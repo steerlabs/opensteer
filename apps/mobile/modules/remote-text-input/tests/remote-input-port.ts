@@ -909,6 +909,20 @@ export class FarField {
         return true;
       }
     }
+    // CW1: another composer's composition is closed only for an operation admitted whatever its
+    // text (an insertion, a command); a replacement or a composition of another composer while
+    // one is open is refused alone, the composition kept.
+    const composer = this.composer;
+    if (
+      this.composition &&
+      composer &&
+      (composer.contextId !== (context ?? this.contextId) || composer.producer !== producer) &&
+      (operation.kind === "edit" || operation.kind === "compose") &&
+      !insertion
+    ) {
+      this.refuse(operation);
+      return true;
+    }
     this.close(context ?? this.contextId, producer);
     switch (operation.kind) {
       case "edit":

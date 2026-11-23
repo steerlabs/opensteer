@@ -37,11 +37,23 @@ afterAll(async () => {
 
 /** What the Home sent as text, and to whom it attributed input, in order. */
 const record: string[] = [];
+/** CW1: what the page does right after the close has read its composition, before it sends. */
+let between: null | (() => Promise<unknown>) = null;
 function handle(session: CDPSession): CdpSession {
   const raw = session.send.bind(session) as unknown as CdpSession["send"];
-  const send = ((method: string, params?: Record<string, unknown>) => {
+  const send = (async (method: string, params?: Record<string, unknown>) => {
     if (method === "Input.insertText") record.push(`text ${String(params?.text)}`);
-    return raw(method as never, params as never);
+    const result: unknown = await raw(method as never, params as never);
+    if (
+      method === "Runtime.evaluate" &&
+      String(params?.expression).includes("editingOwner?.composition()") &&
+      between
+    ) {
+      const act = between;
+      between = null;
+      await act();
+    }
+    return result;
   }) as CdpSession["send"];
   return {
     send,
@@ -371,6 +383,104 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     expect(await send({ kind: "command", command: "moveBackward" }, "B")).toBe(true);
     expect(await read(page, kind)).toEqual({ value: "aに", caret: 1, collapsed: true });
     expect(record).toEqual(["attributed A", "attributed A", "text に"]);
+  });
+
+  /*
+   * CW1: the close commits only what the page still holds, in the field it read, and only for an
+   * operation that is admitted. Focus moving between the read and the send, or the composition
+   * ending by itself there, sends nothing; another viewer's refused edit leaves the composition
+   * and the record as they were.
+   */
+  const composeA = async (text: string) =>
+    send(
+      {
+        kind: "compose",
+        composition: {
+          contextId: observer.context.contextId!,
+          text,
+          selectionStart: text.length,
+          selectionEnd: text.length,
+          before: "",
+          after: "",
+        },
+      },
+      "A",
+    );
+  it("types nothing into a field that took focus between the close's read and its send", async () => {
+    await seed(page, kind, "", 0);
+    await settle();
+    expect(await composeA("日本")).toBe(true);
+    record.length = 0;
+    between = () =>
+      page.evaluate(() => {
+        const other = document.createElement("input");
+        other.id = "g";
+        document.body.append(other);
+        other.focus();
+      });
+    await send(
+      {
+        kind: "edit",
+        edit: { contextId: observer.context.contextId!, text: "x", before: "", after: "" },
+      },
+      "B",
+    );
+    expect(
+      await page.evaluate(() => (document.getElementById("g") as HTMLInputElement).value),
+    ).toBe("");
+    expect(record).not.toContain("text 日本");
+    await page.evaluate(() => {
+      document.getElementById("g")!.remove();
+      document.getElementById("f")!.focus();
+    });
+    await settle();
+  });
+  it("sends nothing for a composition that ended by itself between the close's read and its send", async () => {
+    await seed(page, kind, "", 0);
+    await settle();
+    expect(await composeA("日本")).toBe(true);
+    record.length = 0;
+    between = () =>
+      page.evaluate(() => {
+        const field = document.getElementById("f")!;
+        field.blur();
+        field.focus();
+      });
+    await settle();
+    const contextId = observer.context.contextId!;
+    await send({ kind: "edit", edit: { contextId, text: "x", before: "", after: "" } }, "B");
+    expect(record).not.toContain("text 日本");
+    expect((await read(page, kind)).value).not.toContain("日本日本");
+  });
+  it("leaves the composition and the record as they were when another viewer's edit is refused", async () => {
+    await seed(page, kind, "", 0);
+    await settle();
+    expect(await composeA("日本")).toBe(true);
+    record.length = 0;
+    const refused = await send(
+      {
+        kind: "edit",
+        edit: { contextId: observer.context.contextId!, text: "x", before: "WRONG", after: "" },
+      },
+      "B",
+    );
+    expect(refused).toBe(false);
+    expect(record).toEqual([]);
+    expect((await read(page, kind)).value).toBe("日本");
+    expect(
+      await page.evaluate(
+        () =>
+          (document.getElementById("f") as HTMLTextAreaElement).value ||
+          document.getElementById("f")!.textContent,
+      ),
+    ).toBe("日本");
+    // The page ends the composition (focus leaves and comes back), keeping its text.
+    await page.evaluate(() => {
+      const field = document.getElementById("f")!;
+      field.blur();
+      field.focus();
+    });
+    await settle();
   });
 
   // CS1: a refusal inside the context while composing. The page moved the selection under an
@@ -746,13 +856,20 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
               // Another viewer takes the input while the composition is open: the composing
               // context ends, and closes its composition before the other viewer's operation.
               producer = producer === "A" ? "B" : "A";
+              const way = next();
               operation =
-                next() < 0.5
+                way < 0.4
                   ? {
                       kind: "edit",
                       edit: { contextId, text: pick(alphabet), before: "", after: "" },
                     }
-                  : { kind: "command", command: pick(commands) };
+                  : way < 0.8
+                    ? { kind: "command", command: pick(commands) }
+                    : // CW1: a replacement of the other viewer's, refused alone.
+                      {
+                        kind: "edit",
+                        edit: { contextId, text: pick(alphabet), before: "zz", after: "" },
+                      };
               label = `viewer ${producer}`;
               totals.viewers += 1;
             } else {

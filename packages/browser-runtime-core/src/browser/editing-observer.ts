@@ -357,6 +357,28 @@ export class PageEditingObserver {
       // context's mirror holds, so the current context stays.
       if (!(insertion && this.#earlier.has(edit.contextId))) return false;
     }
+    // CW1: another context's (or viewer's) composition is closed only for an operation the page
+    // admits whatever its text: an insertion at the caret. A replacement or a composition of
+    // another composer while one is open is refused alone; the composition and the record stay.
+    const composer = this.#composer;
+    if (
+      composer &&
+      (composer.contextId !== edit.contextId || composer.producer !== producer) &&
+      !insertion
+    ) {
+      // Only while the page still composes: a composition it ended itself (focus left) is over.
+      const open = await this.#cdp
+        .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+          contextId: focus.context,
+          expression: "globalThis.editingOwner?.composition()",
+          returnByValue: true,
+          silent: true,
+        })
+        .catch(() => null);
+      if (typeof open?.result?.value === "string" && open.result.value.length > 0)
+        return this.#stale();
+      this.#composer = null;
+    }
     await this.#close(focus, edit.contextId, producer);
     const generation = this.#generation;
     const response = await this.#cdp
@@ -521,8 +543,29 @@ export class PageEditingObserver {
       .catch(() => null);
     const text = response?.result?.value;
     if (typeof text !== "string" || text.length === 0) return;
-    composer.admitted?.();
-    await this.input(() => this.#cdp.send("Input.insertText", { text })).catch(() => undefined);
+    // CW1: decided and acted on together. Just before the send the page is read again: the same
+    // field focused, the same marked text, still composing; anything moved, and nothing is sent.
+    // (One CDP hop remains between that read and the insertion: the page cannot commit an IME's
+    // text itself.)
+    const generation = this.#generation;
+    await this.input(async () => {
+      const again = await this.#cdp
+        .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+          contextId: focus.context,
+          expression: "globalThis.editingOwner?.composition()",
+          returnByValue: true,
+          silent: true,
+        })
+        .catch(() => null);
+      if (
+        again?.result?.value !== text ||
+        this.#focused?.context !== focus.context ||
+        this.#generation !== generation
+      )
+        return;
+      composer.admitted?.();
+      await this.#cdp.send("Input.insertText", { text });
+    }).catch(() => undefined);
   }
 
   #stale(): false {

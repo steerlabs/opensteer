@@ -866,6 +866,10 @@ describe("a person's caret moves and selections in the native field", () => {
         const [start, end] = [pick(boundaries), pick(boundaries)].sort((x, y) => x - y);
         const word = pick(["the", "ab", "é"]);
         // No autocorrect on a target without range edits: the keyboard's is turned off there.
+        // NOT FROM A RECORDING (CV2): what UITextView does with replace(_:withText:) is recorded
+        // (uikit-recordings.json), but which range a device keyboard's autocorrect names is not;
+        // any range is drawn, the harder case. Device list: type "teh " on a real keyboard with
+        // autocorrect on and record the range the device names.
         if (!display) await run.replaceRange(start!, end!, word);
       } else if (choice < 0.65) await run.paste(pick(["pasted", "א b"]));
       else if (choice < 0.7) {
@@ -1230,6 +1234,7 @@ describe("a person's caret moves and selections in the native field", () => {
       } else if (choice < 0.62) {
         const [start, end] = [pick(boundaries), pick(boundaries)].sort((x, y) => x - y);
         const word = pick(["the", "ab", "é"]);
+        // Not from a recording (CV2): any range, as in the third generator.
         if (!display && !acted) await run.replaceRange(start!, end!, word);
       } else if (choice < 0.65) {
         text = pick(["pasted", "א b"]);
