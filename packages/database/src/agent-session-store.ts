@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   AgentOperationTargetSchema,
   agentSessionIdleMs,
@@ -227,8 +228,9 @@ async function beginInTransaction(
     .execute();
   const threadId = createId("thread");
   const now = new Date();
-  const purpose = input.purpose?.trim();
-  const title = (purpose ? `${connection.label}: ${purpose}` : connection.label).slice(0, 200);
+  const purpose = input.purpose ? outsideName(input.purpose, 200) : "";
+  const title =
+    outsideName(purpose ? `${connection.label}: ${purpose}` : connection.label, 200) || "Task";
   await tx
     .insertInto("threads")
     .values({

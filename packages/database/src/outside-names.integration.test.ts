@@ -8,8 +8,15 @@ import { createId, ThreadSchema, type RequestId } from "@opensteer/core";
 import { AgentConnectionSchema } from "@opensteer/protocol";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
+import {
+  admitAgentOperation,
+  beginAgentSession,
+  listAgentOperations,
+} from "./agent-session-store.js";
 import { AppStore } from "./app-store.js";
+import { createBrowserProfile } from "./browser-session-store.js";
 import { needsYouPage } from "./needs-you-store.js";
+import { NotificationStore } from "./notification-store.js";
 import {
   describeStore,
   testMessagingRunnerId,
@@ -40,6 +47,7 @@ const nameKeys = new Set([
   "handle",
   "title",
   "name",
+  "body",
 ]);
 /** Every name in `value`, by its key. */
 function names(value: unknown, found: string[] = [], key = ""): string[] {
@@ -64,9 +72,12 @@ describeStore("a name from outside enters the Home clean", (it) => {
     const { upsertChannelIdentity } = await import("./channel-store.js");
     const { commitPersonalMutation } = await import("./personal-mutation.js");
     const answers: unknown[] = [];
-    // A task with a question for the person, so Needs you names it.
+    const notifications = new NotificationStore(database);
+    let notificationCount = 0;
+    // A task with a question for the person, so Needs you and notifications name it.
     const asking = await storeFixture.startRunFixture("outside-asking");
-    await storeFixture.openLiveRequest(asking, createId("request") as RequestId);
+    const askRequestId = createId("request") as RequestId;
+    await storeFixture.openLiveRequest(asking, askRequestId);
     for (const [index, name] of forged.entries()) {
       // A messaging account and its connection, as its provider names them.
       const { account, connection } = await channels.createConnection({
@@ -149,6 +160,15 @@ describeStore("a name from outside enters the Home clean", (it) => {
       if (Array.from(name).length > 240) await expect(rename).rejects.toThrow();
       else await rename;
       answers.push(await needsYouPage(database, { userId: asking.userId }));
+      const decided = await notifications.decide({
+        type: "requestChanged",
+        opened: true,
+        status: "pending",
+        requestId: askRequestId,
+        threadId: asking.threadId,
+      });
+      notificationCount += decided.length;
+      answers.push(decided.map(({ view }) => view));
       // A message's sender and conversation, as the provider sends them (a name longer than the
       // wire allows is refused there, never stored).
       if (name.length <= 160) {
@@ -268,6 +288,82 @@ describeStore("a name from outside enters the Home clean", (it) => {
         .where("appId", "=", published.appId)
         .execute(),
     );
+    // 1. Connected agent's own tool results: task list page, task read, and app list.
+    const toolPage = await store.agentThreadPageForOwner({
+      ownerId: fixture.userId,
+      scope: { kind: "personal" },
+      scopeId: "personal",
+      maxItems: 50,
+      reader: { kind: "connection" },
+    });
+    expect(toolPage.threads.length).toBeGreaterThan(0);
+    answers.push(toolPage.threads);
+    const toolTask = await store.readTask({ kind: "connection" }, asking.threadId, asking.userId);
+    expect(toolTask).not.toBeNull();
+    answers.push(toolTask);
+    const listedApps = await apps.list(asking.userId);
+    expect(listedApps.length).toBeGreaterThan(0);
+    answers.push(listedApps);
+
+    // 2. Activity feed: direct-work session (with a forged purpose) and admitted operation.
+    const sessionConn = await connections.create({
+      userId: fixture.userId,
+      label: "Helper\u202E\nDisconnected",
+      clientName: "Helper\u202E\nDisconnected",
+      accessMode: "approval-required",
+      grant: { scope: "everything" },
+      resource: "https://home.example/mcp",
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await connections.activate(sessionConn.id, "h".repeat(64));
+    const dirtyProfile = await createBrowserProfile(database, {
+      homeRunnerId: null,
+      idempotencyKey: "outside-session-profile",
+      name: "Profile\u202E\nDisconnected",
+      ownerId: fixture.userId,
+    });
+    const { session } = await beginAgentSession(database, {
+      userId: fixture.userId,
+      agentConnectionId: sessionConn.id,
+      purpose: "Inspect\u202E\nDisconnected",
+    });
+    await admitAgentOperation(database, {
+      userId: fixture.userId,
+      agentConnectionId: sessionConn.id,
+      sessionId: session.id,
+      operationKey: "outside-op-1",
+      tool: "browser_open",
+      argumentDigest: "a".repeat(64),
+      target: {
+        grant: { kind: "browser-profile", profileId: dirtyProfile.id },
+        name: dirtyProfile.name,
+        device: null,
+      },
+      targetGeneration: null,
+      grantRevision: sessionConn.grantRevision!,
+      mode: "approval-required",
+      effect: "read",
+      calls: "open",
+      agentReason: null,
+    });
+    const byConnection = await listAgentOperations(database, {
+      userId: fixture.userId,
+      connectionId: sessionConn.id,
+      limit: 20,
+    });
+    const byThread = await listAgentOperations(database, {
+      userId: fixture.userId,
+      threadId: session.threadId,
+      limit: 20,
+    });
+    expect(byConnection.operations.length).toBeGreaterThan(0);
+    expect(byThread.operations.length).toBeGreaterThan(0);
+    const sessionThread = ThreadSchema.parse(
+      await store.getThreadForOwner(session.threadId, fixture.userId),
+    );
+    answers.push(byConnection.operations, byThread.operations, sessionThread);
+    // 3. Notifications were produced and inspected above.
+    expect(notificationCount).toBeGreaterThan(0);
     // A bridge message author composed from a long name must never split a surrogate pair at 160.
     const emojiBridge = await connections.createBridge({
       userId: fixture.userId,

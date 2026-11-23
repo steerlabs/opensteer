@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { requireNoBrowserStandardCdpLease } from "./browser-standard-cdp-lease.js";
 import {
   BrowserPoolAdmissionClosed,
@@ -168,7 +169,7 @@ export async function insertBrowserProfileOnLockedHome(
       .values({
         archivedAt: null,
         id: createId("browserProfile"),
-        name: input.name,
+        name: outsideName(input.name, 120) || "Profile",
         ownerId: input.ownerId,
         homeRunnerId: input.homeRunnerId,
         purpose: input.purpose ?? "person",
@@ -302,7 +303,7 @@ export async function renameBrowserProfile(
       await assertPersonalOwner(transaction, input.ownerId);
       const row = await transaction
         .updateTable("browserProfiles")
-        .set({ name: input.name, updatedAt: new Date() })
+        .set({ name: outsideName(input.name, 120) || "Profile", updatedAt: new Date() })
         .where("id", "=", input.profileId)
         .where("ownerId", "=", input.ownerId)
         .where("archivedAt", "is", null)
