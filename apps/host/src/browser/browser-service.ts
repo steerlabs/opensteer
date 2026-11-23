@@ -4182,8 +4182,11 @@ export class BrowserService {
       // cancels the runtime's wait, and this bind ends at once; a slow wake has its own bound.
       const broker = this.#brokers.get(session.id);
       let reopened = false;
-      // A tab this Home knows to be live is bound as it is; one asleep or not yet known is woken.
-      if (broker?.surfaceState === 1 && broker.surfaceStateOf(row.id) !== "live") {
+      let woken = false;
+      // Z1: this Home's copy of the tab's state is a picture of the past and decides nothing: a
+      // runtime that sleeps tabs is always asked, and says itself whether it woke the tab and
+      // whether a wake's load is unfinished; only then does it wait.
+      if (broker?.surfaceState === 1) {
         const woke = await withTimeout(
           broker.requestCdp(
             {
@@ -4206,7 +4209,9 @@ export class BrowserService {
               new BrowserCdpConnectionEnded("This tab did not wake in time. Try again shortly."),
           },
         );
-        reopened = (woke.result as { reopened?: unknown } | undefined)?.reopened === true;
+        const answer = woke.result as { reopened?: unknown; reloaded?: unknown } | undefined;
+        reopened = answer?.reopened === true;
+        woken = answer?.reloaded === true;
       }
       const { backend } = await this.#admitAgentBackend(
         { ...agent, sessionId: session.id },
@@ -4222,7 +4227,7 @@ export class BrowserService {
         tabId: row.id,
         sessionId: session.id,
         backend,
-        reloaded: !live || reopened,
+        reloaded: !live || woken || reopened,
         ...(reopened ? { reopened: true } : {}),
       };
     } finally {

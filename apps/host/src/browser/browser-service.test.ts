@@ -8875,6 +8875,90 @@ it("tells an agent's bind that its tab was reopened at its address, when the run
   await expect(binding).resolves.toMatchObject({ reloaded: true, reopened: true });
 });
 
+/*
+ * Z1: this Home's copy of a tab's state is a picture of the past and decides nothing on the
+ * runtime. (A) a woken tab whose load did not finish in the first try is announced live, and the
+ * retry must still be asked of the runtime, which waits for that load; (B) a tab that slept on
+ * the runtime before this Home heard of it is still live here, and the bind must still wake it.
+ * In both the Home holds "live"; the old bind skipped the runtime and handed the tab over as it was.
+ */
+it.each([
+  ["a retry after the wake's load did not finish in time", true],
+  ["a tab that slept on the runtime before this Home heard", true],
+] as const)(
+  "asks the runtime on every bind, whatever this Home last heard of the tab: %s (Z1)",
+  async (_case, runtimeWoke) => {
+    const keys = generateKeyPairSync("ed25519"),
+      runtime = await startFakeRuntime(keys.publicKey, "host-primary", { cdpReplyBudget: true }),
+      ownerId = createId("user"),
+      repository = new MemoryBrowserRepository(ownerId),
+      memory = memoryTabs(),
+      service = freshService({
+        keys,
+        runtime,
+        repository,
+        tabs: memory.store,
+        surfaceState: true,
+        tabRestoreVersion: true,
+      });
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", guest: true, url: "about:blank" },
+      "bind-cached-live",
+    );
+    await memory.add(descriptor);
+    const row = memory.rows.get(descriptor.id)!;
+    runtime.publishTabs({
+      surfaces: [{ id: row.id, state: "live", active: true, title: "Awake here" }],
+    });
+    await vi.waitFor(() =>
+      expect(service.tabStateOf(row.pageBinding!.sessionId, row.id)).toBe("live"),
+    );
+    const binding = service.pageTabs.bindBrowserScript!(
+      {
+        authority: { ownerId, agentBindingId: "run:bind-cached-live" },
+        threadId: createId("thread"),
+        signal: new AbortController().signal,
+      } as never,
+      row,
+    );
+    void binding.catch(() => undefined);
+    const resume = await vi.waitFor(
+      () => {
+        const sent = runtime
+          .receivedCommands()
+          .findLast(
+            (m) =>
+              m.type === "cdp.command" &&
+              (m.command as { method?: string }).method === "Opensteer.resumeTab",
+          );
+        expect(sent).toBeDefined();
+        return sent!;
+      },
+      { timeout: 2_000 },
+    );
+    expect((resume.command as { parameters?: unknown }).parameters).toEqual({
+      surfaceId: row.id,
+      loaded: true,
+    });
+    // The runtime says it woke the tab (or that its wake's load is what this retry waited for).
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: resume.requestId,
+      result: {
+        surfaceId: row.id,
+        targetId: "target-1",
+        documentId: "document-1",
+        dialog: null,
+        userActivity: null,
+        pageResize: null,
+        reloaded: runtimeWoke,
+      },
+    });
+    await expect(binding).resolves.toMatchObject({ reloaded: true });
+  },
+);
+
 function memoryTabs() {
   const rows = new Map<string, TabRecord>();
   const add = async (write: TabWrite) => {
