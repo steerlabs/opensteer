@@ -85,6 +85,8 @@ const decided: Readonly<Record<string, string>> = {
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "thread.rename / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "thread.execution.update / selected-covering":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "thread.rename / selected-covering":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "trigger.create / selected-covering":
@@ -94,6 +96,10 @@ const decided: Readonly<Record<string, string>> = {
   "tab.open (profile) / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "tab.close (the person's tab) / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "tab.organize (into a new group) / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "tab.group.update (rename) / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "tab.open (profile) / own-full":
     "the test's browser runtime opens guest pages but not a profile's: the open was admitted and failed in the browser (\"The browser could not open this page\")",
@@ -142,7 +148,6 @@ const withoutTool: Readonly<Record<string, string>> = {
  * owed before this branch is trial-merged (the lead's item 2). The list only shrinks.
  */
 const owed: Readonly<Record<string, string>> = {
-  "thread.execution.update": "opensteer_task_configure",
   "thread.inputQueue.resume": "opensteer_task_queue (resume)",
   "thread.input.steer": "opensteer_task_queue (steer)",
   "thread.input.cancel": "opensteer_task_queue (cancel)",
@@ -159,8 +164,6 @@ const owed: Readonly<Record<string, string>> = {
   "plugins.workflow.start": "opensteer_plugin_resource_update",
   "plugins.workflow.stop": "opensteer_plugin_resource_update",
   "plugins.webhook.remove": "opensteer_plugin_resource_update",
-  "tab.organize": "tab_organize",
-  "tab.group.update": "tab_group_update",
   "app.start": "app_start",
   "app.stop": "app_stop",
   "app.delete": "app_delete",
@@ -197,6 +200,13 @@ it("records what today's tools let each caller do, and the door answers the same
       },
     });
     close.unshift(() => machine.close());
+    // Every answer below is from a connected computer: if the Host ends its connection, the run
+    // says when and why rather than recording what a computer that is gone would answer.
+    let current = "setup";
+    const machineClosed: string[] = [];
+    machine.primary.socket.on("close", (code: number, reason: Buffer) =>
+      machineClosed.push(`${code} ${reason.toString()} during ${current}`),
+    );
     // Its browser, as the hot-path test runs one: tabs open for real.
     const browserRuntime = await startBrowserRuntime(host.hostPort, "unused-existing-main", {
       primary: machine.primary,
@@ -392,6 +402,17 @@ it("records what today's tools let each caller do, and the door answers the same
       })) as { tab: { tabId: string } };
       return (personTabs[caller] = opened.tab.tabId);
     };
+    /** A tab group the person made, one per caller: what tab_group_update acts on. */
+    const personGroups = {} as Record<Caller, string>;
+    const personGroup = async (caller: Caller) => {
+      const organized = (await asPerson({
+        type: "tab.organize",
+        tabIds: [await personTab(caller)],
+        group: { name: `Person ${caller}`, color: "green" },
+      })) as { tabs: { tabId: string; groupId?: string | null }[] };
+      const grouped = organized.tabs.find((tab) => tab.tabId === personTabs[caller]);
+      return (personGroups[caller] = grouped!.groupId!);
+    };
     const harness = {
       environmentId: machine.environmentId,
       harnessInstanceId: machine.harnessInstanceId,
@@ -442,6 +463,23 @@ it("records what today's tools let each caller do, and the door answers the same
       readonly after?: () => Promise<unknown>;
     }
     const scenarios: Scenario[] = [
+      {
+        name: "thread.execution.update",
+        tool: "opensteer_task_configure",
+        // First: the other task has no Run yet (a sent message would start one, and an engine
+        // does not change under an active Run).
+        args: (c) => ({
+          taskId: others[c],
+          aiAccountId: machine.harnessInstanceId,
+          modelSelection: modelChoice,
+        }),
+        command: (c) => ({
+          type: "thread.execution.update",
+          threadId: others[c],
+          harnessInstanceId: machine.harnessInstanceId,
+          modelSelection: modelChoice,
+        }),
+      },
       {
         name: "thread.rename",
         tool: "opensteer_task_update",
@@ -665,16 +703,20 @@ it("records what today's tools let each caller do, and the door answers the same
       {
         name: "harness.model.configure",
         tool: "opensteer_ai_account_update",
-        // The person sets the same limits once the engine offers them again: a Runner's new
-        // descriptor (its browser) is read in the background, and the agent's call meets it ready.
+        // The person sets the same limits first, so the agent's call changes nothing new.
         before: async () => {
-          // The Runner's descriptor, read in the background after the engine came back, can
-          // replace the catalog written here: each attempt writes it again over whatever is
-          // current, so the wait is for the write to stand, not for a race to fall our way.
+          // Model settings come from the connected computer's own descriptor (its OpenAI source
+          // offers them), and the model from the engine's catalog, written again on each attempt.
+          // A refusal while the computer is still connected is retried; once it is gone, the wait
+          // says so at once.
           await until(
             "the spare engine to offer gpt-5.6-sol again, so the person's same limits apply",
-            async () =>
-              catalogued()
+            async () => {
+              if (machineClosed.length)
+                throw new Error(
+                  `the fixture computer's connection closed: ${machineClosed.join("; ")}`,
+                );
+              return catalogued()
                 .then(() =>
                   asPerson({
                     type: "harness.model.configure",
@@ -683,7 +725,8 @@ it("records what today's tools let each caller do, and the door answers the same
                     settings: { contextWindow: 100_000 },
                   }),
                 )
-                .then(() => true),
+                .then(() => true);
+            },
             30_000,
           );
         },
@@ -818,6 +861,30 @@ it("records what today's tools let each caller do, and the door answers the same
         command: (c) => ({ type: "tab.close", tabIds: [personTabs[c]] }),
       },
       {
+        name: "tab.organize (into a new group)",
+        tool: "tab_organize",
+        args: async (c) => ({
+          tabIds: [await personTab(c)],
+          group: { name: `Parity ${c}`, color: "blue" },
+        }),
+        command: (c) => ({
+          type: "tab.organize",
+          tabIds: [personTabs[c]],
+          group: { name: `Parity ${c}`, color: "blue" },
+        }),
+      },
+      {
+        name: "tab.group.update (rename)",
+        tool: "tab_group_update",
+        // A group the person made, one per caller: what the tool renames.
+        args: async (c) => ({ groupId: await personGroup(c), name: "Renamed by parity" }),
+        command: (c) => ({
+          type: "tab.group.update",
+          groupId: personGroups[c],
+          name: "Renamed by parity",
+        }),
+      },
+      {
         name: "browser.profile.delete",
         tool: "browser_profile_remove",
         args: (c) => ({ target: "profile", profileId: profiles[c].id }),
@@ -949,6 +1016,14 @@ it("records what today's tools let each caller do, and the door answers the same
         ),
       };
     });
+    intercept(ThreadService.prototype, "configure", ([, command]) => {
+      const {
+        idempotencyKey: _key,
+        continuation: _continuation,
+        ...rest
+      } = command as Record<string, unknown>;
+      return rest;
+    });
     intercept(ThreadService.prototype, "sendInput", ([, input]) => {
       const i = input as { threadId: string; content: unknown; policy: string };
       return {
@@ -960,6 +1035,14 @@ it("records what today's tools let each caller do, and the door answers the same
     });
     intercept(TabService.prototype, "open", ([, target]) => ({ type: "tab.open", target }));
     intercept(TabService.prototype, "close", ([, tabIds]) => ({ type: "tab.close", tabIds }));
+    intercept(TabService.prototype, "organize", ([, input]) => ({
+      type: "tab.organize",
+      ...(input as Record<string, unknown>),
+    }));
+    intercept(TabService.prototype, "updateGroup", ([, input]) => ({
+      type: "tab.group.update",
+      ...(input as Record<string, unknown>),
+    }));
     intercept(TriggerService.prototype, "manage", ([, value]) => {
       const {
         operation,
@@ -1044,6 +1127,7 @@ it("records what today's tools let each caller do, and the door answers the same
     for (const scenario of ordered) {
       recorded[scenario.name] = {} as Record<Caller, Outcome>;
       for (const caller of callerNames) {
+        current = `${scenario.name} / ${caller}`;
         await scenario.before?.();
         const args = await scenario.args(caller);
         // The command as the scenario builds it, answered before the tool acts; where the tool
@@ -1124,6 +1208,7 @@ it("records what today's tools let each caller do, and the door answers the same
       expect(existsSync(fixturePath), "the frozen recording").toBe(true);
       expect(recorded).toEqual(JSON.parse(readFileSync(fixturePath, "utf8")));
     }
+    expect(machineClosed).toEqual([]);
     expect(unfaithful).toEqual([]);
     expect(differences).toEqual([]);
   } finally {

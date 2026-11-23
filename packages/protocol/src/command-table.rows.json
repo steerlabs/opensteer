@@ -372,7 +372,7 @@
         }
       ],
       "step": "A",
-      "note": "`tsvc:263`; X11: the task's later Runs use it, in the task's lineage, so a connection asks unless that lineage is its own",
+      "note": "`tsvc:263`; X11: the task's later Runs use it, in the task's lineage, so a connection asks unless that lineage is its own; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "database",
         "why": "thread-service.ts:306 → command-service.ts:134: one store write",

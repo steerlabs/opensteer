@@ -20,6 +20,27 @@
     "selected-covering": "refused:not_offered",
     "selected-not": "not_found"
   },
+  "tab.organize (into a new group)": {
+    "own-full": "allowed",
+    "own-supervised": "refused:access_denied",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "tab.group.update (rename)": {
+    "own-full": "allowed",
+    "own-supervised": "refused:access_denied",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "thread.execution.update": {
+    "own-full": "allowed",
+    "own-supervised": "allowed",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
   "thread.rename": {
     "own-full": "allowed",
     "own-supervised": "allowed",
