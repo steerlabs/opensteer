@@ -145,8 +145,16 @@ async function connectionRequestsQuery(
           .where("runners.revokedAt", "is", null),
       ),
     )
-    .$if(scope === "selected", (query) =>
-      query.where("threads.originConnectionId", "=", authority.connectionId),
+    .$if(
+      scope === "selected",
+      (query) => query.where("threads.originConnectionId", "=", authority.connectionId),
+      (query) =>
+        query.where((eb) =>
+          eb.or([
+            eb("threads.originConnectionId", "is", null),
+            eb("threads.originConnectionId", "=", authority.connectionId),
+          ]),
+        ),
     )
     .where((eb) => {
       const asker = eb

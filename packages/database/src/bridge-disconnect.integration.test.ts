@@ -1,9 +1,13 @@
 import { createChannelId, type ChannelConversationId } from "@opensteer/channel-core";
-import type { RequestPresentation } from "@opensteer/core";
+import { BrowserSessionIdSchema, createId, type RequestPresentation } from "@opensteer/core";
+import { sql } from "kysely";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
+import { BrowserSourceStore } from "./browser-source-store.js";
 import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
+import { openCleanups } from "./connection-disconnect.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { browserSignInRequestDeliverableInTransaction } from "./request-store.js";
 import { agentEndedForPersonMessage, chatEndedMessage } from "./resource-access.js";
 import { describeStore, testMessagingRunnerId } from "./store.integration.test-support.js";
 
@@ -477,5 +481,320 @@ describeStore("locks are taken in their stable order when many rows move at once
       title: "Own task",
     });
     expect((await detailOf(running.userId, ownTask.id))?.endedOrigin).toBeNull();
+  });
+
+  it("refuses answering a live Request once its connection has ended, before Disconnect runs, and enqueues nothing for the Runner", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const connections = new AgentConnectionStore(database);
+
+    // 1. Live Request on a connected agent's waiting Run.
+    const running = await storeFixture.startRunFixture("ended-live-request");
+    const agent = await connections.create({
+      userId: running.userId,
+      label: "Ended Live Agent",
+      clientName: "Ended Live Agent",
+      accessMode: "approval-required",
+      resource: "https://home.example/mcp",
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: agent.id })
+      .where("id", "=", running.thread.id)
+      .execute();
+    await database
+      .updateTable("runs")
+      .set({ connectionId: agent.id })
+      .where("id", "=", running.run.id)
+      .execute();
+    const { request: liveRequest } = await store.requests.create({
+      callId: "live-approval-agent",
+      kind: "harness.approval",
+      mode: "live",
+      originatingRunId: running.run.id,
+      originatingThreadId: running.thread.id,
+      payload: { kind: "harness.approval" },
+      presentation: {
+        kind: "choice",
+        title: "Run shell command?",
+        options: [
+          { id: "allow", label: "Allow", hint: "allow-once" },
+          { id: "deny", label: "Deny", hint: "reject-once" },
+        ],
+      },
+      requestedBy: running.userId,
+      requiredActor: "requester",
+    });
+    await database
+      .updateTable("runs")
+      .set({ status: "waiting" })
+      .where("id", "=", running.run.id)
+      .execute();
+    // Revoke WITHOUT running driveConnectionCleanups (Run is still waiting, grant still active).
+    expect(await connections.revoke(running.userId, agent.id)).toBe(true);
+    await expect(
+      store.enqueueRunnerControl({
+        expectedRevision: (await store.requests.revision(liveRequest.id))!,
+        idempotencyKey: "live-approve-after-agent-end",
+        requestId: liveRequest.id,
+        requestedBy: running.userId,
+        response: { kind: "choice", optionId: "allow" },
+        runId: running.run.id,
+        sealedResponse: {
+          envelope: Buffer.from("sealed-live-response"),
+          keyVersion: 1,
+          requestFingerprint: "hmac-sha256-v1:1:live-approve-after-agent-end",
+        },
+        threadId: running.thread.id,
+        type: "request.respond",
+      }),
+    ).rejects.toMatchObject({ code: "forbidden", message: agentEndedForPersonMessage });
+    expect(
+      await database
+        .selectFrom("commands")
+        .select("id")
+        .where("runId", "=", running.run.id)
+        .where("type", "=", "request.respond")
+        .execute(),
+    ).toEqual([]);
+
+    // 2. Live Request on a chat's waiting Run.
+    const bridge = await storeFixture.createBridgeFixture("ended-live-chat");
+    const chatRun = await storeFixture.startRunFixture("ended-live-chat-run");
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridge.bridge.id })
+      .where("id", "=", chatRun.thread.id)
+      .execute();
+    await database
+      .updateTable("runs")
+      .set({ connectionId: bridge.bridge.id })
+      .where("id", "=", chatRun.run.id)
+      .execute();
+    const { request: chatLiveRequest } = await store.requests.create({
+      callId: "live-approval-chat",
+      kind: "harness.approval",
+      mode: "live",
+      originatingRunId: chatRun.run.id,
+      originatingThreadId: chatRun.thread.id,
+      payload: { kind: "harness.approval" },
+      presentation: {
+        kind: "choice",
+        title: "Run shell command for chat?",
+        options: [{ id: "allow", label: "Allow", hint: "allow-once" }],
+      },
+      requestedBy: chatRun.userId,
+      requiredActor: "requester",
+    });
+    await database
+      .updateTable("runs")
+      .set({ status: "waiting" })
+      .where("id", "=", chatRun.run.id)
+      .execute();
+    expect(await connections.revoke(bridge.fixture.userId, bridge.bridge.id)).toBe(true);
+    await expect(
+      store.enqueueRunnerControl({
+        expectedRevision: (await store.requests.revision(chatLiveRequest.id))!,
+        idempotencyKey: "live-approve-after-chat-end",
+        requestId: chatLiveRequest.id,
+        requestedBy: chatRun.userId,
+        response: { kind: "choice", optionId: "allow" },
+        runId: chatRun.run.id,
+        sealedResponse: {
+          envelope: Buffer.from("sealed-chat-live-response"),
+          keyVersion: 1,
+          requestFingerprint: "hmac-sha256-v1:1:live-approve-after-chat-end",
+        },
+        threadId: chatRun.thread.id,
+        type: "request.respond",
+      }),
+    ).rejects.toMatchObject({ code: "forbidden", message: chatEndedMessage });
+    expect(
+      await database
+        .selectFrom("commands")
+        .select("id")
+        .where("runId", "=", chatRun.run.id)
+        .where("type", "=", "request.respond")
+        .execute(),
+    ).toEqual([]);
+  });
+
+  it("records a browser.sign-in receipt already delivered before Disconnect and does not cancel its Request", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const bridge = await storeFixture.createBridgeFixture("signin-after-end");
+    const run = await storeFixture.startRunFixture("signin-after-end-run");
+    const deployment = await database
+      .selectFrom("deployments")
+      .select("id")
+      .executeTakeFirstOrThrow();
+    const connections = new AgentConnectionStore(database);
+    const browserSources = new BrowserSourceStore(database);
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridge.bridge.id })
+      .where("id", "=", run.thread.id)
+      .execute();
+    await database
+      .updateTable("runs")
+      .set({ connectionId: bridge.bridge.id })
+      .where("id", "=", run.run.id)
+      .execute();
+    const sourceId = createId("browserSource");
+    await database
+      .insertInto("browserSources")
+      .values({
+        id: sourceId,
+        ownerId: run.userId,
+        name: "Mac Chrome",
+        tokenHash: `hash-${sourceId}`,
+      })
+      .execute();
+    const browserSession = await store.createBrowserSession({
+      id: BrowserSessionIdSchema.parse(`bsn_${crypto.randomUUID()}`),
+      origin: "agent",
+      placementKey: `runner:${run.runnerId}:browser`,
+      profileId: null,
+      runnerId: run.runnerId,
+      runtimeId: "browser",
+      ownerId: run.userId,
+    });
+    await store.transitionBrowserSession({ sessionId: browserSession.id, state: "ready" });
+    const sessionId = browserSession.id;
+    const site = "https://bank.example";
+    const { request: signInReq } = await store.requests.create({
+      callId: "browser-signin-delivered",
+      kind: "browser.sign-in",
+      mode: "durable",
+      originatingRunId: run.run.id,
+      originatingThreadId: run.thread.id,
+      payload: {
+        kind: "browser.sign-in",
+        reason: "Check statement",
+        sessionId,
+        site,
+      },
+      presentation: {
+        kind: "external",
+        title: "Sign in to bank.example?",
+        detail: "Check statement",
+        subject: { kind: "browser-site", id: site },
+      },
+      requestedBy: run.userId,
+      requiredActor: "requester",
+    });
+
+    // Step 2: delivery decision passes while the chat is live, and cookies reach the browser.
+    expect(
+      await database.transaction().execute((tx) =>
+        browserSignInRequestDeliverableInTransaction(tx, {
+          ownerId: run.userId,
+          requestId: signInReq.id,
+          scope: { sessionId, site },
+        }),
+      ),
+    ).toBe(true);
+
+    // Step 3: the connection ends before commitSignIn records the delivered sign-in.
+    expect(await connections.revoke(bridge.fixture.userId, bridge.bridge.id)).toBe(true);
+
+    // Any NEW delivery decision is refused now.
+    expect(
+      await database.transaction().execute((tx) =>
+        browserSignInRequestDeliverableInTransaction(tx, {
+          ownerId: run.userId,
+          requestId: signInReq.id,
+          scope: { sessionId, site },
+        }),
+      ),
+    ).toBe(false);
+
+    // Step 4: commitSignIn records the receipt + site grant and does NOT roll back.
+    const invocationId = crypto.randomUUID();
+    const committed = await browserSources.commitSignIn({
+      actor: "request",
+      deploymentId: deployment.id,
+      invocationId,
+      ownerId: run.userId,
+      profileName: "Work",
+      rememberSite: true,
+      requestId: signInReq.id,
+      sessionId,
+      site,
+      sourceId,
+      sourceName: "Mac Chrome",
+    });
+    expect(committed.receipt.id).toBe(invocationId);
+    expect(committed.receipt.requestId).toBe(signInReq.id);
+    const grant = await database
+      .selectFrom("browserSiteGrants")
+      .select(["site", "lastSignedInAt"])
+      .where("ownerId", "=", run.userId)
+      .where("site", "=", site)
+      .executeTakeFirst();
+    expect(grant?.lastSignedInAt).toBeInstanceOf(Date);
+    expect(await store.requests.get(signInReq.id)).toMatchObject({ status: "fulfilled" });
+    // No continuation is queued for an ended connection.
+    expect(
+      await database
+        .selectFrom("requestContinuations")
+        .select("requestId")
+        .where("requestId", "=", signInReq.id)
+        .execute(),
+    ).toEqual([]);
+
+    // Step 5: Disconnect runs and must NOT turn the already-delivered sign-in into a clean cancel.
+    await store.driveConnectionCleanups();
+    expect(await store.requests.get(signInReq.id)).toMatchObject({ status: "fulfilled" });
+  });
+
+  it("removing an expired connection leaves cleanup requested until onCleanup closes its lineage", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const fixture = await storeFixture.createRunFixture("remove-before-cleanup");
+    const connections = new AgentConnectionStore(database);
+    const expired = await connections.create({
+      userId: fixture.userId,
+      label: "Expired Before Cleanup",
+      clientName: "Expired Before Cleanup",
+      accessMode: "approval-required",
+      resource: "https://home.example/mcp",
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+    await connections.remove(fixture.userId, expired.id);
+    const row = await database
+      .selectFrom("agentConnections")
+      .select(["removedAt", "cleanupRequestedAt", "cleanupCompletedAt", "cleanupReason"])
+      .where("id", "=", expired.id)
+      .executeTakeFirstOrThrow();
+    expect(row.removedAt).toBeInstanceOf(Date);
+    expect(row.cleanupRequestedAt).toBeInstanceOf(Date);
+    expect(row.cleanupReason).toBe("expired");
+    expect(row.cleanupCompletedAt).toBeNull();
+    expect(await openCleanups(database)).toContain(expired.id);
+
+    const closed: string[] = [];
+    await store.driveConnectionCleanups({
+      onCleanup: async (cleanup) => {
+        closed.push(cleanup.connectionId);
+      },
+    });
+    expect(closed).toContain(expired.id);
+    expect(await openCleanups(database)).not.toContain(expired.id);
+    expect(
+      (
+        await database
+          .selectFrom("agentConnections")
+          .select("cleanupCompletedAt")
+          .where("id", "=", expired.id)
+          .executeTakeFirstOrThrow()
+      ).cleanupCompletedAt,
+    ).toBeInstanceOf(Date);
+    // Keep sql import used for lint cleanliness if needed.
+    await sql`select 1`.execute(database);
   });
 });

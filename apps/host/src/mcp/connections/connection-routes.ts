@@ -401,6 +401,7 @@ export async function handleConnectionCommand(
     }
     case "connection.remove":
       await oauth.store.remove(session.user.id, command.connectionId);
+      await effects.stopLineage?.(session.user.id, command.connectionId, "disconnect");
       return { type: "connection.remove" as const };
     case "connection.uncertain.acknowledge":
       await oauth.store.acknowledgeUncertain(session.user.id, command.connectionId);

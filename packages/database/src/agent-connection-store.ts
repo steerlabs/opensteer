@@ -676,7 +676,6 @@ export class AgentConnectionStore {
         .updateTable("agentConnections")
         .set({
           removedAt: now,
-          cleanupCompletedAt: row.cleanupCompletedAt ?? now,
           ...(row.cleanupRequestedAt === null
             ? {
                 cleanupRequestedAt: row.revokedAt ?? row.expiresAt,
