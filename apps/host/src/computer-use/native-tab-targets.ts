@@ -64,6 +64,7 @@ type ObservedWindow =
       readonly app: ComputerAppIdentity;
       readonly checkedAt: number;
       readonly generation: number;
+      readonly revision: number;
     }
   | {
       readonly kind: "unavailable";
@@ -72,6 +73,7 @@ type ObservedWindow =
       readonly reason: string;
       readonly checkedAt: number;
       readonly generation: number;
+      readonly revision: number;
     };
 const defaultWindowRefreshTtlMs = 30_000;
 const unavailable = (
@@ -117,6 +119,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
   readonly #generations = new Map<ComputerTargetId, number>();
   readonly #observed = new Map<string, ObservedWindow>();
   readonly #inFlight = new Map<string, Promise<void>>();
+  #revision = 0;
   #acquired: NativeTargetAcquiredHandler | undefined;
   #capture: ((ownerId: UserId) => Promise<number>) | undefined;
   constructor(options: NativeTabTargetsOptions) {
@@ -164,6 +167,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
         app: view.target.app,
         checkedAt: this.#now(),
         generation,
+        revision: ++this.#revision,
       };
     } else if (
       view.state === "unavailable" &&
@@ -181,6 +185,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
         reason: mapped.reason,
         checkedAt: this.#now(),
         generation,
+        revision: ++this.#revision,
       };
     }
     if (!next) return false;
@@ -194,6 +199,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
     generation: number,
   ): ObservedWindow {
     const checkedAt = this.#now();
+    const revision = ++this.#revision;
     if (result.unavailableReason) {
       const mapped = mapWindowUnavailableReason(result.unavailableReason);
       return {
@@ -203,6 +209,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
         reason: mapped.reason,
         checkedAt,
         generation,
+        revision,
       };
     }
     if (result.windowId !== windowId || !result.app) {
@@ -213,6 +220,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
         reason: "This app is unavailable.",
         checkedAt,
         generation,
+        revision,
       };
     }
     return {
@@ -221,6 +229,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
       app: result.app,
       checkedAt,
       generation,
+      revision,
     };
   }
   #refreshWindow(
@@ -231,15 +240,24 @@ export class NativeTabTargets implements NativeTabTargetsPort {
   ): void {
     const key = this.#windowKey(computerId, windowId);
     if (this.#inFlight.has(key)) return;
+    const startRevision = this.#observed.get(key)?.revision ?? 0;
     const probe = (async () => {
       let next: ObservedWindow;
       try {
         const result = await this.#options.queryWindow(computerId, { windowId });
-        if (this.#generation(computerId) !== generation || !this.#options.connected(computerId))
+        if (
+          this.#generation(computerId) !== generation ||
+          !this.#options.connected(computerId) ||
+          (this.#observed.get(key)?.revision ?? 0) !== startRevision
+        )
           return;
         next = this.#observeQueryResult(computerId, windowId, result, generation);
       } catch {
-        if (this.#generation(computerId) !== generation || !this.#options.connected(computerId))
+        if (
+          this.#generation(computerId) !== generation ||
+          !this.#options.connected(computerId) ||
+          (this.#observed.get(key)?.revision ?? 0) !== startRevision
+        )
           return;
         next = {
           kind: "unavailable",
@@ -248,6 +266,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
           reason: "This window is unavailable.",
           checkedAt: this.#now(),
           generation,
+          revision: ++this.#revision,
         };
       }
       const previous = this.#observed.get(key);
@@ -312,6 +331,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
         app: result.app,
         checkedAt: this.#now(),
         generation,
+        revision: ++this.#revision,
       });
     }
     return {
@@ -358,7 +378,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
       if (observed.kind === "live") {
         if (!this.#hasApprovedApp(connections, observed.app))
           return unavailable("access-denied", "This app is unavailable.");
-      } else if (!viewed && !usedBy.length) {
+      } else if (!viewed) {
         return unavailable(observed.code, observed.reason);
       }
     }

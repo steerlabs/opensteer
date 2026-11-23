@@ -305,6 +305,69 @@ describe("native tab binding", () => {
       unavailableCode: "access-denied",
     });
   });
+
+  it("keeps confirmed unavailable windows unavailable while tasks hold them and prevents stale probes from overwriting newer observations", async () => {
+    const staleProbe = Promise.withResolvers<{
+      windowId: string | null;
+      app: typeof app | null;
+      title: string | null;
+      unavailableReason: string | null;
+    }>();
+    const queryWindow = vi.fn(() => staleProbe.promise);
+    const onWindowStateChanged = vi.fn();
+    const targets = new NativeTabTargets({
+      views: {
+        list: async () => [],
+        openForTab: vi.fn(),
+        closeTabViews: async () => undefined,
+      },
+      connections: async () => [connection],
+      owns: async () => true,
+      connected: () => true,
+      queryWindow,
+      users: () => [{ taskId: claims.threadId }],
+      phoneUnavailable: () => null,
+      onWindowStateChanged,
+    });
+
+    // Starts background probe while a task holds the window.
+    await expect(targets.windowState(ownerId, computerId, windowId, app)).resolves.toEqual({
+      state: "open",
+      usedBy: [{ taskId: claims.threadId }],
+    });
+    expect(queryWindow).toHaveBeenCalledTimes(1);
+
+    // A ready owner view observes the window as live while the earlier probe is still pending.
+    targets.observeView({
+      machineId: DeviceIdSchema.parse(computerId),
+      target: { kind: "app", app, windowId },
+      state: "ready",
+      unavailableReason: null,
+    } as unknown as import("@opensteer/protocol").ComputerView);
+
+    // The earlier probe later fails; it must NOT overwrite the newer live observation.
+    staleProbe.reject(new Error("timed out"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onWindowStateChanged).not.toHaveBeenCalled();
+    await expect(targets.windowState(ownerId, computerId, windowId, app)).resolves.toEqual({
+      state: "open",
+      usedBy: [{ taskId: claims.threadId }],
+    });
+
+    // A confirmed window-closed observation must still project unavailable even while usedBy is non-empty.
+    targets.observeView({
+      machineId: DeviceIdSchema.parse(computerId),
+      target: { kind: "app", app, windowId },
+      state: "unavailable",
+      unavailableReason: "window-closed",
+    } as unknown as import("@opensteer/protocol").ComputerView);
+    await expect(targets.windowState(ownerId, computerId, windowId, app)).resolves.toMatchObject({
+      state: "unavailable",
+      unavailableCode: "window-closed",
+      unavailableReason: "Window closed",
+    });
+  });
 });
 
 it.each(["paused", "protected"] as const)(
