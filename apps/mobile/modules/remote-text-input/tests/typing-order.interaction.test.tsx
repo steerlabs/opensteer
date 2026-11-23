@@ -468,19 +468,28 @@ describe("the far-field model", () => {
     expect(far.refused).toHaveLength(1);
     expect(far.value).toBe("ab");
   });
-  it("rotates its context after a refusal and refuses what comes under the old one", () => {
+  // CV1: a refusal gives the field a new context; what the person typed under the old one is
+  // still an insertion at its caret, and a replacement under it is refused alone (no rotation).
+  it("rotates its context after a refusal and still takes an insertion under the old one", () => {
     const far = new FarField();
     far.contextId = context.contextId;
     far.take({
       kind: "edit",
       edit: { contextId: context.contextId, text: "x", before: "q", after: "" },
     });
-    expect(far.contextId).not.toBe(context.contextId);
+    const rotated = far.contextId;
+    expect(rotated).not.toBe(context.contextId);
     far.take({
       kind: "edit",
       edit: { contextId: context.contextId, text: "y", before: "", after: "" },
     });
-    expect(far.value).toBe("");
+    expect(far.value).toBe("y");
+    far.take({
+      kind: "edit",
+      edit: { contextId: context.contextId, text: "z", before: "y", after: "" },
+    });
+    expect(far.value).toBe("y");
+    expect(far.contextId).toBe(rotated);
     expect(far.refused).toHaveLength(2);
   });
 });
@@ -982,9 +991,11 @@ describe("a person's caret moves and selections in the native field", () => {
    * segment another change cut must be some prefix of its actions applied to its start, the
    * last one all of them. No model of what was in flight.
    *
-   * C, the page interferes: it adds text or moves its caret under the person. The promise:
-   * nothing the person typed is lost without a word: every character of the person's own text
-   * is in the page, or the person was shown that something was not sent.
+   * C, the page interferes: it rewrites its own value under the person (a mask that adds a
+   * character, one that deletes one, one that moves the caret), and the field gets a new context
+   * for it, as the real applier gives it (tests/editing-far-model.test.ts). The promise (CV1):
+   * everything the person typed or pasted is in the page, in order: the page took it. Only a
+   * replacement (an autocorrect, a composition's update) may be missing.
    *
    * What UIKit selects or replaces by itself is drawn only before the page first acts: after it
    * the native mirror is no longer the person's text from a known place.
@@ -995,10 +1006,6 @@ describe("a person's caret moves and selections in the native field", () => {
     actions: Action[];
     end?: string;
   }
-  const notSent = new Set([
-    ...Object.values(editingRefusalMessages),
-    "Editing refused. Waiting for the remote field.",
-  ]);
   async function regime(
     seed: number,
     which: "B" | "C",
@@ -1041,6 +1048,8 @@ describe("a person's caret moves and selections in the native field", () => {
     };
     let acted = false;
     let composing = false;
+    /** What the person typed or pasted, in order (regime C's promise). */
+    const typed: string[] = [];
     const length = 1 + Math.floor(next() * 28);
     for (let step = 0; step < length; step++) {
       if (next() < 0.12) {
@@ -1062,15 +1071,32 @@ describe("a person's caret moves and selections in the native field", () => {
         } else if (!focused.composition) {
           acted = true;
           const text = focused.value;
-          const at = pick([0, ...characters(text).map(({ end }) => end)]);
-          if (next() < 0.5) {
+          const spots = [0, ...characters(text).map(({ end }) => end)];
+          const at = pick(spots);
+          const way = next();
+          if (way < 1 / 3) {
             steps.push(`the page adds "Z" at ${at}`);
             focused.value = text.slice(0, at) + "Z" + text.slice(at);
             if (focused.caret >= at) focused.caret += 1;
+          } else if (way < 2 / 3 && at > 0) {
+            const from = spots[spots.indexOf(at) - 1]!;
+            steps.push(`the page deletes ${from} to ${at}`);
+            focused.value = text.slice(0, from) + text.slice(at);
+            focused.caret =
+              focused.caret >= at
+                ? focused.caret - (at - from)
+                : focused.caret > from
+                  ? from
+                  : focused.caret;
           } else {
             steps.push(`the page moves its caret to ${at}`);
             focused.caret = at;
           }
+          // The page rewrote the field: a new context for it, the old one an earlier one.
+          const id = fresh();
+          if (focused.contextId !== null) focused.earlier.add(focused.contextId);
+          focused.contextId = id;
+          await opened.publish(id);
         }
       }
       const boundaries = [0, ...characters(run.native.text).map(({ end }) => end)];
@@ -1079,9 +1105,16 @@ describe("a person's caret moves and selections in the native field", () => {
       if (composing && !(choice < 0.22 || (choice >= 0.4 && choice < 0.45) || choice >= 0.65))
         choice = next() < 0.5 ? 0.1 : 0.67;
       if (composing && choice >= 0.73 && choice < 0.78) choice = 0.9;
-      if (choice < 0.22) await run.insertText(pick(letters));
-      else if (choice < 0.32) {
-        if (!display) await run.type(pick(letters));
+      if (choice < 0.22) {
+        const letter = pick(letters);
+        if (!composing) typed.push(letter);
+        await run.insertText(letter);
+      } else if (choice < 0.32) {
+        if (!display) {
+          const letter = pick(letters);
+          if (!composing) typed.push(letter);
+          await run.type(letter);
+        }
       } else if (choice < 0.4) await run.backspace();
       else if (choice < 0.45 && composing) {
         const marked = oracle.person.marked;
@@ -1100,8 +1133,11 @@ describe("a person's caret moves and selections in the native field", () => {
         const [start, end] = [pick(boundaries), pick(boundaries)].sort((x, y) => x - y);
         const word = pick(["the", "ab", "é"]);
         if (!display && !acted) await run.replaceRange(start!, end!, word);
-      } else if (choice < 0.65) await run.paste(pick(["pasted", "א b"]));
-      else if (choice < 0.7) await run.setMarkedText(pick(["に", "日本"]));
+      } else if (choice < 0.65) {
+        const text = pick(["pasted", "א b"]);
+        typed.push(text);
+        await run.paste(text);
+      } else if (choice < 0.7) await run.setMarkedText(pick(["に", "日本"]));
       else if (choice < 0.73) await run.unmarkText();
       else if (choice < 0.78) await run.answer(1);
       else await run.answer(1 + Math.floor(next() * 3));
@@ -1138,20 +1174,31 @@ describe("a person's caret moves and selections in the native field", () => {
         }
       }
     } else {
-      // Each character the person typed reached the page or was reported as not sent: every
-      // operation carrying text that the page refused was reported, and the view dropped
-      // nothing it never sent. (What the person's own Backspace removed at the page's caret is
-      // theirs to remove.)
-      const carries = (operation: EditingOperation) =>
-        (operation.kind === "edit" && operation.edit.text !== "") ||
-        (operation.kind === "compose" && operation.composition.text !== "") ||
-        operation.kind === "paste";
-      const refused = last.field.refused.filter(carries);
-      const told = harness.texts.some((text) => notSent.has(text));
-      if (refused.length > 0 && !told)
-        failure = `refused without a word: ${refused.map((operation) => JSON.stringify(operation, (key, value: unknown) => (key === "bytes" ? "…" : value))).join(", ")}; the page holds ${said(last.field.value)}, the person's text ${said(shown(oracle.person))}`;
-      else if (run.dropped().length > 0)
-        failure = `dropped by the view without a word: ${run.dropped().join(", ")}; the page holds ${said(last.field.value)}, the person's text ${said(shown(oracle.person))}`;
+      // What the page took, in order: the insertions and pastes it did not refuse. Everything
+      // the person typed or pasted is among them, in the order they did it.
+      const fields = [opened.remote, ...segments.map((segment) => segment.field)].filter(
+        (field, index, all) => all.indexOf(field) === index,
+      );
+      const taken = fields
+        .flatMap((field) => field.sent.filter((operation) => !field.refused.includes(operation)))
+        .map((operation) =>
+          operation.kind === "edit" && !operation.edit.before && !operation.edit.after
+            ? operation.edit.text
+            : operation.kind === "paste"
+              ? new TextDecoder().decode(
+                  operation.items.find((item) => item.type === "text/plain")?.bytes,
+                )
+              : "",
+        )
+        .join("");
+      let at = 0;
+      for (const unit of typed.join("")) {
+        at = taken.indexOf(unit, at);
+        if (at < 0) break;
+        at += unit.length;
+      }
+      if (at < 0)
+        failure = `typed text missing from what the page took: typed ${said(typed.join(""))}, the page took ${said(taken)} and holds ${said(last.field.value)}`;
     }
     await act(async () => root.render(null));
     harness.answers = [];
@@ -1173,30 +1220,11 @@ describe("a person's caret moves and selections in the native field", () => {
   // test, counted per target. OPENSTEER_TYPING_FUZZ_REPORT appends each failure, and each
   // chunk's tally, to that file.
   const regimeRuns = Number(process.env.OPENSTEER_TYPING_REGIME_RUNS ?? 100);
-  /*
-   * Regime C's failures over its first 1,000 sequences, each a replay that fails until the fault
-   * is fixed (the volume runs every other seed, which must keep its promise). One fault: the
-   * page moved its caret or added text, a range edit no longer matched, and the page refused it
-   * and rotated its context; what was in flight under the old context was refused too (or
-   * dropped by the view at the reset), and the person was not told. A far refusal reaches the
-   * app only as a new context, which says nothing was refused. The same as base: base shows
-   * nothing for a far refusal either. Basic and baseline send no range edits and never fail.
-   */
-  const regimeCFailing = [
-    28, 97, 108, 178, 241, 300, 324, 380, 400, 405, 418, 435, 450, 455, 463, 505, 512, 523, 546,
-    558, 585, 586, 595, 599, 601, 634, 641, 694, 789, 790, 819, 850, 868, 917, 981, 989, 1000,
-  ];
-  // Fails until a far refusal is told to the person: each seed is regime C's fault, kept as a replay.
-  it.fails.each(regimeCFailing)(
-    "regime C at seed %i keeps its promise (fails: a far refusal is not told)",
-    async (seed) => {
-      const { failure } = await regime(seed, "C");
-      expect(failure).toBeNull();
-    },
-  );
+  // OPENSTEER_TYPING_REGIME_SEED starts elsewhere (one seed, traced, with _RUNS=1).
+  const regimeFirst = Number(process.env.OPENSTEER_TYPING_REGIME_SEED ?? 1);
   for (const which of ["B", "C"] as const)
-    for (let chunk = 1; chunk <= regimeRuns; chunk += 100) {
-      const last = Math.min(chunk + 99, regimeRuns);
+    for (let chunk = regimeFirst; chunk < regimeFirst + regimeRuns; chunk += 100) {
+      const last = Math.min(chunk + 99, regimeFirst + regimeRuns - 1);
       it(`regime ${which}: its promise over random sequences ${chunk} to ${last}`, async () => {
         const tally: Record<
           string,
@@ -1204,8 +1232,6 @@ describe("a person's caret moves and selections in the native field", () => {
         > = {};
         const failures: string[] = [];
         for (let seed = chunk; seed <= last; seed++) {
-          // A known failure is its own replay, above.
-          if (which === "C" && regimeCFailing.includes(seed)) continue;
           let result: { target: string; failure: string | null; changes: number; refused: number };
           try {
             result = await regime(seed, which);

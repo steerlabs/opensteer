@@ -43,9 +43,11 @@ struct RemoteInputEdits {
     var generation = 0
     /// A caret move: where it resolves (the view's moves), not this place's offsets.
     var move: CaretMove?
+    /// The context it was named under (the last configure call's).
+    var context: String?
     static func == (a: Place, b: Place) -> Bool {
       a.revision == b.revision && a.order == b.order && a.start == b.start && a.end == b.end
-        && a.generation == b.generation && a.move === b.move
+        && a.generation == b.generation && a.move === b.move && a.context == b.context
     }
   }
   private struct Edit {

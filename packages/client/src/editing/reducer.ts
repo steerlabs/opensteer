@@ -162,6 +162,25 @@ function textEdit(
     after: old.value.slice(caret, end),
   };
 }
+/**
+ * Text the person typed at their selection: `next` is `base` with the selection (collapsed or
+ * not) replaced by `text`, the caret after it. Anything else (an autocorrect, a deletion) is not.
+ */
+function typedInsertion(
+  base: EditingProxyState,
+  next: EditingProxyState,
+  inputType: string,
+): { start: number; end: number; text: string } | null {
+  if (!["insertText", "insertReplacementText", "insertFromComposition"].includes(inputType))
+    return null;
+  const { selectionStart: start, selectionEnd: end } = base;
+  if (next.selectionStart !== next.selectionEnd || start > end) return null;
+  const length = next.value.length - (base.value.length - (end - start));
+  if (length <= 0 || next.selectionEnd !== start + length) return null;
+  const text = next.value.slice(start, start + length);
+  if (next.value !== base.value.slice(0, start) + text + base.value.slice(end)) return null;
+  return { start, end, text };
+}
 function compositionText(
   transaction: Composition,
   rawStart: number,
@@ -836,6 +855,51 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
           instruction = { ...instruction, set: state.proxy };
           break;
         }
+      }
+      // CV1: what the person types goes as an insertion at the page's caret, with nothing around
+      // it the page could find changed: the far caret is brought to where it goes, and over a
+      // selection the selection's deletion goes first, on its own (a replacement the page may
+      // refuse; the typed text still lands).
+      const typed = typedInsertion(base, event.proxy, event.inputType);
+      if (
+        edit &&
+        typed &&
+        state.context &&
+        state.abilities.commands &&
+        (typed.start === typed.end || state.abilities.rangeEdits)
+      ) {
+        const contextId = state.context.contextId;
+        let far = caret;
+        if (typed.start < typed.end) {
+          const removal = textEdit(
+            base,
+            {
+              value: base.value.slice(0, typed.start) + base.value.slice(typed.end),
+              selectionStart: typed.start,
+              selectionEnd: typed.start,
+            },
+            caret,
+            contextId,
+            null,
+          );
+          if (removal && removal !== "unverified") {
+            if (!emit({ kind: "edit", edit: removal })) {
+              reset();
+              break;
+            }
+            far = caret - removal.before.length + removal.text.length;
+          }
+        }
+        const text = base.value.slice(0, typed.start) + base.value.slice(typed.end);
+        if (far !== typed.start) move(far, typed.start, text);
+        if (!emit({ kind: "edit", edit: { contextId, text: typed.text, before: "", after: "" } })) {
+          reset();
+          break;
+        }
+        state.proxy = event.proxy;
+        state.caret = event.proxy.selectionEnd;
+        if (!state.abilities.rangeEdits || state.resetPending) reset();
+        break;
       }
       let remoteCaret = event.proxy.selectionEnd;
       if (edit) {

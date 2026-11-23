@@ -152,7 +152,11 @@ import UniformTypeIdentifiers
     markedTextRange.map { NSRange(location: offset(from: beginningOfDocument, to: $0.start), length: offset(from: $0.start, to: $0.end)) }
   }
   /// A place in the text as UIKit names it now, while earlier edits may still wait their turn.
-  private func place(_ range: NSRange) -> RemoteInputEdits.Place { edits.place(range.location, range.location + range.length) }
+  private func place(_ range: NSRange) -> RemoteInputEdits.Place {
+    var named = edits.place(range.location, range.location + range.length)
+    named.context = pendingContext
+    return named
+  }
   /// Where a place named earlier is now, after the edits applied since. A caret move is the
   /// distance moved, from where the caret it started at is now, until its turn resolves it.
   private func range(_ place: RemoteInputEdits.Place) -> NSRange {
@@ -272,7 +276,9 @@ import UniformTypeIdentifiers
   /// newer one: a positional place (a range replaced, a mark deleted) is dropped; typing and
   /// deleting backward go where the caret is now, unless a new context fenced them out.
   private func dropped(_ place: RemoteInputEdits.Place, positional: Bool) -> Bool {
-    edits.fenced(place) || (positional && edits.stale(place))
+    // Fenced out only once the field has moved to another context: named before the configure
+    // call, its turn may still come in the context it was named in, where it goes (CV1).
+    (edits.fenced(place) && place.context != contextId) || (positional && edits.stale(place))
   }
   /// `inputType` is named when the edit's turn comes, as the field then stands: a keystroke typed
   /// as a composition commits is a plain insertion by the time it is applied.
@@ -326,7 +332,7 @@ import UniformTypeIdentifiers
   }
   public override func replace(_ range: UITextRange, withText text: String) {
     if mutating { super.replace(range, withText: text); return }
-    let typed = edits.place(offset(from: beginningOfDocument, to: range.start), offset(from: beginningOfDocument, to: range.end))
+    let typed = place(NSRange(location: offset(from: beginningOfDocument, to: range.start), length: offset(from: range.start, to: range.end)))
     change("insertReplacementText", data: text, typed: typed) {
       if self.dropped(typed, positional: true) { return }
       // A replacement elsewhere: its events report the caret as it stands at its turn.

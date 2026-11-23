@@ -21,6 +21,8 @@ export interface Place {
   generation: number;
   /** A caret move: where it resolves (RemoteInputTextView's moves), not this place's offsets. */
   move?: CaretMove;
+  /** The context it was named under (the last configure call's). */
+  context?: string | null;
   start: number;
   end: number;
 }
@@ -353,7 +355,7 @@ export class NativeField {
 
   // The view.
   private place(span: Span): Place {
-    return this.edits.place(span.start, span.end);
+    return { ...this.edits.place(span.start, span.end), context: this.pendingContext };
   }
   private range(place: Place): Span {
     const move = place.move;
@@ -474,7 +476,10 @@ export class NativeField {
    * typing and deleting backward go where the caret is now, unless a new context fenced them out.
    */
   private dropped(place: Place, positional: boolean): boolean {
-    if (!this.edits.fenced(place) && !(positional && this.edits.stale(place))) return false;
+    // Fenced out only once the field has moved to another context: named before the configure
+    // call, its turn may still come in the context it was named in, where it goes (CV1).
+    const fenced = this.edits.fenced(place) && place.context !== this.contextId;
+    if (!fenced && !(positional && this.edits.stale(place))) return false;
     this.onTurn?.("dropped");
     return true;
   }
@@ -793,6 +798,11 @@ export class NativeField {
  * command moves by one grapheme and a deletion command deletes one, as Blink's do. Paste inserts
  * at the caret. An edit during a composition replaces it (an empty one removes it).
  *
+ * What the person types is an insertion at the field's caret (an edit with text and nothing
+ * before or after it): nothing around it is verified, and it is taken under any earlier context
+ * of the same field, whose context changed when the page rewrote it or refused an edit (CV1).
+ * Any other operation under a context not the field's is refused alone, without a rotation.
+ *
  * A composition belongs to the context (and producer) that composed it. The field composes
  * from a composition's start until it is committed or cancelled, whatever is refused meanwhile:
  * a refusal does not end it. When another context's (or producer's) operation comes while it is
@@ -821,11 +831,18 @@ export class FarField {
   /** Compositions another context closed, as each closed them: the record of who composed what. */
   closed: { contextId: string | null; producer: string | undefined; text: string }[] = [];
   private rotations = 0;
+  /** The field's earlier contexts: an insertion under one is still the person's (CV1). */
+  readonly earlier = new Set<string>();
   /** The context a refusal rotates to; several fields on one page give each a distinct one. */
   nextContextId = () =>
     `00000000-0000-4000-8000-${String(100000000000 + ++this.rotations).slice(-12)}`;
   private refuse(operation: EditingOperation) {
     this.refused.push(operation);
+    this.rotate();
+  }
+  /** A new context for this same field: the page rewrote it, or refused an edit. */
+  rotate() {
+    if (this.contextId !== null) this.earlier.add(this.contextId);
     this.contextId = this.nextContextId();
     this.onRotate?.(this.contextId);
   }
@@ -834,10 +851,10 @@ export class FarField {
     this.caret = start + text.length;
   }
   /** The composing context closes its composition before another context's operation. */
-  private close(producer: string | undefined) {
+  private close(contextId: string | null, producer: string | undefined) {
     const composer = this.composer;
     if (!this.composition || !composer) return;
-    if (composer.contextId === this.contextId && composer.producer === producer) return;
+    if (composer.contextId === contextId && composer.producer === producer) return;
     this.closed.push({
       ...composer,
       text: this.value.slice(this.composition.start, this.composition.end),
@@ -854,11 +871,20 @@ export class FarField {
         : operation.kind === "compose"
           ? operation.composition.contextId
           : null;
+    const insertion =
+      operation.kind === "edit" &&
+      operation.edit.text !== "" &&
+      !operation.edit.before &&
+      !operation.edit.after;
     if (context !== null && this.contextId !== null && context !== this.contextId) {
-      this.refuse(operation);
-      return true;
+      // An insertion typed under an earlier context of this field still goes in at the caret;
+      // anything else is refused alone, the field's context kept.
+      if (!(insertion && this.earlier.has(context))) {
+        this.refused.push(operation);
+        return true;
+      }
     }
-    this.close(producer);
+    this.close(context ?? this.contextId, producer);
     switch (operation.kind) {
       case "edit":
       case "compose": {

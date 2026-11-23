@@ -36,6 +36,14 @@ export function RemoteTextInput(
     readonly softKeyboard?: boolean;
     readonly keyboardMayReplaceText?: boolean;
     readonly onEvent: (event: EditingProxyEvent) => EditingProxyInstruction;
+    /**
+     * An event of the context just left, still arriving in the native field's order (CV1):
+     * reduced as of that context, or nothing when it is not the one just left.
+     */
+    readonly onLateEvent?: (
+      contextId: string,
+      event: EditingProxyEvent,
+    ) => EditingProxyInstruction | null;
     readonly onError: () => void;
     readonly instruction?: EditingProxyInstruction;
     readonly finishCompositionRequest?: number;
@@ -46,6 +54,7 @@ export function RemoteTextInput(
     focused,
     softKeyboard = true,
     onEvent,
+    onLateEvent,
     onError,
     instruction,
     finishCompositionRequest,
@@ -99,11 +108,16 @@ export function RemoteTextInput(
           if (packet.id !== last.current + 1)
             throw new Error("Native editing events arrived out of order.");
           last.current = packet.id;
+          const old =
+            packet.contextId !== undefined && packet.contextId !== (context?.contextId ?? null);
+          // A composition of the context just left ends in both: there, so what comes after it in
+          // that context is taken; here, where the change left it ended. A key's release and a
+          // blur are the field's whatever its context.
+          if (old && packet.event.type === "compositionend")
+            onLateEvent?.(packet.contextId!, packet.event);
           const instruction =
-            packet.contextId !== undefined &&
-            packet.contextId !== (context?.contextId ?? null) &&
-            !["compositionend", "keyup", "blur"].includes(packet.event.type)
-              ? { preventDefault: true }
+            old && !["compositionend", "keyup", "blur"].includes(packet.event.type)
+              ? (onLateEvent?.(packet.contextId!, packet.event) ?? { preventDefault: true })
               : onEvent(packet.event);
           void proxyFunctions(view)
             ?.respond(nativeInstruction(packet.id, instruction))

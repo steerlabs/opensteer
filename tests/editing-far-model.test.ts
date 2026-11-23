@@ -481,6 +481,78 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     expect(await read(page, kind)).toEqual({ value: "abcd", caret: 4, collapsed: true });
   });
 
+  /*
+   * CV1: what the person types is an insertion at the page's caret, and nothing around it can
+   * make the page refuse it. The page rewrites its own value as they type (a mask that inserts
+   * characters, one that deletes, one that moves the caret): each rewrite gives the field a new
+   * context, and an insertion still in flight under an earlier context of the same field lands
+   * at the caret. A replacement that no longer matches is refused alone, and what was typed
+   * after it still lands. Nothing crosses to another field: there, an earlier field's
+   * insertion is refused, and the new field's context is not rotated for it.
+   */
+  it("lands every insertion at the page's caret while the page rewrites its value", async () => {
+    await seed(page, kind, "", 0);
+    await settle();
+    const first = observer.context.contextId!;
+    const insert = (contextId: string, text: string) =>
+      send({ kind: "edit", edit: { contextId, text, before: "", after: "" } });
+    expect(await insert(first, "5")).toBe(true);
+    // A mask that inserts characters: the page writes "(5" itself.
+    await seed(page, kind, "(5", 2);
+    await settle();
+    const masked = observer.context.contextId!;
+    expect(masked).not.toBe(first);
+    expect(await insert(first, "1"), "an insertion in flight under the earlier context").toBe(true);
+    expect(await read(page, kind)).toEqual({ value: "(51", caret: 3, collapsed: true });
+    // A mask that deletes, then one that moves the caret.
+    await seed(page, kind, "51", 2);
+    await settle();
+    expect(await insert(masked, "2")).toBe(true);
+    await seed(page, kind, "512", 0);
+    await settle();
+    expect(await insert(first, "0")).toBe(true);
+    expect(await read(page, kind)).toEqual({ value: "0512", caret: 1, collapsed: true });
+    // A replacement that no longer matches is refused alone: under an earlier context it rotates
+    // nothing; under the current one the field gets a new context, and what was typed after it
+    // under either still lands.
+    const current = observer.context.contextId!;
+    expect(
+      await send({
+        kind: "edit",
+        edit: { contextId: masked, text: "the", before: "teh", after: "" },
+      }),
+    ).toBe(false);
+    expect(observer.context.contextId).toBe(current);
+    expect(
+      await send({
+        kind: "edit",
+        edit: { contextId: current, text: "the", before: "teh", after: "" },
+      }),
+    ).toBe(false);
+    expect(observer.context.contextId).not.toBe(current);
+    expect(await insert(current, "x")).toBe(true);
+    expect(await insert(masked, "y")).toBe(true);
+    expect(await read(page, kind)).toEqual({ value: "0xy512", caret: 3, collapsed: true });
+    // Another field: nothing typed for the first lands there, and its context stays.
+    await page.evaluate(() => {
+      const other = document.createElement("textarea");
+      other.id = "g";
+      document.body.append(other);
+      other.focus();
+    });
+    await settle();
+    const other = observer.context.contextId!;
+    expect(await insert(current, "z")).toBe(false);
+    expect(observer.context.contextId).toBe(other);
+    expect(
+      await page.evaluate(() => (document.getElementById("g") as HTMLTextAreaElement).value),
+    ).toBe("");
+    await page.evaluate(() => {
+      document.getElementById("g")!.remove();
+      document.getElementById("f")!.focus();
+    });
+  });
+
   // CS1: where the page itself moves on (focus leaves the field), Blink ends the composition by
   // itself, keeping its text; the Home sends nothing for it.
   it("sends nothing for a composition the page ended itself when focus left", async () => {
@@ -541,6 +613,7 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     cancels: 0,
     pastes: 0,
     stale: 0,
+    rewrites: 0,
     viewers: 0,
     closes: 0,
   };
@@ -571,6 +644,45 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
         const old: string[] = [];
         const steps: string[] = [`seed ${JSON.stringify(initial)} at ${caret}`];
         for (let step = 0; step < opsPerSeed; step++) {
+          // CV1: the page rewrites its own value now and then, as a mask does (it inserts a
+          // character, deletes one, or moves the caret). The field gets a new context; the one
+          // before is an earlier context of the same field, and a stale insertion may use it.
+          if (!far.composition && next() < 0.15) {
+            const spots = boundaries(far.value);
+            const way = next();
+            let value = far.value;
+            let at = far.caret;
+            if (way < 1 / 3) {
+              const index = pick(spots);
+              value = value.slice(0, index) + "-" + value.slice(index);
+              if (at >= index) at += 1;
+              steps.push(`the page inserts "-" at ${index}`);
+            } else if (way < 2 / 3 && spots.length > 1) {
+              const index = Math.floor(next() * (spots.length - 1));
+              const [from, to] = [spots[index]!, spots[index + 1]!];
+              value = value.slice(0, from) + value.slice(to);
+              at = at >= to ? at - (to - from) : at > from ? from : at;
+              steps.push(`the page deletes ${from} to ${to}`);
+            } else {
+              at = pick(spots);
+              steps.push(`the page moves its caret to ${at}`);
+            }
+            const before = observer.context.contextId!;
+            await seed(page, kind, value, at);
+            await settle();
+            far.value = value;
+            far.caret = at;
+            totals.rewrites += 1;
+            if (observer.context.contextId !== before) {
+              far.rotate();
+              far.contextId = observer.context.contextId;
+              old.push(before);
+            }
+            const real = await read(page, kind);
+            expect(real.value, `${kind} seed ${current}: ${steps.join("; ")}: rewritten`).toBe(
+              far.value,
+            );
+          }
           const where = boundaries(far.value);
           const contextId = observer.context.contextId!;
           const around = () => {

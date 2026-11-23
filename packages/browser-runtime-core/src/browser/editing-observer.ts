@@ -183,6 +183,22 @@ export class PageEditingObserver {
     null;
   #context: EditingContext = { contextId: randomUUID(), field: null, caret: null };
   /**
+   * CV1: the earlier contexts of the field that has focus now. The field got a new context when
+   * the page rewrote it (or refused an edit), not when focus moved: what the person typed under
+   * one of these is still an insertion at its caret. Focus moving to another field clears them.
+   */
+  #earlier = new Set<string>();
+  /** Remembers the context being replaced, for the same field. */
+  #supersede(sameField: boolean): void {
+    if (!sameField) {
+      this.#earlier.clear();
+      return;
+    }
+    this.#earlier.add(this.#context.contextId);
+    // A bound, not a policy: a person types far fewer operations in flight than this.
+    if (this.#earlier.size > 64) this.#earlier.delete(this.#earlier.values().next().value!);
+  }
+  /**
    * The open composition's context: who composed it, so the context that ends with it open
    * closes it as its own act, attributed to it, before another context's operation is prepared.
    * Whether the field is composing is the page's (its composition events), never assumed.
@@ -330,7 +346,17 @@ export class PageEditingObserver {
   ): Promise<boolean> {
     if (this.#activeChild) return this.#activeChild.edit(edit, composition, admitted, producer);
     const focus = this.#focused;
-    if (!focus || edit.contextId !== this.#context.contextId) return this.#stale();
+    // What the person types: text inserted at the page's caret, with nothing around it the page
+    // could find changed. A replacement or a composition says what it replaces.
+    const insertion =
+      !composition && edit.text.length > 0 && !edit.before?.length && !edit.after?.length;
+    if (!focus) return this.#stale();
+    if (edit.contextId !== this.#context.contextId) {
+      // Typed under an earlier context of this same field: still the person's, at the caret. Any
+      // other operation of another context is refused alone: it changed nothing the current
+      // context's mirror holds, so the current context stays.
+      if (!(insertion && this.#earlier.has(edit.contextId))) return false;
+    }
     await this.#close(focus, edit.contextId, producer);
     const generation = this.#generation;
     const response = await this.#cdp
@@ -339,13 +365,18 @@ export class PageEditingObserver {
         exceptionDetails?: { text?: string; exception?: { className?: string } };
       }>("Runtime.evaluate", {
         contextId: focus.context,
-        expression: `globalThis.editingOwner?.prepare(${JSON.stringify({ fieldId: focus.fieldId, revision: focus.selectionRevision, before: edit.before ?? "", after: edit.after ?? "", deleting: !composition && edit.text.length === 0 })})`,
+        expression: `globalThis.editingOwner?.prepare(${JSON.stringify({ fieldId: focus.fieldId, revision: focus.selectionRevision, before: edit.before ?? "", after: edit.after ?? "", deleting: !composition && edit.text.length === 0, insertion })})`,
         returnByValue: true,
         silent: true,
       })
       .catch(() => null);
     const parsed = prepared.safeParse(response?.result?.value);
-    if (!parsed.success || !parsed.data.ok || generation !== this.#generation) {
+    // An insertion goes in at the caret however the page moved on meanwhile, while focus stays
+    // in the same field.
+    const moved = insertion
+      ? this.#focused?.fieldId !== focus.fieldId || this.#focused?.context !== focus.context
+      : generation !== this.#generation;
+    if (!parsed.success || !parsed.data.ok || moved) {
       if (parsed.success && parsed.data.ok) await this.#finishInput(focus.context);
       if (process.env.OPENSTEER_BROWSER_DIAGNOSTICS === "1")
         console.info(
@@ -473,6 +504,7 @@ export class PageEditingObserver {
 
   #stale(): false {
     this.#generation++;
+    this.#supersede(this.#focused !== null);
     this.#context = { ...this.#context, contextId: randomUUID() };
     this.#publish(this.#context);
     this.refresh();
@@ -481,6 +513,7 @@ export class PageEditingObserver {
 
   #clear = (): void => {
     this.#generation++;
+    this.#earlier.clear();
     this.#focused = null;
     this.#composer = null;
     if (!this.#activeChild) {
@@ -562,7 +595,15 @@ export class PageEditingObserver {
       this.#focused?.context !== parsed.data.executionContextId ||
       this.#focused?.fieldId !== fieldId ||
       this.#focused?.selectionRevision !== selectionRevision;
-    if (changed) this.#generation++;
+    if (changed) {
+      this.#generation++;
+      // The same field rewritten (only its revision moved) keeps its earlier contexts.
+      this.#supersede(
+        !childWasActive &&
+          this.#focused?.context === parsed.data.executionContextId &&
+          this.#focused?.fieldId === fieldId,
+      );
+    }
     this.#focused = { context: parsed.data.executionContextId, frame, fieldId, selectionRevision };
     const contextId = changed ? randomUUID() : this.#context.contextId;
     this.#context = { contextId, field, caret: this.#context.caret };
@@ -1252,7 +1293,8 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     if (!kind || !document.hasFocus() || identity(element) !== request.fieldId)
       return { ok: false, reason: "focus-changed" };
     syncSelection();
-    if (selectionRevision !== request.revision) return {ok:false,reason:"selection-changed"};
+    // An insertion goes in at the caret as it is now, whatever the page did since.
+    if (!request.insertion && selectionRevision !== request.revision) return {ok:false,reason:"selection-changed"};
     if (composing && composing.element === element) return accept({ ok: true, composing: true });
     const before = request.before,
       after = request.after,

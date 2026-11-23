@@ -85,6 +85,7 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
   // Found by the same random sequences (seed 4363): a selection typed over through the delegate
   // ends next to the same character, so the plain diff places the change one character later
   // than the replacement. The replacement that matches the text around it exactly is verified.
+  // CV1: the typed text is its own insertion at the caret, after the selection's deletion.
   it("verifies a replacement whose neighbour repeats its last character", () => {
     const result = replay(
       [
@@ -101,13 +102,15 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       ],
       "ios",
     );
-    // The replacement, restated back to the far caret after "xabb", then the caret to the "a".
-    expect(result.operations.slice(-2)).toEqual([
+    // The selection's deletion, restated back to the far caret after "xabb"; the caret to where
+    // it was; then what was typed, inserted there.
+    expect(result.operations.slice(-3)).toEqual([
       {
         kind: "edit",
-        edit: { contextId: context.contextId, text: "ab", before: "abb", after: "" },
+        edit: { contextId: context.contextId, text: "b", before: "abb", after: "" },
       },
       { kind: "command", command: "moveBackward" },
+      { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
     ]);
   });
   // Found by the mobile random sequences (second generator, seed 9944): a composition started
