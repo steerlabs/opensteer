@@ -2732,6 +2732,7 @@ export async function enqueueThreadInputInTransaction(
       .set({
         doneAt: null,
         doneReason: null,
+        doneBy: null,
       })
       .where("id", "=", thread.id)
       .execute();
@@ -2739,6 +2740,7 @@ export async function enqueueThreadInputInTransaction(
       ...thread,
       doneAt: null,
       doneReason: null,
+      doneBy: null,
     };
     await publishThreadSummary(transaction, thread.id);
   }

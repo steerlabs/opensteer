@@ -1646,4 +1646,144 @@ describeStore("managed memory passes", (it) => {
       pauseReason: "Memory is off at your request.",
     });
   });
+
+  it("wakes light passes on dismissed questions and person-marked Done, but not on visits or quiet auto-Done", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "wake-signals");
+    await service(f).instance.ensureForPersonal();
+    const light = (await role(f, base.userId)).trigger;
+
+    // Complete an initial pass so subsequent ticks test quiet vs active wake rules.
+    const firstTick = await tick(f, base, light);
+    const firstWake = await wake(f, light, firstTick.occurrence.id, "wake-initial");
+    await finish(f, firstWake.run!, "completed");
+
+    // Visiting a task alone must NOT wake the light pass.
+    await f.store.recordThreadVisit({
+      threadId: base.thread.id,
+      userId: base.userId,
+      visitedAt: new Date(Date.now() + 1_000).toISOString(),
+    });
+    const visitTick = await tick(f, base, light);
+    await expect(wake(f, light, visitTick.occurrence.id, "wake-visit")).rejects.toThrow(
+      MANAGED_MEMORY_WAKE_SKIPPED,
+    );
+
+    // Quiet auto-Done must NOT wake the light pass either.
+    const quietTarget = await f.startRunFixture("wake-quiet-done");
+    await finish(f, quietTarget.run, "completed");
+    const fourDaysAgo = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000);
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    await f.database.updateTable("personalSettings").set({ quietTaskDays: 1 }).execute();
+    await f.database
+      .updateTable("runs")
+      .set({ completedAt: fourDaysAgo })
+      .where("threadId", "=", quietTarget.thread.id)
+      .execute();
+    await f.database
+      .updateTable("messages")
+      .set({ createdAt: fourDaysAgo })
+      .where("threadId", "=", quietTarget.thread.id)
+      .execute();
+    await f.database
+      .updateTable("threadInputs")
+      .set({ updatedAt: fourDaysAgo, deliveredAt: fourDaysAgo })
+      .where("threadId", "=", quietTarget.thread.id)
+      .execute();
+    await f.store.recordThreadVisit({
+      threadId: quietTarget.thread.id,
+      userId: base.userId,
+      visitedAt: threeDaysAgo.toISOString(),
+    });
+    await f.database
+      .updateTable("threadVisits")
+      .set({ lastVisitedAt: threeDaysAgo, updatedAt: threeDaysAgo })
+      .where("threadId", "=", quietTarget.thread.id)
+      .execute();
+    await f.database
+      .updateTable("threads")
+      .set({ status: "idle", updatedAt: threeDaysAgo })
+      .where("id", "=", quietTarget.thread.id)
+      .execute();
+    await f.store.setThreadDone({
+      done: true,
+      quiet: true,
+      idempotencyKey: "quiet-done-target",
+      requestedBy: base.userId,
+      threadId: quietTarget.thread.id,
+    });
+    const quietThread = await f.store.getThreadForOwner(quietTarget.thread.id, base.userId);
+    expect(quietThread?.doneAt).not.toBeNull();
+    expect(quietThread?.doneBy).toBe("quiet");
+    const quietTick = await tick(f, base, light);
+    await expect(wake(f, light, quietTick.occurrence.id, "wake-quiet")).rejects.toThrow(
+      MANAGED_MEMORY_WAKE_SKIPPED,
+    );
+
+    const oldTime = new Date(Date.now() - 60 * 60 * 1000);
+
+    // Dismissing a person.question on a task MUST wake the light pass even with zero new messages.
+    const questionTask = await f.startRunFixture("wake-dismissed-question");
+    await f.database
+      .updateTable("messages")
+      .set({ createdAt: oldTime })
+      .where("threadId", "=", questionTask.thread.id)
+      .execute();
+    await f.database
+      .updateTable("threadInputs")
+      .set({ updatedAt: oldTime, deliveredAt: oldTime })
+      .where("threadId", "=", questionTask.thread.id)
+      .execute();
+    const created = await f.store.requests.create({
+      callId: "wake-q",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: questionTask.run.id,
+      originatingThreadId: questionTask.thread.id,
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Card payment",
+        detail: "Statement due Monday.",
+        fields: [
+          {
+            id: "action",
+            prompt: "Check the account?",
+            choices: [{ label: "No", value: "no" }],
+            custom: true,
+            multiSelect: false,
+            secret: false,
+          },
+        ],
+      },
+      requestedBy: base.userId,
+      requiredActor: "requester",
+    });
+    const revision = (await f.store.requests.revision(created.request.id))!;
+    await f.store.requests.answerPersonQuestion({
+      expectedRevision: revision,
+      requestId: created.request.id,
+      resolvedBy: base.userId,
+      response: { kind: "external", value: { decision: "declined" } },
+    });
+    const dismissedTick = await tick(f, base, light);
+    const dismissedWake = await wake(f, light, dismissedTick.occurrence.id, "wake-dismissed");
+    expect(wakeText(dismissedWake).join("\n")).toContain(
+      `taskId ${questionTask.thread.id}, 1 question dismissed by person`,
+    );
+    await finish(f, dismissedWake.run!, "completed");
+
+    // Marking a task Done as the person MUST wake the light pass and report doneBy person.
+    await f.store.setThreadDone({
+      done: true,
+      idempotencyKey: "wake-person-done",
+      requestedBy: base.userId,
+      threadId: questionTask.thread.id,
+    });
+    const doneTick = await tick(f, base, light);
+    const doneWake = await wake(f, light, doneTick.occurrence.id, "wake-person-done");
+    expect(wakeText(doneWake).join("\n")).toContain(`taskId ${questionTask.thread.id},`);
+    expect(wakeText(doneWake).join("\n")).toContain("marked Done by person at");
+  });
 });

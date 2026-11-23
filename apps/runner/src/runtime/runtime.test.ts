@@ -1014,6 +1014,116 @@ describe("RunnerRuntime", () => {
     }
   });
 
+  it("keeps an authenticated catalog ready when a driver returns invalid usage telemetry", async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-invalid-usage-"));
+    const registry = new HarnessRegistry();
+    const driverKind = HarnessIdSchema.parse("invalid-usage-test");
+    registry.registerDriver({
+      capabilities: fakeHarnessCapabilities,
+      accessModes: fakeHarnessAccessModes,
+      sources: fakeHarnessSources,
+      configSchema: z.strictObject({}),
+      create: async () => {
+        throw new Error("Unexpected adapter creation");
+      },
+      inspect: async () => ({
+        connections: [
+          {
+            authKind: "subscription",
+            connectionSlot: "primary",
+            label: "Subscription",
+            status: "connected",
+            usage: {
+              limitReached: false,
+              observedAt: "2026-11-01T00:00:00.000Z",
+              windows: [
+                {
+                  label: "Claude & GPT (shared) · Weekly",
+                  resetsAt: "2026-11-07T00:00:00.000Z",
+                  usedPercent: 40,
+                },
+              ],
+            },
+          },
+          {
+            authKind: "subscription",
+            connectionSlot: "secondary",
+            label: "Secondary",
+            status: "connected",
+            usage: {
+              limitReached: false,
+              observedAt: "2026-11-01T00:00:00.000Z",
+              windows: [
+                {
+                  label: "Gemini 5h",
+                  resetsAt: "2026-11-01T05:00:00.000Z",
+                  usedPercent: 25,
+                },
+              ],
+            },
+          },
+        ],
+        models: [
+          {
+            acceptsImages: false,
+            displayName: "Demo",
+            isDefault: true,
+            modelId: catalogSelection.modelId,
+            options: [],
+            providerId: catalogSelection.providerId,
+          },
+        ],
+        status: "ready",
+      }),
+      kind: driverKind,
+    });
+    const runtime = configuredRuntime({
+      environmentId: createId("environment"),
+      privateStateDirectory: join(temporaryRoot, "private"),
+      registry,
+    });
+
+    try {
+      const [catalog] = await runtime.inspectHarnesses(
+        [harnessDefinition(driverKind, "Invalid usage", 1)],
+        new AbortController().signal,
+      );
+      expect(catalog).toMatchObject({
+        connections: [
+          {
+            authKind: "subscription",
+            connectionSlot: "primary",
+            label: "Subscription",
+            status: "connected",
+          },
+          {
+            authKind: "subscription",
+            connectionSlot: "secondary",
+            label: "Secondary",
+            status: "connected",
+            usage: {
+              limitReached: false,
+              observedAt: "2026-11-01T00:00:00.000Z",
+              windows: [
+                {
+                  label: "Gemini 5h",
+                  resetsAt: "2026-11-01T05:00:00.000Z",
+                  usedPercent: 25,
+                },
+              ],
+            },
+          },
+        ],
+        models: [expect.objectContaining({ modelId: catalogSelection.modelId })],
+        status: "ready",
+      });
+      expect(catalog?.connections[0]?.usage).toBeUndefined();
+    } finally {
+      await runtime.close();
+      await rm(temporaryRoot, { force: true, recursive: true });
+    }
+  });
+
   it("never infers authentication from a generic provider error", async () => {
     const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-explicit-inspection-state-"));
     const registry = new HarnessRegistry();
@@ -6993,4 +7103,95 @@ describe("this computer's own view and Stop of its Runs", () => {
       await runtime.close();
     }
   });
+});
+
+it("strips unacknowledged run.retry events and keeps ordinals contiguous on Host rollback", async () => {
+  type RunnerEventFrame = Extract<RunnerOperationalReport, { type: "runner.event" }>["event"];
+  const registry = new HarnessRegistry();
+  const session = new HeldHarnessSession();
+  const driver = new FakeHarnessDriver("test-driver", () => session);
+  registry.registerDriver(driver);
+  const environmentId = createId("environment");
+  const command = executeCommand(environmentId);
+  const runtime = configuredRuntime({ environmentId, registry });
+  await reconcile(registry, command);
+  const initialEvents: RunnerEventFrame[] = [];
+  const initialSink: RunnerMessageSink = {
+    send: async (message) => {
+      if (message.type === "runner.event") initialEvents.push(message.event);
+    },
+  };
+  const rollbackEvents: RunnerEventFrame[] = [];
+  const rollbackSink: RunnerMessageSink = {
+    send: async (message) => {
+      if (message.type === "runner.event") rollbackEvents.push(message.event);
+    },
+  };
+
+  try {
+    runtime.setHostRunRetryEvents(true);
+    await expect(runtime.handleCommand(command, initialSink)).resolves.toEqual({
+      status: "accepted",
+    });
+    await waitUntil(() => initialEvents.some((event) => event.type === "run.started"));
+    session.publish({
+      data: {
+        attempt: 1,
+        code: "server_overloaded",
+        maxAttempts: 5,
+        message: "Selected model is at capacity.",
+        status: "retrying",
+      },
+      type: "run.retry",
+    });
+    session.publish({
+      data: { phase: "turn" },
+      type: "run.phase",
+    });
+    await waitUntil(() => initialEvents.some((event) => event.type === "run.phase"));
+    expect(initialEvents.map((event) => [event.ordinal, event.type])).toEqual([
+      [0, "run.started"],
+      [1, "run.retry"],
+      [2, "run.phase"],
+    ]);
+
+    // Simulate disconnecting before the new Host acknowledged ordinals >= 1
+    // and reconnecting to an older Host without run-retry-v1.
+    await runtime.connectionLost(initialSink);
+    runtime.setHostRunRetryEvents(false);
+    runtime.attachInventory();
+    await runtime.attach(
+      {
+        ...testConnectionFence,
+        leaseMs: command.context.executionLeaseMs,
+        results: [{ nextOrdinal: 1, runId: command.context.runId, status: "attached" }],
+        type: "host.executions.attached",
+      },
+      rollbackSink,
+    );
+    await waitUntil(() => rollbackEvents.some((event) => event.type === "run.phase"));
+
+    // Emit another run.retry (must be suppressed) and complete the run.
+    session.publish({
+      data: {
+        attempt: 1,
+        maxAttempts: 5,
+        message: "Selected model is at capacity.",
+        status: "recovered",
+      },
+      type: "run.retry",
+    });
+    session.publish({
+      data: { status: "completed" },
+      type: "run.completed",
+    });
+    await waitUntil(() => rollbackEvents.some((event) => event.type === "run.completed"));
+
+    expect(rollbackEvents.map((event) => [event.ordinal, event.type])).toEqual([
+      [1, "run.phase"],
+      [2, "run.completed"],
+    ]);
+  } finally {
+    await runtime.close();
+  }
 });

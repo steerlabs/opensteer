@@ -456,6 +456,7 @@ const pendingEventVariants = [
   pendingEventVariant("run.status"),
   pendingEventVariant("run.context-measured"),
   pendingEventVariant("run.compaction"),
+  pendingEventVariant("run.retry"),
   pendingEventVariant("run.usage"),
   pendingEventVariant("run.phase"),
   pendingEventVariant("node.started"),
@@ -477,6 +478,7 @@ export const PendingAgentEventSchema = z
 
 export const runEventsVersion = 2;
 export const runEventsCapability = "run-events-v2";
+export const runRetryCapability = "run-retry-v1";
 export const runEventsUpdateReason = "Update Opensteer on the Host and this computer to run tasks.";
 export const PendingAgentEventV2Schema = z
   .discriminatedUnion("type", [
@@ -860,27 +862,126 @@ const HarnessObservedUsageScopeViewSchema = z.discriminatedUnion("kind", [
 ]);
 export type HarnessObservedUsageScope = z.infer<typeof HarnessObservedUsageScopeSchema>;
 
-export const HarnessObservedUsageWindowSchema = z.strictObject({
-  /** The provider's own framing of the window — "5h", "weekly", "30d". */
-  label: z.string().trim().min(1).max(24),
+export const harnessObservedUsageLabelMaxLength = 24;
+export const harnessObservedUsageMaxWindows = 8;
+
+const HarnessObservedUsageWindowBaseSchema = z.strictObject({
+  /** The provider's own short framing of the window — "5h", "weekly", "Gemini 5h". */
+  label: z.string().trim().min(1).max(harnessObservedUsageLabelMaxLength),
+  /**
+   * Providers whose models draw from this window when it represents a shared
+   * pool rather than the whole account or one model. An empty array marks an
+   * informational bucket whose model membership is unknown, so readers show it
+   * at the account level without letting it constrain specific models. Absent
+   * falls back to `scope` (account-wide when `scope` is absent). Mutually
+   * exclusive with `scope`.
+   */
+  providerIds: z.array(ModelProviderIdSchema).max(16).optional(),
   resetsAt: IsoDateTimeSchema.nullable(),
-  /** Absent means the account as a whole. */
+  /** Absent means the account as a whole unless `providerIds` narrows it. */
   scope: HarnessObservedUsageScopeSchema.optional(),
   usedPercent: z.number().min(0).max(100),
 });
+export const HarnessObservedUsageWindowSchema = HarnessObservedUsageWindowBaseSchema.superRefine(
+  (window, context) => {
+    if (window.scope !== undefined && window.providerIds !== undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "providerIds cannot be combined with scope",
+        path: ["providerIds"],
+      });
+    }
+  },
+);
 const HarnessObservedUsageWindowViewSchema = z.object({
-  ...HarnessObservedUsageWindowSchema.shape,
+  ...HarnessObservedUsageWindowBaseSchema.shape,
   scope: HarnessObservedUsageScopeViewSchema.optional(),
 });
 export type HarnessObservedUsageWindow = z.infer<typeof HarnessObservedUsageWindowSchema>;
 
+interface UsageWindowScopeLike {
+  readonly providerIds?: readonly string[] | undefined;
+  readonly scope?:
+    | { readonly kind: "account" }
+    | { readonly kind: "model"; readonly modelId: string; readonly providerId: string }
+    | undefined;
+}
+
+/** Whether a window applies to every model on the connection rather than a pool or single model. */
+export function usageWindowIsAccountWide(window: UsageWindowScopeLike): boolean {
+  return window.scope?.kind !== "model" && window.providerIds === undefined;
+}
+
+/** Whether a window constrains a specific canonical `(providerId, modelId)` pair. */
+export function usageWindowAppliesToModel(
+  window: UsageWindowScopeLike,
+  model: { readonly modelId: string; readonly providerId: string },
+): boolean {
+  if (window.scope?.kind === "model") {
+    return window.scope.providerId === model.providerId && window.scope.modelId === model.modelId;
+  }
+  if (window.providerIds !== undefined) {
+    return window.providerIds.some((providerId) => providerId === model.providerId);
+  }
+  return true;
+}
+
+/** Whether a window can constrain at least one model belonging to `providerId`. */
+export function usageWindowAppliesToProvider(
+  window: UsageWindowScopeLike,
+  providerId: string,
+): boolean {
+  if (window.scope?.kind === "model") return window.scope.providerId === providerId;
+  if (window.providerIds !== undefined) {
+    return window.providerIds.some((candidate) => candidate === providerId);
+  }
+  return true;
+}
+
+/**
+ * Whether a window's reset time has already passed at `now`. An unknown or
+ * unparseable reset cannot be shown to have elapsed, so the reading is kept.
+ */
+export function usageWindowHasReset(resetsAt: string | null, now: number): boolean {
+  if (resetsAt === null) return false;
+  const reset = Date.parse(resetsAt);
+  return !Number.isNaN(reset) && reset <= now;
+}
+
+/**
+ * Whether an account-wide `limitReached` flag still stands at `now`.
+ *
+ * When one or more account-wide windows are at 100%, those windows explain the
+ * limit and it expires once every one of them has reset. When no account-wide
+ * window is at 100% (for example a spend control or a limit reported without
+ * account-wide windows), the provider's flag stands until the next observation.
+ */
+export function accountWideLimitActive(
+  usage: {
+    readonly limitReached: boolean;
+    readonly windows: readonly (UsageWindowScopeLike & {
+      readonly resetsAt: string | null;
+      readonly usedPercent: number;
+    })[];
+  },
+  now: number,
+): boolean {
+  if (!usage.limitReached) return false;
+  const exhaustedAccountWindows = usage.windows.filter(
+    (window) => usageWindowIsAccountWide(window) && window.usedPercent >= 100,
+  );
+  if (exhaustedAccountWindows.length === 0) return true;
+  return exhaustedAccountWindows.some((window) => !usageWindowHasReset(window.resetsAt, now));
+}
+
 /**
  * Provider-neutral consumption against one connection's account. Only what a
  * reader can act on crosses the wire: how much of each window is spent, when
- * it comes back, and whether the account is out. Plan and credit wording stays
- * in `billingLabel`.
+ * it comes back, and whether the account as a whole is out. Plan and credit
+ * wording stays in `billingLabel`.
  */
 export const HarnessObservedUsageSchema = z.strictObject({
+  /** True only when the account as a whole is blocked; scoped window exhaustion lives on each window. */
   limitReached: z.boolean(),
   /**
    * When the Runner took the reading. It travels with the usage rather than
@@ -888,11 +989,11 @@ export const HarnessObservedUsageSchema = z.strictObject({
    * that has aged out.
    */
   observedAt: IsoDateTimeSchema,
-  windows: z.array(HarnessObservedUsageWindowSchema).max(8),
+  windows: z.array(HarnessObservedUsageWindowSchema).max(harnessObservedUsageMaxWindows),
 });
 const HarnessObservedUsageViewSchema = z.object({
   ...HarnessObservedUsageSchema.shape,
-  windows: z.array(HarnessObservedUsageWindowViewSchema).max(8),
+  windows: z.array(HarnessObservedUsageWindowViewSchema).max(harnessObservedUsageMaxWindows),
 });
 export type HarnessObservedUsage = z.infer<typeof HarnessObservedUsageSchema>;
 
@@ -1714,6 +1815,8 @@ export const RunnerChallengeSchema = z.object({
   // Missing on a pre-v2 Host, so the producer can report an actionable refusal.
   proofFormatVersion: z.number().int().positive().optional(),
   runEventsVersion: z.number().int().positive().optional(),
+  /** Advertised by Hosts whose strict catalog schema accepts `usage.windows[].providerIds`. */
+  usageWindowProviderIds: z.literal(true).optional(),
   type: z.literal("host.challenge"),
 });
 export type RunnerChallenge = z.infer<typeof RunnerChallengeSchema>;
@@ -2099,6 +2202,8 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     acceptsAttemptStopState: z.literal(true).optional(),
     agentHome: ComputerFolderSchema.optional(),
     agentHomeIsProvisional: z.literal(true).optional(),
+    /** Present and true when the Host accepts `run.retry` events; sent only to a Runner advertising `run-retry-v1`. */
+    runRetryEvents: z.literal(true).optional(),
     serverTime: IsoDateTimeSchema,
     type: z.literal("host.welcome"),
   }),

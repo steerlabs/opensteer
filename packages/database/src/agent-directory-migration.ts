@@ -1,6 +1,6 @@
 import { sql, type Kysely } from "kysely";
 
-export const agentDirectoryMigrationName = "0047_agent_directory_verification";
+export const agentDirectoryMigrationName = "0103_agent_directory_verification";
 
 export async function applyAgentDirectoryVerification(database: Kysely<unknown>): Promise<void> {
   await sql`

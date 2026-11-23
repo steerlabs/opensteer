@@ -1,4 +1,4 @@
-import { toolOutputWithImages } from "@opensteer/harness";
+import { toolOutputWithImages, type HarnessLog } from "@opensteer/harness";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -57,6 +57,8 @@ import {
   prepareNativeImage,
   resolvedInputParts,
   opensteerToolIdentity,
+  ProviderRetryTracker,
+  formatRetryBudgetMessage,
   profileHarnessProviderStoreScope,
   providerSecretFile,
   reasoningEffortLabel,
@@ -458,7 +460,7 @@ export class PiHarnessDriver implements HarnessDriver {
         message: "This account has no base URL for its OpenAI-compatible endpoint",
       });
     }
-    return new PiHarnessAdapter(context.instanceId, config, row, this.#dependencies);
+    return new PiHarnessAdapter(context.instanceId, config, row, this.#dependencies, context.log);
   }
 }
 
@@ -492,6 +494,7 @@ class PiHarnessAdapter implements HarnessAdapter {
   readonly instanceId: HarnessInstanceId;
   readonly #config: PiHarnessConfig;
   readonly #dependencies: PiHarnessDependencies;
+  readonly #log: HarnessLog | undefined;
   readonly #row: PiSourceRow;
   readonly #sessions = new HarnessSessionRegistry<PiHarnessSession>("Pi");
 
@@ -500,11 +503,13 @@ class PiHarnessAdapter implements HarnessAdapter {
     config: PiHarnessConfig,
     row: PiSourceRow,
     dependencies: PiHarnessDependencies,
+    log?: HarnessLog,
   ) {
     this.instanceId = instanceId;
     this.#config = config;
     this.#row = row;
     this.#dependencies = dependencies;
+    this.#log = log;
   }
 
   async generateText({
@@ -607,6 +612,7 @@ class PiHarnessAdapter implements HarnessAdapter {
       context,
       mode,
       (closed) => this.#sessions.release(closed),
+      this.#log,
     );
   }
 }
@@ -622,7 +628,14 @@ interface ActiveTurn {
   readonly completion: Deferred<void>;
   interruptPromise?: Promise<void>;
   interruptRequested: boolean;
+  /**
+   * Pi emits a failed assistant `message_end` before `auto_retry_start` when
+   * retrying, so hold the error until Pi either begins retrying or settles.
+   */
+  pendingError?: OpensteerError;
   readonly requestedBy: UserId;
+  readonly retry: ProviderRetryTracker;
+  stalledCleanup?: Promise<void>;
   readonly runId: HarnessRunInput["runId"];
   started: boolean;
   terminal: boolean;
@@ -657,6 +670,7 @@ class PiHarnessSession implements HarnessSession {
   readonly #config: PiHarnessConfig;
   #context: HarnessSessionContext;
   readonly #dependencies: PiHarnessDependencies;
+  readonly #log: HarnessLog | undefined;
   readonly #onClose: (session: PiHarnessSession) => void;
   readonly #pendingRequests = new Map<RequestId, PendingApproval>();
   readonly #processLifetime = new AbortController();
@@ -683,10 +697,12 @@ class PiHarnessSession implements HarnessSession {
     dependencies: PiHarnessDependencies,
     context: HarnessSessionContext,
     onClose: (session: PiHarnessSession) => void,
+    log?: HarnessLog,
   ) {
     this.#config = config;
     this.#row = row;
     this.#dependencies = dependencies;
+    this.#log = log;
     this.#context = context;
     this.#onClose = onClose;
     this.#publisher = new TurnPublisher({
@@ -705,6 +721,7 @@ class PiHarnessSession implements HarnessSession {
     context: HarnessSessionContext,
     mode: SessionMode,
     onClose: (session: PiHarnessSession) => void,
+    log?: HarnessLog,
   ): Promise<PiHarnessSession> {
     if (context.runtimeBoundary.kind !== "native-user") {
       // Pi has no sandbox, and the Runner's own sandbox binds the profile home
@@ -718,7 +735,7 @@ class PiHarnessSession implements HarnessSession {
         message: "Pi session was cancelled before startup",
       });
     }
-    const session = new PiHarnessSession(config, row, dependencies, context, onClose);
+    const session = new PiHarnessSession(config, row, dependencies, context, onClose, log);
     try {
       await session.#initialize(mode);
       return session;
@@ -760,6 +777,33 @@ class PiHarnessSession implements HarnessSession {
       completion: new Deferred<void>(),
       interruptRequested: run.signal.aborted,
       requestedBy: run.requestedBy,
+      retry: new ProviderRetryTracker({
+        publish: (event) => this.#publish(event),
+        onBudgetExceeded: (record) => {
+          if (active.terminal || active.interruptRequested) return;
+          active.interruptRequested = true;
+          const failure = new OpensteerError({
+            code: "harness_error",
+            message: formatRetryBudgetMessage(record, active.retry.budgetMs),
+            retryable: false,
+          });
+          if (this.#client) {
+            const client = this.#client;
+            active.stalledCleanup = client
+              .command("clear_queue")
+              .catch(() => undefined)
+              .then(() => client.command("abort", {}, this.#config.interruptTimeoutMs))
+              .then(() => undefined)
+              .catch(() => {
+                this.#closeEventStream(failure);
+              });
+          }
+          this.#publisher.latchUnusable(failure);
+          this.#publishFailure(active, failure);
+        },
+        log: this.#log,
+        logContext: { harness: "pi", runId: run.runId },
+      }),
       runId: run.runId,
       started: false,
       terminal: false,
@@ -798,7 +842,9 @@ class PiHarnessSession implements HarnessSession {
         else this.#publishFailure(active, toHarnessError(error, "Pi turn failed"));
       }
     } finally {
+      active.retry.dispose();
       run.signal.removeEventListener("abort", abort);
+      if (active.stalledCleanup) await active.stalledCleanup;
       if (this.#activeTurn === active) this.#activeTurn = undefined;
     }
   }
@@ -1164,16 +1210,40 @@ class PiHarnessSession implements HarnessSession {
       this.#ensureRunStarted(active);
     }
     switch (event.type) {
+      case "auto_retry_start":
+        delete active.pendingError;
+        active.retry.noteRetry({
+          attempt: typeof event.attempt === "number" ? event.attempt : null,
+          maxAttempts: typeof event.maxAttempts === "number" ? event.maxAttempts : null,
+          retryDelayMs: typeof event.delayMs === "number" ? event.delayMs : null,
+          message: optionalString(event.errorMessage) ?? "Pi is retrying the request",
+        });
+        break;
+      case "auto_retry_end":
+        if (event.success === true) {
+          delete active.pendingError;
+          active.retry.recover();
+        } else {
+          const errorMessage =
+            optionalString(event.finalError) ??
+            active.retry.current?.message ??
+            active.pendingError?.message;
+          delete active.pendingError;
+          this.#publishFailure(active, piTurnError(errorMessage));
+        }
+        break;
       case "message_start":
         this.#startSteeredMessage(active, event);
         break;
       case "message_update":
-        this.#publishMessageUpdate(event);
+        this.#publishMessageUpdate(active, event);
         break;
       case "message_end":
         this.#publishMessageEnd(active, event);
         break;
       case "tool_execution_start":
+        delete active.pendingError;
+        active.retry.recover();
         this.#publishToolStarted(event);
         break;
       case "tool_execution_end":
@@ -1183,6 +1253,12 @@ class PiHarnessSession implements HarnessSession {
         // `agent_end` repeats for every queued continuation and every retry;
         // only `agent_settled` means this prompt's work is over (pi-facts §2).
         this.#settled?.resolve();
+        if (active.pendingError && !active.interruptRequested) {
+          const failure = active.pendingError;
+          delete active.pendingError;
+          this.#publishFailure(active, failure);
+          break;
+        }
         // A steer still on its way opens the next turn: this one has answered.
         if (active.unansweredSteers.length > 0 && !active.interruptRequested) {
           if (!active.awaitingSteeredTurn) {
@@ -1385,17 +1461,27 @@ class PiHarnessSession implements HarnessSession {
     };
   }
 
-  #publishMessageUpdate(event: PiMessage): void {
+  #publishMessageUpdate(active: ActiveTurn, event: PiMessage): void {
     const delta = requireObject(event.assistantMessageEvent, "Pi message_update event");
     const type = optionalString(delta.type);
     const contentIndex = optionalNumber(delta.contentIndex) ?? 0;
     if (type === "text_delta") {
-      this.#publish({ data: { text: optionalString(delta.delta) ?? "" }, type: "assistant.delta" });
+      const text = optionalString(delta.delta) ?? "";
+      if (text.length > 0) {
+        delete active.pendingError;
+        active.retry.recover();
+      }
+      this.#publish({ data: { text }, type: "assistant.delta" });
       return;
     }
     if (type === "thinking_delta") {
+      const text = optionalString(delta.delta) ?? "";
+      if (text.length > 0) {
+        delete active.pendingError;
+        active.retry.recover();
+      }
       this.#publish({
-        data: { blockId: `thinking-${contentIndex}`, text: optionalString(delta.delta) ?? "" },
+        data: { blockId: `thinking-${contentIndex}`, text },
         type: "reasoning.delta",
       });
       return;
@@ -1403,6 +1489,8 @@ class PiHarnessSession implements HarnessSession {
     if (type === "thinking_end") {
       const content = optionalString(delta.content) ?? "";
       if (!content) return;
+      delete active.pendingError;
+      active.retry.recover();
       this.#publish({
         data: { blockId: `thinking-${contentIndex}`, text: content.slice(0, 250_000) },
         type: "reasoning.completed",
@@ -1415,11 +1503,14 @@ class PiHarnessSession implements HarnessSession {
     if (message.role !== "assistant") return;
     accumulateUsage(active.usage, message.usage);
     if (message.stopReason === "error") {
-      // Pi has no error event; a provider failure is an assistant message with
-      // `stopReason: "error"` and free-text `errorMessage` (pi-facts §10).
-      this.#publishFailure(active, piTurnError(optionalString(message.errorMessage)));
+      // Pi emits the failed assistant `message_end` before `auto_retry_start`
+      // when retrying, so hold this error until Pi either starts retrying or
+      // settles with `agent_settled` (pi-facts §10).
+      active.pendingError = piTurnError(optionalString(message.errorMessage));
       return;
     }
+    delete active.pendingError;
+    active.retry.recover();
     const content = Array.isArray(message.content) ? message.content : [];
     const text = content
       .flatMap((part) => {
@@ -1590,6 +1681,7 @@ class PiHarnessSession implements HarnessSession {
   }
 
   #publishTerminal(active: ActiveTurn, status: "completed" | "interrupted"): void {
+    active.retry.dispose();
     if (!this.#publisher.claimTerminal(active)) return;
     active.toolLifetime.abort(new Error(`Pi turn ${status}`));
     // Every terminal path goes through here, so this is the one place that can
@@ -1605,6 +1697,7 @@ class PiHarnessSession implements HarnessSession {
   }
 
   #publishFailure(active: ActiveTurn, error: OpensteerError): void {
+    active.retry.dispose();
     if (!this.#publisher.claimTerminal(active)) return;
     active.toolLifetime.abort(error);
     // Including a failure the Run never asked for: a process that died while a

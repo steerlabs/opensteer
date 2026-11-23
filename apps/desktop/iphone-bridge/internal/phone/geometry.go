@@ -34,8 +34,37 @@ func encodeScreenshot(data []byte) ([]byte, Geometry, error) {
 	if err != nil {
 		return nil, g, wire.Fail(wire.NativeServiceFailed)
 	}
-	scale := math.Min(1, math.Min(1440/float64(max(cfg.Width, cfg.Height)), math.Sqrt(1150000/float64(cfg.Width*cfg.Height))))
-	width, height := max(2, int(float64(cfg.Width)*scale)), max(2, int(float64(cfg.Height)*scale))
+	return encodeScreenImage(source, cfg.Width, cfg.Height)
+}
+func matchingAspect(w, h, otherW, otherH float64) bool {
+	return w > 0 && h > 0 && otherW > 0 && otherH > 0 && math.Abs((w/h)/(otherW/otherH)-1) < 0.02
+}
+func encodeMediaScreenshot(frame *MediaFrame) ([]byte, Geometry, error) {
+	w, h := frame.Width, frame.Height
+	var source image.Image
+	if len(frame.JPEG) > 0 {
+		c, err := jpeg.DecodeConfig(bytes.NewReader(frame.JPEG))
+		if err != nil || c.Width != w || c.Height != h {
+			return nil, Geometry{}, wire.Fail(wire.NativeLimit)
+		}
+		if max(w, h) <= 1440 && w*h <= 1150000 && (len(frame.JPEG)+2)/3*4 <= 600000 {
+			return frame.JPEG, Geometry{Width: w, Height: h, CaptureWidth: w, CaptureHeight: h}, nil
+		}
+		source, err = jpeg.Decode(bytes.NewReader(frame.JPEG))
+		if err != nil {
+			return nil, Geometry{}, wire.Fail(wire.NativeServiceFailed)
+		}
+	} else if len(frame.RGBA) == w*h*4 {
+		source = &image.RGBA{Pix: frame.RGBA, Stride: w * 4, Rect: image.Rect(0, 0, w, h)}
+	} else {
+		return nil, Geometry{}, wire.Fail(wire.NativeServiceFailed)
+	}
+	return encodeScreenImage(source, w, h)
+}
+func encodeScreenImage(source image.Image, captureWidth, captureHeight int) ([]byte, Geometry, error) {
+	var g Geometry
+	scale := math.Min(1, math.Min(1440/float64(max(captureWidth, captureHeight)), math.Sqrt(1150000/float64(captureWidth*captureHeight))))
+	width, height := max(2, int(float64(captureWidth)*scale)), max(2, int(float64(captureHeight)*scale))
 	for range 8 {
 		output := image.NewRGBA(image.Rect(0, 0, width, height))
 		draw.BiLinear.Scale(output, output.Bounds(), source, source.Bounds(), draw.Src, nil)
@@ -45,7 +74,7 @@ func encodeScreenshot(data []byte) ([]byte, Geometry, error) {
 				return nil, g, wire.Fail(wire.NativeServiceFailed)
 			}
 			if (b.Len()+2)/3*4 <= 600000 {
-				return b.Bytes(), Geometry{Width: width, Height: height, CaptureWidth: cfg.Width, CaptureHeight: cfg.Height}, nil
+				return b.Bytes(), Geometry{Width: width, Height: height, CaptureWidth: captureWidth, CaptureHeight: captureHeight}, nil
 			}
 		}
 		width = max(2, width*3/4)

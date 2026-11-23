@@ -352,15 +352,34 @@ export function withHostMemoryWakes(testCase: EvalCase): EvalCase {
     const changes = testCase.tasks.flatMap(({ task, items, self }) => {
       if (self || task.purpose === "background-job") return [];
       const fresh = published(items).filter((item) => Date.parse(item.createdAt) > since.getTime());
-      if (!fresh.length) return [];
-      const dates = fresh.map((item) => Date.parse(item.createdAt));
+      const freshQuestions = items.filter(
+        (item) =>
+          item.type === "request.resolved" &&
+          (item.status === "fulfilled" || item.status === "declined") &&
+          Date.parse(item.createdAt) > since.getTime(),
+      );
+      const doneAt =
+        task.doneAt && Date.parse(task.doneAt) > since.getTime() && task.doneBy !== "quiet"
+          ? new Date(task.doneAt)
+          : null;
+      if (!fresh.length && !freshQuestions.length && !doneAt) return [];
+      const messageDates = fresh.map((item) => Date.parse(item.createdAt));
+      const allDates = [
+        ...messageDates,
+        ...freshQuestions.map((item) => Date.parse(item.createdAt)),
+        ...(doneAt ? [doneAt.getTime()] : []),
+      ];
       return [
         {
           id: task.id,
           title: task.title ?? "",
           count: fresh.length,
-          first: new Date(Math.min(...dates)),
-          newest: Math.max(...dates),
+          first: messageDates.length ? new Date(Math.min(...messageDates)) : null,
+          newest: Math.max(...allDates),
+          questionsAnswered: freshQuestions.filter((item) => item.status === "fulfilled").length,
+          questionsDismissed: freshQuestions.filter((item) => item.status === "declined").length,
+          doneAt,
+          doneBy: doneAt ? (task.doneBy ?? null) : null,
         },
       ];
     });

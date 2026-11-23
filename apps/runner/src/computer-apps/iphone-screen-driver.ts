@@ -1,6 +1,20 @@
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { runnerWebSocketTransport } from "@opensteer/runner-client";
+import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
+import { WebSocket } from "ws";
 import {
   ComputerUseErrorCodeSchema,
+  DisplayAckSchema,
+  DisplayStreamReasonSchema,
+  decodeDisplayMediaFrame,
+  displayFirstFrameTimeoutMs,
+  displayMaxEnvelopeBytes,
+  displayMaxHeaderBytes,
+  displaySourceKey,
+  type DisplaySource,
+  type DisplayStreamId,
+  type DisplayStreamReason,
   IphoneScreenDispatchActParamsSchema,
   IphoneScreenObservationSchema,
   PhoneDisplayInstalledAppsParamsSchema,
@@ -20,6 +34,7 @@ import {
 import {
   iphoneScreenshotHiddenReason,
   iphoneRunnerResults,
+  iphoneNativeActionSchema,
   type IphoneNativeAction,
   type IphoneNativeObservation,
   type IphoneRunnerEvent,
@@ -37,11 +52,11 @@ import type {
   PhoneScreenCancel,
   PhoneScreenStopRecorded,
 } from "./phone-screen-driver.js";
-import { phoneLabel, phoneTree } from "./phone-tree.js";
+import { phoneLabel, phoneTree, type PhoneTreeTarget } from "./phone-tree.js";
 
 export type IphoneScreenBridge = Pick<
   ComputerUseHandler,
-  "iphoneRequest" | "onIphoneEvent" | "onIphoneConnection"
+  "iphoneRequest" | "onIphoneEvent" | "onIphoneConnection" | "openVideoAttachment"
 >;
 type ConnectOptions = Parameters<PhoneScreenDriver["connect"]>[0];
 type AssignmentLane = { tail: Promise<void> };
@@ -52,6 +67,7 @@ type Session = Pick<PhoneScreenContext, "deviceId" | "driverGeneration" | "sessi
 type Snapshot = {
   native: IphoneNativeObservation;
   public: IphoneScreenObservation;
+  targets: ReadonlyMap<number, PhoneTreeTarget>;
   session: Session;
 };
 type Work = { context: PhoneScreenContext; abort: AbortController };
@@ -66,6 +82,37 @@ type Phone = {
   closing?: Promise<void>;
 };
 
+type DisplayRef = DeviceDriverTarget & { streamId: DisplayStreamId };
+type DisplayEntry = {
+  ref: DisplayRef;
+  abort: AbortController;
+  data?: WebSocket;
+  media?: WebSocket;
+  starting?: Promise<IphoneRunnerResult<"iphone.display.start">>;
+  state?: Extract<IphoneRunnerEvent, { event: "iphone.displayState" }>["params"];
+  timeout?: ReturnType<typeof setTimeout>;
+  tail: Promise<void>;
+  revision: number;
+  inputEpoch: number;
+  sources: readonly DisplaySource[];
+  inputSources: readonly DisplaySource[] | undefined;
+  terminal: boolean;
+};
+const navigationLabels = {
+  home: "Home",
+  lock: "Lock",
+  volumeUp: "Volume up",
+  volumeDown: "Volume down",
+  recents: "App Switcher",
+  notifications: "Notification Center",
+  quickSettings: "Control Center",
+  action: "Action",
+  siri: "Siri",
+} as const;
+const defaultNavigationButtons = Object.keys(
+  navigationLabels,
+) as readonly (keyof typeof navigationLabels)[];
+
 export function iphoneCapabilityReason(reason: string | null | undefined): DeviceCapabilityReason {
   switch (reason) {
     case "candidate-gone":
@@ -77,6 +124,8 @@ export function iphoneCapabilityReason(reason: string | null | undefined): Devic
     case "trust-denied":
     case "pairing-revoked":
     case "wifi-pairing-required":
+    case "wifi-pairing-denied":
+    case "wifi-pairing-failed":
       return { kind: "trust-required" };
     case "developer-mode-required":
     case "developer-mode-status-unknown":
@@ -223,6 +272,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
   readonly #now: () => number;
   readonly #options: ConnectOptions;
   readonly #phones = new Map<string, Phone>();
+  readonly #displays = new Map<DisplayStreamId, DisplayEntry>();
   readonly #cleanup = new Set<Promise<unknown>>();
   readonly #unsub: (() => void)[];
   readonly #lanes: Map<string, Promise<unknown>>;
@@ -247,12 +297,14 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
       bridge.onIphoneEvent((event) => this.#event(event)),
       bridge.onIphoneConnection((state) => {
         if (!this.#alive) return;
-        if (state === "lost")
+        if (state === "lost") {
+          for (const entry of this.#displays.values()) this.#stopDisplay(entry, false);
           for (const phone of this.#phones.values()) {
             this.#invalidate(phone, false);
             phone.target = undefined;
             void this.#status(phone, "phone-disconnected");
           }
+        }
         if (state === "connected") this.#pushAssignments();
       }),
     ];
@@ -268,6 +320,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     );
     for (const [id, phone] of this.#phones) {
       if (wanted.get(id)?.generation === phone.assignment.generation) continue;
+      this.#stopPhoneDisplays(id);
       this.#invalidate(phone, true);
       this.#phones.delete(id);
     }
@@ -314,6 +367,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
               )
             )
               continue;
+            this.#stopPhoneDisplays(phone.assignment.deviceId);
             if (phone.target || phone.session) this.#invalidate(phone, true);
             phone.target = undefined;
             void this.#status(phone, "phone-disconnected");
@@ -322,6 +376,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
         } catch {
           if (this.#alive && revision === this.#assignmentRevision)
             for (const phone of this.#phones.values()) {
+              this.#stopPhoneDisplays(phone.assignment.deviceId);
               if (phone.target || phone.session) this.#invalidate(phone, true);
               phone.target = undefined;
               void this.#status(phone, "native-service-failed");
@@ -400,7 +455,11 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
       );
       check();
       session.epoch = opened.nativeEpoch;
-      if (phone.target) phone.target = { ...phone.target, nativeEpoch: opened.nativeEpoch };
+      if (phone.target) {
+        if (phone.target.nativeEpoch !== opened.nativeEpoch)
+          this.#stopPhoneDisplays(context.deviceId);
+        phone.target = { ...phone.target, nativeEpoch: opened.nativeEpoch };
+      }
       return session;
     } catch (error) {
       if (phone.session === session) this.#cancelSession(phone);
@@ -432,6 +491,66 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     }
     if ("reason" in native) {
       await this.#status(phone, native.reason);
+      if (
+        native.state.display === "off" &&
+        native.wakeToken &&
+        native.geometryRevision !== undefined &&
+        phone.target?.capabilities?.wake === null
+      ) {
+        const observation = IphoneScreenObservationSchema.parse({
+          capturedAt: new Date(this.#now()).toISOString(),
+          observationId: randomUUID(),
+          geometry: { width: 2, height: 2 },
+          rotation: native.state.rotation ?? 0,
+          locked: native.state.lock === "unknown" ? null : native.state.lock === "locked",
+          secureLock: null,
+          screen: "off",
+          foreground: null,
+          screenshot: null,
+          screenshotUnavailable: "screen-off",
+          tree: "",
+          elementCount: 0,
+          truncated: false,
+        });
+        phone.latest = {
+          native: {
+            observationToken: native.wakeToken,
+            nativeEpoch: native.nativeEpoch,
+            geometryRevision: native.geometryRevision,
+            geometry: {
+              width: 2,
+              height: 2,
+              captureWidth: 2,
+              captureHeight: 2,
+              displayId: native.state.displayId,
+              rotation: native.state.rotation,
+            },
+            state: native.state,
+            nodes: [],
+            coverage: {
+              coordinateSpace: "unqualified",
+              status: "unavailable",
+              reason: "accessibility-unavailable",
+              received: 0,
+              returned: 0,
+              missingFrames: 0,
+              missingChildren: 0,
+              unreturned: 0,
+              cycles: 0,
+              truncated: false,
+            },
+            foreground: null,
+            buttons: [],
+            textReason: "unsupported-text",
+            clearReason: "unsupported-clear",
+            screenshot: null,
+          },
+          public: observation,
+          session,
+          targets: new Map(),
+        };
+        return { observation };
+      }
       return {
         observation: null,
         status: {
@@ -453,6 +572,9 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     )
       failure("unsupported", "The iPhone display geometry is unavailable.");
     const hidden = iphoneScreenshotHiddenReason(native);
+    const { targets, ...tree } = hidden
+      ? { tree: "", elementCount: 0, truncated: false, targets: new Map<number, PhoneTreeTarget>() }
+      : phoneTree(native, phone.target?.capabilities?.indexedTargets === null);
     const observation = IphoneScreenObservationSchema.parse({
       capturedAt: new Date(this.#now()).toISOString(),
       observationId: randomUUID(),
@@ -475,19 +597,26 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
             },
       screenshotUnavailable:
         hidden ?? (!includeScreenshot ? "not-requested" : native.screenshot ? null : "failed"),
-      ...(hidden ? { tree: "", elementCount: 0, truncated: false } : phoneTree(native)),
+      ...tree,
     });
-    phone.latest = { native, public: observation, session };
+    phone.latest = {
+      native: hidden ? { ...native, nodes: [], screenshot: null } : native,
+      public: observation,
+      session,
+      targets,
+    };
     await this.#status(
       phone,
       hidden === "locked"
         ? "phone-locked"
         : hidden === "protected"
           ? "lock-state-unknown"
-          : qualificationBlocker(
-              phone.target?.capabilities?.observe ??
-                (phone.target?.capabilities ? null : phone.target?.reason),
-            ),
+          : hidden === "screen-off"
+            ? "wake-on-phone-required"
+            : qualificationBlocker(
+                phone.target?.capabilities?.observe ??
+                  (phone.target?.capabilities ? null : phone.target?.reason),
+              ),
       native,
     );
     return { observation };
@@ -521,6 +650,8 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
           failure("stale-observation", "Observe this iPhone again before acting.");
         const groups = this.#actions(phone, snapshot, params.actions);
         const actions = groups.flat();
+        if (actions.some((action) => !iphoneNativeActionSchema.safeParse(action).success))
+          failure("unsupported", "This input exceeds the iPhone's native action limits.");
         if (actions.length > 32)
           failure(
             "unsupported",
@@ -591,23 +722,56 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     snapshot: Snapshot,
     actions: IphoneScreenAction[],
   ): IphoneNativeAction[][] {
-    const point = (target: { index: number } | { x: number; y: number }) => {
-      if ("index" in target)
-        failure(
-          "unsupported",
-          "iPhone element coordinates are unqualified; use screenshot pixels.",
-        );
+    type Target = { index: number } | { x: number; y: number };
+    const indexed = (target: { index: number }) => {
+      if (
+        snapshot.native.coverage.coordinateSpace !== "qualified" ||
+        phone.target?.capabilities?.indexedTargets !== null
+      )
+        failure("unsupported", "iPhone element indices are unavailable; use screenshot pixels.");
+      const node = snapshot.targets.get(target.index);
+      if (!node)
+        failure("stale-observation", "The element is absent from this iPhone observation.");
+      return node;
+    };
+    const point = (target: Target) => {
+      if ("index" in target) {
+        const { frame } = indexed(target);
+        return {
+          x: Math.floor(frame.x + frame.width / 2),
+          y: Math.floor(frame.y + frame.height / 2),
+        };
+      }
       const { width, height } = snapshot.native.geometry;
       if (target.x < 0 || target.y < 0 || target.x > width - 1 || target.y > height - 1)
         failure("stale-observation", "The target is outside this iPhone observation.");
       return { x: target.x, y: target.y };
+    };
+    const nativeTarget = (target: Target) =>
+      "index" in target ? { nodeId: indexed(target).nodeId } : { point: point(target) };
+    const checkTextTarget = (target: Target | undefined) => {
+      const secure =
+        target && "index" in target
+          ? indexed(target).secure === "yes"
+          : snapshot.native.nodes.some(
+              (node) =>
+                node.secure === "yes" &&
+                (target && node.frame && snapshot.native.coverage.coordinateSpace === "qualified"
+                  ? target.x >= node.frame.x &&
+                    target.y >= node.frame.y &&
+                    target.x < node.frame.x + node.frame.width &&
+                    target.y < node.frame.y + node.frame.height
+                  : node.focused === true),
+            );
+      if (secure) failure("permission-required", "The iPhone field is protected.");
     };
     return actions.map((action): IphoneNativeAction[] => {
       const reason = this.#observationCapability(
         phone,
         action.type === "launch" ? "launch" : "act",
       );
-      if (reason) failure("unsupported", `iPhone ${action.type} is unavailable: ${reason}.`);
+      if (reason && action.type !== "wake")
+        failure("unsupported", `iPhone ${action.type} is unavailable: ${reason}.`);
       if (
         ["locked", "protected", "screen-off"].includes(
           snapshot.public.screenshotUnavailable ?? "",
@@ -628,14 +792,18 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
         );
       switch (action.type) {
         case "tap":
-          if (action.count !== 1)
-            failure("unsupported", "Double tap is not qualified on this iPhone.");
-          return [{ kind: "tap", target: { point: point(action.target) } }];
+          return [
+            {
+              kind: "tap",
+              target: nativeTarget(action.target),
+              ...(action.count === 2 ? { count: 2 } : {}),
+            },
+          ];
         case "longPress":
           return [
             {
               kind: "longPress",
-              target: { point: point(action.target) },
+              target: nativeTarget(action.target),
               durationMs: action.durationMs,
             },
           ];
@@ -643,7 +811,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
           return [
             {
               kind: "swipe",
-              target: { point: point(action.from) },
+              target: nativeTarget(action.from),
               to: point(action.to),
               durationMs: action.durationMs,
             },
@@ -654,7 +822,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
           return [
             {
               kind: "drag",
-              target: { point: point(action.from) },
+              target: nativeTarget(action.from),
               to: point(action.to),
               durationMs: action.durationMs,
               holdMs: action.holdMs,
@@ -706,12 +874,28 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
         case "launch":
           return [{ kind: "launch", appId: action.appId }];
         case "wake":
-          return failure("unsupported", "Wake this iPhone on the phone.");
+          if (phone.target?.capabilities?.wake !== null)
+            failure("unsupported", "Wake this iPhone on the phone.");
+          return [{ kind: "wake" }];
         case "wait":
           return [{ kind: "wait", durationMs: action.ms }];
         case "type":
+          if (phone.target?.capabilities?.text !== null || snapshot.native.textReason !== null)
+            failure("unsupported", "This iPhone does not support typing here.");
+          checkTextTarget(action.target);
+          return [
+            {
+              kind: "type",
+              text: action.text,
+              submit: action.submit,
+              ...(action.target ? { target: nativeTarget(action.target) } : {}),
+            },
+          ];
         case "clear":
-          return failure("unsupported", `This iPhone does not support ${action.type}.`);
+          if (phone.target?.capabilities?.clear !== null || snapshot.native.clearReason !== null)
+            failure("unsupported", "This iPhone does not support clearing text here.");
+          checkTextTarget(action.target);
+          return [{ kind: "clear", target: nativeTarget(action.target) }];
       }
     });
   }
@@ -750,62 +934,379 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     await phone.closing;
     return {};
   }
-  async ownerView(frame: PhoneScreenOwnerView, _signal: AbortSignal, _receivedAt: number) {
-    this.#phone(frame);
-    return {
-      viewId: frame.viewId,
-      generation: frame.generation,
-      kind: "unavailable" as const,
-      reason: "unsupported",
+  async ownerView(frame: PhoneScreenOwnerView, signal: AbortSignal, _receivedAt: number) {
+    await this.#sync;
+    const phone = this.#phone(frame);
+    const ref = { viewId: frame.viewId, generation: frame.generation };
+    if (signal.aborted) failure("stopped-by-user", "The iPhone view was cancelled.");
+    if (frame.operation === "close")
+      return { ...ref, state: "closed" as const, captureTargetId: null };
+    if (phone.target?.capabilities?.liveVideo === null)
+      return { ...ref, state: "ready" as const, captureTargetId: null };
+    return { ...ref, kind: "unavailable" as const, reason: "unsupported" };
+  }
+
+  display(frame: PhoneScreenDisplayFrame): void {
+    const phone = this.#phone(frame);
+    const ref = {
+      deviceId: frame.deviceId,
+      driverGeneration: frame.driverGeneration,
+      streamId: frame.streamId,
     };
-  }
-  display(frame: PhoneScreenDisplayFrame) {
-    this.#phone(frame);
-    if (frame.type === "host.integrations.display.input") {
-      void this.#emit({
-        type: "runner.integrations.display.input-result",
-        deviceId: frame.deviceId,
-        driverGeneration: frame.driverGeneration,
-        streamId: frame.streamId,
-        ...(frame.sessionId ? { sessionId: frame.sessionId } : { source: frame.source! }),
-        geometry: frame.geometry,
-        sequence: frame.sequence,
-        outcome: "refused",
-        reason: "unsupported",
-      });
-      return;
-    }
-    if (frame.type === "host.integrations.display.power") {
-      void this.#emit({
-        type: "runner.integrations.display.power-result",
-        deviceId: frame.deviceId,
-        driverGeneration: frame.driverGeneration,
-        streamId: frame.streamId,
-        source: frame.source,
-        sequence: frame.sequence,
-        outcome: "refused",
-        reason: "unsupported",
-      });
-      return;
-    }
+    let entry = this.#displays.get(ref.streamId);
     if (
-      frame.type === "host.integrations.display.start" ||
-      frame.type === "host.integrations.display.refresh"
+      entry &&
+      (entry.ref.deviceId !== ref.deviceId || entry.ref.driverGeneration !== ref.driverGeneration)
     )
-      void this.#emit({
-        deviceId: frame.deviceId,
-        driverGeneration: frame.driverGeneration,
-        type: "runner.integrations.display.state",
-        streamId: frame.streamId,
-        display: "main",
-        state: "failed",
-        reason: "target-unavailable",
-        generation: 0,
-        width: 0,
-        height: 0,
-        rotation: 0,
+      return;
+    if (frame.type === "host.integrations.display.start") {
+      if (entry) return;
+      entry = {
+        ref,
+        abort: new AbortController(),
+        tail: Promise.resolve(),
+        revision: frame.revision,
+        inputEpoch: 0,
+        sources: frame.sources,
+        inputSources: frame.inputSources,
+        terminal: false,
+      };
+      this.#displays.set(ref.streamId, entry);
+      const active = entry;
+      active.timeout = setTimeout(
+        () => this.#failDisplay(active, "capture-timeout"),
+        displayFirstFrameTimeoutMs,
+      );
+      active.timeout.unref();
+      active.tail = this.#startDisplay(phone, active, frame).catch(() =>
+        this.#failDisplay(active, "capture-failed"),
+      );
+      this.#track(active.tail);
+      return;
+    }
+    if (frame.type === "host.integrations.display.stop") {
+      if (entry) this.#stopDisplay(entry);
+      return;
+    }
+    if (!entry || entry.terminal || entry.abort.signal.aborted) {
+      if (
+        frame.type === "host.integrations.display.input" ||
+        frame.type === "host.integrations.display.power"
+      )
+        this.#refuseDisplayInput(
+          frame,
+          phone.target?.capabilities?.liveVideo === null ? "unavailable" : "unsupported",
+        );
+      return;
+    }
+    if (frame.type === "host.integrations.display.input-reset") {
+      entry.inputEpoch++;
+      const active = entry;
+      const reset = this.#bridge
+        .iphoneRequest("iphone.display.inputReset", ref, {
+          deadline: this.#now() + 5000,
+          signal: active.abort.signal,
+        })
+        .catch(() => undefined);
+      this.#track(reset);
+      return;
+    }
+    if (frame.type === "host.integrations.display.demand") {
+      if (frame.revision <= entry.revision) return;
+      entry.revision = frame.revision;
+      entry.sources = frame.sources;
+      entry.inputSources = frame.inputSources;
+    }
+    const active = entry;
+    const inputEpoch = active.inputEpoch;
+    active.tail = active.tail
+      .then(async () => {
+        if (active.abort.signal.aborted || active.terminal) return;
+        const options = { deadline: this.#now() + 5000, signal: active.abort.signal };
+        switch (frame.type) {
+          case "host.integrations.display.demand":
+            await this.#bridge.iphoneRequest(
+              "iphone.display.demand",
+              {
+                ...ref,
+                ...(frame.maxLongSide === undefined ? {} : { maxLongSide: frame.maxLongSide }),
+              },
+              options,
+            );
+            break;
+          case "host.integrations.display.refresh":
+            await this.#bridge.iphoneRequest("iphone.display.refresh", ref, options);
+            break;
+          case "host.integrations.display.input": {
+            const source = frame.source ?? {
+              kind: "task-session" as const,
+              sessionId: frame.sessionId!,
+            };
+            if (
+              active.inputEpoch !== inputEpoch ||
+              !this.#displayInputAllowed(active, source) ||
+              phone.target?.capabilities?.act !== null
+            ) {
+              this.#refuseDisplayInput(frame, "unavailable");
+              return;
+            }
+            phone.latest = undefined;
+            const result = await this.#bridge.iphoneRequest(
+              "iphone.display.input",
+              {
+                ...ref,
+                geometry: frame.geometry,
+                sequence: frame.sequence,
+                events: frame.events,
+              },
+              options,
+            );
+            if (!active.abort.signal.aborted)
+              void this.#emit({
+                ...ref,
+                ...result,
+                type: "runner.integrations.display.input-result",
+                ...(frame.sessionId ? { sessionId: frame.sessionId } : { source }),
+                geometry: frame.geometry,
+                sequence: frame.sequence,
+              });
+            break;
+          }
+          case "host.integrations.display.power": {
+            if (
+              !this.#displayInputAllowed(active, frame.source) ||
+              phone.target?.capabilities?.wake !== null
+            ) {
+              this.#refuseDisplayInput(frame, "unavailable");
+              return;
+            }
+            const result = await this.#bridge.iphoneRequest(
+              "iphone.display.power",
+              {
+                ...ref,
+                action: frame.action,
+              },
+              options,
+            );
+            if (!active.abort.signal.aborted) {
+              phone.latest = undefined;
+              void this.#emit({
+                ...ref,
+                ...result,
+                type: "runner.integrations.display.power-result",
+                source: frame.source,
+                sequence: frame.sequence,
+              });
+            }
+            break;
+          }
+        }
+      })
+      .catch(() => {
+        if (active.abort.signal.aborted || active.terminal) return;
+        if (
+          frame.type === "host.integrations.display.input" ||
+          frame.type === "host.integrations.display.power"
+        )
+          this.#refuseDisplayInput(frame, "unavailable");
+        else if (frame.type !== "host.integrations.display.refresh")
+          this.#failDisplay(active, "capture-failed");
       });
+    this.#track(active.tail);
   }
+
+  #displayInputAllowed(entry: DisplayEntry, source: DisplaySource): boolean {
+    const paths =
+      entry.inputSources ?? entry.sources.filter((item) => item.kind === "task-session");
+    return paths.some((item) => displaySourceKey(item) === displaySourceKey(source));
+  }
+
+  #refuseDisplayInput(
+    frame: Extract<
+      PhoneScreenDisplayFrame,
+      { type: "host.integrations.display.input" | "host.integrations.display.power" }
+    >,
+    reason: "unavailable" | "unsupported",
+  ) {
+    const base = {
+      deviceId: frame.deviceId,
+      driverGeneration: frame.driverGeneration,
+      streamId: frame.streamId,
+      sequence: frame.sequence,
+      outcome: "refused" as const,
+      reason,
+    };
+    void this.#emit(
+      frame.type === "host.integrations.display.input"
+        ? {
+            ...base,
+            type: "runner.integrations.display.input-result",
+            geometry: frame.geometry,
+            ...(frame.sessionId ? { sessionId: frame.sessionId } : { source: frame.source! }),
+          }
+        : { ...base, type: "runner.integrations.display.power-result", source: frame.source },
+    );
+  }
+
+  async #startDisplay(
+    phone: Phone,
+    entry: DisplayEntry,
+    frame: Extract<PhoneScreenDisplayFrame, { type: "host.integrations.display.start" }>,
+  ): Promise<void> {
+    const deadline = this.#now() + displayFirstFrameTimeoutMs;
+    const signal = entry.abort.signal;
+    await this.#sync;
+    if (signal.aborted) return;
+    if (!this.#options.transport || phone.target?.capabilities?.liveVideo !== null) {
+      this.#failDisplay(entry, "target-unavailable");
+      return;
+    }
+    // Retain the start reply so stop can release a native attachment even if
+    // the caller stops before Desktop has registered the stream.
+    entry.starting = this.#bridge.iphoneRequest(
+      "iphone.display.start",
+      {
+        ...entry.ref,
+        maxLongSide: frame.maxLongSide,
+        maxFps: frame.maxFps,
+      },
+      { deadline },
+    );
+    const started = await entry.starting;
+    if (signal.aborted || entry.terminal) return;
+    const transport = await runnerWebSocketTransport(
+      this.#options.transport,
+      "/internal/v1/computer-use/display",
+    );
+    if (signal.aborted || entry.terminal) return;
+    const data = new WebSocket(transport.url, {
+      headers: { authorization: `Bearer ${frame.dataTicket}` },
+      ...(transport.ca ? { ca: transport.ca } : {}),
+      rejectUnauthorized: true,
+      perMessageDeflate: false,
+      followRedirects: false,
+      maxPayload: displayMaxHeaderBytes,
+    });
+    entry.data = data;
+    const dataEnded = () => {
+      if (!entry.terminal) this.#failDisplay(entry, "data-socket-failed");
+      this.#stopDisplay(entry);
+    };
+    data.on("error", dataEnded);
+    data.once("close", dataEnded);
+    await once(data, "open", { signal });
+    if (signal.aborted || entry.terminal) return;
+    const media = this.#bridge.openVideoAttachment(started.attachmentToken);
+    entry.media = media;
+    let mediaEndedOnce = false;
+    const mediaEnded = () => {
+      if (!mediaEndedOnce && !entry.terminal && !signal.aborted) {
+        mediaEndedOnce = true;
+        // The native state and media close travel separately. Allow the terminal
+        // state to arrive before classifying a closed socket as a transport failure.
+        this.#track(
+          this.#bridge
+            .iphoneRequest("iphone.display.refresh", entry.ref, {
+              deadline: this.#now() + 5000,
+              signal,
+            })
+            .catch(() => undefined)
+            .then(() => this.#failDisplay(entry, "data-socket-failed")),
+        );
+      }
+    };
+    media.on("error", mediaEnded);
+    media.once("close", mediaEnded);
+    media.on("message", (raw, binary) => {
+      if (signal.aborted || entry.terminal) return;
+      try {
+        const bytes = rawDataBuffer(raw);
+        if (!binary || decodeDisplayMediaFrame(bytes).header.streamId !== entry.ref.streamId)
+          throw new Error();
+        if (
+          data.readyState !== WebSocket.OPEN ||
+          data.bufferedAmount + bytes.byteLength > displayMaxEnvelopeBytes
+        )
+          throw new Error();
+        clearTimeout(entry.timeout);
+        data.send(bytes, { binary: true }, (error) => {
+          if (error) dataEnded();
+        });
+      } catch {
+        this.#failDisplay(entry, "data-socket-failed");
+      }
+    });
+    data.on("message", (raw, binary) => {
+      if (signal.aborted || entry.terminal) return;
+      try {
+        if (
+          binary ||
+          media.readyState !== WebSocket.OPEN ||
+          media.bufferedAmount > displayMaxHeaderBytes
+        )
+          throw new Error();
+        const ack = DisplayAckSchema.parse(JSON.parse(rawDataBuffer(raw).toString("utf8")));
+        media.send(JSON.stringify(ack), (error) => {
+          if (error) mediaEnded();
+        });
+      } catch {
+        this.#failDisplay(entry, "data-socket-failed");
+      }
+    });
+  }
+
+  #failDisplay(entry: DisplayEntry, reason: DisplayStreamReason): void {
+    if (entry.abort.signal.aborted || entry.terminal) return;
+    this.#finishDisplay(entry, {
+      ...entry.ref,
+      display: "main",
+      type: "runner.integrations.display.state",
+      state: "failed",
+      reason,
+      generation: Number.MAX_SAFE_INTEGER,
+      width: 0,
+      height: 0,
+      rotation: 0,
+    });
+  }
+
+  #finishDisplay(
+    entry: DisplayEntry,
+    event: Extract<PhoneScreenDriverEvent, { type: "runner.integrations.display.state" }>,
+  ) {
+    entry.terminal = true;
+    clearTimeout(entry.timeout);
+    entry.media?.terminate();
+    // Host handles the terminal state before the data socket closes.
+    const sent = this.#emit(event);
+    void sent?.then(() => this.#stopDisplay(entry));
+  }
+
+  #stopDisplay(entry: DisplayEntry, stopNative = true) {
+    if (entry.abort.signal.aborted) return;
+    entry.abort.abort();
+    clearTimeout(entry.timeout);
+    entry.media?.terminate();
+    entry.data?.terminate();
+    const release = async () => {
+      if (stopNative && entry.starting) {
+        await entry.starting.catch(() => undefined);
+        await this.#bridge
+          .iphoneRequest("iphone.display.stop", entry.ref, {
+            deadline: this.#now() + 5000,
+          })
+          .catch(() => undefined);
+      }
+      this.#displays.delete(entry.ref.streamId);
+    };
+    this.#track(release());
+  }
+
+  #stopPhoneDisplays(deviceId: string) {
+    for (const entry of this.#displays.values())
+      if (entry.ref.deviceId === deviceId) this.#stopDisplay(entry);
+  }
+
   cancel(frame: PhoneScreenCancel) {
     const phone = this.#phone(frame);
     for (const work of phone.work)
@@ -823,6 +1324,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     this.#alive = false;
     ++this.#assignmentRevision;
     for (const unsub of this.#unsub) unsub();
+    for (const entry of this.#displays.values()) this.#stopDisplay(entry);
     for (const phone of this.#phones.values()) this.#invalidate(phone, true);
     this.#phones.clear();
     this.#sync = this.#assignments.tail
@@ -880,8 +1382,10 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     if (
       (phone.target && phone.target.nativeEpoch !== target.nativeEpoch) ||
       (phone.session && phone.session.epoch > 0 && phone.session.epoch !== target.nativeEpoch)
-    )
+    ) {
+      this.#stopPhoneDisplays(target.deviceId);
       this.#invalidate(phone, true);
+    }
     phone.target = target;
     void this.#status(phone, target.ready ? null : target.reason);
   }
@@ -889,6 +1393,42 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     if (!this.#alive) return;
     if (event.event === "iphone.targetsChanged") {
       this.#target(event.params);
+      return;
+    }
+    if (event.event === "iphone.displayState") {
+      const { reason, ...params } = event.params;
+      const entry = this.#displays.get(params.streamId);
+      if (
+        !entry ||
+        entry.abort.signal.aborted ||
+        entry.terminal ||
+        entry.ref.deviceId !== params.deviceId ||
+        entry.ref.driverGeneration !== params.driverGeneration ||
+        (entry.state && params.generation < entry.state.generation)
+      )
+        return;
+      const phone = this.#phones.get(params.deviceId);
+      if (
+        phone &&
+        (params.state === "protected" ||
+          params.state === "screen-off" ||
+          (entry.state && entry.state.generation !== params.generation))
+      )
+        phone.latest = undefined;
+      entry.state = event.params;
+      if (params.state === "protected" || params.state === "screen-off")
+        clearTimeout(entry.timeout);
+      const parsed = DisplayStreamReasonSchema.safeParse(reason);
+      const forwarded = {
+        ...params,
+        ...entry.ref,
+        type: "runner.integrations.display.state" as const,
+        display: "main" as const,
+        ...(parsed.success ? { reason: parsed.data } : {}),
+      };
+      if (params.state === "failed" || params.state === "stopped")
+        this.#finishDisplay(entry, forwarded);
+      else void this.#emit(forwarded);
       return;
     }
     const phone = this.#phones.get(event.params.deviceId);
@@ -925,8 +1465,16 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
 
   #status(phone: Phone, reason: string | null | undefined, observation = phone.latest?.native) {
     const available = reason === null;
-    const capabilityReason = available ? null : iphoneCapabilityReason(reason);
     const capabilities = phone.target?.capabilities;
+    // Keep locked/screen-off routes ready when wake or live view is supported so Host
+    // does not invalidate in-flight wake observations or tear down active owner views.
+    const privacyShieldRouteReady =
+      !available &&
+      Boolean(phone.target?.nativeEpoch) &&
+      (reason === "wake-on-phone-required" || reason === "phone-locked") &&
+      (capabilities?.wake === null || capabilities?.liveVideo === null);
+    const routeAvailable = available || privacyShieldRouteReady;
+    const capabilityReason = routeAvailable ? null : iphoneCapabilityReason(reason);
     const inventoryReady =
       available ||
       (Boolean(phone.target?.nativeEpoch) &&
@@ -951,22 +1499,43 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
       PhoneScreenDriverEvent,
       { type: "runner.integrations.device-status" }
     >["actions"] = [];
-    if (available && observation) {
-      if (inputReady)
-        actions.push(
-          ...(selfApp
-            ? ["navigate" as const]
-            : (["tap", "longPress", "swipe", "drag", "scroll", "navigate"] as const)),
-        );
-      if (!this.#observationCapability(phone, "launch")) actions.push("launch");
-      actions.push("wait");
+    if (available) {
+      if (observation) {
+        if (inputReady)
+          actions.push(
+            ...(selfApp
+              ? ["navigate" as const]
+              : (["tap", "longPress", "swipe", "drag", "scroll", "navigate"] as const)),
+          );
+        if (!this.#observationCapability(phone, "launch")) actions.push("launch");
+        if (inputReady && !selfApp) {
+          if (capabilities?.text === null && observation.textReason === null) actions.push("type");
+          if (capabilities?.clear === null && observation.clearReason === null)
+            actions.push("clear");
+        }
+        actions.push("wait");
+      } else if (capabilities?.liveVideo === null && inputReady) {
+        // Advertise interactive viewer controls immediately before an agent observes.
+        actions.push("tap", "longPress", "swipe", "drag", "scroll", "navigate");
+        if (capabilities.launch === null) actions.push("launch");
+        if (capabilities.text === null) actions.push("type");
+        if (capabilities.clear === null) actions.push("clear");
+        actions.push("wait");
+      }
     }
+    if (capabilities?.wake === null) actions.push("wake");
+    const buttons = inputReady
+      ? (observation?.buttons ?? (capabilities?.liveVideo === null ? defaultNavigationButtons : []))
+      : [];
+    const ownerControlReady =
+      capabilities?.liveVideo === null &&
+      (inputReady || (privacyShieldRouteReady && capabilities?.wake === null));
     return this.#emit({
       deviceId: phone.assignment.deviceId,
       driverGeneration: phone.assignment.generation,
       type: "runner.integrations.device-status",
       definitionId: "iphone-screen",
-      availability: available
+      availability: routeAvailable
         ? { state: "ready", reason: null }
         : { state: "unavailable", reason: capabilityReason },
       operations: (["observe", "act", "close", "installed_apps"] as const).map((operation) => ({
@@ -975,21 +1544,17 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
         detail: capabilities ? operationReasons[operation] : null,
         remedy: null,
       })),
-      navigationButtons: (inputReady ? (observation?.buttons ?? []) : []).map((id) => ({
+      navigationButtons: buttons.map((id) => ({
         id,
-        label: { home: "Home", lock: "Lock", volumeUp: "Volume up", volumeDown: "Volume down" }[id],
+        label: navigationLabels[id],
       })),
       actions,
-      wake: false,
-      lock: observation
-        ? observation.state.lock === "unknown"
-          ? null
-          : observation.state.lock === "locked"
-        : null,
-      displayVersion: null,
-      ownerViewVersion: null,
-      inputVersion: null,
-      powerVersion: null,
+      wake: capabilities?.wake === null,
+      lock: capabilities?.wake === null ? true : null,
+      displayVersion: capabilities?.liveVideo === null ? 1 : null,
+      ownerViewVersion: capabilities?.liveVideo === null ? 1 : null,
+      inputVersion: ownerControlReady ? 1 : null,
+      powerVersion: capabilities?.wake === null ? 1 : null,
     });
   }
   #emit(event: PhoneScreenDriverEvent) {

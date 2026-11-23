@@ -5,7 +5,7 @@ export function appleEditingPlatform(platform: EditingViewerPlatform): boolean {
   return platform === "mac" || platform === "ios";
 }
 export function editingModifiers(
-  key: EditingKeyState,
+  key: Pick<EditingKeyState, "alt" | "altGraph" | "control" | "meta" | "shift">,
   platform: EditingViewerPlatform,
 ): EditingModifier[] {
   const modifiers: EditingModifier[] = [];

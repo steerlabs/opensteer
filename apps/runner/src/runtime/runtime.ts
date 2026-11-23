@@ -39,6 +39,7 @@ import {
   requestTextMaxLength,
   requestTitleMaxLength,
   runFailureMessageMaxLength,
+  runRetryMessageMaxLength,
   surrogateSafeCut,
   toolOutputTextMaxBytes,
   utf8ByteLength,
@@ -73,6 +74,7 @@ import {
   type EngineUpdatePlan,
   type HarnessLiveEvent,
   type HarnessInstanceDefinition,
+  type HarnessObservedConnection,
   type HarnessRegistry,
   type HarnessSourceDescriptor,
   spawnSupervised,
@@ -85,8 +87,10 @@ import {
 import {
   backgroundTextAttemptsPerRunner,
   HarnessInstanceCatalogSchema,
+  HarnessObservedUsageSchema,
   PendingAgentEventV2Schema,
   pendingAgentEventMaxSerializedBytes,
+  type HarnessObservedUsage,
   type PendingAgentEvent,
   type ProtocolError,
   type HostToRunnerMessage,
@@ -487,6 +491,11 @@ export class RunnerRuntime {
   >();
   readonly #agentHome: AgentHomeAccess;
   readonly #nativeFsHelperBinary: string | undefined;
+  #hostSupportsRunRetry = true;
+  /** Records whether the connected Host confirmed `run.retry` support on `host.welcome`. */
+  setHostRunRetryEvents(supported: boolean): void {
+    this.#hostSupportsRunRetry = supported;
+  }
   #skillObserver:
     ((bindingGeneration: number, scan: AgentHomeSkills | undefined) => Promise<void>) | undefined;
   /** Hears every scan of Agent home's skills, so the Host's inventory follows what agents add. */
@@ -1013,10 +1022,11 @@ export class RunnerRuntime {
               status: "preparing",
             });
           }
+          const connections = this.#sanitizeObservedConnections(definition, result.connections);
           if (result.status !== "ready") {
             if (result.status === "authentication-required") {
               return HarnessInstanceCatalogSchema.parse({
-                connections: result.connections ?? [],
+                connections,
                 detail: result.detail,
                 driverKind: definition.driverKind,
                 harnessInstanceId: definition.id,
@@ -1026,7 +1036,7 @@ export class RunnerRuntime {
               });
             }
             return HarnessInstanceCatalogSchema.parse({
-              connections: result.connections ?? [],
+              connections,
               detail: result.detail,
               driverKind: definition.driverKind,
               harnessInstanceId: definition.id,
@@ -1036,7 +1046,7 @@ export class RunnerRuntime {
             });
           }
           return HarnessInstanceCatalogSchema.parse({
-            connections: result.connections ?? [],
+            connections,
             // The Runner owns the continuation identity, and it identifies the
             // native session store rather than the profile or the account
             // signed into it: switching accounts is a visible catalog fact, not
@@ -1079,6 +1089,31 @@ export class RunnerRuntime {
         }
       }),
     );
+  }
+
+  /**
+   * Usage telemetry is optional and comes from volatile third-party endpoints,
+   * so an unrepresentable reading is logged and omitted rather than turning an
+   * authenticated engine catalog into an error.
+   */
+  #sanitizeObservedConnections(
+    definition: Pick<HarnessInstanceDefinition, "driverKind" | "id">,
+    connections: readonly HarnessObservedConnection[] | undefined,
+  ): Array<Omit<HarnessObservedConnection, "usage"> & { readonly usage?: HarnessObservedUsage }> {
+    if (!connections || connections.length === 0) return [];
+    return connections.map((connection) => {
+      const { usage, ...rest } = connection;
+      if (usage === undefined) return rest;
+      const parsed = HarnessObservedUsageSchema.safeParse(usage);
+      if (parsed.success) return { ...rest, usage: parsed.data };
+      this.#logger?.error("Discarding invalid AI engine usage observation", {
+        connectionSlot: connection.connectionSlot,
+        detail: safeMessage(parsed.error, this.#safeMessageOptions),
+        driverKind: definition.driverKind,
+        harnessInstanceId: definition.id,
+      });
+      return rest;
+    });
   }
 
   /**
@@ -2196,6 +2231,37 @@ export class RunnerRuntime {
         if (ordinal >= result.nextOrdinal) continue;
         journal.events.delete(ordinal);
         journal.bytes -= entry.bytes;
+      }
+      if (!this.#hostSupportsRunRetry) {
+        // After a Host rollback, drop unacknowledged `run.retry` frames the
+        // older Host cannot parse and shift subsequent unacknowledged ordinals
+        // so ordinal continuity stays intact.
+        let nextOrdinal = result.nextOrdinal;
+        const retained: { readonly bytes: number; readonly event: PendingAgentEvent }[] = [];
+        let changed = false;
+        for (const [, entry] of [...journal.events.entries()].sort((a, b) => a[0] - b[0])) {
+          if (entry.event.type === "run.retry") {
+            changed = true;
+            continue;
+          }
+          const event =
+            entry.event.ordinal === nextOrdinal
+              ? entry.event
+              : { ...entry.event, ordinal: nextOrdinal };
+          const bytes =
+            event === entry.event ? entry.bytes : Buffer.byteLength(JSON.stringify(event), "utf8");
+          retained.push({ bytes, event });
+          nextOrdinal += 1;
+        }
+        if (changed) {
+          journal.events.clear();
+          journal.bytes = 0;
+          for (const entry of retained) {
+            journal.events.set(entry.event.ordinal, entry);
+            journal.bytes += entry.bytes;
+          }
+          active.nextOrdinal = nextOrdinal;
+        }
       }
       journal.sentThrough = result.nextOrdinal - 1;
       journal.sessionBoundSent = false;
@@ -3667,6 +3733,7 @@ export class RunnerRuntime {
     // The terminal event is a Run's last: an engine still reporting after the
     // Runner ended it for its stop is not heard.
     if (active.revoked || active.journal.terminal) return;
+    if (original.type === "run.retry" && !this.#hostSupportsRunRetry) return;
     if (active.shutdown && terminalEventTypes.has(original.type)) return;
     const outcome: HarnessDurableEvent =
       active.interruptionCause &&
@@ -4202,6 +4269,13 @@ function fittedDurableEvent(
         ...event,
         data: { request: { ...request, presentation: fittedPresentation(request.presentation) } },
       };
+    }
+    case "run.retry": {
+      const redacted = redactNetworkCredentials(event.data.message, secrets);
+      const message = utf8Prefix(redacted, runRetryMessageMaxLength);
+      return message === event.data.message
+        ? event
+        : { ...event, data: { ...event.data, message } };
     }
     case "run.failed":
       return {

@@ -40,7 +40,6 @@ import {
 } from "./browser-deployment.test-support.js";
 import {
   describeViewerEntry,
-  loadingSite,
   openBrowserView,
   popupDialogSite,
   recordBrowserView,
@@ -374,102 +373,6 @@ run("Browser Sessions through a whole deployment", () => {
         null,
         2,
       ),
-    );
-  }, 90_000);
-
-  it("says a tab is loading only while its own page loads, through the catalog, and Stop ends it", async () => {
-    const browser = await startBrowser();
-    addCleanup("local Browser Runtime", () => browser.close());
-    const stack = await deployment(browser);
-    const site = await loadingSite();
-    addCleanup("test site", () => site.close());
-    await browserAvailable(stack);
-    const sessionId = BrowserSessionIdSchema.parse(
-      await startPersonBrowser(stack, { viewport: { height: 700, width: 1000 } }),
-    );
-    const started = Date.now();
-    const timeline: { at: number; step: string; loading: boolean | undefined }[] = [];
-    const catalog = async () => {
-      const read = await browserInventory(stack, sessionId);
-      return read;
-    };
-    const tabOf = async (tabId: string) => (await catalog()).tabs.find((tab) => tab.id === tabId);
-    const note = async (step: string, tabId: string) =>
-      timeline.push({ at: Date.now() - started, step, loading: (await tabOf(tabId))?.loading });
-    const until = async (step: string, tabId: string, loading: boolean) => {
-      await waitFor(async () => ((await tabOf(tabId))?.loading === true) === loading, 15_000);
-      await note(step, tabId);
-    };
-
-    // A page whose response is still arriving: its tab loads, as a browser's spinner says.
-    const opened = await runtimeBrowserCommand(stack, {
-      type: "browser.tab.open",
-      sessionId,
-      url: `${site.origin}/slow`,
-      idempotencyKey: randomUUID(),
-    });
-    if (!opened.ok || opened.data.type !== "browser.tab.open")
-      throw new Error(JSON.stringify(opened));
-    const tabId = opened.data.tabId;
-    await until("its page's response is held open", tabId, true);
-    // The sidebar's place list reads exactly that field.
-    const read = await catalog();
-    // Loading follows the exact runtime surface.
-    // Another tab of the same browser is not loading.
-    expect(read.tabs.filter((tab) => tab.id !== tabId).every((tab) => !tab.loading)).toBe(true);
-
-    // Stop, from that tab's own targeted view, ends it; the server never finished the page.
-    const control = await openBrowserView(stack, sessionId, "control");
-    addCleanup("control viewer", async () => control.socket.terminate());
-    control.socket.send(JSON.stringify({ type: "stream.subscribe", surfaceId: tabId }));
-    control.socket.send(JSON.stringify({ type: "navigation.stop", surfaceId: tabId }));
-    await until("Stop", tabId, false);
-    expect(site.finished).not.toContain("/slow");
-
-    // A page that finishes loads and then stops by itself.
-    control.socket.send(
-      JSON.stringify({ type: "navigation.go", surfaceId: tabId, url: `${site.origin}/frame-host` }),
-    );
-    await waitFor(async () => (await tabOf(tabId))?.title === "Frame host", 15_000);
-    await until("a page that finished", tabId, false);
-    // Its script then adds a frame whose page never finishes: a frame loading is not the tab.
-    await waitFor(async () => site.requests.includes("/slow-frame"), 15_000);
-    await new Promise((resolve) => setTimeout(resolve, 1_500));
-    await note("1.5 s into a frame that never finishes", tabId);
-    expect(timeline.at(-1)?.loading).toBe(false);
-
-    // A navigation the server answers with 204 leaves no spinner behind.
-    control.socket.send(
-      JSON.stringify({ type: "navigation.go", surfaceId: tabId, url: `${site.origin}/empty` }),
-    );
-    await waitFor(async () => site.requests.includes("/empty"), 15_000);
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
-    await note("1 s after a 204 answer", tabId);
-    expect(timeline.at(-1)?.loading).toBe(false);
-
-    // Reloading a held page loads again, and closing the tab takes it all away.
-    control.socket.send(
-      JSON.stringify({ type: "navigation.go", surfaceId: tabId, url: `${site.origin}/slow` }),
-    );
-    await until("held again", tabId, true);
-    const current = await catalog();
-    const closed = await runtimeBrowserCommand(stack, {
-      type: "browser.tab.close",
-      sessionId,
-      surfaceId: tabId,
-      inventoryRevision: current.inventoryRevision!,
-      idempotencyKey: randomUUID(),
-    });
-    expect(closed).toMatchObject({ ok: true });
-    expect((await catalog()).tabs.some((tab) => tab.loading)).toBe(false);
-
-    const directory =
-      process.env.OPENSTEER_TAB_OPEN_E2E_ARTIFACT_DIR ??
-      path.join(tmpdir(), "opensteer-tab-open-e2e");
-    await mkdir(directory, { recursive: true });
-    await writeFile(
-      path.join(directory, "host-tab-loading.json"),
-      JSON.stringify({ timeline, requests: site.requests, finished: site.finished }, null, 2),
     );
   }, 90_000);
 

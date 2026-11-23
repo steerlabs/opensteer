@@ -4,7 +4,7 @@ import { sql, type Kysely } from "kysely";
  * Pool bookkeeping lives only in these tables. Ordinary rows are referenced by id without a
  * constraint, so an ordinary Home's writes never check them; pool code cleans them up.
  */
-export const browserPoolMigrationName = "0050_browser_pool";
+export const browserPoolMigrationName = "0106_browser_pool";
 
 export async function applyBrowserPool(database: Kysely<unknown>): Promise<void> {
   await sql`

@@ -8,6 +8,7 @@ import {
 describe.each([
   "ipc-golden.json",
   "screen-ipc-golden.json",
+  "display-ipc-golden.json",
   "ipc-wifi-golden.json",
   "ipc-setup-golden.json",
 ])("iPhone native IPC golden fixtures: %s", (filename) => {
@@ -118,4 +119,87 @@ it("uses identical init/refresh root bounds and strict reveal references", () =>
       params: { localPhoneId: "phone", nativeEpoch: 0 },
     }).success,
   ).toBe(false);
+});
+
+it("accepts additive display methods, media states and action variants", () => {
+  const streamId = "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const ref = { bindingToken: "binding", nativeEpoch: 1, streamId };
+  const request = { kind: "request", protocolVersion: 1, id: 3, timeoutMs: 1000 };
+  for (const [method, fields] of Object.entries({
+    start: { maxLongSide: 1280, maxFps: 30 },
+    demand: { maxFps: 20 },
+    refresh: {},
+    stop: {},
+    input: { events: [{ kind: "pointer", phase: "down", x: 0.5, y: 0.2, t: 1 }] },
+    inputReset: {},
+    power: { action: "wake" },
+  })) {
+    expect(
+      iphoneNativeRequestSchema.safeParse({
+        ...request,
+        method: `display.${method}`,
+        params: { ...ref, ...fields },
+      }).success,
+    ).toBe(true);
+  }
+  expect(
+    iphoneNativeRequestSchema.safeParse({
+      ...request,
+      method: "display.input",
+      params: { ...ref, geometry: 1, events: [] },
+    }).success,
+  ).toBe(false);
+  const target = { nodeId: "test-node" };
+  const actions = [
+    { kind: "tap", target, count: 2 },
+    { kind: "swipe", target, to: { x: 0, y: 10 }, edge: "top", durationMs: 150 },
+    { kind: "navigate", button: "quickSettings" },
+    { kind: "pinch", target, scale: 1.2, durationMs: 150 },
+    { kind: "key", key: "a", modifiers: ["command"] },
+    { kind: "terminate", appId: "example.app" },
+  ];
+  const perform = {
+    ...request,
+    method: "phone.perform",
+    params: {
+      bindingToken: "b",
+      nativeEpoch: 1,
+      sessionId: "s",
+      observationToken: "o",
+      geometryRevision: 1,
+      actions,
+    },
+  };
+  expect(iphoneNativeRequestSchema.safeParse(perform).success).toBe(true);
+  expect(
+    iphoneNativeRequestSchema.safeParse({
+      ...perform,
+      params: { ...perform.params, actions: [{ ...actions[0], count: 3 }] },
+    }).success,
+  ).toBe(false);
+  expect(
+    iphoneNativeMessageSchema.safeParse({
+      kind: "event",
+      bootId: "boot",
+      sequence: 1,
+      event: "display.state",
+      displayState: {
+        streamId,
+        state: "protected",
+        generation: 1,
+        width: 0,
+        height: 0,
+        rotation: 90,
+      },
+    }).success,
+  ).toBe(true);
+  for (const result of [
+    { socketPath: "/private/native.sock" },
+    { outcome: "stale", reason: "stale" },
+    { outcome: "dispatched" },
+  ]) {
+    expect(iphoneNativeMessageSchema.safeParse({ kind: "response", id: 3, result }).success).toBe(
+      true,
+    );
+  }
 });

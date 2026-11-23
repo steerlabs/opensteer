@@ -423,7 +423,7 @@ export async function completeRunReplacement(
     .executeTakeFirstOrThrow();
   await tx
     .updateTable("runs")
-    .set({ bindingGeneration: null, status: "queued" })
+    .set({ bindingGeneration: null, providerRetry: null, status: "queued" })
     .where("id", "=", run.id)
     .executeTakeFirstOrThrow();
   await endAttempt(tx, replaced.id, "interrupted");
