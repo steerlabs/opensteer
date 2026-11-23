@@ -447,6 +447,12 @@ export function ComputerDisplayScreen({
           ? display.editing.send(operation)
           : Promise.reject(new Error("Input unavailable."));
       },
+      sendBatch: (operations: readonly Parameters<DisplayEditingSession["send"]>[0][]) => {
+        input?.flush();
+        return display.editing
+          ? display.editing.sendBatch(operations)
+          : Promise.reject(new Error("Input unavailable."));
+      },
     }),
     [display.editing, input],
   );

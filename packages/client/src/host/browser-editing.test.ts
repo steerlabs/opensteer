@@ -275,48 +275,92 @@ describe("browser editing transport", () => {
     });
     store.dispose();
   });
-  it("settles pending clipboard operations immediately on browser.error instead of timing out", async () => {
+  it("settles clipboard operations only by their own operationId or carrier end, never unrelated browser.error", async () => {
     vi.useFakeTimers();
-    const { store, target } = setup();
+    const { store, target, commands } = setup();
     try {
       const paste = target.send({
         kind: "paste",
         items: [{ type: "text/plain", bytes: encoder.encode("hi") }],
         contextId: crypto.randomUUID(),
       });
-      store.receive(sessionId, {
-        type: "browser.error",
-        error: {
-          code: "conflict",
-          reason: "stale-document",
-          message: "The field changed.",
-          retryable: false,
-        },
-      });
-      // Resolves on the microtask queue without advancing the 15 s clipboard timeout.
-      const outcome = await Promise.race([
-        paste,
-        Promise.resolve()
-          .then(() => undefined)
-          .then(() => undefined)
-          .then(() => "hung"),
-      ]);
-      expect(outcome).toEqual({ outcome: "refused", items: [] });
-      const large = target.send({
-        kind: "paste",
-        items: [{ type: "text/plain", bytes: encoder.encode("hi") }],
+      const copy = target.send({
+        kind: "copy",
         contextId: crypto.randomUUID(),
       });
-      store.receive(sessionId, {
-        type: "browser.error",
-        error: {
-          code: "bad_message",
+      const pasteCmd = commands.find((c) => c.type === "clipboard.paste-data");
+      const copyCmd = commands.find((c) => c.type === "clipboard.copy");
+      if (pasteCmd?.type !== "clipboard.paste-data" || copyCmd?.type !== "clipboard.copy")
+        throw new Error("Missing clipboard commands.");
+
+      // Unrelated browser.error messages (including stale-input, stale-document, reasonless conflict)
+      // must not settle pending clipboard operations.
+      for (const error of [
+        {
+          code: "conflict" as const,
+          reason: "stale-input",
+          message: "Stale input.",
+          retryable: false,
+        },
+        {
+          code: "conflict" as const,
+          reason: "stale-document",
+          message: "Field changed.",
+          retryable: false,
+        },
+        { code: "conflict" as const, message: "The field changed. Paste again.", retryable: false },
+        {
+          code: "bad_message" as const,
           reason: "too-large",
           message: "Too large.",
           retryable: false,
         },
+      ]) {
+        store.receive(sessionId, { type: "browser.error", error });
+      }
+      const settledEarly = await Promise.race([
+        paste.then(() => "paste-settled"),
+        copy.then(() => "copy-settled"),
+        Promise.resolve()
+          .then(() => undefined)
+          .then(() => undefined)
+          .then(() => "still-pending"),
+      ]);
+      expect(settledEarly).toBe("still-pending");
+
+      // The paste's own refusal settles only the paste; the sibling copy's late result is still delivered.
+      store.receive(sessionId, {
+        type: "clipboard.result",
+        surfaceId,
+        operationId: pasteCmd.operationId,
+        outcome: "refused",
       });
-      expect(await large).toEqual({ outcome: "too-large", items: [] });
+      expect(await paste).toEqual({ outcome: "refused", items: [] });
+
+      store.receive(sessionId, {
+        type: "clipboard.result",
+        surfaceId,
+        operationId: copyCmd.operationId,
+        outcome: "copied",
+        items: [{ type: "text/plain", size: 4 }],
+      });
+      store.receive(sessionId, {
+        type: "clipboard.part",
+        part: { operationId: copyCmd.operationId, index: 0, data: btoa("late") },
+      });
+      expect(await copy).toEqual({
+        outcome: "copied",
+        items: [{ type: "text/plain", bytes: encoder.encode("late") }],
+      });
+
+      // When the carrier ends with a paste already sent, the outcome is unknown (never refused).
+      const inFlightPaste = target.send({
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: encoder.encode("maybe") }],
+        contextId: crypto.randomUUID(),
+      });
+      store.disconnect(sessionId, surfaceId);
+      expect(await inFlightPaste).toEqual({ outcome: "unknown", items: [] });
     } finally {
       store.dispose();
       vi.useRealTimers();

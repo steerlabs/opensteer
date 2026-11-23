@@ -30,6 +30,8 @@ import "./remote-editing.css";
 
 export interface RemoteEditingWire {
   send(operation: EditingOperation): Promise<ViewerClipboardResult | undefined>;
+  /** P2: sends a dependent operation group in one atomic batch on display targets. */
+  sendBatch?(operations: readonly EditingOperation[]): Promise<ViewerClipboardResult | undefined>;
   subscribeClipboard?(
     onWritten: (items: readonly EditingClipboardPayloadItem[]) => void,
     onError?: (message: string) => void,
@@ -163,7 +165,11 @@ export function RemoteEditingProxy({
         void current.current.wire.send(operation).then(
           (result) => {
             if (!arm) {
-              if (result && !["copied", "cut", "pasted", "empty"].includes(result.outcome))
+              if (result?.outcome === "unknown")
+                refuse(
+                  "The connection ended before the paste was confirmed. Check the page before pasting again.",
+                );
+              else if (result && !["copied", "cut", "pasted", "empty"].includes(result.outcome))
                 refuse(`The remote clipboard operation was ${result.outcome}.`);
               return;
             }
@@ -210,7 +216,47 @@ export function RemoteEditingProxy({
         )
       )
         clipboard.current!.armActivation();
-      for (const operation of step.operations) perform(operation);
+      const sendBatch = current.current.wire.sendBatch;
+      if (sendBatch && step.operations.some((op) => "follows" in op && op.follows)) {
+        for (let i = 0; i < step.operations.length;) {
+          const group: EditingOperation[] = [step.operations[i]!];
+          i++;
+          while (i < step.operations.length) {
+            const next = step.operations[i]!;
+            if (!("follows" in next && next.follows)) break;
+            group.push(next);
+            i++;
+          }
+          if (group.length === 1) {
+            perform(group[0]!);
+          } else if (!current.current.enabled) {
+            for (const op of group) refused(op);
+          } else {
+            setError(null);
+            try {
+              void sendBatch(group).then(
+                (result) => {
+                  if (result?.outcome === "unknown")
+                    refuse(
+                      "The connection ended before the paste was confirmed. Check the page before pasting again.",
+                    );
+                  else if (result && !["copied", "cut", "pasted", "empty"].includes(result.outcome))
+                    refuse(`The remote clipboard operation was ${result.outcome}.`);
+                },
+                (reason) => {
+                  for (const op of group) refused(op);
+                  failure(reason);
+                },
+              );
+            } catch (reason) {
+              for (const op of group) refused(op);
+              failure(reason);
+            }
+          }
+        }
+      } else {
+        for (const operation of step.operations) perform(operation);
+      }
       setPreedit(
         step.state.composition?.detached ? "" : (step.state.composition?.nativeText ?? ""),
       );

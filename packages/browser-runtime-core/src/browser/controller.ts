@@ -984,10 +984,13 @@ export class BrowserController {
         message.type === "clipboard.cut" ||
         message.type === "clipboard.paste-data" ||
         message.type === "clipboard.part")
-    )
-      return this.enqueueFailure(
-        new BrowserRuntimeError("forbidden", "The engine clipboard was not negotiated."),
+    ) {
+      return this.refuseClipboard(message).then(() =>
+        this.enqueueFailure(
+          new BrowserRuntimeError("forbidden", "The engine clipboard was not negotiated."),
+        ),
       );
+    }
     if (this.editing && message.type === "clipboard.part") {
       this.clipboardParts.part(message);
       return Promise.resolve();
@@ -1962,6 +1965,7 @@ export class BrowserController {
             message.type === "input.compose",
             () => this.recordPasskeyInput(message, active.surface.id),
             message.producerId,
+            message.type === "input.text" && message.follows === true,
           ))
         )
           this.editingCounters.stale = (this.editingCounters.stale ?? 0) + 1;
@@ -2041,7 +2045,12 @@ export class BrowserController {
               message.producerId,
               message.follows === true,
             );
-          return observer.copyOrCut(message.contextId, dispatch, message.producerId);
+          return observer.copyOrCut(
+            message.contextId,
+            dispatch,
+            message.producerId,
+            command === "cut",
+          );
         });
         if (!result.result) await outcome("refused");
         else if (command === "paste") await outcome("pasted");

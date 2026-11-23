@@ -665,11 +665,38 @@ export class PhoneBrowserManager {
           });
         } else {
           const channel = this.#requireChannel(message.channelId);
-          await this.#client(
-            channel,
-            BrowserClientMessageSchema.parse(message.message),
-            authorityHandle,
-          );
+          const clientMessage = BrowserClientMessageSchema.parse(message.message);
+          try {
+            await this.#client(channel, clientMessage, authorityHandle);
+          } catch (error) {
+            // P1 (M1): a clipboard operation that throws (other than the two session-wide
+            // capability/suspension errors) settles by a clipboard.result naming its operationId.
+            if (
+              !(
+                error instanceof PhoneBrowserError &&
+                (error.code === "unsupported-operation" || error.code === "target-suspended")
+              ) &&
+              (clientMessage.type === "clipboard.copy" ||
+                clientMessage.type === "clipboard.cut" ||
+                clientMessage.type === "clipboard.paste-data")
+            ) {
+              this.#clipboard.delete(`${channel.id}:${clientMessage.operationId}`);
+              await this.#send(channel, {
+                type: "clipboard.result",
+                surfaceId: clientMessage.surfaceId,
+                operationId: clientMessage.operationId,
+                outcome:
+                  error instanceof PhoneBrowserError && error.code === "too-large"
+                    ? "too-large"
+                    : "refused",
+                ...(clientMessage.consumerToken
+                  ? { consumerToken: clientMessage.consumerToken }
+                  : {}),
+              });
+              return;
+            }
+            throw error;
+          }
         }
       }
     } catch (error) {
@@ -1113,8 +1140,24 @@ export class PhoneBrowserManager {
         );
       } catch (error) {
         if (clipboardKey) this.#clipboard.delete(clipboardKey);
-        if (message.type === "clipboard.part")
+        if (message.type === "clipboard.part") {
           this.#clipboard.delete(`${channel.id}:${message.part.operationId}`);
+          if (!(
+            error instanceof PhoneBrowserError &&
+            (error.code === "unsupported-operation" || error.code === "target-suspended")
+          )) {
+            await this.#send(channel, {
+              type: "clipboard.result",
+              surfaceId: tab.id,
+              operationId: message.part.operationId,
+              outcome:
+                error instanceof PhoneBrowserError && error.code === "too-large"
+                  ? "too-large"
+                  : "refused",
+            });
+            return;
+          }
+        }
         throw error;
       }
       return;

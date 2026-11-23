@@ -86,20 +86,25 @@ struct OwnerEditingContexts: Sendable {
   }
 
   /// Whether an operation stamped with `contextId` is admitted against the live field.
+  /// Under an earlier context of the same field, a relative edit requires a collapsed live
+  /// selection (`collapsed == true`); under the current context, any selection is admitted.
   func admits(
     _ contextId: String,
     kind: AdmissionKind,
     namedMatches: Bool = true,
-    exactNamed: Bool = false
+    exactNamed: Bool = false,
+    collapsed: Bool = true
   ) -> Bool {
-    let sameFieldContext = contextId == current || (field != nil && earlier.contains(contextId))
+    let isCurrent = contextId == current
+    let sameFieldContext = isCurrent || (field != nil && earlier.contains(contextId))
+    guard sameFieldContext else { return false }
     switch kind {
     case .relative:
-      return sameFieldContext
+      return isCurrent || collapsed
     case .named:
-      return namedMatches && (exactNamed ? contextId == current : sameFieldContext)
+      return namedMatches && (exactNamed ? isCurrent : true)
     case .exact:
-      return contextId == current
+      return isCurrent
     }
   }
 

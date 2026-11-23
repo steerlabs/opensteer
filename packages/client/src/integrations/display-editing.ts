@@ -194,32 +194,24 @@ export class DisplayEditingSession {
       if (!pending.sequences.size) this.#finish(pending);
     }
   }
-  send = async (operation: EditingOperation): Promise<ViewerClipboardResult | undefined> => {
-    // Losing the lease already releases native holds; cleanup must not become a new edit.
-    if (!this.#scope && operation.kind === "key" && operation.keystroke.action === "up")
-      return undefined;
-    let events: DisplayInputEvent[];
+  #mapOperation(operation: EditingOperation): DisplayInputEvent[] {
     switch (operation.kind) {
       case "key":
-        events = [{ kind: "key", ...operation.keystroke }];
-        break;
+        return [{ kind: "key", ...operation.keystroke }];
       case "command":
         if (!operation.contextId) {
           this.#count(this.diagnostics.operations, operation.kind);
           throw this.#refuse("stale", refusalWords.stale);
         }
-        events = [{ kind: "command", command: operation.command, contextId: operation.contextId }];
-        break;
+        return [{ kind: "command", command: operation.command, contextId: operation.contextId }];
       case "edit":
-        events = [{ kind: "edit", edit: operation.edit }];
-        break;
+        return [{ kind: "edit", edit: operation.edit }];
       case "copy":
         if (!operation.contextId) {
           this.#count(this.diagnostics.operations, operation.kind);
           throw this.#refuse("stale", refusalWords.stale);
         }
-        events = [{ kind: "copy", contextId: operation.contextId }];
-        break;
+        return [{ kind: "copy", contextId: operation.contextId }];
       case "cut":
         if (this.#lease.getSnapshot().display?.displayCut !== 1 || !this.#state.context?.field) {
           this.#count(this.diagnostics.operations, operation.kind);
@@ -229,8 +221,7 @@ export class DisplayEditingSession {
           this.#count(this.diagnostics.operations, operation.kind);
           throw this.#refuse("stale", refusalWords.stale);
         }
-        events = [{ kind: "cut", contextId: operation.contextId }];
-        break;
+        return [{ kind: "cut", contextId: operation.contextId }];
       case "compose":
         this.#count(this.diagnostics.operations, operation.kind);
         throw this.#refuse("unsupported", "Live composition isn’t supported by this device.");
@@ -254,7 +245,7 @@ export class DisplayEditingSession {
           this.#count(this.diagnostics.operations, operation.kind);
           throw this.#refuse("stale", refusalWords.stale);
         }
-        events = [];
+        const events: DisplayInputEvent[] = [];
         let piece = "";
         for (const character of text) {
           if (piece.length + character.length > displayPasteTextMaxLength) {
@@ -264,20 +255,50 @@ export class DisplayEditingSession {
           piece += character;
         }
         if (piece) events.push({ kind: "paste", text: piece, contextId: operation.contextId });
-        if (!events.length) return undefined;
-        break;
+        return events;
       }
     }
+  }
+  send = async (operation: EditingOperation): Promise<ViewerClipboardResult | undefined> => {
+    // Losing the lease already releases native holds; cleanup must not become a new edit.
+    if (!this.#scope && operation.kind === "key" && operation.keystroke.action === "up")
+      return undefined;
+    const events = this.#mapOperation(operation);
+    if (!events.length) return undefined;
     return this.input(
       this.#geometry,
       events,
       operation.kind === "copy" || operation.kind === "cut",
     );
   };
+  /**
+   * P2 (M2 & S2): sends a group of dependent operations (e.g. selection removal, compensating
+   * moves, replacement paste/edit) in ONE atomic `display.input` batch so the receiver stops at
+   * the first refusal and never applies follow-up operations alone. Never splits a dependent group
+   * across batches: if it cannot fit in one batch it is refused whole as `too-large`.
+   */
+  sendBatch = async (
+    operations: readonly EditingOperation[],
+  ): Promise<ViewerClipboardResult | undefined> => {
+    if (operations.length === 0) return undefined;
+    if (operations.length === 1) return this.send(operations[0]!);
+    const events: DisplayInputEvent[] = [];
+    let copy = false;
+    for (const operation of operations) {
+      if (!this.#scope && operation.kind === "key" && operation.keystroke.action === "up") continue;
+      if (operation.kind === "copy" || operation.kind === "cut") copy = true;
+      events.push(...this.#mapOperation(operation));
+    }
+    if (!events.length) return undefined;
+    if (events.length > maxDisplayInputEvents)
+      throw this.#refuse("too-large", refusalWords["too-large"]);
+    return this.input(this.#geometry, events, copy, true);
+  };
   input(
     geometry: number | null,
     events: readonly DisplayInputEvent[],
     copy = false,
+    atomic = false,
   ): Promise<ViewerClipboardResult | undefined> {
     for (const event of events) this.#count(this.diagnostics.operations, event.kind);
     const snapshot = this.#lease.getSnapshot();
@@ -291,7 +312,7 @@ export class DisplayEditingSession {
       return Promise.reject(this.#refuse("stale", "The display changed. Try again."));
     // The producer's lane is short and a frame is shorter than its answer: movement
     // and wheel turns wait for this view's earlier input to be answered, merged.
-    if (this.#pending.size && events.length && events.every(merges)) {
+    if (!atomic && this.#pending.size && events.length && events.every(merges)) {
       const held = (this.#held ??= { geometry, events: [], callers: [] });
       for (const event of events) {
         const last = held.events.at(-1);
@@ -305,12 +326,13 @@ export class DisplayEditingSession {
       return Promise.reject(this.#refuse("capacity", "Waiting for this device to respond."));
     // Presses and edits never wait, and follow the movement before them.
     this.#sendHeld(true);
-    return this.#transmit(geometry, events, copy);
+    return this.#transmit(geometry, events, copy, atomic);
   }
   #transmit(
     geometry: number,
     events: readonly DisplayInputEvent[],
     copy = false,
+    atomic = false,
   ): Promise<ViewerClipboardResult | undefined> {
     return new Promise((resolve, reject) => {
       const pending: Pending = {
@@ -329,16 +351,25 @@ export class DisplayEditingSession {
       };
       try {
         if (
-          !this.#lease.input(geometry, events, (sequence) => {
-            pending.sequences.add(sequence);
-            this.#pending.set(sequence, pending);
-          })
+          !this.#lease.input(
+            geometry,
+            events,
+            (sequence) => {
+              pending.sequences.add(sequence);
+              this.#pending.set(sequence, pending);
+            },
+            atomic ? { atomic: true } : undefined,
+          )
         )
           this.#finish(pending, new Error("Input is unavailable."));
       } catch (error) {
         this.#finish(
           pending,
-          error instanceof Error ? error : new Error("This edit couldn’t be sent."),
+          atomic
+            ? this.#refuse("too-large", refusalWords["too-large"])
+            : error instanceof Error
+              ? error
+              : new Error("This edit couldn’t be sent."),
         );
       }
     });

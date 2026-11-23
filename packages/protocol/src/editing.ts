@@ -198,7 +198,7 @@ export class EditingContexts {
 
   /** Rotates to a fresh context. Keeps the previous context in `earlier` only for the same field. */
   rotate(sameField: boolean): string {
-    if (sameField) {
+    if (sameField && this.#field !== null) {
       if (!this.#earlier.includes(this.#current)) {
         this.#earlier.push(this.#current);
         if (this.#earlier.length > EditingContexts.kept) this.#earlier.shift();
@@ -223,19 +223,25 @@ export class EditingContexts {
 
   /**
    * Decides whether an edit made under `contextId` is admitted now (Rules 1-4).
+   * Under an earlier context of the same field, a relative edit requires a collapsed live
+   * selection (`collapsed: true`); under the current context, any selection is admitted.
    * A refusal never mutates state (Rule 5).
    */
   admits(
     contextId: string,
     kind: EditingAdmissionKind,
-    options?: { readonly namedMatches?: boolean; readonly exactNamed?: boolean },
+    options?: {
+      readonly namedMatches?: boolean;
+      readonly exactNamed?: boolean;
+      readonly collapsed?: boolean;
+    },
   ): boolean {
     const isCurrent = contextId === this.#current;
     const sameField = isCurrent || (this.#field !== null && this.#earlier.includes(contextId));
     if (!sameField) return false;
     switch (kind) {
       case "relative":
-        return true;
+        return isCurrent || (options?.collapsed ?? true);
       case "named":
         if (options?.exactNamed && !isCurrent) return false;
         return options?.namedMatches ?? true;

@@ -112,7 +112,12 @@ export type EditingOperation =
       readonly follows?: true;
     }
   | { readonly kind: "compose"; readonly composition: EditingComposition }
-  | { readonly kind: "edit"; readonly edit: EditingTextEdit }
+  | {
+      readonly kind: "edit";
+      readonly edit: EditingTextEdit;
+      /** P2 (S2): an insertion over a selection follows its selection-removal edit as one unit. */
+      readonly follows?: true;
+    }
   | {
       readonly kind: "copy" | "cut";
       /** PH5: the context it was made for, stamped where it is made (reducer or menu). */

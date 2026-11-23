@@ -933,10 +933,10 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         if (!state.abilities.rangeEdits || state.resetPending) reset();
         break;
       }
-      // CV1: what the person types goes as an insertion at the page's caret, with nothing around
-      // it the page could find changed: the far caret is brought to where it goes, and over a
-      // selection the selection's deletion goes first, on its own (a replacement the page may
-      // refuse; the typed text still lands).
+      // CV1, P2 (S2): what the person types goes as an insertion at the page's caret, with nothing
+      // around it the page could find changed: the far caret is brought to where it goes, and over
+      // a selection the selection's deletion goes first, with any compensating moves and the typed
+      // insertion marked follows: true so if the removal is refused, nothing after it applies.
       const typed = typedInsertion(base, event.proxy, event.inputType);
       if (
         edit &&
@@ -947,6 +947,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       ) {
         const contextId = state.context.contextId;
         let far = caret;
+        let deletedSelection = false;
         if (typed.start < typed.end) {
           const removal = textEdit(
             base,
@@ -965,11 +966,18 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
               break;
             }
             far = caret - removal.before.length + removal.text.length;
+            deletedSelection = true;
           }
         }
         const text = base.value.slice(0, typed.start) + base.value.slice(typed.end);
-        if (far !== typed.start) move(far, typed.start, text, typed.start < typed.end);
-        if (!emit({ kind: "edit", edit: { contextId, text: typed.text, before: "", after: "" } })) {
+        if (far !== typed.start) move(far, typed.start, text, deletedSelection);
+        if (
+          !emit({
+            kind: "edit",
+            edit: { contextId, text: typed.text, before: "", after: "" },
+            ...(deletedSelection ? { follows: true as const } : {}),
+          })
+        ) {
           reset();
           break;
         }

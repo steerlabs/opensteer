@@ -47,6 +47,7 @@ export function NativeEditingProxy({
   focused = context?.field != null,
   softKeyboard = true,
   sendOperation,
+  sendOperations,
   onDone,
   cancelCompositionOnBlur = false,
   abilities = nativeBrowserAbilities,
@@ -57,6 +58,8 @@ export function NativeEditingProxy({
   readonly focused?: boolean;
   readonly softKeyboard?: boolean;
   readonly sendOperation: (operation: EditingOperation) => boolean;
+  /** P2: sends a dependent operation group in one atomic batch on display targets. */
+  readonly sendOperations?: (operations: readonly EditingOperation[]) => boolean;
   readonly cancelCompositionOnBlur?: boolean;
   readonly onDone: () => void;
   readonly abilities?: EditingTargetAbilities;
@@ -141,17 +144,42 @@ export function NativeEditingProxy({
     if (!item) return [];
     const text = new TextDecoder().decode(item.bytes);
     if (text.length > editingTextMaxLength) return null;
-    return [{ kind: "edit", edit: { contextId, text, before: "", after: "" } }];
+    return [
+      {
+        kind: "edit",
+        edit: { contextId, text, before: "", after: "" },
+        ...(operation.follows ? { follows: true as const } : {}),
+      },
+    ];
   };
   /**
-   * CY8: the one send of both paths. Each operation in order; at the first the transport refuses,
-   * the reducer it came from is told (the current one, or the late one of its context), nothing
-   * after it goes, and the person sees the refusal.
+   * CY8, P2: the one send of both paths. When `sendOperations` is supplied (display targets),
+   * a leading operation and any immediately following `follows: true` operations are delivered
+   * together as one atomic group. At the first refusal, the reducer is told and nothing after goes.
    */
   const send = (
     operations: readonly EditingOperation[],
     refused: (operation: EditingOperation) => void,
   ): boolean => {
+    if (sendOperations && operations.some((op) => "follows" in op && op.follows)) {
+      for (let i = 0; i < operations.length;) {
+        const group: EditingOperation[] = [operations[i]!];
+        i++;
+        while (i < operations.length) {
+          const next = operations[i]!;
+          if (!("follows" in next && next.follows)) break;
+          group.push(next);
+          i++;
+        }
+        const ok = group.length === 1 ? sendOperation(group[0]!) : sendOperations(group);
+        if (!ok) {
+          for (const op of group) refused(op);
+          setRefusal("Editing refused. Waiting for the remote field.");
+          return false;
+        }
+      }
+      return true;
+    }
     for (const operation of operations)
       if (!sendOperation(operation)) {
         refused(operation);

@@ -269,6 +269,58 @@
         { "wait": { "sameField": false, "matches": false, "waited": 0.0 }, "is": "refuse-field" },
         { "wait": { "sameField": false, "matches": true, "waited": 0.0 }, "is": "refuse-field" }
       ]
+    },
+    {
+      "name": "relative edits under an earlier context require a collapsed live selection",
+      "steps": [
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "relative", "collapsed": false }, "is": true },
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": true
+          },
+          "save": "c2",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "relative", "collapsed": false }, "is": false },
+        { "admits": { "context": "c1", "kind": "relative", "collapsed": true }, "is": true },
+        { "admits": { "context": "c2", "kind": "relative", "collapsed": false }, "is": true }
+      ]
+    },
+    {
+      "name": "dependent operations are refused when the edit they follow is refused, and an independent edit still applies",
+      "steps": [
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        {
+          "dependentGroup": {
+            "initial": "hello world",
+            "context": "c1",
+            "operations": [
+              { "kind": "named", "before": "world", "text": "", "namedMatches": false },
+              { "kind": "relative", "move": -1, "follows": true },
+              { "kind": "relative", "text": "there", "follows": true }
+            ],
+            "independent": { "kind": "relative", "text": "!" }
+          },
+          "expectAfterGroup": "hello world",
+          "expectAfterIndependent": "hello world!"
+        }
+      ]
     }
   ]
 }

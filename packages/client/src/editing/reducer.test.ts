@@ -131,7 +131,11 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
         edit: { contextId: context.contextId, text: "b", before: "abb", after: "" },
       },
       { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
-      { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
+      {
+        kind: "edit",
+        edit: { contextId: context.contextId, text: "a", before: "", after: "" },
+        follows: true,
+      },
     ]);
   });
   // Found by the mobile random sequences (second generator, seed 9944): a composition started
@@ -1182,6 +1186,31 @@ it("still swallows a cancelled composition's trailing deleteContentBackward inpu
         selectionStart: 0,
         selectionEnd: 0,
       },
+    },
+  ]);
+});
+
+it("couples typed insertion over a selection with follows: true so a refused removal stops it", () => {
+  const { operations } = replay([
+    input("hello world"),
+    { type: "selection", proxy: proxy("hello world", 6, 11) },
+    {
+      type: "input",
+      inputType: "insertText",
+      composing: false,
+      proxy: proxy("hello X", 7, 7),
+    },
+  ]);
+  const overSelection = operations.slice(1);
+  expect(overSelection).toEqual([
+    {
+      kind: "edit",
+      edit: { contextId: context.contextId, before: "world", after: "", text: "" },
+    },
+    {
+      kind: "edit",
+      edit: { contextId: context.contextId, before: "", after: "", text: "X" },
+      follows: true,
     },
   ]);
 });

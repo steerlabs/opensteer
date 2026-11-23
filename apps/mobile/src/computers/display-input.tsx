@@ -173,6 +173,8 @@ export function DisplayControls({
       : lease.input(geometry, events));
   const sendOperation = (operation: EditingOperation): boolean =>
     session !== null && submit(() => session.send(operation));
+  const sendOperations = (operations: readonly EditingOperation[]): boolean =>
+    session !== null && submit(() => session.sendBatch(operations));
   const pendingMove = useRef<{ geometry: number; event: DisplayInputEvent } | null>(null);
   const moveFrame = useRef<ReturnType<typeof requestAnimationFrame> | null>(null);
   const discardMove = () => {
@@ -306,6 +308,7 @@ export function DisplayControls({
               context={context}
               abilities={displayEditingAbilities}
               sendOperation={sendOperation}
+              sendOperations={sendOperations}
               onDone={() => {
                 lease.resetInput();
                 setTyping(false);

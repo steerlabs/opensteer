@@ -19,8 +19,26 @@ type Step =
         kind: EditingAdmissionKind;
         namedMatches?: boolean;
         exactNamed?: boolean;
+        collapsed?: boolean;
       };
       is: boolean;
+    }
+  | {
+      dependentGroup: {
+        initial: string;
+        context: string;
+        operations: {
+          kind: EditingAdmissionKind;
+          before?: string;
+          text?: string;
+          move?: number;
+          namedMatches?: boolean;
+          follows?: boolean;
+        }[];
+        independent: { kind: EditingAdmissionKind; text: string };
+      };
+      expectAfterGroup: string;
+      expectAfterIndependent: string;
     }
   | { mismatch: true; save?: string; expectChanged?: boolean }
   | { reset: true; save?: string; expectChanged?: boolean }
@@ -66,8 +84,41 @@ describe("editing admission rule (shared fixture)", () => {
             contexts.admits(contextId, step.admits.kind, {
               namedMatches: step.admits.namedMatches ?? true,
               exactNamed: step.admits.exactNamed ?? false,
+              collapsed: step.admits.collapsed ?? true,
             }),
           ).toBe(step.is);
+        } else if ("dependentGroup" in step) {
+          const group = step.dependentGroup;
+          const contextId = saved.get(group.context);
+          if (!contextId) throw new Error(`Unknown saved context ${group.context}`);
+          let text = group.initial;
+          let refusedContext: string | null = null;
+          const applyOp = (op: {
+            kind: EditingAdmissionKind;
+            text?: string;
+            namedMatches?: boolean;
+            follows?: boolean;
+          }) => {
+            if (op.follows && refusedContext === contextId) return false;
+            const ok = contexts.admits(contextId, op.kind, {
+              namedMatches: op.namedMatches ?? true,
+              collapsed: true,
+            });
+            if (!ok) {
+              refusedContext = contextId;
+              if (op.kind === "named") contexts.mismatch();
+              return false;
+            }
+            if (refusedContext === contextId) refusedContext = null;
+            if (op.text) text += op.text;
+            return true;
+          };
+          for (const op of group.operations) {
+            if (!applyOp(op)) break;
+          }
+          expect(text).toBe(step.expectAfterGroup);
+          expect(applyOp(group.independent)).toBe(true);
+          expect(text).toBe(step.expectAfterIndependent);
         } else if ("mismatch" in step) {
           const before = contexts.current;
           contexts.mismatch();

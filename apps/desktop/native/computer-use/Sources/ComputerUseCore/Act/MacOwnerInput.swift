@@ -408,6 +408,10 @@ final class MacOwnerInputWorker {
     }
   }
 
+  /// P2 (Rule 2 dependency): events in one `display.input` batch run strictly in order and the
+  /// batch stops at its FIRST refusal (any thrown `MacOwnerInput.Refusal` immediately aborts the
+  /// loop and returns `refused`/`stale` from `run(_:...)`, so dependent compensating moves and
+  /// replacement paste/edit events never run after a refused selection removal).
   private func dispatch(_ params: MacOwnerInput.InputParams, lease: MacOwnerAttachment,
                         map: MacOwnerInputMap, proceed: @escaping @Sendable () throws -> Void) async throws {
     for event in params.events {
@@ -429,7 +433,9 @@ final class MacOwnerInputWorker {
         refresh(focused, agentRevision: lease.mutations.agentRevision)
         let kind: OwnerEditingContexts.AdmissionKind =
           OwnerEditingContexts.caretRelativeCommands.contains(event.command!) ? .relative : .exact
-        guard contexts.admits(event.contextId!, kind: kind) else { throw MacOwnerInput.Refusal("stale") }
+        guard contexts.admits(event.contextId!, kind: kind, collapsed: selection?.length == 0) else {
+          throw MacOwnerInput.Refusal("stale")
+        }
         let combo = try KeyComboParser.parse(MacOwnerInput.commands[event.command!]!)
         try await chord(combo, target: focused.target, lease: lease, map: map, proceed: proceed)
       case "edit": try await edit(event.edit!, lease: lease, map: map, proceed: proceed)
@@ -437,7 +443,9 @@ final class MacOwnerInputWorker {
         let focused = try keyboard(lease, map: map)
         guard !focused.secure else { throw MacOwnerInput.Refusal("sensitive") }
         refresh(focused, agentRevision: lease.mutations.agentRevision)
-        guard contexts.admits(event.contextId!, kind: .relative) else { throw MacOwnerInput.Refusal("stale") }
+        guard contexts.admits(event.contextId!, kind: .relative, collapsed: selection?.length == 0) else {
+          throw MacOwnerInput.Refusal("stale")
+        }
         try await insert(event.text!, focused: focused, lease: lease, map: map, proceed: proceed)
       case "copy":
         do { try copy(contextId: event.contextId!, sequence: params.sequence, lease: lease, map: map) }
@@ -708,7 +716,11 @@ final class MacOwnerInputWorker {
     // Choose and qualify the insertion route before selecting any range.
     let route = try insertionRoute(focused, lease: lease)
     let namedText = !edit.before.isEmpty || !edit.after.isEmpty
-    guard contexts.admits(edit.contextId, kind: namedText ? .named : .relative) else {
+    guard contexts.admits(
+      edit.contextId,
+      kind: namedText ? .named : .relative,
+      collapsed: selection?.length == 0
+    ) else {
       throw MacOwnerInput.Refusal("stale")
     }
     if namedText {

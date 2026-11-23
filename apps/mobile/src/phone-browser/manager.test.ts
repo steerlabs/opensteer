@@ -1362,16 +1362,18 @@ describe("phone browser manager", () => {
       return originalApply(input);
     };
     for (let i = 0; i < 33; i++) {
+      const pasteOp = uuid();
       await fixture.client({
         type: "clipboard.paste-data",
         surfaceId: fixture.surfaceId,
-        operationId: uuid(),
+        operationId: pasteOp,
         items: [{ type: "text/plain", size: 5 }],
         contextId,
       });
       expect(fixture.server().at(-1)).toMatchObject({
-        type: "browser.error",
-        error: { reason: "stale-document" },
+        type: "clipboard.result",
+        operationId: pasteOp,
+        outcome: "refused",
       });
     }
     // After 33 native refusals, a valid 34th paste must still be admitted (not "too-large").

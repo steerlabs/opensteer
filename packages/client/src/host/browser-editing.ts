@@ -28,7 +28,7 @@ import type { BrowserCommand } from "./client.js";
 import { browserInputMode, type BrowserInputMode } from "./browser-input.js";
 
 export interface ViewerClipboardResult {
-  readonly outcome: EditingClipboardOutcome;
+  readonly outcome: EditingClipboardOutcome | "unknown";
   readonly items: readonly EditingClipboardPayloadItem[];
 }
 export type BrowserContextMenu = Extract<BrowserServerMessage, { type: "browser.contextmenu" }>;
@@ -149,6 +149,8 @@ interface Pending {
   readonly reject: (reason: Error) => void;
   readonly timer: ReturnType<typeof setTimeout>;
   readonly kind: "copy" | "cut" | "paste" | "written";
+  /** True once the command left this client onto the carrier (paste outcome becomes unknown if carrier ends). */
+  dispatched: boolean;
   items: readonly EditingClipboardItem[] | null;
   outcome: EditingClipboardOutcome;
   chunks: Uint8Array[];
@@ -395,7 +397,12 @@ export class BrowserEditingStore {
         });
         return;
       case "edit":
-        send({ type: "input.text", surfaceId, edit: EditingTextEditSchema.parse(operation.edit) });
+        send({
+          type: "input.text",
+          surfaceId,
+          edit: EditingTextEditSchema.parse(operation.edit),
+          ...(operation.follows ? { follows: true } : {}),
+        });
         return;
       case "copy":
       case "cut":
@@ -438,6 +445,8 @@ export class BrowserEditingStore {
         const result = this.#await(operationId, target, operation.kind);
         try {
           send(command);
+          const pending = this.#pending.get(operationId);
+          if (pending) pending.dispatched = true;
           if (operation.kind === "paste") {
             const data = new Uint8Array(
               operation.items.reduce((total, item) => total + item.bytes.byteLength, 0),
@@ -481,6 +490,7 @@ export class BrowserEditingStore {
       this.#pending.set(id, {
         target,
         kind,
+        dispatched: false,
         timer,
         resolve,
         reject,
@@ -530,6 +540,13 @@ export class BrowserEditingStore {
   }
   receive(sessionId: string, message: BrowserServerMessage, surfaceId?: string): void {
     if (message.type === "browser.error") {
+      // P1 (M1): a clipboard operation is settled only by an answer naming its operationId or
+      // by the end of what carries it. Only the two session-wide reasons settle pending ops here.
+      if (
+        message.error.reason !== "unsupported-operation" &&
+        message.error.reason !== "target-suspended"
+      )
+        return;
       for (const [id, pending] of this.#pending) {
         if (
           pending.kind === "written" ||
@@ -537,28 +554,7 @@ export class BrowserEditingStore {
           (surfaceId && pending.target.surfaceId !== surfaceId)
         )
           continue;
-        const reason = message.error.reason;
-        if (reason === "unsupported-operation" || reason === "target-suspended")
-          this.#take(id)?.resolve({ outcome: "empty", items: [] });
-        else if (reason === "too-large") {
-          this.#count(this.diagnostics.clipboard, "too-large");
-          this.#take(id)?.resolve({ outcome: "too-large", items: [] });
-        } else if (
-          reason === "stale-document" ||
-          reason === "not-actionable" ||
-          reason === "forbidden" ||
-          reason === "stale-input" ||
-          reason === "dialog-open" ||
-          reason === "target-closed"
-        ) {
-          this.#count(this.diagnostics.clipboard, "refused");
-          this.#take(id)?.resolve({ outcome: "refused", items: [] });
-        } else {
-          this.#fail(
-            id,
-            new Error(message.error.message || "The remote clipboard operation failed."),
-          );
-        }
+        this.#take(id)?.resolve({ outcome: "empty", items: [] });
       }
       return;
     }
@@ -733,9 +729,21 @@ export class BrowserEditingStore {
       }
     }
   }
+  #carrierEnded(id: string, message: string): void {
+    const pending = this.#pending.get(id);
+    if (!pending) return;
+    // P1 (AGENTS.md rule 4): a paste already sent onto the carrier may have landed; never
+    // report it as "refused" or invite a blind second paste.
+    if (pending.kind === "paste" && pending.dispatched) {
+      this.#count(this.diagnostics.clipboard, "unknown");
+      this.#take(id)?.resolve({ outcome: "unknown", items: [] });
+      return;
+    }
+    this.#fail(id, new Error(message));
+  }
   #cancel(target: Target, message: string): void {
     for (const [id, pending] of this.#pending)
-      if (pending.target === target) this.#fail(id, new Error(message));
+      if (pending.target === target) this.#carrierEnded(id, message);
   }
   disconnect(sessionId: string, surfaceId?: string): void {
     if (!surfaceId) this.#versions.delete(sessionId);
@@ -747,7 +755,7 @@ export class BrowserEditingStore {
   }
   dispose(): void {
     for (const id of this.#pending.keys())
-      this.#fail(id, new Error("The browser viewer disconnected."));
+      this.#carrierEnded(id, "The browser viewer disconnected.");
     this.#targets.clear();
     this.#versions.clear();
   }
@@ -793,6 +801,7 @@ export class BrowserEditingStore {
           surfaceId,
           text: operation.edit.text,
           contextId: operation.edit.contextId,
+          ...(operation.follows ? { follows: true } : {}),
         });
         return;
       case "compose":

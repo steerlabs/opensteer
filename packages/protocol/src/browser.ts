@@ -694,6 +694,8 @@ const BaselineBrowserClientMessageSchema = z
       targeted: z.boolean().optional(),
       surfaceId: BrowserSurfaceIdSchema,
       edit: EditingTextEditSchema,
+      /** P2 (S2): an insertion over a selection follows its selection-removal edit as one unit. */
+      follows: z.literal(true).optional(),
     }),
     /**
      * Editing sessions only. The person's copy or cut: the runtime performs its

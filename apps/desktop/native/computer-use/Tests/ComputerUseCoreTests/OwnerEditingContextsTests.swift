@@ -62,11 +62,43 @@ final class OwnerEditingContextsTests: XCTestCase {
           }
           let namedMatches = admits["namedMatches"] as? Bool ?? true
           let exactNamed = admits["exactNamed"] as? Bool ?? false
+          let collapsed = admits["collapsed"] as? Bool ?? true
           let expected = try XCTUnwrap(step["is"] as? Bool, name)
           XCTAssertEqual(
-            contexts.admits(contextId, kind: kind, namedMatches: namedMatches, exactNamed: exactNamed),
+            contexts.admits(
+              contextId,
+              kind: kind,
+              namedMatches: namedMatches,
+              exactNamed: exactNamed,
+              collapsed: collapsed),
             expected,
-            "\(name): admits(\(key), \(kindName), namedMatches=\(namedMatches), exactNamed=\(exactNamed))")
+            "\(name): admits(\(key), \(kindName), namedMatches=\(namedMatches), exactNamed=\(exactNamed), collapsed=\(collapsed))")
+        } else if let group = step["dependentGroup"] as? [String: Any] {
+          let key = try XCTUnwrap(group["context"] as? String, name)
+          let contextId = try XCTUnwrap(saved[key], "\(name): unknown context \(key)")
+          var text = try XCTUnwrap(group["initial"] as? String, name)
+          let ops = try XCTUnwrap(group["operations"] as? [[String: Any]], name)
+          let independent = try XCTUnwrap(group["independent"] as? [String: Any], name)
+          // P2: a dependent batch runs in order and stops at its first refusal; an independent
+          // edit afterward still applies under the same field.
+          func apply(_ op: [String: Any]) throws -> Bool {
+            let kindName = try XCTUnwrap(op["kind"] as? String, name)
+            let kind: OwnerEditingContexts.AdmissionKind =
+              kindName == "named" ? .named : kindName == "exact" ? .exact : .relative
+            let namedMatches = op["namedMatches"] as? Bool ?? true
+            guard contexts.admits(contextId, kind: kind, namedMatches: namedMatches, collapsed: true) else {
+              if kind == .named { contexts.mismatch() }
+              return false
+            }
+            if let append = op["text"] as? String { text += append }
+            return true
+          }
+          for op in ops {
+            if !(try apply(op)) { break }
+          }
+          XCTAssertEqual(text, try XCTUnwrap(step["expectAfterGroup"] as? String, name), name)
+          XCTAssertTrue(try apply(independent), name)
+          XCTAssertEqual(text, try XCTUnwrap(step["expectAfterIndependent"] as? String, name), name)
         } else if step["mismatch"] != nil {
           let before = contexts.current
           contexts.mismatch()

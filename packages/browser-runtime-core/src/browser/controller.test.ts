@@ -4235,6 +4235,110 @@ describe("BrowserController", () => {
         sink.messages.find((m) => m.type === "clipboard.result" && m.operationId === liveCutOp),
       ).toMatchObject({ outcome: "refused" });
       expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(0);
+
+      // 5) P2 (S2): typing over a selection (input.text with follows: true) is refused when its
+      // preceding selection removal was refused under the same context.
+      clipboardOpenHook = null;
+      liveOk = true;
+      const beforeS2 = sink.messages.filter((message) => message.type === "browser.editing").at(-1);
+      if (beforeS2?.type !== "browser.editing") throw new Error("Missing context for S2");
+      const s2Ctx = beforeS2.context.contextId;
+      await controller.handle({
+        type: "input.text",
+        surfaceId: active.surface.id,
+        edit: { contextId: s2Ctx, before: "world", after: "", text: "" },
+        producerId: producer,
+      });
+      await controller.handle({
+        type: "input.text",
+        surfaceId: active.surface.id,
+        edit: { contextId: s2Ctx, before: "", after: "", text: "X" },
+        follows: true,
+        producerId: producer,
+      });
+      expect(commandsNamed("Input.insertText", page)).toHaveLength(0);
+
+      // 6) P3 (S1): under an earlier context of the same field when the live selection is NOT
+      // collapsed, relative insertion, deleteBackward, paste, and cut are all refused.
+      const earlierCtx = sink.messages
+        .filter((message) => message.type === "browser.editing")
+        .at(-1);
+      if (earlierCtx?.type !== "browser.editing") throw new Error("Missing earlierCtx");
+      cdp.emit("Runtime.bindingCalled", {
+        executionContextId: 7,
+        name: world.name,
+        payload: JSON.stringify({
+          fieldId: "1:control:text:false:false",
+          selectionRevision: 2,
+          field: { kind: "text", multiline: false, sensitive: false },
+          caret: null,
+        }),
+      });
+      await flushMicrotasks();
+      cdp.responses.set("Runtime.evaluate", (params?: Record<string, unknown>) => {
+        const expr = String(params?.expression ?? "");
+        if (
+          expr.includes("prepare(") ||
+          expr.includes("prepareClipboard(") ||
+          expr.includes("beginInput(")
+        ) {
+          if (expr.includes('"requireCollapsed":true') || expr.includes('"earlier":true')) {
+            return { result: { value: { ok: false, reason: "selection-not-collapsed" } } };
+          }
+          return { result: { value: { ok: true } } };
+        }
+        return { result: { value: false } };
+      });
+      const insertsBefore = commandsNamed("Input.insertText", page).length;
+      const keysBefore = commandsNamed("Input.dispatchKeyEvent", page).length;
+      await controller.handle({
+        type: "input.text",
+        surfaceId: active.surface.id,
+        edit: { contextId: earlierCtx.context.contextId, before: "", after: "", text: "a" },
+        producerId: producer,
+      });
+      await controller.handle({
+        type: "input.command",
+        surfaceId: active.surface.id,
+        command: "deleteBackward",
+        contextId: earlierCtx.context.contextId,
+        producerId: producer,
+      });
+      const nonCollapsedPasteOp = crypto.randomUUID();
+      const pasteRefused = controller.handle({
+        type: "clipboard.paste-data",
+        surfaceId: active.surface.id,
+        operationId: nonCollapsedPasteOp,
+        items: [{ type: "text/plain", size: data.length }],
+        contextId: earlierCtx.context.contextId,
+        producerId: producer,
+      });
+      await controller.handle({
+        type: "clipboard.part",
+        part: { operationId: nonCollapsedPasteOp, index: 0, data: data.toString("base64") },
+        producerId: producer,
+      });
+      await pasteRefused;
+      const nonCollapsedCutOp = crypto.randomUUID();
+      await controller.handle({
+        type: "clipboard.cut",
+        surfaceId: active.surface.id,
+        operationId: nonCollapsedCutOp,
+        contextId: earlierCtx.context.contextId,
+        producerId: producer,
+      });
+      expect(commandsNamed("Input.insertText", page)).toHaveLength(insertsBefore);
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(keysBefore);
+      expect(
+        sink.messages.find(
+          (m) => m.type === "clipboard.result" && m.operationId === nonCollapsedPasteOp,
+        ),
+      ).toMatchObject({ outcome: "refused" });
+      expect(
+        sink.messages.find(
+          (m) => m.type === "clipboard.result" && m.operationId === nonCollapsedCutOp,
+        ),
+      ).toMatchObject({ outcome: "refused" });
     } finally {
       await controller.close();
       await ledger.close();

@@ -1312,6 +1312,46 @@ describe("display editing receipt adapter", () => {
     await rejected;
     editing.dispose();
   });
+  it("sends dependent operations (removal, compensating moves, replacement paste/edit) in one atomic display.input batch and never splits them", async () => {
+    const { socket, editing } = await editingFixture();
+    const contextId = "00000000-0000-4000-8000-000000000001";
+    const batch = editing.sendBatch([
+      { kind: "edit", edit: { contextId, before: "world", after: "", text: "" } },
+      { kind: "command", command: "moveBackward", contextId, follows: true },
+      {
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: new TextEncoder().encode("there") }],
+        contextId,
+        follows: true,
+      },
+    ]);
+    const sent = socket.messages("display.input");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      events: [
+        { kind: "edit", edit: { contextId, before: "world", after: "", text: "" } },
+        { kind: "command", command: "moveBackward", contextId },
+        { kind: "paste", text: "there", contextId },
+      ],
+    });
+    socket.json({ type: "display.input.result", sequence: 0, outcome: "stale", reason: "stale" });
+    await expect(batch).rejects.toThrow("changed");
+    // A dependent group whose paste exceeds one batch (64 events) is refused whole, never split.
+    const huge = "a".repeat(65 * 4096);
+    await expect(
+      editing.sendBatch([
+        { kind: "edit", edit: { contextId, before: "world", after: "", text: "" } },
+        {
+          kind: "paste",
+          items: [{ type: "text/plain", bytes: new TextEncoder().encode(huge) }],
+          contextId,
+          follows: true,
+        },
+      ]),
+    ).rejects.toThrow("large");
+    expect(socket.messages("display.input")).toHaveLength(1);
+    editing.dispose();
+  });
 });
 
 describe("phone power and explicit-open intent", () => {

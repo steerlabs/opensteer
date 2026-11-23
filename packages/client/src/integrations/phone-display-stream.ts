@@ -119,6 +119,7 @@ export interface DisplayLease {
     geometry: number,
     events: readonly DisplayInputEvent[],
     onSequence?: (sequence: number) => void,
+    options?: { readonly atomic?: boolean },
   ): boolean;
   /**
    * The decoder lost its state: asks the Host for a decodable start, and
@@ -443,9 +444,9 @@ export class DisplayStreams {
         if (!released && (current.holder === null || current.holder === lease))
           this.#resetInput(current);
       },
-      input: (geometry, events, onSequence) => {
+      input: (geometry, events, onSequence, options) => {
         if (released || (current.holder !== null && current.holder !== lease)) return false;
-        const sent = this.#input(current, geometry, events, onSequence);
+        const sent = this.#input(current, geometry, events, onSequence, options);
         if (!sent) return false;
         for (const event of events) trackHeldDisplayInput(current.held, event);
         current.holder = current.held.size > 0 ? lease : null;
@@ -828,6 +829,7 @@ export class DisplayStreams {
     geometry: number,
     events: readonly DisplayInputEvent[],
     onSequence?: (sequence: number) => void,
+    options?: { readonly atomic?: boolean },
   ): boolean {
     const connection = entry.connection;
     if (
@@ -880,6 +882,8 @@ export class DisplayStreams {
         candidate.length > maxDisplayInputEvents ||
         new TextEncoder().encode(serialize(candidate)).byteLength > maxInputBytes
       ) {
+        if (options?.atomic)
+          throw new Error("Dependent display input batch exceeds its single-batch limit.");
         if (batch.length === 0) throw new Error("Display input event exceeds its byte limit.");
         batches.push(serialize(batch));
         batch = [event];
