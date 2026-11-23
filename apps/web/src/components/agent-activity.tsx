@@ -63,6 +63,9 @@ import {
   formatClockTime,
   groupTranscriptEntries,
   hasRunOutcome,
+  isRunTerminationUnproven,
+  runOutcomeMessage,
+  runOutcomeTitle,
   silentRunLabel,
   isTerminalRunEntryStatus,
   incomingMessagePreview,
@@ -3104,15 +3107,17 @@ function RunOutcome({
     <RunRestart>Restarted to include your message</RunRestart>
   ) : null;
   if (run.status === "failed") {
+    const message = runOutcomeMessage(run);
+    const unproven = isRunTerminationUnproven(run);
     return (
       <>
         <div className="run-failure" role="alert">
           <span className="run-failure__title">
             <Icon name="alert-circle" />
-            {conversation ? "Opensteer couldn’t finish" : "Run failed"}
+            {runOutcomeTitle(run, { conversation })}
           </span>
-          {run.error ? <p className="run-failure__message">{run.error.message}</p> : null}
-          {run.error?.retryable ? (
+          {message ? <p className="run-failure__message">{message}</p> : null}
+          {run.error?.retryable && !unproven ? (
             <p className="action-note">This looks temporary — sending again may work.</p>
           ) : null}
         </div>

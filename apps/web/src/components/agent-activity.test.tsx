@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it } from "vitest";
-import { createId } from "@opensteer/core";
+import { createId, runTerminationUnprovenCode } from "@opensteer/core";
 import type { MessageEntry, RunEntry, ToolEntry } from "@opensteer/client/host";
 import { AgentTranscript } from "./agent-activity.js";
 
@@ -224,6 +224,28 @@ describe("AgentTranscript", () => {
     );
     expect(markup.indexOf("All tests pass.")).toBeLessThan(markup.indexOf("run-failure"));
     expect(markup).toContain("The Runner disconnected.");
+  });
+
+  it("says stopping could not be confirmed instead of Run failed when termination is unproven", () => {
+    const unproven = run({
+      error: {
+        code: runTerminationUnprovenCode,
+        message: "The Runner could not verify that all Run processes stopped.",
+        retryable: false,
+      },
+      status: "failed",
+    });
+    for (const conversation of [false, true]) {
+      const markup = renderToStaticMarkup(
+        <MemoryRouter>
+          <AgentTranscript conversation={conversation} entries={[unproven]} />
+        </MemoryRouter>,
+      );
+      expect(markup).not.toContain("Run failed");
+      expect(markup).not.toContain("Opensteer couldn’t finish");
+      expect(markup).toContain("Couldn’t confirm this stopped");
+      expect(markup).toContain("may still be running on that device");
+    }
   });
 });
 

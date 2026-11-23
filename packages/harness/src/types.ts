@@ -533,6 +533,12 @@ export interface HarnessAdapter {
    * serves a new session. Each such process ends once its sessions have.
    */
   recycle?(): void;
+  /**
+   * Ends any shared engine process this adapter owns when a session's stop
+   * could not prove its work gone. Resolves only once every such process has
+   * exited, which is the evidence the Runner waits on.
+   */
+  retireSharedEngine?(reason: string): Promise<void>;
   close(): Promise<void>;
 }
 

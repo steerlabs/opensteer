@@ -807,6 +807,19 @@ describe("a task's turn", () => {
     const failed = turns([run({ status: "failed" }), note, command("ls")])[0]!;
     expect(turnWords(failed)).toEqual([note]);
 
+    const unproven = activityFeedPresentation(
+      run({
+        error: {
+          code: "execution_termination_unproven",
+          message: "The Runner could not verify that all Run processes stopped.",
+          retryable: false,
+        },
+        status: "failed",
+      }),
+    );
+    expect(unproven.label).toBe("Couldn’t confirm this stopped");
+    expect(unproven.detail).toContain("may still be running on that device");
+
     const joined = groupTranscriptEntries([
       run({ status: "running" }),
       command("ls"),

@@ -4229,6 +4229,116 @@ describe("RunnerRuntime", () => {
       }
     }, 15_000);
 
+    it("retires the shared engine when session.stop() rejects and releases the task once the retired process exits", async () => {
+      let failStop!: (error: Error) => void;
+      const failed = new Promise<void>((_resolve, reject) => {
+        failStop = reject;
+      });
+      failed.catch(() => undefined);
+      const retired = deferred<void>();
+      let retireCalls = 0;
+      const driver = new FakeHarnessDriver("test-driver", () => new SharedEngineSession(failed));
+      const create = driver.create.bind(driver);
+      driver.create = async (input) => {
+        const adapter = await create(input);
+        return {
+          ...adapter,
+          capabilities: { ...adapter.capabilities, sharedEngineProcess: true },
+          retireSharedEngine: async () => {
+            retireCalls += 1;
+            await retired.promise;
+          },
+        };
+      };
+      const registry = new HarnessRegistry();
+      registry.registerDriver(driver);
+      const environmentId = createId("environment");
+      const runtime = runtimeWithLeaseGrants({
+        nativeFsHelperBinary: testNativeFsHelperBinary,
+        nodeExecutable: process.execPath,
+        agentSkills: testAgentSkills,
+        plugins: noPlugins,
+        bootId: "boot-test",
+        browserHarnessExecutable: testBrowserHarnessExecutable,
+        deploymentShape: testDeploymentShape,
+        environmentId,
+        harnesses: registry,
+        maxConcurrentRuns: 2,
+        dataDirectory: dirname(testPrivateStateRoot),
+        privateStateDirectory: testPrivateStateRoot,
+        projectContinuationIdentity,
+        agentHome: {
+          folder: async ({ path }: { readonly path: string }) => path,
+          prepare: async () => ({ instructions: undefined, path: "/runner/runs/test/workspace" }),
+        },
+        containment: new ExecutionContainment({
+          bootId: "boot-test",
+          dataDirectory: dirname(testPrivateStateRoot),
+          listProcesses: async () => [],
+        }),
+        stopTimings: { graceMs: 20, sharedEngineSettleMs: 50 },
+      });
+      const messages: RunnerOperationalReport[] = [];
+      const sink: RunnerMessageSink = {
+        send: async (message) => {
+          messages.push(message);
+        },
+      };
+      const ends = () =>
+        messages.flatMap((message) =>
+          message.type === "runner.event" &&
+          (message.event.type === "run.interrupted" ||
+            message.event.type === "run.failed" ||
+            message.event.type === "run.completed")
+            ? [message.event]
+            : [],
+        );
+      const execute = executeCommand(environmentId);
+      await reconcile(registry, execute);
+      try {
+        await runtime.handleCommand(execute, sink);
+        await waitUntil(() => driver.contexts.length === 1);
+        failStop(new Error("Codex session stop rejected"));
+        await runtime.handleCommand(stopOf(execute), sink);
+        await waitUntil(() => ends().length === 1);
+        expect(retireCalls).toBe(1);
+        expect(ends()[0]).toMatchObject({
+          type: "run.failed",
+          data: { code: runTerminationUnprovenCode },
+        });
+        await waitUntil(() => runtime.activeRunIds().length === 0);
+        // Held while the retired server process has not exited yet.
+        expect(await runtime.handleCommand(nextTurn(execute), sink)).toMatchObject({
+          status: "rejected",
+        });
+        expect(
+          await runtime.handleCommand(
+            { ...stopOf(execute), bindingGeneration: execute.context.bindingGeneration },
+            sink,
+          ),
+        ).toMatchObject({ status: "rejected" });
+
+        // Process exit is the evidence: Stop now confirms the end and the task is free.
+        retired.resolve();
+        await vi.waitFor(async () =>
+          expect(
+            await runtime.handleCommand(
+              { ...stopOf(execute), bindingGeneration: execute.context.bindingGeneration },
+              sink,
+            ),
+          ).toEqual({ status: "accepted" }),
+        );
+        await vi.waitFor(async () =>
+          expect(await runtime.handleCommand(nextTurn(execute), sink)).toEqual({
+            status: "accepted",
+          }),
+        );
+      } finally {
+        retired.resolve();
+        await runtime.close();
+      }
+    });
+
     it("says the end is unverified and holds the task when the stop outlasts its bound", async () => {
       const stopped = deferred<void>();
       const f = sharedStopFixture({

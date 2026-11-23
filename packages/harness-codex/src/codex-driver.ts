@@ -852,6 +852,8 @@ class CodexHarnessAdapter implements HarnessAdapter {
   readonly #servers = new Set<CodexAppServer>();
   /** Starts in flight, which closing the adapter cancels and waits out. */
   readonly #starting = new Set<Promise<unknown>>();
+  /** Shared app-server starts in flight, which retiring waits out and ends. */
+  readonly #sharedStarting = new Set<Promise<CodexAppServer>>();
   /** Ends every process the adapter starts, the account's shared one included. */
   readonly #lifetime = new AbortController();
   /** The account's shared app-server, or its start in flight, and what it was started with. */
@@ -876,6 +878,31 @@ class CodexHarnessAdapter implements HarnessAdapter {
     this.#shared = undefined;
     void shared?.server.then((server) => server.recycle()).catch(() => undefined);
     for (const server of this.#servers) server.recycle();
+  }
+
+  async retireSharedEngine(reason: string): Promise<void> {
+    const shared = this.#shared;
+    this.#shared = undefined;
+    const failure = new OpensteerError({
+      code: "harness_error",
+      message: reason,
+      retryable: true,
+    });
+    const pendingStarts = [...this.#sharedStarting];
+    if (shared) pendingStarts.push(shared.server);
+    const servers = new Set<CodexAppServer>(
+      [...this.#servers].filter((server) => !server.dedicated),
+    );
+    const started = await Promise.allSettled(pendingStarts);
+    for (const result of started) {
+      if (result.status === "fulfilled" && !result.value.dedicated) servers.add(result.value);
+    }
+    for (const server of this.#servers) {
+      if (!server.dedicated) servers.add(server);
+    }
+    await Promise.all(
+      [...servers].map((server) => server.retire(failure, { othersInterrupted: true })),
+    );
   }
 
   async generateText({
@@ -1114,6 +1141,11 @@ class CodexHarnessAdapter implements HarnessAdapter {
     }
     // The account's process outlives the session that asked for it.
     const started = this.#startServer(context, shared, this.#lifetime.signal);
+    this.#sharedStarting.add(started);
+    void started.then(
+      () => this.#sharedStarting.delete(started),
+      () => this.#sharedStarting.delete(started),
+    );
     const entry = { key, server: started };
     this.#shared = entry;
     started.catch(() => {
@@ -2034,7 +2066,14 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     try {
       if (server?.dedicated) await server.close();
       else if (server) {
-        await this.#unload(server, active);
+        try {
+          await this.#unload(server, active);
+        } catch (error) {
+          await server.retire(
+            toHarnessError(error, "Codex session stop failed, so its app-server was ended"),
+            { othersInterrupted: true },
+          );
+        }
         // Its conversation closed, or its server is gone: the turn is over.
         if (active && !active.terminal) this.#publishTerminal(active, "interrupted");
       }

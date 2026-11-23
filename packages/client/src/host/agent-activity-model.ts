@@ -3099,6 +3099,28 @@ function clipText(value: string): string {
   return value.length <= max ? value : `…${value.slice(value.length - max)}`;
 }
 
+export const runTerminationUnprovenCode = "execution_termination_unproven";
+
+export function isRunTerminationUnproven(run: Pick<RunEntry, "error" | "status">): boolean {
+  return run.status === "failed" && run.error?.code === runTerminationUnprovenCode;
+}
+
+export function runOutcomeTitle(
+  run: Pick<RunEntry, "error" | "status">,
+  options?: { readonly conversation?: boolean; readonly mobile?: boolean },
+): string {
+  if (isRunTerminationUnproven(run)) return "Couldn’t confirm this stopped";
+  if (options?.conversation === true) return "Opensteer couldn’t finish";
+  return options?.mobile === true ? "This run failed" : "Run failed";
+}
+
+export function runOutcomeMessage(run: Pick<RunEntry, "error" | "status">): string | null {
+  if (isRunTerminationUnproven(run)) {
+    return "Stopping could not be confirmed. Something from this Run may still be running on that device.";
+  }
+  return run.error?.message ?? null;
+}
+
 interface ActivityFeedPresentation {
   detail: string;
   detailKind: "code" | "prose";
@@ -3110,10 +3132,10 @@ interface ActivityFeedPresentation {
 export function activityFeedPresentation(entry: ActivityFeedEntry): ActivityFeedPresentation {
   if (entry.kind === "run") {
     return {
-      detail: entry.error?.message ?? "",
+      detail: runOutcomeMessage(entry) ?? "",
       detailKind: "prose",
       icon: "alert-circle",
-      label: "Run failed",
+      label: runOutcomeTitle(entry),
       marker: "failed",
     };
   }

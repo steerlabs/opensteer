@@ -469,6 +469,26 @@ describe("native transcript prose", () => {
     expect(container.textContent).not.toContain("Execution details");
   });
 
+  it("says stopping could not be confirmed instead of failed when termination is unproven", () => {
+    const unproven: RunEntry = {
+      ...run,
+      error: {
+        code: "execution_termination_unproven",
+        message: "The Runner could not verify that all Run processes stopped.",
+        retryable: false,
+      },
+      status: "failed",
+    };
+    for (const conversation of [false, true]) {
+      const { container, render } = setup(conversation);
+      render([unproven]);
+      expect(container.textContent).not.toContain("This run failed");
+      expect(container.textContent).not.toContain("Opensteer couldn’t finish");
+      expect(container.textContent).toContain("Couldn’t confirm this stopped");
+      expect(container.textContent).toContain("may still be running on that device");
+    }
+  });
+
   it("shows Opensteer typing while it answers, with nothing under it to press", () => {
     const { container, render } = setup(true);
     render([run, note, { ...command, completedAt: null, state: "running" }]);

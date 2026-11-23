@@ -14,6 +14,9 @@ import {
   conversationTurn,
   formatClockTime,
   hasRunOutcome,
+  isRunTerminationUnproven,
+  runOutcomeMessage,
+  runOutcomeTitle,
   silentRunLabel,
   incomingMessagePreview,
   messageAuthorName,
@@ -1876,18 +1879,20 @@ function RunOutcome(props: {
     </AppText>
   ) : null;
   if (run.status === "failed") {
+    const message = runOutcomeMessage(run);
+    const unproven = isRunTerminationUnproven(run);
     return (
       <>
         <View accessibilityRole="alert" style={styles.failure}>
           <AppText role="secondaryMedium" tone="danger">
-            {props.conversation === true ? "Opensteer couldn’t finish" : "This run failed"}
+            {runOutcomeTitle(run, { conversation: props.conversation, mobile: true })}
           </AppText>
-          {run.error === null ? null : (
+          {message === null ? null : (
             <AppText role="secondary" selectable tone="soft">
-              {run.error.message}
+              {message}
             </AppText>
           )}
-          {run.error?.retryable === true ? (
+          {run.error?.retryable === true && !unproven ? (
             <AppText role="caption" tone="muted">
               This looks temporary. Sending again may work.
             </AppText>
