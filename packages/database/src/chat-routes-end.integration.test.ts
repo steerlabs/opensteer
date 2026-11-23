@@ -4,7 +4,7 @@ import { expect } from "vitest";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import { chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
 import { migrateToLatest } from "./migrations.js";
-import { chatEndedWithTheUpdate, lineagePersonalContext } from "./resource-access.js";
+import { chatEndedMessage, lineagePersonalContext } from "./resource-access.js";
 import type { DatabaseSchema } from "./schema.js";
 import {
   describeStore,
@@ -201,7 +201,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
         policy: "queue",
         idempotencyKey: "after-the-update",
       }),
-    ).rejects.toMatchObject({ code: "forbidden", message: chatEndedWithTheUpdate });
+    ).rejects.toMatchObject({ code: "forbidden", message: chatEndedMessage });
     // The person's own task goes on.
     await expect(
       store.enqueueThreadInput({

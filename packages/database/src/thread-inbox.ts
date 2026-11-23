@@ -1898,11 +1898,19 @@ export async function settleSteer(
             updatedAt: now,
           }
         : outcome === "failed"
-          ? observed.policy === "queue" || reasonCode === "request-pending"
+          ? // A message for a Run that has ended (as one held for a paused chat may find it)
+            // goes back to its task's queue, to start the next Run.
+            observed.policy === "queue" ||
+            reasonCode === "request-pending" ||
+            !nonTerminalRunStatuses.some((status) => status === run.status)
             ? {
                 cancelReason: null,
                 state: "pending",
-                policy: reasonCode === "request-pending" ? "queue" : observed.policy,
+                policy:
+                  reasonCode === "request-pending" ||
+                  !nonTerminalRunStatuses.some((status) => status === run.status)
+                    ? "queue"
+                    : observed.policy,
                 runId: null,
                 steerCommandId: null,
                 updatedAt: now,

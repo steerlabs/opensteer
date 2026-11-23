@@ -1,7 +1,7 @@
 import { runHasBrowserPages } from "./browser-capability.js";
 import { promptCacheExpiresAt } from "@opensteer/core";
 import {
-  chatEndedWithTheUpdate,
+  chatEndedMessage,
   connectionIsWaiting,
   triggerChatIsWaiting,
   dispatchNodeStop,
@@ -814,7 +814,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     };
     if (command.authoritySource.kind === "channel-ingress") {
       // Queued by a route, which ended with the update (0053): it never runs.
-      throw new CommandDispatchError(chatEndedWithTheUpdate, "failed");
+      throw new CommandDispatchError(chatEndedMessage, "failed");
     } else {
       await this.#runners.dispatch(runnerCommand, signal, dispatch);
     }
@@ -1164,7 +1164,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           }
         });
       if (command.authoritySource.kind === "channel-ingress")
-        throw new CommandDispatchError(chatEndedWithTheUpdate, "failed");
+        throw new CommandDispatchError(chatEndedMessage, "failed");
       await this.#runners.dispatch(runnerCommand, signal, beforeSend ? { beforeSend } : undefined);
     } catch (error) {
       if (!(error instanceof CommandDispatchError) || error.disposition !== "failed") throw error;
