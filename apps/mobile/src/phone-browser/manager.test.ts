@@ -2024,3 +2024,35 @@ test("Android CDP lists sleeping surfaces and resumes only this attachment's ses
     type: "cdp.error",
   });
 });
+
+test("P5 (S3): phone browser refuses text-naming input.text edits with non-empty before or after", async () => {
+  const fixture = await setup();
+  await fixture.present();
+  const contextId = uuid();
+  await fixture.native.emit({
+    ...fixture.reference(),
+    type: "editing",
+    channelId: fixture.currentEnvelope().channelId,
+    context: {
+      contextId,
+      field: { kind: "text", multiline: false, sensitive: false },
+      caret: null,
+    },
+  });
+  let applied = 0;
+  const originalApply = fixture.native.applyViewerInput.bind(fixture.native);
+  fixture.native.applyViewerInput = async (input) => {
+    applied += 1;
+    return originalApply(input);
+  };
+  await fixture.client({
+    type: "input.text",
+    surfaceId: fixture.surfaceId,
+    edit: { contextId, before: "teh", after: "", text: "the" },
+  });
+  expect(fixture.server().at(-1)).toMatchObject({
+    type: "browser.error",
+    error: { reason: "unsupported-operation" },
+  });
+  expect(applied).toBe(0);
+});

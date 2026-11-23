@@ -687,7 +687,8 @@ extension WireJourney {
     try require(moved["outcome"] as? String == "dispatched" && afterMoved == "q漢X字!",
       "An insertion under an earlier context of the same field did not land at the live caret")
     let restored = try await input([["kind": "edit", "edit": ["contextId": try await context(), "text": "", "before": "X", "after": ""]]])
-    try require(restored["outcome"] as? String == "dispatched" && (try await note()) == "q漢字!",
+    let afterRestored = try await note()
+    try require(restored["outcome"] as? String == "dispatched" && afterRestored == "q漢字!",
       "Restoring after external-caret insertion failed")
     passed()
     start("other-field-insertion-refused")
@@ -713,10 +714,27 @@ extension WireJourney {
     try require(replace["outcome"] as? String == "dispatched", "Verified replacement was refused")
     try require(try await note() == "qé!", "Verified middle replacement changed the prefix or suffix")
     passed()
+    start("earlier-context-replacement")
+    // S9: Mac-specific Rule 3 — a text-naming replacement under an earlier context of the same
+    // field still applies when its named text is present around the collapsed caret.
+    let earlierReplaceCtx = try await context(sensitive: false)
+    try await Contracts.command(out, "owner-end")
+    let afterEndCtx = try await context(sensitive: false, excluding: earlierReplaceCtx)
+    try require(afterEndCtx != earlierReplaceCtx, "External caret move to end did not rotate context")
+    let earlierReplace = try await input([["kind": "edit", "edit": ["contextId": earlierReplaceCtx, "text": "?", "before": "!", "after": ""]]])
+    let afterEarlierReplace = try await note()
+    try require(earlierReplace["outcome"] as? String == "dispatched" && afterEarlierReplace == "qé?",
+      "Verified replacement under an earlier context of the same field did not apply")
+    let restoredBang = try await input([["kind": "edit", "edit": ["contextId": try await context(sensitive: false), "text": "!", "before": "?", "after": ""]]])
+    let afterRestoredBang = try await note()
+    try require(restoredBang["outcome"] as? String == "dispatched" && afterRestoredBang == "qé!",
+      "Restoring text after earlier-context replacement failed")
+    passed()
     start("replacement-text-gone")
     // Lead's ruling: a replacement whose named text is no longer in the field is refused.
     let gone = try await input([["kind": "edit", "edit": ["contextId": beforeReplace, "text": "BAD", "before": "漢", "after": "字"]]])
-    try require(gone["outcome"] as? String == "stale" && (try await note()) == "qé!",
+    let afterGone = try await note()
+    try require(gone["outcome"] as? String == "stale" && afterGone == "qé!",
       "A replacement whose named text is gone was not refused or changed the field")
     passed()
     start("stale-replacement")

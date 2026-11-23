@@ -270,7 +270,10 @@ export class PageEditingObserver {
         }
       },
     );
-    this.#publish = publish;
+    this.#publish = (context) => {
+      if (context.contextId === this.#admission.current) this.#admission.markPublished();
+      publish(context);
+    };
     this.#menu = menu;
     cdp.on("Runtime.bindingCalled", this.#onBinding);
     cdp.on("Runtime.executionContextCreated", this.#onContext);
@@ -357,7 +360,8 @@ export class PageEditingObserver {
     // could find changed. A replacement or a composition says what it replaces.
     const insertion =
       !composition && edit.text.length > 0 && !edit.before?.length && !edit.after?.length;
-    if (!focus) return this.#stale();
+    // S6 (Rule 5): a refusal when no field is focused rotates nothing.
+    if (!focus) return false;
     // P2 (S2): an insertion over a selection follows its selection removal as one unit.
     if (follows && this.#refusedFrom.get(producer) === edit.contextId) return false;
     // Docs/editing-admission.md: insertions are relative (Rule 2, any context of the same field);
@@ -547,6 +551,21 @@ export class PageEditingObserver {
     )
       return false;
     if (!focus) {
+      // S7: even when the observer believes no field is focused, verify live in-page that no
+      // editable field took focus before dispatching a page-level command.
+      for (const execContext of this.#contexts.keys()) {
+        const began = await this.#cdp
+          .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+            contextId: execContext,
+            expression: `globalThis.editingOwner?.beginInput(${JSON.stringify({ fieldId: null, requireCollapsed: false })})`,
+            returnByValue: true,
+            silent: true,
+          })
+          .catch(() => null);
+        const parsedBegin = prepared.safeParse(began?.result?.value);
+        if (!parsedBegin.success || !parsedBegin.data.ok) return false;
+      }
+      if (this.#focused !== null || !admitted()) return false;
       await action();
       return true;
     }
@@ -1230,6 +1249,11 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
   const beginInput = (request) => {
     if (request) {
       const element = active(), kind = mechanism(element);
+      if (request.fieldId === null) {
+        if (document.hasFocus() && kind && !element.disabled && !element.readOnly)
+          return { ok: false, reason: "focus-changed" };
+        return { ok: true };
+      }
       if (!kind || !document.hasFocus() || element.disabled || element.readOnly || fieldKey(element) !== request.fieldId)
         return { ok: false, reason: "focus-changed" };
       if (request.requireCollapsed && !isCollapsedSelection(element, kind))

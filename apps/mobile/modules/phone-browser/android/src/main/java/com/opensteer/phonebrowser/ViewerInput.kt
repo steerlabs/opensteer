@@ -136,7 +136,6 @@ internal class ViewerInput(private val pool: PhoneBrowserPool, private val emit:
         "clipboard.paste" -> {
           if (message.getString("contextId") != tab.contextId) throw BrowserFailure("stale-document")
           val connection = connection(tab)
-          if (message.getString("contextId") != tab.contextId) throw BrowserFailure("stale-document")
           val text = message.getString("text")
           if (text.length > 100000) throw BrowserFailure("too-large")
           if (!connection.commitText(text, 1)) throw BrowserFailure("outcome-unknown")

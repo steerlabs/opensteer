@@ -1,18 +1,33 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  caretRelativeEditingCommands,
   EditingContexts,
   namedTextWaitDecision,
   type EditingAdmissionKind,
   type EditingFieldIdentity,
+  type EditingObservedState,
 } from "./editing.js";
 
 type Step =
   | {
       observe: { field: EditingFieldIdentity | null; changed: boolean };
       save?: string;
+      publish?: boolean;
       expectChanged?: boolean;
     }
+  | {
+      observeState: {
+        field: EditingFieldIdentity | null;
+        state: EditingObservedState | null;
+        forceChanged?: boolean;
+      };
+      save?: string;
+      publish?: boolean;
+      expectChanged?: boolean;
+    }
+  | { expectOwnEffect: EditingObservedState }
+  | { publish: true }
   | {
       admits: {
         context: string;
@@ -40,9 +55,10 @@ type Step =
       expectAfterGroup: string;
       expectAfterIndependent: string;
     }
-  | { mismatch: true; save?: string; expectChanged?: boolean }
-  | { reset: true; save?: string; expectChanged?: boolean }
+  | { mismatch: true; save?: string; publish?: boolean; expectChanged?: boolean }
+  | { reset: true; save?: string; publish?: boolean; expectChanged?: boolean }
   | { rotateSame: number }
+  | { rotateUnpublished: number }
   | {
       wait: { sameField: boolean; matches: boolean; waited: number };
       is: "apply" | "wait" | "refuse-mismatch" | "refuse-field";
@@ -54,6 +70,7 @@ const fixture = JSON.parse(
   version: number;
   kept: number;
   namedTextWaitSeconds: number;
+  caretRelativeCommands: string[];
   cases: { name: string; steps: Step[] }[];
 };
 
@@ -61,6 +78,9 @@ describe("editing admission rule (shared fixture)", () => {
   it("matches the shared constants", () => {
     expect(EditingContexts.kept).toBe(fixture.kept);
     expect(EditingContexts.namedTextWaitSeconds).toBe(fixture.namedTextWaitSeconds);
+    expect([...caretRelativeEditingCommands].sort()).toEqual(
+      [...fixture.caretRelativeCommands].sort(),
+    );
     expect(fixture.cases.length).toBeGreaterThanOrEqual(7);
   });
 
@@ -76,7 +96,25 @@ describe("editing admission rule (shared fixture)", () => {
             expect(changed).toBe(step.expectChanged);
             expect(contexts.current !== before).toBe(step.expectChanged);
           }
+          if (step.publish ?? step.save !== undefined) contexts.markPublished();
           if (step.save) saved.set(step.save, contexts.current);
+        } else if ("observeState" in step) {
+          const before = contexts.current;
+          const changed = contexts.observeState(
+            step.observeState.field,
+            step.observeState.state,
+            step.observeState.forceChanged ?? false,
+          );
+          if (step.expectChanged !== undefined) {
+            expect(changed).toBe(step.expectChanged);
+            expect(contexts.current !== before).toBe(step.expectChanged);
+          }
+          if (step.publish ?? step.save !== undefined) contexts.markPublished();
+          if (step.save) saved.set(step.save, contexts.current);
+        } else if ("expectOwnEffect" in step) {
+          contexts.expectOwnEffect(step.expectOwnEffect);
+        } else if ("publish" in step) {
+          contexts.markPublished();
         } else if ("admits" in step) {
           const contextId = saved.get(step.admits.context);
           if (!contextId) throw new Error(`Unknown saved context ${step.admits.context}`);
@@ -124,15 +162,22 @@ describe("editing admission rule (shared fixture)", () => {
           contexts.mismatch();
           if (step.expectChanged !== undefined)
             expect(contexts.current !== before).toBe(step.expectChanged);
+          if (step.publish ?? step.save !== undefined) contexts.markPublished();
           if (step.save) saved.set(step.save, contexts.current);
         } else if ("reset" in step) {
           const before = contexts.current;
           contexts.reset();
           if (step.expectChanged !== undefined)
             expect(contexts.current !== before).toBe(step.expectChanged);
+          if (step.publish ?? step.save !== undefined) contexts.markPublished();
           if (step.save) saved.set(step.save, contexts.current);
         } else if ("rotateSame" in step) {
-          for (let i = 0; i < step.rotateSame; i++) contexts.rotate(true);
+          for (let i = 0; i < step.rotateSame; i++) {
+            contexts.markPublished();
+            contexts.rotate(true);
+          }
+        } else if ("rotateUnpublished" in step) {
+          for (let i = 0; i < step.rotateUnpublished; i++) contexts.rotate(true);
         } else if ("wait" in step) {
           expect(
             namedTextWaitDecision(step.wait.sameField, step.wait.matches, step.wait.waited),

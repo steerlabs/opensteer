@@ -334,10 +334,16 @@ export function RemoteEditingProxy({
         if (nativePaste) {
           const id = ++nativePasteId.current;
           pendingNativePaste.current = { id, contextId: scope };
-          void nativePaste().catch((reason) => {
-            if (pendingNativePaste.current?.id === id) pendingNativePaste.current = null;
-            failure(reason);
-          });
+          void nativePaste()
+            .then(() => {
+              setTimeout(() => {
+                if (pendingNativePaste.current?.id === id) pendingNativePaste.current = null;
+              }, 0);
+            })
+            .catch((reason) => {
+              if (pendingNativePaste.current?.id === id) pendingNativePaste.current = null;
+              failure(reason);
+            });
           return;
         }
         if (!navigator.clipboard?.read) {
@@ -475,10 +481,17 @@ export function RemoteEditingProxy({
                     id,
                     contextId: current.current.context?.contextId,
                   };
-                  void nativePaste().catch((reason) => {
-                    if (pendingNativePaste.current?.id === id) pendingNativePaste.current = null;
-                    failure(reason);
-                  });
+                  void nativePaste()
+                    .then(() => {
+                      setTimeout(() => {
+                        if (pendingNativePaste.current?.id === id)
+                          pendingNativePaste.current = null;
+                      }, 0);
+                    })
+                    .catch((reason) => {
+                      if (pendingNativePaste.current?.id === id) pendingNativePaste.current = null;
+                      failure(reason);
+                    });
                   return;
                 }
               }

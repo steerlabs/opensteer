@@ -1148,7 +1148,7 @@ export class PhoneBrowserManager {
           )) {
             await this.#send(channel, {
               type: "clipboard.result",
-              surfaceId: tab.id,
+              surfaceId: BrowserSurfaceIdSchema.parse(tab.id),
               operationId: message.part.operationId,
               outcome:
                 error instanceof PhoneBrowserError && error.code === "too-large"

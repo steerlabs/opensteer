@@ -901,11 +901,13 @@ export class FarField {
       this.untracked = false;
       this.pendingId = value;
       this.contexts.observe(this.fieldIdentity, false);
+      this.contexts.markPublished();
       return;
     }
     if (value !== this.contexts.current) {
       this.pendingId = value;
       this.contexts.observe(this.fieldIdentity, true);
+      this.contexts.markPublished();
     }
   }
   /** Rotates this same field to a fresh or specified context, preserving earlier contexts. */
@@ -913,6 +915,7 @@ export class FarField {
     this.untracked = false;
     this.pendingId = nextId ?? null;
     this.contexts.observe(this.fieldIdentity, true);
+    this.contexts.markPublished();
     return this.contexts.current;
   }
   private refuse(operation: EditingOperation) {
@@ -944,6 +947,7 @@ export class FarField {
       this.pendingId = next;
       this.contexts.observe(this.fieldIdentity, false);
     }
+    this.contexts.markPublished();
     this.onRotate?.(this.contexts.current);
   }
   private replace(start: number, end: number, text: string) {

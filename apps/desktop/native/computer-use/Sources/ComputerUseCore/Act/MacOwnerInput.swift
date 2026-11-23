@@ -438,6 +438,7 @@ final class MacOwnerInputWorker {
         }
         let combo = try KeyComboParser.parse(MacOwnerInput.commands[event.command!]!)
         try await chord(combo, target: focused.target, lease: lease, map: map, proceed: proceed)
+        predictCommand(event.command!)
       case "edit": try await edit(event.edit!, lease: lease, map: map, proceed: proceed)
       case "paste":
         let focused = try keyboard(lease, map: map)
@@ -447,6 +448,7 @@ final class MacOwnerInputWorker {
           throw MacOwnerInput.Refusal("stale")
         }
         try await insert(event.text!, focused: focused, lease: lease, map: map, proceed: proceed)
+        predictInsertion(event.text!)
       case "copy":
         do { try copy(contextId: event.contextId!, sequence: params.sequence, lease: lease, map: map) }
         catch {
@@ -543,9 +545,15 @@ final class MacOwnerInputWorker {
       keys[identity] = HeldKey(code: code, target: target, token: focused.token, menuHandled: true)
       return
     }
+    if let text = event.text, modifiers.isEmpty {
+      refresh(focused, agentRevision: lease.mutations.agentRevision)
+    }
     try await SyntheticEvents.ownerKey(down: true, virtualKey: code, flags: event.flags,
       text: event.text ?? VirtualKeys.characters(for: combo), repeatKey: event.repeat ?? false,
       target: target, gate: { try proceed(); try lease.check(map) })
+    if let text = event.text, modifiers.isEmpty {
+      predictInsertion(text)
+    }
     keys[identity] = HeldKey(code: code, target: target, token: focused.token,
       characters: event.text ?? VirtualKeys.characters(for: combo))
   }
@@ -622,18 +630,127 @@ final class MacOwnerInputWorker {
     return OwnerEditingContexts.FieldIdentity(
       id: id, kind: focused.role, sensitive: focused.secure, editable: true)
   }
+  private static let tailWindow = 16
+
+  private func observedState(for focused: Focused) -> OwnerEditingContexts.ObservedState? {
+    guard !focused.secure, let selected = range(focused.element) else { return nil }
+    let tail: String?
+    if selected.location == 0 {
+      tail = ""
+    } else {
+      let count = min(selected.location, Self.tailWindow)
+      var slice = CFRange(location: selected.location - count, length: count)
+      if let parameter = AXValueCreate(.cfRange, &slice) {
+        var value: CFTypeRef?
+        if AXUIElementCopyParameterizedAttributeValue(
+          focused.element,
+          kAXStringForRangeParameterizedAttribute as CFString,
+          parameter,
+          &value
+        ) == .success, let text = value as? String, text.utf16.count == count {
+          tail = text
+        } else {
+          tail = nil
+        }
+      } else {
+        tail = nil
+      }
+    }
+    return OwnerEditingContexts.ObservedState(
+      location: selected.location,
+      length: selected.length,
+      text: tail)
+  }
+
+  private static func trimmedTail(_ text: String) -> String? {
+    let units = Array(text.utf16)
+    if units.count <= tailWindow { return text }
+    let suffix = units.suffix(tailWindow)
+    // Avoid splitting a surrogate pair at the left boundary of the tail window.
+    if let first = suffix.first, (0xDC00...0xDFFF).contains(first) { return nil }
+    return String(decoding: suffix, as: UTF16.self)
+  }
+
+  private func predictInsertion(_ text: String) {
+    guard let base = contexts.predictedState else { return }
+    let nextLocation = base.location + text.utf16.count
+    let nextTail = base.text.flatMap { Self.trimmedTail($0 + text) }
+    contexts.expectOwnEffect(
+      OwnerEditingContexts.ObservedState(location: nextLocation, length: 0, text: nextTail))
+  }
+
+  private func predictEdit(_ edit: MacOwnerInput.Edit) {
+    guard let base = contexts.predictedState else { return }
+    let beforeUnits = edit.before.utf16.count
+    let nextLocation = max(0, base.location - beforeUnits) + edit.text.utf16.count
+    let nextTail: String?
+    if edit.before.isEmpty {
+      nextTail = base.text.flatMap { Self.trimmedTail($0 + edit.text) }
+    } else if let prior = base.text, base.location <= Self.tailWindow, prior.hasSuffix(edit.before) {
+      let dropped = String(prior.dropLast(edit.before.count))
+      nextTail = Self.trimmedTail(dropped + edit.text)
+    } else {
+      nextTail = nil
+    }
+    contexts.expectOwnEffect(
+      OwnerEditingContexts.ObservedState(location: nextLocation, length: 0, text: nextTail))
+  }
+
+  private func predictCommand(_ command: String) {
+    guard let base = contexts.predictedState else { return }
+    switch command {
+    case "deleteBackward":
+      if base.length > 0 {
+        contexts.expectOwnEffect(
+          OwnerEditingContexts.ObservedState(location: base.location, length: 0, text: base.text))
+      } else if base.location > 0 {
+        if let prior = base.text, let last = prior.last {
+          let removed = last.utf16.count
+          let nextTail = base.location <= Self.tailWindow ? String(prior.dropLast()) : nil
+          contexts.expectOwnEffect(
+            OwnerEditingContexts.ObservedState(
+              location: max(0, base.location - removed), length: 0, text: nextTail))
+        } else {
+          contexts.expectOwnEffect(
+            OwnerEditingContexts.ObservedState(location: base.location - 1, length: 0, text: nil))
+        }
+      }
+    case "moveBackward":
+      if base.length > 0 {
+        contexts.expectOwnEffect(
+          OwnerEditingContexts.ObservedState(location: base.location, length: 0, text: base.text))
+      } else if base.location > 0 {
+        if let prior = base.text, let last = prior.last {
+          let removed = last.utf16.count
+          let nextTail = base.location <= Self.tailWindow ? String(prior.dropLast()) : nil
+          contexts.expectOwnEffect(
+            OwnerEditingContexts.ObservedState(
+              location: max(0, base.location - removed), length: 0, text: nextTail))
+        } else {
+          contexts.expectOwnEffect(
+            OwnerEditingContexts.ObservedState(location: base.location - 1, length: 0, text: nil))
+        }
+      }
+    case "moveForward":
+      let nextLocation = base.length > 0 ? base.location + base.length : base.location + 1
+      contexts.expectOwnEffect(
+        OwnerEditingContexts.ObservedState(location: nextLocation, length: 0, text: nil))
+    default:
+      break
+    }
+  }
+
   private func refresh(_ focused: Focused, agentRevision: Int) {
-    let next = focused.secure ? nil : range(focused.element)
+    let observed = observedState(for: focused)
     let identity = fieldIdentity(for: focused)
-    // Rule 5: context changes only when the field changes, an external agent acted, or live
-    // selection moved — never on key-up, mouse button, scroll, or refusal.
-    let stateChanged =
-      (contextRevision >= 0 && agentRevision != contextRevision) ||
-      selection?.location != next?.location || selection?.length != next?.length
-    contexts.observe(field: identity, stateChanged: stateChanged)
+    // Rule 5 + P4(b): context changes only when the field changes, an external agent acted, or
+    // someone else (or the app) changed the live selection/text — never on our own expected edit
+    // effects, key-up, mouse button, scroll, or refusal.
+    let agentChanged = contextRevision >= 0 && agentRevision != contextRevision
+    contexts.observeState(field: identity, state: observed, forceChanged: agentChanged)
     contextRevision = agentRevision
     focusedField = (focused.element, focused.role, focused.secure, identity.id)
-    selection = next
+    selection = observed.map { CFRange(location: $0.location, length: $0.length) }
   }
   /// Checked on this actor: a context read between a dispatch and its effect
   /// is never offered while that or later input is still queued.
@@ -665,13 +782,15 @@ final class MacOwnerInputWorker {
         }
       }
       try lease.check(map, secureMetadata: true)
+      contexts.markPublished()
       lease.emit(.init(type: "display.editing", generation: map.generation,
         context: .init(contextId: contextID,
           field: ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"].contains(focused.role) || selection != nil
             ? .init(kind: focused.role == "AXWebArea" ? "rich" : "text", multiline: focused.role == "AXTextArea", sensitive: focused.secure) : nil,
           caret: caret)))
     } catch {
-      focusedField = nil; selection = nil; contexts.observe(field: nil, stateChanged: false)
+      focusedField = nil; selection = nil; contexts.observeState(field: nil, state: nil)
+      contexts.markPublished()
       lease.emit(.init(type: "display.editing", generation: map.generation,
         context: .init(contextId: contextID, field: nil, caret: nil)))
     }
@@ -708,6 +827,40 @@ final class MacOwnerInputWorker {
       }
     }
   }
+  /// Bounded wait for a text-naming edit when an app (such as Electron) renders a prior keystroke
+  /// after dispatch returns (Rule 3, up to `OwnerEditingContexts.namedTextWait` = 0.5 s).
+  nonisolated static func waitForNamedText<Match>(
+    pollIntervalNanoseconds: UInt64 = 10_000_000,
+    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+    checkGate: () throws -> Void = {},
+    probe: () -> (sameField: Bool, match: Match?),
+    onMismatch: () -> Void
+  ) async throws -> Match {
+    let started = now()
+    while true {
+      try checkGate()
+      let result = probe()
+      let decision = OwnerEditingContexts.namedTextWaitDecision(
+        sameField: result.sameField,
+        matches: result.match != nil,
+        waited: now() - started
+      )
+      switch decision {
+      case .apply:
+        if let match = result.match { return match }
+        onMismatch()
+        throw MacOwnerInput.Refusal("stale")
+      case .wait:
+        try await Task.sleep(nanoseconds: pollIntervalNanoseconds)
+      case .refuseField:
+        throw MacOwnerInput.Refusal("stale")
+      case .refuseMismatch:
+        onMismatch()
+        throw MacOwnerInput.Refusal("stale")
+      }
+    }
+  }
+
   private func edit(_ edit: MacOwnerInput.Edit, lease: MacOwnerAttachment, map: MacOwnerInputMap,
                     proceed: @escaping @Sendable () throws -> Void) async throws {
     let focused = try keyboard(lease, map: map)
@@ -726,50 +879,34 @@ final class MacOwnerInputWorker {
     if namedText {
       let before = edit.before.utf16.count, after = edit.after.utf16.count
       let expected = Array((edit.before + edit.after).utf16)
-      let started = ProcessInfo.processInfo.systemUptime
-      var matchedParameter: AXValue?
-      while true {
-        try proceed(); try lease.check(map)
-        let sameField = (try? verifyFocus(focused, lease: lease, map: map)) != nil
-        var matches = false
-        if sameField, let selected = range(focused.element), selected.length == 0, selected.location >= before {
-          var replacement = CFRange(location: selected.location - before, length: before + after)
-          if let parameter = AXValueCreate(.cfRange, &replacement) {
-            var value: CFTypeRef?
-            if AXUIElementCopyParameterizedAttributeValue(focused.element, kAXStringForRangeParameterizedAttribute as CFString, parameter, &value) == .success,
-              let actual = value as? String, Array(actual.utf16) == expected,
-              range(focused.element)?.location == selected.location,
-              range(focused.element)?.length == 0 {
-              matches = true
-              matchedParameter = parameter
+      let matchedParameter: AXValue = try await Self.waitForNamedText(
+        checkGate: { try proceed(); try lease.check(map) },
+        probe: {
+          let sameField = (try? self.verifyFocus(focused, lease: lease, map: map)) != nil
+          if sameField, let selected = self.range(focused.element), selected.length == 0, selected.location >= before {
+            var replacement = CFRange(location: selected.location - before, length: before + after)
+            if let parameter = AXValueCreate(.cfRange, &replacement) {
+              var value: CFTypeRef?
+              if AXUIElementCopyParameterizedAttributeValue(focused.element, kAXStringForRangeParameterizedAttribute as CFString, parameter, &value) == .success,
+                let actual = value as? String, Array(actual.utf16) == expected,
+                self.range(focused.element)?.location == selected.location,
+                self.range(focused.element)?.length == 0 {
+                return (sameField: true, match: parameter)
+              }
             }
           }
-        }
-        let decision = OwnerEditingContexts.namedTextWaitDecision(
-          sameField: sameField, matches: matches,
-          waited: ProcessInfo.processInfo.systemUptime - started)
-        switch decision {
-        case .apply:
-          break
-        case .wait:
-          try await Task.sleep(nanoseconds: 10_000_000)
-          continue
-        case .refuseField:
-          throw MacOwnerInput.Refusal("stale")
-        case .refuseMismatch:
-          contexts.mismatch()
-          throw MacOwnerInput.Refusal("stale")
-        }
-        break
-      }
+          return (sameField: sameField, match: nil)
+        },
+        onMismatch: { self.contexts.mismatch() }
+      )
       try verifyFocus(focused, lease: lease, map: map); try proceed(); try lease.check(map)
-      guard let matchedParameter,
-        AXUIElementSetAttributeValue(focused.element, kAXSelectedTextRangeAttribute as CFString, matchedParameter) == .success else {
+      guard AXUIElementSetAttributeValue(focused.element, kAXSelectedTextRangeAttribute as CFString, matchedParameter) == .success else {
         contexts.mismatch()
         throw MacOwnerInput.Refusal("stale")
       }
     }
     try await insert(edit.text, focused: focused, lease: lease, map: map, route: route, proceed: proceed)
+    predictEdit(edit)
   }
   private func copy(contextId: String, sequence: Int, lease: MacOwnerAttachment, map: MacOwnerInputMap) throws {
     let focused = try keyboard(lease, map: map)

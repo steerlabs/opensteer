@@ -107,6 +107,31 @@ export interface EditingFieldIdentity {
 }
 
 /**
+ * Snapshot of a focused field's selection and optional trailing text before the caret,
+ * used to distinguish the viewer's own edit effects from external changes (P4(b)).
+ */
+export interface EditingObservedState {
+  readonly location: number;
+  readonly length: number;
+  readonly text?: string | null | undefined;
+}
+
+function sameObservedState(a: EditingObservedState, b: EditingObservedState): boolean {
+  return (
+    a.location === b.location && a.length === b.length && (a.text ?? null) === (b.text ?? null)
+  );
+}
+
+function matchesExpectedState(
+  observed: EditingObservedState,
+  expected: EditingObservedState,
+): boolean {
+  if (observed.location !== expected.location || observed.length !== expected.length) return false;
+  if (expected.text != null && observed.text != null) return observed.text === expected.text;
+  return true;
+}
+
+/**
  * The three admission classes in docs/editing-admission.md:
  * - `relative`: insertion, backward deletion, plain caret move, paste (Rule 2)
  * - `named`: text-naming replacement or forward deletion of named text (Rule 3)
@@ -158,6 +183,9 @@ export class EditingContexts {
   #current: string;
   #earlier: string[] = [];
   #field: EditingFieldIdentity | null = null;
+  #currentPublished = false;
+  #baseline: EditingObservedState | null = null;
+  #expected: EditingObservedState[] = [];
 
   constructor(nextId: () => string = () => crypto.randomUUID()) {
     this.#nextId = nextId;
@@ -176,8 +204,28 @@ export class EditingContexts {
     return this.#earlier;
   }
 
+  get predictedState(): EditingObservedState | null {
+    return this.#expected.at(-1) ?? this.#baseline;
+  }
+
   hasEarlier(contextId: string): boolean {
     return this.#earlier.includes(contextId);
+  }
+
+  /**
+   * Marks `current` as published to the viewer. Only published contexts enter `earlier` on
+   * same-field rotation (P4(c)), so unpublished rotations while batches are pending never evict
+   * the viewer's published context.
+   */
+  markPublished(): void {
+    this.#currentPublished = true;
+  }
+
+  /** Records the state expected after dispatching one of the viewer's own edits (P4(b)). */
+  expectOwnEffect(state: EditingObservedState): void {
+    if (this.#field === null) return;
+    this.#expected.push(state);
+    if (this.#expected.length > EditingContexts.kept) this.#expected.shift();
   }
 
   /**
@@ -188,7 +236,10 @@ export class EditingContexts {
     if (!sameEditingField(this.#field, field)) {
       this.#field = field;
       this.#earlier = [];
+      this.#expected = [];
+      this.#baseline = null;
       this.#current = this.#nextId();
+      this.#currentPublished = false;
       return true;
     }
     if (!changed) return false;
@@ -196,28 +247,93 @@ export class EditingContexts {
     return true;
   }
 
-  /** Rotates to a fresh context. Keeps the previous context in `earlier` only for the same field. */
+  /**
+   * Observes the live focused field together with its live selection/text state (P4(b)):
+   * - Equal to baseline (unchanged or app has not caught up yet): rotates nothing.
+   * - Equal to any expected prefix in `#expected`: consumes that prefix, advances baseline,
+   *   rotates nothing.
+   * - Anything else (or `forceChanged`, e.g. agent mutation): rotates, clears `#expected`,
+   *   and updates baseline.
+   */
+  observeState(
+    field: EditingFieldIdentity | null,
+    state: EditingObservedState | null,
+    forceChanged = false,
+  ): boolean {
+    if (!sameEditingField(this.#field, field)) {
+      this.#field = field;
+      this.#earlier = [];
+      this.#expected = [];
+      this.#baseline = state;
+      this.#current = this.#nextId();
+      this.#currentPublished = false;
+      return true;
+    }
+    if (forceChanged) {
+      this.#expected = [];
+      this.#baseline = state;
+      this.rotate(field !== null);
+      return true;
+    }
+    if (state === null) {
+      if (this.#baseline === null) return false;
+      this.#expected = [];
+      this.#baseline = null;
+      this.rotate(field !== null);
+      return true;
+    }
+    if (this.#baseline === null) {
+      this.#baseline = state;
+      return false;
+    }
+    if (sameObservedState(state, this.#baseline)) return false;
+    const matchIndex = this.#expected.findIndex((expected) =>
+      matchesExpectedState(state, expected),
+    );
+    if (matchIndex >= 0) {
+      this.#baseline = state;
+      this.#expected.splice(0, matchIndex + 1);
+      return false;
+    }
+    this.#expected = [];
+    this.#baseline = state;
+    this.rotate(field !== null);
+    return true;
+  }
+
+  /**
+   * Rotates to a fresh context. Keeps the previous context in `earlier` only for the same field
+   * AND only if that context was published to the viewer (P4(c)).
+   */
   rotate(sameField: boolean): string {
     if (sameField && this.#field !== null) {
-      if (!this.#earlier.includes(this.#current)) {
+      if (this.#currentPublished && !this.#earlier.includes(this.#current)) {
         this.#earlier.push(this.#current);
         if (this.#earlier.length > EditingContexts.kept) this.#earlier.shift();
       }
     } else {
       this.#earlier = [];
     }
+    this.#expected = [];
     this.#current = this.#nextId();
+    this.#currentPublished = false;
     return this.#current;
   }
 
-  /** A text-naming edit mismatched live text in the current field: rotate while keeping earlier contexts. */
+  /**
+   * A text-naming edit mismatched live text in the current field: rotate while a field is focused,
+   * without forgetting earlier contexts. With no focused field, rotates nothing (S6).
+   */
   mismatch(): string {
-    return this.rotate(this.#field !== null);
+    if (this.#field === null) return this.#current;
+    return this.rotate(true);
   }
 
   /** Clears focus and forgets all earlier contexts. */
   reset(): string {
     this.#field = null;
+    this.#baseline = null;
+    this.#expected = [];
     return this.rotate(false);
   }
 

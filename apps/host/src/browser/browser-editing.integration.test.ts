@@ -328,15 +328,6 @@ integration("Host and Chromium editing contract", () => {
       for (const viewer of [other, old, watch, oldWatch])
         expect(viewer.messages.some((m) => m.type.startsWith("clipboard."))).toBe(false);
       checks.push("clipboard result and parts only reach the initiating controller");
-      const oldCopies = () => old.messages.filter((m) => m.type === "clipboard.data");
-      const legacyStroke = (key: string, code: string, modifiers: ("meta" | "control")[]) => {
-        for (const action of ["down", "up"] as const)
-          old.send({ type: "input.key", surfaceId, action, key, code, modifiers });
-      };
-      await evaluate("t.value='legacy copy';t.focus();t.select()");
-      legacyStroke("c", "KeyC", ["meta"]);
-      await expect.poll(() => oldCopies().length).toBe(1);
-      expect(oldCopies()[0]).toMatchObject({ text: "legacy copy" });
       const modernCopy = async (text: string) => {
         await evaluate(`t.value=${JSON.stringify(text)};t.focus();t.select()`);
         const id = randomUUID();
@@ -356,49 +347,9 @@ integration("Host and Chromium editing contract", () => {
           .toBe(true);
       };
       await modernCopy("editing copy");
-      expect(oldCopies()).toHaveLength(1);
-      await evaluate("t.value='legacy cut';t.focus();t.select()");
-      const cutsBefore = await evaluate("events.filter(e=>e.type==='cut').length");
-      legacyStroke("x", "KeyX", ["control"]);
-      await expect.poll(() => oldCopies().length).toBe(2);
-      expect(oldCopies()[1]).toMatchObject({ text: "legacy cut" });
-      expect(await evaluate("t.value")).toBe("");
-      expect(await evaluate("events.filter(e=>e.type==='cut').length")).toBe(
-        Number(cutsBefore) + 1,
-      );
-      expect(
-        browserRuntime
-          .receivedCommands()
-          .filter(
-            (m) =>
-              m.type === "input.key" &&
-              typeof m.code === "string" &&
-              ["KeyC", "KeyX"].includes(m.code),
-          ),
-      ).toHaveLength(0);
-      checks.push(
-        "editing and baseline controllers copy alternately; baseline cut deletes once and consumes matching keyup",
-      );
-      await evaluate(
-        "t.value='canceled';t.focus();t.select();window.copyCanceled=false;t.addEventListener('keydown',e=>{e.preventDefault();window.copyCanceled=true},{once:true})",
-      );
-      legacyStroke("c", "KeyC", ["control"]);
-      await expect.poll(() => evaluate("copyCanceled")).toBe(true);
-      await modernCopy("after canceled copy");
-      expect(oldCopies()).toHaveLength(2);
-      await evaluate(
-        "p.value='sensitive';p.focus();p.select();window.afterSensitive=false;p.addEventListener('keydown',()=>window.afterSensitive=true,{once:true})",
-      );
-      legacyStroke("c", "KeyC", ["meta"]);
-      legacyStroke("Escape", "Escape", []);
-      await expect.poll(() => evaluate("afterSensitive")).toBe(true);
-      await modernCopy("after sensitive copy");
-      expect(oldCopies()).toHaveLength(2);
-      for (const viewer of [other, watch, oldWatch])
+      for (const viewer of [other, old, watch, oldWatch])
         expect(viewer.messages.some((m) => m.type.startsWith("clipboard."))).toBe(false);
-      checks.push(
-        "canceled and sensitive baseline copy project no clipboard data to any other viewer",
-      );
+      checks.push("editing copy stays isolated from every other viewer");
       const legacyRefused = once(old.socket, "close");
       old.send({
         type: "input.command",

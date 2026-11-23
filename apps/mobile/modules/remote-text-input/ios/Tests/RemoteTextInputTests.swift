@@ -931,5 +931,27 @@ import UIKit
     XCTAssertEqual(field.view.text, "h")
     XCTAssertEqual(field.view.selectedRange, NSRange(location: 1, length: 0))
   }
+
+  // P4(b): positive case beside the per-keystroke rotation test above. When the Mac helper skips
+  // rotating for its own edit effects (same contextId across the person's typing, or no new
+  // context between keystrokes), the native text view keeps "teh" before the caret so iOS
+  // autocorrect sees the whole word.
+  func testSameContextAcrossThreeKeystrokesKeepsNativeTextBeforeCaret() {
+    let field = Field()
+    let textField: [String: Any] = ["kind": "text", "sensitive": false]
+    field.view.configure(["contextId": "mac-0", "field": textField], focused: false)
+    field.view.insertText("t")
+    field.answerAll()
+    field.view.configure(["contextId": "mac-0", "field": textField], focused: false)
+    field.view.insertText("e")
+    field.answerAll()
+    field.view.insertText("h")
+    field.answerAll()
+    let text = field.view.text ?? ""
+    let beforeCaret = (text as NSString).substring(to: field.view.selectedRange.location)
+    XCTAssertEqual(beforeCaret, "teh")
+    XCTAssertEqual(field.view.text, "teh")
+    XCTAssertEqual(field.view.selectedRange, NSRange(location: 3, length: 0))
+  }
 }
 #endif

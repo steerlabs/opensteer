@@ -508,6 +508,29 @@ describe("real shared proxy element", () => {
       element().dispatchEvent(trustedPaste("from-shortcut"));
     });
     expect(operations.at(-1)).toMatchObject({ kind: "paste", contextId: other.contextId });
+
+    // 3) S10: if native paste resolves without firing a DOM paste event, pendingNativePaste is
+    // cleared so a later unrelated paste in another field uses that field's live context, not the
+    // stale pre-IPC context.
+    vi.useFakeTimers();
+    try {
+      const fourth: EditingContext = {
+        ...context,
+        contextId: "00000000-0000-4000-8000-000000000004",
+        field: { ...context.field!, sensitive: false },
+      };
+      pasteFromMenu(third.contextId);
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+      render({ context: fourth });
+      act(() => {
+        element().dispatchEvent(trustedPaste("later-unrelated"));
+      });
+      expect(operations.at(-1)).toMatchObject({ kind: "paste", contextId: fourth.contextId });
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it("renders local preedit when the target has no composition ability", () => {
     const { element, container, operations } = setup({

@@ -2,6 +2,7 @@
   "version": 1,
   "kept": 64,
   "namedTextWaitSeconds": 0.5,
+  "caretRelativeCommands": ["deleteBackward", "moveBackward", "moveForward"],
   "cases": [
     {
       "name": "same-field identity distinguishes element, kind, sensitivity, editability, and blur",
@@ -320,6 +321,159 @@
           "expectAfterGroup": "hello world",
           "expectAfterIndependent": "hello world!"
         }
+      ]
+    },
+    {
+      "name": "refusal with no focused field rotates nothing",
+      "steps": [
+        { "observe": { "field": null, "changed": false }, "save": "none", "expectChanged": false },
+        { "mismatch": true, "expectChanged": false },
+        { "admits": { "context": "none", "kind": "relative" }, "is": true },
+        { "admits": { "context": "none", "kind": "exact" }, "is": true }
+      ]
+    },
+    {
+      "name": "own edit effect rotates nothing",
+      "steps": [
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 0, "length": 0, "text": "" }
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "expectOwnEffect": { "location": 1, "length": 0, "text": "t" } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 1, "length": 0, "text": "t" }
+          },
+          "expectChanged": false
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": true }
+      ]
+    },
+    {
+      "name": "own edit effect seen late rotates nothing",
+      "steps": [
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 0, "length": 0, "text": "" }
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "expectOwnEffect": { "location": 1, "length": 0, "text": "t" } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 0, "length": 0, "text": "" }
+          },
+          "expectChanged": false
+        },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 1, "length": 0, "text": "t" }
+          },
+          "expectChanged": false
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": true }
+      ]
+    },
+    {
+      "name": "two of the phone's edits answered by one observation rotate nothing",
+      "steps": [
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 0, "length": 0, "text": "" }
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "expectOwnEffect": { "location": 1, "length": 0, "text": "t" } },
+        { "expectOwnEffect": { "location": 2, "length": 0, "text": "te" } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 2, "length": 0, "text": "te" }
+          },
+          "expectChanged": false
+        },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 2, "length": 0, "text": "te" }
+          },
+          "expectChanged": false
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": true }
+      ]
+    },
+    {
+      "name": "an app that changes what was typed rotates and forgets expected states",
+      "steps": [
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 0, "length": 0, "text": "" }
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "expectOwnEffect": { "location": 1, "length": 0, "text": "t" } },
+        { "expectOwnEffect": { "location": 2, "length": 0, "text": "te" } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 2, "length": 0, "text": "TE" }
+          },
+          "save": "c2",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": false },
+        { "admits": { "context": "c1", "kind": "relative" }, "is": true },
+        { "admits": { "context": "c2", "kind": "exact" }, "is": true },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 2, "length": 0, "text": "te" }
+          },
+          "save": "c3",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c2", "kind": "exact" }, "is": false },
+        { "admits": { "context": "c3", "kind": "exact" }, "is": true }
+      ]
+    },
+    {
+      "name": "earlier keeps only published contexts across 200 unpublished rotations",
+      "steps": [
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "published",
+          "expectChanged": true
+        },
+        { "rotateUnpublished": 200 },
+        { "admits": { "context": "published", "kind": "relative" }, "is": true },
+        { "publish": true },
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "published2",
+          "expectChanged": false
+        },
+        { "rotateUnpublished": 200 },
+        { "admits": { "context": "published", "kind": "relative" }, "is": true },
+        { "admits": { "context": "published2", "kind": "relative" }, "is": true }
       ]
     }
   ]

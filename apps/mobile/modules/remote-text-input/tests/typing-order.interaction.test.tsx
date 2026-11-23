@@ -1367,7 +1367,23 @@ describe("a person's caret moves and selections in the native field", () => {
     const fresh = () => `00000000-0000-4000-8000-${String(200000000000 + ++ids).slice(-12)}`;
     let focused: FarField = opened.remote;
     focused.nextContextId = fresh;
-    if (mac === "after") focused.exactNamed = false;
+    const initMacState = (field: FarField) => {
+      if (mac !== "after") return;
+      field.exactNamed = false;
+      // P4(b)/(c): track baseline observed state and mark the initial published context.
+      field.contexts.observeState(field.fieldIdentity, {
+        location: field.caret,
+        length: 0,
+        text: field.value,
+      });
+      field.contexts.markPublished();
+    };
+    initMacState(focused);
+    let macPendingObservation: {
+      field: FarField;
+      pre: { location: number; length: number; text: string };
+      post: { location: number; length: number; text: string };
+    } | null = null;
     const segment = (field: FarField, first: number): Segment => {
       const start = { text: field.value, caret: field.caret };
       const person = new Person();
@@ -1594,6 +1610,8 @@ describe("a person's caret moves and selections in the native field", () => {
           ? { ...made, contextId: crypto.randomUUID() }
           : made;
       if (sent0 !== made) entry.operation = sent0;
+      const macPre =
+        mac === "after" ? { location: focused.caret, length: 0, text: focused.value } : null;
       const result = focused.take(sent0);
       if (sabotage === "double") focused.take(made);
       if (sabotage === "shift") focused.caret = off(focused);
@@ -1628,14 +1646,38 @@ describe("a person's caret moves and selections in the native field", () => {
         focused.take(made);
         took(again);
       }
-      // PH1: the old Mac helper ("before") rotated on every edit with no earlier contexts and
-      // republished a moment later; the new helper ("after") follows Rule 5 and does NOT rotate
-      // on ordinary edits or refusals — only when the field changes or a named replacement misses.
+      // PH1 + P4(b)/(c): the old Mac helper ("before") rotated on every edit with no earlier
+      // contexts and republished a moment later; the new helper ("after") records the expected
+      // own-edit state, skips rotating when observing the pre-edit state (app hasn't caught up
+      // yet) or any prefix of expected states, and rotates only on unexpected changes.
       if (mac === "before" && applied(entry) && made.kind === "edit") {
         clock += 1;
         focused.contexts.rotate(false);
         opened.renew(focused.contextId!);
         republish = true;
+      } else if (mac === "after" && applied(entry) && macPre) {
+        const post = { location: focused.caret, length: 0, text: focused.value };
+        const predictable =
+          made.kind === "edit" ||
+          made.kind === "paste" ||
+          (made.kind === "command" && caretRelativeEditingCommands.has(made.command));
+        if (predictable) focused.contexts.expectOwnEffect(post);
+        if (next() < 0.5) {
+          // App has not caught up yet: observing pre-edit state rotates nothing; post arrives next step.
+          const changed = focused.contexts.observeState(focused.fieldIdentity, macPre);
+          if (changed) {
+            focused.contexts.markPublished();
+            opened.renew(focused.contextId!);
+          }
+          macPendingObservation = { field: focused, pre: macPre, post };
+        } else {
+          const changed = focused.contexts.observeState(focused.fieldIdentity, post);
+          if (changed) {
+            focused.contexts.markPublished();
+            opened.renew(focused.contextId!);
+          }
+          macPendingObservation = null;
+        }
       }
       rotated();
       return result;
@@ -1654,6 +1696,17 @@ describe("a person's caret moves and selections in the native field", () => {
         focused.contexts.rotate(false);
         opened.renew(focused.contextId!);
         rotated();
+      }
+      // New Mac helper ("after"): delayed observation catches up with own edit(s) without rotating.
+      if (macPendingObservation && macPendingObservation.field === focused) {
+        const settled = macPendingObservation;
+        macPendingObservation = null;
+        const changed = focused.contexts.observeState(focused.fieldIdentity, settled.post);
+        if (changed) {
+          focused.contexts.markPublished();
+          opened.renew(focused.contextId!);
+          rotated();
+        }
       }
       if (next() < 0.12) {
         acted = true;
@@ -1677,7 +1730,7 @@ describe("a person's caret moves and selections in the native field", () => {
           field.contextId = id;
           field.nextContextId = fresh;
           field.onRotate = opened.renew;
-          if (mac === "after") field.exactNamed = false;
+          initMacState(field);
           segments.at(-1)!.end = { text: focused.value, caret: focused.caret };
           focused = field;
           segments.push(segment(field, kinds.length));
@@ -1717,12 +1770,23 @@ describe("a person's caret moves and selections in the native field", () => {
           clock += 1;
           // The page rewrote the field: a new context for it, the old one an earlier one.
           const id = fresh();
-          focused.rotateSameField(id);
-          log.push({ act: { kind: "context", contextId: id } });
-          logged = id;
+          if (mac === "after") {
+            macPendingObservation = null;
+            focused.contexts.observeState(
+              focused.fieldIdentity,
+              { location: focused.caret, length: 0, text: focused.value },
+              true,
+            );
+            focused.contexts.markPublished();
+          } else {
+            focused.rotateSameField(id);
+          }
+          const publishedId = focused.contextId!;
+          log.push({ act: { kind: "context", contextId: publishedId } });
+          logged = publishedId;
           const before = owners;
           owners = [];
-          await opened.publish(id);
+          await opened.publish(publishedId);
           owners = before;
         }
       }

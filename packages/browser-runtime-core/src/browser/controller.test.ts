@@ -4339,6 +4339,75 @@ describe("BrowserController", () => {
           (m) => m.type === "clipboard.result" && m.operationId === nonCollapsedCutOp,
         ),
       ).toMatchObject({ outcome: "refused" });
+
+      // 7) S7: command() verifies live field in-page (refusing when live field changed/readOnly
+      // even before the binding report arrives).
+      cdp.responses.set("Runtime.evaluate", (params?: Record<string, unknown>) => {
+        const expr = String(params?.expression ?? "");
+        if (expr.includes("beginInput(")) {
+          return { result: { value: { ok: false, reason: "focus-changed" } } };
+        }
+        return { result: { value: { ok: true } } };
+      });
+      const currentAfterEarlier = sink.messages
+        .filter((message) => message.type === "browser.editing")
+        .at(-1);
+      if (currentAfterEarlier?.type !== "browser.editing")
+        throw new Error("Missing current context for S7");
+      const keysBeforeS7 = commandsNamed("Input.dispatchKeyEvent", page).length;
+      await controller.handle({
+        type: "input.command",
+        surfaceId: active.surface.id,
+        command: "selectAll",
+        contextId: currentAfterEarlier.context.contextId,
+        producerId: producer,
+      });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(keysBeforeS7);
+
+      // 8) S6: a refused edit when no field is focused changes NO context and emits NO rotation.
+      cdp.emit("Runtime.bindingCalled", {
+        executionContextId: 7,
+        name: world.name,
+        payload: JSON.stringify({
+          fieldId: null,
+          selectionRevision: 0,
+          field: null,
+          caret: null,
+        }),
+      });
+      await flushMicrotasks();
+      const editingBeforeS6 = sink.messages.filter((m) => m.type === "browser.editing");
+      const noFieldCtx = editingBeforeS6.at(-1);
+      if (noFieldCtx?.type !== "browser.editing" || noFieldCtx.context.field !== null)
+        throw new Error("Expected no-field editing context before S6");
+      await controller.handle({
+        type: "input.text",
+        surfaceId: active.surface.id,
+        edit: { contextId: noFieldCtx.context.contextId, before: "", after: "", text: "x" },
+        producerId: producer,
+      });
+      const editingAfterS6 = sink.messages.filter((m) => m.type === "browser.editing");
+      expect(editingAfterS6).toHaveLength(editingBeforeS6.length);
+      expect(editingAfterS6.at(-1)).toEqual(noFieldCtx);
+
+      // 9) S7 (no-field branch): a page-level command while observer believes no field is focused
+      // must still verify live in-page that no editable field actually took focus.
+      cdp.responses.set("Runtime.evaluate", (params?: Record<string, unknown>) => {
+        const expr = String(params?.expression ?? "");
+        if (expr.includes("beginInput(") && expr.includes('"fieldId":null')) {
+          return { result: { value: { ok: false, reason: "focus-changed" } } };
+        }
+        return { result: { value: { ok: true } } };
+      });
+      const keysBeforeNoFieldCmd = commandsNamed("Input.dispatchKeyEvent", page).length;
+      await controller.handle({
+        type: "input.command",
+        surfaceId: active.surface.id,
+        command: "selectAll",
+        contextId: noFieldCtx.context.contextId,
+        producerId: producer,
+      });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(keysBeforeNoFieldCmd);
     } finally {
       await controller.close();
       await ledger.close();
