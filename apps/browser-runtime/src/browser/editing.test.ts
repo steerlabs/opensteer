@@ -444,7 +444,8 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           );
           await agent("Browser.getVersion");
         };
-        for (let seen = ""; seen !== context().context.contextId;) {
+        for (let seen = "", rounds = 0; seen !== context().context.contextId; rounds++) {
+          if (rounds > 20) throw new Error("The page never settled after the focus move.");
           seen = context().context.contextId;
           await quiet();
         }
