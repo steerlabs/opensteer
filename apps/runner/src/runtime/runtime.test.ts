@@ -3,6 +3,7 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { AttachmentCache } from "../attachments/attachment-cache.js";
 import { agentTools, appHostingGuide } from "@opensteer/agent-tools";
 import { hostCommandPlatform } from "@opensteer/shared/command";
+import { networkCredentialSecrets } from "@opensteer/shared/safeMessage";
 import {
   ignoreForeignTestRequest,
   probeTestServer,
@@ -4821,7 +4822,7 @@ describe("RunnerRuntime", () => {
   // Codex makes `writableRoots` its sandbox's writable roots and Claude its
   // additional directories, so this is what both engines are handed.
   it("hands a task without personal context its own folder only, never Agent home", async () => {
-    const driver = new FakeHarnessDriver();
+    const driver = new FakeHarnessDriver("claude");
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
     const agentHome = {
@@ -4846,7 +4847,7 @@ describe("RunnerRuntime", () => {
       agentHome,
     });
     const sink: RunnerMessageSink = { send: async () => undefined };
-    const personal = executeCommand(environmentId);
+    const personal = executeCommand(environmentId, "claude");
     const command = RunnerCommandSchema.parse({
       ...personal,
       context: { ...personal.context, personalContext: false },
@@ -6520,6 +6521,12 @@ describe("RunnerRuntime", () => {
 });
 
 describe("harness process environment", () => {
+  it("passes the lowercase HTTPS proxy through to engines on macOS and Linux", () => {
+    const source = { https_proxy: "http://proxy.invalid:8080" };
+    expect(harnessProcessEnvironment(source, [], "darwin")).toEqual(source);
+    expect(harnessProcessEnvironment(source, [], "linux")).toEqual(source);
+  });
+
   it("keeps the Windows baseline and engine variables but no Runner credentials", () => {
     const source = {
       CLAUDE_CONFIG_DIR: "C:\\Users\\Ada\\.claude",
@@ -6542,6 +6549,183 @@ describe("harness process environment", () => {
     expect(harnessProcessEnvironment(source, [], "darwin")).toEqual({
       USERPROFILE: "C:\\Users\\Ada",
     });
+  });
+
+  it("hands the engine the person's proxy and certificates, for every task", () => {
+    const network = {
+      ALL_PROXY: "socks5://proxy.example.test:1080",
+      HTTPS_PROXY: "http://person:fake-proxy-password@proxy.example.test:8080",
+      HTTP_PROXY: "http://proxy.example.test:8080",
+      NODE_EXTRA_CA_CERTS: "/etc/company/ca.pem",
+      NO_PROXY: "localhost,127.0.0.1",
+      SSL_CERT_DIR: "/etc/company/certs",
+      SSL_CERT_FILE: "/etc/company/ca.pem",
+    };
+    expect(
+      harnessProcessEnvironment({ ...network, OPENSTEER_RUNNER_TOKEN: "private" }, [], "darwin"),
+    ).toEqual(network);
+  });
+
+  it("refuses an engine not shown to run others' tasks before it starts, as forbidden", async () => {
+    const session = new ScriptedHarnessSession([]);
+    const execute = vi.spyOn(session, "execute");
+    const failure = (await eventsOfScriptedRun(session, { personLineage: false })).find(
+      (event) => event.type === "run.failed",
+    )!;
+    expect(failure.data).toMatchObject({
+      code: "forbidden",
+      message: expect.stringContaining(
+        "so it runs only tasks you started yourself that no connected agent or chat has written to.",
+      ),
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("starts a fresh session and never resumes the old reference when personLineage narrows", async () => {
+    let calls = 0;
+    const driver = new FakeHarnessDriver("claude", () => {
+      calls += 1;
+      const session = new FakeHarnessSession();
+      Object.defineProperty(session, "providerSessionReference", {
+        value: `claude-native-session-${calls}`,
+      });
+      return session;
+    });
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+    try {
+      const ownCommand = executeCommand(environmentId, "claude");
+      await reconcile(registry, ownCommand);
+      await runtime.handleCommand(ownCommand, sink);
+      await waitUntil(() =>
+        messages.some(
+          (message) =>
+            message.type === "runner.event" &&
+            message.event.runId === ownCommand.context.runId &&
+            message.event.type === "run.completed",
+        ),
+      );
+      const rotatedCommand = RunnerCommandSchema.parse({
+        ...ownCommand,
+        commandId: createId("command"),
+        correlationId: CorrelationIdSchema.parse(createId("command")),
+        context: {
+          ...ownCommand.context,
+          personLineage: false,
+          providerSessionId: createId("providerSession"),
+          providerSessionReference: null,
+          runId: createId("run"),
+        },
+      }) as Extract<RunnerCommand, { readonly type: "run.execute" }>;
+      await runtime.handleCommand(rotatedCommand, sink);
+      await waitUntil(() =>
+        messages.some(
+          (message) =>
+            message.type === "runner.event" &&
+            message.event.runId === rotatedCommand.context.runId &&
+            message.event.type === "run.completed",
+        ),
+      );
+      expect(driver.contexts.map((context) => context.personLineage)).toEqual([true, false]);
+      expect(driver.resumedReferences).toEqual([]);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("keeps a proxy password out of a Run's recorded failure", async () => {
+    const session = new ScriptedHarnessSession([
+      {
+        data: {
+          code: "engine_error",
+          message: "stream failed via http://person:fake-proxy-password@proxy.example.test:8080",
+          retryable: false,
+          status: "failed",
+        },
+        type: "run.failed",
+      },
+    ]);
+    const failure = (await eventsOfScriptedRun(session)).find(
+      (event) => event.type === "run.failed",
+    )!;
+    expect(JSON.stringify(failure)).not.toContain("fake-proxy-password");
+    expect(failure.data.message).toBe(
+      "stream failed via http://[REDACTED]@proxy.example.test:8080",
+    );
+  });
+
+  it("keeps configured proxy credentials out of an engine inspection failure", async () => {
+    const proxy = "http://alice:p@ss/word@proxy.invalid:8080";
+    vi.stubEnv("HTTPS_PROXY", proxy);
+    const driverKind = HarnessIdSchema.parse("inspection-proxy-test");
+    const registry = new HarnessRegistry();
+    registry.registerDriver({
+      ...catalogDriver(driverKind),
+      inspect: async () => {
+        throw new Error(`Inspection failed via ${proxy}`);
+      },
+    });
+    const runtime = configuredRuntime({
+      environmentId: createId("environment"),
+      networkSecrets: networkCredentialSecrets({ HTTPS_PROXY: process.env.HTTPS_PROXY }),
+      registry,
+    });
+    try {
+      await expect(
+        runtime.inspectHarnesses(
+          [harnessDefinition(driverKind, "Proxy inspection", 1)],
+          new AbortController().signal,
+          true,
+        ),
+      ).resolves.toMatchObject([
+        {
+          detail: "Inspection failed via http://[REDACTED]@proxy.invalid:8080",
+          status: "error",
+        },
+      ]);
+    } finally {
+      vi.unstubAllEnvs();
+      await runtime.close();
+    }
+  });
+
+  it("keeps configured proxy credentials out of a rejected command", async () => {
+    const proxy = "http://alice:p@ss/word@proxy.invalid:8080";
+    vi.stubEnv("HTTPS_PROXY", proxy);
+    const environmentId = createId("environment");
+    const driverKind = HarnessIdSchema.parse("rejection-proxy-test");
+    const registry = new HarnessRegistry();
+    vi.spyOn(registry, "driverInstallation").mockResolvedValue({
+      descriptor: {
+        detail: `Update unavailable via ${proxy}`,
+        latestVersion: null,
+        scope: "ambient",
+        update: "manual",
+        version: "1.0.0",
+      },
+    });
+    const runtime = configuredRuntime({
+      environmentId,
+      networkSecrets: networkCredentialSecrets({ HTTPS_PROXY: process.env.HTTPS_PROXY }),
+      registry,
+    });
+    try {
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), {
+          send: async () => undefined,
+        }),
+      ).resolves.toMatchObject({
+        error: { message: "Update unavailable via http://[REDACTED]@proxy.invalid:8080" },
+        status: "rejected",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      await runtime.close();
+    }
   });
 });
 
@@ -7268,6 +7452,7 @@ function executeCommand(
     context: {
       accessMode: "full-access",
       personalContext: true,
+      personLineage: true,
       assignment: null,
       agentTools: {
         tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
@@ -7505,10 +7690,12 @@ async function eventsOfScriptedRun(
   session: HarnessSession,
   options: {
     readonly interrupt?: true;
+    readonly personLineage?: false;
     readonly resolveRequests?: readonly { requestId: RequestId; response: RequestResponse }[];
   } = {},
 ) {
-  const driver = new FakeHarnessDriver("scripted-driver", () => session);
+  const started = vi.fn(() => session);
+  const driver = new FakeHarnessDriver("scripted-driver", started);
   const registry = new HarnessRegistry();
   registry.registerDriver(driver);
   const environmentId = createId("environment");
@@ -7516,7 +7703,11 @@ async function eventsOfScriptedRun(
   const messages: RunnerOperationalReport[] = [];
   const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
   try {
-    const execute = executeCommand(environmentId, "scripted-driver");
+    const built = executeCommand(environmentId, "scripted-driver");
+    const execute =
+      options.personLineage === false
+        ? { ...built, context: { ...built.context, personLineage: false } }
+        : built;
     await reconcile(registry, execute);
     await runtime.handleCommand(execute, sink);
     for (const { requestId, response } of options.resolveRequests ?? []) {
@@ -7639,6 +7830,7 @@ function configuredRuntime(input: {
   readonly maxRunEvents?: number;
   readonly maxConcurrentRuns?: number;
   readonly mode?: ConstructorParameters<typeof RunnerRuntime>[0]["mode"];
+  readonly networkSecrets?: readonly string[];
   readonly privateStateDirectory?: string;
   readonly registry: HarnessRegistry;
   readonly workspacePrepare?: ConstructorParameters<
@@ -7663,6 +7855,7 @@ function configuredRuntime(input: {
       maxConcurrentRuns: input.maxConcurrentRuns ?? 1,
       ...(input.maxRunEvents === undefined ? {} : { maxRunEvents: input.maxRunEvents }),
       ...(input.mode === undefined ? {} : { mode: input.mode }),
+      ...(input.networkSecrets === undefined ? {} : { networkSecrets: input.networkSecrets }),
       dataDirectory: dirname(input.privateStateDirectory ?? testPrivateStateRoot),
       privateStateDirectory: input.privateStateDirectory ?? testPrivateStateRoot,
       projectContinuationIdentity,

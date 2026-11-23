@@ -356,7 +356,11 @@ function handleClientMethod(message) {
                     "company.docs": { command: "ambient-docs" },
                     github: { url: "https://example.test" },
                   }
-                : {},
+                : scenario === "person-opensteer-command"
+                  ? { opensteer: { command: "person-opensteer" } }
+                  : scenario === "person-opensteer-url"
+                    ? { opensteer: { enabled_tools: ["only_theirs"], url: "https://person.test" } }
+                    : {},
             tools: {
               update_plan: { enabled: scenario === "managed-planning-tool" },
             },
@@ -2330,6 +2334,30 @@ function handleTurnStart(message) {
     });
     return;
   }
+  if (scenario === "cancel-only-approval") {
+    send({
+      id: "cancel-only-approval-rpc",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        availableDecisions: [
+          "accept",
+          {
+            acceptWithExecpolicyAmendment: {
+              execpolicy_amendment: ["touch"],
+            },
+          },
+          "cancel",
+        ],
+        command: "touch ran.txt",
+        itemId: "cancel-only-command-1",
+        proposedExecpolicyAmendment: ["touch"],
+        reason: "Create ran.txt",
+        threadId,
+        turnId,
+      },
+    });
+    return;
+  }
   if (scenario === "structured-execpolicy-approval") {
     send({
       id: "execpolicy-approval-rpc",
@@ -2917,6 +2945,14 @@ function handleServerResponse(message) {
     return;
   }
 
+  if (message.id === "cancel-only-approval-rpc") {
+    send({
+      method: "serverRequest/resolved",
+      params: { requestId: message.id, threadId },
+    });
+    sendTurnCompleted(message.result?.decision === "cancel" ? "interrupted" : "completed");
+    return;
+  }
   if (message.id === "execpolicy-approval-rpc" || message.id === "network-policy-approval-rpc") {
     send({
       method: "serverRequest/resolved",

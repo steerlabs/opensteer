@@ -18,6 +18,7 @@ import {
   threadPendingRequestsSelection,
   threadProviderSessionSelection,
   threadsFromRows,
+  threadStartedByOtherSelection,
   threadVisitSelection,
 } from "./thread-row-mappers.js";
 
@@ -229,6 +230,7 @@ export function taskPageThreadSelections() {
     threadContinuationIdentitySelection,
     threadPendingRequestsSelection,
     threadProviderSessionSelection,
+    threadStartedByOtherSelection,
     threadVisitSelection,
   ] as const;
 }

@@ -1,3 +1,4 @@
+import { connectionModeDescriptions } from "@opensteer/client/host";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { AccessModePanel } from "./access-mode-control.js";
@@ -15,7 +16,7 @@ describe("AccessModeControl", () => {
     // Two of the four are refused, and each says so where its description was.
     expect(html.match(/aria-disabled="true"/gu)).toHaveLength(2);
     expect(html.match(/Codex cannot enforce this mode/gu)).toHaveLength(2);
-    expect(html).not.toContain("Auto-approve edits, ask before other actions.");
+    expect(html).not.toContain("Auto-approve edits, ask before other actions");
   });
 
   it("rules nothing out while the engine has not declared its modes", () => {
@@ -29,5 +30,23 @@ describe("AccessModeControl", () => {
 
     expect(html).not.toContain('aria-disabled="true"');
     expect(html).not.toContain("cannot enforce this mode");
+  });
+
+  it("uses connectionModeDescriptions when the task was started by a connected agent or a chat", () => {
+    const html = renderToStaticMarkup(
+      <AccessModePanel
+        engine={{
+          accessModes: ["approval-required", "auto-accept-edits", "auto", "full-access"],
+          engineName: "Claude Code",
+        }}
+        mode="approval-required"
+        onSelect={vi.fn()}
+        startedByOther
+      />,
+    );
+
+    expect(html).toContain(connectionModeDescriptions["approval-required"]);
+    expect(html).toContain(connectionModeDescriptions["auto-accept-edits"]);
+    expect(html).not.toContain("unless a rule you set in the engine already allows it");
   });
 });

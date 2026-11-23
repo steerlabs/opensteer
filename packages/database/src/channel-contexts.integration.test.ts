@@ -8,7 +8,12 @@ import { expect } from "vitest";
 import { sql } from "kysely";
 import { ChannelStore } from "./channel-store.js";
 import { TriggerStore } from "./trigger-store.js";
-import { runAllowsPersonalContext, threadAllowsPersonalContext } from "./run-personal-context.js";
+import {
+  runAllowsPersonalContext,
+  runContextLineage,
+  threadAllowsPersonalContext,
+  threadContextLineage,
+} from "./run-personal-context.js";
 import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
 import {
   describeStore,
@@ -277,6 +282,12 @@ describeStore("personal Messaging conversation contexts", (it) => {
     const first = await p.adopt("private-owner", "owner", "dm");
     if (!first.run) throw new Error("Owner DM did not reserve a Run");
     expect(await runAllowsPersonalContext(f.database, first.run.id)).toBe(true);
+    // A chat only the person speaks in keeps personal context and is still a chat.
+    expect(await runContextLineage(f.database, first.run.id)).toEqual({
+      fromChat: true,
+      personLineage: false,
+      personalContext: true,
+    });
     const running = await startPersonalQueuedRunFixture(f.store, first.run.id);
     await f.store.commitRunnerEvent({
       environmentId: p.environmentId,
@@ -525,7 +536,20 @@ describeStore("personal Messaging conversation contexts", (it) => {
       expect((await f.store.loadRunDispatchContext(grandchild.command.id)).personalContext).toBe(
         ownerDm,
       );
+      // Work a chat started stays the chat's however far it is delegated.
+      expect((await f.store.loadRunDispatchContext(grandchild.command.id)).lineage.fromChat).toBe(
+        true,
+      );
       expect(await threadAllowsPersonalContext(f.database, p.thread.id, p.userId)).toBe(true);
+      // A chat's work is never the person's own lineage.
+      expect(
+        (await f.store.loadRunDispatchContext(grandchild.command.id)).lineage.personLineage,
+      ).toBe(false);
+      expect(await threadContextLineage(f.database, p.thread.id, p.userId)).toEqual({
+        fromChat: false,
+        personLineage: true,
+        personalContext: true,
+      });
     });
   }
 });

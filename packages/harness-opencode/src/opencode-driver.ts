@@ -3,6 +3,7 @@ import { opencodeLightModelFamilies } from "@opensteer/core";
 import { resolveLightModel, type HarnessLog } from "@opensteer/harness";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { isRecord } from "@opensteer/shared/isRecord";
+import { redactUrlCredentials } from "@opensteer/shared/safeMessage";
 import { pathToFileURL } from "node:url";
 import {
   attachmentMaxBytes,
@@ -40,6 +41,7 @@ import {
   type HarnessGenerateTextResult,
   HarnessSessionRegistry,
   TurnPublisher,
+  assertEngineMayRun,
   assertFreshProviderSessionContext,
   initialContinuationContextPrompt,
   boundedDenialNote,
@@ -705,6 +707,7 @@ class OpencodeHarnessAdapter implements HarnessAdapter {
 
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
+    assertEngineMayRun("opencode", context);
     assertFreshProviderSessionContext(context);
     // OpenCode mints the session id, so the reference is only known once the
     // server has answered.
@@ -716,6 +719,7 @@ class OpencodeHarnessAdapter implements HarnessAdapter {
     context: HarnessSessionContext,
   ): Promise<HarnessSession> {
     this.#sessions.assertOpen();
+    assertEngineMayRun("opencode", context);
     const reference = validateProviderReference(providerSessionReference);
     return this.#sessions.open(reference, () => this.#open(context, { reference, type: "resume" }));
   }
@@ -2302,7 +2306,8 @@ class OpencodeHarnessSession implements HarnessSession {
       this.#publish(
         runFailedEvent({
           code: opencodeFailureCode(error),
-          message: error.message,
+          message:
+            this.#server?.redactDiagnostic(error.message) ?? redactUrlCredentials(error.message),
           retryable: error.retryable,
         }),
       );

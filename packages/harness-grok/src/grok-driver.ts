@@ -49,6 +49,7 @@ import {
   type HarnessGenerateTextInput,
   type HarnessGenerateTextResult,
   type SupervisedProcess,
+  assertEngineMayRun,
 } from "@opensteer/harness";
 import { readPrivateFileText } from "@opensteer/shared/atomicPrivateFile";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -467,6 +468,8 @@ class GrokHarnessAdapter implements HarnessAdapter {
   }
 
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
+    // Grok cannot be run here to show what of the person's it loads.
+    assertEngineMayRun("grok", context);
     return this.#delegate.startSession(this.#resolvedContext(context));
   }
 
@@ -474,6 +477,7 @@ class GrokHarnessAdapter implements HarnessAdapter {
     providerSessionReference: string,
     context: HarnessSessionContext,
   ): Promise<HarnessSession> {
+    assertEngineMayRun("grok", context);
     await assertGrokSessionExists(providerSessionReference, context);
     return this.#delegate.resumeSession(providerSessionReference, this.#resolvedContext(context));
   }

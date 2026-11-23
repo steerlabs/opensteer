@@ -245,6 +245,8 @@ export interface ThreadSummary {
   runStartHoldReason?: import("@opensteer/core").RunStartHoldReason | null;
   /** Machine failure code when the task's latest Run failed. */
   failureCode?: string | null;
+  /** A connected agent or a chat started this task, so the person's own engine rules do not apply. */
+  startedByOther?: boolean | undefined;
   /** A connected agent works this task itself; Stop it with `agent.session.stop`. */
   agentSessionId?: string | null;
   /** A connected agent's own task: its session and connection, kept after the session ends. */

@@ -215,6 +215,24 @@ function serve() {
           });
           return;
         }
+        if (scenario === "proxy-failure" || scenario === "refresh-failure") {
+          notification("turn/completed", {
+            error: {
+              kind: "provider",
+              message:
+                scenario === "proxy-failure"
+                  ? `Connection failed via ${process.env.HTTPS_PROXY}; password p@ss-word`
+                  : `Connection failed with refresh token ${process.env.REFRESH_TOKEN}`,
+              retryable: false,
+            },
+            sessionId,
+            sourceRange: { first: "2", last: "2" },
+            terminal: "failed",
+            turnId,
+            viewCursor: "v4",
+          });
+          return;
+        }
         if (scenario === "quota" || scenario === "model-denied") {
           notification("turn/completed", {
             error:

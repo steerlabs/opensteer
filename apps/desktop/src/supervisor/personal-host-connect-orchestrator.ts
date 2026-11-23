@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
 import {
   ConnectCredentialResponseSchema,
@@ -608,7 +609,7 @@ function isAuthorityFence(error: unknown): boolean {
 
 function publicConnectError(error: unknown): string {
   const message = error instanceof Error ? error.message : "Opensteer Connect failed.";
-  return message
+  return redactNetworkCredentials(message, networkCredentialSecrets(process.env))
     .replace(/Bearer\s+[^\s]+/giu, "Bearer [redacted]")
     .replace(/((?:tunnel[_ -]?token|token)\s*[:=]\s*)[^\s,}]+/giu, "$1[redacted]")
     .slice(0, 2_000);

@@ -293,6 +293,7 @@ export function EnginePickerPanel({
                     engine={access.engine}
                     mode={access.mode}
                     onSelect={(mode) => void access.onApply(mode)}
+                    startedByOther={access.startedByOther}
                   />
                 </>
               ) : null}

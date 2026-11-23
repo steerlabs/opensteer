@@ -8,12 +8,11 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { chromium } from "playwright-core";
 import { describe, expect, it, vi } from "vitest";
-import { createId } from "@opensteer/core";
+import { createId, ModelSelectionSchema, requestOptionDeclines } from "@opensteer/core";
 import { Deferred, type HarnessSession, type HarnessVoiceCall } from "@opensteer/harness";
 import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { CodexHarnessDriver } from "./codex-driver.js";
-import { ModelSelectionSchema } from "@opensteer/core";
 
 const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
 const signedIn = await access(join(codexHome, "auth.json")).then(
@@ -229,6 +228,8 @@ describe.skipIf(!qualify).each([
         instructions: "Answer in one or two short sentences.",
         // The Runner delivers the Host's Run plan instructions as the platform guide.
         platformGuide: guide,
+        personalContext: false,
+        personLineage: false,
         machineAccessNotice: "No other computers are reachable.",
         modelSelection: ModelSelectionSchema.parse({
           providerId: "openai",
@@ -261,12 +262,25 @@ describe.skipIf(!qualify).each([
         for await (const event of session.events) {
           runEvents.push(event.type);
           if (event.type === "voice.heard") recorded.push(event.data.text);
-          // Nobody taps in qualification: decline as a person would, so the
-          // agent answers with its Opensteer tool rather than waiting on a shell.
-          if (event.type === "request.opened")
-            void session
-              .resolveRequest(event.data.request.id, { kind: "choice", optionId: "reject" })
-              .catch(() => undefined);
+          // Nobody taps in qualification: decline with the offered declining option
+          // (Codex 0.162.0 command approvals offer `cancel`, not `reject`), so the
+          // agent never sits waiting on a shell approval.
+          if (event.type === "request.opened") {
+            const presentation = event.data.request.presentation;
+            const decline =
+              presentation.kind === "choice"
+                ? presentation.options.find(requestOptionDeclines)
+                : undefined;
+            if (!decline) {
+              throw new Error(
+                `Unexpected Codex request without a declining option: ${presentation.kind}`,
+              );
+            }
+            await session.resolveRequest(event.data.request.id, {
+              kind: "choice",
+              optionId: decline.id,
+            });
+          }
           if (event.type === "run.interrupted" || event.type === "run.failed") terminal.count++;
         }
       })();

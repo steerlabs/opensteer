@@ -6,6 +6,7 @@ import { backgroundLightModels, voiceCallSeed } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
 import { startRealtime } from "./voice.js";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
+import { redactUrlCredentials } from "@opensteer/shared/safeMessage";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
@@ -134,6 +135,10 @@ import {
   type SupervisedProcess,
   linkDirectory,
   linkNames,
+  assertEngineMayRun,
+  checkCodexOthersHome,
+  engineConfiguration,
+  type HarnessEngineConfiguration,
 } from "@opensteer/harness";
 import { z } from "zod";
 import { CodexHarnessConfigSchema, type CodexHarnessConfig } from "./config.js";
@@ -141,6 +146,7 @@ import {
   assertCodexFeatureBoundary,
   codexFeatureBoundary,
   codexFeatureBoundaryArgument,
+  codexOwnFeatureOverrides,
   type CodexFeatureBoundary,
 } from "./features.js";
 import {
@@ -904,6 +910,17 @@ class CodexHarnessAdapter implements HarnessAdapter {
     prompt,
     signal,
   }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
+    // Background text (task naming, Auto-mode review) never starts with the
+    // person's own Codex home; on an ambient profile without a file login,
+    // refuse before spawning so the Home can pick another engine or fall back.
+    if (
+      !checkCodexOthersHome({
+        environment: context.environment,
+        providerState: context.providerState,
+      }).ok
+    ) {
+      return { ok: false, failure: "unavailable" };
+    }
     return backgroundTextResult(signal, async () => {
       return withBackgroundTextDirectory(context, signal, async (directory) => {
         const environment = {
@@ -918,6 +935,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
               signal,
               workingDirectory: directory,
             },
+            "stripped",
           )),
         };
         // 0.162.0 normalizes unified_exec back on unless managed policy pins
@@ -948,7 +966,12 @@ class CodexHarnessAdapter implements HarnessAdapter {
             cwd: directory,
             environment,
             appServerArgs: [
-              ...codexProcessBoundaryArgs(features, context.providerState),
+              ...codexProcessBoundaryArgs(
+                features,
+                context.providerState,
+                "stripped",
+                context.providerState.kind === "ambient",
+              ),
               "-c",
               `log_dir=${JSON.stringify(directory)}`,
               "-c",
@@ -1090,6 +1113,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
   }
 
   #open(context: HarnessSessionContext, mode: SessionMode): Promise<CodexHarnessSession> {
+    assertEngineMayRun("codex", context);
     return CodexHarnessSession.open(
       this.#config,
       context,
@@ -1118,11 +1142,28 @@ class CodexHarnessAdapter implements HarnessAdapter {
         AbortSignal.any([lifetime, this.#lifetime.signal]),
       );
     }
+    const configuration = engineConfiguration(context);
+    const othersCheck =
+      configuration === "stripped" && context.providerState.kind === "ambient"
+        ? checkCodexOthersHome({
+            environment: shared.environment,
+            providerState: context.providerState,
+          })
+        : undefined;
+    if (othersCheck && !othersCheck.ok) {
+      throw new OpensteerError({ code: "forbidden", message: othersCheck.message });
+    }
     const key = JSON.stringify([
       shared.environment,
       shared.workingDirectory,
       context.providerState.providerHomeDirectory ?? null,
       context.providerState.kind,
+      // A process runs one kind of configuration: its flags and the settings
+      // it loaded are the person's own, or none of theirs.
+      configuration,
+      othersCheck?.ok && othersCheck.mode === "ambient"
+        ? [othersCheck.sourceHome, othersCheck.configTomlText]
+        : null,
     ]);
     const current = this.#shared;
     if (current?.key === key) {
@@ -1168,7 +1209,9 @@ class CodexHarnessAdapter implements HarnessAdapter {
     shared: HarnessSharedEngineLaunch | undefined,
     lifetime: AbortSignal,
   ): Promise<CodexAppServer> {
-    const features = await codexFeatureBoundary(this.#launch);
+    const configuration = engineConfiguration(context);
+    const boundary = await codexFeatureBoundary(this.#launch);
+    const features = configuration === "own" ? codexOwnFeatureOverrides(boundary) : boundary;
     const workingDirectory = shared?.workingDirectory ?? context.workspacePath;
     if (shared) await mkdir(shared.workingDirectory, { recursive: true, mode: 0o700 });
     const environment = await codexProcessEnvironment(
@@ -1176,6 +1219,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
       context.providerState,
       this.#source,
       { ...context, config: this.#config, launch: this.#launch, workingDirectory },
+      configuration,
     );
     // A call's text log can hold its session descriptions, so it lives in the
     // call's private directory, removed when the call ends. Codex also keeps a
@@ -1184,7 +1228,12 @@ class CodexHarnessAdapter implements HarnessAdapter {
     if (callLog) await mkdir(callLog, { recursive: true, mode: 0o700 });
     const server = await CodexAppServer.start({
       appServerArgs: [
-        ...codexProcessBoundaryArgs(features, context.providerState),
+        ...codexProcessBoundaryArgs(
+          features,
+          context.providerState,
+          configuration,
+          configuration === "stripped",
+        ),
         // A conversation no session holds unloads at once, so its next load
         // takes that Run's configuration and nothing it ran outlives it.
         "-c",
@@ -1195,6 +1244,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
       cwd: workingDirectory,
       environment,
       features,
+      featureScope: configuration === "own" ? "named" : "every",
       launch: this.#launch,
       ...(this.#log ? { log: this.#log } : {}),
       onEnded: (ended) => this.#servers.delete(ended),
@@ -1516,11 +1566,17 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     const families: Record<string, string> = {
       opensteer_computers: this.#context.machineAccessNotice,
       opensteer_current_instructions: [
-        "Current Opensteer and task instructions for this Run follow. They replace their counterparts from earlier Runs.",
+        // With its own configuration Codex reads the task's instructions,
+        // Agent home's AGENTS.md, itself; only Opensteer's follow here.
+        engineConfiguration(this.#context) === "own"
+          ? "Current Opensteer instructions for this Run follow. They replace their counterparts from earlier Runs."
+          : "Current Opensteer and task instructions for this Run follow. They replace their counterparts from earlier Runs.",
         this.#context.platformGuide,
-        this.#context.instructions?.trim()
-          ? this.#context.instructions
-          : "(There are no current task instructions.)",
+        engineConfiguration(this.#context) === "own"
+          ? undefined
+          : this.#context.instructions?.trim()
+            ? this.#context.instructions
+            : "(There are no current task instructions.)",
         durableHistoryWindowNotice(this.#context),
       ]
         .filter(Boolean)
@@ -3456,7 +3512,9 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       this.#publish(
         runFailedEvent({
           code: codexErrorCode(error),
-          message: error.message,
+          message:
+            this.#server?.client.redactDiagnostic(error.message) ??
+            redactUrlCredentials(error.message),
           retryable: error.retryable,
         }),
       );
@@ -4084,14 +4142,17 @@ function identityString(value: unknown): string | undefined {
 function codexProcessBoundaryArgs(
   features: CodexFeatureBoundary,
   providerState: HarnessProviderState,
+  configuration: HarnessEngineConfiguration = "stripped",
+  usesOthersHome = false,
 ): string[] {
   return [
     "-c",
     codexFeatureBoundaryArgument(features),
-    "-c",
-    "tools.update_plan.enabled=false",
-    "-c",
-    'web_search="disabled"',
+    // Codex's own plan tool and web search stay with its own configuration.
+    ...(configuration === "own"
+      ? []
+      : ["-c", "tools.update_plan.enabled=false", "-c", 'web_search="disabled"']),
+    // An engine that updates itself while a Run uses it can end that Run.
     "-c",
     "check_for_update_on_startup=false",
     // The Runner owns the command environment. A login shell would replay the
@@ -4107,15 +4168,22 @@ function codexProcessBoundaryArgs(
     `shell_environment_policy.inherit=${JSON.stringify(codexShellEnvironmentInherit)}`,
     "-c",
     `shell_environment_policy.exclude=${JSON.stringify(codexShellEnvironmentExclude)}`,
-    // The credential store follows the profile: an isolated profile must keep
-    // its credentials in its private provider home instead of the machine-wide
-    // store that login, logout, and inspection would otherwise disagree about.
-    ...codexCredentialStoreArgs(providerState),
+    // The credential store follows the profile and whether this process uses
+    // the Opensteer-owned others'-tasks home: an isolated profile or an
+    // others'-tasks home keeps credentials in its `auth.json` file (or symlink
+    // to it) instead of the OS keyring keyed by `CODEX_HOME`. Inspection and
+    // login on an ambient profile stay with the person's own store.
+    ...codexCredentialStoreArgs(providerState, usesOthersHome),
   ];
 }
 
-function codexCredentialStoreArgs(providerState: Pick<HarnessProviderState, "kind">): string[] {
-  return providerState.kind === "isolated" ? ["-c", 'cli_auth_credentials_store="file"'] : [];
+function codexCredentialStoreArgs(
+  providerState: Pick<HarnessProviderState, "kind">,
+  usesOthersHome = false,
+): string[] {
+  return providerState.kind === "isolated" || usesOthersHome
+    ? ["-c", 'cli_auth_credentials_store="file"']
+    : [];
 }
 
 /**
@@ -4510,13 +4578,89 @@ function codexSourceApiKey(providerState: HarnessProviderState) {
   });
 }
 
+/**
+ * The Opensteer-owned `CODEX_HOME` for tasks that are not the person's own on
+ * an ambient Codex profile. Holds only:
+ *  - `auth.json`: a symbolic link to the person's `auth.json` (never a copy),
+ *    which Codex 0.162.0 writes in place on both login and OAuth refresh.
+ *  - `config.toml`: `cli_auth_credentials_store = "file"` plus only the
+ *    reach-the-model settings extracted from the person's `config.toml`.
+ *  - `sqlite/`: Codex's state directory, separate from the person's own home.
+ */
+export function codexOthersHomeDirectory(
+  providerState: Pick<HarnessProviderState, "privateStateRoot">,
+  sourceHome: string,
+): string {
+  const digest = createHash("sha256").update(resolve(sourceHome)).digest("hex").slice(0, 16);
+  return join(resolve(providerState.privateStateRoot), "codex-others-home", digest);
+}
+
+const othersHomeMaterializations = new Map<string, Promise<void>>();
+
+async function materializeCodexOthersHome(
+  environment: Readonly<Record<string, string>>,
+  providerState: HarnessProviderState,
+): Promise<Readonly<Record<string, string>>> {
+  const check = checkCodexOthersHome({ environment, providerState });
+  if (!check.ok) {
+    throw new OpensteerError({ code: "forbidden", message: check.message });
+  }
+  if (check.mode !== "ambient") return environment;
+  const othersHome = codexOthersHomeDirectory(providerState, check.sourceHome);
+  const previous = othersHomeMaterializations.get(othersHome) ?? Promise.resolve();
+  const current = previous
+    .catch(() => undefined)
+    .then(async () => {
+      await mkdir(othersHome, { mode: 0o700, recursive: true });
+      await mkdir(codexSqliteHome(othersHome), { mode: 0o700, recursive: true });
+      await replacePrivateFileAtomically(join(othersHome, "config.toml"), check.configTomlText);
+      const authLink = join(othersHome, "auth.json");
+      const existing = await lstat(authLink).catch((error: unknown) => {
+        if (nodeErrorCode(error) === "ENOENT") return undefined;
+        throw error;
+      });
+      if (existing) {
+        if (existing.isSymbolicLink() && (await linkNames(authLink, check.authPath))) return;
+        await rm(authLink, { force: true, recursive: true });
+      }
+      try {
+        await symlink(check.authPath, authLink);
+      } catch (error) {
+        if (nodeErrorCode(error) !== "EEXIST") throw error;
+        const winner = await lstat(authLink);
+        if (!winner.isSymbolicLink() || !(await linkNames(authLink, check.authPath))) {
+          throw error;
+        }
+      }
+    });
+  othersHomeMaterializations.set(othersHome, current);
+  try {
+    await current;
+  } finally {
+    if (othersHomeMaterializations.get(othersHome) === current) {
+      othersHomeMaterializations.delete(othersHome);
+    }
+  }
+  return {
+    ...environment,
+    CODEX_HOME: othersHome,
+    CODEX_SQLITE_HOME: codexSqliteHome(othersHome),
+  };
+}
+
 async function codexProcessEnvironment(
   environment: Readonly<Record<string, string>>,
   providerState: HarnessProviderState,
   source: CodexSourceSelection | undefined,
   preparation: CodexHomePreparation,
+  configuration: HarnessEngineConfiguration = "own",
 ): Promise<Readonly<Record<string, string>>> {
-  if (providerState.kind === "ambient") return environment;
+  if (providerState.kind === "ambient") {
+    if (configuration === "stripped") {
+      return materializeCodexOthersHome(environment, providerState);
+    }
+    return environment;
+  }
   const providerHome = isolatedCodexProviderHome(providerState);
   const processEnvironment = {
     ...environment,
@@ -4564,7 +4708,8 @@ async function codexThreadRuntimeConfig(
     "config/read result",
   );
   const effectiveConfig = requireObject(configRead.config, "config/read result.config");
-  assertCodexProcessBoundary(configRead, effectiveConfig);
+  const own = engineConfiguration(context) === "own";
+  assertCodexProcessBoundary(configRead, effectiveConfig, own ? "own" : "stripped");
   const configuredMcpServers = requireObject(
     effectiveConfig.mcp_servers,
     "config/read result.config.mcp_servers",
@@ -4579,6 +4724,7 @@ async function codexThreadRuntimeConfig(
     }
   }
 
+  if (own) return codexOwnThreadRuntimeConfig(context, features, configuredMcpServers);
   const runtimeConfig: JsonObject = {
     allow_login_shell: false,
     project_doc_max_bytes: 0,
@@ -4593,6 +4739,61 @@ async function codexThreadRuntimeConfig(
   for (const name of ambientMcpNames) {
     runtimeConfig[codexMcpConfigPath(name, "enabled")] = false;
   }
+  setOpensteerMcpServers(runtimeConfig, context);
+  return runtimeConfig;
+}
+
+/**
+ * A conversation with Codex's own configuration: the person's settings, the
+ * project's `AGENTS.md`, Codex's own skills, plan tool and web search, and the
+ * person's MCP servers all stay. Opensteer sets only what it needs.
+ */
+function codexOwnThreadRuntimeConfig(
+  context: HarnessSessionContext,
+  features: CodexFeatureBoundary,
+  configuredMcpServers: JsonObject,
+): JsonObject {
+  const runtimeConfig: JsonObject = {
+    // The Runner owns the command environment; see codexProcessBoundaryArgs.
+    allow_login_shell: false,
+    // The Run's browser endpoint, Agent home and machine-access variables;
+    // Codex applies them after its exclusions, and none is a credential.
+    "shell_environment_policy.set": { ...context.commandEnvironment },
+    features: { ...features },
+  };
+  // The person's own MCP servers keep what their configuration says about
+  // approving their tools: in their own task that is their answer, given in
+  // advance. Opensteer sets the turn's mode and adds no prompt on top.
+
+  // Codex merges these into a server of the person's with the same name
+  // (Opensteer's own connection instructions name one `opensteer`): every
+  // field set here wins, and a field only theirs sets stays, since a thread's
+  // configuration can neither replace nor remove it (Codex 0.162.0). If what
+  // stays keeps Opensteer's server from connecting, the Run fails closed.
+  for (const name of codexMcpTools(context.agentTools.tools).keys()) {
+    const theirs = configuredMcpServers[name];
+    // A server that runs a command cannot take Opensteer's address: Codex
+    // would refuse the merged entry with a transport error nobody can read.
+    if (typeof theirs === "object" && theirs !== null && "command" in theirs) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: `Your Codex configuration has an MCP server named ${name} that runs a command. Opensteer's own server uses that name, so rename yours (codex mcp remove ${name}, then add it again under another name).`,
+      });
+    }
+  }
+  // `enabled_tools` and every other field set here replace theirs, so their
+  // own list cannot filter Opensteer's tools.
+  setOpensteerMcpServers(runtimeConfig, context);
+  for (const name of codexMcpTools(context.agentTools.tools).keys()) {
+    if (name in configuredMcpServers) {
+      runtimeConfig[codexMcpConfigPath(name, "disabled_tools")] = [];
+    }
+  }
+  return runtimeConfig;
+}
+
+/** Opensteer's own MCP servers for this conversation, whichever configuration it has. */
+function setOpensteerMcpServers(runtimeConfig: JsonObject, context: HarnessSessionContext): void {
   for (const [name, tools] of codexMcpTools(context.agentTools.tools)) {
     runtimeConfig[codexMcpConfigPath(name, "url")] = context.agentTools.url;
     // Codex reads a bearer variable from its own process, which other Runs
@@ -4611,10 +4812,13 @@ async function codexThreadRuntimeConfig(
   }
   runtimeConfig[codexMcpConfigPath("opensteer", "tools.computer_use.output_token_limit")] =
     codexComputerUseOutputTokenLimit;
-  return runtimeConfig;
 }
 
-function assertCodexProcessBoundary(configRead: JsonObject, config: JsonObject): void {
+function assertCodexProcessBoundary(
+  configRead: JsonObject,
+  config: JsonObject,
+  configuration: HarnessEngineConfiguration,
+): void {
   if (!Array.isArray(configRead.layers)) {
     throw protocolError("Codex config/read did not return configuration layers");
   }
@@ -4628,6 +4832,17 @@ function assertCodexProcessBoundary(configRead: JsonObject, config: JsonObject):
     throw protocolError("Codex config/read did not return its session override layer");
   }
   const sessionConfig = requireObject(sessionLayer.config, "Codex session override config");
+  if (configuration === "own") {
+    if (
+      sessionConfig.check_for_update_on_startup !== false ||
+      sessionConfig.allow_login_shell !== false ||
+      !codexShellEnvironmentPolicyApplied(sessionConfig.shell_environment_policy)
+    ) {
+      throw protocolError("Codex did not apply the complete Opensteer process boundary");
+    }
+    assertCodexCommandEnvironment(config);
+    return;
+  }
   const sessionTools = requireObject(sessionConfig.tools, "Codex session override config.tools");
   const sessionUpdatePlan = requireObject(
     sessionTools.update_plan,
@@ -4650,6 +4865,21 @@ function assertCodexProcessBoundary(configRead: JsonObject, config: JsonObject):
       message: "Local Codex policy prevents Opensteer from disabling native web search",
     });
   }
+  assertCodexCommandEnvironment(config);
+  if (
+    typeof config.instructions === "string" ||
+    typeof config.model_instructions_file === "string"
+  ) {
+    throw new OpensteerError({
+      code: "forbidden",
+      message:
+        "Local Codex configuration contains native model instructions that Opensteer cannot isolate",
+    });
+  }
+}
+
+/** What a model's commands start with is the Runner's, whichever configuration the Run has. */
+function assertCodexCommandEnvironment(config: JsonObject): void {
   if (config.allow_login_shell !== false) {
     throw new OpensteerError({
       code: "forbidden",
@@ -4661,16 +4891,6 @@ function assertCodexProcessBoundary(configRead: JsonObject, config: JsonObject):
       code: "forbidden",
       message:
         "Local Codex policy prevents Opensteer from keeping credentials out of the shell environment",
-    });
-  }
-  if (
-    typeof config.instructions === "string" ||
-    typeof config.model_instructions_file === "string"
-  ) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message:
-        "Local Codex configuration contains native model instructions that Opensteer cannot isolate",
     });
   }
 }
@@ -4804,7 +5024,8 @@ async function assertCodexMcpBoundary(
       details: { missingServers },
     });
   }
-  if (unexpected.length > 0) {
+  // With Codex's own configuration the person's servers are expected.
+  if (unexpected.length > 0 && engineConfiguration(context) === "stripped") {
     throw new OpensteerError({
       code: "forbidden",
       message: `Codex exposed unmanaged MCP servers inside the Opensteer runtime boundary: ${unexpected.join(", ")}`,
@@ -4813,8 +5034,11 @@ async function assertCodexMcpBoundary(
 }
 
 function codexMcpConfigPath(name: string, property: string): string {
-  const segment = /^[A-Za-z0-9_-]+$/u.test(name) ? name : JSON.stringify(name);
-  return `mcp_servers.${segment}.${property}`;
+  return `mcp_servers.${codexConfigSegment(name)}.${property}`;
+}
+
+function codexConfigSegment(name: string): string {
+  return /^[A-Za-z0-9_-]+$/u.test(name) ? name : JSON.stringify(name);
 }
 
 /**
@@ -4827,11 +5051,20 @@ function harnessModelId(selection: ModelSelection): string {
   return selection.nativeModelId ?? selection.modelId;
 }
 
+/**
+ * Agent home's `AGENTS.md`, unless Codex reads it itself: with its own
+ * configuration Codex starts in Agent home and reads that file as the
+ * project's, so Opensteer does not hand it over a second time.
+ */
+function codexAgentHomeInstructions(context: HarnessSessionContext): string | undefined {
+  return engineConfiguration(context) === "own" ? undefined : context.instructions;
+}
+
 function threadStartupOptions(context: HarnessSessionContext): JsonObject {
   const access = codexAccessModeConfiguration(context.accessMode, context.writableRoots);
   const developerInstructions = [
     context.platformGuide,
-    context.instructions,
+    codexAgentHomeInstructions(context),
     durableHistoryWindowNotice(context),
     ...(context.voiceCall ? [context.machineAccessNotice] : []),
   ]

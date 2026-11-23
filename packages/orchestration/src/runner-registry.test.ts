@@ -2681,6 +2681,7 @@ function executeCommand(
     agentHome: { computerId: createId("runner"), path: "/tmp/agent-home" },
     context: {
       personalContext: true,
+      personLineage: true,
       taskPurpose: "task",
       accessMode: "full-access",
       assignment: null,

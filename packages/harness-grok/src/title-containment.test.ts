@@ -103,6 +103,30 @@ process.stdout.write("Contained title\\n");
     expect(await stat(observed.home).catch(() => undefined)).toBeUndefined();
   });
 
+  it("refuses a task a connected agent or a chat started, before Grok starts", async () => {
+    const root = await temporaryDirectory();
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    const context = {
+      ...sessionContext(root, workspace, { PATH: process.env.PATH ?? "" }),
+      personLineage: false,
+    };
+    const adapter = await new GrokHarnessDriver({ executable: join(root, "no-grok") }).create({
+      config: {},
+      instanceId: context.harnessInstanceId,
+      sourceId: "xai",
+    });
+    try {
+      await expect(adapter.startSession(context)).rejects.toMatchObject({
+        code: "forbidden",
+        message:
+          "Grok starts with your own Grok settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+      });
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it("keeps the native session reference on a session that can name its Thread", async () => {
     const root = await temporaryDirectory();
     const workspace = join(root, "workspace");
@@ -428,6 +452,9 @@ function sessionContext(
     history: [],
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: undefined,
+    // The person's own task: the only kind this engine runs.
+    personalContext: true,
+    personLineage: true,
     machineAccessNotice: "No other computers are reachable.",
     modelSelection: ModelSelectionSchema.parse({
       modelId: "grok-4.6",

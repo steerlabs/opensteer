@@ -159,6 +159,12 @@ export const RunExecutionContextSchema = z.strictObject({
   /** A Home before team removal still sends null here; nothing reads it. */
   teamTurnContext: z.null().optional(),
   personalContext: z.boolean(),
+  /**
+   * The task and every task it descends from are the person's own: no
+   * connected agent's lineage and no chat in it. Only such a Run starts its
+   * engine with the engine's own configuration.
+   */
+  personLineage: z.boolean(),
   accessMode: ThreadAccessModeSchema,
   assignment: AssignmentRunContextSchema.nullable(),
   /** Scoped to files already admitted to this provider session and this frozen Run. */

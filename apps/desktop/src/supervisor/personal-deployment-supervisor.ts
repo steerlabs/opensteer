@@ -1,5 +1,6 @@
 import { nodeTrustEnvironment } from "../../../../deploy/container/opensteer-node-trust.mjs";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
+import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import {
   confirmRunnerShutdown,
   RunnerShutdownProofSchema,
@@ -2652,7 +2653,7 @@ function childExitDetail(
   diagnostic = "",
 ): string {
   const summary = result.error
-    ? `${displayComponent(component)} failed to start: ${result.error.message}`
+    ? `${displayComponent(component)} failed to start: ${sanitizedErrorDetail(result.error)}`
     : `${displayComponent(component)} stopped unexpectedly (${result.signal ?? `exit ${result.code}`}).`;
   const tail = sanitizedErrorDetail(diagnostic.trim()).slice(-1_200);
   return tail ? `${summary} ${tail}` : summary;
@@ -2673,7 +2674,7 @@ function safeErrorDetail(error: unknown): string {
 function sanitizedErrorDetail(error: unknown): string {
   const message =
     error instanceof Error ? error.message : String(error || "Personal setup failed.");
-  return message
+  return redactNetworkCredentials(message, networkCredentialSecrets(process.env))
     .replace(/Bearer\s+[^\s]+/giu, "Bearer [redacted]")
     .replace(/(?:password|token|secret)=([^\s&]+)/giu, "credential=[redacted]")
     .replace(/(postgres(?:ql)?:\/\/[^:\s/]+:)[^@\s/]+@/giu, "$1[redacted]@")

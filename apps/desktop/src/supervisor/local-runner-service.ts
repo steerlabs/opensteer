@@ -4,6 +4,7 @@ import { logShutdownError, type ShutdownLog } from "../app/desktop-shutdown.js";
 import { RestartPolicy } from "@opensteer/shared/restartPolicy";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { assertRegularFile } from "@opensteer/shared/privateFiles";
+import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { lstat, mkdir, readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -1794,6 +1795,7 @@ export class LocalRunnerService {
       }),
       { environmentInputs: "drop" },
     );
+    const networkSecrets = networkCredentialSecrets(environment);
     this.#assertCurrentIntent(slot, intentGeneration);
     const stoppedSince = this.#agentsStoppedSince?.();
     if (stoppedSince !== undefined)
@@ -1866,7 +1868,9 @@ export class LocalRunnerService {
             slot.activeTarget = undefined;
           }
           slot.state = cancelled ? "disabled" : "failed";
-          slot.detail = cancelled ? notEnrolledDetail : withLogTail(safeDetail(error), logTail());
+          slot.detail = cancelled
+            ? notEnrolledDetail
+            : withLogTail(safeDetail(error, networkSecrets), logTail(), networkSecrets);
           this.#emit();
           if (startupPending) rejectPromise(error);
           else if (!cancelled) this.#scheduleRestart(target.deploymentId);
@@ -2060,6 +2064,7 @@ export class LocalRunnerService {
               slot.detail = withLogTail(
                 `The Runner stopped unexpectedly (exit ${code}).`,
                 logTail(),
+                networkSecrets,
               );
               this.#emit();
               this.#scheduleRestart(target.deploymentId);
@@ -2915,23 +2920,23 @@ function boundedLogTail(streams: readonly (NodeJS.ReadableStream | null)[]): () 
 }
 
 /** The worker's last line of output, as much of it as a status line can carry. */
-function withLogTail(detail: string, tail: string): string {
+function withLogTail(detail: string, tail: string, secrets: readonly string[]): string {
   const lastLine = tail
     .split("\n")
     .map((line) => line.trim())
     .findLast((line) => line.length > 0);
   if (!lastLine) return detail;
-  return `${detail} Last output: ${redactSecrets(lastLine).slice(0, maxLogTailDetailChars)}`;
+  return `${detail} Last output: ${redactSecrets(lastLine, secrets).slice(0, maxLogTailDetailChars)}`;
 }
 
 /** Worker output and error messages both carry Host credentials in the clear. */
-function redactSecrets(message: string): string {
-  return message.replace(/Bearer\s+\S+/giu, "Bearer [redacted]");
+function redactSecrets(message: string, secrets: readonly string[]): string {
+  return redactNetworkCredentials(message, secrets).replace(/Bearer\s+\S+/giu, "Bearer [redacted]");
 }
 
-function safeDetail(error: unknown): string {
+function safeDetail(error: unknown, secrets = networkCredentialSecrets(process.env)): string {
   const message = error instanceof Error ? error.message : "The Runner failed on this Mac.";
-  return redactSecrets(message).slice(0, 2_000);
+  return redactSecrets(message, secrets).slice(0, 2_000);
 }
 
 async function readDeviceSigningIdentity(directory: string) {
