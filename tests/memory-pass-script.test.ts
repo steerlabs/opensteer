@@ -105,7 +105,7 @@ describe("memoryPassScript real execution (AA1)", () => {
           url: mcp.url,
         },
       }),
-      transport: { mode: "local" },
+      transport: { mode: "development" },
     });
     const executor = new AutomationScriptExecutor({
       nativeFsHelperBinary,

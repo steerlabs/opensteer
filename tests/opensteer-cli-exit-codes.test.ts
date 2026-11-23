@@ -110,7 +110,7 @@ describe("opensteer CLI exit codes against real Home failure payloads (AA4)", ()
         agentToolFailure(new OperationOutcomeUnknown("Lost contact mid-call"), "write"),
       ),
       agentToolFailureResult(
-        agentToolFailure(new PluginServiceError("execution-failed", "Half-done"), "write"),
+        agentToolFailure(new PluginServiceError("tool", "Half-done"), "write"),
       ),
       agentToolFailureResult(
         agentToolFailure(
