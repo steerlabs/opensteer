@@ -668,7 +668,8 @@ export const runnerTrustVariable = "NODE_USE_SYSTEM_CA";
 export function shellHelperEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const output: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(environment)) {
-    if (value === undefined || name.startsWith("OPENSTEER_") || name === runnerTrustVariable)
+    const upper = name.toUpperCase();
+    if (value === undefined || upper.startsWith("OPENSTEER_") || upper === runnerTrustVariable)
       continue;
     output[name] = value;
   }

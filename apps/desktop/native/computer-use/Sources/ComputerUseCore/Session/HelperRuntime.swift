@@ -707,13 +707,26 @@ public final class HelperRuntime {
   func requestExit(connection: IPCConnection) -> Wire.HelperExitResult {
     Log.lifecycle.notice("The desktop is quitting; ending its connection.")
     // Every socket of the app that is quitting ends with it: a watched window
-    // has a video socket of its own, and it is not another app.
+    // has a video socket of its own, and it is not another app. Close both
+    // peer-PID matches and any media sockets attached to this connection's
+    // streams (covering cases where `peerProcessIdentifier` is unavailable).
+    var peerConnections: [IPCConnection] = []
     if let quitting = connection.peerProcessIdentifier {
-      for other in Array(connections.values)
-      where other !== connection && other.peerProcessIdentifier == quitting {
-        connectionClosed(other, ending: .ended)
-        other.close()
+      peerConnections.append(
+        contentsOf: connections.values.filter {
+          $0 !== connection && $0.peerProcessIdentifier == quitting
+        })
+    }
+    for mediaID in video.attachedMediaConnectionIDs(for: connection) {
+      if let media = connections[mediaID], media !== connection,
+        !peerConnections.contains(where: { $0 === media })
+      {
+        peerConnections.append(media)
       }
+    }
+    for other in peerConnections {
+      connectionClosed(other, ending: .ended)
+      other.close()
     }
     // A quit is not a lost connection: the pill says the work ended.
     connectionClosed(connection, ending: .ended)

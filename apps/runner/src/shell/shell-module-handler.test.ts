@@ -84,7 +84,15 @@ describe("ShellModuleHandler", () => {
   it("keeps the Runner's own certificate switch out of the person's shells", () => {
     expect(runnerTrustVariable).toBe(nodeTrustVariable);
     expect(
-      shellHelperEnvironment({ HOME: "/Users/test", NODE_USE_SYSTEM_CA: "1", PATH: "/usr/bin" }),
+      shellHelperEnvironment({
+        HOME: "/Users/test",
+        NODE_USE_SYSTEM_CA: "1",
+        node_use_system_ca: "1",
+        Node_Use_System_Ca: "1",
+        opensteer_secret: "never",
+        Opensteer_Token: "never",
+        PATH: "/usr/bin",
+      }),
     ).toEqual({ HOME: "/Users/test", PATH: "/usr/bin" });
   });
 

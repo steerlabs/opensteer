@@ -374,9 +374,11 @@ const runtimeTaskStopWaitMs = 30_000;
 /** How long a stopped Run's engine gets to wind down before the Runner ends its processes. */
 const executionStopGraceMs = 3_000;
 /**
- * How long a session on a shared engine may take to settle its stop: its own
- * interrupt (Codex waits its request limit, 30 s by default) and the unload of
- * its conversations (up to 40 s), after which it retires its server itself.
+ * How long a session on a shared engine may take to settle its stop: Codex
+ * sends `turn/interrupt` without waiting for its reply, then runs up to four
+ * unload rounds (each bounded by 10 s for the `thread/unsubscribe` reply and
+ * 10 s for `thread/closed`, up to 80 s), and retires its server if any
+ * conversation still has not closed.
  */
 const sharedEngineStopSettleMs = 90_000;
 const uncontainedRetryMs = 5_000;
