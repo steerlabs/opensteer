@@ -383,6 +383,25 @@ describe("SurfaceLedger", () => {
     }
   });
 
+  it("takes a page showing a dialog as loaded at once: its document cannot answer until the dialog closes", async () => {
+    const page = new FakePage({ url: "https://dialog.test/" });
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    await flushMicrotasks();
+    const id = ledger.snapshot()[0]!.id;
+    try {
+      // The fake page never says it is complete, as a page blocked by its dialog does not.
+      page.cdpSession.emit("Page.javascriptDialogOpening", { message: "Sure?", type: "confirm" });
+      await flushMicrotasks();
+      const asked = performance.now();
+      expect(await ledger.documentLoaded(id, 15_000)).toBe("loaded");
+      expect(performance.now() - asked).toBeLessThan(1_000);
+    } finally {
+      await ledger.closeOwnedPages().catch(() => undefined);
+      await ledger.close().catch(() => undefined);
+    }
+  });
+
   it("keeps no closed target in a sleeping lineage when the page's sleep cannot keep the tab as itself (finding 10)", async () => {
     const page = new FakePage({ url: "https://no-helper.test/" });
     Object.assign(page, {

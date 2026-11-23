@@ -758,6 +758,9 @@ export class SurfaceLedger {
       // V3: a tab that went back to sleep is not waited for: it is said at once.
       if (!live && (record.lease.state === "suspended" || record.lease.state === "sleeping"))
         return "asleep";
+      // A page showing a dialog is a running document, and its scripts wait on the answer: it
+      // cannot say its ready state until the dialog closes, and the agent must see it to answer.
+      if (live?.dialog) return "loaded";
       if (live && !live.loading && live.pendingNavigations.size === 0) {
         const read = (await withTimeout(
           live.cdp.send("Runtime.evaluate", {
