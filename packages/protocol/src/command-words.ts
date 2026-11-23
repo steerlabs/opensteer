@@ -121,6 +121,7 @@ export const commandTitles: { readonly [K in CommandType]: string } = {
   "channel.me.link": "Link your own chat identity",
   "browser.session.start": "Open a browser",
   "browser.session.close": "Close a browser",
+  "browser.session.dismiss": "Dismiss an unconfirmed closed browser",
   "browser.profile.create": "Create a browser profile",
   "browser.profile.rename": "Rename a browser profile",
   "browser.profile.delete": "Delete a browser profile",

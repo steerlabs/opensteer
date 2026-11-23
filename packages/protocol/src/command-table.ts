@@ -1276,6 +1276,15 @@ export const commandTable: CommandTable = {
     governsKinds: ["browser-session"],
     governs: (c) => resource("browser-session", c.sessionId),
   },
+  "browser.session.dismiss": {
+    family: "browser",
+    scope: "task",
+    step: "none",
+    faces: [personView],
+    governsKinds: ["browser-session"],
+    governs: (c) => resource("browser-session", c.sessionId),
+    effect: "database",
+  },
   "browser.profile.create": {
     family: "browser",
     scope: "new",

@@ -156,12 +156,13 @@ edit. Callers: (a) your own agent at Full access, (b) your own agent below Full 
 | `channel.chat.create` | a new chat connection (an AgentConnection) on a chat account ← `accountId`, `conversation` (null = its direct messages), `senders` (fixed for life), `accessMode`, `grant` | widen-other | ask | ask | nf | nf | — | branch `host-api.ts:1026-1044`, `channel-handlers.ts:66-77`; "anyone" senders only for a named channel, holding tasks and plugins only; X13: a chat account and its chats are other connections, so not found for every connected agent |
 | `channel.me.link` | the person's own identity on a chat account ← `accountId`; returns a code the person sends from that account | identity | ask | ask | nf | nf | — | branch `host-api.ts:1046-1054`, `channel-handlers.ts:80-83`; the code is never returned to an agent; X13: a chat account and its chats are other connections, so not found for every connected agent |
 
-## Browser (16)
+## Browser (17)
 
 | Command | Governs ← input | Class | (a) | (b) | (c) | (d) | Step | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `browser.session.start` | a page in a profile ← `input.profileId` | widen-self | now | now | now | now | B | owner-only `browser.start` (`server.ts:2504`); `tab_open` is the actor path; X11: the session goes on for the task it was started for, so a connection asks unless that lineage is its own |
 | `browser.session.close` | a browser session ← `sessionId` | narrow | now | now | now | now | B |  |
+| `browser.session.dismiss` | an unconfirmed closed browser ← `sessionId` | person-view | nf | nf | nf | nf | — | the person's dismissal of an unconfirmed-close warning; an agent must not clear it |
 | `browser.profile.create` | a new profile ← `input.name` | widen-self | now | ask | now | ask | B |  |
 | `browser.profile.rename` | a profile ← `profileId` | preference | now | ask | now | now | A (d: B) | `admin-svc:613`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
 | `browser.profile.delete` | a profile and its sign-ins ← `profileId` | destroy | now | ask | now | ask | A | ; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |

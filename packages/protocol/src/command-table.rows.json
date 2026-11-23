@@ -2819,6 +2819,30 @@
       }
     },
     {
+      "type": "browser.session.dismiss",
+      "family": "browser",
+      "governs": "an unconfirmed closed browser ← `sessionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "the person's dismissal of an unconfirmed-close warning; an agent must not clear it",
+      "effect": {
+        "where": "database",
+        "why": "server.ts:2615: dismisses the unconfirmed-close flag in one database transaction",
+        "ongoing": false
+      }
+    },
+    {
       "type": "browser.profile.create",
       "family": "browser",
       "governs": "a new profile ← `input.name`",
