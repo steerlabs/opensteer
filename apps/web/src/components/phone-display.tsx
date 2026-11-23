@@ -759,7 +759,7 @@ export function ComputerDisplayScreen({
           onDismiss={dismissMenu}
           onAction={(action) => {
             if (action === "copy" || action === "cut") proxy.current?.perform({ kind: action });
-            else if (action === "paste") proxy.current?.pasteFromMenu();
+            else if (action === "paste") proxy.current?.pasteFromMenu(menu.contextId);
             else if (action === "select-all")
               proxy.current?.perform({
                 kind: "command",

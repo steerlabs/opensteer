@@ -336,8 +336,11 @@ export function BrowserViewport({
   }, [editingTarget]);
   function menuAction(action: StreamedMenuAction) {
     if (action === "copy" || action === "cut") textInputRef.current?.perform({ kind: action });
-    else if (action === "paste") textInputRef.current?.pasteFromMenu();
-    else if (action === "select-all") {
+    else if (action === "paste") {
+      // PH3: made for the field the menu was opened in, and refused in any other.
+      const contextId = editingTarget?.get().menuContext;
+      if (contextId) textInputRef.current?.pasteFromMenu(contextId);
+    } else if (action === "select-all") {
       // CZ3: made for the field the menu was opened in, and refused in any other.
       const contextId = editingTarget?.get().menuContext;
       if (contextId)

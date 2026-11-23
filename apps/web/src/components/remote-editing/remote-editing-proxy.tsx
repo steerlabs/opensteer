@@ -41,7 +41,7 @@ export interface RemoteEditingProxyHandle {
   pointerDown(): void;
   activate(): void;
   perform(operation: EditingOperation): void;
-  pasteFromMenu(): void;
+  pasteFromMenu(contextId?: string): void;
   copyText(text: string): void;
 }
 export interface RemoteCaretPosition {
@@ -117,6 +117,11 @@ export function RemoteEditingProxy({
   const touchFocus = useRef(false);
   const alive = useRef(true);
   const revision = useRef(0);
+  const nativePasteId = useRef(0);
+  const pendingNativePaste = useRef<{
+    readonly id: number;
+    readonly contextId: string | undefined;
+  } | null>(null);
   const clipboard = useRef<ViewerClipboard | null>(null);
   if (!clipboard.current) {
     const native = desktopBridge()?.writeViewerClipboard;
@@ -272,11 +277,17 @@ export function RemoteEditingProxy({
         const arm = clipboard.current!.arm("copy");
         arm.resolve([{ type: "text/plain", bytes: new TextEncoder().encode(text) }]);
       },
-      pasteFromMenu: () => {
+      pasteFromMenu: (menuContext?: string) => {
+        const scope = menuContext ?? current.current.context?.contextId;
         focus();
         const nativePaste = desktopBridge()?.pasteViewerClipboard;
         if (nativePaste) {
-          void nativePaste().catch(failure);
+          const id = ++nativePasteId.current;
+          pendingNativePaste.current = { id, contextId: scope };
+          void nativePaste().catch((reason) => {
+            if (pendingNativePaste.current?.id === id) pendingNativePaste.current = null;
+            failure(reason);
+          });
           return;
         }
         if (!navigator.clipboard?.read) {
@@ -285,7 +296,6 @@ export function RemoteEditingProxy({
           );
           return;
         }
-        const scope = current.current.context?.contextId;
         // A custom web menu has no native Paste command; Clipboard.read is gesture-gated.
         void navigator.clipboard
           .read()
@@ -296,11 +306,12 @@ export function RemoteEditingProxy({
                 const blob = await item.getType(type);
                 payload.push({ type, bytes: new Uint8Array(await blob.arrayBuffer()) });
               }
-            if (current.current.context?.contextId !== scope || !current.current.enabled) {
+            if (!alive.current || !current.current.enabled) return;
+            if (!scope) {
               refuse("The remote field changed before paste completed.");
               return;
             }
-            feed({ type: "paste", items: payload });
+            feed({ type: "paste", items: payload, contextId: scope });
           })
           .catch(failure);
       },
@@ -318,6 +329,7 @@ export function RemoteEditingProxy({
       if (enabled && focused) focus(touchFocus.current);
     }
     if (!enabled) {
+      pendingNativePaste.current = null;
       feed({ type: "blur" });
       element.current?.blur();
     } else if (touchFocus.current && context?.field) focus(true);
@@ -408,7 +420,15 @@ export function RemoteEditingProxy({
                 const nativePaste = desktopBridge()?.pasteViewerClipboard;
                 if (binding?.kind === "paste" && nativePaste) {
                   event.preventDefault();
-                  void nativePaste().catch(failure);
+                  const id = ++nativePasteId.current;
+                  pendingNativePaste.current = {
+                    id,
+                    contextId: current.current.context?.contextId,
+                  };
+                  void nativePaste().catch((reason) => {
+                    if (pendingNativePaste.current?.id === id) pendingNativePaste.current = null;
+                    failure(reason);
+                  });
                   return;
                 }
               }
@@ -491,14 +511,20 @@ export function RemoteEditingProxy({
           paste.preventDefault();
           const data = paste.clipboardData;
           if (!data) return;
-          const scope = current.current.context?.contextId;
+          const pending = pendingNativePaste.current;
+          pendingNativePaste.current = null;
+          const scope = pending ? pending.contextId : current.current.context?.contextId;
           const items: EditingClipboardPayloadItem[] = [];
           for (const type of ["text/plain", "text/html"])
             if (data.types.includes(type))
               items.push({ type, bytes: new TextEncoder().encode(data.getData(type)) });
           const files = [...data.files];
           if (!files.length) {
-            feed({ type: "paste", items }, event);
+            if (pending && !scope) {
+              refuse("The remote field changed before paste completed.");
+              return;
+            }
+            feed({ type: "paste", items, ...(scope ? { contextId: scope } : {}) }, event);
             return;
           }
           void Promise.all(
@@ -509,15 +535,12 @@ export function RemoteEditingProxy({
             })),
           )
             .then((files) => {
-              if (
-                !alive.current ||
-                !current.current.enabled ||
-                current.current.context?.contextId !== scope
-              ) {
+              if (!alive.current || !current.current.enabled) return;
+              if (!scope) {
                 refuse("The remote field changed before paste completed.");
                 return;
               }
-              feed({ type: "paste", items: [...items, ...files] });
+              feed({ type: "paste", items: [...items, ...files], contextId: scope });
             })
             .catch(failure);
         },
@@ -556,6 +579,7 @@ export function RemoteEditingProxy({
   useEffect(() => {
     alive.current = true;
     return () => {
+      pendingNativePaste.current = null;
       feed({ type: "blur" });
       alive.current = false;
       clipboard.current!.dispose();

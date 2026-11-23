@@ -90,7 +90,7 @@ function setup(
     render,
     focusTouch: () => act(() => handle?.focus(true)),
     pointerDown: () => act(() => handle?.pointerDown()),
-    pasteFromMenu: () => act(() => handle?.pasteFromMenu()),
+    pasteFromMenu: (contextId?: string) => act(() => handle?.pasteFromMenu(contextId)),
   };
 }
 function input(
@@ -428,6 +428,86 @@ describe("real shared proxy element", () => {
     await act(async () => Promise.resolve());
     expect(paste).toHaveBeenCalledOnce();
     expect(operations).toEqual([]);
+  });
+  it("stamps web pasteFromMenu with the menu's context after focus moved", async () => {
+    const read = vi.fn(async () => [
+      {
+        types: ["text/plain"],
+        getType: async () => new Blob(["secret"], { type: "text/plain" }),
+      },
+    ]);
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      clipboard: { read },
+    });
+    const other: EditingContext = {
+      ...context,
+      contextId: "00000000-0000-4000-8000-000000000002",
+      field: { ...context.field!, sensitive: true },
+    };
+    const { pasteFromMenu, render, operations } = setup();
+    render({ context: other });
+    pasteFromMenu(context.contextId);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(operations).toMatchObject([{ kind: "paste", contextId: context.contextId }]);
+  });
+  it("stamps desktop menu Paste and Cmd+V with the pre-IPC context if focus moves mid-IPC", async () => {
+    const paste = vi.fn(async () => undefined);
+    const write = vi.fn(async () => undefined);
+    Object.defineProperty(window, "opensteerDesktop", {
+      configurable: true,
+      value: { pasteViewerClipboard: paste, writeViewerClipboard: write },
+    });
+    const other: EditingContext = {
+      ...context,
+      contextId: "00000000-0000-4000-8000-000000000002",
+      field: { ...context.field!, sensitive: true },
+    };
+    const trustedPaste = (text: string) => {
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "isTrusted", { value: true });
+      Object.defineProperty(event, "clipboardData", {
+        value: { types: ["text/plain"], getData: () => text, files: [] },
+      });
+      return event;
+    };
+    const { element, pasteFromMenu, render, operations } = setup();
+    // 1) Menu paste opened in Field A (`context`), clicked after focus moved to Field B (`other`).
+    render({ context: other });
+    pasteFromMenu(context.contextId);
+    await act(async () => Promise.resolve());
+    act(() => {
+      element().dispatchEvent(trustedPaste("from-menu"));
+    });
+    expect(operations).toMatchObject([{ kind: "paste", contextId: context.contextId }]);
+
+    // 2) Electron Cmd+V pressed in Field B (`other`), focus moves to Field C before IPC delivers DOM paste.
+    const third: EditingContext = {
+      ...context,
+      contextId: "00000000-0000-4000-8000-000000000003",
+      field: { ...context.field!, sensitive: false },
+    };
+    act(() => {
+      element().dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "v",
+          code: "KeyV",
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    render({ context: third });
+    await act(async () => Promise.resolve());
+    act(() => {
+      element().dispatchEvent(trustedPaste("from-shortcut"));
+    });
+    expect(operations.at(-1)).toMatchObject({ kind: "paste", contextId: other.contextId });
   });
   it("renders local preedit when the target has no composition ability", () => {
     const { element, container, operations } = setup({

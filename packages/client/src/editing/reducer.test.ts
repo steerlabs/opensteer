@@ -1062,6 +1062,24 @@ describe("a paste over a selection the target cannot delete", () => {
       { kind: "paste", contextId: context.contextId, follows: true },
     ]);
   });
+  it("preserves an explicit pre-captured contextId on paste after focus moved to another context", () => {
+    const other: EditingContext = {
+      ...context,
+      contextId: "00000000-0000-4000-8000-000000000002",
+    };
+    const items = [{ type: "text/plain", bytes: new TextEncoder().encode("secret") }];
+    const { state, operations } = replay([
+      { type: "context", context: other },
+      input("typed"),
+      { type: "paste", items, contextId: context.contextId },
+    ]);
+    expect(operations.at(-1)).toEqual({
+      kind: "paste",
+      items,
+      contextId: context.contextId,
+    });
+    expect(state.proxy.value).toBe("typed");
+  });
 });
 
 // CV1 (found by regime C, seed 735): a Backspace at the mirror's start is the page's, at its

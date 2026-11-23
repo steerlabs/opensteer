@@ -72,7 +72,12 @@ export type EditingProxyEvent =
        */
       readonly moves?: readonly number[] | undefined;
     }
-  | { readonly type: "paste"; readonly items: readonly EditingClipboardPayloadItem[] }
+  | {
+      readonly type: "paste";
+      readonly items: readonly EditingClipboardPayloadItem[];
+      /** PH3: the context captured before an async menu or native-paste IPC round-trip. */
+      readonly contextId?: string | undefined;
+    }
   | { readonly type: "copy" | "cut" }
   | { readonly type: "pointerdown" }
   | { readonly type: "blur" }

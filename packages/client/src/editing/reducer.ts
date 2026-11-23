@@ -1039,6 +1039,13 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
             : text
               ? [text]
               : [];
+      // PH3: a paste captured for an earlier context (before a menu click or desktop IPC
+      // round-trip) carries that context untouched and must not mutate the newer field's mirror.
+      if (event.contextId !== undefined && event.contextId !== state.context?.contextId) {
+        if (items.length) emit({ kind: "paste", items, contextId: event.contextId });
+        else if (event.items.length) refusal = "clipboard";
+        break;
+      }
       // A paste over a selection replaces it, as typing over it does. The far field has no
       // selection: the selection is deleted first, and the paste goes in where it was.
       const { value, selectionStart: start, selectionEnd: end } = state.proxy;
