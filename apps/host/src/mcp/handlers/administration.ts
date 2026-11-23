@@ -34,10 +34,7 @@ type AdministrationToolName =
   | "computer_remove"
   | "browser_profile_list"
   | "browser_profile_update"
-  | "browser_profile_remove"
-  | "opensteer_messaging_bridge_list"
-  | "opensteer_messaging_bridge_update"
-  | "opensteer_messaging_bridge_remove";
+  | "browser_profile_remove";
 export type AdministrationHandlers = Pick<AgentToolHandlers, AdministrationToolName>;
 
 function command(value: Record<string, unknown>): AdministrationCommand {
@@ -45,7 +42,6 @@ function command(value: Record<string, unknown>): AdministrationCommand {
   if (
     isAdministrationCommand(parsed) ||
     parsed.type === "browser.site.remove" ||
-    parsed.type === "channel.binding.revoke" ||
     parsed.type === "channel.connection.status.set"
   )
     return parsed;
@@ -197,23 +193,6 @@ export class AdministrationToolHandlers {
         return this.#write(c, tool, { type: "browser.site.remove", site: i.site });
     }
   }
-  bridgeCommand(
-    c:
-      ToolCall<"opensteer_messaging_bridge_update"> | ToolCall<"opensteer_messaging_bridge_remove">,
-  ) {
-    const i = c.input;
-    return "routeId" in i
-      ? this.#write(c, "opensteer_messaging_bridge_remove", {
-          type: "channel.binding.revoke",
-          bindingId: i.routeId,
-        })
-      : this.#write(c, "opensteer_messaging_bridge_update", {
-          type: "channel.connection.status.set",
-          connectionId: i.bridgeId,
-          status: i.paused ? "paused" : "connected",
-        });
-  }
-
   async execute(caller: AgentCaller, command: AdministrationCommand) {
     return { ...(await this.service.execute(caller, command)), ok: true as const };
   }
@@ -516,28 +495,6 @@ export class AdministrationToolHandlers {
       sites: sources?.sites ?? [],
     };
   }
-  async opensteer_messaging_bridge_list({ caller }: ToolCall<"opensteer_messaging_bridge_list">) {
-    await this.service.actor(caller);
-    const dashboard = await this.service.dependencies.channels.service.dashboard(caller.userId);
-    return {
-      bridges: dashboard.connections.map((connection) => {
-        const accounts = new Set(
-          dashboard.accounts
-            .filter((account) => account.connectionId === connection.id)
-            .map(({ id }) => id),
-        );
-        return {
-          bridgeId: connection.id,
-          name: connection.displayName,
-          provider: connection.provider,
-          status: connection.status,
-          routes: dashboard.bindings
-            .filter((binding) => accounts.has(binding.accountId))
-            .map(({ id, status }) => ({ routeId: id, status })),
-        };
-      }),
-    };
-  }
 }
 function defaultsView(preferences: z.output<typeof ExecutionPreferencesViewSchema>) {
   const latest = preferences.history[0];
@@ -583,8 +540,5 @@ export function administrationToolHandlers(
     browser_profile_list: (c) => admin.browser_profile_list(c),
     browser_profile_update: mutation((c) => admin.browserCommand(c)),
     browser_profile_remove: mutation((c) => admin.browserCommand(c)),
-    opensteer_messaging_bridge_list: (c) => admin.opensteer_messaging_bridge_list(c),
-    opensteer_messaging_bridge_update: mutation((c) => admin.bridgeCommand(c)),
-    opensteer_messaging_bridge_remove: mutation((c) => admin.bridgeCommand(c)),
   };
 }

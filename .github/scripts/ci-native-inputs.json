@@ -302,6 +302,7 @@
     "apps/host/src/browser/standard-cdp-tickets.ts",
     "apps/host/src/browser/standard-cdp-transport.ts",
     "apps/host/src/browser/trigger-cdp-bridge.ts",
+    "apps/host/src/channels/bridge-caller.ts",
     "apps/host/src/channels/channel-handlers.ts",
     "apps/host/src/channels/channel-service.ts",
     "apps/host/src/channels/messaging-relay-hub.ts",

@@ -335,20 +335,11 @@ describe("the iMessage adapter", () => {
         text: "On it.",
         to: "+15551230000",
       });
-      // Nothing to look up: sending again with the same key is the lookup.
-      await expect(
-        adapter.outbound.reconcile({
-          delivery,
-          destination,
-          lease,
-          signal: new AbortController().signal,
-        }),
-      ).resolves.toEqual({ kind: "unknown" });
     });
 
     it("stops a send the helper cannot confirm, but retries definite refusals", async () => {
       const cases = [
-        ["delivery-unconfirmed", "dead"],
+        ["delivery-unconfirmed", "unknown"],
         ["outcome-unknown", "unknown"],
         ["busy", "retryable"],
         ["failed", "retryable"],
@@ -367,7 +358,7 @@ describe("the iMessage adapter", () => {
       }
     });
 
-    it("reconciles a lost transport answer using the same delivery key", async () => {
+    it("sends each delivery under its own key, which the helper never sends twice", async () => {
       const port = helper();
       vi.mocked(port.send).mockRejectedValueOnce(new Error("Bridge disconnected"));
       const adapter = createIMessageAdapter({ cursors: store(), helper: port });

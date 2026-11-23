@@ -1,4 +1,3 @@
-import { channelAllowsPersonalContext } from "@opensteer/channel-core";
 import type { RunId, ThreadId, UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -31,6 +30,7 @@ export async function runAllowsPersonalContext(
 ): Promise<boolean> {
   return (await runContextLineage(database, runId)).personalContext;
 }
+
 export async function runContextLineage(
   database: Kysely<DatabaseSchema>,
   runId: RunId,
@@ -40,9 +40,9 @@ export async function runContextLineage(
     .select(["threadId", "requestedBy", "connectionId"])
     .where("id", "=", runId)
     .executeTakeFirstOrThrow();
-  const lineage = await threadContextLineage(database, run.threadId, run.requestedBy);
-  return run.connectionId === null ? lineage : { ...lineage, personLineage: false };
+  return queryContextLineage(database, run.threadId, run.connectionId);
 }
+
 export async function threadAllowsPersonalContext(
   database: Kysely<DatabaseSchema>,
   threadId: ThreadId,
@@ -50,15 +50,30 @@ export async function threadAllowsPersonalContext(
 ): Promise<boolean> {
   return (await threadContextLineage(database, threadId, ownerId)).personalContext;
 }
+
 export async function threadContextLineage(
   database: Kysely<DatabaseSchema>,
   threadId: ThreadId,
-  ownerId: UserId,
+  _ownerId: UserId,
+): Promise<ThreadContextLineage> {
+  return queryContextLineage(database, threadId, null);
+}
+
+async function queryContextLineage(
+  database: Kysely<DatabaseSchema>,
+  threadId: ThreadId,
+  runConnectionId: string | null,
 ): Promise<ThreadContextLineage> {
   // Reused workers retain every assigning conversation's context restriction, a task linked
   // under another (an automation's own task) retains its parent's, and work an automation's
-  // program sends anywhere retains its anchor's.
-  const ancestors = await sql<{ threadId: ThreadId; notPersons: boolean }>`
+  // program sends anywhere retains its anchor's. Chats are connections in `agent_connections`
+  // with `bridge_senders` set ('me' keeps personal context, 'anyone' drops it; both are chats
+  // and neither is the person's own lineage).
+  const result = await sql<{
+    total: number;
+    chatCount: number;
+    nonPersonalCount: number;
+  }>`
     with recursive context_threads(id) as (
       select ${threadId}::text
       union
@@ -107,72 +122,42 @@ export async function threadContextLineage(
         select parent_thread_id as id from threads
         where id = current.id and parent_thread_id is not null
       ) parent
-    )
-    -- A thread is not the person's when a connected agent started it or wrote
-    -- into it, including a cancelled input whose delivery could have started.
-    select context_threads.id as thread_id,
-      (thread.origin_connection_id is not null
-        or exists (
-          select 1 from thread_inputs written
-          where written.thread_id = context_threads.id
-            and (
-              written.state <> 'cancelled'
-              or written.run_id is not null
-              or written.steer_command_id is not null
-              or written.delivered_at is not null
-            )
-            and written.connection_id is not null
-        )) as not_persons
-    from context_threads
-    join threads thread on thread.id = context_threads.id
-  `.execute(database);
-  const threadIds = ancestors.rows.map((row) => row.threadId);
-  const persons = ancestors.rows.every((row) => !row.notPersons);
-  const sources = await database
-    .selectFrom("threadInputs")
-    .innerJoin("channelConversations", (join) =>
-      join.on(
-        sql<boolean>`channel_conversations.id = thread_inputs.authority_source->>'conversationId'`,
-      ),
-    )
-    .leftJoin("channelIdentities", "channelIdentities.principalId", "threadInputs.actorPrincipalId")
-    .select([
-      "threadInputs.threadId",
-      "channelConversations.conversationType",
-      "channelIdentities.linkedUserId",
-      "channelIdentities.status",
-    ])
-    .where("threadInputs.threadId", "in", threadIds)
-    .where((eb) =>
-      eb.or([
-        eb("threadInputs.state", "<>", "cancelled"),
-        eb("threadInputs.runId", "is not", null),
-        eb("threadInputs.steerCommandId", "is not", null),
-        eb("threadInputs.deliveredAt", "is not", null),
-      ]),
-    )
-    .where(sql<string>`thread_inputs.authority_source->>'kind'`, "=", "channel-ingress")
-    .execute();
-  const represented = new Set(sources.map((source) => source.threadId));
-  const unrepresented = threadIds.filter((id) => !represented.has(id));
-  if (
-    unrepresented.length &&
-    (await database
-      .selectFrom("channelConversations")
-      .select("id")
-      .where("activeThreadId", "in", unrepresented)
-      .executeTakeFirst())
-  )
-    return { fromChat: true, personalContext: false, personLineage: false };
-  return {
-    fromChat: sources.length > 0,
-    personLineage: persons && sources.length === 0,
-    personalContext: sources.every((source) =>
-      channelAllowsPersonalContext({
-        conversationType: source.conversationType,
-        linkedSenderId: source.status === "linked" ? source.linkedUserId : null,
-        ownerId: ownerId,
-      }),
     ),
+    touched_connections(connection_id) as (
+      select thread.origin_connection_id
+      from context_threads
+      join threads thread on thread.id = context_threads.id
+      where thread.origin_connection_id is not null
+      union
+      select written.connection_id
+      from context_threads
+      join thread_inputs written on written.thread_id = context_threads.id
+      where (
+          written.state <> 'cancelled'
+          or written.run_id is not null
+          or written.steer_command_id is not null
+          or written.delivered_at is not null
+        )
+        and written.connection_id is not null
+      union
+      select ${runConnectionId}::text
+      where ${runConnectionId}::text is not null
+    )
+    select
+      count(*)::int as total,
+      count(*) filter (where conn.bridge_senders is not null)::int as chat_count,
+      count(*) filter (where conn.id is null or conn.bridge_senders = 'anyone')::int
+        as non_personal_count
+    from touched_connections tc
+    left join agent_connections conn on conn.id = tc.connection_id
+  `.execute(database);
+  const row = result.rows[0];
+  const total = row?.total ?? 0;
+  const chatCount = row?.chatCount ?? 0;
+  const nonPersonalCount = row?.nonPersonalCount ?? 0;
+  return {
+    fromChat: chatCount > 0,
+    personLineage: total === 0,
+    personalContext: nonPersonalCount === 0,
   };
 }

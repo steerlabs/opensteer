@@ -44,6 +44,11 @@ import {
 import { workHomeMigrationName, applyWorkHome } from "./work-home-migration.js";
 import { browserPoolMigrationName, applyBrowserPool } from "./browser-pool-migration.js";
 import {
+  applyBridgeConnections,
+  bridgeConnectionsMigrationName,
+} from "./bridge-connections-migration.js";
+import { applyChatRoutesEnd, chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
+import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
   withPersonalStateStartupLock,
@@ -658,6 +663,8 @@ export function migrationProvider(options?: {
                   );
                 },
               },
+              [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
+              [chatRoutesEndMigrationName]: { up: applyChatRoutesEnd },
               "0114_thread_inputs_written_by_connection": {
                 /**
                  * Indexes connection-written inputs per task so `threadContextLineage` checks

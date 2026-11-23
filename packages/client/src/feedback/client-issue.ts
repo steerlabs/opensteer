@@ -119,6 +119,10 @@ const rejectionReasons: Readonly<Record<string, string>> = {
   "plugin-consent-changed": "What this plugin asks for changed. Review it again.",
   "plugin-webhooks-active": "Remove this plugin's webhook subscriptions first.",
   "plugin-workflows-active": "Stop this plugin's workflow runs first.",
+  // A chat's grant, in the Home's words (core's chatGrantRefusal).
+  "bridge-needs-tasks": "A chat can only ask your own agents to work, so it always needs tasks.",
+  "bridge-anyone-grant":
+    "When anyone in the conversation can message it, it can use only tasks and the plugins you choose.",
 };
 
 /** A read the Host answered, saying a source beyond it can't be reached now. */

@@ -156,10 +156,6 @@ export function createIMessageAdapter(options: {
     },
 
     outbound: {
-      async reconcile() {
-        return { kind: "unknown" as const };
-      },
-
       async send(input) {
         if (!helper) throw new ChannelDeliveryError(desktopMissing, "retryable");
         const text = input.delivery.content
@@ -179,13 +175,15 @@ export function createIMessageAdapter(options: {
           if (error instanceof IMessageHelperError) {
             throw new ChannelDeliveryError(
               error.message,
-              // The helper has durable evidence of an unconfirmed attempt.
-              // It will never repeat it; leave its explanation for the owner.
-              error.code === "delivery-unconfirmed"
-                ? "dead"
-                : error.code === "outcome-unknown"
-                  ? "unknown"
-                  : "retryable",
+              // A send that may have happened is unknown: the helper's own record of
+              // an unconfirmed attempt (`delivery-unconfirmed`, which it never repeats)
+              // and a lost answer (`outcome-unknown`) alike, so Disconnect shows it
+              // and nothing sends it again. `failed`, `busy` and
+              // `permission-required` are said only before Messages was asked, or
+              // when it refused, and the helper keeps the key otherwise.
+              error.code === "delivery-unconfirmed" || error.code === "outcome-unknown"
+                ? "unknown"
+                : "retryable",
             );
           }
           // A reply whose answer never came back may have been sent.

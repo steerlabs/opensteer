@@ -753,7 +753,8 @@ export function DesktopConnect({
         : { kind: "address", origin: origin.trim() },
     );
     if (!parsed.success) {
-      setFormError(parsed.error.issues[0]?.message ?? "Enter a valid Opensteer address.");
+      // A validator's issue is never drawn as it is: the form says what to enter.
+      setFormError("Enter a valid Opensteer address.");
       return;
     }
     setFormError(null);

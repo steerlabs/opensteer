@@ -16,6 +16,20 @@ inline transcript messages with 1 MiB detail snapshots; version 66 removed every
 from the wire, and both require an update for clients on an earlier version. Agent-enabled
 Runners update alongside the Host and negotiate `run-events-v2` separately.
 
+## Chats are connected agents (Personal API 66)
+
+Slack and iMessage chats become connected agents: each is listed with the other connected agents,
+with what it can use, Stop and Disconnect, and on Messaging the person links "me" with a code and
+adds chats. Routes and sender approvals are gone; migration 0053 converts each active route to a
+chat that only "me" can give work to, and ties tasks from before the update to "Messages before
+the update", whose tasks run without the person's personal context. A paused account holds its
+chats' replies and Runs; Slack does not deliver what is sent meanwhile, iMessage does.
+
+**Rolling back** to a build before this one keeps the person's data but not every behaviour: the old
+build cannot link a second identity on an account or create an iMessage connection with two or more
+addresses (the one-"me" index refuses it); identities the update unlinked stay unlinked; chats
+disconnected on the new build stay ended. Nothing gets wider than it was before the update.
+
 ## Build inputs and local proof
 
 Contributor builds ([desktop README](../apps/desktop/README.md)) need no Developer ID or

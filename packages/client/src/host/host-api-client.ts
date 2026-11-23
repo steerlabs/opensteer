@@ -189,6 +189,7 @@ async function dispatchInMemory<Name extends keyof typeof hostApi>(
           ? {
               code: "bad_request",
               message: `Request is invalid: ${formatIssues(error.issues)}`,
+              reason: "invalid-request",
               retryable: false,
             }
           : {

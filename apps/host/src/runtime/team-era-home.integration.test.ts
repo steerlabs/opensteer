@@ -1,6 +1,7 @@
 import { createId, SequenceSchema, type ThreadId } from "@opensteer/core";
 import {
-  migrateToLatest,
+  migrationProvider,
+  personTaskReader,
   readAgentThreadActivity,
   readAgentThreadRecent,
   readThreadWaitSnapshot,
@@ -137,13 +138,11 @@ it("keeps a Home that used teams working: its old rows read without error and ev
       waiting: waiting.message.id,
     });
 
-    // The Home's start runs this release's migrations over that database.
-    await sql`drop index thread_inputs_written_by_connection`.execute(store.database);
-    await sql`alter table provider_sessions drop column person_lineage`.execute(store.database);
-    await sql`delete from kysely_migration where name >= '0107_needs_you_counts_requests'`.execute(
-      store.database,
-    );
-    await migrateToLatest(store.database);
+    // This release's migration for it runs over that database, as on a Home that last ran the
+    // release before. Later migrations already ran on this one, so it is run as itself rather
+    // than by forgetting it and migrating again.
+    const migrations = await migrationProvider().getMigrations();
+    await migrations["0107_needs_you_counts_requests"]!.up(store.database as never);
 
     // What a client reads at startup.
     const shell = data(await host.api["personal.shell.get"]({}));
@@ -208,6 +207,7 @@ it("keeps a Home that used teams working: its old rows read without error and ev
     // Task-list message search, changedSince, and activity paging all omit retired teammate messages.
     const searched = await store.agentThreadPageForOwner({
       ownerId: host.ownerId,
+      reader: personTaskReader,
       scope: { kind: "personal" },
       scopeId: own.threadId,
       query: "teammate",
@@ -215,6 +215,7 @@ it("keeps a Home that used teams working: its old rows read without error and ev
     expect(searched.threads.map(({ id }) => id)).not.toContain(threadId);
     const changed = await store.agentThreadPageForOwner({
       ownerId: host.ownerId,
+      reader: personTaskReader,
       scope: { kind: "personal" },
       scopeId: own.threadId,
       changedSince: new Date(0),
