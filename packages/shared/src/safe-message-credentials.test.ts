@@ -15,3 +15,10 @@ it("removes a proxy address's user and password and keeps the rest", () => {
     "https://example.test/path?a=b",
   );
 });
+
+it("stays linear on a long message", () => {
+  const message = `HEAD:${"f".repeat(200_000)}:TAIL http://person:fake-proxy-password@proxy.test`;
+  const started = performance.now();
+  expect(redactUrlCredentials(message)).not.toContain("fake-proxy-password");
+  expect(performance.now() - started).toBeLessThan(1_000);
+});

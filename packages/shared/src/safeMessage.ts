@@ -36,8 +36,10 @@ export const networkEnvironmentNames = [
  * A URL's user and password, which a proxy address can carry. Every message an
  * engine's error, a log line or a Run's failure can show passes this first.
  */
+// Both parts are bounded, so a long run of letters cannot make it backtrack
+// for every position of a long message.
 export const urlCredentialRedaction = Object.freeze({
-  pattern: /([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/giu,
+  pattern: /([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@]{1,1024}@/giu,
   replacement: "$1[REDACTED]@",
 });
 
