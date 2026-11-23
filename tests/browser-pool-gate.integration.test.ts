@@ -4161,3 +4161,142 @@ it("returns null from closeAgentSession on a pooled closing session without re-i
     await j.close();
   }
 });
+
+it("refuses to write a hold and still parks when device access is turned off during pooled openTab's request (PH2)", async () => {
+  let j: Awaited<ReturnType<typeof journey>> | undefined;
+  j = await journey("ph2-opentab-access-off", {
+    chromium: false,
+    profile: true,
+    requireAgentAccess: (runnerId) =>
+      requireRunnerDeviceAccess(j!.database, runnerId, "browser", true),
+    detachRunnerAgents: async (runnerId) => {
+      const rows = await j!.database
+        .selectFrom("browserSessions")
+        .select("id")
+        .where("runnerId", "=", runnerId)
+        .execute();
+      if (!rows.length) return [];
+      const ids = rows.map(({ id }) => id);
+      await j!.database
+        .deleteFrom("browserSessionAttachments")
+        .where("sessionId", "in", ids)
+        .execute();
+      return ids;
+    },
+  });
+  try {
+    const home = await j.startHome();
+    const profile = j.profile!;
+    const driverRow = await j.database
+      .selectFrom("deviceDrivers")
+      .select("deviceId")
+      .where("runnerId", "=", j.task.runnerId)
+      .where("role", "=", "self")
+      .where("detachedAt", "is", null)
+      .executeTakeFirstOrThrow();
+    const deviceId = driverRow.deviceId;
+    await j.database
+      .updateTable("devices")
+      .set({
+        kind: "computer",
+        ownerKind: "user",
+        ownerUserId: j.task.userId,
+        accessPolicy: {
+          reach: "owner",
+          commands: true,
+          forwarding: true,
+          shares: [],
+          browser: true,
+          apps: true,
+        },
+        accessPolicyRevision: 1,
+      })
+      .where("id", "=", deviceId)
+      .execute();
+    const personTab = await home.service.openTab(j.task.userId, {
+      type: "browser.tab.open",
+      identity: { kind: "profile", profileId: profile.id },
+      placement: { kind: "runner", runnerId: j.task.runnerId },
+      idempotencyKey: "ph2-person-tab",
+    });
+
+    const requestSent = Promise.withResolvers<void>();
+    const releaseRequest = Promise.withResolvers<void>();
+    const origSend = TestRuntimeConnection.prototype.send;
+    const sendSpy = vi
+      .spyOn(TestRuntimeConnection.prototype, "send")
+      .mockImplementation(function (
+        this: TestRuntimeConnection,
+        ...args: Parameters<TestRuntimeConnection["send"]>
+      ) {
+        const message = JSON.parse(args[0]) as {
+          type?: string;
+          command?: { method?: string };
+        };
+        if (
+          message.type === "cdp.command" &&
+          message.command?.method === browserHostMethods.openTab
+        ) {
+          requestSent.resolve();
+          void releaseRequest.promise.then(() => origSend.apply(this, args));
+          return;
+        }
+        return origSend.apply(this, args);
+      });
+
+    try {
+      const opening = home.service.openTab(
+        j.task.userId,
+        {
+          type: "browser.tab.open",
+          identity: { kind: "profile", profileId: profile.id },
+          placement: { kind: "runner", runnerId: j.task.runnerId },
+          idempotencyKey: "ph2-agent-tab",
+        },
+        {
+          agentBindingId: `run:${j.task.runId}`,
+          ownerId: j.task.userId,
+          environmentId: j.task.environmentId,
+          threadId: j.task.threadId,
+        },
+      );
+      await before(requestSent.promise, opening, "agent openTab request in flight");
+
+      // Turn browser access off on this computer while openTab awaits the runtime's reply.
+      await home.service.withRunnerAdmission(j.task.runnerId, async () => {
+        const updated = await j.store.updateDeviceAccessPolicy({
+          deviceId,
+          ownerId: j.task.userId,
+          allowDeployment: true,
+          expectedRevision: 1,
+          policy: {
+            reach: "owner",
+            commands: true,
+            forwarding: true,
+            shares: [],
+            browser: false,
+            apps: true,
+          },
+          idempotency: { key: "ph2-device-off", requestedBy: j.task.userId },
+        });
+        expect(updated.outcome).toBe("updated");
+        await home.service.disableAgentAccess(j.task.runnerId);
+      });
+
+      releaseRequest.resolve();
+      await expect(opening).rejects.toThrow();
+
+      // No attachment row was written, and the pooled browser can park cleanly.
+      expect(await j.store.listBrowserSessionAttachmentBindings(personTab.sessionId)).toEqual([]);
+      await until(() => expect(home.coordinator.gate.held).toBe(0));
+      expect(await home.coordinator.tryPark()).toBe("parked");
+    } finally {
+      releaseRequest.resolve();
+      sendSpy.mockRestore();
+      home.coordinator.close();
+      await home.service.close();
+    }
+  } finally {
+    await j.close();
+  }
+});

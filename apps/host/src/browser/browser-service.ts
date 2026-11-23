@@ -995,6 +995,7 @@ export class BrowserService {
   readonly #announcedPresence = new Map<BrowserSessionId, string>();
   readonly #agentAdmissions = new KeyedMutationQueue();
   readonly #runnerAccessGeneration = new Map<RunnerId, number>();
+  #accessGeneration = 0;
   readonly #deviceAccessDisabled = new Error("This device's browser access was turned off.");
   readonly #requireAgentAccess: (runnerId: RunnerId) => Promise<void>;
   readonly #requireAgentVisibility: (runnerId: RunnerId) => Promise<void>;
@@ -1029,6 +1030,7 @@ export class BrowserService {
    * after the lane is released. Without an agent the command is the person's.
    */
   async disableAgentAccess(runnerId: RunnerId): Promise<void> {
+    this.#accessGeneration++;
     this.#runnerAccessGeneration.set(
       runnerId,
       (this.#runnerAccessGeneration.get(runnerId) ?? 0) + 1,
@@ -2502,6 +2504,7 @@ export class BrowserService {
           }
           budget.signal.throwIfAborted();
           if (agent) {
+            budget.openAccessGeneration = this.#runnerAccessGeneration.get(runnerId) ?? 0;
             await this.admitAgentBrowser(
               agent,
               "read-write",
@@ -2764,6 +2767,8 @@ export class BrowserService {
           "The original browser is unavailable. This request cannot start another browser.",
         );
       budget.signal.throwIfAborted();
+      const accessGeneration =
+        budget.openAccessGeneration ?? this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
       if (agent && binding.outcome.kind === "opened")
         await this.admitAgentBrowser(agent, "read-write", [record]);
       if (binding.outcome.kind !== "opened") {
@@ -2894,7 +2899,8 @@ export class BrowserService {
           "browser-tab-open-outcome-unknown",
           "The page outcome is unknown.",
         );
-      if (budget.pool && agent && !agent.browserSend) await this.#holdForAgent(agent, record);
+      if (budget.pool && agent && !agent.browserSend)
+        await this.#holdForAgent(agent, record, { accessGeneration, recheck: true });
       await this.#flushTabDescriptors(record.id);
       this.#onTabsChanged();
       const visible = await this.#visibleOpenerThreads(ownerId, [record]);
@@ -4796,13 +4802,13 @@ export class BrowserService {
       if (!record || this.#ended(record)) {
         throw new OpensteerError({ code: "not_found", message: "Browser tab unavailable." });
       }
+      const accessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
       if (!(await this.agentMayAccessSession(input, record))) {
         throw new OpensteerError({
           code: "forbidden",
           message: "That tab is not available to this task.",
         });
       }
-      const accessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
       const pool = this.#pool(record.runnerId);
       if (pool) await this.#requireAgentAccess(record.runnerId);
       const reservation = pool
@@ -4839,6 +4845,7 @@ export class BrowserService {
         message: "This browser profile is unavailable.",
       });
     // The exact profile, or Guest, before any browser starts for this binding.
+    const globalAccessGeneration = this.#accessGeneration;
     await this.admitAgentBrowser(input, "read-write", [], this.#repository, false, {
       profileId: input.profileId ?? null,
     });
@@ -4878,7 +4885,10 @@ export class BrowserService {
           message: "The browser became unavailable to this task while it was opening.",
         });
       }
-      await this.#holdForAgent(input, openedRecord, { requireAccess: true });
+      await this.#holdForAgent(input, openedRecord, {
+        requireAccess: true,
+        globalAccessGeneration,
+      });
       return {
         session: await this.#agentSessionSummary(input, opened.session.id),
         wasExisting: false,
@@ -4990,6 +5000,7 @@ export class BrowserService {
       readonly inRunnerAdmission?: boolean;
     },
   ) {
+    const globalAccessGeneration = this.#accessGeneration;
     const sessionId = input.sessionId ?? (await this.#followedAgentSessionId(input));
     // Attaching is new access; a command on an open attachment follows its Run's end.
     // Check authority before inspecting the broker so an unauthorized caller never
@@ -5028,7 +5039,8 @@ export class BrowserService {
         "The browser cannot keep your tab separate from the agent's tab. Update Opensteer on that computer, then reopen the tab.",
       );
     if (captured) (captureAuthority ?? noteAuthority)?.(captured);
-    if (hold && input.sessionId) await this.#holdForAgent(input, record, lane);
+    if (hold && input.sessionId)
+      await this.#holdForAgent(input, record, { ...lane, globalAccessGeneration });
     return { record, broker, backend };
   }
 
@@ -5913,6 +5925,7 @@ export class BrowserService {
     // Work under a connection's authority, as the one authority rule resolved this attachment's
     // binding: settled here, once, and never read again per command.
     let connectionWork = connectedAgentBinding(input.agentBindingId);
+    const globalAccessGeneration = this.#accessGeneration;
     const { record, broker } = await this.#admitAgentBackend(
       input,
       "cdp",
@@ -6002,6 +6015,7 @@ export class BrowserService {
       if (
         !nativeAttachment &&
         (admissionWaited ||
+          this.#accessGeneration !== globalAccessGeneration ||
           (this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== accessGeneration)
       ) {
         try {
@@ -8069,6 +8083,7 @@ export class BrowserService {
       readonly recheck?: boolean;
       readonly requireAccess?: boolean;
       readonly accessGeneration?: number;
+      readonly globalAccessGeneration?: number;
       readonly heldProfileId?: BrowserProfileId | null;
       readonly profileWaited?: boolean;
       readonly inRunnerAdmission?: boolean;
@@ -8104,7 +8119,9 @@ export class BrowserService {
             profileWaited ||
             reservation?.waited ||
             admissionWaited ||
-            (this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== accessGeneration,
+            (this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== accessGeneration ||
+            (options?.globalAccessGeneration !== undefined &&
+              this.#accessGeneration !== options.globalAccessGeneration),
           );
           if (mustRecheck) await this.#admitAgentSession(input, record.id, false);
           else if (options?.requireAccess) await this.#requireAgentAccess(record.runnerId);
@@ -12024,6 +12041,7 @@ interface BrowserTabOpenBudget {
   readonly expiresAt: number;
   readonly abort?: (reason?: unknown) => void;
   readonly browserSend?: PooledBrowserSend;
+  openAccessGeneration?: number;
   admitted?: BrowserTabOpenBinding;
   pageRequested?: boolean;
   cleanupPoolAbort?: () => void;
