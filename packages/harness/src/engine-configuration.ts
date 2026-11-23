@@ -34,24 +34,20 @@ export function engineConfiguration(context: {
 
 /**
  * The engines that may unconditionally run a task that is not the person's own,
- * each on evidence. For each of the first group a real-engine test in the
- * engine lane plants one of every kind of the person's configuration that
- * engine loads, in a temporary home and project, and shows that such a task's
- * mode holds, nothing of theirs runs for it, and none of their instructions or
- * memory reaches it. The second group always start with a home of Opensteer's.
+ * on evidence: a real-engine test in the engine lane plants one of every kind
+ * of the person's configuration that engine loads, in a temporary home and
+ * project, and shows that such a task's mode holds, nothing of theirs runs for
+ * it, and none of their instructions or memory reaches it.
  *
- * Codex is checked dynamically below: it runs others' tasks from an
- * Opensteer-owned `CODEX_HOME` sharing the person's `auth.json` by symlink
- * whenever a file login exists (or on an isolated profile), and refuses when
- * their login is in the system keyring or missing.
+ * Codex and Pi are checked dynamically below (each also has a real-engine
+ * boundary test, and refuses before spawning when a credential store or
+ * command-backed auth setting cannot be used without running the person's
+ * programs). Every other engine — including Cursor, Grok, Muse Code, OpenCode
+ * and Antigravity — is refused on others' tasks until it has that proof.
  */
 const enginesShownWithoutThePersonsConfiguration: ReadonlySet<string> = new Set([
   // packages/harness-claude/src/own-configuration.engine.test.ts
   "claude",
-  // A Runner-owned home, its project configuration switched off.
-  "opencode",
-  // A Runner-owned `GEMINI_HOME`.
-  "antigravity",
 ]);
 
 /**

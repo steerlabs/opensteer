@@ -33,12 +33,14 @@ it("gives the engine's own configuration only to the person's own task with pers
 it("refuses a task that is not the person's own only on an engine not shown to start without their configuration", () => {
   const others = { personalContext: true, personLineage: false };
   const own = { personalContext: true, personLineage: true };
-  for (const engine of ["claude", "pi", "opencode", "antigravity"])
+  for (const engine of ["claude", "pi"])
     expect(() => assertEngineMayRun(engine, others)).not.toThrow();
   for (const [engine, label] of [
     ["cursor", "Cursor"],
     ["grok", "Grok"],
     ["muse", "Muse Code"],
+    ["opencode", "OpenCode"],
+    ["antigravity", "Antigravity"],
   ] as const) {
     expect(() => assertEngineMayRun(engine, others)).toThrow(
       `${label} starts with your own ${label} settings, so it runs only tasks you started yourself that no connected agent or chat has written to.`,

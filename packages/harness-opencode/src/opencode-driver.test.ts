@@ -2107,8 +2107,8 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
       itemCount: options.history?.length ?? 0,
     },
     instructions: "Follow the workspace instructions.",
-    personalContext: false,
-    personLineage: false,
+    personalContext: true,
+    personLineage: true,
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,
@@ -2323,6 +2323,21 @@ it("retains tool-result image files without provider base64", async () => {
     expect(JSON.stringify(observer.events)).not.toContain("iVBORw0KGgoA");
   } finally {
     await session.stop();
+    await fixture.adapter.close();
+  }
+});
+
+it("refuses a task that is not the person's own before starting OpenCode", async () => {
+  const fixture = await setup("happy");
+  try {
+    await expect(
+      fixture.adapter.startSession({ ...fixture.context, personLineage: false }),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+      message:
+        "OpenCode starts with your own OpenCode settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+    });
+  } finally {
     await fixture.adapter.close();
   }
 });

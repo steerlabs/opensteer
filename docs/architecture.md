@@ -275,11 +275,9 @@ under the person's configuration. The Runner is told `personLineage`, and `engin
 (`packages/harness/src/engine-configuration.ts`) is the one place that chooses.
 
 Such a task keeps the task's mode, runs nothing of theirs (hooks, notify commands, command
-prefixes, MCP servers) and reads none of their instructions or memory; what the engine needs to
-sign in stays. An engine that reads the person's own configuration runs such a task only where an
-engine-lane test plants one of each kind in a temporary home and project and shows all three on the
-real engine (OpenCode and Antigravity always start from a Runner-owned home and do not read the
-person's configuration in either case, though neither has a boundary test yet). Otherwise
+prefixes, credential commands, MCP servers) and reads none of their instructions or memory; what
+the engine needs to sign in stays. An engine runs such a task only where an engine-lane test plants
+one of each kind in a temporary home and project and shows all three on the real engine. Otherwise
 `assertEngineMayRun`, in the same file, refuses it before any process starts, with code `forbidden`
 and one sentence, for example: "Cursor starts with your own Cursor settings, so it runs only tasks
 you started yourself that no connected agent or chat has written to." The Home offers every engine
@@ -313,12 +311,9 @@ unavailable when `models.json` or `auth.json` contains a `"!"` shell command).
   provider runs a credential command or uses AWS/Bedrock credentials (`auth`, `aws.*`,
   `amazon-bedrock`, `amazon-bedrock-runtime`), `assertEngineMayRun` refuses others' tasks with code
   `forbidden` and background text returns `unavailable`.
-- **Cursor**, **Grok** and **Muse Code** run only the person's own tasks: each reads the person's
-  own configuration with no way shown to start without it.
-- **OpenCode** and **Antigravity** run both and do not read the person's own configuration of
-  them, in their own task either. OpenCode starts with a configuration home Opensteer writes for the
-  session and with project configuration and Claude Code's prompt and skills switched off;
-  Antigravity starts with isolated state only. Neither has a boundary test yet.
+- **Cursor**, **Grok**, **Muse Code**, **OpenCode** and **Antigravity** run only the person's own
+  tasks: none has a real-engine boundary test proving all three guarantees on others' tasks, so
+  `assertEngineMayRun` refuses them with code `forbidden` before any process starts.
 
 Every task's engine gets the person's proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`,
 `NO_PROXY` and their lowercase spellings) and certificate variables (`NODE_EXTRA_CA_CERTS`,

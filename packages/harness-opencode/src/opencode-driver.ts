@@ -41,6 +41,7 @@ import {
   type HarnessGenerateTextResult,
   HarnessSessionRegistry,
   TurnPublisher,
+  assertEngineMayRun,
   assertFreshProviderSessionContext,
   initialContinuationContextPrompt,
   boundedDenialNote,
@@ -714,6 +715,7 @@ class OpencodeHarnessAdapter implements HarnessAdapter {
 
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
+    assertEngineMayRun("opencode", context);
     assertFreshProviderSessionContext(context);
     // OpenCode mints the session id, so the reference is only known once the
     // server has answered.
@@ -725,6 +727,7 @@ class OpencodeHarnessAdapter implements HarnessAdapter {
     context: HarnessSessionContext,
   ): Promise<HarnessSession> {
     this.#sessions.assertOpen();
+    assertEngineMayRun("opencode", context);
     const reference = validateProviderReference(providerSessionReference);
     return this.#sessions.open(reference, () => this.#open(context, { reference, type: "resume" }));
   }
