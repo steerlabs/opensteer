@@ -168,6 +168,15 @@ export interface RunnerMessageSink {
   publishOutputImage?(image: ToolOutputImage, signal: AbortSignal): Promise<void>;
 }
 
+/** What a Run may reach on disk (`RunnerRuntime.#runFolders`). */
+interface RunFolders {
+  readonly workingDirectory: string;
+  readonly writableRoots: readonly string[];
+  readonly fileRoot: string;
+  /** Agent home, for the person's skills and settings; null without personal context. */
+  readonly agentHome: string | null;
+}
+
 export interface RunnerRuntimeOptions {
   /** Execution leases only; request, engine and transport budgets stay real. */
   readonly executionClock?: Clock;
@@ -313,7 +322,8 @@ interface ActiveRun {
   readonly saturatedToolDeltaCallIds: Set<string>;
   readonly toolDeltaBytes: Map<string, number>;
   readonly toolNodeIds: Map<string, ExecutionNodeId>;
-  agentHome?: AgentHomeWorkspace;
+  /** What it may reach on disk, from `runFolders`; set once it has a working directory. */
+  folders?: RunFolders;
   /**
    * What the engine reaches the Host and the browser through, while this Run
    * holds them; cut on interrupt. A Run that hands its engine on lets go of
@@ -885,6 +895,40 @@ export class RunnerRuntime {
     }
   }
 
+  /**
+   * What a Run may reach on disk, decided once from whether it has personal context: its working
+   * directory (also its environment's workspace and its warm engine's), the roots it may write,
+   * the folder a file it sends by a relative path is read from, and Agent home where it may read
+   * the person's skills and settings. Without personal context the Run's own folder is all it has:
+   * nothing of Agent home (memory, AGENTS.md, home skills, settings) is a root, a file source,
+   * named in its environment or part of its warm engine. Nothing else reads Agent home's path on a
+   * Run's behalf (`runtime-agent-home.test.ts`).
+   */
+  async #runFolders(
+    context: { readonly personalContext: boolean; readonly providerSessionId: string },
+    workspace: AgentHomeWorkspace,
+  ): Promise<RunFolders> {
+    if (context.personalContext)
+      return {
+        workingDirectory: workspace.path,
+        writableRoots: [workspace.path],
+        fileRoot: workspace.path,
+        agentHome: workspace.path,
+      };
+    // Shared Messaging must not trigger native discovery of the owner's home instructions.
+    const workingDirectory = join(
+      await (this.#messagingWorkRoot ??= mkdtemp(join(tmpdir(), "opensteer-messaging-"))),
+      context.providerSessionId,
+    );
+    await mkdir(workingDirectory, { recursive: true, mode: 0o700 });
+    return {
+      workingDirectory,
+      writableRoots: [workingDirectory],
+      fileRoot: workingDirectory,
+      agentHome: null,
+    };
+  }
+
   withRunFiles<T>(
     execution: RunFileExecution,
     signal: AbortSignal,
@@ -896,7 +940,7 @@ export class RunnerRuntime {
       active.settling ||
       active.abort.signal.aborted ||
       active.command.context.bindingGeneration !== execution.bindingGeneration ||
-      !active.agentHome
+      !active.folders
     )
       return Promise.reject(
         new RunFileError("This task execution has ended; retry from the current task."),
@@ -905,7 +949,7 @@ export class RunnerRuntime {
     if (!this.#canDeliverMessageAttachments(context.harness.driverKind) || !this.#attachmentCache)
       return Promise.reject(new RunFileError("This engine or machine cannot receive files."));
     const cache = this.#attachmentCache;
-    const agentHomePath = active.agentHome.path;
+    const fileRoot = active.folders.fileRoot;
     const lifetime = new AbortController();
     const linked = AbortSignal.any([
       signal,
@@ -916,7 +960,7 @@ export class RunnerRuntime {
     const task = (async () => {
       const directory = await cache.directory(context.threadId);
       linked.throwIfAborted();
-      return await work({ roots: [agentHomePath, directory], directory, signal: linked });
+      return await work({ roots: [fileRoot, directory], directory, signal: linked });
     })();
     active.fileTasks.add(task);
     void task
@@ -2748,7 +2792,6 @@ export class RunnerRuntime {
         personalContext: context.personalContext,
         signal: active.abort.signal,
       });
-      active.agentHome = workspace;
       const adapter = await this.#harnesses.adapter(context.harnessInstanceId);
       const transport = { deploymentShape: this.#deploymentShape, mode: this.#mode };
       const credentials = new RunCredentials(context);
@@ -2802,18 +2845,9 @@ export class RunnerRuntime {
         attachmentRoot && attachmentDirectory ? { attachmentDirectory, attachmentRoot } : {};
       this.#requireInputAttachments(command.inputs, attachments);
       this.#requireInputAttachments(command.reports.messages, attachments);
-      // Shared Messaging must not trigger native discovery of the owner's home instructions.
-      const workingDirectory = context.personalContext
-        ? workspace.path
-        : join(
-            await (this.#messagingWorkRoot ??= mkdtemp(join(tmpdir(), "opensteer-messaging-"))),
-            context.providerSessionId,
-          );
-      if (!context.personalContext) await mkdir(workingDirectory, { recursive: true, mode: 0o700 });
-      // Without personal context the Run's own folder is all it has: nothing of Agent home (the
-      // person's memory, AGENTS.md, home skills) is readable or writable as a root, named in its
-      // environment, or part of its warm engine's identity.
-      const writableRoots = [workingDirectory];
+      const folders = await this.#runFolders(context, workspace);
+      active.folders = folders;
+      const { workingDirectory, writableRoots } = folders;
       // Once taken, the idle engine remains this Run’s to reuse or retire.
       warmEngine = await this.#warm.take(context.threadId);
       // An engine that failed or was recycled while it waited serves no Run.
@@ -2835,10 +2869,10 @@ export class RunnerRuntime {
         threadId: context.threadId,
       });
       plugins = runSkills;
-      const homeSkills = context.personalContext
-        ? await this.#scanAgentHomeSkills(workspace.path, context.bindingGeneration)
+      const homeSkills = folders.agentHome
+        ? await this.#scanAgentHomeSkills(folders.agentHome, context.bindingGeneration)
         : { skills: [], warnings: [], digest: "personal-context-disabled" };
-      if (context.personalContext) await this.#readAgentHomeSettings(workspace.path);
+      if (folders.agentHome) await this.#readAgentHomeSettings(folders.agentHome);
       for (const warning of new Set(homeSkills.warnings)) {
         this.#logger?.info(warning, {
           runId: context.runId,
@@ -3279,7 +3313,7 @@ export class RunnerRuntime {
           () => undefined,
         );
       }
-      if (workspace && context.personalContext) await this.#readAgentHomeSettings(workspace.path);
+      if (active.folders?.agentHome) await this.#readAgentHomeSettings(active.folders.agentHome);
       // Naming owns another process in this containment scope. It must exit
       // before stop, the single-tree warm check, or credential teardown.
       active.settling = true;
@@ -3323,7 +3357,7 @@ export class RunnerRuntime {
           threadId: internalBinding.threadId,
         });
       }
-      delete active.agentHome;
+      delete active.folders;
       terminal ??= failureEvent("Runner execution ended unexpectedly", "runner_internal_error");
       await this.#settleLiveStreams(active).catch(() => undefined);
       if (active.interrupted)

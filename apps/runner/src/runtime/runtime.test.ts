@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { AttachmentCache } from "../attachments/attachment-cache.js";
+import { RunFileError, RunFiles } from "../attachments/run-files.js";
 import { agentTools, appHostingGuide } from "@opensteer/agent-tools";
 import { hostCommandPlatform } from "@opensteer/shared/command";
 import {
@@ -6745,6 +6746,74 @@ it("creates the attachment directory before launch and drains file work before R
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it.each([false, true])(
+  "sends a file by a relative path from the Run's own folder, never from Agent home without personal context (personal context: %s)",
+  async (personalContext) => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "runtime-run-files-")));
+    const agentHome = join(root, "agent-home");
+    await mkdir(agentHome);
+    await writeFile(join(agentHome, "AGENTS.md"), "the person's own instructions");
+    const cache = new AttachmentCache({
+      root: join(root, "cache"),
+      transport: { mode: "development", hostOrigin: new URL("http://localhost") },
+    });
+    const registry = new HarnessRegistry();
+    const driver = new FakeHarnessDriver("test-driver", () => new HeldHarnessSession());
+    Object.defineProperty(driver, "capabilities", {
+      value: {
+        ...fakeHarnessCapabilities,
+        messageAttachments: { darwinIsolatedServiceSandbox: true },
+      },
+    });
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const base = executeCommand(environmentId);
+    const command = {
+      ...base,
+      agentHome: { ...base.agentHome!, path: agentHome },
+      context: { ...base.context, personalContext },
+    };
+    const runtime = configuredRuntime({
+      environmentId,
+      registry,
+      attachmentCache: cache,
+      workspacePrepare: async () => ({ instructions: undefined, path: agentHome }),
+    });
+    const files = new RunFiles({
+      dataDirectory: join(root, "private"),
+      helperBinary: testNativeFsHelperBinary,
+      transport: { mode: "development", hostOrigin: new URL("http://localhost") },
+    });
+    await reconcile(registry, command);
+    try {
+      await runtime.handleCommand(command, { send: async () => undefined });
+      await vi.waitFor(() => expect(driver.context).toBeDefined(), { timeout: 2_000 });
+      const execution = {
+        runId: command.context.runId,
+        bindingGeneration: command.context.bindingGeneration,
+      };
+      const send = (path: string) =>
+        runtime.withRunFiles(execution, new AbortController().signal, async (access) => {
+          const source = await files.source(path, access);
+          const chunks: Buffer[] = [];
+          for await (const chunk of source.body) chunks.push(Buffer.from(chunk as Uint8Array));
+          return Buffer.concat(chunks).toString("utf8");
+        });
+      if (personalContext) {
+        await expect(send("AGENTS.md")).resolves.toBe("the person's own instructions");
+      } else {
+        // A relative path is read from the Run's own folder, where there is no AGENTS.md.
+        await expect(send("AGENTS.md")).rejects.toThrow();
+        // And Agent home is not one of its roots at all.
+        await expect(send(join(agentHome, "AGENTS.md"))).rejects.toThrow(RunFileError);
+      }
+    } finally {
+      await runtime.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 describe("this computer's own view and Stop of its Runs", () => {
   function blockingRuntime() {
