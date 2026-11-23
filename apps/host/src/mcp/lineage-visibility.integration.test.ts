@@ -753,4 +753,97 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       qOwnB.request.id,
     );
   });
+
+  it("hides Requests on tasks whose execution environment is unavailable in both list and read", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("lineage-unavailable-env");
+    const runScopes: Record<string, RunToolScope> = {};
+    const url = await serveMcp(storeFixture, { runScopes });
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+    });
+    const liveTask = await createTask(agent, f, "live-env-reader");
+    const unavailableTask = await createTask(agent, f, "unavailable-env-task");
+    const liveRun = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, liveTask)).id,
+    );
+    const unavailableRun = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, unavailableTask)).id,
+    );
+    runScopes["live-run"] = fixtureRunScope({ ...f, ...liveRun, threadId: liveTask });
+    const client = await runClient(url, "live-run");
+    const call = (name: string, arguments_: Record<string, unknown>) =>
+      client.callTool({ name, arguments: arguments_ });
+
+    const req = await storeFixture.store.requests.create({
+      callId: "unavailable-env-question",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: unavailableRun.runId,
+      originatingThreadId: unavailableTask,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Unavailable env question",
+        fields: [
+          { id: "answer", prompt: "Ready?", secret: false, custom: true, multiSelect: false },
+        ],
+      },
+    });
+
+    const unavailableEnv = await storeFixture.store.createEnvironment({
+      kind: "local",
+      name: "Unavailable computer",
+      runnerId: null,
+    });
+    const unavailableHarnessId = createId("harnessInstance");
+    await storeFixture.database
+      .insertInto("harnessInstances")
+      .values({
+        id: unavailableHarnessId,
+        environmentId: unavailableEnv,
+        driverKind: "native",
+        name: "Unavailable Harness",
+        config: sql`'{}'::jsonb`,
+        runtimeRevision: 1,
+        stateKind: "isolated",
+        enabled: true,
+        isDefault: false,
+        sourceId: "unavailable-env-fixture",
+      })
+      .execute();
+    await storeFixture.database
+      .updateTable("threads")
+      .set({ environmentId: unavailableEnv, harnessInstanceId: unavailableHarnessId })
+      .where("id", "=", unavailableTask)
+      .execute();
+
+    const listedAll = await call("opensteer_request_list", { status: "all" });
+    expect(listedAll.isError, JSON.stringify(listedAll.content)).not.toBe(true);
+    expect((listedAll.structuredContent as { requests: unknown[] }).requests).toEqual([]);
+
+    const listedTask = await call("opensteer_request_list", {
+      taskId: unavailableTask,
+      status: "all",
+    });
+    expect(listedTask.isError, JSON.stringify(listedTask.content)).not.toBe(true);
+    expect((listedTask.structuredContent as { requests: unknown[] }).requests).toEqual([]);
+
+    expect(await call("opensteer_request_read", { requestId: req.request.id })).toEqual(
+      await call("opensteer_request_read", { requestId: createId("request") }),
+    );
+
+    const pendingTasks = await call("opensteer_task_list", { hasPendingRequests: true });
+    expect(pendingTasks.isError, JSON.stringify(pendingTasks.content)).not.toBe(true);
+    expect(
+      (pendingTasks.structuredContent as { tasks: { id: string }[] }).tasks.map(({ id }) => id),
+    ).not.toContain(unavailableTask);
+  });
 });

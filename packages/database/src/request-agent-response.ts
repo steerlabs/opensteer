@@ -23,6 +23,7 @@ import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
 import { assertThreadCaller, type ThreadCallerAuthority } from "./thread-caller.js";
+import { isWorkHomeDatabase } from "./work-home-context.js";
 export const AgentRequestResponderSchema = z.object({
   expectedRevision: PersonalRevisionSchema,
   authority: z.object({
@@ -116,6 +117,32 @@ async function connectionRequestsQuery(
     .leftJoin("agentSessions", "agentSessions.id", "requests.originatingAgentSessionId")
     .selectAll("requests")
     .where("threads.createdBy", "=", authority.userId)
+    .$if(isWorkHomeDatabase(tx), (query) =>
+      query.where((eb) =>
+        eb.exists(
+          eb.selectFrom("workHomePolicy").select("singleton").where("state", "=", "active"),
+        ),
+      ),
+    )
+    .where((eb) =>
+      eb.exists(
+        eb
+          .selectFrom("personalSettings")
+          .innerJoin("users", "users.id", "personalSettings.ownerId")
+          .innerJoin(
+            "executionEnvironments",
+            "executionEnvironments.runnerId",
+            "personalSettings.agentHomeComputerId",
+          )
+          .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
+          .select("executionEnvironments.id")
+          .where("personalSettings.singletonKey", "=", "personal")
+          .where("personalSettings.ownerId", "=", authority.userId)
+          .where("users.disabledAt", "is", null)
+          .whereRef("executionEnvironments.id", "=", "threads.environmentId")
+          .where("runners.revokedAt", "is", null),
+      ),
+    )
     .$if(scope === "selected", (query) =>
       query.where("threads.originConnectionId", "=", authority.connectionId),
     )
@@ -220,7 +247,6 @@ export async function readPendingConnectionRequest(
   threadId: Request["originatingThreadId"],
   assignmentId?: import("@opensteer/core").AssignmentId,
 ) {
-  if (!(await threadExecutionIsAvailableToUser(tx, threadId, authority.userId))) return undefined;
   const query = await connectionRequestsQuery(tx, authority);
   return query
     .clearSelect()
@@ -247,21 +273,10 @@ export function visibleConnectionRequestIds(
     const query = await connectionRequestsQuery(tx, authority);
     const rows = await query
       .clearSelect()
-      .select(["requests.id", "requests.originatingThreadId"])
+      .select("requests.id")
       .where("requests.id", "in", [...new Set(requestIds)])
       .execute();
-    const available = new Map<string, boolean>();
-    for (const { originatingThreadId } of rows)
-      if (!available.has(originatingThreadId))
-        available.set(
-          originatingThreadId,
-          await threadExecutionIsAvailableToUser(tx, originatingThreadId, authority.userId),
-        );
-    return new Set(
-      rows
-        .filter(({ originatingThreadId }) => available.get(originatingThreadId))
-        .map(({ id }) => RequestIdSchema.parse(id)),
-    );
+    return new Set(rows.map(({ id }) => RequestIdSchema.parse(id)));
   });
 }
 
@@ -289,11 +304,7 @@ async function readConnectionRequest(
 ) {
   const query = await connectionRequestsQuery(tx, authority);
   const row = await query.where("requests.id", "=", requestId).executeTakeFirst();
-  if (
-    !row ||
-    !(await threadExecutionIsAvailableToUser(tx, row.originatingThreadId, authority.userId))
-  )
-    throw new OpensteerError({ code: "not_found", message: "Request is unavailable" });
+  if (!row) throw new OpensteerError({ code: "not_found", message: "Request is unavailable" });
   return { request: requestFromRow(row), revision: row.revision };
 }
 
