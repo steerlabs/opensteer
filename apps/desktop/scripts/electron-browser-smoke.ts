@@ -1643,6 +1643,8 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     readonly target: Debugger;
     readonly width: unknown;
   }> = [];
+  /** Each debugger's page address as of its latest recorded command: a closed tab keeps one. */
+  const debuggerUrls = new Map<Debugger, string>();
   const watchDebugger = (target: Debugger) => {
     const send = target.sendCommand.bind(target);
     target.on("message", (_event, method, parameters, sessionId) => {
@@ -1667,6 +1669,11 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         method === "Page.stopScreencast"
       ) {
         const { height, width } = asRecord(parameters);
+        const address = webContents
+          .getAllWebContents()
+          .find((contents) => contents.debugger === target)
+          ?.getURL();
+        if (address) debuggerUrls.set(target, address);
         const entry: (typeof debuggerCommands)[number] = {
           at: performance.now(),
           height,
@@ -1906,17 +1913,50 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         `${record.stage}${record.reason === undefined ? "" : ` ${record.reason}`}${record.castId === undefined ? "" : ` #${record.castId}`}`,
     );
   const phaseStart = performance.now();
+  // The follow view's record with when each entry came and the address of the tab it is for, then.
+  const followTimed: Array<{ readonly at: number; readonly entry: string }> = [];
+  {
+    const list = (
+      controller as unknown as { readonly screencast: { readonly diagnostics: unknown[] } }
+    ).screencast.diagnostics;
+    const push = list.push.bind(list);
+    list.push = (...entries: unknown[]) => {
+      for (const value of entries) {
+        const entry = asRecord(value);
+        const tab =
+          typeof entry.surfaceId === "string"
+            ? ledger.binding(entry.surfaceId as typeof surfaceId)?.surface.url
+            : undefined;
+        followTimed.push({
+          at: performance.now(),
+          entry: `${String(entry.stage)}${entry.reason === undefined ? "" : ` ${String(entry.reason)}`}${entry.castId === undefined ? "" : ` #${String(entry.castId)}`}${tab ? ` ${tab.replace(origin, "")}` : ""}`,
+        });
+        if (followTimed.length > 4_000) followTimed.shift();
+      }
+      return push(...entries);
+    };
+  }
+  /** What the follow view and each tab's debugger did since `since`, each tab by its address. */
+  const evidenceSince = (since: number) => ({
+    followView: followTimed
+      .filter(({ at }) => at >= since)
+      .slice(-150)
+      .map(({ at, entry }) => `${Math.round(at - since)}ms ${entry}`),
+    tabs: [...new Set(debuggerCommands.map((command) => command.target))]
+      .map((target) => ({
+        url:
+          webContents
+            .getAllWebContents()
+            .find((contents) => contents.debugger === target)
+            ?.getURL() ?? debuggerUrls.get(target),
+        timeline: castTimeline(target, since),
+      }))
+      .filter(({ timeline }) => timeline.length > 0),
+  });
   followEvidence = () => ({
     agentRefusals: agentRefusals.slice(-20),
-    followView: followDiagnostics().slice(-60),
-    tabs: [...new Set(debuggerCommands.map((command) => command.target))].map((target) => ({
-      url: webContents
-        .getAllWebContents()
-        .find((contents) => contents.debugger === target)
-        ?.getURL(),
-      // The last fifteen seconds of it, or since the phase began.
-      timeline: castTimeline(target, Math.max(phaseStart, performance.now() - 15_000)),
-    })),
+    // The last fifteen seconds of it, or since the phase began.
+    ...evidenceSince(Math.max(phaseStart, performance.now() - 15_000)),
   });
   await controller.start();
   const root = ledger.active();
@@ -2264,6 +2304,8 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         passed: false,
         failure: message,
         castLog: castLog(since),
+        // The follow view and every tab's debugger from this check's start, as it failed.
+        evidence: evidenceSince(since),
       };
     }
   };
