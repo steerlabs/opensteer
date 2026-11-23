@@ -1925,9 +1925,11 @@ export class TriggerStore {
       if (input.idempotencyKey !== undefined) {
         const existing = await transaction
           .selectFrom("triggerOccurrences")
-          .selectAll()
-          .where("triggerId", "=", trigger.id)
-          .where("sourceKey", "=", sourceKey)
+          .leftJoin("commands", "commands.id", "triggerOccurrences.commandId")
+          .selectAll("triggerOccurrences")
+          .select("commands.frameSentAt")
+          .where("triggerOccurrences.triggerId", "=", trigger.id)
+          .where("triggerOccurrences.sourceKey", "=", sourceKey)
           .executeTakeFirst();
         if (existing) return occurrenceFromRow(existing);
       }
@@ -3380,9 +3382,11 @@ async function enqueueOccurrence(
   if (!revision.executable) throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
   const existing = await transaction
     .selectFrom("triggerOccurrences")
-    .selectAll()
-    .where("triggerId", "=", trigger.id)
-    .where("sourceKey", "=", sourceKey)
+    .leftJoin("commands", "commands.id", "triggerOccurrences.commandId")
+    .selectAll("triggerOccurrences")
+    .select("commands.frameSentAt")
+    .where("triggerOccurrences.triggerId", "=", trigger.id)
+    .where("triggerOccurrences.sourceKey", "=", sourceKey)
     .executeTakeFirst();
   if (existing)
     return {
@@ -3472,7 +3476,7 @@ async function enqueueOccurrence(
     .returningAll()
     .executeTakeFirstOrThrow();
   return {
-    occurrence: occurrenceFromRow(row),
+    occurrence: occurrenceFromRow({ ...row, frameSentAt: null }),
     wasDuplicate: false,
   };
 }

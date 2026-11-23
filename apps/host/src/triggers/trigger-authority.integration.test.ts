@@ -358,19 +358,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
         };
       },
     );
-    for (const status of ["paused", "active"] as const) {
-      await check(`A1 ${status}`, f.child.id, `set_status ${status}`, status, async () => {
-        await agentTrigger(f.childToken, {
-          operation: "set_status",
-          status,
-          triggerId: created.trigger.id,
-        });
-        const detail = await personDetail(f, created.trigger.id);
-        expect(detail.trigger.status).toBe(status);
-        expect(detail.trigger.nextFireAt).toBe(status === "paused" ? null : nextHour);
-        return detail.trigger;
-      });
-    }
     await check(
       "A1 cancel pending",
       f.child.id,
@@ -393,6 +380,19 @@ integration.sequential("Trigger authority through real Host services and Postgre
         };
       },
     );
+    for (const status of ["paused", "active"] as const) {
+      await check(`A1 ${status}`, f.child.id, `set_status ${status}`, status, async () => {
+        await agentTrigger(f.childToken, {
+          operation: "set_status",
+          status,
+          triggerId: created.trigger.id,
+        });
+        const detail = await personDetail(f, created.trigger.id);
+        expect(detail.trigger.status).toBe(status);
+        expect(detail.trigger.nextFireAt).toBe(status === "paused" ? null : nextHour);
+        return detail.trigger;
+      });
+    }
     for (const input of [
       {
         operation: "update",
@@ -801,6 +801,21 @@ integration.sequential("Trigger authority through real Host services and Postgre
         return response;
       },
     );
+    const runningOwn = occurrenceClaims.get(token)!;
+    await triggerStore.completeExecution({
+      executionGeneration: runningOwn.executionGeneration,
+      output: {
+        error: null,
+        exitCode: 0,
+        occurrenceId: runningOwn.occurrenceId,
+        result: null,
+        status: "succeeded",
+        stderr: "",
+        stdout: "",
+      },
+      runnerBootId: runningOwn.runnerBootId,
+      runnerId: runningOwn.runnerId,
+    });
     await store.updateThreadAccessMode({
       accessMode: "approval-required",
       requestedBy: f.ownerId,
