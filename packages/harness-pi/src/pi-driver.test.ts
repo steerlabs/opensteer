@@ -1,7 +1,18 @@
 import { createToolImageStore } from "@opensteer/harness";
 import { agentTools } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  readlink,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,9 +41,11 @@ import {
   type SupervisedProcess,
 } from "@opensteer/harness";
 import { afterEach, describe, expect, it } from "vitest";
+import { packagedPiExecutable } from "./executable.js";
 import {
   PiHarnessDriver,
   connectPiMcpServer,
+  piAgentDirectoryForOthersTasks,
   piToolCallTimeoutMs,
   piAccessModeGate,
   piCommandTools,
@@ -673,6 +686,72 @@ describe("Pi sessions", () => {
       await fixture.adapter.close();
     },
   );
+
+  it("keeps the person's auth.json symlink intact when Pi writes credentials and skips absent files", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-pi-others-dir-"));
+    temporaryDirectories.push(root);
+    const { AuthStorage } = (await import(
+      new URL("./core/auth-storage.js", await piPackageEntryUrl(packagedPiExecutable())).href
+    )) as {
+      AuthStorage: {
+        create(path: string): {
+          modify(
+            provider: string,
+            fn: (
+              current: Record<string, unknown> | undefined,
+            ) => Promise<Record<string, unknown> | undefined>,
+          ): Promise<Record<string, unknown> | undefined>;
+        };
+      };
+    };
+
+    // Case 1: person has auth.json and models.json; Pi's FileAuthStorageBackend writes THROUGH the symlink.
+    const personAgent = join(root, "person-home", ".pi", "agent");
+    await mkdir(personAgent, { recursive: true });
+    const personAuth = join(personAgent, "auth.json");
+    const personModels = join(personAgent, "models.json");
+    await writeFile(personAuth, JSON.stringify({ openai: { key: "old", type: "api_key" } }));
+    await writeFile(personModels, JSON.stringify({ providers: {} }));
+    const othersDir = await piAgentDirectoryForOthersTasks(
+      { HOME: join(root, "person-home") },
+      join(root, "others-1"),
+    );
+    const linkedAuth = join(othersDir, "auth.json");
+    const linkedModels = join(othersDir, "models.json");
+    expect((await lstat(linkedAuth)).isSymbolicLink()).toBe(true);
+    expect(await readlink(linkedAuth)).toBe(personAuth);
+    expect((await lstat(linkedModels)).isSymbolicLink()).toBe(true);
+    expect(await readlink(linkedModels)).toBe(personModels);
+
+    const beforeLink = await lstat(linkedAuth);
+    const beforeTarget = await lstat(personAuth);
+    const storage = AuthStorage.create(linkedAuth);
+    await storage.modify("openai", async () => ({ key: "refreshed-key", type: "api_key" }));
+    const afterLink = await lstat(linkedAuth);
+    const afterTarget = await lstat(personAuth);
+    expect(afterLink.isSymbolicLink()).toBe(true);
+    expect(afterLink.ino).toBe(beforeLink.ino);
+    expect(afterTarget.ino).toBe(beforeTarget.ino);
+    expect(JSON.parse(await readFile(personAuth, "utf8"))).toMatchObject({
+      openai: { key: "refreshed-key", type: "api_key" },
+    });
+
+    // Case 2: person has no ~/.pi/agent directory at all (e.g. env-var API key).
+    // No dangling symlinks are left behind, so Pi's AuthStorage does not fail with ENOENT.
+    const emptyHome = join(root, "empty-home");
+    await mkdir(emptyHome, { recursive: true });
+    const othersEmpty = await piAgentDirectoryForOthersTasks(
+      { HOME: emptyHome },
+      join(root, "others-2"),
+    );
+    expect(await readdir(othersEmpty)).toEqual([]);
+    await expect(
+      AuthStorage.create(join(othersEmpty, "auth.json")).modify("openai", async () => ({
+        key: "k",
+        type: "api_key",
+      })),
+    ).resolves.toMatchObject({ key: "k", type: "api_key" });
+  });
 
   it("sends the native model id and the thinking level, and verifies both", async () => {
     const fixture = await setup({

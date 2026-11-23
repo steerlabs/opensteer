@@ -4,7 +4,7 @@ import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { readBoundedRegularFile } from "@opensteer/shared/privateFiles";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { mkdir, open as openFile, realpath, rm, symlink } from "node:fs/promises";
+import { mkdir, open as openFile, realpath, rm, stat, symlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -2062,12 +2062,17 @@ function piLaunch(dependencies: PiHarnessDependencies): PiLaunch {
  */
 /**
  * Pi's agent folder for a task that is not the person's own, on their own Pi
- * home: a folder of Opensteer's holding only links to their `auth.json` and
- * `models.json`, which are how Pi signs in. Their `settings.json` (a shell, a
- * command prefix, packages), `SYSTEM.md`, `APPEND_SYSTEM.md`, `AGENTS.md`,
- * prompts, sessions and the projects they trusted stay out. Pi writes
- * `auth.json` in place (Pi 0.87.1), through the link, so a refreshed sign-in
- * is the person's own file, never a copy.
+ * home: a folder of Opensteer's holding only links to their existing
+ * `auth.json` and `models.json`, which are how Pi signs in. Their
+ * `settings.json` (a shell, a command prefix, packages), `SYSTEM.md`,
+ * `APPEND_SYSTEM.md`, `AGENTS.md`, prompts, sessions and the projects they
+ * trusted stay out. Pi 0.87.1 writes `auth.json` in place through the link
+ * (`writeFileSync`), so a refreshed sign-in updates the person's own file
+ * rather than copying or replacing it. Caveat: Pi's `FileAuthStorageBackend`
+ * locks with `proper-lockfile` `{ realpath: false }`, so a concurrent refresh
+ * from the person's own Pi and an others'-tasks Pi take separate lockfiles.
+ * Absent files are skipped so a missing `~/.pi/agent` does not leave dangling
+ * links that fail Pi's `ensureFileExists()`.
  */
 export async function piAgentDirectoryForOthersTasks(
   environment: Readonly<Record<string, string>>,
@@ -2077,8 +2082,14 @@ export async function piAgentDirectoryForOthersTasks(
     environment.PI_CODING_AGENT_DIR?.trim() || join(environment.HOME ?? homedir(), ".pi", "agent");
   await rm(directory, { force: true, recursive: true });
   await mkdir(directory, { mode: 0o700, recursive: true });
-  for (const name of ["auth.json", "models.json"])
-    await symlink(join(theirs, name), join(directory, name));
+  for (const name of ["auth.json", "models.json"]) {
+    const source = join(theirs, name);
+    const exists = await stat(source).then(
+      (info) => info.isFile(),
+      () => false,
+    );
+    if (exists) await symlink(source, join(directory, name));
+  }
   return directory;
 }
 
