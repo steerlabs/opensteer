@@ -253,3 +253,70 @@ describe("the look for the helper's manifest (TS7, TS14)", () => {
     expect(held.asked).toEqual(["chrome-extension://aaaa/manifest.json", "about:blank"]);
   });
 });
+
+describe("waking the helper's worker (TS14)", () => {
+  function waking(options: { attachMs: number }) {
+    const calls: string[] = [];
+    const page = {
+      isClosed: () => false,
+      goto: async (url: string) => {
+        calls.push(`goto ${url}`);
+        return null;
+      },
+    };
+    const session = {
+      send: async (method: string) => {
+        calls.push(method);
+        return {};
+      },
+      detach: async () => {
+        calls.push("detach");
+      },
+    };
+    const context = {
+      serviceWorkers: () => [{ url: () => "chrome-extension://helper/sw.js" }],
+      newCDPSession: () =>
+        new Promise((resolve) => setTimeout(() => resolve(session), options.attachMs)),
+    };
+    const bridge = new ChromiumTabLifecycleBridge(context as never, {} as never, page as never);
+    const wake = (remainingMs: number) =>
+      (
+        bridge as unknown as { wakeServiceWorkerOnce(remainingMs: number): Promise<void> }
+      ).wakeServiceWorkerOnce(remainingMs);
+    return { bridge, calls, wake };
+  }
+
+  it("lets go of a debugger session that arrives after its wait", async () => {
+    vi.useFakeTimers();
+    try {
+      const { calls, wake } = waking({ attachMs: 2_000 });
+      const woke = wake(5_000);
+      await vi.advanceTimersByTimeAsync(1_600);
+      await woke;
+      expect(calls).not.toContain("detach");
+      await vi.advanceTimersByTimeAsync(500);
+      // The late session is detached, and nothing was sent on it.
+      expect(calls).toContain("detach");
+      expect(calls).not.toContain("ServiceWorker.enable");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("asks nothing more once stopped between its steps", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, calls, wake } = waking({ attachMs: 100 });
+      const woke = wake(5_000);
+      void bridge.stop();
+      await vi.advanceTimersByTimeAsync(200);
+      await woke;
+      expect(calls).not.toContain("ServiceWorker.enable");
+      expect(calls).not.toContain("ServiceWorker.startWorker");
+      // The private page is put back where it started.
+      expect(calls.at(-1)).toBe("goto about:blank");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
