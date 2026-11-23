@@ -138,6 +138,8 @@ it("keeps a Home that used teams working: its old rows read without error and ev
     });
 
     // The Home's start runs this release's migrations over that database.
+    await sql`drop index thread_inputs_written_by_connection`.execute(store.database);
+    await sql`alter table provider_sessions drop column person_lineage`.execute(store.database);
     await sql`delete from kysely_migration where name >= '0107_needs_you_counts_requests'`.execute(
       store.database,
     );
