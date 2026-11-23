@@ -4418,6 +4418,18 @@ export class MockHostClient implements HostClient {
     });
   }
 
+  /** TS10: the runtime put this tab to sleep, or woke it, as the Home then lists it. */
+  setBrowserTabState(tabId: string, state: "live" | "suspended"): void {
+    const snapshot = this.#state.getSnapshot();
+    this.#state.updatePlaces({
+      ...snapshot,
+      browserGroups: snapshot.browserGroups?.map((group) => ({
+        ...group,
+        tabs: group.tabs?.map((tab) => (tab.id === tabId ? { ...tab, state } : tab)),
+      })),
+    } as typeof snapshot);
+  }
+
   /** TS7: the tab's last wake opened it again at its address, at `at` (ms since the epoch). */
   setBrowserReopened(tabId: string, at: number | undefined): void {
     const snapshot = this.#state.getSnapshot();

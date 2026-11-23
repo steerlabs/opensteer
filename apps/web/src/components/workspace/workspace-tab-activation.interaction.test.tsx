@@ -45,3 +45,22 @@ it("activates a selected tab once across republished rows, then again on Try aga
   );
   expect(document.querySelector(".place-state .btn")).toBeNull();
 });
+
+it("asks again for a tab it shows that is not open, so a sleep under the Home's answer never leaves it unopened (TS10)", async () => {
+  let activate!: MockInstance<MockHostClient["activateTab"]>;
+  let tabId = "";
+  await mount((source) => {
+    const page = placeList(source.getSnapshot()).find((place) => place.kind === "page")!;
+    tabId = page.key;
+    activate = vi.spyOn(source, "activateTab");
+    return `/?panel=browser&tab=${tabId}`;
+  });
+  await vi.waitFor(() => expect(activate).toHaveBeenCalledTimes(1));
+  // The Home answered with the page; the runtime had just put the tab to sleep.
+  await act(async () => client.setBrowserTabState(tabId, "suspended"));
+  await vi.waitFor(() => expect(activate).toHaveBeenCalledTimes(2));
+  // Asking again spends no Open: it wakes the tab, not a phone.
+  expect(activate).toHaveBeenLastCalledWith(tabId, { wake: false });
+  await act(async () => client.setBrowserTabState(tabId, "live"));
+  expect(activate).toHaveBeenCalledTimes(2);
+});

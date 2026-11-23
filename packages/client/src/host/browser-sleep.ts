@@ -12,6 +12,7 @@
  * that changes as the wait grows. A page that came back by reloading, or not at all, says so
  * once, in that page.
  */
+import type { TabViewer } from "@opensteer/protocol";
 import type { HostSnapshot } from "./client.js";
 
 /* ------------------------------------------------------------------------- *
@@ -211,6 +212,21 @@ export function browserTabReturnOf(
     reason: "tab-sleep",
     startAt: new Date(reopenedAt).toISOString(),
   };
+}
+
+/**
+ * TS10: whether the viewer this device holds for a tab still stands. A page is shown only while
+ * its tab is open: a tab this device looks at that is not open (it went to sleep before or under
+ * the Home's answer) is asked for again, and asking wakes it. One rule for the web and the phone.
+ */
+export function tabViewerStands(
+  viewer: TabViewer | null,
+  tabState: "open" | "asleep" | "unavailable" | undefined,
+): boolean {
+  if (viewer === null) return false;
+  if (viewer.kind === "page") return tabState === "open";
+  if (viewer.kind === "app") return true;
+  return viewer.view.state !== "closed" && viewer.view.state !== "expired";
 }
 
 /** Whether this is a Cloud Computer's pooled browser, which alone offers Restart browser. */

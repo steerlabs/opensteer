@@ -385,6 +385,7 @@ function ViewedTab(
     props.presence.shown,
     intent,
     available,
+    props.tab.state,
   );
   const last = useRef<TabViewer | null>(null);
   const viewer: TabViewer | null =

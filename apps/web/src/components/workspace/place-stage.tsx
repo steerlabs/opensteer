@@ -1,6 +1,6 @@
 import { agentSessionSlot } from "@opensteer/client/host";
 import { TabAgentStatus } from "../agent-work.js";
-import { actingOccupants, threadMark } from "@opensteer/client/host";
+import { actingOccupants, tabViewerStands, threadMark } from "@opensteer/client/host";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router";
 import type { ReactNode } from "react";
@@ -193,13 +193,7 @@ function SelectedPlace({
       : null,
   );
   // Selecting a tab opens (or wakes) this device's view of it; an unavailable tab says why instead.
-  const viewerReady =
-    viewer !== null &&
-    (viewer.kind === "app" ||
-      (viewer.kind === "page" && tabState === "open") ||
-      ((viewer.kind === "window" || viewer.kind === "phone") &&
-        viewer.view.state !== "closed" &&
-        viewer.view.state !== "expired"));
+  const viewerReady = tabViewerStands(viewer, tabState);
   const needsActivation = placeKey !== null && !!kind && tabState !== "unavailable" && !viewerReady;
   // A re-render, StrictMode or a second opening while one activation is on its way joins it.
   const pendingActivation = useRef<{

@@ -1,4 +1,4 @@
-import type { HostClient } from "@opensteer/client/host";
+import { tabViewerStands, type HostClient } from "@opensteer/client/host";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import {
   useHostSelector,
@@ -37,6 +37,8 @@ export function useTabViewer(
   enabled: boolean,
   intent: OpenIntent,
   available = true,
+  /** The tab's listed state: a page whose tab is not open is asked for again (TS10). */
+  tabState?: "open" | "asleep" | "unavailable",
 ): {
   readonly state: TabViewerState;
   readonly retry: () => void;
@@ -92,6 +94,13 @@ export function useTabViewer(
       current = false;
     };
   }, [attempt, available, hostClient, intent, live, reconnect.getSnapshot, tabId]);
+  // TS10: a page shown for a tab that is not open (it went to sleep before or under the answer)
+  // is asked for again, once each time it stops standing; asking wakes it. The ask keeps what is
+  // shown and spends no Open.
+  const stands = state.status !== "ready" || tabViewerStands(state.viewer, tabState);
+  useEffect(() => {
+    if (!stands && available) setAttempt((value) => value + 1);
+  }, [available, stands]);
   // Try again and Reopen are the person's Open too.
   const retry = useCallback(() => {
     reconnect.reset();

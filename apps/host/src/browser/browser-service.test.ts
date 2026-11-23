@@ -8696,6 +8696,44 @@ it("person activation resumes the exact suspended workspace tab in its existing 
   expect(await activated).toEqual({ kind: "page", sessionId, surfaceId: row.id });
 });
 
+it("person activation asks the runtime to wake the tab even while this Home still has it live, so a sleep a moment before the ask never leaves the tab unopened (TS10)", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      surfaceState: true,
+      tabRestoreVersion: true,
+    });
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "sleep",
+  );
+  await memory.add(descriptor);
+  const row = memory.rows.get(descriptor.id)!,
+    sessionId = row.pageBinding!.sessionId;
+  runtime.publishTabs({
+    surfaces: [{ id: row.id, state: "live", active: true, title: "Awake here" }],
+  });
+  await vi.waitFor(() => expect(service.tabStateOf(sessionId, row.id)).toBe("live"));
+  // The runtime has just put it to sleep; its update has not reached this Home.
+  const activated = service.pageTabs.activate(ownerId, row, "activate");
+  let command = await runtime.nextCommand();
+  while (command.type !== "cdp.command") command = await runtime.nextCommand();
+  expect(command.command).toEqual({
+    method: "Opensteer.resumeTab",
+    parameters: { surfaceId: row.id },
+  });
+  runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+  expect(await activated).toEqual({ kind: "page", sessionId, surfaceId: row.id });
+});
+
 function memoryTabs() {
   const rows = new Map<string, TabRecord>();
   const add = async (write: TabWrite) => {

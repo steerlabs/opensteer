@@ -817,7 +817,8 @@ function pageTab(page: Page): Tab {
   const usedBy = [...new Set(occupants.map(({ threadId }) => threadId))]
     .sort()
     .map((taskId) => ({ taskId }));
-  return { ...tab, usedBy } as unknown as Tab;
+  const listedState = (page as { tabState?: "asleep" }).tabState;
+  return { ...tab, usedBy, ...(listedState ? { state: listedState } : {}) } as unknown as Tab;
 }
 /** A Mac window or a phone the person opened as a tab. */
 function nativeTab(phone: boolean, extra: Partial<Tab> = {}): Tab {
@@ -1377,6 +1378,27 @@ describe("mobile pages", () => {
     await render();
     expect(state.goBack).toHaveBeenCalledOnce();
     expect(state.setParams).not.toHaveBeenCalled();
+  });
+
+  it("asks again when the tab it shows is not open, so a sleep under the Home's answer never leaves it on Opening… (TS10)", async () => {
+    const { container, render } = await setup({ sessionId: "chosen" });
+    state.snapshot = snapshot([session("chosen")]);
+    await render();
+    expect(state.hostClient.activateTab).toHaveBeenCalledOnce();
+    const shown = container.textContent;
+    expect(shown).not.toContain("Opening…");
+    // The Home answered with the page; the runtime had just put the tab to sleep.
+    const asleep = { ...firstPage, tabState: "asleep" } as PageInput;
+    state.snapshot = snapshot([session("chosen", "ready", [asleep])]);
+    await render();
+    expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
+    // Asking again spends no Open: it wakes the tab, not a phone.
+    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("page-1", { wake: false });
+    // The wake lands: the page shows, and nothing is asked a third time.
+    state.snapshot = snapshot([session("chosen")]);
+    await render();
+    expect(container.textContent).toBe(shown);
+    expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
   });
 
   it("keeps its selection by tabId through a catalog replacement, and asks the Host only once", async () => {
