@@ -25,6 +25,7 @@ vi.mock("../ui/screen.js", () => ({
   useReadingColumn: () => ({}),
 }));
 vi.mock("../ui/primitives.js", () => ({
+  DisplayTitle: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   AppText: ({ children }: { children?: ReactNode }) => <p>{children}</p>,
   PrimaryButton: ({ label, onPress }: { label: string; onPress: () => void }) => (
     <button onClick={onPress}>{label}</button>

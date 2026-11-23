@@ -62,6 +62,7 @@ export const theme = {
 
 export const primitives = {
   AppText: ({ children }: Children) => <span>{children}</span>,
+  DisplayTitle: ({ children }: Children) => <span>{children}</span>,
   Field: (props: {
     readonly label: string;
     readonly input: {

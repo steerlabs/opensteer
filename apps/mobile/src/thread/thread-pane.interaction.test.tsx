@@ -585,6 +585,7 @@ vi.mock("../ui/motion.js", () => ({
   exit: undefined,
 }));
 vi.mock("../ui/primitives.js", () => ({
+  DisplayTitle: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   AppText: (props: { readonly accessibilityLabel?: string; readonly children?: ReactNode }) => (
     <span aria-label={props.accessibilityLabel}>{props.children}</span>
   ),

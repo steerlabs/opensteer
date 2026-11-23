@@ -63,6 +63,7 @@ vi.mock("react-native", () => ({
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("../ui/primitives.js", () => ({
+  DisplayTitle: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Field: ({ label, input }: { label: string; input: { value?: string } }) => (
     <label>

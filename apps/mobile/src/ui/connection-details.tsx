@@ -83,13 +83,13 @@ export const ConnectionDetails = memo(function ConnectionDetails(props: {
               ]}
             >
               <AppText
-                numberOfLines={stacked ? undefined : 1}
+                {...(stacked ? {} : { numberOfLines: 1 })}
                 role="body"
                 style={!stacked && styles.otherName}
               >
                 {session.name}
               </AppText>
-              <AppText numberOfLines={stacked ? undefined : 1} role="secondary" tone="muted">
+              <AppText {...(stacked ? {} : { numberOfLines: 1 })} role="secondary" tone="muted">
                 {session.state}
               </AppText>
               {stacked ? null : (

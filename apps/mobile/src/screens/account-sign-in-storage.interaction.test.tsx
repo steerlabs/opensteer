@@ -36,6 +36,7 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 0 }));
 vi.mock("../ui/primitives.js", () => ({
+  DisplayTitle: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Notice: ({ detail }: { detail: string }) => <span>{detail}</span>,
   PrimaryButton: ({ label, onPress }: { label: string; onPress: () => void }) => (
