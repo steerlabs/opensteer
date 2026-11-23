@@ -3,6 +3,7 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { AttachmentCache } from "../attachments/attachment-cache.js";
 import { agentTools, appHostingGuide } from "@opensteer/agent-tools";
 import { hostCommandPlatform } from "@opensteer/shared/command";
+import { networkCredentialSecrets } from "@opensteer/shared/safeMessage";
 import {
   ignoreForeignTestRequest,
   probeTestServer,
@@ -5419,6 +5420,12 @@ describe("RunnerRuntime", () => {
 });
 
 describe("harness process environment", () => {
+  it("passes the lowercase HTTPS proxy through to engines on macOS and Linux", () => {
+    const source = { https_proxy: "http://proxy.invalid:8080" };
+    expect(harnessProcessEnvironment(source, [], "darwin")).toEqual(source);
+    expect(harnessProcessEnvironment(source, [], "linux")).toEqual(source);
+  });
+
   it("keeps the Windows baseline and engine variables but no Runner credentials", () => {
     const source = {
       CLAUDE_CONFIG_DIR: "C:\\Users\\Ada\\.claude",
@@ -5492,6 +5499,76 @@ describe("harness process environment", () => {
     expect(failure.data.message).toBe(
       "stream failed via http://[REDACTED]@proxy.example.test:8080",
     );
+  });
+
+  it("keeps configured proxy credentials out of an engine inspection failure", async () => {
+    const proxy = "http://alice:p@ss/word@proxy.invalid:8080";
+    vi.stubEnv("HTTPS_PROXY", proxy);
+    const driverKind = HarnessIdSchema.parse("inspection-proxy-test");
+    const registry = new HarnessRegistry();
+    registry.registerDriver({
+      ...catalogDriver(driverKind),
+      inspect: async () => {
+        throw new Error(`Inspection failed via ${proxy}`);
+      },
+    });
+    const runtime = configuredRuntime({
+      environmentId: createId("environment"),
+      networkSecrets: networkCredentialSecrets({ HTTPS_PROXY: process.env.HTTPS_PROXY }),
+      registry,
+    });
+    try {
+      await expect(
+        runtime.inspectHarnesses(
+          [harnessDefinition(driverKind, "Proxy inspection", 1)],
+          new AbortController().signal,
+          true,
+        ),
+      ).resolves.toMatchObject([
+        {
+          detail: "Inspection failed via http://[REDACTED]@proxy.invalid:8080",
+          status: "error",
+        },
+      ]);
+    } finally {
+      vi.unstubAllEnvs();
+      await runtime.close();
+    }
+  });
+
+  it("keeps configured proxy credentials out of a rejected command", async () => {
+    const proxy = "http://alice:p@ss/word@proxy.invalid:8080";
+    vi.stubEnv("HTTPS_PROXY", proxy);
+    const environmentId = createId("environment");
+    const driverKind = HarnessIdSchema.parse("rejection-proxy-test");
+    const registry = new HarnessRegistry();
+    vi.spyOn(registry, "driverInstallation").mockResolvedValue({
+      descriptor: {
+        detail: `Update unavailable via ${proxy}`,
+        latestVersion: null,
+        scope: "ambient",
+        update: "manual",
+        version: "1.0.0",
+      },
+    });
+    const runtime = configuredRuntime({
+      environmentId,
+      networkSecrets: networkCredentialSecrets({ HTTPS_PROXY: process.env.HTTPS_PROXY }),
+      registry,
+    });
+    try {
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), {
+          send: async () => undefined,
+        }),
+      ).resolves.toMatchObject({
+        error: { message: "Update unavailable via http://[REDACTED]@proxy.invalid:8080" },
+        status: "rejected",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      await runtime.close();
+    }
   });
 });
 
@@ -6555,6 +6632,7 @@ function configuredRuntime(input: {
   readonly maxRunEvents?: number;
   readonly maxConcurrentRuns?: number;
   readonly mode?: ConstructorParameters<typeof RunnerRuntime>[0]["mode"];
+  readonly networkSecrets?: readonly string[];
   readonly privateStateDirectory?: string;
   readonly registry: HarnessRegistry;
   readonly workspacePrepare?: ConstructorParameters<
@@ -6581,6 +6659,7 @@ function configuredRuntime(input: {
       maxConcurrentRuns: input.maxConcurrentRuns ?? 1,
       ...(input.maxRunEvents === undefined ? {} : { maxRunEvents: input.maxRunEvents }),
       ...(input.mode === undefined ? {} : { mode: input.mode }),
+      ...(input.networkSecrets === undefined ? {} : { networkSecrets: input.networkSecrets }),
       dataDirectory: dirname(input.privateStateDirectory ?? testPrivateStateRoot),
       privateStateDirectory: input.privateStateDirectory ?? testPrivateStateRoot,
       projectContinuationIdentity,

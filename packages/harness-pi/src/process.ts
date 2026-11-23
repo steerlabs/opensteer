@@ -1,5 +1,10 @@
 import { supervisedExitCode } from "@opensteer/shared/processControl";
-import { safeMessage } from "@opensteer/shared/safeMessage";
+import {
+  credentialNamePattern,
+  networkCredentialSecrets,
+  redactNetworkCredentials,
+  safeMessage,
+} from "@opensteer/shared/safeMessage";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { OpensteerError } from "@opensteer/core";
 import { finished } from "node:stream/promises";
@@ -67,6 +72,7 @@ export class PiRpcClient {
   readonly #pending = new Map<string, PendingCommand>();
   readonly #process: ReturnType<typeof spawnSupervised>;
   readonly #secrets: readonly string[];
+  readonly #networkSecrets: readonly string[];
   readonly #stdoutTask: Promise<void>;
   readonly #stderrTask: Promise<void>;
   readonly #abortSignal: AbortSignal;
@@ -99,6 +105,7 @@ export class PiRpcClient {
     // every provider flag, the working directory, and the environment it must
     // carry into the sandbox are already in place.
     const wrapped = options.wrapProcessLaunch ? options.wrapProcessLaunch(launch) : launch;
+    this.#networkSecrets = networkCredentialSecrets(wrapped.environment);
     this.#process = spawnSupervised({
       args: wrapped.args,
       cwd: wrapped.cwd,
@@ -157,7 +164,7 @@ export class PiRpcClient {
   }
 
   stderrText(): string {
-    return this.#stderr.trim();
+    return redactNetworkCredentials(this.#stderr, this.#networkSecrets).trim();
   }
 
   stderrDiagnostic(): string {
@@ -223,7 +230,12 @@ export class PiRpcClient {
   ): Promise<PiMessage> {
     const response = await this.command(type, params, timeoutMs);
     if (response.success !== true) {
-      throw protocolError(`Pi refused ${type}: ${optionalString(response.error) ?? "no reason"}`);
+      throw protocolError(
+        `Pi refused ${type}: ${redactNetworkCredentials(
+          optionalString(response.error) ?? "no reason",
+          this.#networkSecrets,
+        )}`,
+      );
     }
     return response;
   }
@@ -458,15 +470,16 @@ export async function runPiCommand(options: {
           }),
       },
     );
-    return { code: exit.code, stderr, stdout };
+    return {
+      code: exit.code,
+      stderr: redactNetworkCredentials(stderr, networkCredentialSecrets(options.environment)),
+      stdout,
+    };
   } finally {
     options.signal.removeEventListener("abort", abort);
     await supervised.terminate(0).catch(() => undefined);
   }
 }
-
-const credentialNamePattern =
-  /(?:API_KEY|ACCESS_KEY|AUTHORIZATION|COOKIE|CREDENTIAL|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)/iu;
 
 const stderrSafeMessageOptions = {
   fallback: "Pi stderr was unavailable",

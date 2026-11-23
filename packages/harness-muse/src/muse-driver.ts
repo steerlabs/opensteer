@@ -1,4 +1,5 @@
 import { createUuidV7Mint } from "@muse-code/sdk";
+import { engineDiagnosticSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import {
   attachmentImageMaxPixels,
   attachmentMaxBytes,
@@ -428,7 +429,11 @@ export class MuseHarnessDriver implements HarnessDriver {
     if (!allowFailure && exit.code !== 0) {
       throw new OpensteerError({ code: "harness_error", message: "Muse Code command failed" });
     }
-    return { exitCode: exit.code, stderr, stdout };
+    return {
+      exitCode: exit.code,
+      stderr: redactNetworkCredentials(stderr, engineDiagnosticSecrets(environment)),
+      stdout,
+    };
   }
 }
 
@@ -560,7 +565,10 @@ class MuseHarnessAdapter implements HarnessAdapter {
           try {
             await done.promise;
             signal.throwIfAborted();
-            if (failure) throw new Error(failure);
+            if (failure)
+              throw new Error(
+                redactNetworkCredentials(failure, engineDiagnosticSecrets(environment)),
+              );
             if (!text.trim()) throw new Error("Muse Code did not return a title");
             return text.trim();
           } finally {
@@ -659,6 +667,7 @@ class MuseHarnessSession implements HarnessSession {
   readonly #publisher: TurnPublisher;
   readonly #pending = new Map<RequestId, MusePending>();
   #host: MuseHost | undefined;
+  #diagnosticSecrets: readonly string[] = [];
   #active: ActiveTurn | undefined;
   #closed = false;
   #compacting = false;
@@ -783,7 +792,12 @@ class MuseHarnessSession implements HarnessSession {
       if (!active.terminal)
         this.#failure(
           active,
-          classifyMuseFailure(error, nativeModel(this.#context), this.#latestUsage),
+          classifyMuseFailure(
+            error,
+            nativeModel(this.#context),
+            this.#latestUsage,
+            this.#diagnosticSecrets,
+          ),
         );
     } finally {
       run.signal.removeEventListener("abort", abort);
@@ -977,7 +991,11 @@ class MuseHarnessSession implements HarnessSession {
       onServerRequest: (method, params) => this.#serverRequest(method, params),
       signal: this.#processLifetime.signal,
       startupTimeoutMs: this.#config.startupTimeoutMs,
-      wrapProcessLaunch: this.#context.wrapProcessLaunch,
+      wrapProcessLaunch: (launch) => {
+        const wrapped = this.#context.wrapProcessLaunch(launch);
+        this.#diagnosticSecrets = engineDiagnosticSecrets(wrapped.environment);
+        return wrapped;
+      },
     });
     if (!host.initializeResult.grantedCapabilities.includes("sessionMcp")) {
       await host.close();
@@ -1107,6 +1125,7 @@ class MuseHarnessSession implements HarnessSession {
             completed.error ?? completed.reason,
             nativeModel(this.#context),
             this.#latestUsage,
+            this.#diagnosticSecrets,
           ),
         );
       }
@@ -1563,7 +1582,7 @@ class MuseHarnessSession implements HarnessSession {
     } else if (active && !active.terminal)
       this.#failure(active, {
         code: "muse_harness_error",
-        message: error.message,
+        message: redactNetworkCredentials(error.message, this.#diagnosticSecrets),
         retryable: false,
       });
   }
@@ -1795,6 +1814,7 @@ function classifyMuseFailure(
   error: unknown,
   model: string,
   usage: SubscriptionUsage | undefined,
+  secrets: readonly string[],
 ): { code: string; message: string; retryable: boolean } {
   const message =
     error instanceof Error
@@ -1830,7 +1850,7 @@ function classifyMuseFailure(
   }
   return {
     code: "muse_harness_error",
-    message: sanitizeFailure(message),
+    message: sanitizeFailure(redactNetworkCredentials(message, secrets)),
     retryable: isMuseMspError(error) && error.code === -32000,
   };
 }

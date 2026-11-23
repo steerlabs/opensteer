@@ -1019,6 +1019,27 @@ function fakeClient(
   };
 }
 
+it("scrubs proxy credentials from an ACP prompt failure", async () => {
+  const fixture = await setup("replay");
+  const proxy = "http://alice:p@ss-word@proxy.invalid:8080";
+  fixture.duringPrompt = () => {
+    throw new Error(`Connection failed via ${proxy}; password p@ss-word`);
+  };
+  const environment = { ...fixture.context.environment, HTTPS_PROXY: proxy };
+  try {
+    const session = await fixture.adapter.startSession({ ...fixture.context, environment });
+    const observer = observe(session.events);
+    await session.execute({ ...fixture.turn("Hello"), environment });
+    await session.stop();
+    await observer.done;
+    expect(observer.events.find((event) => event.type === "run.failed")?.data.message).toBe(
+      "Connection failed via http://[REDACTED]@proxy.invalid:8080; password [REDACTED]",
+    );
+  } finally {
+    await fixture.adapter.close();
+  }
+});
+
 function observe(events: AsyncIterable<HarnessEvent>) {
   const collected: HarnessEvent[] = [];
   const done = (async () => {

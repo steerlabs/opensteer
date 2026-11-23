@@ -425,6 +425,41 @@ describe("Muse Code sessions", () => {
     await adapter.close();
   });
 
+  it.each<{
+    name: string;
+    scenario: string;
+    environment: Readonly<Record<string, string>>;
+    message: string;
+  }>([
+    {
+      name: "proxy credentials",
+      scenario: "proxy-failure",
+      environment: { HTTPS_PROXY: "http://alice:p@ss-word@proxy.invalid:8080" },
+      message: "Connection failed via http://[REDACTED]@proxy.invalid:8080; password [REDACTED]",
+    },
+    {
+      name: "a refresh token",
+      scenario: "refresh-failure",
+      environment: { REFRESH_TOKEN: "fake-refresh-value" },
+      message: "Connection failed with refresh token [REDACTED]",
+    },
+  ])("scrubs $name from a Muse Code failure", async ({ scenario, environment, message }) => {
+    const fixture = await setup(scenario, environment);
+    const adapter = await fixture.driver.create({
+      config: {},
+      instanceId: fixture.context.harnessInstanceId,
+      sourceId: "meta",
+    });
+    try {
+      const session = await adapter.startSession(fixture.context);
+      const observer = observe(session.events);
+      await session.execute(fixture.turn("Hello"));
+      expect((await observer.waitFor("run.failed")).data.message).toBe(message);
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it("maps quota failures to the usage-limit code with the latest valid reset", async () => {
     const fixture = await setup("quota");
     const adapter = await fixture.driver.create({
@@ -692,7 +727,7 @@ describe("Muse Code sessions", () => {
   });
 });
 
-async function setup(scenario: string) {
+async function setup(scenario: string, supplied: Readonly<Record<string, string>> = {}) {
   const directory = await mkdtemp(join(tmpdir(), "osmuse-"));
   temporaryDirectories.push(directory);
   const capture = join(directory, "capture.jsonl");
@@ -704,6 +739,7 @@ async function setup(scenario: string) {
     FAKE_MUSE_SCENARIO: scenario,
     META_API_KEY: "inherited-must-not-pass",
     PATH: process.env.PATH ?? "",
+    ...supplied,
   };
   const providerState = {
     continuationKey: `muse:${directory}`,

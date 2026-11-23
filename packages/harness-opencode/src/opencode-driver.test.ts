@@ -33,7 +33,8 @@ import {
   opencodePermissionRules,
   opencodeChildPermissionRules,
 } from "./configuration.js";
-import { TESTED_OPENCODE_VERSION } from "./config.js";
+import { OpencodeHarnessConfigSchema, TESTED_OPENCODE_VERSION } from "./config.js";
+import { OpencodeServer } from "./server.js";
 
 // A Run outside any task with nothing earlier to state, for a person whose
 // time zone is unknown: its thread context is one fixed line, so these turns
@@ -306,6 +307,51 @@ describe("OpenCode inspection", () => {
     const result = await inspect({ scenario: "spawn-failure", sourceId: "anthropic", key: "k" });
     expect(result?.status).toBe("unavailable");
     expect(result?.detail).toContain("OpenCode exited before it started listening");
+  });
+
+  it.each<{
+    name: string;
+    environment: Readonly<Record<string, string>>;
+    prefix: string;
+    diagnostic: string;
+  }>([
+    {
+      name: "proxy credentials",
+      environment: {
+        HTTPS_PROXY: "http://alice:p@ss-word@proxy.invalid:8080",
+        FAKE_OPENCODE_PROXY_DIAGNOSTIC: "1",
+      },
+      prefix: "proxy",
+      diagnostic: "proxy http://[REDACTED]@proxy.invalid:8080; password [REDACTED]",
+    },
+    {
+      name: "a refresh token",
+      environment: {
+        REFRESH_TOKEN: "fake-refresh-value",
+        FAKE_OPENCODE_REFRESH_DIAGNOSTIC: "1",
+      },
+      prefix: "refresh token",
+      diagnostic: "refresh token [REDACTED]",
+    },
+  ])("scrubs $name from OpenCode stderr", async ({ environment, prefix, diagnostic }) => {
+    const directory = await temporaryDirectory();
+    const server = await OpencodeServer.start({
+      args: [fakeServer],
+      cacheHome: directory,
+      config: OpencodeHarnessConfigSchema.parse({}),
+      configHome: directory,
+      dataHome: directory,
+      environment: { ...environment, HOME: directory },
+      executable: process.execPath,
+      stateHome: directory,
+      workingDirectory: directory,
+    });
+    try {
+      await vi.waitFor(() => expect(server.stderrTail).toContain(`fake opencode: ${prefix}`));
+      expect(server.stderrTail).toContain(diagnostic);
+    } finally {
+      await server.stop();
+    }
   });
 
   it("reports a stored key OpenCode does not accept as authentication-required", async () => {

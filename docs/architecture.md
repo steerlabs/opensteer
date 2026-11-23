@@ -305,15 +305,15 @@ task and does not refuse by engine itself, so the Runner refuses.
   session and with project configuration and Claude Code's prompt and skills switched off;
   Antigravity starts with isolated state only. Neither has a boundary test yet.
 
-Every task's engine gets the person's proxy and certificate variables (`HTTPS_PROXY`,
-`HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`)
-from their login shell: they are how the engine reaches the network, not its configuration.
-Without them an engine behind a proxy cannot reach its model at all. A task's commands run as the
-person's user and can read the engine's environment, so a proxy address that carries a password
-is readable by every task's commands, the person's own and those a connected agent or a chat
-started, as the person's shell profile already is. Opensteer removes a URL's user and password
-only from its own records: every engine error, Run failure and Runner log line
-(`redactUrlCredentials`, `packages/shared/src/safeMessage.ts`).
+Every task's engine gets the person's proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`,
+`NO_PROXY` and their lowercase spellings) and certificate variables (`NODE_EXTRA_CA_CERTS`,
+`SSL_CERT_FILE`, `SSL_CERT_DIR`) from their login shell. The Home's launch environment excludes
+these login-shell variables. A task's commands run as the person and can read the engine's
+environment, including passwords in proxy addresses. Opensteer removes proxy usernames and
+passwords from its own records when it writes errors and diagnostics from every engine,
+recorded Run failures, Runner log lines, Runner command rejections and inspection details, and
+the desktop supervisor's child logs and status details
+(`redactNetworkCredentials`, `packages/shared/src/safeMessage.ts`).
 
 In the person's own task the mode is the task's and the rules are the person's. The engine is
 started in the task's mode (Claude Code's permission mode on its command line, Codex's approval
