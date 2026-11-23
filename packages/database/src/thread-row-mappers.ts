@@ -130,7 +130,9 @@ export function isRetiredMessageRow(row: Pick<Selectable<MessageTable>, "author"
   return (row.author as { readonly kind?: unknown }).kind === "team-member";
 }
 /** The same rule as `isRetiredMessageRow`, for a query that pages or counts messages. */
-export const keptMessageSql = sql<boolean>`messages.author->>'kind' is distinct from 'team-member'`;
+export function keptMessageSql(alias = "messages") {
+  return sql<boolean>`${sql.ref(`${alias}.author`)}->>'kind' is distinct from 'team-member'`;
+}
 export function messagesFromRows(rows: readonly Selectable<MessageTable>[]): Message[] {
   return MessageSchema.array().parse(
     rows.filter((row) => !isRetiredMessageRow(row)).map(messageValueFromRow),

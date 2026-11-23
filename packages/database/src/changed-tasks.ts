@@ -62,7 +62,7 @@ export function changedTasksSubquery(
     )
     .where("messages.kind", "!=", "continuation")
     .where(publishedMessagePredicate("threadInputs"))
-    .where(keptMessageSql)
+    .where(keptMessageSql())
     .where(changedMessageAt, ">", since);
 
   if (excludeSystemWorkers) {
