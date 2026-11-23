@@ -171,6 +171,49 @@ describe("TabSleeper", () => {
     }
   });
 
+  it("backs off exponentially when a full pressure rotation sleeps zero pages and resets when a blocker clears", async () => {
+    const onPass = vi.fn();
+    const f = await fixture({
+      memoryBudgetBytes: 100 * 1024 ** 2,
+      rendererUsage: () => ({ processes: 12, bytes: 500 * 1024 ** 2 }),
+      onPass,
+    });
+    try {
+      let protectedNow = true;
+      const keepAwake = () => (protectedNow ? ("capturing" as const) : null);
+      f.page.keepAwake = keepAwake;
+      for (let index = 1; index < 10; index++) {
+        const { id } = await f.ledger.openSurface({ origin: "agent", activate: false });
+        f.ledger.binding(id)!.page.keepAwake = keepAwake;
+      }
+      const sleepSpy = vi.spyOn(f.ledger, "sleep");
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      // Wait past the initial 30s renderer sample + 2 passes for 10 pages at 8/pass.
+      await vi.advanceTimersByTimeAsync(35_000);
+      const afterFirstRotation = sleepSpy.mock.calls.length;
+      expect(afterFirstRotation).toBe(10);
+      // During the 30s zero-progress backoff window (before leftoverMs=60s), no 1s spin retries occur.
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(sleepSpy.mock.calls.length).toBe(afterFirstRotation);
+      // Even over 10 minutes past leftoverMs, per-page exponential backoff prevents 1Hz spinning.
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(sleepSpy.mock.calls.length).toBeLessThan(150);
+      // Once the blocker clears and Host state releases a hold, backoff resets immediately and pages sleep.
+      protectedNow = false;
+      f.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [],
+        viewed: [],
+        pinned: [f.record.id],
+      });
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect([...f.ledger.policyRecords()].some((record) => record.live === null)).toBe(true);
+    } finally {
+      await f.close();
+    }
+  });
+
   it("backs off pressure shedding when successful sleeps leave renderer use unchanged", async () => {
     const f = await fixture({
       memoryBudgetBytes: 100 * 1024 ** 2,

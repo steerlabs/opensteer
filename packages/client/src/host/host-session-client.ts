@@ -2693,27 +2693,41 @@ export class HttpHostClient {
       this.#browserUsageReads.get(threadId) === read &&
       this.#showsThread(threadId);
     const uses = new Map<string, BrowserSessionUsageProjection>();
+    const batches: RunId[][] = [];
+    for (let offset = 0; offset < Math.max(1, runIds.length); offset += browserUsageRunBatchSize) {
+      batches.push(
+        runIds.slice(offset, offset + browserUsageRunBatchSize).map((id) => RunIdSchema.parse(id)),
+      );
+    }
     try {
-      for (
-        let offset = 0;
-        offset < Math.max(1, runIds.length);
-        offset += browserUsageRunBatchSize
-      ) {
-        const response = unwrapRpcResult(
-          await this.rpc["thread.browserUsage.get"]({
-            threadId,
-            runIds: runIds
-              .slice(offset, offset + browserUsageRunBatchSize)
-              .map((id) => RunIdSchema.parse(id)),
-          }),
+      const concurrency = 4;
+      for (let start = 0; start < batches.length; start += concurrency) {
+        // Wait for the whole wave to settle so an early failure cannot release the slot
+        // while sibling RPCs in the same wave are still in flight.
+        const results = await Promise.allSettled(
+          batches
+            .slice(start, start + concurrency)
+            .map((batch) =>
+              this.rpc["thread.browserUsage.get"]({ threadId, runIds: batch }).then(
+                unwrapRpcResult,
+              ),
+            ),
         );
         if (!current()) return false;
-        if (
-          response.threadId !== threadId ||
-          response.uses.some((use) => use.threadId !== threadId)
-        )
-          throw new Error("Browser usage Thread mismatch.");
-        for (const use of response.uses) uses.set(browserUseKey(use.sessionId, use), use);
+        const firstFailure = results.find(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (firstFailure) throw firstFailure.reason;
+        for (const result of results) {
+          if (result.status !== "fulfilled") continue;
+          const response = result.value;
+          if (
+            response.threadId !== threadId ||
+            response.uses.some((use) => use.threadId !== threadId)
+          )
+            throw new Error("Browser usage Thread mismatch.");
+          for (const use of response.uses) uses.set(browserUseKey(use.sessionId, use), use);
+        }
       }
     } catch (error) {
       if (!current()) return false;

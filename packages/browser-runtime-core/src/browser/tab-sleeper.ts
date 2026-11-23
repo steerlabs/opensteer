@@ -21,6 +21,9 @@ const rendererSampleMs = 30_000;
 const pressureScanMs = 1_000;
 const rendererSettleMs = 3_000;
 const ineffectiveReclaimsBeforeBackoff = 3;
+const maxProbeDelayMs = 60_000;
+const zeroProgressBackoffBaseMs = 30_000;
+const zeroProgressBackoffMaxMs = 300_000;
 const minimumReclaimBytes = 16 * 1024 ** 2;
 const reportMemoryChangeBytes = 64 * 1024 ** 2;
 /** Refused attempts alone change the summary at most this often. */
@@ -66,6 +69,7 @@ interface SleepSession {
 interface HeldSession extends SleepSession {
   hostState: BrowserSessionState | null;
   releasedAt: number;
+  blockerEpoch: number;
   stop(): void;
 }
 
@@ -74,6 +78,7 @@ export class TabSleeper {
   private readonly sessions = new Map<string, HeldSession>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private readonly nextProbe = new WeakMap<TabRecord, number>();
+  private readonly refusalCount = new WeakMap<TabRecord, number>();
   private running = false;
   private closed = false;
   private rendererUsage: BrowserRendererUsage | null = null;
@@ -87,6 +92,7 @@ export class TabSleeper {
   } | null = null;
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private ineffectiveReclaims = 0;
+  private zeroProgressRotations = 0;
   private pressureBackoffUntil = 0;
   private lastReportedPass: TabSleepPass | null = null;
   private lastReportedAt = 0;
@@ -222,6 +228,7 @@ export class TabSleeper {
       ...session,
       hostState: null,
       releasedAt: Date.now(),
+      blockerEpoch: 0,
       stop: () => {
         stopPolicy();
       },
@@ -241,15 +248,30 @@ export class TabSleeper {
   setSessionState(id: string, state: BrowserSessionState): void {
     const session = this.sessions.get(id);
     if (!session) return;
+    const previous = session.hostState;
+    const blockerCleared =
+      previous === null ||
+      state.runs < previous.runs ||
+      (Boolean(previous.keepAwake) && !state.keepAwake) ||
+      previous.viewed.some((surfaceId) => !state.viewed.includes(surfaceId)) ||
+      previous.pinned.some((surfaceId) => !state.pinned.includes(surfaceId));
     if (
       state.runs === 0 &&
-      (session.hostState === null ||
-        session.hostState.runs > 0 ||
-        (session.hostState.keepAwake && !state.keepAwake))
+      (previous === null || previous.runs > 0 || (previous.keepAwake && !state.keepAwake))
     )
       session.releasedAt = Date.now();
     session.hostState = state;
     for (const surfaceId of state.personUsed) session.ledger.markPersonUsed(surfaceId);
+    if (blockerCleared) {
+      session.blockerEpoch += 1;
+      for (const record of session.ledger.policyRecords()) {
+        this.nextProbe.delete(record);
+        this.refusalCount.delete(record);
+      }
+      this.zeroProgressRotations = 0;
+      this.pressureBackoffUntil = 0;
+      this.declined = new WeakSet();
+    }
     this.poke();
   }
   private openerLinks(session: SleepSession): ReadonlySet<BrowserSurfaceId> {
@@ -367,6 +389,7 @@ export class TabSleeper {
     if (!this.overBudget()) {
       this.reclaimFrom = null;
       this.ineffectiveReclaims = 0;
+      this.zeroProgressRotations = 0;
       this.pressureBackoffUntil = 0;
       return;
     }
@@ -450,6 +473,7 @@ export class TabSleeper {
     let attempted = 0;
     let slept = 0;
     let livePages = 0;
+    let hasUnvisitedEligible = false;
     const pending = new Set<Promise<void>>();
     try {
       this.sampleRenderers();
@@ -492,13 +516,24 @@ export class TabSleeper {
           ((this.rendererUsage && slept > 0) || !this.overBudget(pending.size))
         )
           continue;
+        const attemptEpoch = session.blockerEpoch;
         const sleeping = session.ledger
           .sleep(record.id, (next) => this.blocked(id, next, Date.now()))
           .then((committed) => {
-            if (committed) slept++;
-            else {
+            if (committed) {
+              slept++;
+              this.refusalCount.delete(record);
+              this.nextProbe.delete(record);
+              this.zeroProgressRotations = 0;
+            } else if (session.blockerEpoch === attemptEpoch) {
               this.declined.add(record);
-              this.nextProbe.set(record, Date.now() + quietMs);
+              const refusals = (this.refusalCount.get(record) ?? 0) + 1;
+              this.refusalCount.set(record, refusals);
+              const probeDelay = Math.min(
+                maxProbeDelayMs,
+                quietMs * 2 ** Math.min(refusals - 1, 3),
+              );
+              this.nextProbe.set(record, Date.now() + probeDelay);
             }
             this.trimRestore();
           })
@@ -507,6 +542,15 @@ export class TabSleeper {
         attempted++;
       }
       await Promise.all(pending);
+      const afterAttempts = Date.now();
+      hasUnvisitedEligible = candidates.some(
+        ({ id, session, record }) =>
+          record.live !== null &&
+          !this.declined.has(record) &&
+          this.sessions.get(id) === session &&
+          (this.nextProbe.get(record) ?? 0) <= afterAttempts &&
+          !this.blocked(id, record, afterAttempts),
+      );
       if (!this.closed && attempted < sleepsPerPass) {
         for (const host of this.retirementCandidates()) {
           if (this.closed || this.estimate() <= this.budget()) break;
@@ -515,9 +559,20 @@ export class TabSleeper {
       }
     } finally {
       this.running = false;
-      if (attempted < sleepsPerPass) this.declined = new WeakSet();
+      const now = Date.now();
+      const continueScan = attempted >= sleepsPerPass && (slept > 0 || hasUnvisitedEligible);
+      if (slept === 0 && attempted > 0 && !hasUnvisitedEligible) {
+        this.zeroProgressRotations++;
+        const backoff = Math.min(
+          zeroProgressBackoffMaxMs,
+          zeroProgressBackoffBaseMs * 2 ** Math.min(this.zeroProgressRotations - 1, 4),
+        );
+        this.pressureBackoffUntil = Math.max(this.pressureBackoffUntil, now + backoff);
+        this.declined = new WeakSet();
+      } else if (attempted < sleepsPerPass) {
+        this.declined = new WeakSet();
+      }
       if (this.rendererUsage && this.releasing) {
-        const now = Date.now();
         if (slept > 0) {
           this.reclaimFrom ??= {
             usage: this.rendererUsage,
@@ -527,12 +582,12 @@ export class TabSleeper {
           this.reclaimFrom.settledAt = now + rendererSettleMs;
           this.reclaimFrom.waiting = false;
         }
-        if (attempted >= sleepsPerPass)
+        if (continueScan)
           this.nextRendererSample = Math.min(this.nextRendererSample, now + pressureScanMs);
         if (this.reclaimFrom)
           this.nextRendererSample = Math.min(this.nextRendererSample, this.reclaimFrom.settledAt);
       }
-      this.poke(attempted >= sleepsPerPass ? pressureScanMs : 0);
+      this.poke(continueScan ? pressureScanMs : 0);
       if (this.options.onPass) this.reportPass({ ...this.summary(attempted, slept), livePages });
     }
   }
