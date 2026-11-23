@@ -1,6 +1,12 @@
-import { OpensteerError, type RequestId, type ThreadId } from "@opensteer/core";
+import {
+  AgentGrantTargetSchema,
+  OpensteerError,
+  type RequestId,
+  type ThreadId,
+} from "@opensteer/core";
 import {
   commandGrantScope,
+  commandGrantTarget,
   commandHeld,
   commandNotFoundMessage,
   commandRule,
@@ -13,6 +19,7 @@ import {
   commandFamilies,
   commandRow,
   commandTable,
+  type CommandResource,
   type CommandRow,
   type CommandType,
 } from "@opensteer/protocol/command-table";
@@ -206,7 +213,19 @@ export class CommandTools {
         await dispatchCommand(caller, command, this.#door(caller, origin, task.id, reason)),
       );
     }
-    // A connected agent's command is one recorded operation of its session, rechecked there.
+    // A connected agent's command is one recorded operation of its session, about the thing it
+    // governs: a grant admits the operation because it holds that thing. What governs the Home
+    // itself is a Home-scoped target, which only `everything` holds. An unknown type is nothing.
+    if (!Object.hasOwn(commandTable, command.type)) throw notFound();
+    const row = commandRow(command.type as CommandType) as CommandRow;
+    let governed: CommandResource | undefined;
+    try {
+      governed = (row.governs as (c: HostApiCommand) => CommandResource)(command);
+    } catch {
+      governed = undefined;
+    }
+    const named = governed ? commandGrantTarget(governed) : null;
+    const grantTarget = named ? AgentGrantTargetSchema.safeParse(named).data : undefined;
     const result = await requireDirectWork(this.#sessions).run({
       ownerUserId: caller.userId,
       agentConnectionId: caller.connectionId,
@@ -215,7 +234,7 @@ export class CommandTools {
       tool: "opensteer_command",
       input,
       target: {
-        grant: { kind: "device" },
+        grant: grantTarget ?? { kind: "device" },
         name: commandTitles[command.type as CommandType] ?? "A Home command",
         device: null,
       },

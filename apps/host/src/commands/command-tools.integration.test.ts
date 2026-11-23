@@ -187,6 +187,44 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
     expect(
       (await call(selected.client, "opensteer_commands", { type: "harness.rename" })).isError,
     ).toBe(true);
+
+    // The operation is about the thing the command governs (AC3): a grant holding profile A
+    // has its session admit an operation on A, and never one on B, whose answer reads as
+    // something that does not exist (AC2).
+    const profile = (name: string) =>
+      host.store.createBrowserProfile({
+        name,
+        ownerId: owner,
+        homeRunnerId: machine.runnerId,
+        idempotencyKey: randomUUID(),
+      });
+    const [a, b] = [await profile("Work"), await profile("Private")];
+    const holdsA = await connect({
+      scope: "selected",
+      tasks: false,
+      resources: [{ kind: "browser-profile", profileId: a.id }],
+    });
+    const renameProfile = (profileId: string) => ({
+      command: { type: "browser.profile.rename", profileId, name: "Renamed" },
+    });
+    const onA = await call(holdsA.client, "opensteer_command", renameProfile(a.id));
+    expect(onA.isError, JSON.stringify(onA.content)).not.toBe(true);
+    const operations = () =>
+      host.store.database
+        .selectFrom("agentOperations")
+        .select(["target"])
+        .where("connectionId", "=", holdsA.id)
+        .execute();
+    expect((await operations()).map(({ target }) => (target as { grant: unknown }).grant)).toEqual([
+      { kind: "browser-profile", profileId: a.id },
+    ]);
+    const onB = await call(holdsA.client, "opensteer_command", renameProfile(b.id));
+    const nothing = await call(holdsA.client, "opensteer_command", {
+      command: { type: "no.such.command" },
+    });
+    expect(onB.isError).toBe(true);
+    expect(JSON.stringify(onB.content)).toBe(JSON.stringify(nothing.content));
+    expect(await operations()).toHaveLength(1);
   } finally {
     for (const step of close) await step().catch(() => undefined);
     await database.drop?.();

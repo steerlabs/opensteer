@@ -1314,6 +1314,10 @@ function scopedGrant(grant: AgentGrant, scope: "everything" | "selected" | null)
     : grant;
 }
 
+/** The thing a grant names that a command governs, or null where it governs nothing nameable. */
+export function commandGrantTarget(resource: CommandResource): AgentGrantTarget | null {
+  return grantTargetOf(resource);
+}
 function grantTargetOf(resource: CommandResource): AgentGrantTarget | null {
   if (resource.id === null) return null;
   switch (resource.kind) {
