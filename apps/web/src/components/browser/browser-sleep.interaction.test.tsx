@@ -243,8 +243,9 @@ it("shows an unconfirmed-closing replaced-browser session and removes it from th
     client.getSnapshot().browserSessions.find((item) => item.state !== "closed")?.id ??
     "bsn_11111111-1111-4111-8111-111111111111";
   const dismissSpy = vi.fn(async () => {});
-  (client as unknown as { dismissBrowserSession?: (id: string) => Promise<void> }).dismissBrowserSession =
-    dismissSpy;
+  (
+    client as unknown as { dismissBrowserSession?: (id: string) => Promise<void> }
+  ).dismissBrowserSession = dismissSpy;
   await act(async () =>
     client.setBrowserPools([
       {

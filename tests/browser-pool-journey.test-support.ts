@@ -157,8 +157,12 @@ export async function journey(
     readonly statusEveryMs?: number;
     /** The guest's page probe during a retire; a retire waits for it. */
     readonly probePage?: (page: unknown, phase: "active" | "frozen") => Promise<readonly string[]>;
-    readonly requireAgentAccess?: ConstructorParameters<typeof BrowserService>[0]["requireAgentAccess"];
-    readonly detachRunnerAgents?: ConstructorParameters<typeof BrowserService>[0]["detachRunnerAgents"];
+    readonly requireAgentAccess?: ConstructorParameters<
+      typeof BrowserService
+    >[0]["requireAgentAccess"];
+    readonly detachRunnerAgents?: ConstructorParameters<
+      typeof BrowserService
+    >[0]["detachRunnerAgents"];
   } = {},
 ) {
   const real = options.chromium !== false;

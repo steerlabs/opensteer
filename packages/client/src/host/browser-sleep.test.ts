@@ -418,9 +418,7 @@ describe("unconfirmed-closing replaced-browser session (X2)", () => {
     expect(
       closeUnconfirmed!(null, { sessionId: "bsn_11111111-1111-4111-8111-111111111111" }),
     ).toEqual(expected);
-    expect(
-      closeUnconfirmed!({ id: "bsn_11111111-1111-4111-8111-111111111111" }, null),
-    ).toBeNull();
+    expect(closeUnconfirmed!({ id: "bsn_11111111-1111-4111-8111-111111111111" }, null)).toBeNull();
     const viewWithUnconfirmed = browserSleepFromHome(
       [
         {

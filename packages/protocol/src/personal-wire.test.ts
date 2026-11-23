@@ -299,8 +299,8 @@ describe("personal wire compatibility", () => {
       type: "browser.session.dismiss",
     });
     expect(command.type).toBe("browser.session.dismiss");
-    expect(
-      hostApi["commands.dispatch"].success.parse({ type: "browser.session.dismiss" }),
-    ).toEqual({ type: "browser.session.dismiss" });
+    expect(hostApi["commands.dispatch"].success.parse({ type: "browser.session.dismiss" })).toEqual(
+      { type: "browser.session.dismiss" },
+    );
   });
 });

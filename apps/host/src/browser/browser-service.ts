@@ -1011,7 +1011,10 @@ export class BrowserService {
    * after the lane is released. Without an agent the command is the person's.
    */
   async disableAgentAccess(runnerId: RunnerId): Promise<void> {
-    this.#runnerAccessGeneration.set(runnerId, (this.#runnerAccessGeneration.get(runnerId) ?? 0) + 1);
+    this.#runnerAccessGeneration.set(
+      runnerId,
+      (this.#runnerAccessGeneration.get(runnerId) ?? 0) + 1,
+    );
     for (const waiters of this.#poolAgentWaiters.values())
       for (const waiter of waiters)
         if (waiter.runnerId === runnerId) waiter.controller.abort(this.#deviceAccessDisabled);
@@ -7610,7 +7613,11 @@ export class BrowserService {
         sessionId,
       );
     } catch (error) {
-      if (runnerId && waiter.signal.aborted && waiter.signal.reason === this.#deviceAccessDisabled) {
+      if (
+        runnerId &&
+        waiter.signal.aborted &&
+        waiter.signal.reason === this.#deviceAccessDisabled
+      ) {
         await this.withRunnerAdmission(runnerId, async () => {
           if (onDisabled) await onDisabled();
           else await this.#requireAgentAccess(runnerId);
@@ -7988,7 +7995,7 @@ export class BrowserService {
     },
   ): Promise<void> {
     const accessGeneration =
-      options?.accessGeneration ?? (this.#runnerAccessGeneration.get(record.runnerId) ?? 0);
+      options?.accessGeneration ?? this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
     return this.#standardCdpProfiles.run(record.profileId, async (profileWaited) => {
       const held = record.profileId ? this.#standardCdpProfiles.held(record.profileId) : undefined;
       if (held && held.bindingId !== input.agentBindingId)
@@ -8013,10 +8020,10 @@ export class BrowserService {
             throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
           const mustRecheck = Boolean(
             options?.recheck ||
-              profileWaited ||
-              reservation?.waited ||
-              admissionWaited ||
-              (this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== accessGeneration,
+            profileWaited ||
+            reservation?.waited ||
+            admissionWaited ||
+            (this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== accessGeneration,
           );
           if (mustRecheck) await this.#admitAgentSession(input, record.id, false);
           else if (options?.requireAccess) await this.#requireAgentAccess(record.runnerId);
@@ -9767,7 +9774,9 @@ export class HostedBrowserBroker {
       });
       this.#socket.on("close", (code, reason) => {
         this.#failure ??= `Browser Runtime closed the connection (${code} ${reason.toString()}).`;
-        abortReady(new Error(`Browser Runtime closed during attach (${code} ${reason.toString()}).`));
+        abortReady(
+          new Error(`Browser Runtime closed during attach (${code} ${reason.toString()}).`),
+        );
         const retired =
           !this.#stopping &&
           !this.#detaching &&

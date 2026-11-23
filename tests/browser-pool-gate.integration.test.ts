@@ -39,6 +39,7 @@ import { EventEmitter } from "node:events";
 import { sql } from "kysely";
 import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
+import { KeyedMutationQueue } from "../packages/shared/src/mutationQueue.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
 import { BrowserService, HostedBrowserBroker } from "../apps/host/src/browser/browser-service.js";
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
@@ -2955,7 +2956,8 @@ for (const revoke of ["device-off", "grant-narrowed", "disconnect"] as const)
     j = await journey(`x1-wake-${revoke}`, {
       chromium: false,
       profile: true,
-      requireAgentAccess: (runnerId) => requireRunnerDeviceAccess(j!.database, runnerId, "browser", true),
+      requireAgentAccess: (runnerId) =>
+        requireRunnerDeviceAccess(j!.database, runnerId, "browser", true),
       detachRunnerAgents: async (runnerId) => {
         const rows = await j!.database
           .selectFrom("browserSessions")
@@ -3054,9 +3056,7 @@ for (const revoke of ["device-off", "grant-narrowed", "disconnect"] as const)
       });
       try {
         await before(resume.seen, opening, "Agent hold during wake");
-        expect(
-          await j.store.listBrowserSessionAttachmentBindings(personTab.sessionId),
-        ).toEqual([]);
+        expect(await j.store.listBrowserSessionAttachmentBindings(personTab.sessionId)).toEqual([]);
 
         if (revoke === "device-off") {
           await home.service.withRunnerAdmission(j.task.runnerId, async () => {
@@ -3106,11 +3106,8 @@ for (const revoke of ["device-off", "grant-narrowed", "disconnect"] as const)
           message: (firstAdmissionRefusal as { message?: string }).message,
           ...(revoke === "device-off" ? { reason: "device-access-off" } : {}),
         });
-        if (revoke === "disconnect")
-          expect((refused as Error).message).toBe(lineageEndedMessage);
-        expect(
-          await j.store.listBrowserSessionAttachmentBindings(personTab.sessionId),
-        ).toEqual([]);
+        if (revoke === "disconnect") expect((refused as Error).message).toBe(lineageEndedMessage);
+        expect(await j.store.listBrowserSessionAttachmentBindings(personTab.sessionId)).toEqual([]);
       } finally {
         resume.allow();
         await opening.catch(() => undefined);
@@ -3179,9 +3176,7 @@ it("re-checks authority after #holdForAgent waits in the profile queue on a pers
     ]);
     const baseRepository = personalBrowserRepository(store);
     const realCreate = baseRepository.createBrowserSession.bind(baseRepository);
-    let pauseNextCreate:
-      | { entered: () => void; release: Promise<void> }
-      | undefined;
+    let pauseNextCreate: { entered: () => void; release: Promise<void> } | undefined;
     const personal = new BrowserService({
       deploymentId: task.deploymentId,
       hostOrigin: new URL("http://127.0.0.1"),
@@ -3290,11 +3285,25 @@ it("re-checks authority after #holdForAgent waits in the profile queue on a pers
 
         // Agent attaches while the profile queue is held: first admission passes, then
         // #holdForAgent suspends behind `blocker` in the profile queue.
+        const agentQueued = Promise.withResolvers<void>();
+        const queueRun = KeyedMutationQueue.prototype.run;
+        const queueSpy = vi.spyOn(KeyedMutationQueue.prototype, "run").mockImplementation(function (
+          this: KeyedMutationQueue,
+          key,
+          operation,
+        ) {
+          if (key === profile.id) agentQueued.resolve();
+          return queueRun.call(this, key, operation);
+        });
         const attaching = personal.attachCdpForAgent(
           { ...agent, sessionId: personTab.sessionId },
           () => {},
         );
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        try {
+          await agentQueued.promise;
+        } finally {
+          queueSpy.mockRestore();
+        }
 
         // Narrow the grant while #holdForAgent is waiting in the profile queue.
         const updated = await connections.update(task.userId, {
@@ -3348,12 +3357,12 @@ it("never resolves broker.ready() or confirms openTab while the broker is detach
     const emit = EventEmitter.prototype.emit;
     const held: { connection: TestRuntimeConnection; args: unknown[] }[] = [];
     let release = false;
-    let activeBroker: HostedBrowserBroker | undefined;
+    const brokers: HostedBrowserBroker[] = [];
     const readyOriginal = HostedBrowserBroker.prototype.ready;
     const captureBroker = vi
       .spyOn(HostedBrowserBroker.prototype, "ready")
       .mockImplementation(function (this: HostedBrowserBroker) {
-        activeBroker = this;
+        brokers.push(this);
         return readyOriginal.call(this);
       });
     const frames = vi.spyOn(TestRuntimeConnection.prototype, "emit").mockImplementation(function (
@@ -3362,7 +3371,12 @@ it("never resolves broker.ready() or confirms openTab while the broker is detach
       ...args
     ) {
       const [data, binary] = args as [Buffer, boolean];
-      if (!release && event === "message" && !binary && /"type":"browser\.tabs"/u.test(data.toString())) {
+      if (
+        !release &&
+        event === "message" &&
+        !binary &&
+        /"type":"browser\.tabs"/u.test(data.toString())
+      ) {
         held.push({ connection: this, args: [event, ...args] });
         return true;
       }
@@ -3371,17 +3385,17 @@ it("never resolves broker.ready() or confirms openTab while the broker is detach
     try {
       const opening = home.service.openTab(j.task.userId, j.command("x6-detach-ready"));
       await until(() => {
-        expect(activeBroker).toBeDefined();
-        expect(
-          held.some(({ args }) => /"op":"end"/u.test((args[1] as Buffer).toString())),
-        ).toBe(true);
+        expect(brokers[0]).toBeDefined();
+        expect(held.some(({ args }) => /"op":"end"/u.test((args[1] as Buffer).toString()))).toBe(
+          true,
+        );
       });
       // Exact Finding 1 sequence: browser.tabs (rows + end) are queued on #runtimeFrameTail right
       // as letGoPooled sets #detaching = true before rows executes.
       release = true;
       for (const frame of held.splice(0))
         emit.call(frame.connection, ...(frame.args as [string, ...unknown[]]));
-      const lettingGo = activeBroker!.letGoPooled("The Home is shutting down.");
+      const lettingGo = brokers[0]!.letGoPooled("The Home is shutting down.");
       const opened = await opening.then(
         (result) => ({ ok: true as const, result }),
         (error: unknown) => ({ ok: false as const, error }),
@@ -3424,27 +3438,32 @@ it("rejects openTab and preserves closing when Stop races attach before ready (X
       ...args
     ) {
       const [data, binary] = args as [Buffer, boolean];
-      if (!release && event === "message" && !binary && /"type":"browser\.tabs"/u.test(data.toString())) {
+      if (
+        !release &&
+        event === "message" &&
+        !binary &&
+        /"type":"browser\.tabs"/u.test(data.toString())
+      ) {
         held.push({ connection: this, args: [event, ...args] });
         return true;
       }
       return emit.call(this, event, ...args);
     });
     const stopBroker = HostedBrowserBroker.prototype.stop;
-    const stopping = vi
-      .spyOn(HostedBrowserBroker.prototype, "stop")
-      .mockImplementation(function (this: HostedBrowserBroker) {
-        release = true;
-        for (const frame of held.splice(0))
-          emit.call(frame.connection, ...(frame.args as [string, ...unknown[]]));
-        return stopBroker.call(this);
-      });
+    const stopping = vi.spyOn(HostedBrowserBroker.prototype, "stop").mockImplementation(function (
+      this: HostedBrowserBroker,
+    ) {
+      release = true;
+      for (const frame of held.splice(0))
+        emit.call(frame.connection, ...(frame.args as [string, ...unknown[]]));
+      return stopBroker.call(this);
+    });
     try {
       const opening = home.service.openTab(j.task.userId, j.command("x6-stop-during-attach"));
       await until(() =>
-        expect(
-          held.some(({ args }) => /"op":"end"/u.test((args[1] as Buffer).toString())),
-        ).toBe(true),
+        expect(held.some(({ args }) => /"op":"end"/u.test((args[1] as Buffer).toString()))).toBe(
+          true,
+        ),
       );
       const [row] = await j.database
         .selectFrom("browserSessions")
@@ -3648,11 +3667,24 @@ it("never forgets a retired target while a closing session still has an active b
         runtime: loopbackPoolChannel(j.guest),
         controller: j.controller,
       });
+      let closingChecks = 0;
+      const setAdopterOriginal = drain.setAdopter.bind(drain);
+      vi.spyOn(drain, "setAdopter").mockImplementation((adopter) => {
+        setAdopterOriginal({
+          ...adopter,
+          hasClosing: async (target) => {
+            closingChecks++;
+            return adopter.hasClosing(target);
+          },
+        });
+      });
       const drained = home.service.drainPool(j.task.runnerId, drain).then(() => {
         drainedSettled = true;
       });
-      // Give #drainStep several turns while the broker is still in #brokers.
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      // Give #drainStep several ticks while the broker is still in #brokers.
+      await until(() => {
+        expect(closingChecks).toBeGreaterThanOrEqual(4);
+      });
       // Must NOT have forgotten the retired target or resolved drain while the row is closing!
       expect(drainedSettled).toBe(false);
       expect(await listBrowserPoolRetiredTargets(j.database, j.task.runnerId)).toHaveLength(1);
@@ -3964,15 +3996,13 @@ it("aborts an in-flight pooled openTab as soon as reservation.ended fires on res
         return origCreate.call(this, input);
       });
     try {
-      const opening = home.service
-        .openTab(j.task.userId, j.command("x8-open-aborted"))
-        .then(
-          () => "opened",
-          () => {
-            observedAborted = true;
-            return "rejected";
-          },
-        );
+      const opening = home.service.openTab(j.task.userId, j.command("x8-open-aborted")).then(
+        () => "opened",
+        () => {
+          observedAborted = true;
+          return "rejected";
+        },
+      );
       await enteredCreate.promise;
       // Start a restart while openTab holds its pool reservation BEFORE any broker exists:
       // reservation.ended must abort openTab immediately instead of waiting for browserOpenWorkMs.
