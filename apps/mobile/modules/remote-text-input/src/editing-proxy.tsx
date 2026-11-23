@@ -47,7 +47,6 @@ export function NativeEditingProxy({
   cancelCompositionOnBlur = false,
   abilities = nativeBrowserAbilities,
   label = "Type into the page",
-  commandContext = false,
   ref,
 }: {
   readonly context: EditingContext | null;
@@ -58,12 +57,6 @@ export function NativeEditingProxy({
   readonly onDone: () => void;
   readonly abilities?: EditingTargetAbilities;
   readonly label?: string;
-  /**
-   * CV1: the far side honours a command's context (negotiated). Every command then says the
-   * context it was made in, and a command of a context just left still goes, under it; without
-   * it a late command is dropped, as before.
-   */
-  readonly commandContext?: boolean;
   readonly ref?: Ref<NativeEditingProxyHandle>;
 }) {
   const { step, late, current } = useMemo(() => {
@@ -117,11 +110,12 @@ export function NativeEditingProxy({
       },
     };
   }, [abilities]);
-  /** A command says the context it was made in, to a far side that honours it. */
+  /**
+   * A command says the context of the field it was made for: the reducer's, the current one or
+   * a retired one on the late path. (The transport stamps any command that arrives without one.)
+   */
   const scoped = (operation: EditingOperation, contextId = current()): EditingOperation =>
-    commandContext && operation.kind === "command" && contextId
-      ? { ...operation, contextId }
-      : operation;
+    operation.kind === "command" && contextId ? { ...operation, contextId } : operation;
   const latest = useRef({ sendOperation, onDone, scoped });
   latest.current = { sendOperation, onDone, scoped };
   const nativeComposing = useRef(false);
@@ -180,8 +174,8 @@ export function NativeEditingProxy({
             // CV1: what the person did in the context just left still goes, under that context:
             // the page applies what is relative to its caret (an insertion, a backward deletion, a
             // move) in the same field and refuses anything else alone. Only what names its context
-            // leaves: an edit or a composition, a paste as the text it inserts, and a command only
-            // to a far side that honours its context; a key would land in whatever has focus now.
+            // leaves: an edit or a composition, a paste as the text it inserts, and a command; a key
+            // would land in whatever has focus now.
             const result = late(contextId, event);
             if (!result) return null;
             // The native field composes or not whatever the context: the same bookkeeping.
@@ -199,8 +193,7 @@ export function NativeEditingProxy({
                   : null;
               if (operation.kind === "edit" || operation.kind === "compose")
                 sendOperation(operation);
-              else if (operation.kind === "command" && commandContext)
-                sendOperation(scoped(operation, contextId));
+              else if (operation.kind === "command") sendOperation(scoped(operation, contextId));
               else if (text)
                 sendOperation({
                   kind: "edit",

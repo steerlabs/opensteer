@@ -917,7 +917,6 @@ export class ReconnectingHostConnection {
                 rasterDemand: 1,
                 editing: 2,
                 clipboard: false,
-                editingCommandContext: 1,
                 ...(bridge.signIn ? { signIn: { version: 3 }, cardFill: 1 } : {}),
                 ...(bridge.personFill ? { personFill: 2 } : {}),
               },

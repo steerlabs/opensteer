@@ -68,11 +68,6 @@ export interface BrowserEditingState {
   readonly input: BrowserInputMode;
   readonly negotiated: boolean;
   readonly abilities: EditingTargetAbilities;
-  /**
-   * CV1: the far side honours a command's context, so a command made in a context the viewer
-   * has since left may still be sent, under that context. Without it a late command is dropped.
-   */
-  readonly commandContext?: boolean;
   readonly context: EditingContext | null;
   readonly geometryRevision?: number;
   readonly menu: BrowserContextMenu | null;
@@ -283,7 +278,6 @@ export class BrowserEditingStore {
     surfaceId?: string,
     clipboard?: boolean,
     basicInput?: 1,
-    commandContext?: 1,
   ): void {
     const abilities =
       version === 1 || (version === 2 && clipboard === true)
@@ -298,7 +292,6 @@ export class BrowserEditingStore {
       input: browserInputMode(version, basicInput),
       negotiated: version !== undefined || basicInput === 1,
       abilities,
-      commandContext: version !== undefined && commandContext === 1,
     };
     if (!surfaceId) {
       if (state.negotiated) this.#versions.set(sessionId, state);
@@ -352,17 +345,20 @@ export class BrowserEditingStore {
           ...EditingKeystrokeSchema.parse(operation.keystroke),
         });
         return;
-      case "command":
+      case "command": {
+        // CV1, CY7: every command says the field context it was made for, stamped here, the one
+        // place every client sends through: its own (a late one's) or the context now. With no
+        // field context yet there is nothing it was made for, and nothing is sent.
+        const contextId = operation.contextId ?? target.state.context?.contextId;
+        if (!contextId) return;
         send({
           type: "input.command",
           surfaceId,
           command: EditingCommandSchema.parse(operation.command),
-          // Only to a far side that said it honours it: an older one refuses the field.
-          ...(target.state.commandContext && operation.contextId
-            ? { contextId: operation.contextId }
-            : {}),
+          contextId,
         });
         return;
+      }
       case "compose":
         send({
           type: "input.compose",

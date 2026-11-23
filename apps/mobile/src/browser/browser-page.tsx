@@ -1225,7 +1225,6 @@ export function BrowserPage(props: {
           }}
           context={editingState.context}
           abilities={editingState.abilities}
-          commandContext={editingState.commandContext === true}
           legacy={!editingState.negotiated}
           sendOperation={(operation) => editing.send(operation)}
           autofill={editingState.autofill}
@@ -1536,8 +1535,6 @@ export function PageTyping(props: {
   readonly sendOperation: (operation: EditingOperation) => boolean;
   readonly abilities?: EditingTargetAbilities;
   readonly legacy?: boolean;
-  /** The far side honours a command's context (CV1). */
-  readonly commandContext?: boolean;
   readonly ref?: Ref<NativeEditingProxyHandle>;
   readonly autofill?: BrowserAutofillState | null;
   readonly confirmingLogin?: string | null;
@@ -1556,7 +1553,6 @@ export function PageTyping(props: {
         softKeyboard={props.softKeyboard ?? true}
         sendOperation={props.sendOperation}
         onDone={props.onBlur ?? props.onDone}
-        commandContext={props.commandContext === true}
         {...(props.abilities ? { abilities: props.abilities } : {})}
       />
     );

@@ -214,11 +214,6 @@ export const BrowserAttachTicketClaimsSchema = z
      * editing kinds. Issued only to a runtime advertising `modules.browser.editing`.
      */
     editingVersion: z.union([z.literal(1), z.literal(2)]).optional(),
-    /**
-     * CV1: the Host relays an editing command's `contextId`. Issued only with an editing version,
-     * to a runtime advertising `modules.browser.editingCommandContext`.
-     */
-    editingCommandContext: z.literal(1).optional(),
     basicInput: z.literal(1).optional(),
     surfaceState: z.literal(1).optional(),
     /** V2 makes the isolated engine clipboard explicit; v1 implies true. */
@@ -666,11 +661,13 @@ const BaselineBrowserClientMessageSchema = z
       surfaceId: BrowserSurfaceIdSchema,
       command: EditingCommandSchema,
       /**
-       * The context the command was made in (CV1). A move or deletion under an earlier context
-       * of the focused field applies at its caret; any command under another field's context is
-       * refused alone. Sent only to a far side that negotiated `editingCommandContext`.
+       * The context of the field the command was made for (CV1), always. A move or the backward
+       * deletion under an earlier context of the focused field applies at its caret; any command
+       * under another field's context is refused alone. A target with no field contexts (a Mac
+       * app, a phone screen) takes its commands on its own wire, display.input, which carries
+       * none.
        */
-      contextId: EditingContextIdSchema.optional(),
+      contextId: EditingContextIdSchema,
     }),
     /** Editing sessions only: the composition in progress, shown live in the page. */
     z.strictObject({
@@ -857,12 +854,6 @@ export const BrowserViewerSnapshotSchema = z
     navigationAttributionVersion: z.literal(1).optional(),
     /** Present only when the attach ticket claimed it, and projected only to viewers that opted in. */
     editingVersion: z.union([z.literal(1), z.literal(2)]).optional(),
-    /**
-     * CV1: the far side honours an editing command's `contextId`. Present only when the attach
-     * ticket claimed it, and projected only to a viewer that asked (`editingCommands=1`) with an
-     * editing version.
-     */
-    editingCommandContext: z.literal(1).optional(),
     basicInput: z.literal(1).optional(),
     surfaceState: z.literal(1).optional(),
     /** Only v2 carries this flag; v1 implies an isolated engine clipboard. */

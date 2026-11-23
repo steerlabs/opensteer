@@ -222,9 +222,7 @@ async function startBrowserRelay(options: {
           stateImport: true,
           fileStaging: true,
           cdpBoundary: 1,
-          ...(options.headless
-            ? { editing: 2 as const, clipboard: true, editingCommandContext: 1 as const }
-            : {}),
+          ...(options.headless ? { editing: 2 as const, clipboard: true } : {}),
           sharedControl: 1,
           targetControl: 1,
           navigationVersion: 1,

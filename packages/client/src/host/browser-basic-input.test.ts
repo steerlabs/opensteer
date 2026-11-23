@@ -58,6 +58,7 @@ describe("basic browser input", () => {
     ] satisfies import("../editing/index.js").EditingOperation[];
     for (const basicInput of [undefined, 1] as const) {
       store.negotiate("session", 2, surfaceId, true, basicInput);
+      store.receive("session", { type: "browser.editing", surfaceId, context });
       expect(target.get().input).toBe("editing");
       for (const operation of operations) await target.send(operation);
     }
@@ -98,7 +99,7 @@ describe("basic browser input", () => {
         surfaceId,
         edit: { contextId: context.contextId, text: " ", before: "", after: "" },
       },
-      { type: "input.command", surfaceId, command: "deleteBackward" },
+      { type: "input.command", surfaceId, command: "deleteBackward", contextId: context.contextId },
     ]);
     store.dispose();
   });
@@ -252,7 +253,9 @@ describe("basic browser input", () => {
     });
     expect(commands).toEqual([]);
     await target.send({ kind: "command", command: "selectAll" });
-    expect(commands).toEqual([{ type: "input.command", surfaceId, command: "selectAll" }]);
+    expect(commands).toEqual([
+      { type: "input.command", surfaceId, command: "selectAll", contextId: context.contextId },
+    ]);
     store.dispose();
   });
 });

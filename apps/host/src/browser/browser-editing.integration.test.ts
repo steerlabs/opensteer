@@ -363,7 +363,12 @@ integration("Host and Chromium editing contract", () => {
         "canceled and sensitive baseline copy project no clipboard data to any other viewer",
       );
       const legacyRefused = once(old.socket, "close");
-      old.send({ type: "input.command", surfaceId, command: "selectAll" });
+      old.send({
+        type: "input.command",
+        surfaceId,
+        command: "selectAll",
+        contextId: crypto.randomUUID(),
+      });
       const [refusalCode, refusalReason] = await legacyRefused;
       expect(refusalCode).toBe(4002);
       expect(String(refusalReason)).toBe("Browser editing was not negotiated.");

@@ -3066,6 +3066,15 @@ it("opens controller page actions only from matching streamed facts and offers o
   expect(container.querySelector('[data-drag-select="true"]')).not.toBeNull();
   press(container, "Finish selection");
   expect(container.querySelector('[data-drag-select="true"]')).toBeNull();
+  // The page's context, with no field focused: a page publishes one from the start.
+  const contextId = "00000000-0000-4000-8000-000000000002";
+  act(() =>
+    editing.receive(chosen.id, {
+      type: "browser.editing",
+      surfaceId,
+      context: { contextId, field: null, caret: null },
+    }),
+  );
   const menu = {
     type: "browser.contextmenu" as const,
     surfaceId,
@@ -3083,6 +3092,7 @@ it("opens controller page actions only from matching streamed facts and offers o
     type: "input.command",
     surfaceId,
     command: "selectAll",
+    contextId,
   });
   expect(container.querySelector('section[aria-label="Page actions"]')).toBeNull();
   act(() => editing.receive(chosen.id, { ...menu, geometryRevision: 7 }));

@@ -251,6 +251,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         await waitForBrowserState(() =>
           messages.some((m) => m.type === "browser.editing" && m.context.field !== null),
         );
+      const context = () => messages.filter((m) => m.type === "browser.editing").at(-1)!;
       if (mode === "undo" || mode === "undo-baseline") {
         for (const text of ["a", "b"]) {
           stroke({ key: text, code: `Key${text.toUpperCase()}`, modifiers: [], text });
@@ -258,7 +259,13 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
             read<boolean>(`t.value===${JSON.stringify(text === "a" ? "a" : "ab")}`),
           );
         }
-        if (negotiated) send({ type: "input.command", surfaceId, command: "undo" });
+        if (negotiated)
+          send({
+            type: "input.command",
+            surfaceId,
+            command: "undo",
+            contextId: context().context.contextId,
+          });
         else
           stroke({
             key: "z",
@@ -274,7 +281,6 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         capture = undefined;
         return;
       }
-      const context = () => messages.filter((m) => m.type === "browser.editing").at(-1)!;
       if (mode === "editing" || mode === "editing-v2") {
         send({
           type: "input.key",
@@ -461,7 +467,12 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           keyCode: 90,
         });
         await read("t.removeEventListener('keydown',layoutBinding)");
-        send({ type: "input.command", surfaceId, command: "redo" });
+        send({
+          type: "input.command",
+          surfaceId,
+          command: "redo",
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() => read<boolean>("t.value==='x'"));
         expect(await read("events.filter(e=>e.type==='keydown').at(-1)")).toMatchObject(
           process.platform === "darwin"
@@ -489,7 +500,12 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         await read(
           "window.commandCanceled=false;t.addEventListener('keydown',e=>{e.preventDefault();window.commandCanceled=true},{once:true});t.setSelectionRange(3,3)",
         );
-        send({ type: "input.command", surfaceId, command: "moveToBeginningOfLine" });
+        send({
+          type: "input.command",
+          surfaceId,
+          command: "moveToBeginningOfLine",
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() => read<boolean>("commandCanceled"));
         expect(await read("t.selectionStart")).toBe(3);
         checks.push("page keydown cancellation suppresses the native editing command");
@@ -506,7 +522,12 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
             context().context.contextId !== secondContext &&
             context().context.field?.sensitive === false,
         );
-        send({ type: "input.command", surfaceId, command: "selectAll" });
+        send({
+          type: "input.command",
+          surfaceId,
+          command: "selectAll",
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() =>
           read<boolean>("t.selectionStart === 0 && t.selectionEnd === t.value.length"),
         );
@@ -1044,6 +1065,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           surfaceId,
           producerId: contender,
           command: "deleteBackward",
+          contextId: blockedContext,
         });
         send({
           type: "clipboard.cut",

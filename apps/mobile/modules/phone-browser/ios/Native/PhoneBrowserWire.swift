@@ -302,6 +302,9 @@ struct BrowserHelperRefusal: CodedError {
       } else { throw BrowserRefusal.unsupportedOperation }
     case "input.command":
       guard let command = message["command"] as? String, ["selectAll", "deleteBackward"].contains(command) else { throw BrowserRefusal.unsupportedOperation }
+      // A phone browser's field has one context at a time: a command made for any other is
+      // refused, as an edit is.
+      guard message["contextId"] as? String == tab.contextId else { throw BrowserRefusal.notActionable }
       primitive.action.kind = command == "selectAll" ? "text.selectAll" : "text.backspace"
     case "clipboard.paste":
       guard let text = message["text"] as? String else { throw BrowserRefusal.invalidArgument }

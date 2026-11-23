@@ -693,7 +693,6 @@ export class BrowserController {
             ...(this.claims.editingVersion === 2
               ? { clipboard: this.clipboard !== undefined }
               : {}),
-            ...(this.claims.editingCommandContext === 1 ? { editingCommandContext: 1 } : {}),
           }
         : {}),
       type: "browser.snapshot",

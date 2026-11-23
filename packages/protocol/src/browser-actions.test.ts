@@ -402,8 +402,8 @@ describe("typed browser agent wire", () => {
 
   it("admits only the fixed basic input subset", () => {
     const allowed = [
-      { type: "input.command", command: "selectAll" },
-      { type: "input.command", command: "deleteBackward" },
+      { type: "input.command", command: "selectAll", contextId: uuid },
+      { type: "input.command", command: "deleteBackward", contextId: uuid },
       { type: "input.key", action: "down", key: "Enter", code: "Enter", modifiers: [] },
       { type: "input.text", edit: { contextId: uuid, text: "Hello", before: "", after: "" } },
       {
@@ -424,8 +424,8 @@ describe("typed browser agent wire", () => {
         text: "paste",
         modifiers: [],
       },
-      { type: "input.command", command: "undo" },
-      { type: "input.command", command: "deleteForward" },
+      { type: "input.command", command: "undo", contextId: uuid },
+      { type: "input.command", command: "deleteForward", contextId: uuid },
       { type: "input.key", action: "down", key: "Tab", code: "Tab", modifiers: [] },
       { type: "input.key", action: "down", key: "v", code: "KeyV", modifiers: ["primary"] },
       { type: "input.text", edit: { contextId: uuid, text: "Hi", before: "Hello", after: "" } },

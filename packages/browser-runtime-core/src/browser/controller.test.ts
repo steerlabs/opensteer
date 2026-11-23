@@ -1407,7 +1407,16 @@ describe("BrowserController", () => {
           clipboard: false,
         });
         const surfaceId = activeSurfaceId();
-        await controller.handle({ type: "input.command", surfaceId, command: "selectAll" });
+        const context = sink.messages
+          .filter((message) => message.type === "browser.editing")
+          .at(-1);
+        if (context?.type !== "browser.editing") throw new Error("Missing editing context");
+        await controller.handle({
+          type: "input.command",
+          surfaceId,
+          command: "selectAll",
+          contextId: context.context.contextId,
+        });
         expect(page.cdpSession.sent).toContainEqual(
           expect.objectContaining({
             method: "Input.dispatchKeyEvent",

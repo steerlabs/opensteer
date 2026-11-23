@@ -142,6 +142,9 @@ internal class ViewerInput(private val pool: PhoneBrowserPool, private val emit:
           if (!accepted) throw BrowserFailure("outcome-unknown")
         }
         "input.command" -> {
+          // A phone browser's field has one context at a time: a command made for any other is
+          // refused, as an edit is.
+          if (message.getString("contextId") != tab.contextId) throw BrowserFailure("stale-document")
           val connection = connection(tab)
           val accepted = when (message.getString("command")) {
             "selectAll" -> connection.performContextMenuAction(android.R.id.selectAll)

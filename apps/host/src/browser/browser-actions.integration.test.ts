@@ -873,7 +873,7 @@ integration("session-scoped browser agent backends", () => {
     const commands = f.phone.receivedCommands();
     const send = (message: Record<string, unknown>) =>
       viewer.send(JSON.stringify({ surfaceId: "page-integration", ...message }));
-    send({ type: "input.command", command: "selectAll" });
+    send({ type: "input.command", command: "selectAll", contextId: crypto.randomUUID() });
     await vi.waitFor(
       () =>
         expect(commands).toContainEqual(
@@ -887,7 +887,7 @@ integration("session-scoped browser agent backends", () => {
       { timeout: 2_000 },
     );
     for (const message of [
-      { type: "input.command", command: "undo" },
+      { type: "input.command", command: "undo", contextId: crypto.randomUUID() },
       { type: "clipboard.cut", operationId: crypto.randomUUID() },
       {
         type: "clipboard.paste-data",
@@ -971,6 +971,7 @@ integration("session-scoped browser agent backends", () => {
         type: "input.command",
         surfaceId: "page-integration",
         command: "selectAll",
+        contextId: crypto.randomUUID(),
       }),
     );
     expect(await notNegotiated).toEqual({

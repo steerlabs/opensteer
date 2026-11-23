@@ -192,9 +192,10 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
       }
       return true;
     }
+    // Stamped as the client's store stamps it: its own context (a late one's), else the field's now.
     if (operation.kind === "command")
       return observer.command(
-        operation.contextId,
+        operation.contextId ?? observer.context.contextId,
         /^(move|delete)/.test(operation.command),
         () =>
           cdp.send(

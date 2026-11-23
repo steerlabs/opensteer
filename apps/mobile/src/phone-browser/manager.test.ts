@@ -1390,7 +1390,7 @@ describe("phone browser manager", () => {
     const fixture = await setup();
     await fixture.present();
     for (const message of [
-      { type: "input.command", surfaceId: fixture.surfaceId, command: "undo" },
+      { type: "input.command", surfaceId: fixture.surfaceId, command: "undo", contextId: uuid() },
       { type: "clipboard.cut", surfaceId: fixture.surfaceId, operationId: uuid() },
       { type: "state.import", operationId: uuid(), site: "https://example.com", cookies: [] },
       { type: "signin.probe", probeId: uuid(), site: "https://example.com" },

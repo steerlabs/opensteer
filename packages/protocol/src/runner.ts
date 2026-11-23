@@ -1422,8 +1422,6 @@ export const RunnerBrowserModuleSchema = z
       .optional(),
     /** Required for editing v2; true means the engine isolates clipboard operations. */
     clipboard: z.boolean().optional(),
-    /** CV1: the runtime honours an editing command's `contextId` (`input.command`). */
-    editingCommandContext: z.literal(1).optional().catch(undefined),
   })
   .transform(({ editing, clipboard, localProfileStorage, ...module }) => {
     const version = editing === 2 && clipboard === undefined ? undefined : editing;

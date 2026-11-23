@@ -1853,7 +1853,12 @@ describe("BrowserService", () => {
               false,
             );
           if (mode === "control") {
-            const command = { type: "input.command", surfaceId: "page-1", command: "selectAll" };
+            const command = {
+              type: "input.command",
+              surfaceId: "page-1",
+              command: "selectAll",
+              contextId: crypto.randomUUID(),
+            };
             if (expected) {
               await attachment.handle(Buffer.from(JSON.stringify(command)), false);
               expect(await nextInput()).toMatchObject(command);

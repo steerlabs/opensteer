@@ -17,31 +17,27 @@ function setup(negotiated = true) {
   return { store, target, commands };
 }
 describe("browser editing transport", () => {
-  // CV1: a command says its context only to a far side that negotiated it. A released Host
-  // parses input.command strictly (BrowserClientMessageSchema): it never sees the field, because
-  // it never projects editingCommandContext.
-  it.each([
-    [undefined, false],
-    [1, true],
-  ] as const)(
-    "sends a command's context only when negotiated (%s)",
-    async (commandContext, sent) => {
-      const commands: BrowserCommand[] = [];
-      const store = new BrowserEditingStore(
-        (_session, _surface, command) => commands.push(command),
-        () => "pc",
-      );
-      store.negotiate(sessionId, 2, undefined, false, undefined, commandContext);
-      const target = store.target(sessionId, surfaceId);
-      expect(target.get().commandContext).toBe(sent);
-      const contextId = crypto.randomUUID();
-      await target.send({ kind: "command", command: "deleteBackward", contextId });
-      const command = commands.find((candidate) => candidate.type === "input.command");
-      expect(command).toMatchObject({ type: "input.command", command: "deleteBackward" });
-      if (sent) expect(command).toMatchObject({ contextId });
-      else expect(command).not.toHaveProperty("contextId");
-    },
-  );
+  // CV1, CY7: every command says the field context it was made for, stamped in the store: its
+  // own (a late one's), else the field's context now; with no field context, nothing is sent.
+  it("stamps every command with its own context or the field's current one", async () => {
+    const { store, target, commands } = setup();
+    await target.send({ kind: "command", command: "deleteBackward" });
+    expect(commands.filter((command) => command.type === "input.command")).toEqual([]);
+    const current = crypto.randomUUID();
+    store.receive(sessionId, {
+      type: "browser.editing",
+      surfaceId,
+      context: { contextId: current, field: null, caret: null },
+    });
+    const late = crypto.randomUUID();
+    await target.send({ kind: "command", command: "deleteBackward", contextId: late });
+    await target.send({ kind: "command", command: "moveBackward" });
+    expect(commands.filter((command) => command.type === "input.command")).toEqual([
+      { type: "input.command", surfaceId, command: "deleteBackward", contextId: late },
+      { type: "input.command", surfaceId, command: "moveBackward", contextId: current },
+    ]);
+    store.dispose();
+  });
   it.each(["mac", "pc", null] as const)(
     "uses runtime primary for v2 text clipboard from %s viewers",
     async (platform) => {
@@ -57,6 +53,11 @@ describe("browser editing transport", () => {
         abilities: { composition: true, rangeEdits: true, commands: true, clipboard: "text" },
       });
       const contextId = crypto.randomUUID();
+      store.receive(sessionId, {
+        type: "browser.editing",
+        surfaceId,
+        context: { contextId, field: null, caret: null },
+      });
       await target.send({
         kind: "compose",
         composition: { contextId, text: "한", selectionStart: 1, selectionEnd: 1 },

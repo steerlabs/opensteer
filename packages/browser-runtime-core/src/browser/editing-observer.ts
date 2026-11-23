@@ -330,6 +330,9 @@ export class PageEditingObserver {
     );
     this.#script = result.identifier;
     await this.#frames.start();
+    // CY7: a page has a context from the start, with no field until one is focused, so every
+    // command (a Select all of the page too) says the context it was made for.
+    this.#publish(this.#context);
   }
 
   refresh(): void {
@@ -495,11 +498,10 @@ export class PageEditingObserver {
   /**
    * CV1: a command made in `contextId`. A move or a deletion is relative to the caret: under an
    * earlier context of the focused field it applies at the caret as it now is. Any command under
-   * another context (another field's) is refused alone, and nothing rotates. Without a context
-   * (a viewer that does not send one) it applies as always.
+   * another context (another field's) is refused alone, and nothing rotates.
    */
   async command(
-    contextId: string | undefined,
+    contextId: string,
     relative: boolean,
     action: () => Promise<unknown>,
     producer?: string,
@@ -511,23 +513,18 @@ export class PageEditingObserver {
     const admitted = () =>
       this.#focused?.fieldId === focus?.fieldId &&
       this.#focused?.context === focus?.context &&
-      (contextId === undefined ||
-        contextId === this.#context.contextId ||
+      (contextId === this.#context.contextId ||
         (relative && this.#focused !== null && this.#earlier.has(contextId)));
     if (!admitted()) return false;
     // A move or deletion computed from an edit the page refused goes with it (CY5).
-    if (
-      contextId !== undefined &&
-      this.#refusedFrom?.contextId === contextId &&
-      this.#refusedFrom.producer === producer
-    )
+    if (this.#refusedFrom?.contextId === contextId && this.#refusedFrom.producer === producer)
       return false;
     if (!focus) {
       await action();
       return true;
     }
     // Another composer's composition is closed by the command's own context, not the current one.
-    await this.#close(focus, contextId ?? this.#context.contextId, producer);
+    await this.#close(focus, contextId, producer);
     if (!admitted()) return false;
     await this.#cdp.send("Runtime.evaluate", {
       contextId: focus.context,

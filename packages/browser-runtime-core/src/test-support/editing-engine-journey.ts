@@ -329,6 +329,7 @@ export async function runEditingEngineJourney(
       surfaceId,
       producerId: contender,
       command: "deleteBackward",
+      contextId,
     });
     await controller.handle(
       browser.clipboard

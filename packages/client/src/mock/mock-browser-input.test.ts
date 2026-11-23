@@ -68,9 +68,9 @@ describe("mock basic browser input", () => {
     input.retain("session", surfaceId);
     const receive = vi.spyOn(input.editing, "receive");
     const commands: BrowserCommand[] = [
-      { type: "input.command", surfaceId, command: "selectAll" },
-      { type: "input.command", surfaceId, command: "deleteBackward" },
-      { type: "input.command", surfaceId, command: "deleteWordBackward" },
+      { type: "input.command", surfaceId, command: "selectAll", contextId: operationId },
+      { type: "input.command", surfaceId, command: "deleteBackward", contextId: operationId },
+      { type: "input.command", surfaceId, command: "deleteWordBackward", contextId: operationId },
       {
         type: "input.text",
         surfaceId,
