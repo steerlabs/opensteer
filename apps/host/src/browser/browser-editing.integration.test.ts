@@ -253,6 +253,23 @@ integration("Host and Chromium editing contract", () => {
       for (const viewer of [old, oldWatch])
         expect(viewer.messages[0]).not.toHaveProperty("editingVersion");
       checks.push("signed ticket and per-control/watch snapshot opt-in");
+      // CZ5: a paste is made for the field a viewer last saw focused, and refused in any other.
+      const fieldContext = async (messages: readonly BrowserServerMessage[]) => {
+        let contextId: string | undefined;
+        await expect
+          .poll(() => {
+            const published = messages
+              .filter((m) => m.type === "browser.editing" && m.surfaceId === surfaceId)
+              .at(-1);
+            contextId =
+              published?.type === "browser.editing" && published.context.field !== null
+                ? published.context.contextId
+                : undefined;
+            return contextId;
+          })
+          .toBeDefined();
+        return contextId!;
+      };
       const snapshot = person.messages[0];
       if (snapshot?.type !== "browser.snapshot") throw new Error("Missing snapshot");
       capture = async () => {
@@ -437,7 +454,7 @@ integration("Host and Chromium editing contract", () => {
           surfaceId,
           operationId: id,
           items: [{ type, size: data.length }],
-          contextId: crypto.randomUUID(),
+          contextId: await fieldContext(person.messages),
         });
         for (let index = 0; index < Math.ceil(data.length / (512 * 1024)); index++)
           person.send({
@@ -512,7 +529,7 @@ integration("Host and Chromium editing contract", () => {
           surfaceId,
           operationId: id,
           items: [{ type: "text/plain", size: 1 }],
-          contextId: crypto.randomUUID(),
+          contextId: await fieldContext(other.messages),
         });
         other.send({ type: "clipboard.part", part: { operationId: id, index: 0, data: "eA==" } });
         await expect
@@ -536,7 +553,7 @@ integration("Host and Chromium editing contract", () => {
         surfaceId,
         operationId: recovered,
         items: [{ type: "text/plain", size: 1 }],
-        contextId: crypto.randomUUID(),
+        contextId: await fieldContext(other.messages),
       });
       other.send({
         type: "clipboard.part",
