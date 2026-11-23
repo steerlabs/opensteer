@@ -132,7 +132,15 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
     };
     const fromChannel = await queued(anyone, channel, "queued-in-channel");
     const fromDirect = await queued(own.id, direct, "queued-in-dm", me.principalId as string);
-    // One whose outcome is unknown: it may have been acted on, and stays unknown.
+    // One waiting behind the first, one long delivered (history), and one whose outcome is
+    // unknown: it may have been acted on, and stays unknown.
+    const behind = await queued(anyone, channel, "behind-in-channel");
+    const delivered = await queued(anyone, channel, "delivered-in-channel");
+    await database
+      .updateTable("threadInputs")
+      .set({ state: "delivered" })
+      .where("messageId", "=", delivered as never)
+      .execute();
     const unknown = await queued(anyone, channel, "unknown-in-channel");
     await database
       .updateTable("threadInputs")
@@ -268,22 +276,62 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
         .execute(),
     ).toEqual([]);
 
-    // At start, what routes queued is cancelled, in its task's queue, never run.
-    const { cancelChatMessagesFromBeforeTheUpdate } = await import("./execution-recovery.js");
-    await cancelChatMessagesFromBeforeTheUpdate(database);
-    expect(
-      await database
+    // Each message says what is true of where it came from, its state untouched.
+    const input = (id: string) =>
+      database
         .selectFrom("threadInputs")
-        .select(["messageId", "state"])
-        .where("messageId", "in", [fromChannel, fromDirect, unknown] as never)
-        .orderBy("messageId")
-        .execute(),
-    ).toEqual(
-      [fromChannel, fromDirect, unknown].sort().map((messageId) => ({
-        messageId,
-        state: messageId === unknown ? "unknown" : "cancelled",
-      })),
+        .select(["state", "authoritySource", "connectionId"])
+        .where("messageId", "=", id as never)
+        .executeTakeFirstOrThrow();
+    const fromTheEndedChat = { kind: "connection", connectionId: ended, userId: fixture.userId };
+    expect(await input(fromChannel)).toMatchObject({
+      state: "pending",
+      authoritySource: fromTheEndedChat,
+      connectionId: ended,
+    });
+    expect(await input(delivered)).toMatchObject({
+      state: "delivered",
+      authoritySource: fromTheEndedChat,
+    });
+    expect(await input(unknown)).toMatchObject({
+      state: "unknown",
+      authoritySource: fromTheEndedChat,
+    });
+    expect(await input(fromDirect)).toMatchObject({
+      state: "pending",
+      authoritySource: { kind: "user-session", userId: fixture.userId },
+      connectionId: null,
+    });
+    // The queued Run the route's message seeded names the ended row, and the ordinary claim
+    // refuses it in a chat's words.
+    const run = await database
+      .selectFrom("runs")
+      .select(["id", "connectionId"])
+      .where("seedInputId", "=", fromChannel as never)
+      .executeTakeFirstOrThrow();
+    expect(run.connectionId).toBe(ended);
+    const command = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", run.id)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
+    const claimed = await store.claimCommand(command.id, "after-the-update");
+    expect(claimed?.terminalFailure).toBe(chatEndedMessage);
+    await store.failCommand(
+      command.id,
+      claimed!.terminalFailure!,
+      claimed!.terminalFailureInput ?? "authority-cohort",
     );
+    // Start recovery, as at any start: what waits for the ended chat is cancelled with its
+    // queue by the code that cancels any waiting message of an ended connection; the person's
+    // own waiting message goes on as theirs; the unknown stays unknown, history stays history.
+    await store.recoverThreadWorkQueues();
+    expect((await input(fromChannel)).state).toBe("cancelled");
+    expect((await input(behind)).state).toBe("cancelled");
+    expect((await input(unknown)).state).toBe("unknown");
+    expect((await input(delivered)).state).toBe("delivered");
+    expect((await input(fromDirect)).state).not.toBe("cancelled");
 
     // The task that ran without personal context takes no new work, and says why.
     await expect(

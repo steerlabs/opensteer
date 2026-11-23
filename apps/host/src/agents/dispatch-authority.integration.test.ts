@@ -949,7 +949,7 @@ describeStore("a connected agent's authority at the send", (it) => {
     ).rejects.toMatchObject({
       code: "forbidden",
       message:
-        "This connected agent's access ended. The person can reconnect it from Connected agents.",
+        "This connected agent's access ended, so this task takes no new messages. Start a new task, or reconnect it from Connected agents.",
     });
   });
 

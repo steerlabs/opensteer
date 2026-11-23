@@ -21,8 +21,14 @@ export const chatRoutesEndMigrationName = "0053_chat_routes_end_contract";
  *   number and an email address); the one they last sent a message from stays linked (or, never
  *   used, the one linked last), after the work above is read against the identities as they
  *   were, so what they said from any of them stays theirs;
- * - a message a route queued is never run: what is still waiting is cancelled at start, with its
- *   task's queue (`cancelChatMessagesFromBeforeTheUpdate`).
+ * - what each message a route brought in says about where it came from becomes what is true of
+ *   it now, its state untouched: in a task tied to the ended row, it came from that connection
+ *   (which stands for the chat), and a Run it seeded that has not ended names that connection; in
+ *   a task that stays the person's own, every chat message in it came from them, so it is a
+ *   message the person sent. Nothing is cancelled here: a waiting message of the ended row is
+ *   cancelled, with its task's queue, by the code that cancels any waiting message of an ended
+ *   connection (`ensureQueuedRun`, which start recovery runs for every task with waiting work),
+ *   and a waiting message the person sent runs as theirs.
  */
 export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<void> {
   await sql`
@@ -106,6 +112,24 @@ export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<voi
     from chat_routes_reached reached
     join chat_routes_ended legacy on legacy.user_id = reached.created_by
     where reached.kind = 'trigger' and tr.id = reached.id and tr.origin_connection_id is null;
+
+    -- Where each message a route brought in came from, as is true now (its state untouched).
+    update thread_inputs i set
+      authority_source = jsonb_build_object(
+        'kind', 'connection', 'connectionId', t.origin_connection_id, 'userId', i.requested_by),
+      connection_id = t.origin_connection_id
+    from threads t
+    where i.thread_id = t.id and t.origin_connection_id is not null
+      and i.authority_source->>'kind' = 'channel-ingress';
+    update thread_inputs i set
+      authority_source = jsonb_build_object('kind', 'user-session', 'userId', i.requested_by)
+    where i.authority_source->>'kind' = 'channel-ingress';
+    update runs r set connection_id = i.connection_id
+    from thread_inputs i
+    where r.seed_input_id = i.message_id and r.connection_id is null
+      and i.connection_id in (select id from chat_routes_ended)
+      and r.status in ('queued', 'starting', 'running', 'waiting');
+    drop index if exists thread_inputs_channel_authority;
 
     -- "Me", once the work above was read against the identities as they were: the one each
     -- person last sent a message from stays linked (never used: the one linked last).

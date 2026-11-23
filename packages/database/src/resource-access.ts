@@ -113,6 +113,9 @@ function forbidden(message: string): OpensteerError {
 }
 export const lineageEndedMessage =
   "This connected agent's access ended. The person can reconnect it from Connected agents.";
+/** What a person reads in a connected agent's task once its access has ended. */
+export const agentEndedForPersonMessage =
+  "This connected agent's access ended, so this task takes no new messages. Start a new task, or reconnect it from Connected agents.";
 /** What a chat's task says once its chat has ended: it takes no new work, and why. */
 export const chatEndedMessage =
   "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging.";
@@ -406,7 +409,7 @@ export async function assertPersonMayContinue(
   if (taskOriginConnectionId === null) return;
   const standing = await readConnectionRowStanding(database, ownerUserId, taskOriginConnectionId);
   if (standing.row || standing.waiting) return;
-  throw forbidden(standing.chat ? chatEndedMessage : lineageEndedMessage);
+  throw forbidden(standing.chat ? chatEndedMessage : agentEndedForPersonMessage);
 }
 
 /** The send rule against the connection as it stands now; refuses as an unknown task would. */
