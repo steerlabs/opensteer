@@ -26,7 +26,7 @@ import { describe, expect, it } from "vitest";
  *    phone draws are often built in `packages/client` and reach it as `text`, a name that says
  *    nothing: build 9's walk saw the GitHub plugin's consent hyphenated inside its hosts. So in
  *    `packages/client`, drawn words (`text`, `title`, `label`, …) that join an address are made
- *    with `said` (`said.ts`), the address a slot known as one; a plain template joining one is a
+ *    with `sentence` (`said.ts`), the address a slot known as one; a plain template joining one is a
  *    failure. `knownJoinedSentences` lists those still drawn raw, each with why it may be.
  * 5. No address is found by searching words. A sentence's parts are what they were made as; a
  *    search of finished words for an address (an `indexOf`, a split, a pattern) can take a name
@@ -677,7 +677,7 @@ describe("a sentence assembled elsewhere from data says which addresses it holds
       export const lines = (sites) => [
         { key: "sites", text: sealed ? \`Your credential can only be sent to \${listText(sites)}.\` : "None." },
         { addresses: sites, key: "listed", text: \`Sent to \${listText(sites)}.\` },
-        { key: "said", title: said\`Sharing \${address(domain)} is stopped\` },
+        { key: "said", title: sentence\`Sharing \${domain} is stopped\` },
         { key: "plain", text: \`Linking trusts \${pluginName}.\` },
       ];`;
     // Saying which addresses a joined sentence holds is not enough: it is made of parts or raw.

@@ -1,4 +1,4 @@
-import { address, said, type SaidPart } from "./said.js";
+import { plainSentence, sentence, type SentencePart } from "./said.js";
 import type { PersonSaveOffer } from "@opensteer/protocol";
 import { browserSiteLabel } from "./browser-sign-in.js";
 import type { BrowserPasswordSaveState } from "./browser-editing.js";
@@ -18,7 +18,7 @@ export const passwordSaveMask = "••••••••";
 export interface PasswordSavePrompt {
   readonly title: string;
   /** The title as it was made (`said.ts`): the site in it is an address. */
-  readonly titleParts: readonly SaidPart[];
+  readonly titleParts: readonly SentencePart[];
   readonly detail: string;
   /** The account being saved; absent for setup. */
   readonly username: string | null;
@@ -35,10 +35,10 @@ export function passwordSavePrompt(offer: PersonSaveOffer): PasswordSavePrompt {
       username: null,
       action: passwordSaveSetUpAction,
     };
-  const title = said`Save password for ${address(browserSiteLabel(offer.origin))}?`;
+  const title = sentence`Save password for ${browserSiteLabel(offer.origin)}?`;
   return {
-    title: title.text,
-    titleParts: title.parts,
+    title: plainSentence(title),
+    titleParts: title,
     detail:
       "Kept in Opensteer Passwords on your Mac. Fill it later from any device, and let agents use it when you allow them.",
     username: offer.username,

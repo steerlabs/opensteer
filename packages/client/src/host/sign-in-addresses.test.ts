@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { browserSignInProblemCopy, browserSiteLabel } from "./browser-sign-in.js";
 import { passwordSavePrompt } from "./password-save.js";
 import { chromeCookiesStep, savedLoginStep } from "./passwords.js";
-import { saidWords, type SaidPart } from "./said.js";
+import { plainSentence, type SentencePart } from "./said.js";
 
 /*
  * Signing in to a site and saving a password for it are where a person decides something about
@@ -31,9 +31,9 @@ const problems = [
 ] as const;
 
 /** The parts read as the words, and the site is in them only as an address. */
-function expectMade(text: string | null, parts: readonly SaidPart[] | null) {
+function expectMade(text: string | null, parts: readonly SentencePart[] | null) {
   if (text === null) return expect(parts).toBeNull();
-  expect(parts!.map(saidWords).join("")).toBe(text);
+  expect(plainSentence(parts!)).toBe(text);
   expect(parts!.filter((part) => typeof part === "string" && part.includes(domain))).toEqual([]);
   expect(parts!.some((part) => typeof part === "object" && "address" in part)).toBe(
     text.includes(domain),
@@ -62,7 +62,7 @@ describe("the words of signing in to a site and saving its password", () => {
       chromeCookiesStep({ reason: "chrome-signed-out", site, status: "unavailable" } as never),
     ]) {
       expectMade(step.label, step.labelParts);
-      expect(step.hintParts.map(saidWords).join("")).toBe(step.hint);
+      expect(plainSentence(step.hintParts)).toBe(step.hint);
     }
     expect(
       savedLoginStep({ account: "person@fixture.invalid", site, status: "ready" } as never)

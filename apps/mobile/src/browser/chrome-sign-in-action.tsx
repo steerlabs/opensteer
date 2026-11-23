@@ -8,7 +8,7 @@ import {
   unwrapRpcResult,
   type HostClient,
 } from "@opensteer/client/host";
-import type { SaidPart } from "@opensteer/client/host";
+import type { SentencePart as MadePart } from "@opensteer/client/host";
 import type {
   BrowserSignInOutcome,
   BrowserSourceInspection,
@@ -28,10 +28,10 @@ type Result =
   | {
       readonly kind: "problem";
       readonly fix: string | null;
-      /** The words as they were made (`said`): the site in them an address. */
-      readonly fixParts: readonly SaidPart[] | null;
+      /** The words as they were made (`sentence`): the site in them an address. */
+      readonly fixParts: readonly MadePart[] | null;
       readonly title: string;
-      readonly titleParts: readonly SaidPart[];
+      readonly titleParts: readonly MadePart[];
     }
   | {
       readonly kind: "choose";
