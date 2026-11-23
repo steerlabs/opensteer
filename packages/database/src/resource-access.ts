@@ -44,6 +44,7 @@ import { sql, type Kysely, type RawBuilder } from "kysely";
 import type { BridgeSenders, DatabaseSchema } from "./schema.js";
 import { connectionState } from "./connection-liveness.js";
 import { withDatabaseTransaction } from "./connection.js";
+import { readerSees, type TaskReader } from "./task-reader.js";
 
 /**
  * Who an effect is for. A binding names an execution the Home issued (`run:`, `trigger:`,
@@ -1283,13 +1284,23 @@ async function commandReach(
   /** The task this caller works in: what it opens is its own work, and only that. */
   const ownTask = execution.threadId;
   const own = (mode: ThreadAccessMode) => threadAccessModeAtMost(mode, execution.mode);
+  // What the caller may see, as the task reader has it (T3): work in a memory pass's own task tree
+  // sees only what ran with personal context; anything else reads exactly like nothing (rule 5).
+  const reader: TaskReader = ownTask ? { kind: "work", threadId: ownTask } : { kind: "person" };
   const task = async (threadId: string, origin?: string | null): Promise<CommandReach> => {
     const thread = await database
       .selectFrom("threads")
       .select(["createdBy", "accessMode", "originConnectionId"])
+      .select(
+        readerSees(
+          reader,
+          sql`threads.origin_connection_id`,
+          ...(origin ? [sql`${origin}::text`] : []),
+        ).as("visible"),
+      )
       .where("id", "=", threadId as ThreadId)
       .executeTakeFirst();
-    if (!thread || thread.createdBy !== owner) return outOfReach;
+    if (!thread || thread.createdBy !== owner || !thread.visible) return outOfReach;
     const lineage = origin === undefined ? thread.originConnectionId : origin;
     // A connection's own task (its direct session's) is its own, with or without Tasks.
     if (connection && threadId !== ownTask) {

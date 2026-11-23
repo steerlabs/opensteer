@@ -1043,6 +1043,69 @@ describeStore("one admission for Home commands", (it) => {
       expect(await admit(command), command.type).toBe("now");
   });
 
+  it("reads an automation of a chat without personal context as nothing, for a memory pass's work (T3)", async ({
+    storeFixture,
+  }) => {
+    const { f, database } = await setup(storeFixture);
+    const program = {
+      toolContractVersion: 5 as const,
+      language: "javascript" as const,
+      source: "export default async () => null",
+    };
+    const make = async () =>
+      (
+        await storeFixture.triggers.create({
+          actorThreadId: null,
+          anchorThreadId: f.threadId,
+          createdBy: f.userId,
+          idempotencyKey: randomUUID(),
+          name: "Daily",
+          program,
+          source: {
+            kind: "schedule",
+            schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+          },
+        })
+      ).trigger.id;
+    // A chat anyone may speak in, and an automation in its lineage.
+    const chat = await storeFixture.createBridgeFixture("memory-reader", {
+      senders: "anyone",
+      conversation: { id: "C-memory-reader", name: "Open room" },
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const chats = await make();
+    await database
+      .updateTable("triggers")
+      .set({ originConnectionId: chat.bridge.id } as never)
+      .where("id", "=", chats)
+      .execute();
+    const persons = await make();
+    const admit = async (command: Record<string, unknown>) =>
+      (
+        await admitCommand(database, {
+          ownerUserId: f.userId,
+          subject: commandSubject(`run:${f.run.id}`),
+          command: { idempotencyKey: randomUUID(), ...command } as Command,
+        })
+      ).answer;
+    const pause = (triggerId: string) => ({
+      type: "trigger.status.set",
+      triggerId,
+      status: "paused",
+    });
+    // An ordinary Run of the person's task: both are the person's to pause.
+    expect(await admit(pause(chats))).toBe("now");
+    // The same Run as a memory pass's own work: its task is a memory automation's anchor.
+    await database
+      .updateTable("triggers")
+      .set({ systemRole: "memory-light" } as never)
+      .where("id", "=", persons)
+      .execute();
+    expect(await admit(pause(chats))).toBe("not_found");
+    expect(await admit({ type: "trigger.run", triggerId: chats })).toBe("not_found");
+    expect(await admit(pause(persons))).toBe("now");
+  });
+
   it("asks one of the person's own agents before it runs, or puts a program in, another lineage's automation (T1)", async ({
     storeFixture,
   }) => {
