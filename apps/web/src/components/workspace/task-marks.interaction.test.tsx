@@ -77,6 +77,24 @@ describe("task marks", () => {
     expect(element(".conv-header").textContent).not.toContain("Working");
     expect(element(".task-mark").getAttribute("aria-hidden")).toBe("true");
   });
+  it("keeps a task the reader stopped bright while open, then lets it step back once left", async () => {
+    const id = await openLiveTask("working");
+    const row = () => element(`.side-task[data-thread-id="${id}"]`);
+    await act(async () => client.stopRun(id));
+    await until("The stop never reached the row", () =>
+      expect(element(".task-state", row()).getAttribute("data-state")).toBe("finished"),
+    );
+    // Open, it reads like the conversation beside it; nothing about it is news.
+    expect(row().classList.contains("is-quiet")).toBe(false);
+    expect(element(".task-mark", row()).classList.contains("task-mark--quiet")).toBe(false);
+    expect(row().querySelector(".task-row__unread")).toBeNull();
+    await act(async () => goTo!("/"));
+    await until("The stopped task never stepped back", () => {
+      expect(row().classList.contains("is-quiet")).toBe(true);
+      expect(element(".task-mark", row()).classList.contains("task-mark--quiet")).toBe(true);
+    });
+    expect(row().querySelector(".task-row__unread")).toBeNull();
+  });
   it("updates every occupant in place on an icon-only edit, keeping the acting task hue", async () => {
     await mount(`/tasks/${flights}`);
     const place = pageTab();

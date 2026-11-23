@@ -479,6 +479,10 @@ export interface ElectronPagePresentation {
   unmount(): void;
   inputOutstanding(): boolean;
   takeContextMenuTrigger(): "person" | "agent" | null;
+  openInNewTab(
+    url: string,
+    options?: { readonly background?: boolean; readonly referrer?: string },
+  ): void;
   isFullscreen(): boolean;
   exitFullscreen(): Promise<void>;
 }
@@ -993,6 +997,14 @@ class ElectronBrowserContext implements BrowserContext {
       browserAcceptLanguages(app.getPreferredSystemLanguages()),
       this.#options.onPageCleanupFailure,
       this.#options.onProfileRefused,
+      (options) => {
+        if (this.#closed) return;
+        try {
+          this.#openChildPage(page, options);
+        } catch {
+          /* A session closing concurrently owns its own teardown. */
+        }
+      },
     );
     this.#pages.add(page);
     for (const listener of this.#handOffs) listener(page, opener);
@@ -1007,27 +1019,56 @@ class ElectronBrowserContext implements BrowserContext {
     });
     const securePreferences = this.#securePreferences();
     page.installPopupHandler(securePreferences, (popupOptions, details) => {
-      // A view wrapping existing contents resets their preferences unless it is
-      // given them again; the next cross-site navigation would apply defaults.
-      const popup = this.#newPage(
-        page,
-        popupOptions.webContents
-          ? {
-              webContents: popupOptions.webContents,
-              webPreferences: securePreferences,
-            }
-          : { webPreferences: securePreferences },
-      );
-      popup.openedInBackground = details.disposition === "background-tab";
-      if (popup.openedInBackground && !popupOptions.webContents) {
-        void popup.loadInitialUrl(details.url).catch(() => popup.close());
-      }
-      setImmediate(() => {
-        void this.#announcePage(popup).catch(() => popup.close());
+      const popup = this.#openChildPage(page, {
+        ...(popupOptions.webContents ? { webContents: popupOptions.webContents } : {}),
+        url: details.url,
+        background: details.disposition === "background-tab",
+        ...(details.referrer?.url ? { referrer: details.referrer } : {}),
       });
       return popup.view.webContents;
     });
     return page;
+  }
+
+  #openChildPage(
+    opener: ElectronBrowserPage,
+    options: {
+      readonly webContents?: WebContents;
+      readonly url: string;
+      readonly background: boolean;
+      readonly referrer?: string | Electron.Referrer;
+    },
+  ): ElectronBrowserPage {
+    const securePreferences = this.#securePreferences();
+    // A view wrapping existing contents resets their preferences unless it is
+    // given them again; the next cross-site navigation would apply defaults.
+    const child = this.#newPage(
+      opener,
+      options.webContents
+        ? {
+            webContents: options.webContents,
+            webPreferences: securePreferences,
+          }
+        : { webPreferences: securePreferences },
+    );
+    child.openedInBackground = options.background;
+    // OpenURLFromTab dispositions (background-tab, foreground-tab, new-window)
+    // and context-menu opens supply no pre-created WebContents, so the child
+    // loads its target address directly.
+    if (!options.webContents && options.url && options.url !== "about:blank") {
+      const referrer =
+        options.referrer &&
+        (typeof options.referrer === "string" ? options.referrer : options.referrer.url)
+          ? options.referrer
+          : undefined;
+      void child
+        .loadInitialUrl(options.url, referrer ? { httpReferrer: referrer } : undefined)
+        .catch(() => child.close());
+    }
+    setImmediate(() => {
+      void this.#announcePage(child).catch(() => child.close());
+    });
+    return child;
   }
 
   async #announcePage(page: ElectronBrowserPage): Promise<void> {
@@ -1145,6 +1186,13 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
    */
   readonly #webContents: WebContents;
   readonly #onPageCleanupFailure: (() => void) | undefined;
+  readonly #openChild:
+    | ((options: {
+        readonly url: string;
+        readonly background: boolean;
+        readonly referrer?: string;
+      }) => void)
+    | undefined;
   #closePromise: Promise<void> | undefined;
   /** The main frame's renderer when the page was asked to close; a destroyed page cannot say. */
   #rendererPid = 0;
@@ -1260,12 +1308,18 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     acceptLanguage?: string,
     onPageCleanupFailure?: () => void,
     onProfileRefused?: ElectronBrowserLauncherOptions["onProfileRefused"],
+    openChild?: (options: {
+      readonly url: string;
+      readonly background: boolean;
+      readonly referrer?: string;
+    }) => void,
   ) {
     this.view = view;
     this.initialLoad = initialLoad;
     this.#restingHost = host;
     this.#webContents = view.webContents;
     this.#onPageCleanupFailure = onPageCleanupFailure;
+    this.#openChild = openChild;
     this.#protection = protection(view.webContents);
     // Electron installs a native message-box listener even with Page enabled.
     // The debugger and ledger own these dialogs for the page's entire lifetime.
@@ -1385,8 +1439,12 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       if (this.#mount || !this.inputOutstanding()) this.#invalidateCursor();
       if (mouse.type !== "mouseDown") return;
       const origin = this.inputOutstanding() ? "agent" : "person";
-      if (mouse.button === "right" || mouse.modifiers?.includes("control") || this.#controlDown)
-        this.#contextMenuCandidate = origin;
+      const controlContextMenu =
+        process.platform === "darwin" &&
+        (mouse.modifiers?.includes("control") ||
+          mouse.modifiers?.includes("ctrl") ||
+          this.#controlDown);
+      if (mouse.button === "right" || controlContextMenu) this.#contextMenuCandidate = origin;
       else this.#contextMenuCandidate = null;
       if (origin === "person") {
         for (const listener of this.#humanInput)
@@ -1666,10 +1724,18 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       const raster = image.getSize(scale);
       const pixels = (dips: number) => Math.round(Math.fround(dips * Math.fround(scale)));
       const bounds = this.#desiredPlacement.bounds;
-      if (raster.width !== pixels(bounds.width) || raster.height !== pixels(bounds.height)) return;
+      if (
+        Math.abs(raster.width - pixels(bounds.width)) > 1 ||
+        Math.abs(raster.height - pixels(bounds.height)) > 1
+      )
+        return;
       this.#paintedSurfaceRevision = revision;
       for (const waiter of this.#paintWaiters) waiter.resolve();
     });
+    // Kick the owner compositor when reparenting an idle/static view back onto
+    // a visible window so macOS/Electron does not wait passively for a new frame.
+    if (this.#mount?.attached && typeof this.#webContents.invalidate === "function")
+      this.#webContents.invalidate();
   }
 
   #endPaintSubscription(): void {
@@ -1856,6 +1922,18 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     return origin;
   }
 
+  openInNewTab(
+    url: string,
+    options?: { readonly background?: boolean; readonly referrer?: string },
+  ): void {
+    if (this.isClosed() || this.#closeRequested || !isAllowedBrowserNavigation(url)) return;
+    this.#openChild?.({
+      url,
+      background: options?.background ?? true,
+      ...(options?.referrer ? { referrer: options.referrer } : {}),
+    });
+  }
+
   isFullscreen(): boolean {
     return this.#fullscreen;
   }
@@ -1872,6 +1950,13 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
 
   hasOpenerAccess(): boolean {
     return this.#webContents.opener !== null;
+  }
+
+  navigationState(): { readonly canGoBack: boolean; readonly canGoForward: boolean } {
+    return {
+      canGoBack: this.#webContents.navigationHistory.canGoBack(),
+      canGoForward: this.#webContents.navigationHistory.canGoForward(),
+    };
   }
 
   restoreHistory(
@@ -2256,11 +2341,11 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     return encoded;
   }
 
-  loadInitialUrl(url: string): Promise<void> {
+  loadInitialUrl(url: string, options?: Electron.LoadURLOptions): Promise<void> {
     if (!isAllowedBrowserNavigation(url)) {
       return Promise.reject(new Error("Electron browser navigation scheme is not allowed."));
     }
-    return this.#webContents.loadURL(url);
+    return options ? this.#webContents.loadURL(url, options) : this.#webContents.loadURL(url);
   }
 
   cdp(): Promise<CdpSession> {
@@ -2440,6 +2525,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
 
 interface ElectronPopupDetails {
   readonly disposition: string;
+  readonly referrer?: Electron.Referrer;
   readonly url: string;
 }
 

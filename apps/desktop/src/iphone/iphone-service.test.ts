@@ -1,4 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { DisplayStreamIdSchema } from "@opensteer/protocol";
+
 import { FakeIphoneMacSupport, FakeIphoneNative, fixture, ownerA, ownerB } from "./test-support.js";
 import { IphoneServiceError } from "./iphone-store.js";
 import { IphoneService } from "./iphone-service.js";
@@ -938,3 +940,191 @@ it("refuses first observations with stale epochs or unusable geometry", async ()
     code: "geometry-unknown",
   });
 });
+
+async function displayFixture() {
+  const f = await fixture();
+  cleanups.push(f.cleanup);
+  await f.bind();
+  const port = f.service.forSlot(ownerA);
+  const events: IphoneRunnerEvent[] = [];
+  const connection = port.connect((event) => events.push(event));
+  await connection.request(
+    "iphone.targets",
+    {
+      assignments: [
+        { deviceId: f.deviceId, generation: 1, role: "screen", definitionId: "iphone-screen" },
+      ],
+    },
+    f.options(),
+  );
+  f.native.probeReady = false;
+  f.native.roster.candidates[0]!.capabilities = {
+    observe: null,
+    act: null,
+    launch: null,
+    installedApps: null,
+    text: null,
+    clear: null,
+    indexedTargets: null,
+    liveVideo: null,
+    wake: null,
+  };
+  f.native.publish();
+  const started = Promise.withResolvers<void>();
+  const request = f.native.request.bind(f.native);
+  const calls = vi
+    .spyOn(f.native, "request")
+    .mockImplementation(async (method, params, schema, options) => {
+      if (method === "display.start") {
+        started.resolve();
+        await f.native.held.get(method);
+        return schema.parse({ socketPath: "/tmp/synthetic-iphone-media.sock" });
+      }
+      if (method === "display.input" || method === "display.power")
+        return schema.parse({ outcome: "dispatched" });
+      return request(method, params, schema, options);
+    });
+  return { ...f, port, connection, events, calls, started: started.promise };
+}
+
+it("claims iPhone display media once and fences input by slot, generation and live geometry", async () => {
+  const f = await displayFixture();
+  const ref = {
+    deviceId: f.deviceId,
+    driverGeneration: 1,
+    streamId: DisplayStreamIdSchema.parse("dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+  };
+  const profile = { maxLongSide: 1280, maxFps: 30 };
+  await expect(
+    f.connection.request(
+      "iphone.display.start",
+      {
+        ...ref,
+        ...profile,
+        driverGeneration: 2,
+      },
+      f.options(),
+    ),
+  ).rejects.toMatchObject({ code: "no-session" });
+  const { attachmentToken } = await f.connection.request(
+    "iphone.display.start",
+    { ...ref, ...profile },
+    f.options(),
+  );
+  expect(f.calls.mock.calls.find(([method]) => method === "display.start")?.[1]).toEqual({
+    bindingToken: expect.any(String),
+    nativeEpoch: 1,
+    streamId: ref.streamId,
+    ...profile,
+  });
+  expect(f.service.forSlot(ownerB).claimMediaAttachment?.(attachmentToken)).toBeUndefined();
+  const media = f.port.claimMediaAttachment?.(attachmentToken);
+  expect(media?.socketPath).toBe("/tmp/synthetic-iphone-media.sock");
+  expect(f.port.claimMediaAttachment?.(attachmentToken)).toBeUndefined();
+  const state = {
+    streamId: ref.streamId,
+    state: "live" as const,
+    generation: 3,
+    width: 200,
+    height: 400,
+    rotation: 0 as const,
+  };
+  for (const listener of f.native.listeners)
+    listener({
+      kind: "event",
+      event: "display.state",
+      bootId: "boot",
+      sequence: 1,
+      displayState: state,
+    });
+  expect(f.events).toContainEqual({
+    kind: "event",
+    event: "iphone.displayState",
+    params: { ...ref, ...state },
+  });
+  const input = { ...ref, sequence: 1, events: [{ kind: "nav" as const, to: "home" as const }] };
+  await expect(
+    f.connection.request("iphone.display.input", { ...input, geometry: 2 }, f.options()),
+  ).resolves.toEqual({ outcome: "stale", reason: "stale" });
+  await expect(
+    f.connection.request("iphone.display.input", { ...input, geometry: 3 }, f.options()),
+  ).resolves.toEqual({ outcome: "dispatched" });
+  await expect(
+    f.connection.request("iphone.display.input", { ...input, geometry: 3 }, f.options()),
+  ).resolves.toEqual({ outcome: "stale", reason: "stale" });
+  expect(
+    f.calls.mock.calls.filter(([method]) => method === "display.input").map(([, params]) => params),
+  ).toEqual([
+    {
+      bindingToken: expect.any(String),
+      nativeEpoch: 1,
+      streamId: ref.streamId,
+      geometry: 3,
+      events: input.events,
+    },
+  ]);
+  await expect(
+    f.connection.request("iphone.display.power", { ...ref, action: "lock" }, f.options()),
+  ).resolves.toEqual({ outcome: "dispatched" });
+  f.native.roster = {
+    revision: f.native.roster.revision + 1,
+    candidates: f.native.roster.candidates.map((candidate) => ({ ...candidate, nativeEpoch: 2 })),
+  };
+  f.native.publish();
+  expect(media?.signal.aborted).toBe(true);
+  await vi.waitFor(() =>
+    expect(f.native.calls.filter(({ method }) => method === "display.stop")).toHaveLength(1),
+  );
+});
+
+it("stops a late native display start after the Runner disconnects", async () => {
+  const f = await displayFixture();
+  const gate = Promise.withResolvers<void>();
+  f.native.held.set("display.start", gate.promise);
+  const ref = {
+    deviceId: f.deviceId,
+    driverGeneration: 1,
+    streamId: DisplayStreamIdSchema.parse("dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+  };
+  const start = f.connection.request(
+    "iphone.display.start",
+    { ...ref, maxLongSide: 1280, maxFps: 30 },
+    f.options(),
+  );
+  const refused = expect(start).rejects.toMatchObject({ code: "no-session" });
+  await f.started;
+  f.connection.close();
+  gate.resolve();
+  await refused;
+  await vi.waitFor(() =>
+    expect(f.native.calls.filter(({ method }) => method === "display.stop")).toHaveLength(1),
+  );
+});
+
+it.each(["slot close", "device detach", "bridge crash"] as const)(
+  "revokes an unclaimed display attachment on %s",
+  async (reason) => {
+    const f = await displayFixture();
+    const ref = {
+      deviceId: f.deviceId,
+      driverGeneration: 1,
+      streamId: DisplayStreamIdSchema.parse("dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+    };
+    const { attachmentToken } = await f.connection.request(
+      "iphone.display.start",
+      { ...ref, maxLongSide: 1280, maxFps: 30 },
+      f.options(),
+    );
+    if (reason === "slot close") await f.service.stopForSlot(ownerA.deploymentId);
+    if (reason === "device detach") await f.service.detach(ownerA, f.deviceId);
+    if (reason === "bridge crash") f.native.lose();
+    expect(f.port.claimMediaAttachment?.(attachmentToken)).toBeUndefined();
+    if (reason !== "bridge crash") {
+      const methods = f.native.calls.map(({ method }) => method);
+      expect(methods.lastIndexOf("display.stop")).toBeGreaterThan(-1);
+      expect(methods.lastIndexOf("display.stop")).toBeLessThan(
+        methods.lastIndexOf("binding.release"),
+      );
+    }
+  },
+);

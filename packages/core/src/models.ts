@@ -191,6 +191,8 @@ export const RunnerCapabilitySchema = z.enum([
   // `login.authorize` and `noLaunch` on computer-use windows and bind. An older Runner's
   // strict schemas refuse those frames, so the Home never sends them to one.
   "agent-session-guards-v1",
+  // Emits durable `run.retry` events when the Host acknowledges `runRetryEvents: true` on welcome.
+  "run-retry-v1",
 ]);
 export type RunnerCapability = z.infer<typeof RunnerCapabilitySchema>;
 
@@ -315,6 +317,8 @@ export type TaskPurpose = z.infer<typeof TaskPurposeSchema>;
 /** Why a Done task is Done, when the Host rather than a person put it there. */
 export const ThreadDoneReasonSchema = z.enum(["quiet"]);
 export type ThreadDoneReason = z.infer<typeof ThreadDoneReasonSchema>;
+export const ThreadDoneBySchema = z.enum(["person", "agent", "quiet"]);
+export type ThreadDoneBy = z.infer<typeof ThreadDoneBySchema>;
 /** Days a person's task sits untouched before the Host moves it to Done; 0 never. */
 export const QuietTaskDaysSchema = z.union([
   z.literal(0),
@@ -355,6 +359,8 @@ export const ThreadSchema = z.object({
   doneAt: IsoDateTimeSchema.nullable().default(null),
   /** Null while open and when a person or its own agent marked it Done. */
   doneReason: ThreadDoneReasonSchema.nullable().default(null),
+  /** Who marked the task Done: the person, an agent/automation, or quiet auto-close. */
+  doneBy: ThreadDoneBySchema.nullable().optional(),
   environmentId: EnvironmentIdSchema,
   harnessInstanceId: HarnessInstanceIdSchema,
   id: ThreadIdSchema,
@@ -381,6 +387,7 @@ export const ThreadViewSchema = z.object({
   // A colour a newer Host added reads as none rather than failing the view.
   color: MarkColorSchema.optional().catch(undefined),
   doneReason: ThreadDoneReasonSchema.nullable().default(null).catch(null),
+  doneBy: ThreadDoneBySchema.nullable().optional().catch(null),
   continuationIdentity: ProviderContinuationIdentityViewSchema.nullable(),
   modelSelection: ModelSelectionViewSchema,
 });
@@ -823,6 +830,21 @@ export const RunFailureSchema = z.strictObject(runFailureShape);
 export const RunFailureViewSchema = z.object(runFailureShape);
 export type RunFailure = z.infer<typeof RunFailureSchema>;
 
+/** The longest a Run's provider-retry summary message may be, in UTF-8 bytes / UTF-16 units. */
+export const runRetryMessageMaxLength = 256;
+
+const runRetryShape = {
+  attempt: z.number().int().min(1),
+  code: z.string().min(1).max(128).nullable().optional(),
+  maxAttempts: z.number().int().min(1).nullable().optional(),
+  message: z.string().max(runRetryMessageMaxLength),
+  retryDelayMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
+  status: z.enum(["retrying", "recovered"]),
+} as const;
+export const RunRetrySchema = z.strictObject(runRetryShape);
+export const RunRetryViewSchema = z.object(runRetryShape);
+export type RunRetry = z.infer<typeof RunRetrySchema>;
+
 /**
  * What one Run consumed, as the provider reported it. Opensteer never
  * estimates: a field is present only when the engine stated it, and `costUsd`
@@ -867,6 +889,7 @@ const runShape = {
   replyTarget: ReplyTargetSchema.nullable(),
   providerSessionId: ProviderSessionIdSchema.nullable(),
   requestedBy: UserIdSchema,
+  retry: RunRetrySchema.nullable().optional(),
   runOrdinal: z.number().int().nonnegative(),
   startedAt: IsoDateTimeSchema.nullable(),
   status: RunStatusSchema,
@@ -880,6 +903,7 @@ export const RunViewSchema = z.object({
   maintenance: RunMaintenanceViewSchema.nullable().optional(),
   failure: RunFailureViewSchema.nullable(),
   modelSelection: ModelSelectionViewSchema,
+  retry: RunRetryViewSchema.nullable().optional(),
   usage: RunUsageViewSchema.optional(),
   replyTarget: ReplyTargetViewSchema.nullable(),
 });

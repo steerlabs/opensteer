@@ -1550,6 +1550,24 @@ describe("OpenCode interruption and failure", () => {
     await fixture.adapter.close();
     expect(observer.events.find((event) => event.type === "run.status")).toBeUndefined();
     expect(observer.events.map((event) => event.type)).toContain("run.completed");
+    const retryEvents = observer.events.filter((event) => event.type === "run.retry");
+    expect(retryEvents.map((event) => event.data.status)).toEqual(["retrying", "recovered"]);
+  });
+
+  it("does not clear a child's active retry on repeated updates for an already-started tool", async () => {
+    const fixture = await setup("retry-child-duplicate-tool");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    await session.execute(fixture.turn("Go"));
+    await session.stop();
+    await fixture.adapter.close();
+    expect(observer.events.map((event) => event.type)).toContain("run.completed");
+    const retryEvents = observer.events.filter((event) => event.type === "run.retry");
+    expect(retryEvents.map((event) => [event.data.status, event.data.attempt])).toEqual([
+      ["retrying", 1],
+      ["retrying", 2],
+      ["recovered", 2],
+    ]);
   });
 
   it("fails the Run when the event stream drops mid-turn", async () => {

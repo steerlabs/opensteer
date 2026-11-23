@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	dtx "github.com/danielpaulus/go-ios/ios/dtx_codec"
@@ -154,13 +155,138 @@ func resolveForeground(executable string, apps []InstalledApp) *Foreground {
 	return found
 }
 
+// warmProcesses reuses a single Instruments DTX deviceinfo channel across
+// foreground checks so monitorDisplay does not open a fresh tunnel TCP + DTX
+// handshake on every poll tick.
+type warmProcesses struct {
+	life   context.Context
+	dial   ServiceDialer
+	mu     sync.Mutex
+	conn   *dtx.RawConnection
+	cancel context.CancelFunc
+	nextID int
+}
+
+func (w *warmProcesses) close() {
+	w.mu.Lock()
+	conn, cancel := w.conn, w.cancel
+	w.conn, w.cancel, w.nextID = nil, nil, 0
+	w.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
+func (w *warmProcesses) resetLocked() {
+	conn, cancel := w.conn, w.cancel
+	w.conn, w.cancel, w.nextID = nil, nil, 0
+	if cancel != nil {
+		cancel()
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
+func (w *warmProcesses) read(ctx context.Context) ([]interface{}, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for attempt := range 2 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		hadConn := w.conn != nil
+		if w.conn == nil {
+			base := w.life
+			if base == nil {
+				base = context.Background()
+			}
+			connCtx, connCancel := context.WithCancel(base)
+			abortDial := context.AfterFunc(ctx, connCancel)
+			raw, err := w.dial.DialService(connCtx, instrumentsService)
+			aborted := !abortDial()
+			if err != nil {
+				connCancel()
+				return nil, err
+			}
+			if aborted || ctx.Err() != nil {
+				connCancel()
+				_ = raw.Close()
+				return nil, ctx.Err()
+			}
+			conn := dtx.NewRawConnection(raw)
+			w.conn, w.cancel, w.nextID = conn, connCancel, 3
+			deadline, _ := ctx.Deadline()
+			_ = conn.SetReadDeadline(deadline)
+			_ = conn.SetWriteDeadline(deadline)
+			stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+			err = instrumentCall(conn, 1, 0, "_notifyOfPublishedCapabilities:", map[string]interface{}{"com.apple.private.DTXBlockCompression": uint64(0), "com.apple.private.DTXConnection": uint64(1)})
+			if err == nil {
+				err = instrumentCall(conn, 2, 0, "_requestChannelWithCode:identifier:", uint32(1), "com.apple.instruments.server.services.deviceinfo")
+			}
+			if err == nil {
+				_, err = instrumentReply(conn, 2, 0)
+			}
+			stop()
+			if err != nil {
+				w.resetLocked()
+				return nil, err
+			}
+		}
+		conn := w.conn
+		id := w.nextID
+		w.nextID++
+		if w.nextID <= 2 {
+			w.nextID = 3
+		}
+		deadline, _ := ctx.Deadline()
+		_ = conn.SetReadDeadline(deadline)
+		_ = conn.SetWriteDeadline(deadline)
+		stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+		err := instrumentCall(conn, id, 1, "runningProcesses")
+		var payload []interface{}
+		if err == nil {
+			payload, err = instrumentReply(conn, id, 1)
+		}
+		stop()
+		_ = conn.SetReadDeadline(time.Time{})
+		_ = conn.SetWriteDeadline(time.Time{})
+		if err == nil {
+			if len(payload) != 1 {
+				w.resetLocked()
+				return nil, wire.Fail(wire.ProtocolUnsupported)
+			}
+			processes, ok := payload[0].([]interface{})
+			if !ok || len(processes) > 10000 {
+				w.resetLocked()
+				return nil, wire.Fail(wire.ProtocolUnsupported)
+			}
+			return processes, nil
+		}
+		w.resetLocked()
+		if !hadConn || attempt == 1 || ctx.Err() != nil {
+			return nil, err
+		}
+	}
+	return nil, wire.Fail(wire.NativeServiceFailed)
+}
+
 // readForeground names the front app only when exactly one flagged executable
 // is an installed app. Anything else, including SpringBoard under an overlay,
 // is unknown (nil); callers treat the result as a label, never as a gate.
 func readForeground(ctx context.Context, dial ServiceDialer, installed func(context.Context, ServiceDialer) ([]InstalledApp, error)) (*Foreground, error) {
+	return readForegroundWith(ctx, func(ctx context.Context) ([]interface{}, error) {
+		return runningProcesses(ctx, dial)
+	}, dial, installed)
+}
+
+func readForegroundWith(ctx context.Context, readProcs func(context.Context) ([]interface{}, error), dial ServiceDialer, installed func(context.Context, ServiceDialer) ([]InstalledApp, error)) (*Foreground, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	processes, err := runningProcesses(ctx, dial)
+	processes, err := readProcs(ctx)
 	if err != nil {
 		return nil, err
 	}

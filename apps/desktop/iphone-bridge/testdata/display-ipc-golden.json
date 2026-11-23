@@ -1,0 +1,124 @@
+[
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 1,
+    "timeoutMs": 1000,
+    "method": "display.start",
+    "params": {
+      "bindingToken": "fixture-binding",
+      "nativeEpoch": 2,
+      "streamId": "dsp_c2a11f7c-8568-4d02-80ec-754ae26bb150",
+      "maxLongSide": 1280,
+      "maxFps": 30
+    }
+  },
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 2,
+    "timeoutMs": 1000,
+    "method": "display.demand",
+    "params": {
+      "bindingToken": "fixture-binding",
+      "nativeEpoch": 2,
+      "streamId": "dsp_c2a11f7c-8568-4d02-80ec-754ae26bb150",
+      "maxFps": 24
+    }
+  },
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 3,
+    "timeoutMs": 1000,
+    "method": "display.refresh",
+    "params": {
+      "bindingToken": "fixture-binding",
+      "nativeEpoch": 2,
+      "streamId": "dsp_c2a11f7c-8568-4d02-80ec-754ae26bb150"
+    }
+  },
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 4,
+    "timeoutMs": 1000,
+    "method": "display.input",
+    "params": {
+      "bindingToken": "fixture-binding",
+      "nativeEpoch": 2,
+      "streamId": "dsp_c2a11f7c-8568-4d02-80ec-754ae26bb150",
+      "events": [
+        { "kind": "pointer", "phase": "down", "x": 0.5, "y": 0.5, "t": 0 },
+        { "kind": "scroll", "x": 0.5, "y": 0.5, "dx": 0, "dy": 0.2 },
+        { "kind": "nav", "to": "home" },
+        { "kind": "text", "insert": "fixture" },
+        { "kind": "text", "deleteBackward": 2 },
+        { "kind": "text", "submit": true },
+        {
+          "kind": "key",
+          "action": "down",
+          "code": "KeyA",
+          "key": "a",
+          "modifiers": [],
+          "text": "a"
+        },
+        { "kind": "paste", "text": "fixture" },
+        { "kind": "paste", "items": [{ "type": "text/plain", "size": 7 }] },
+        { "kind": "command", "command": "selectAll" }
+      ]
+    }
+  },
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 5,
+    "timeoutMs": 1000,
+    "method": "display.inputReset",
+    "params": {
+      "bindingToken": "fixture-binding",
+      "nativeEpoch": 2,
+      "streamId": "dsp_c2a11f7c-8568-4d02-80ec-754ae26bb150"
+    }
+  },
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 6,
+    "timeoutMs": 1000,
+    "method": "display.power",
+    "params": {
+      "bindingToken": "fixture-binding",
+      "nativeEpoch": 2,
+      "streamId": "dsp_c2a11f7c-8568-4d02-80ec-754ae26bb150",
+      "action": "lock"
+    }
+  },
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 7,
+    "timeoutMs": 1000,
+    "method": "display.stop",
+    "params": {
+      "bindingToken": "fixture-binding",
+      "nativeEpoch": 2,
+      "streamId": "dsp_c2a11f7c-8568-4d02-80ec-754ae26bb150"
+    }
+  },
+  {
+    "kind": "event",
+    "bootId": "fixture-boot",
+    "sequence": 2,
+    "event": "display.state",
+    "displayState": {
+      "streamId": "dsp_c2a11f7c-8568-4d02-80ec-754ae26bb150",
+      "state": "protected",
+      "reason": "locked-screen",
+      "generation": 2,
+      "width": 0,
+      "height": 0,
+      "rotation": 0
+    }
+  }
+]

@@ -267,4 +267,90 @@ describeStore("agent Thread history", (it) => {
     });
     expect(rest.messages.map(({ id }) => id)).toEqual([sent[101]!]);
   });
+  it("budgets large non-secret question pages without leaking secret answer lengths", async ({
+    storeFixture,
+  }) => {
+    const { store, database, startRunFixture } = storeFixture;
+    const f = await startRunFixture("question-page-budget");
+    const largeChunk = "a".repeat(95_000);
+    const fieldIds = ["part_1", "part_2", "part_3", "part_4"] as const;
+    const largeAnswers = Object.fromEntries(fieldIds.map((id) => [id, [largeChunk]]));
+    const makeQuestion = async (
+      fixture: typeof f,
+      callId: string,
+      label: string,
+      secret: boolean,
+    ) => {
+      const created = await store.requests.create({
+        callId,
+        kind: "person.question",
+        mode: "durable",
+        originatingThreadId: fixture.thread.id,
+        originatingRunId: fixture.run.id,
+        payload: { kind: "person.question" },
+        presentation: {
+          kind: "form",
+          title: label,
+          fields: fieldIds.map((id) => ({
+            id,
+            prompt: id,
+            custom: true,
+            multiSelect: false,
+            secret,
+          })),
+        },
+        requestedBy: fixture.userId,
+        requiredActor: "requester",
+      });
+      await store.requests.answerPersonQuestion({
+        expectedRevision: (await store.requests.revision(created.request.id))!,
+        requestId: created.request.id,
+        resolvedBy: fixture.userId,
+        response: { kind: "form", answers: largeAnswers },
+      });
+      return created.request.id;
+    };
+    const publicFirst = await makeQuestion(f, "q-pub-1", "Public 1", false);
+    const publicSecond = await makeQuestion(f, "q-pub-2", "Public 2", false);
+
+    const firstPage = await readAgentThreadActivity(database, {
+      ownerId: f.userId,
+      threadId: f.thread.id,
+      messagesOnly: true,
+      limit: 100,
+    });
+    expect(firstPage?.hasMore).toBe(true);
+    const firstPageRequestIds = firstPage!.items.flatMap((item) =>
+      "requestId" in item ? [item.requestId] : [],
+    );
+    expect(firstPageRequestIds).toEqual([publicSecond]);
+    expect(firstPage?.nextBefore).toBeTruthy();
+
+    const secondPage = await readAgentThreadActivity(database, {
+      ownerId: f.userId,
+      threadId: f.thread.id,
+      messagesOnly: true,
+      before: firstPage!.nextBefore!,
+      limit: 100,
+    });
+    const secondPageRequestIds = secondPage!.items.flatMap((item) =>
+      "requestId" in item ? [item.requestId] : [],
+    );
+    expect(secondPageRequestIds).toContain(publicFirst);
+
+    const secretFixture = await startRunFixture("secret-question-page-budget");
+    const secretFirst = await makeQuestion(secretFixture, "q-sec-1", "Secret 1", true);
+    const secretSecond = await makeQuestion(secretFixture, "q-sec-2", "Secret 2", true);
+    const secretPage = await readAgentThreadActivity(database, {
+      ownerId: secretFixture.userId,
+      threadId: secretFixture.thread.id,
+      messagesOnly: true,
+      limit: 100,
+    });
+    expect(secretPage?.hasMore).toBe(false);
+    const secretPageRequestIds = secretPage!.items.flatMap((item) =>
+      "requestId" in item ? [item.requestId] : [],
+    );
+    expect(secretPageRequestIds).toEqual([secretSecond, secretFirst]);
+  });
 });

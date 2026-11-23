@@ -81,6 +81,33 @@ export async function lockLineageConnection(
       .forShare()
       .executeTakeFirst();
 }
+/**
+ * Who asked for a command, as its `authority_source` records it: the person's own session when
+ * no agent, automation, watch or connection acts for them. A person's `run.interrupt` is their
+ * Stop, which is never news to them.
+ */
+export function callerAuthoritySource(
+  caller: ThreadCallerAuthority | undefined,
+  userId: UserId,
+): Readonly<Record<string, unknown>> {
+  switch (caller?.kind) {
+    case undefined:
+      return { kind: "user-session", userId };
+    case "run":
+      return {
+        kind: "thread-agent",
+        runId: caller.scope.runId,
+        threadId: caller.scope.threadId,
+        userId,
+      };
+    case "trigger":
+      return { kind: "trigger", occurrenceId: caller.scope.occurrenceId, userId };
+    case "watch":
+      return { kind: "watch", activationId: caller.scope.activationId, userId };
+    case "connection":
+      return { kind: "connection", connectionId: caller.connectionId, userId };
+  }
+}
 export async function lockThreadCaller(
   tx: Transaction<DatabaseSchema>,
   caller: ThreadCallerAuthority | undefined,

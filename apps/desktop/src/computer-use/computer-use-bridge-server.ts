@@ -7,10 +7,12 @@ import {
   iphoneRunnerMethodSchema,
   iphoneRunnerResults,
   iphoneRunnerParams,
+  type IphoneMediaAttachment,
 } from "@opensteer/protocol/iphone-bridge";
 import { IphoneServiceError } from "../iphone/iphone-store.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http";
+import { createConnection } from "node:net";
 import { once } from "node:events";
 import { closeHttpServerNow, refuseConnection } from "@opensteer/shared/httpServer";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
@@ -19,6 +21,7 @@ import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import {
   DisplayAckSchema,
   displayMaxEnvelopeBytes,
+  displayMaxHeaderBytes,
   computerUseBridgePasswordsParams,
   type LoginReceiverKey,
   type PasswordSignInAuthorityCommand,
@@ -355,6 +358,7 @@ export class ComputerUseBridgeServer {
   #cleanupUnconfirmed = false;
   readonly #passwords: PasswordsAuthorityPort | undefined;
   readonly #iphone: DesktopIphoneRunnerPort | undefined;
+  readonly #iphoneMediaSockets = new Set<WebSocket>();
   readonly #graceMs: number;
   readonly #helper: ComputerUseBridgeHelperPort;
   readonly #httpServer: HttpServer;
@@ -432,6 +436,11 @@ export class ComputerUseBridgeServer {
   }
 
   async #acceptMedia(token: string, socket: WebSocket): Promise<void> {
+    const iphone = this.#iphone?.claimMediaAttachment?.(token);
+    if (iphone) {
+      this.#relayIphoneMedia(iphone, socket);
+      return;
+    }
     const found = [...this.#videos.entries()].find(
       ([, entry]) => entry.attachmentToken === token && !entry.mediaTaken,
     );
@@ -498,6 +507,95 @@ export class ComputerUseBridgeServer {
       this.#videoEnded(streamId, "helper-attach-failed");
       socket.terminate();
     }
+  }
+
+  #relayIphoneMedia(attachment: IphoneMediaAttachment, socket: WebSocket): void {
+    let native: ReturnType<typeof createConnection>;
+    try {
+      native = createConnection(attachment.socketPath);
+    } catch {
+      attachment.close();
+      socket.terminate();
+      return;
+    }
+    let closed = false;
+    this.#iphoneMediaSockets.add(socket);
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      this.#iphoneMediaSockets.delete(socket);
+      attachment.signal.removeEventListener("abort", close);
+      native.destroy();
+      socket.terminate();
+      attachment.close();
+    };
+    native.on("error", close);
+    native.once("close", close);
+    socket.on("error", close);
+    socket.once("close", close);
+    attachment.signal.addEventListener("abort", close, { once: true });
+    if (attachment.signal.aborted) close();
+
+    // Unix data chunks can split either part of a frame or contain multiple frames.
+    const header = Buffer.alloc(5);
+    let headerUsed = 0;
+    let payload: Buffer | undefined;
+    let payloadUsed = 0;
+    native.on("data", (chunk: Buffer) => {
+      let offset = 0;
+      while (!closed && offset < chunk.length) {
+        if (!payload) {
+          const copied = chunk.copy(header, headerUsed, offset, offset + 5 - headerUsed);
+          headerUsed += copied;
+          offset += copied;
+          if (headerUsed < 5) return;
+          const size = header.readUInt32BE(1);
+          if (header[0] !== 0x01 || size < 7 || size > displayMaxEnvelopeBytes) {
+            close();
+            return;
+          }
+          payload = Buffer.allocUnsafe(size);
+        }
+        const copied = chunk.copy(
+          payload,
+          payloadUsed,
+          offset,
+          offset + payload.length - payloadUsed,
+        );
+        payloadUsed += copied;
+        offset += copied;
+        if (payloadUsed < payload.length) return;
+        if (
+          socket.readyState !== socket.OPEN ||
+          socket.bufferedAmount + payload.length > displayMaxEnvelopeBytes
+        ) {
+          close();
+          return;
+        }
+        socket.send(payload, { binary: true }, (error) => {
+          if (error) close();
+        });
+        headerUsed = 0;
+        payload = undefined;
+        payloadUsed = 0;
+      }
+    });
+    socket.on("message", (raw, binary) => {
+      if (closed) return;
+      try {
+        const bytes = rawDataBuffer(raw);
+        if (binary || bytes.length > displayMaxHeaderBytes) throw new Error();
+        DisplayAckSchema.parse(JSON.parse(bytes.toString("utf8")));
+        if (native.writableLength + 5 + bytes.length > displayMaxHeaderBytes) throw new Error();
+        const frame = Buffer.allocUnsafe(5 + bytes.length);
+        frame[0] = 0x02;
+        frame.writeUInt32BE(bytes.length, 1);
+        bytes.copy(frame, 5);
+        native.write(frame);
+      } catch {
+        close();
+      }
+    });
   }
 
   #pruneViews(): void {
@@ -681,6 +779,7 @@ export class ComputerUseBridgeServer {
       if (socket.readyState === socket.OPEN) socket.close(1001, "stopping");
       socket.terminate();
     }
+    for (const socket of this.#iphoneMediaSockets) socket.terminate();
     await Promise.all(closed);
     this.#url = null;
   }

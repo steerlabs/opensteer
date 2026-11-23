@@ -224,6 +224,26 @@ export function iphoneSetupWords(
         waiting: "Waiting for the iPhone…",
         yours: true,
       };
+    case "wifi-pairing-denied":
+      return {
+        cue: "On the iPhone",
+        detail:
+          "Keep it unlocked and plugged into this Mac, try again, and tap Trust when the iPhone asks.",
+        recovery: "check",
+        title: "The iPhone didn’t trust this Mac",
+        yours: true,
+      };
+    case "wifi-pairing-failed":
+      return {
+        detail: "Keep it unlocked and plugged into this Mac, then try again.",
+        more: {
+          summary: "Still not working?",
+          lines: ["Restart the iPhone, plug it back in, and try again."],
+        },
+        recovery: "check",
+        title: "Wi‑Fi pairing didn’t finish",
+        yours: true,
+      };
     case "wifi-transport-unsupported":
       return {
         detail: "It still works while it’s plugged into this Mac.",

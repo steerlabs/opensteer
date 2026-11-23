@@ -9,7 +9,7 @@ import {
   type Turn,
 } from "@opensteer/client/host";
 import { useHostSelector, useTabsRevision } from "@opensteer/client/react";
-import { RunnerIdSchema } from "@opensteer/core";
+import { DeviceIdSchema } from "@opensteer/core";
 import type {
   BrowserPageContentPart,
   ComputerAppContentPart,
@@ -137,7 +137,7 @@ function IncludedPlaces(props: {
             key={`phone:${part.machineId}:${part.display}`}
             onPress={() => {
               // The person's Open of its one tab, which may wake it once when shown.
-              const computerId = RunnerIdSchema.safeParse(part.machineId);
+              const computerId = DeviceIdSchema.safeParse(part.machineId);
               if (!computerId.success) return;
               void props.surfaces.hostClient
                 .openTab({ kind: "phone", computerId: computerId.data })
