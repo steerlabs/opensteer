@@ -1,7 +1,7 @@
 import { sql, type Kysely } from "kysely";
 import type { Migration } from "kysely/migration";
 
-export const removePlatformVerificationMigrationName = "0056_remove_platform_verification_contract";
+export const removePlatformVerificationMigrationName = "0054_remove_platform_verification_contract";
 
 /**
  * A connected agent is verified only by the origin of its redirect address, listed in the signed
