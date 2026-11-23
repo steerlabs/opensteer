@@ -7,6 +7,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   generateSystemCaFixtureCertificates,
+  inspectExportedAdminTrustState,
   runSystemCaSmokeLifecycle,
   type CommandResult,
   type SystemCaSmokeReport,
@@ -66,6 +67,9 @@ describe("system-ca smoke lifecycle", () => {
             return fail("SecTrustSettingsCopyTrustSettings: No Trust Settings were found.");
           }
           if (subcommand === "add-trusted-cert") {
+            if (args.includes("deny")) {
+              return fail("SecTrustSettingsSetTrustSettings: revoke failed");
+            }
             certPresent = true;
             trustPresent = true;
             return ok();
@@ -273,11 +277,10 @@ describe("system-ca smoke lifecycle", () => {
     expect(report.cleanup.restored).toBe(true);
   });
 
-  it("H8: checks find-certificate output for the fixture sha256 instead of treating any System.keychain cert as present, and temporarily relaxes com.apple.trust-settings.admin to remove trust in a headless VM", async () => {
+  it("H8: checks find-certificate output for the fixture sha256 instead of treating any System.keychain cert as present, revokes trust to deny when headless remove-trusted-cert is denied, and verifies via cleanup probe", async () => {
     const dirs = makeDirs();
     let certPresent = false;
-    let trustPresent = false;
-    let authDbRule = "<plist><string>authenticate-admin</string></plist>";
+    let trustState: "none" | "trustRoot" | "deny" = "none";
     const calls: string[] = [];
 
     const report = await runSystemCaSmokeLifecycle({
@@ -289,39 +292,33 @@ describe("system-ca smoke lifecycle", () => {
       rootDer: dirs.rootDer,
       rootPem: dirs.rootPem,
       workDir: dirs.workDir,
-      runCommand: (command, args, stdin) => {
+      runCommand: (command, args) => {
         calls.push([command, ...args].join(" "));
         const subcommand = args.find((a) => !a.startsWith("-") && a !== "/usr/bin/security");
         if (subcommand === "trust-settings-export") {
           const outPath = args.at(-1)!;
-          writeFileSync(
-            outPath,
-            trustPresent
-              ? `<plist><string>${sha256}</string></plist>`
-              : "<plist><string>prior-only</string></plist>",
-          );
+          const xml =
+            trustState === "none"
+              ? "<plist><dict><key>trustList</key><dict/></dict></plist>"
+              : trustState === "deny"
+                ? `<plist><dict><key>trustList</key><dict><key>${sha256}</key><dict><key>trustSettings</key><array><dict><key>kSecTrustSettingsResult</key><integer>3</integer></dict></array></dict></dict></dict></plist>`
+                : `<plist><dict><key>trustList</key><dict><key>${sha256}</key><dict><key>trustSettings</key><array/></dict></dict></dict></plist>`;
+          writeFileSync(outPath, xml);
           return ok();
         }
         if (subcommand === "add-trusted-cert") {
-          certPresent = true;
-          trustPresent = true;
-          return ok();
-        }
-        if (subcommand === "authorizationdb") {
-          if (args.includes("read")) return ok(authDbRule);
-          if (args.includes("write")) {
-            authDbRule = args.includes("allow") ? "allow" : (stdin ?? "");
+          if (args.includes("deny")) {
+            trustState = "deny";
             return ok();
           }
+          certPresent = true;
+          trustState = "trustRoot";
+          return ok();
         }
         if (subcommand === "remove-trusted-cert") {
-          if (authDbRule !== "allow") {
-            return fail(
-              "SecTrustSettingsRemoveTrustSettings: The authorization was denied since no user interaction was possible.",
-            );
-          }
-          trustPresent = false;
-          return ok();
+          return fail(
+            "SecTrustSettingsRemoveTrustSettings: The authorization was denied since no user interaction was possible.",
+          );
         }
         if (subcommand === "delete-certificate") {
           certPresent = false;
@@ -337,7 +334,7 @@ describe("system-ca smoke lifecycle", () => {
         }
         if (subcommand === "dump-trust-settings") {
           return ok(
-            trustPresent ? "Cert 0: Opensteer system CA fixture 5" : "Cert 0: Existing Admin Root",
+            certPresent ? "Cert 0: Opensteer system CA fixture 5" : "Cert 0: Existing Admin Root",
           );
         }
         return ok();
@@ -345,13 +342,52 @@ describe("system-ca smoke lifecycle", () => {
       runProbes: async (rows) => {
         rows.push({ listed: true, process: "home-node", reached: true, setting: "on" });
       },
+      verifyCleanupProbe: async () => ({
+        error: "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+        listed: false,
+        process: "home-node",
+        reached: false,
+        setting: "on",
+      }),
     });
 
     expect(report.cleanup.certPresentAfterCleanup).toBe(false);
+    expect(report.cleanup.revokeTrustedCert?.ok).toBe(true);
+    expect(report.cleanup.trustStateAfterCleanup).toBe("revoked-deny");
     expect(report.cleanup.trustPresentAfterCleanup).toBe(false);
+    expect(report.cleanup.cleanupProbe).toMatchObject({ listed: false, reached: false });
     expect(report.cleanup.restored).toBe(true);
-    expect(authDbRule.trim()).toBe("<plist><string>authenticate-admin</string></plist>");
     expect(calls.some((c) => c.includes("find-certificate -a -Z"))).toBe(true);
+    expect(calls.some((c) => c.includes("add-trusted-cert -d -r deny"))).toBe(true);
+  });
+
+  it("H8: treats an empty trustSettings array or trustRoot integer in exported plist as still trusted", () => {
+    const emptyArrayXml = `<plist><dict><key>trustList</key><dict><key>${sha256}</key><dict><key>trustSettings</key><array/></dict></dict></dict></plist>`;
+    expect(
+      inspectExportedAdminTrustState(emptyArrayXml, {
+        commonName: "Opensteer system CA fixture 6",
+        sha1: null,
+        sha256,
+      }),
+    ).toBe("trusted");
+
+    const trustRootXml = `<plist><dict><key>trustList</key><dict><key>${sha256}</key><dict><key>trustSettings</key><array><dict><key>kSecTrustSettingsResult</key><integer>1</integer></dict></array></dict></dict></dict></plist>`;
+    expect(
+      inspectExportedAdminTrustState(trustRootXml, {
+        commonName: "Opensteer system CA fixture 6",
+        sha1: null,
+        sha256,
+      }),
+    ).toBe("trusted");
+
+    const denyXml = `<plist><dict><key>trustList</key><dict><key>${sha256}</key><dict><key>trustSettings</key><array><dict><key>kSecTrustSettingsResult</key><integer>3</integer></dict></array></dict></dict></dict></plist>`;
+    expect(
+      inspectExportedAdminTrustState(denyXml, {
+        commonName: "Opensteer system CA fixture 6",
+        sha1: null,
+        sha256,
+      }),
+    ).toBe("revoked-deny");
   });
 
   it("H8: generates a non-self-issued localhost leaf signed by the fixture root that Node TLS verifies against the root", async () => {

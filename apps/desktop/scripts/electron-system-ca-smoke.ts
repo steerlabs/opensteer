@@ -187,6 +187,17 @@ async function main(): Promise<void> {
         });
       }
     },
+    verifyCleanupProbe: async () => {
+      const environment = nodeTrustEnvironment(
+        { HOME: home, PATH: "/usr/bin:/bin" },
+        { environmentInputs: "drop", settings: {} },
+      );
+      return {
+        process: "home-node",
+        setting: "on",
+        ...(await homeNode(release.entrypoints.node, environment, url, fixture.fingerprint)),
+      };
+    },
   });
 
   for (const row of report.rows) {

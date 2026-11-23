@@ -25,18 +25,21 @@ export interface SystemCaCleanupStep {
   readonly ok: boolean;
 }
 
+export type AdminTrustCleanupState = "removed" | "revoked-deny" | "trusted" | "unknown";
+
 export interface SystemCaCleanupReport {
   readonly priorAdminTrustSettings: "exported" | "none" | "error";
   readonly priorAdminTrustSettingsError?: string | null;
   readonly removeTrustedCert: SystemCaCleanupStep | null;
   readonly removeTrustedCertDer?: SystemCaCleanupStep | null;
+  readonly revokeTrustedCert?: SystemCaCleanupStep | null;
   readonly restoreAdminTrustSettings?: SystemCaCleanupStep | null;
-  readonly authDbRelaxed?: SystemCaCleanupStep | null;
-  readonly authDbRestored?: SystemCaCleanupStep | null;
   readonly deleteCertificate: SystemCaCleanupStep | null;
   readonly deleteCertificateByName?: SystemCaCleanupStep | null;
   readonly certPresentAfterCleanup: boolean | null;
+  readonly trustStateAfterCleanup: AdminTrustCleanupState;
   readonly trustPresentAfterCleanup: boolean | null;
+  readonly cleanupProbe?: Record<string, unknown> | null;
   readonly restored: boolean;
 }
 
@@ -61,6 +64,7 @@ export interface RunSystemCaSmokeOptions {
   readonly workDir: string;
   readonly runCommand?: CommandRunner;
   readonly runProbes: (rows: Record<string, unknown>[]) => Promise<void>;
+  readonly verifyCleanupProbe?: () => Promise<Record<string, unknown>>;
   readonly closeServer?: () => void;
 }
 
@@ -211,6 +215,87 @@ function isAuthorizationDeniedSecurityError(stderr: string): boolean {
   );
 }
 
+function extractPlistDictForKey(plistXml: string, key: string): string | null {
+  const keyPattern = new RegExp(`<key>\\s*${key}\\s*<\\/key>\\s*<dict>`, "iu");
+  const match = keyPattern.exec(plistXml);
+  if (!match) return null;
+  const openStart = match.index + match[0].length - "<dict>".length;
+  let depth = 0;
+  const tagPattern = /<\/?dict(?:\s*\/)?>/giu;
+  tagPattern.lastIndex = openStart;
+  let token = tagPattern.exec(plistXml);
+  while (token !== null) {
+    const text = token[0].toLowerCase();
+    if (text === "<dict>") {
+      depth += 1;
+    } else if (text === "</dict>") {
+      depth -= 1;
+      if (depth === 0) {
+        return plistXml.slice(openStart, token.index + token[0].length);
+      }
+    }
+    token = tagPattern.exec(plistXml);
+  }
+  return null;
+}
+
+/**
+ * Inspects XML output from `security trust-settings-export -d` for a fixture
+ * root certificate.
+ * - `"removed"` when neither the certificate's SHA-1/SHA-256 key nor common name appears.
+ * - `"revoked-deny"` when the certificate entry exists in `trustList` and every
+ *   `trustSettings` usage-constraint dictionary explicitly sets
+ *   `kSecTrustSettingsResult = 3` (`kSecTrustSettingsResultDeny`). An empty
+ *   `trustSettings` array defaults to `kSecTrustSettingsResultTrustRoot` in
+ *   macOS Security.framework, so it is treated as `"trusted"`.
+ * - `"trusted"` otherwise.
+ */
+export function inspectExportedAdminTrustState(
+  plistXml: string,
+  identifiers: {
+    readonly commonName: string;
+    readonly sha1: string | null;
+    readonly sha256: string;
+  },
+): AdminTrustCleanupState {
+  const upper = plistXml.toUpperCase();
+  const hasSha1 = identifiers.sha1 !== null && upper.includes(identifiers.sha1);
+  const hasSha256 = upper.includes(identifiers.sha256);
+  const hasCommonName = upper.includes(identifiers.commonName.toUpperCase());
+  if (!hasSha1 && !hasSha256 && !hasCommonName) {
+    return "removed";
+  }
+
+  const certDict =
+    (identifiers.sha1 ? extractPlistDictForKey(plistXml, identifiers.sha1) : null) ??
+    extractPlistDictForKey(plistXml, identifiers.sha256);
+  if (!certDict) {
+    return "trusted";
+  }
+  const arrayMatch = /<key>\s*trustSettings\s*<\/key>\s*<array>([\s\S]*?)<\/array>/iu.exec(
+    certDict,
+  );
+  if (!arrayMatch) {
+    return "trusted";
+  }
+  const entries = [...arrayMatch[1]!.matchAll(/<dict>([\s\S]*?)<\/dict>/giu)];
+  if (entries.length === 0) {
+    return "trusted";
+  }
+  for (const entry of entries) {
+    const body = entry[1]!;
+    const results = [
+      ...body.matchAll(
+        /<key>\s*kSecTrustSettingsResult\s*<\/key>\s*<integer>\s*(\d+)\s*<\/integer>/giu,
+      ),
+    ];
+    if (results.length === 0 || results.some((r) => r[1] !== "3")) {
+      return "trusted";
+    }
+  }
+  return "revoked-deny";
+}
+
 function formatError(error: unknown): string {
   return error instanceof Error ? (error.stack ?? error.message) : String(error);
 }
@@ -303,12 +388,6 @@ export async function runSystemCaSmokeLifecycle(
 
   // Cleanup runs independently of any primary error, never throws out of
   // finally, and never skips deleting the certificate or writing system-ca.json.
-  try {
-    options.closeServer?.();
-  } catch {
-    // Ignore close errors during cleanup.
-  }
-
   let sha1: string | null = null;
   if (existsSync(options.rootPem)) {
     try {
@@ -320,7 +399,7 @@ export async function runSystemCaSmokeLifecycle(
     }
   }
 
-  let removeTrustedCert = runSecurityStep(
+  const removeTrustedCert = runSecurityStep(
     runCommand,
     "/usr/bin/sudo",
     ["-n", "/usr/bin/security", "remove-trusted-cert", "-d", options.rootPem],
@@ -328,101 +407,51 @@ export async function runSystemCaSmokeLifecycle(
   );
 
   let removeTrustedCertDer: SystemCaCleanupStep | null = null;
+  let revokeTrustedCert: SystemCaCleanupStep | null = null;
   let restoreAdminTrustSettings: SystemCaCleanupStep | null = null;
-  let authDbRelaxed: SystemCaCleanupStep | null = null;
-  let authDbRestored: SystemCaCleanupStep | null = null;
 
-  // In a headless disposable VM, `add-trusted-cert -d` succeeds under `sudo -n`,
-  // while `remove-trusted-cert -d` and `trust-settings-import -d` evaluate the
-  // `com.apple.trust-settings.admin` right and fail with "no user interaction
-  // was possible". Temporarily relax that right for the removal and restore its
-  // saved definition in `finally`.
-  if (!removeTrustedCert.ok && isAuthorizationDeniedSecurityError(removeTrustedCert.stderr)) {
-    const priorAuthDb = runSecurityStep(runCommand, "/usr/bin/security", [
-      "authorizationdb",
-      "read",
-      "com.apple.trust-settings.admin",
-    ]);
-    if (priorAuthDb.ok && priorAuthDb.stdout.length > 0) {
-      authDbRelaxed = runSecurityStep(runCommand, "/usr/bin/sudo", [
+  // On modern macOS in a headless VM, `SecTrustSettingsSetTrustSettings`
+  // (`add-trusted-cert -d`) permits root (`euid == 0`) without interactive GUI
+  // authorization, whereas `SecTrustSettingsRemoveTrustSettings`
+  // (`remove-trusted-cert -d`), `SecTrustSettingsImportExternalRepresentation`
+  // (`trust-settings-import -d`), and `authorizationdb write` on
+  // `com.apple.trust-settings.admin` are denied headlessly. When removal is
+  // denied for lack of user interaction, overwrite the fixture root's admin
+  // trust setting to `deny` (`kSecTrustSettingsResultDeny = 3`) before deleting
+  // the certificate from `System.keychain`.
+  if (!removeTrustedCert.ok) {
+    if (isAuthorizationDeniedSecurityError(removeTrustedCert.stderr)) {
+      revokeTrustedCert = runSecurityStep(runCommand, "/usr/bin/sudo", [
         "-n",
         "/usr/bin/security",
-        "authorizationdb",
-        "write",
-        "com.apple.trust-settings.admin",
-        "allow",
-      ]);
-      try {
-        if (authDbRelaxed.ok) {
-          removeTrustedCert = runSecurityStep(
-            runCommand,
-            "/usr/bin/sudo",
-            ["-n", "/usr/bin/security", "remove-trusted-cert", "-d", options.rootPem],
-            { allowNotFound: true },
-          );
-          if (!removeTrustedCert.ok && existsSync(options.rootDer)) {
-            removeTrustedCertDer = runSecurityStep(
-              runCommand,
-              "/usr/bin/sudo",
-              ["-n", "/usr/bin/security", "remove-trusted-cert", "-d", options.rootDer],
-              { allowNotFound: true },
-            );
-          }
-          if (
-            !removeTrustedCert.ok &&
-            !removeTrustedCertDer?.ok &&
-            priorAdminTrustSettings === "exported" &&
-            existsSync(options.priorTrustPlist)
-          ) {
-            restoreAdminTrustSettings = runSecurityStep(runCommand, "/usr/bin/sudo", [
-              "-n",
-              "/usr/bin/security",
-              "trust-settings-import",
-              "-d",
-              options.priorTrustPlist,
-            ]);
-          }
-        }
-      } finally {
-        if (authDbRelaxed.ok) {
-          authDbRestored = runSecurityStep(
-            runCommand,
-            "/usr/bin/sudo",
-            [
-              "-n",
-              "/usr/bin/security",
-              "authorizationdb",
-              "write",
-              "com.apple.trust-settings.admin",
-            ],
-            { stdin: `${priorAuthDb.stdout}\n` },
-          );
-        }
-      }
-    }
-  }
-
-  if (!removeTrustedCert.ok && !removeTrustedCertDer && !restoreAdminTrustSettings) {
-    if (existsSync(options.rootDer)) {
-      removeTrustedCertDer = runSecurityStep(
-        runCommand,
-        "/usr/bin/sudo",
-        ["-n", "/usr/bin/security", "remove-trusted-cert", "-d", options.rootDer],
-        { allowNotFound: true },
-      );
-    }
-    if (
-      !removeTrustedCertDer?.ok &&
-      priorAdminTrustSettings === "exported" &&
-      existsSync(options.priorTrustPlist)
-    ) {
-      restoreAdminTrustSettings = runSecurityStep(runCommand, "/usr/bin/sudo", [
-        "-n",
-        "/usr/bin/security",
-        "trust-settings-import",
+        "add-trusted-cert",
         "-d",
-        options.priorTrustPlist,
+        "-r",
+        "deny",
+        options.rootPem,
       ]);
+    } else {
+      if (existsSync(options.rootDer)) {
+        removeTrustedCertDer = runSecurityStep(
+          runCommand,
+          "/usr/bin/sudo",
+          ["-n", "/usr/bin/security", "remove-trusted-cert", "-d", options.rootDer],
+          { allowNotFound: true },
+        );
+      }
+      if (
+        !removeTrustedCertDer?.ok &&
+        priorAdminTrustSettings === "exported" &&
+        existsSync(options.priorTrustPlist)
+      ) {
+        restoreAdminTrustSettings = runSecurityStep(runCommand, "/usr/bin/sudo", [
+          "-n",
+          "/usr/bin/security",
+          "trust-settings-import",
+          "-d",
+          options.priorTrustPlist,
+        ]);
+      }
     }
   }
 
@@ -477,7 +506,7 @@ export async function runSystemCaSmokeLifecycle(
     "dump-trust-settings",
     "-d",
   ]);
-  let trustPresentAfterCleanup: boolean | null =
+  const listedInDumpAfterCleanup: boolean | null =
     dumpTrustAfter.status === 0
       ? dumpTrustAfter.stdout.includes(options.commonName) ||
         dumpTrustAfter.stdout.toUpperCase().includes(sha256) ||
@@ -485,32 +514,68 @@ export async function runSystemCaSmokeLifecycle(
       : isNotFoundSecurityError(dumpTrustAfter.stderr)
         ? false
         : null;
-  // Also inspect raw exported admin trust settings so an orphaned trust entry
-  // whose certificate was deleted from System.keychain cannot hide as absent.
+
+  // Inspect raw exported admin trust settings so an orphaned `trustRoot` entry
+  // cannot hide as absent, while an explicit `deny` revocation is verified.
   const afterTrustPlist = path.join(options.workDir, "after-trust.plist");
   const exportAfter = runSecurityStep(runCommand, "/usr/bin/security", [
     "trust-settings-export",
     "-d",
     afterTrustPlist,
   ]);
+  let trustStateAfterCleanup: AdminTrustCleanupState = "unknown";
   if (exportAfter.ok && existsSync(afterTrustPlist)) {
-    const exportedText = readFileSync(afterTrustPlist, "utf8").toUpperCase();
-    const stillInPlist =
-      exportedText.includes(sha256) ||
-      (sha1 !== null && exportedText.includes(sha1)) ||
-      exportedText.includes(options.commonName.toUpperCase());
-    if (stillInPlist) trustPresentAfterCleanup = true;
-    else if (trustPresentAfterCleanup === null) trustPresentAfterCleanup = false;
+    trustStateAfterCleanup = inspectExportedAdminTrustState(readFileSync(afterTrustPlist, "utf8"), {
+      commonName: options.commonName,
+      sha1,
+      sha256,
+    });
+  } else if (isNotFoundSecurityError(exportAfter.stderr)) {
+    trustStateAfterCleanup = "removed";
+  } else if (listedInDumpAfterCleanup === false) {
+    trustStateAfterCleanup = "removed";
+  } else if (listedInDumpAfterCleanup === true) {
+    trustStateAfterCleanup = "trusted";
   }
 
-  const authDbOk = authDbRelaxed === null || (authDbRelaxed.ok && authDbRestored?.ok === true);
+  let cleanupProbe: Record<string, unknown> | null = null;
+  if (added && options.verifyCleanupProbe) {
+    try {
+      cleanupProbe = await options.verifyCleanupProbe();
+    } catch (error) {
+      cleanupProbe = { error: formatError(error), listed: null, reached: null };
+    }
+  }
+
+  try {
+    options.closeServer?.();
+  } catch {
+    // Ignore close errors during cleanup.
+  }
+
+  const cleanupProbeOk =
+    cleanupProbe === null || (cleanupProbe.listed === false && cleanupProbe.reached === false);
+
+  const trustPresentAfterCleanup: boolean | null =
+    listedInDumpAfterCleanup === true || trustStateAfterCleanup === "trusted"
+      ? true
+      : trustStateAfterCleanup === "removed"
+        ? false
+        : trustStateAfterCleanup === "revoked-deny" &&
+            revokeTrustedCert?.ok === true &&
+            certPresentAfterCleanup === false &&
+            cleanupProbeOk
+          ? false
+          : trustStateAfterCleanup === "unknown"
+            ? null
+            : true;
+
   const restored =
-    certPresentAfterCleanup === false && trustPresentAfterCleanup === false && authDbOk;
+    certPresentAfterCleanup === false && trustPresentAfterCleanup === false && cleanupProbeOk;
 
   const cleanup: SystemCaCleanupReport = {
-    ...(authDbRelaxed ? { authDbRelaxed } : {}),
-    ...(authDbRestored ? { authDbRestored } : {}),
     certPresentAfterCleanup,
+    ...(cleanupProbe ? { cleanupProbe } : {}),
     deleteCertificate,
     ...(deleteCertificateByName ? { deleteCertificateByName } : {}),
     priorAdminTrustSettings,
@@ -520,8 +585,10 @@ export async function runSystemCaSmokeLifecycle(
     removeTrustedCert,
     ...(removeTrustedCertDer ? { removeTrustedCertDer } : {}),
     ...(restoreAdminTrustSettings ? { restoreAdminTrustSettings } : {}),
+    ...(revokeTrustedCert ? { revokeTrustedCert } : {}),
     restored,
     trustPresentAfterCleanup,
+    trustStateAfterCleanup,
   };
 
   const report: SystemCaSmokeReport = {
@@ -555,19 +622,20 @@ export async function runSystemCaSmokeLifecycle(
       removeTrustedCertDer && !removeTrustedCertDer.ok
         ? `remove-trusted-cert (der): ${removeTrustedCertDer.stderr}`
         : null,
+      revokeTrustedCert && !revokeTrustedCert.ok
+        ? `revoke-trusted-cert (-r deny): ${revokeTrustedCert.stderr}`
+        : null,
       restoreAdminTrustSettings && !restoreAdminTrustSettings.ok
         ? `trust-settings-import: ${restoreAdminTrustSettings.stderr}`
-        : null,
-      authDbRelaxed && !authDbRelaxed.ok ? `authorizationdb allow: ${authDbRelaxed.stderr}` : null,
-      authDbRestored && !authDbRestored.ok
-        ? `authorizationdb restore: ${authDbRestored.stderr}`
         : null,
       deleteCertificate.ok ? null : `delete-certificate: ${deleteCertificate.stderr}`,
       deleteCertificateByName && !deleteCertificateByName.ok
         ? `delete-certificate (-c): ${deleteCertificateByName.stderr}`
         : null,
       `certPresentAfterCleanup=${String(certPresentAfterCleanup)}`,
+      `trustStateAfterCleanup=${trustStateAfterCleanup}`,
       `trustPresentAfterCleanup=${String(trustPresentAfterCleanup)}`,
+      ...(cleanupProbe && !cleanupProbeOk ? [`cleanupProbe=${JSON.stringify(cleanupProbe)}`] : []),
     ]
       .filter(Boolean)
       .join("; ");
