@@ -813,7 +813,7 @@ describeStore("a connected agent's authority at the send", (it) => {
         ownerId: owner.fixture.userId,
         triggerId: trigger.id,
         expectedRevisionId: revision.id,
-        program: everyMinute.program,
+        script: everyMinute.script,
       }),
     ).rejects.toMatchObject(refusal);
   });

@@ -2328,25 +2328,15 @@ export class TriggerStore {
         const standing = await triggerLaunchStanding(transaction, trigger);
         await seam?.afterAuthority?.();
         if (standing.kind === "waiting") return held;
-        if (standing.kind === "refused") {
-          await transaction
-            .updateTable("triggers")
-            .set({
-              nextFireAt: null,
-              pauseReason: noAutomationPauseReason,
-              status: "paused",
-              updatedAt: new Date(),
-            })
-            .where("id", "=", trigger.id)
-            .execute();
-          return undefined;
-        }
-        if (standing.kind === "lost") {
-          // Authority can be unavailable transiently — an offline Runner. Pausing keeps the Trigger recoverable by
-          // its owner; archiving would be a permanent answer to a temporary
-          // condition.
+        if (standing.kind === "refused" || standing.kind === "lost") {
+          // Authority can be unavailable transiently — an offline Runner — or refused for a chat
+          // without personal context. Pausing keeps the Trigger recoverable by its owner;
+          // archiving would be a permanent answer.
           await pauseTriggerInTransaction(transaction, trigger, {
-            pauseReason: triggerAuthorityLossPauseReason,
+            pauseReason:
+              standing.kind === "refused"
+                ? noAutomationPauseReason
+                : triggerAuthorityLossPauseReason,
             pausedBy: "system",
           });
           const running = await transaction
