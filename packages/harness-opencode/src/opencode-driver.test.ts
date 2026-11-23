@@ -33,7 +33,8 @@ import {
   opencodePermissionRules,
   opencodeChildPermissionRules,
 } from "./configuration.js";
-import { TESTED_OPENCODE_VERSION } from "./config.js";
+import { OpencodeHarnessConfigSchema, TESTED_OPENCODE_VERSION } from "./config.js";
+import { OpencodeServer } from "./server.js";
 
 // A Run outside any task with nothing earlier to state, for a person whose
 // time zone is unknown: its thread context is one fixed line, so these turns
@@ -306,6 +307,30 @@ describe("OpenCode inspection", () => {
     const result = await inspect({ scenario: "spawn-failure", sourceId: "anthropic", key: "k" });
     expect(result?.status).toBe("unavailable");
     expect(result?.detail).toContain("OpenCode exited before it started listening");
+  });
+
+  it("scrubs configured proxy credentials from OpenCode stderr", async () => {
+    const proxy = "http://alice:p@ss-word@proxy.invalid:8080";
+    const directory = await temporaryDirectory();
+    const server = await OpencodeServer.start({
+      args: [fakeServer],
+      cacheHome: directory,
+      config: OpencodeHarnessConfigSchema.parse({}),
+      configHome: directory,
+      dataHome: directory,
+      environment: { HTTPS_PROXY: proxy, FAKE_OPENCODE_PROXY_DIAGNOSTIC: "1", HOME: directory },
+      executable: process.execPath,
+      stateHome: directory,
+      workingDirectory: directory,
+    });
+    try {
+      await vi.waitFor(() => expect(server.stderrTail).toContain("fake opencode: proxy"));
+      expect(server.stderrTail).toContain(
+        "proxy http://[REDACTED]@proxy.invalid:8080; password [REDACTED]",
+      );
+    } finally {
+      await server.stop();
+    }
   });
 
   it("reports a stored key OpenCode does not accept as authentication-required", async () => {

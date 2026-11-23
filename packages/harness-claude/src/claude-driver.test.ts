@@ -5264,6 +5264,28 @@ describe("whose configuration Claude Code starts with", () => {
 });
 
 describe("how Claude Code reaches the network", () => {
+  it("scrubs a configured proxy password printed separately in a Claude Code failure", async () => {
+    const proxy = "http://alice:p@ss-word@proxy.invalid:8080";
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        yield initMessage(providerSessionId(parameters.options));
+        throw new Error(`Connection failed via ${proxy}; password p@ss-word`);
+      }),
+    );
+    const fixture = await openSession(sdk, { environment: { HTTPS_PROXY: proxy } });
+    try {
+      const observer = observe(fixture.session.events);
+      await send(fixture.session, "Hello").catch(() => undefined);
+      await fixture.session.stop();
+      await observer.done;
+      const failure = observer.events.find((event) => event.type === "run.failed");
+      expect(failure?.data.message).toContain("password [REDACTED]");
+      expect(failure?.data.message).not.toContain("ss-word");
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
   it("passes the lowercase HTTPS proxy from the process environment to Claude Code", async () => {
     const proxy = "http://proxy.invalid:8080";
     vi.stubEnv("https_proxy", proxy);

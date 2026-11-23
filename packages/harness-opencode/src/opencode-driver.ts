@@ -3,6 +3,7 @@ import { opencodeLightModelFamilies } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { isRecord } from "@opensteer/shared/isRecord";
+import { redactUrlCredentials } from "@opensteer/shared/safeMessage";
 import { pathToFileURL } from "node:url";
 import {
   attachmentMaxBytes,
@@ -2205,7 +2206,8 @@ class OpencodeHarnessSession implements HarnessSession {
       this.#publish(
         runFailedEvent({
           code: opencodeFailureCode(error),
-          message: error.message,
+          message:
+            this.#server?.redactDiagnostic(error.message) ?? redactUrlCredentials(error.message),
           retryable: error.retryable,
         }),
       );

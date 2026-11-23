@@ -1,6 +1,7 @@
 import { toolOutputWithImages } from "@opensteer/harness";
 import { backgroundLightModels, imageGenerationToolName } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
+import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import { stat, mkdir, copyFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
@@ -517,6 +518,7 @@ interface ActiveTurn {
   readonly requestedBy: UserId;
   readonly runId: HarnessRunInput["runId"];
   interruptRequested: boolean;
+  networkSecrets: readonly string[];
   started: boolean;
   terminal: boolean;
   usageReported: boolean;
@@ -624,6 +626,7 @@ class CursorHarnessSession implements HarnessSession {
       completedToolCalls: new Set(),
       startedToolArguments: new Map(),
       interruptRequested: run.signal.aborted,
+      networkSecrets: [],
       requestedBy: run.requestedBy,
       runId: run.runId,
       started: false,
@@ -797,6 +800,7 @@ class CursorHarnessSession implements HarnessSession {
       environment: cursorHookShellEnvironment(run.environment),
       executable: this.#dependencies.executable,
     });
+    active.networkSecrets = networkCredentialSecrets(launch.environment);
     const supervised = spawnSupervised({
       args: launch.args,
       cwd: launch.cwd,
@@ -861,7 +865,10 @@ class CursorHarnessSession implements HarnessSession {
     // Every failure the CLI reports before it can stream lands here: an
     // untrusted workspace, an invalid key and an unknown model all exit 1 with
     // an empty stdout and one sentence on stderr (verified).
-    this.#publishRunFailure(active, cursorExitFailure(exit.code, stderr.text()));
+    this.#publishRunFailure(
+      active,
+      cursorExitFailure(exit.code, stderr.text(), launch.environment),
+    );
   }
 
   #handleFrame(active: ActiveTurn, frame: CursorFrame): void {
@@ -1251,7 +1258,7 @@ class CursorHarnessSession implements HarnessSession {
   #publishFailure(active: ActiveTurn, error: OpensteerError): void {
     this.#publishRunFailure(active, {
       code: error.code === "harness_error" ? cursorFailureCode : error.code,
-      message: error.message,
+      message: redactNetworkCredentials(error.message, active.networkSecrets),
       retryable: error.retryable,
     });
   }
@@ -1480,8 +1487,17 @@ export function cursorWorkspaceSlug(workspacePath: string): string {
  * `rate_limit_exceeded`) and is marked untested here rather than in a
  * changelog nobody reads (cursor-facts §A.8, open risk 8).
  */
-export function cursorExitFailure(code: number | null, stderr: string): CursorRunFailure {
-  const detail = stderr.split("\n").filter(Boolean).slice(-6).join("\n").slice(0, 2_000);
+export function cursorExitFailure(
+  code: number | null,
+  stderr: string,
+  environment: Readonly<Record<string, string>> = {},
+): CursorRunFailure {
+  const detail = redactNetworkCredentials(stderr, networkCredentialSecrets(environment))
+    .split("\n")
+    .filter(Boolean)
+    .slice(-6)
+    .join("\n")
+    .slice(0, 2_000);
   if (/usage[ _]limit|rate[ _]limit|quota exceeded/iu.test(stderr)) {
     return {
       code: harnessUsageLimitFailureCode,
@@ -1566,8 +1582,9 @@ async function runCursorCommand(
     environment: options.environment,
     executable,
   };
+  const wrapped = options.wrapProcessLaunch ? options.wrapProcessLaunch(launch) : launch;
   const supervised = spawnSupervised({
-    ...(options.wrapProcessLaunch ? options.wrapProcessLaunch(launch) : launch),
+    ...wrapped,
     maxOutputBytes: 4 * 1_024 * 1_024,
     signal: lifetime.signal,
   });
@@ -1578,13 +1595,17 @@ async function runCursorCommand(
       collectStreamText(supervised.stderr),
       supervised.exited,
     ]);
+    const diagnostic = redactNetworkCredentials(
+      stderr,
+      networkCredentialSecrets(wrapped.environment),
+    );
     if (exit.code !== 0) {
       throw new OpensteerError({
         code: "harness_error",
-        message: `Cursor \`agent ${options.args[0] ?? ""}\` failed (exit ${exit.code ?? "unknown"}): ${stderr.trim().slice(0, 500)}`,
+        message: `Cursor \`agent ${options.args[0] ?? ""}\` failed (exit ${exit.code ?? "unknown"}): ${diagnostic.trim().slice(0, 500)}`,
       });
     }
-    return { stderr, stdout };
+    return { stderr: diagnostic, stdout };
   } finally {
     clearTimeout(timer);
     options.signal.removeEventListener("abort", abort);

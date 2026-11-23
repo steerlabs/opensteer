@@ -405,6 +405,27 @@ describe("Muse Code sessions", () => {
     await adapter.close();
   });
 
+  it("scrubs configured proxy credentials from a Muse Code failure", async () => {
+    const fixture = await setup("proxy-failure", {
+      HTTPS_PROXY: "http://alice:p@ss-word@proxy.invalid:8080",
+    });
+    const adapter = await fixture.driver.create({
+      config: {},
+      instanceId: fixture.context.harnessInstanceId,
+      sourceId: "meta",
+    });
+    try {
+      const session = await adapter.startSession(fixture.context);
+      const observer = observe(session.events);
+      await session.execute(fixture.turn("Hello"));
+      expect((await observer.waitFor("run.failed")).data.message).toBe(
+        "Connection failed via http://[REDACTED]@proxy.invalid:8080; password [REDACTED]",
+      );
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it("maps quota failures to the usage-limit code with the latest valid reset", async () => {
     const fixture = await setup("quota");
     const adapter = await fixture.driver.create({
@@ -672,7 +693,7 @@ describe("Muse Code sessions", () => {
   });
 });
 
-async function setup(scenario: string) {
+async function setup(scenario: string, supplied: Readonly<Record<string, string>> = {}) {
   const directory = await mkdtemp(join(tmpdir(), "osmuse-"));
   temporaryDirectories.push(directory);
   const capture = join(directory, "capture.jsonl");
@@ -684,6 +705,7 @@ async function setup(scenario: string) {
     FAKE_MUSE_SCENARIO: scenario,
     META_API_KEY: "inherited-must-not-pass",
     PATH: process.env.PATH ?? "",
+    ...supplied,
   };
   const providerState = {
     continuationKey: `muse:${directory}`,

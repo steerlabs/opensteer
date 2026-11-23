@@ -11,7 +11,11 @@ import { workflowSessionRoot } from "./workflow-transcript.js";
 import { type ClaudeExecutableInspection } from "./executable.js";
 import { claudeSdkProcess } from "./sdk-process.js";
 import { isRecord } from "@opensteer/shared/isRecord";
-import { networkEnvironmentNames, redactUrlCredentials } from "@opensteer/shared/safeMessage";
+import {
+  networkCredentialSecrets,
+  networkEnvironmentNames,
+  redactNetworkCredentials,
+} from "@opensteer/shared/safeMessage";
 import { ClaudeContextMeasurement } from "./context-measurement.js";
 import { mergeEnvironment } from "@opensteer/shared/userEnvironment";
 import { randomUUID } from "node:crypto";
@@ -4264,13 +4268,12 @@ function sanitizeErrorMessage(
   environment: Readonly<Record<string, string>>,
   maxBytes: number,
 ): string {
-  let sanitized = message;
+  let sanitized = redactNetworkCredentials(message, networkCredentialSecrets(environment));
   for (const [name, value] of Object.entries(environment)) {
     if (!credentialNamePattern.test(name) || value.length < 4) continue;
     sanitized = sanitized.split(value).join("[REDACTED]");
   }
   sanitized = sanitized.replace(/os_secret_[A-Za-z0-9_-]+/gu, "[OPAQUE_CREDENTIAL]");
-  sanitized = redactUrlCredentials(sanitized);
   return clipUtf8(sanitized, maxBytes);
 }
 

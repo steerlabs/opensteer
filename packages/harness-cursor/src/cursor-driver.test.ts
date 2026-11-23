@@ -813,6 +813,15 @@ describe("Cursor turns", () => {
     expect(cursorExitFailure(1, "")).toMatchObject({ code: "cursor_harness_error" });
   });
 
+  it("scrubs configured proxy credentials from Cursor stderr", () => {
+    const proxy = "http://alice:p@ss-word@proxy.invalid:8080";
+    expect(
+      cursorExitFailure(1, `Connection failed via ${proxy}; password p@ss-word`, {
+        HTTPS_PROXY: proxy,
+      }).message,
+    ).toBe("Connection failed via http://[REDACTED]@proxy.invalid:8080; password [REDACTED]");
+  });
+
   it("projects a tool kind it has never seen without failing the Run", async () => {
     const fixture = await setup({ scenario: "unknown-tool" });
     const session = await fixture.adapter.startSession(fixture.context);

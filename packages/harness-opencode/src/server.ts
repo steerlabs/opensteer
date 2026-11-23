@@ -1,6 +1,7 @@
 import { OpensteerError } from "@opensteer/core";
 import { readBoundedJson, readBoundedText } from "@opensteer/shared/boundedJson";
 import { supervisedExitCode } from "@opensteer/shared/processControl";
+import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import {
   spawnSupervised,
   type HarnessProcessLaunchWrapper,
@@ -96,6 +97,7 @@ export class OpencodeServer {
   readonly #config: OpencodeHarnessConfig;
   readonly #process: SupervisedProcess;
   readonly #password: string;
+  readonly #networkSecrets: readonly string[];
   readonly #stderr: string[] = [];
   readonly #listening: Promise<string>;
   #settleListening!: (outcome: { readonly address: string } | { readonly error: unknown }) => void;
@@ -109,10 +111,12 @@ export class OpencodeServer {
     process: SupervisedProcess,
     password: string,
     baseUrl: string,
+    networkSecrets: readonly string[],
   ) {
     this.#config = config;
     this.#process = process;
     this.#password = password;
+    this.#networkSecrets = networkSecrets;
     this.#baseUrl = baseUrl;
     this.#listening = new Promise<string>((resolveAddress, rejectAddress) => {
       this.#settleListening = (outcome) => {
@@ -175,7 +179,13 @@ export class OpencodeServer {
       maxOutputBytes: options.config.maxStderrBytes,
       ...(options.signal ? { signal: options.signal } : {}),
     });
-    const server = new OpencodeServer(options.config, child, password, "");
+    const server = new OpencodeServer(
+      options.config,
+      child,
+      password,
+      "",
+      networkCredentialSecrets(wrapped.environment),
+    );
     server.#collectStderr();
     try {
       server.#baseUrl = await server.#awaitListening();
@@ -192,7 +202,11 @@ export class OpencodeServer {
   }
 
   get stderrTail(): string {
-    return this.#stderr.join("");
+    return this.redactDiagnostic(this.#stderr.join(""));
+  }
+
+  redactDiagnostic(message: string): string {
+    return redactNetworkCredentials(message, this.#networkSecrets);
   }
 
   get exited(): SupervisedProcess["exited"] {
@@ -267,7 +281,11 @@ export class OpencodeServer {
       }).catch(() => "");
       throw opencodeProtocolError(
         `OpenCode answered HTTP ${response.status} for ${method} ${path.split("?")[0] ?? path}`,
-        { details: { detail: detail.slice(0, 2_000) } },
+        {
+          details: {
+            detail: this.redactDiagnostic(detail).slice(0, 2_000),
+          },
+        },
       );
     }
     return readBoundedJson(response, {
@@ -421,13 +439,14 @@ export class OpencodeServer {
       timer.unref?.();
     });
     const exit = this.#process.exited.then(({ code, signal }) => {
+      const diagnostic = this.stderrTail.trim();
       throw new OpensteerError({
         code: "harness_error",
         // A cold-start collision on one profile's database is transient, and
         // the serialization above is only in-process.
-        retryable: this.stderrTail.includes("database is locked"),
+        retryable: diagnostic.includes("database is locked"),
         message: `OpenCode exited before it started listening (${signal ?? `exit ${code ?? "unknown"}`})${
-          this.stderrTail.trim() ? `: ${lastLine(this.stderrTail)}` : ""
+          diagnostic ? `: ${lastLine(diagnostic)}` : ""
         }`,
       });
     });
@@ -498,9 +517,10 @@ export class OpencodeServer {
       "global health",
     );
     if (health.version !== TESTED_OPENCODE_VERSION) {
+      const version = this.redactDiagnostic(health.version);
       throw opencodeProtocolError(
-        `Unsupported OpenCode version ${health.version}; this adapter is pinned to ${TESTED_OPENCODE_VERSION}`,
-        { details: { testedVersion: TESTED_OPENCODE_VERSION, version: health.version } },
+        `Unsupported OpenCode version ${version}; this adapter is pinned to ${TESTED_OPENCODE_VERSION}`,
+        { details: { testedVersion: TESTED_OPENCODE_VERSION, version } },
       );
     }
   }

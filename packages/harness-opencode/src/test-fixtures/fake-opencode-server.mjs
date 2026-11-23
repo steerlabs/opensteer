@@ -87,6 +87,10 @@ let heldTurn;
 capture({ kind: "process", argv: process.argv.slice(2), environment: { ...process.env } });
 capture({ kind: "config", config: readConfiguration(), configMode: configurationMode() });
 
+if (process.env.FAKE_OPENCODE_PROXY_DIAGNOSTIC === "1") {
+  process.stderr.write(`fake opencode: proxy ${process.env.HTTPS_PROXY}; password p@ss-word\n`);
+}
+
 if (scenario === "spawn-failure") {
   process.stderr.write("fake opencode: database is locked\n");
   process.exit(3);

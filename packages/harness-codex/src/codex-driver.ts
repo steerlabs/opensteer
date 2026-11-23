@@ -6,6 +6,7 @@ import { backgroundLightModels, voiceCallSeed } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
 import { startRealtime } from "./voice.js";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
+import { redactUrlCredentials } from "@opensteer/shared/safeMessage";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
@@ -3048,7 +3049,9 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       this.#publish(
         runFailedEvent({
           code: codexErrorCode(error),
-          message: error.message,
+          message:
+            this.#server?.client.redactDiagnostic(error.message) ??
+            redactUrlCredentials(error.message),
           retryable: error.retryable,
         }),
       );

@@ -215,6 +215,21 @@ function serve() {
           });
           return;
         }
+        if (scenario === "proxy-failure") {
+          notification("turn/completed", {
+            error: {
+              kind: "provider",
+              message: `Connection failed via ${process.env.HTTPS_PROXY}; password p@ss-word`,
+              retryable: false,
+            },
+            sessionId,
+            sourceRange: { first: "2", last: "2" },
+            terminal: "failed",
+            turnId,
+            viewCursor: "v4",
+          });
+          return;
+        }
         if (scenario === "quota" || scenario === "model-denied") {
           notification("turn/completed", {
             error:
