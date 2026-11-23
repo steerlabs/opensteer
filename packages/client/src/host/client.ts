@@ -529,7 +529,12 @@ export interface RunEntry {
   createdAt: string;
   /** When it ended, which settles what a page before its end left open. */
   endedAt?: string;
-  error: { code: string; message: string; retryable: boolean } | null;
+  error: {
+    code: string;
+    message: string;
+    ownerMessage?: string | undefined;
+    retryable: boolean;
+  } | null;
   id: string;
   kind: "run";
   /**

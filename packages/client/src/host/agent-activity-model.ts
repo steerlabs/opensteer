@@ -1769,7 +1769,7 @@ function delegationHead(entry: DelegationEntry): ActivityStepHead {
   }
   if (entry.outcome === "failed") {
     return {
-      detail: entry.failure?.message ?? entry.resultPreview ?? "",
+      detail: entry.failure?.ownerMessage ?? entry.failure?.message ?? entry.resultPreview ?? "",
       detailKind: "prose",
       duration: null,
       errors: 1,

@@ -92,6 +92,7 @@ import {
   type HarnessSessionContext,
   type HarnessSteerInput,
   type ResolvedAttachment,
+  EngineUnavailableForTaskError,
   assertEngineMayRun,
   checkPiOthersHome,
   engineConfiguration,
@@ -1709,6 +1710,9 @@ class PiHarnessSession implements HarnessSession {
         runFailedEvent({
           code: piFailureCode(error),
           message: error.message,
+          ...(error instanceof EngineUnavailableForTaskError
+            ? { ownerMessage: error.ownerMessage }
+            : {}),
           retryable: error.retryable,
         }),
       );
@@ -2198,7 +2202,7 @@ export async function piAgentDirectoryForOthersTasks(
 ): Promise<string> {
   const check = checkPiOthersHome({ environment, providerState: { kind: "ambient" } });
   if (!check.ok) {
-    throw new OpensteerError({ code: "forbidden", message: check.message });
+    throw new EngineUnavailableForTaskError(check.message);
   }
   const theirs =
     environment.PI_CODING_AGENT_DIR?.trim() || join(environment.HOME ?? homedir(), ".pi", "agent");

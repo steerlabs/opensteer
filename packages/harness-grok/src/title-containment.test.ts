@@ -123,7 +123,8 @@ process.stdout.write("Contained title\\n");
     try {
       await expect(adapter.startSession(context)).rejects.toMatchObject({
         code: "forbidden",
-        message:
+        message: "This engine is not available for this task.",
+        ownerMessage:
           "Grok starts with your own Grok settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
       });
     } finally {

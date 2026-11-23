@@ -134,6 +134,7 @@ import {
   type SupervisedProcess,
   linkDirectory,
   linkNames,
+  EngineUnavailableForTaskError,
   assertEngineMayRun,
   checkCodexOthersHome,
   engineConfiguration,
@@ -4451,7 +4452,7 @@ async function materializeCodexOthersHome(
 ): Promise<Readonly<Record<string, string>>> {
   const check = checkCodexOthersHome({ environment, providerState });
   if (!check.ok) {
-    throw new OpensteerError({ code: "forbidden", message: check.message });
+    throw new EngineUnavailableForTaskError(check.message);
   }
   if (check.mode !== "ambient") return environment;
   const othersHome = codexOthersHomeDirectory(providerState, check.sourceHome);

@@ -397,10 +397,11 @@ it("refuses others' tasks before starting Codex when the login is in the keyring
     own: false,
   });
   expect(keyring.startFailure).toBeInstanceOf(OpensteerError);
-  expect((keyring.startFailure as OpensteerError).code).toBe("forbidden");
-  expect((keyring.startFailure as OpensteerError).message).toContain(
-    'cli_auth_credentials_store = "file"',
-  );
+  expect(keyring.startFailure).toMatchObject({
+    code: "forbidden",
+    message: "This engine is not available for this task.",
+    ownerMessage: expect.stringContaining('cli_auth_credentials_store = "file"'),
+  });
   expect(keyring.requests).toHaveLength(0);
 
   const missingAuth = await codexRun({
@@ -409,8 +410,11 @@ it("refuses others' tasks before starting Codex when the login is in the keyring
     own: false,
   });
   expect(missingAuth.startFailure).toBeInstanceOf(OpensteerError);
-  expect((missingAuth.startFailure as OpensteerError).code).toBe("forbidden");
-  expect((missingAuth.startFailure as OpensteerError).message).toContain("auth.json");
+  expect(missingAuth.startFailure).toMatchObject({
+    code: "forbidden",
+    message: "This engine is not available for this task.",
+    ownerMessage: expect.stringContaining("auth.json"),
+  });
   expect(missingAuth.requests).toHaveLength(0);
 }, 120_000);
 

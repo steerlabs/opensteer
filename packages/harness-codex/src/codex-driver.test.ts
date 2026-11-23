@@ -2891,7 +2891,8 @@ describe("Codex app-server harness", () => {
       });
       await expect(fixture.adapter.startSession(fixture.context)).rejects.toMatchObject({
         code: "forbidden",
-        message: expect.stringContaining('cli_auth_credentials_store = "file"'),
+        message: "This engine is not available for this task.",
+        ownerMessage: expect.stringContaining('cli_auth_credentials_store = "file"'),
       });
       await fixture.adapter.close();
     });

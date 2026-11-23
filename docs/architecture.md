@@ -279,9 +279,12 @@ prefixes, credential commands, MCP servers) and reads none of their instructions
 the engine needs to sign in stays. An engine runs such a task only where an engine-lane test plants
 one of each kind in a temporary home and project and shows all three on the real engine. Otherwise
 `assertEngineMayRun`, in the same file, refuses it before any process starts, with code `forbidden`
-and one sentence, for example: "Cursor starts with your own Cursor settings, so it runs only tasks
-you started yourself that no connected agent or chat has written to." The Home offers every engine
-to every task and does not refuse by engine itself, so the Runner refuses. Background text (task
+and two audiences (`EngineUnavailableForTaskError`): the starting party (a connected agent, a chat
+reply, a delegation result, or a follow-up Run) reads only the neutral sentence `"This engine is not
+available for this task."` for every engine and every refusal reason, while the person on their own
+screens (task view, task list preview, and notifications) reads `ownerMessage` with the exact
+reason and what they can change. The Home offers every engine to every task and does not refuse by
+engine itself, so the Runner refuses. Background text (task
 naming and Auto-mode review) always starts without the person's configuration on every engine,
 using the Opensteer-owned home on Codex (refusing as unavailable when no file login is present or
 the active provider runs a credential program) and the others'-tasks folder on Pi (refusing as

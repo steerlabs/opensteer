@@ -2404,12 +2404,16 @@ describe("pi Thread naming", () => {
     try {
       await expect(
         piAgentDirectoryForOthersTasks({ HOME: ambientHome }, join(ambientHome, "others-dir")),
-      ).rejects.toThrow(
-        'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
-      );
+      ).rejects.toMatchObject({
+        code: "forbidden",
+        message: "This engine is not available for this task.",
+        ownerMessage:
+          'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
+      });
       await expect(fixture.adapter.startSession(ambientContext)).rejects.toMatchObject({
         code: "forbidden",
-        message:
+        message: "This engine is not available for this task.",
+        ownerMessage:
           'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
       });
       expect(

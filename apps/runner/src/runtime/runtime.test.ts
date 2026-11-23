@@ -5583,7 +5583,8 @@ describe("harness process environment", () => {
     )!;
     expect(failure.data).toMatchObject({
       code: "forbidden",
-      message: expect.stringContaining(
+      message: "This engine is not available for this task.",
+      ownerMessage: expect.stringContaining(
         "so it runs only tasks you started yourself that no connected agent or chat has written to.",
       ),
     });

@@ -62,6 +62,7 @@ import {
   type TriggerWatchActivationId,
 } from "@opensteer/core";
 import {
+  EngineUnavailableForTaskError,
   assertEngineMayRun,
   assertFreshProviderSessionContext,
   discoverModelServers,
@@ -3361,13 +3362,19 @@ export class RunnerRuntime {
           )
         : active.abort.signal.aborted
           ? { data: { status: "interrupted" }, type: "run.interrupted" }
-          : failureEvent(
-              safeMessage(error, this.#safeMessageOptions),
-              // A refusal reaches the Home as one, not as an execution error.
-              error instanceof OpensteerError && error.code === "forbidden"
-                ? "forbidden"
-                : "runner_execution_error",
-            );
+          : error instanceof EngineUnavailableForTaskError
+            ? failureEvent(
+                error.message,
+                "forbidden",
+                redactNetworkCredentials(error.ownerMessage, this.#safeMessageOptions.secrets),
+              )
+            : failureEvent(
+                safeMessage(error, this.#safeMessageOptions),
+                // A refusal reaches the Home as one, not as an execution error.
+                error instanceof OpensteerError && error.code === "forbidden"
+                  ? "forbidden"
+                  : "runner_execution_error",
+              );
     } finally {
       if (workspace && this.#skillObserver) {
         await this.#scanAgentHomeSkills(workspace.path, context.bindingGeneration).catch(
@@ -3450,7 +3457,7 @@ export class RunnerRuntime {
         // The logger names the line `message`; the reason is `detail`.
         this.#logger?.error("run.failed", {
           code: terminal.data.code,
-          detail: terminal.data.message,
+          detail: terminal.data.ownerMessage ?? terminal.data.message,
           driverKind: context.harness.driverKind,
           harnessInstanceId: context.harnessInstanceId,
           runId: context.runId,
@@ -4287,6 +4294,14 @@ function fittedDurableEvent(
             redactNetworkCredentials(event.data.message, secrets),
             runFailureMessageMaxLength,
           ),
+          ...(event.data.ownerMessage !== undefined
+            ? {
+                ownerMessage: fittedText(
+                  redactNetworkCredentials(event.data.ownerMessage, secrets),
+                  runFailureMessageMaxLength,
+                ),
+              }
+            : {}),
         },
       };
     default:
@@ -4445,11 +4460,12 @@ function fittedTail(text: string, truncated: boolean, maxBytes: number): string 
   return `…${text.slice(start).toWellFormed()}`;
 }
 
-function failureEvent(message: string, code: string): HarnessDurableEvent {
+function failureEvent(message: string, code: string, ownerMessage?: string): HarnessDurableEvent {
   return {
     data: {
       code,
       message,
+      ...(ownerMessage ? { ownerMessage } : {}),
       retryable: false,
       status: "failed",
     },

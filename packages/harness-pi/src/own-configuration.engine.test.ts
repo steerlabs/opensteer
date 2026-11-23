@@ -448,7 +448,8 @@ it("refuses others' tasks and background text before spawning Pi when models.jso
   const othersContext = await makeContext(false);
   await expect(adapter.startSession(othersContext)).rejects.toMatchObject({
     code: "forbidden",
-    message:
+    message: "This engine is not available for this task.",
+    ownerMessage:
       'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
   });
   expect(

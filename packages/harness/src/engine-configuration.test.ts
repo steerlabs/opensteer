@@ -35,16 +35,47 @@ it("refuses a task that is not the person's own only on an engine not shown to s
   const own = { personalContext: true, personLineage: true };
   for (const engine of ["claude", "pi"])
     expect(() => assertEngineMayRun(engine, others)).not.toThrow();
-  for (const [engine, label] of [
-    ["cursor", "Cursor"],
-    ["grok", "Grok"],
-    ["muse", "Muse Code"],
-    ["opencode", "OpenCode"],
-    ["antigravity", "Antigravity"],
+  const captureError = (fn: () => void) => {
+    try {
+      fn();
+    } catch (error) {
+      return error as Error & { code?: string; ownerMessage?: string };
+    }
+    throw new Error("Expected refusal");
+  };
+  for (const [engine, label, expectedOwnerMessage] of [
+    [
+      "cursor",
+      "Cursor",
+      "Cursor starts with your own Cursor settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+    ],
+    [
+      "grok",
+      "Grok",
+      "Grok starts with your own Grok settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+    ],
+    [
+      "muse",
+      "Muse Code",
+      "Muse Code starts with your own Muse Code settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+    ],
+    [
+      "opencode",
+      "OpenCode",
+      "OpenCode is not yet verified to keep your settings out of tasks a connected agent or chat started, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+    ],
+    [
+      "antigravity",
+      "Antigravity",
+      "Antigravity is not yet verified to keep your settings out of tasks a connected agent or chat started, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+    ],
   ] as const) {
-    expect(() => assertEngineMayRun(engine, others)).toThrow(
-      `${label} starts with your own ${label} settings, so it runs only tasks you started yourself that no connected agent or chat has written to.`,
-    );
+    const error = captureError(() => assertEngineMayRun(engine, others));
+    expect(error, label).toMatchObject({
+      code: "forbidden",
+      message: "This engine is not available for this task.",
+      ownerMessage: expectedOwnerMessage,
+    });
     expect(() => assertEngineMayRun(engine, own)).not.toThrow();
   }
 });
@@ -71,32 +102,51 @@ it("lets Codex run others' tasks only when an Opensteer home can share a file lo
     }),
   ).not.toThrow();
 
+  const expectRefusal = (fn: () => void, ownerPattern: RegExp | string) => {
+    let caught: (Error & { code?: string; ownerMessage?: string }) | undefined;
+    try {
+      fn();
+    } catch (error) {
+      caught = error as Error & { code?: string; ownerMessage?: string };
+    }
+    expect(caught).toMatchObject({
+      code: "forbidden",
+      message: "This engine is not available for this task.",
+      ownerMessage:
+        typeof ownerPattern === "string" ? ownerPattern : expect.stringMatching(ownerPattern),
+    });
+  };
+
   // Keyring store cannot be shared into another CODEX_HOME.
   const withKeyring = await makeCodexHome({
     auth: '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-stub"}',
     config: 'cli_auth_credentials_store = "keyring"\n',
   });
-  expect(() =>
-    assertEngineMayRun("codex", {
-      environment: { CODEX_HOME: withKeyring.codexHome },
-      personalContext: true,
-      personLineage: false,
-      providerState: { kind: "ambient" },
-    }),
-  ).toThrow(/cli_auth_credentials_store = "file"/u);
+  expectRefusal(
+    () =>
+      assertEngineMayRun("codex", {
+        environment: { CODEX_HOME: withKeyring.codexHome },
+        personalContext: true,
+        personLineage: false,
+        providerState: { kind: "ambient" },
+      }),
+    /cli_auth_credentials_store = "file"/u,
+  );
 
   // Missing auth.json refuses with guidance.
   const withoutAuth = await makeCodexHome({
     config: 'cli_auth_credentials_store = "auto"\n',
   });
-  expect(() =>
-    assertEngineMayRun("codex", {
-      environment: { CODEX_HOME: withoutAuth.codexHome },
-      personalContext: true,
-      personLineage: false,
-      providerState: { kind: "ambient" },
-    }),
-  ).toThrow(/auth\.json/u);
+  expectRefusal(
+    () =>
+      assertEngineMayRun("codex", {
+        environment: { CODEX_HOME: withoutAuth.codexHome },
+        personalContext: true,
+        personLineage: false,
+        providerState: { kind: "ambient" },
+      }),
+    /auth\.json/u,
+  );
 
   // Command-backed model provider auth refuses so no user command runs on an others' task.
   const withCommandAuth = await makeCodexHome({
@@ -109,14 +159,16 @@ it("lets Codex run others' tasks only when an Opensteer home can share a file lo
       'command = "corp-token"',
     ].join("\n"),
   });
-  expect(() =>
-    assertEngineMayRun("codex", {
-      environment: { CODEX_HOME: withCommandAuth.codexHome },
-      personalContext: true,
-      personLineage: false,
-      providerState: { kind: "ambient" },
-    }),
-  ).toThrow(/command/iu);
+  expectRefusal(
+    () =>
+      assertEngineMayRun("codex", {
+        environment: { CODEX_HOME: withCommandAuth.codexHome },
+        personalContext: true,
+        personLineage: false,
+        providerState: { kind: "ambient" },
+      }),
+    /command/iu,
+  );
 
   // Active AWS profile / Bedrock provider refuses so no ~/.aws credential_process or SSO helper runs.
   const withAwsProfile = await makeCodexHome({
@@ -130,17 +182,33 @@ it("lets Codex run others' tasks only when an Opensteer home can share a file lo
       'region = "us-east-1"',
     ].join("\n"),
   });
-  expect(() =>
-    assertEngineMayRun("codex", {
-      environment: { CODEX_HOME: withAwsProfile.codexHome },
-      personalContext: true,
-      personLineage: false,
-      providerState: { kind: "ambient" },
-    }),
-  ).toThrow(/AWS|credential/iu);
+  expectRefusal(
+    () =>
+      assertEngineMayRun("codex", {
+        environment: { CODEX_HOME: withAwsProfile.codexHome },
+        personalContext: true,
+        personLineage: false,
+        providerState: { kind: "ambient" },
+      }),
+    /AWS|credential/iu,
+  );
 });
 
 it("refuses Pi on others' tasks when models.json or auth.json contains a ! shell command", async () => {
+  const expectRefusal = (fn: () => void, ownerPattern: RegExp | string) => {
+    let caught: (Error & { code?: string; ownerMessage?: string }) | undefined;
+    try {
+      fn();
+    } catch (error) {
+      caught = error as Error & { code?: string; ownerMessage?: string };
+    }
+    expect(caught).toMatchObject({
+      code: "forbidden",
+      message: "This engine is not available for this task.",
+      ownerMessage:
+        typeof ownerPattern === "string" ? ownerPattern : expect.stringMatching(ownerPattern),
+    });
+  };
   const makePiHome = async (files: { readonly auth?: string; readonly models?: string }) => {
     const root = await mkdtemp(join(tmpdir(), "opensteer-pi-check-"));
     temporaryDirectories.push(root);
@@ -175,14 +243,16 @@ it("refuses Pi on others' tasks when models.json or auth.json contains a ! shell
   });
   const expectedSentence =
     'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.';
-  expect(() =>
-    assertEngineMayRun("pi", {
-      environment: { HOME: withModelsCommand.root },
-      personalContext: true,
-      personLineage: false,
-      providerState: { kind: "ambient" },
-    }),
-  ).toThrow(expectedSentence);
+  expectRefusal(
+    () =>
+      assertEngineMayRun("pi", {
+        environment: { HOME: withModelsCommand.root },
+        personalContext: true,
+        personLineage: false,
+        providerState: { kind: "ambient" },
+      }),
+    expectedSentence,
+  );
   // Own tasks still run with the person's Pi configuration.
   expect(() =>
     assertEngineMayRun("pi", {
@@ -203,28 +273,32 @@ it("refuses Pi on others' tasks when models.json or auth.json contains a ! shell
       },
     }),
   });
-  expect(() =>
-    assertEngineMayRun("pi", {
-      environment: { PI_CODING_AGENT_DIR: withHeaderCommand.agentDir },
-      personalContext: true,
-      personLineage: false,
-      providerState: { kind: "ambient" },
-    }),
-  ).toThrow(expectedSentence);
+  expectRefusal(
+    () =>
+      assertEngineMayRun("pi", {
+        environment: { PI_CODING_AGENT_DIR: withHeaderCommand.agentDir },
+        personalContext: true,
+        personLineage: false,
+        providerState: { kind: "ambient" },
+      }),
+    expectedSentence,
+  );
 
   const withAuthCommand = await makePiHome({
     auth: JSON.stringify({
       openai: { key: "!security find-generic-password -w", type: "api_key" },
     }),
   });
-  expect(() =>
-    assertEngineMayRun("pi", {
-      environment: { HOME: withAuthCommand.root },
-      personalContext: true,
-      personLineage: false,
-      providerState: { kind: "ambient" },
-    }),
-  ).toThrow(expectedSentence);
+  expectRefusal(
+    () =>
+      assertEngineMayRun("pi", {
+        environment: { HOME: withAuthCommand.root },
+        personalContext: true,
+        personLineage: false,
+        providerState: { kind: "ambient" },
+      }),
+    expectedSentence,
+  );
 
   // Isolated Pi profiles already own their agent folder.
   expect(() =>
@@ -238,12 +312,14 @@ it("refuses Pi on others' tasks when models.json or auth.json contains a ! shell
 
   // Unreadable/malformed JSON fails closed.
   const withBrokenJson = await makePiHome({ models: "{not-json" });
-  expect(() =>
-    assertEngineMayRun("pi", {
-      environment: { HOME: withBrokenJson.root },
-      personalContext: true,
-      personLineage: false,
-      providerState: { kind: "ambient" },
-    }),
-  ).toThrow(/models\.json/u);
+  expectRefusal(
+    () =>
+      assertEngineMayRun("pi", {
+        environment: { HOME: withBrokenJson.root },
+        personalContext: true,
+        personLineage: false,
+        providerState: { kind: "ambient" },
+      }),
+    /models\.json/u,
+  );
 });
