@@ -2098,6 +2098,57 @@ describe("real Chromium pages follow the person's view", () => {
     ]);
   }, 30_000);
 
+  /*
+   * Re-check 10, R5 on Linux: the renderer of the page in view crashes and the page is loaded
+   * again at the same size. Whatever Chrome does with the session's cast, the person gets a
+   * picture: from the cast if Chrome kept it, else once the time the follow view gives a first
+   * picture is up (R10) and it starts the cast again.
+   */
+  it("pictures a still page again after its renderer crashed and it reloaded at the same size", async () => {
+    const session = await startFollowSession({ path: "/plain" });
+    const root = session.rootSurfaceId;
+    await session.controller.handle({ type: "stream.subscribe" });
+    const size = { width: 900, height: 650 };
+    await session.follow(root, size);
+    await session.frameAt(root, size);
+    const binding = session.ledger.binding(root);
+    if (!binding) throw new Error("Missing the root page");
+    let crashed = false;
+    binding.cdp.on("Inspector.targetCrashed", () => {
+      crashed = true;
+    });
+    await binding.cdp.send("Inspector.enable");
+    const startsBefore = session.screencastStarts(root).length;
+    const stopsBefore = session
+      .commands(root)
+      .filter((entry) => entry.method === "Page.stopScreencast").length;
+    // The renderer dies; Chromium answers nothing from it.
+    void binding.cdp.send("Page.crash").catch(() => undefined);
+    await waitFor(() => crashed);
+    const reloadedAt = performance.now();
+    await rootCdpNavigate(session.ledger, root, `${session.origin}/plain`);
+    await session.loaded(root);
+    const frame = await session.frameAt(root, size, reloadedAt);
+    const follow = (
+      session.controller as unknown as {
+        readonly screencast: { readonly diagnostics: ReadonlyArray<{ readonly stage: string }> };
+      }
+    ).screencast.diagnostics;
+    followReport.rendererCrash = {
+      // What Chrome did with the cast, as the follow view saw it.
+      castsStartedAfter: session.screencastStarts(root).length - startsBefore,
+      castsStoppedAfter:
+        session.commands(root).filter((entry) => entry.method === "Page.stopScreencast").length -
+        stopsBefore,
+      firstFrameTimeouts: follow.filter((entry) => entry.stage === "cast-first-frame-timeout")
+        .length,
+      pictureAfterMs: Math.round(frame.at - reloadedAt),
+      passed: true,
+    };
+    expect(frame.header).toMatchObject({ viewportHeight: 650, viewportWidth: 900 });
+    expect(session.errors()).toEqual([]);
+  }, 30_000);
+
   it("pictures a tab whose dialog waits as soon as the list showing it again goes out", async () => {
     const directory = join(
       process.env.OPENSTEER_BROWSER_FOLLOW_E2E_ARTIFACT_DIR ??
