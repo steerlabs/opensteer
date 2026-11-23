@@ -93,8 +93,9 @@ export function assertAgentRequestAnswer(
 async function connectionRequestsQuery(
   tx: Transaction<DatabaseSchema>,
   authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
+  options?: { readonly ownerVerified?: boolean },
 ) {
-  await requirePersonalOwner(tx, authority.userId);
+  if (!options?.ownerVerified) await requirePersonalOwner(tx, authority.userId);
   const scope = await connectionTaskRequestScope(tx, authority);
 
   return tx
@@ -189,8 +190,9 @@ async function connectionRequestsQuery(
 export async function connectionRequests(
   tx: Transaction<DatabaseSchema>,
   authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
+  options?: { readonly ownerVerified?: boolean },
 ): Promise<SelectQueryBuilder<{ readonly requests: RequestRow }, "requests", RequestRow>> {
-  const scoped = await connectionRequestsQuery(tx, authority);
+  const scoped = await connectionRequestsQuery(tx, authority, options);
   return tx.selectFrom(scoped.as("requests")).selectAll("requests");
 }
 
@@ -257,27 +259,6 @@ export async function readPendingConnectionRequest(
     .orderBy("requests.createdAt", "asc")
     .limit(1)
     .executeTakeFirst();
-}
-
-/**
- * Of `requestIds`, the ones this connection may know of: one read with the same origin predicate
- * as every other Request a connection is told about.
- */
-export function visibleConnectionRequestIds(
-  database: Kysely<DatabaseSchema>,
-  authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
-  requestIds: readonly RequestId[],
-): Promise<ReadonlySet<RequestId>> {
-  if (!requestIds.length) return Promise.resolve(new Set());
-  return withPersonalReadTransaction(database, async (tx) => {
-    const query = await connectionRequestsQuery(tx, authority);
-    const rows = await query
-      .clearSelect()
-      .select("requests.id")
-      .where("requests.id", "in", [...new Set(requestIds)])
-      .execute();
-    return new Set(rows.map(({ id }) => RequestIdSchema.parse(id)));
-  });
 }
 
 export function countPendingConnectionRequests(

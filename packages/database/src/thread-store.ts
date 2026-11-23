@@ -805,6 +805,7 @@ export async function agentThreadPageForOwner(
     readonly nativeOnly?: boolean;
     readonly done?: boolean;
     readonly hasPendingRequests?: boolean;
+    readonly omitPendingRequests?: boolean;
     readonly connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
   },
 ): Promise<AgentThreadListPage> {
@@ -825,9 +826,13 @@ export async function agentThreadPageForOwner(
     database,
     async (transaction) => {
       await requirePersonalOwner(transaction, input.ownerId);
-      const visibleRequests = input.connectionAuthority
-        ? await connectionRequests(transaction, input.connectionAuthority)
-        : undefined;
+      const visibleRequests =
+        input.connectionAuthority &&
+        (since !== null || input.hasPendingRequests !== undefined || !input.omitPendingRequests)
+          ? await connectionRequests(transaction, input.connectionAuthority, {
+              ownerVerified: true,
+            })
+          : undefined;
       const lineageRootThreadId =
         scope.kind === "lineage"
           ? (
@@ -964,7 +969,7 @@ export async function agentThreadPageForOwner(
               .whereRef("visibleParent.id", "=", "threads.parentThreadId")
               .as("parentThreadId"),
           )
-          .$if(visibleRequests !== undefined, (query) =>
+          .$if(visibleRequests !== undefined && !input.omitPendingRequests, (query) =>
             query.select((eb) =>
               eb
                 .selectFrom(visibleRequests!.as("visible_requests"))
@@ -974,7 +979,7 @@ export async function agentThreadPageForOwner(
                 .as("pendingRequests"),
             ),
           )
-          .$if(visibleRequests === undefined, (query) =>
+          .$if(visibleRequests === undefined && !input.omitPendingRequests, (query) =>
             query.select(threadPendingRequestsSelection),
           )
           .select([

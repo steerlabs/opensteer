@@ -1402,6 +1402,7 @@ export class OpensteerStore {
     readonly nativeOnly?: boolean;
     readonly done?: boolean;
     readonly hasPendingRequests?: boolean;
+    readonly omitPendingRequests?: boolean;
     readonly connectionAuthority?: Extract<
       import("./thread-caller.js").ThreadCallerAuthority,
       { kind: "connection" }

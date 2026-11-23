@@ -846,4 +846,188 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       (pendingTasks.structuredContent as { tasks: { id: string }[] }).tasks.map(({ id }) => id),
     ).not.toContain(unavailableTask);
   });
+
+  it("applies connectionRequests inside SQL before pending caps and activity paging, matching absence byte-for-byte", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("lineage-sql-paging-and-caps");
+    const runScopes: Record<string, RunToolScope> = {};
+    const url = await serveMcp(storeFixture, { runScopes });
+    const agentA = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+    });
+    const agentB = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: tasksOnly,
+    });
+    const taskA = await createTask(agentA, f, "r5-reader");
+    const taskB = await createTask(agentB, f, "r5-pending-cap");
+    const runA = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, taskA)).id,
+    );
+    const runB = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, taskB)).id,
+    );
+    runScopes["r5-run-a"] = fixtureRunScope({ ...f, ...runA, threadId: taskA });
+    const clientA = await runClient(url, "r5-run-a");
+    const callA = (name: string, arguments_: Record<string, unknown>) =>
+      clientA.callTool({ name, arguments: arguments_ });
+
+    const questionPresentation = (title: string) => ({
+      kind: "form" as const,
+      title,
+      fields: [{ id: "answer", prompt: "Ready?", secret: false, custom: true, multiSelect: false }],
+    });
+
+    // 1. 26 earlier hidden pending Requests from connection B + 1 newer visible pending Request
+    // (person automation, no connection asker): visible Request must survive the 25-row cap.
+    for (let i = 0; i < 26; i++) {
+      await storeFixture.store.requests.create({
+        callId: `r5-hidden-pending-${i}`,
+        kind: "person.question",
+        mode: "durable",
+        originatingRunId: runB.runId,
+        originatingThreadId: taskB,
+        requestedBy: f.userId,
+        requiredActor: "requester",
+        payload: { kind: "person.question" },
+        presentation: questionPresentation(`Hidden ${i}`),
+      });
+    }
+    const triggers = new TriggerStore(storeFixture.database);
+    const automation = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: taskB,
+      createdBy: f.userId,
+      idempotencyKey: "r5-person-automation-on-b",
+      name: "Person automation on B",
+      program: {
+        language: "javascript",
+        source: "export default async () => null",
+        toolContractVersion: 5,
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: f.userId,
+      triggerId: automation.trigger.id,
+    });
+    await storeFixture.store.claimCommand(occurrence.commandId, "r5-occurrence");
+    await triggers.startExecution({
+      runnerId: f.runnerId,
+      runnerBootId: f.runnerBootId,
+      commandId: occurrence.commandId,
+    });
+    const visiblePending = await storeFixture.store.requests.create({
+      callId: "r5-visible-pending",
+      kind: "person.question",
+      mode: "durable",
+      originatingOccurrenceId: occurrence.id,
+      originatingThreadId: taskB,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: questionPresentation("Visible after 26 hidden"),
+    });
+
+    const cappedRead = await callA("opensteer_task_read", { taskId: taskB });
+    expect(cappedRead.isError, JSON.stringify(cappedRead.content)).not.toBe(true);
+    const cappedBody = cappedRead.structuredContent as {
+      task: { pendingRequests: number };
+      pendingRequests?: { id: string }[];
+    };
+    expect(cappedBody.task.pendingRequests).toBe(1);
+    expect(cappedBody.pendingRequests?.map(({ id }) => id)).toEqual([visiblePending.request.id]);
+
+    // 2. Default (messagesOnly) and activity views: a newer hidden person.question from B must
+    // neither appear nor shorten/split pages or change page bytes compared to its absence.
+    const taskBActivity = await createTask(agentB, f, "r5-activity-paging");
+    const runBActivity = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, taskBActivity)).id,
+    );
+    await storeFixture.store.enqueueThreadInput({
+      threadId: taskBActivity,
+      requestedBy: f.userId,
+      policy: "report",
+      content: [{ type: "text", text: "Second visible message" }],
+      source: { kind: "human" },
+      idempotencyKey: "r5-second-visible-message",
+    });
+
+    const pageSlice = (result: Awaited<ReturnType<typeof callA>>) => {
+      const body = result.structuredContent as {
+        items: unknown[];
+        hasMore: boolean;
+        nextBefore: string | null;
+      };
+      return { items: body.items, hasMore: body.hasMore, nextBefore: body.nextBefore };
+    };
+
+    const baseDefault = await callA("opensteer_task_read", { taskId: taskBActivity, limit: 2 });
+    expect(baseDefault.isError, JSON.stringify(baseDefault.content)).not.toBe(true);
+    expect(pageSlice(baseDefault).items).toHaveLength(2);
+    expect(pageSlice(baseDefault).hasMore).toBe(false);
+
+    const baseActivity = await callA("opensteer_task_read", {
+      taskId: taskBActivity,
+      view: "activity",
+      limit: 2,
+    });
+    expect(baseActivity.isError, JSON.stringify(baseActivity.content)).not.toBe(true);
+    expect(pageSlice(baseActivity).items).toHaveLength(2);
+    expect(pageSlice(baseActivity).hasMore).toBe(false);
+
+    const hiddenActivityReq = await storeFixture.store.requests.create({
+      callId: "r5-hidden-activity-question",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: runBActivity.runId,
+      originatingThreadId: taskBActivity,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: questionPresentation("Hidden newest question"),
+    });
+
+    const afterDefault = await callA("opensteer_task_read", { taskId: taskBActivity, limit: 2 });
+    expect(afterDefault.isError, JSON.stringify(afterDefault.content)).not.toBe(true);
+    expect(afterDefault.structuredContent).not.toHaveProperty("pendingRequests");
+    expect(JSON.stringify(afterDefault.structuredContent)).not.toContain(
+      hiddenActivityReq.request.id,
+    );
+    expect(JSON.stringify(pageSlice(afterDefault))).toBe(JSON.stringify(pageSlice(baseDefault)));
+
+    const afterActivity = await callA("opensteer_task_read", {
+      taskId: taskBActivity,
+      view: "activity",
+      limit: 2,
+    });
+    expect(afterActivity.isError, JSON.stringify(afterActivity.content)).not.toBe(true);
+    expect(JSON.stringify(afterActivity.structuredContent)).not.toContain(
+      hiddenActivityReq.request.id,
+    );
+    expect(JSON.stringify(pageSlice(afterActivity))).toBe(JSON.stringify(pageSlice(baseActivity)));
+
+    expect(
+      await callA("opensteer_task_read", {
+        taskId: taskBActivity,
+        itemId: hiddenActivityReq.request.id,
+      }),
+    ).toEqual(
+      await callA("opensteer_task_read", {
+        taskId: taskBActivity,
+        itemId: createId("request"),
+      }),
+    );
+  });
 });

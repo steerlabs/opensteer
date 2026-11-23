@@ -23,7 +23,6 @@ import {
   readAssignmentResult,
   readConnectionChildResult,
   countPendingConnectionRequests,
-  visibleConnectionRequestIds,
   beginAssignmentResultWait,
   endAssignmentResultWait,
   withoutDatabaseOperationSignal,
@@ -505,6 +504,7 @@ export class ProductToolHandlers {
         ? {}
         : { hasPendingRequests: input.hasPendingRequests }),
       ...(connectionAuthority ? { connectionAuthority } : {}),
+      ...(caller.kind === "connection" ? { omitPendingRequests: true } : {}),
       scope,
       ...(caller.kind === "connection" ? { nativeOnly: true } : {}),
       scopeId: caller.kind === "connection" ? caller.key : callerThread(caller).id,
@@ -586,18 +586,8 @@ export class ProductToolHandlers {
     const recentPlaces = (await this.#readableTabPlaces(caller, references))
       .slice(0, 10)
       .map(({ runId, tabId, title, site }) => ({ runId, tabId, title, site }));
-    const visiblePending =
-      connectionAuthority && recent.pendingRequests?.length
-        ? await visibleConnectionRequestIds(
-            this.#store.database,
-            connectionAuthority,
-            recent.pendingRequests.map((request) => request.id),
-          )
-        : undefined;
     const pendingRequests = boundedThreadItems(
-      (recent.pendingRequests ?? [])
-        .filter((request) => !visiblePending || visiblePending.has(request.id))
-        .map((request) => agentRequest(request, "list")),
+      (recent.pendingRequests ?? []).map((request) => agentRequest(request, "list")),
       64 * 1024,
     );
     const context = {
@@ -712,10 +702,12 @@ export class ProductToolHandlers {
     nodeId?: import("@opensteer/core").ExecutionNodeId,
     messagesOnly?: boolean,
   ) {
+    const connectionAuthority = connectionAuthorityForLineage(caller);
     const page = await readAgentThreadActivity(this.#store.database, {
       threadId,
       ownerId: caller.userId,
       limit: input.itemId ? 1 : input.limit,
+      ...(connectionAuthority ? { connectionAuthority } : {}),
       ...(nodeId
         ? { nodeId, messagesOnly: input.view !== "activity" && !input.itemId }
         : messagesOnly
@@ -750,15 +742,6 @@ export class ProductToolHandlers {
         page.items.flatMap((item) => (item.type === "message" ? [item.message] : [])),
       ),
     ]);
-    // One read for every Request item, with the predicate that decides all a connection learns of.
-    const connectionAuthority = connectionAuthorityForLineage(caller);
-    const visibleRequests = connectionAuthority
-      ? await visibleConnectionRequestIds(
-          this.#store.database,
-          connectionAuthority,
-          page.items.flatMap((item) => ("requestId" in item ? [item.requestId] : [])),
-        )
-      : undefined;
     const readablePlaces = new Set(places.map((place) => place.id));
     const readableMessages = new Map(messages.map((message) => [message.id, message]));
     const mapped = page.items.flatMap<{
@@ -776,8 +759,6 @@ export class ProductToolHandlers {
             ]
           : [];
       }
-      if (connectionAuthority && "requestId" in item && !visibleRequests?.has(item.requestId))
-        return [];
       const machineId = machineOf(item);
       if (machineId && owners.get(machineId)?.effectiveOwner !== caller.userId) return [];
       if (item.type === "place.entered" && !readablePlaces.has(item.id)) return [];

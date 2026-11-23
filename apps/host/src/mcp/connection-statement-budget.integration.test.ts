@@ -118,9 +118,9 @@ describeStore("a connected agent's reads stay within their statement budgets", (
         for (const id of requestIds) expect(JSON.stringify(warm.structuredContent)).toContain(id);
       counts[name] = (await statements(call)).length;
     }
-    // One live check per discover call; one read each for a child's delegation and for the
-    // Request items of a task read (27, about 60 and 47 before). A task read no longer reads
-    // its messages' team sources (33 before teams went).
-    expect(counts).toEqual({ discover: 22, childWait: 36, taskRead: 32 });
+    // One live check per discover call; one read for a child's delegation; Request visibility
+    // is folded into the task read's recent and activity SQL (27, about 60 and 47 before; 32
+    // before moving connectionRequests into SQL removed post-hoc visibleConnectionRequestIds).
+    expect(counts).toEqual({ discover: 22, childWait: 36, taskRead: 28 });
   });
 });
