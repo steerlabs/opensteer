@@ -125,6 +125,7 @@ export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<voi
       where status = 'linked' and linked_user_id is not null;
 
     -- The routes and everything only they used.
+    drop index if exists thread_inputs_current_channel_binding;
     drop table channel_deliveries;
     drop table channel_access_grants;
     drop table channel_link_codes;

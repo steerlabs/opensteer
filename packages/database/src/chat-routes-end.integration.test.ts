@@ -77,7 +77,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
     const { thread: under } = await create("under-anyone", { parentThreadId: anyone });
     const { thread: own } = await create("own-dm");
     await restoreRoutes(database);
-    const route = createChannelId("binding");
+    const route = `chb_${crypto.randomUUID()}`;
     await sql`insert into channel_bindings (id, account_id, created_by, selector, execution_policy,
         access_policy, revision, status)
       values (${route}, ${configured.account.id}, ${fixture.userId}, '{}'::jsonb, '{}'::jsonb,
@@ -355,7 +355,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
         .where("id", "=", row.id as never)
         .execute();
     await restoreRoutes(database);
-    const route = createChannelId("binding");
+    const route = `chb_${crypto.randomUUID()}`;
     await sql`insert into channel_bindings (id, account_id, created_by, selector, execution_policy,
         access_policy, revision, status)
       values (${route}, ${configured.account.id}, ${fixture.userId}, '{}'::jsonb, '{}'::jsonb,

@@ -544,7 +544,6 @@ export class ChannelService {
       claimToken: claim.claimToken,
       delivery: claim.delivery,
       destination: claim.destination,
-      mayHaveBeenSent: claim.mayHaveBeenSent,
       lease: {
         accountId: claim.delivery.accountId,
         externalAccountId: claim.externalAccountId,

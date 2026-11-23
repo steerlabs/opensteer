@@ -110,7 +110,6 @@ interface ClaimedDeliveryRecord {
   };
   readonly externalAccountId: string;
   /** The previous attempt lost its outcome, so the provider may already hold this message. */
-  readonly mayHaveBeenSent: boolean;
 }
 
 const atIngressLaneHead = sql<boolean>`not exists (
@@ -1158,8 +1157,6 @@ export class ChannelStore {
           externalUserId: null,
         },
         externalAccountId: row.externalAccountId,
-        // Never: a send that may have happened is not handed out again.
-        mayHaveBeenSent: false,
       };
     });
   }
