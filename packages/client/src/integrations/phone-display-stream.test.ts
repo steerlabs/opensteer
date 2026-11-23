@@ -1336,20 +1336,52 @@ describe("display editing receipt adapter", () => {
     });
     socket.json({ type: "display.input.result", sequence: 0, outcome: "stale", reason: "stale" });
     await expect(batch).rejects.toThrow("changed");
-    // A dependent group whose paste exceeds one batch (64 events) is refused whole, never split.
+    // O1: a dependent group whose trailing paste exceeds one frame sends the deletion atomically
+    // first, never sends the paste if the deletion is refused, and chunks the paste once dispatched.
     const huge = "a".repeat(65 * 4096);
+    const hugeOp = [
+      { kind: "edit" as const, edit: { contextId, before: "world", after: "", text: "" } },
+      {
+        kind: "paste" as const,
+        items: [{ type: "text/plain" as const, bytes: new TextEncoder().encode(huge) }],
+        contextId,
+        follows: true as const,
+      },
+    ];
+    const staleHuge = editing.sendBatch(hugeOp);
+    expect(socket.messages("display.input")).toHaveLength(2);
+    expect(socket.messages("display.input")[1]).toMatchObject({
+      events: [{ kind: "edit", edit: { contextId, before: "world", after: "", text: "" } }],
+    });
+    socket.json({ type: "display.input.result", sequence: 1, outcome: "stale", reason: "stale" });
+    await expect(staleHuge).rejects.toThrow("changed");
+    expect(socket.messages("display.input")).toHaveLength(2);
+
+    const okHuge = editing.sendBatch(hugeOp);
+    expect(socket.messages("display.input")).toHaveLength(3);
+    socket.json({ type: "display.input.result", sequence: 2, outcome: "dispatched" });
+    await Promise.resolve();
+    const afterDispatch = socket.messages("display.input");
+    expect(afterDispatch.length).toBeGreaterThan(3);
+    for (let seq = 3; seq < afterDispatch.length; seq++) {
+      socket.json({ type: "display.input.result", sequence: seq, outcome: "dispatched" });
+    }
+    await expect(okHuge).resolves.toBeUndefined();
+
+    // Any over-large non-paste dependent group (>64 events) is still refused whole, never split.
+    const countBefore = socket.messages("display.input").length;
     await expect(
       editing.sendBatch([
         { kind: "edit", edit: { contextId, before: "world", after: "", text: "" } },
-        {
-          kind: "paste",
-          items: [{ type: "text/plain", bytes: new TextEncoder().encode(huge) }],
+        ...Array.from({ length: 64 }, () => ({
+          kind: "command" as const,
+          command: "moveBackward" as const,
           contextId,
-          follows: true,
-        },
+          follows: true as const,
+        })),
       ]),
     ).rejects.toThrow("large");
-    expect(socket.messages("display.input")).toHaveLength(1);
+    expect(socket.messages("display.input")).toHaveLength(countBefore);
     editing.dispose();
   });
   it("reports sent paste and cut as unknown (never Try again) on 10 s timeout and resize, while unsent ones and copies may still say Try again", async () => {

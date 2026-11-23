@@ -999,6 +999,38 @@ describe("a composition the transport refused", () => {
     expect(step.operations).toMatchObject([{ kind: "compose", composition: { text: "abcd" } }]);
     expect(step.operations[0]).not.toHaveProperty("composition.before");
   });
+  it("resets the mirror when a non-compose paste or edit in the current context is refused", () => {
+    let { state } = replay(
+      [
+        { type: "context", context },
+        { type: "beforeinput", inputType: "insertText", data: "hello" },
+        input("hello"),
+      ],
+      "ios",
+    );
+    expect(state.proxy.value).toBe("hello");
+    const stale = reduceEditing(state, {
+      type: "refused",
+      operation: {
+        kind: "paste",
+        contextId: "00000000-0000-4000-8000-000000000099",
+        items: [{ type: "text/plain", bytes: new TextEncoder().encode("old") }],
+      },
+    });
+    expect(stale.state.proxy.value).toBe("hello");
+    expect(stale.instruction.set).toBeUndefined();
+
+    const step = reduceEditing(stale.state, {
+      type: "refused",
+      operation: {
+        kind: "paste",
+        contextId: context.contextId,
+        items: [{ type: "text/plain", bytes: new TextEncoder().encode("huge") }],
+      },
+    });
+    expect(step.state.proxy).toEqual({ value: "", selectionStart: 0, selectionEnd: 0 });
+    expect(step.instruction.set).toEqual({ value: "", selectionStart: 0, selectionEnd: 0 });
+  });
 });
 
 // CW9 (CT8): a paste over a selection is pasted whole or refused whole. Where the selection's

@@ -1367,22 +1367,23 @@ describe("a person's caret moves and selections in the native field", () => {
     const fresh = () => `00000000-0000-4000-8000-${String(200000000000 + ++ids).slice(-12)}`;
     let focused: FarField = opened.remote;
     focused.nextContextId = fresh;
+    const macObserved = (value: string, caret: number) => ({
+      location: caret,
+      length: 0,
+      text: EditingContexts.trimmedTail(value.slice(0, caret)),
+    });
     const initMacState = (field: FarField) => {
       if (mac !== "after") return;
       field.exactNamed = false;
       // P4(b)/(c): track baseline observed state and mark the initial published context.
-      field.contexts.observeState(field.fieldIdentity, {
-        location: field.caret,
-        length: 0,
-        text: field.value,
-      });
+      field.contexts.observeState(field.fieldIdentity, macObserved(field.value, field.caret));
       field.contexts.markPublished();
     };
     initMacState(focused);
     let macPendingObservation: {
       field: FarField;
-      pre: { location: number; length: number; text: string };
-      post: { location: number; length: number; text: string };
+      pre: { location: number; length: number; text: string | null };
+      post: { location: number; length: number; text: string | null };
     } | null = null;
     const segment = (field: FarField, first: number): Segment => {
       const start = { text: field.value, caret: field.caret };
@@ -1610,8 +1611,9 @@ describe("a person's caret moves and selections in the native field", () => {
           ? { ...made, contextId: crypto.randomUUID() }
           : made;
       if (sent0 !== made) entry.operation = sent0;
-      const macPre =
-        mac === "after" ? { location: focused.caret, length: 0, text: focused.value } : null;
+      const macPreValue = focused.value;
+      const macPreCaret = focused.caret;
+      const macPre = mac === "after" ? macObserved(macPreValue, macPreCaret) : null;
       const result = focused.take(sent0);
       if (sabotage === "double") focused.take(made);
       if (sabotage === "shift") focused.caret = off(focused);
@@ -1656,12 +1658,79 @@ describe("a person's caret moves and selections in the native field", () => {
         opened.renew(focused.contextId!);
         republish = true;
       } else if (mac === "after" && applied(entry) && macPre) {
-        const post = { location: focused.caret, length: 0, text: focused.value };
-        const predictable =
-          made.kind === "edit" ||
-          made.kind === "paste" ||
-          (made.kind === "command" && caretRelativeEditingCommands.has(made.command));
-        if (predictable) focused.contexts.expectOwnEffect(post);
+        // O6: predict from pre-edit state + operation (matching MacOwnerInput), never from post.
+        const base = focused.contexts.predictedState;
+        if (base) {
+          const predictDeleteOrBack = () => {
+            if (base.location <= 0) return;
+            const lastGrapheme = base.text ? [...splitGraphemes(base.text)].at(-1) : undefined;
+            if (!lastGrapheme) return;
+            const nextLocation = Math.max(0, base.location - lastGrapheme.length);
+            const nextTail =
+              base.location <= EditingContexts.tailWindow
+                ? base.text!.slice(0, base.text!.length - lastGrapheme.length)
+                : EditingContexts.trimmedTail(macPreValue.slice(0, nextLocation));
+            focused.contexts.expectOwnEffect({
+              location: nextLocation,
+              length: 0,
+              text: nextTail,
+            });
+          };
+          if (
+            made.kind === "key" &&
+            made.keystroke.action === "down" &&
+            made.keystroke.text &&
+            made.keystroke.modifiers.every((modifier) => modifier === "shift")
+          ) {
+            const text = made.keystroke.text;
+            focused.contexts.expectOwnEffect({
+              location: base.location + text.length,
+              length: 0,
+              text: base.text != null ? EditingContexts.trimmedTail(base.text + text) : null,
+            });
+          } else if (made.kind === "paste") {
+            const text = inserted(made) ?? "";
+            focused.contexts.expectOwnEffect({
+              location: base.location + text.length,
+              length: 0,
+              text: base.text != null ? EditingContexts.trimmedTail(base.text + text) : null,
+            });
+          } else if (made.kind === "edit") {
+            if (!made.edit.before && !made.edit.after) {
+              if (!made.edit.text) {
+                predictDeleteOrBack();
+              } else {
+                const text = made.edit.text;
+                focused.contexts.expectOwnEffect({
+                  location: base.location + text.length,
+                  length: 0,
+                  text: base.text != null ? EditingContexts.trimmedTail(base.text + text) : null,
+                });
+              }
+            } else {
+              const replaceStart = macPreCaret - made.edit.before.length;
+              const prefixCount = Math.min(
+                replaceStart,
+                Math.max(0, EditingContexts.tailWindow - made.edit.text.length),
+              );
+              const prefix = macPreValue.slice(replaceStart - prefixCount, replaceStart);
+              focused.contexts.expectOwnEffect({
+                location: replaceStart + made.edit.text.length,
+                length: 0,
+                text: EditingContexts.trimmedTail(prefix + made.edit.text),
+              });
+            }
+          } else if (made.kind === "command") {
+            if (made.command === "moveForward") {
+              focused.contexts.expectMoveForward(
+                macPreValue.slice(macPreCaret, macPreCaret + EditingContexts.tailWindow),
+              );
+            } else if (made.command === "moveBackward" || made.command === "deleteBackward") {
+              predictDeleteOrBack();
+            }
+          }
+        }
+        const post = macObserved(focused.value, focused.caret);
         if (next() < 0.5) {
           // App has not caught up yet: observing pre-edit state rotates nothing; post arrives next step.
           const changed = focused.contexts.observeState(focused.fieldIdentity, macPre);
@@ -1774,7 +1843,7 @@ describe("a person's caret moves and selections in the native field", () => {
             macPendingObservation = null;
             focused.contexts.observeState(
               focused.fieldIdentity,
-              { location: focused.caret, length: 0, text: focused.value },
+              macObserved(focused.value, focused.caret),
               true,
             );
             focused.contexts.markPublished();

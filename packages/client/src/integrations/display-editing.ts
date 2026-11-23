@@ -9,6 +9,7 @@ import type { ViewerClipboardResult } from "../host/browser-editing.js";
 import { mergeDisplayInput } from "./display-input.js";
 import {
   DisplayInputTooLargeError,
+  maxDisplayInputBytes,
   maxDisplayInputEvents,
   type DisplayEditingMessage,
   type DisplayLease,
@@ -295,27 +296,44 @@ export class DisplayEditingSession {
     );
   };
   /**
-   * P2 (M2 & S2): sends a group of dependent operations (e.g. selection removal, compensating
+   * P2 (M2 & S2) + O1: sends a group of dependent operations (e.g. selection removal, compensating
    * moves, replacement paste/edit) in ONE atomic `display.input` batch so the receiver stops at
-   * the first refusal and never applies follow-up operations alone. Never splits a dependent group
-   * across batches: if it cannot fit in one batch it is refused whole as `too-large`.
+   * the first refusal and never applies follow-up operations alone. If a group exceeds one batch ONLY
+   * because its trailing paste is larger than one frame, sends the prefix atomically first and
+   * chunks the paste only after the prefix dispatches; any other over-large group is refused whole.
    */
   sendBatch = async (
     operations: readonly EditingOperation[],
   ): Promise<ViewerClipboardResult | undefined> => {
     if (operations.length === 0) return undefined;
     if (operations.length === 1) return this.send(operations[0]!);
-    const events: DisplayInputEvent[] = [];
-    let copy = false;
-    for (const operation of operations) {
-      if (!this.#scope && operation.kind === "key" && operation.keystroke.action === "up") continue;
-      if (operation.kind === "copy" || operation.kind === "cut") copy = true;
-      events.push(...this.#mapOperation(operation));
-    }
+    const groups = operations.map((operation) =>
+      !this.#scope && operation.kind === "key" && operation.keystroke.action === "up"
+        ? []
+        : this.#mapOperation(operation),
+    );
+    const events = groups.flat();
     if (!events.length) return undefined;
-    if (events.length > maxDisplayInputEvents)
-      throw this.#refuse("too-large", refusalWords["too-large"]);
-    return this.input(this.#geometry, events, copy, true);
+    const copy = operations.some((op) => op.kind === "copy" || op.kind === "cut");
+    const geometry = this.#geometry;
+    const fitsOneBatch = (items: readonly DisplayInputEvent[]) =>
+      items.length <= maxDisplayInputEvents &&
+      new TextEncoder().encode(
+        JSON.stringify({
+          type: "display.input",
+          geometry: geometry ?? 0,
+          sequence: Number.MAX_SAFE_INTEGER,
+          events: items,
+        }),
+      ).byteLength <= maxDisplayInputBytes;
+    if (fitsOneBatch(events)) return this.input(geometry, events, copy, true);
+    const last = operations.at(-1)!;
+    const prefix = groups.slice(0, -1).flat();
+    if (last.kind === "paste" && prefix.length > 0 && fitsOneBatch(prefix)) {
+      await this.input(geometry, prefix, copy, true);
+      return this.send(last);
+    }
+    throw this.#refuse("too-large", refusalWords["too-large"]);
   };
   input(
     geometry: number | null,

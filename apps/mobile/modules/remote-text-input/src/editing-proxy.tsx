@@ -36,6 +36,7 @@ const nativeBrowserAbilities: EditingTargetAbilities = {
 export interface NativeEditingProxyHandle {
   cancel(): void;
   interrupt(type?: "pointerdown" | "blur"): void;
+  refused(operation: EditingOperation): void;
 }
 
 /** Browser, phone and Mac viewers feed the same native event adapter. */
@@ -210,6 +211,10 @@ export function NativeEditingProxy({
         setInstruction(result.instruction);
         if (nativeComposing.current) requestFinish((previous) => previous + 1);
         setPreedit("");
+      },
+      refused(operation: EditingOperation) {
+        const result = step({ type: "refused", operation });
+        if (result.instruction.set) setInstruction(result.instruction);
       },
     }),
     [step],

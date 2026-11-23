@@ -145,7 +145,13 @@ export function RemoteEditingProxy({
    * to the reducer, which sends a composition it carried again as a fresh start in the same field.
    */
   const refused = useCallback((operation: EditingOperation) => {
-    state.current = reduceEditing(state.current, { type: "refused", operation }).state;
+    const step = reduceEditing(state.current, { type: "refused", operation });
+    state.current = step.state;
+    const set = step.instruction.set;
+    if (set && alive.current && !state.current.composition && element.current) {
+      element.current.value = set.value;
+      element.current.setSelectionRange(set.selectionStart, set.selectionEnd);
+    }
   }, []);
   const perform = useCallback(
     (operation: EditingOperation) => {
@@ -336,7 +342,7 @@ export function RemoteEditingProxy({
             .then(() => {
               setTimeout(() => {
                 if (pendingNativePaste.current?.id === id) pendingNativePaste.current = null;
-              }, 0);
+              }, 250);
             })
             .catch((reason) => {
               if (pendingNativePaste.current?.id === id) pendingNativePaste.current = null;
@@ -491,7 +497,7 @@ export function RemoteEditingProxy({
                       setTimeout(() => {
                         if (pendingNativePaste.current?.id === id)
                           pendingNativePaste.current = null;
-                      }, 0);
+                      }, 250);
                     })
                     .catch((reason) => {
                       if (pendingNativePaste.current?.id === id) pendingNativePaste.current = null;

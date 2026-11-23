@@ -23,7 +23,7 @@ internal class ViewerInput(private val pool: PhoneBrowserPool, private val emit:
         val tab = pool.check(input, true).also(admission)
         if (message.getString("contextId") == tab.contextId && !sensitive(tab)) tab else null
       }
-      if (copyTab != null) JSONObject(pool.evaluate(copyTab, input.epoch, "(()=>{const e=document.activeElement;if(e&&e.tagName==='INPUT'&&e.type==='password')return {sensitive:true,text:''};return {sensitive:false,text:e&&typeof e.selectionStart==='number'?e.value.slice(e.selectionStart,e.selectionEnd):String(getSelection())}})()"))
+      if (copyTab != null) JSONObject(pool.evaluate(copyTab, input.epoch, "(()=>{let e=document.activeElement;while(e&&e.shadowRoot&&e.shadowRoot.activeElement)e=e.shadowRoot.activeElement;if(e&&e.tagName==='INPUT'&&e.type==='password')return {sensitive:true,text:''};return {sensitive:false,text:e&&typeof e.selectionStart==='number'?e.value.slice(e.selectionStart,e.selectionEnd):String(getSelection())}})()"))
       else null
     } else null
     pool.ui(input.epoch) {

@@ -142,6 +142,7 @@ export function DisplayControls({
   const submit = (
     action: () => ReturnType<DisplayEditingSession["send"]>,
     kind?: EditingOperation["kind"],
+    onRefused?: () => void,
   ): boolean => {
     const before = lease.getSnapshot();
     if (!session || before.input !== "available") return false;
@@ -175,7 +176,9 @@ export function DisplayControls({
         } else if (result.outcome !== "empty") setReceipt(`Copy ${result.outcome}`);
       })
       // A refusal is said by the session's own receipt; a lost picture by its cover.
-      .catch(() => undefined);
+      .catch(() => {
+        if (currentSession.current === session) onRefused?.();
+      });
     return true;
   };
   const send = (events: readonly DisplayInputEvent[], geometry = picture?.generation): boolean =>
@@ -185,12 +188,20 @@ export function DisplayControls({
       ? session !== null && submit(() => session.input(geometry, events))
       : lease.input(geometry, events));
   const sendOperation = (operation: EditingOperation): boolean =>
-    session !== null && submit(() => session.send(operation), operation.kind);
+    session !== null &&
+    submit(
+      () => session.send(operation),
+      operation.kind,
+      () => proxy.current?.refused(operation),
+    );
   const sendOperations = (operations: readonly EditingOperation[]): boolean =>
     session !== null &&
     submit(
       () => session.sendBatch(operations),
       operations.some((op) => op.kind === "cut") ? "cut" : "paste",
+      () => {
+        for (const op of operations) proxy.current?.refused(op);
+      },
     );
   const pendingMove = useRef<{ geometry: number; event: DisplayInputEvent } | null>(null);
   const moveFrame = useRef<ReturnType<typeof requestAnimationFrame> | null>(null);

@@ -517,6 +517,13 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         transaction.contextId === state.context?.contextId
       )
         state.composition = { ...transaction, sent: false };
+      else if (
+        !transaction &&
+        (operation.kind === "edit" || operation.kind === "paste") &&
+        (operation.kind === "edit" ? operation.edit.contextId : operation.contextId) ===
+          state.context?.contextId
+      )
+        reset();
       break;
     }
     case "pointerdown":

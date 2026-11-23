@@ -27,7 +27,7 @@ import type { DisplayUnavailableReason } from "./computer-watch-status.js";
 
 /** The contract's bound on one input batch (`DisplayInputEventsSchema`). */
 export const maxDisplayInputEvents = 64;
-const maxInputBytes = 256 * 1_024;
+export const maxDisplayInputBytes = 256 * 1_024;
 /** Thrown before sending when a single event or atomic batch exceeds the wire size bound (A4). */
 export class DisplayInputTooLargeError extends Error {}
 /** Viewer JSON is a state or editing line; anything near this is not one. */
@@ -882,7 +882,7 @@ export class DisplayStreams {
       const candidate = [...batch, event];
       if (
         candidate.length > maxDisplayInputEvents ||
-        new TextEncoder().encode(serialize(candidate)).byteLength > maxInputBytes
+        new TextEncoder().encode(serialize(candidate)).byteLength > maxDisplayInputBytes
       ) {
         if (options?.atomic)
           throw new DisplayInputTooLargeError(
@@ -895,7 +895,7 @@ export class DisplayStreams {
       } else batch = candidate;
     }
     const last = serialize(batch);
-    if (new TextEncoder().encode(last).byteLength > maxInputBytes)
+    if (new TextEncoder().encode(last).byteLength > maxDisplayInputBytes)
       throw new DisplayInputTooLargeError("Display input event exceeds its byte limit.");
     batches.push(last);
     const first = entry.inputSequence;

@@ -550,13 +550,13 @@ final class MacOwnerInputWorker {
       keys[identity] = HeldKey(code: code, target: target, token: focused.token, menuHandled: true)
       return
     }
-    if event.text != nil, modifiers.isEmpty {
+    if event.text != nil, modifiers.isSubset(of: [.shift]) {
       refresh(focused, agentRevision: lease.mutations.agentRevision)
     }
     try await SyntheticEvents.ownerKey(down: true, virtualKey: code, flags: event.flags,
       text: event.text ?? VirtualKeys.characters(for: combo), repeatKey: event.repeat ?? false,
       target: target, gate: { try proceed(); try lease.check(map) })
-    if let text = event.text, modifiers.isEmpty {
+    if let text = event.text, modifiers.isSubset(of: [.shift]) {
       predictInsertion(text)
     }
     keys[identity] = HeldKey(code: code, target: target, token: focused.token,
