@@ -963,6 +963,20 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     if (!ids.has(element)) ids.set(element, String(++next));
     return ids.get(element);
   };
+  // CY1: a field is the same field only while it is the same element of the same kind: its
+  // mechanism, its type, whether it is sensitive, whether it can be edited. An <input> reused for
+  // a password after a username is another field: a new context, nothing earlier carried.
+  const fieldKey = (element) =>
+    [
+      identity(element),
+      mechanism(element) ?? "",
+      element.type ?? "",
+      element.type === "password" ||
+        /(?:^|\\s)(?:current-password|new-password|one-time-code|cc-number|cc-csc)(?:$|\\s)/.test(
+          element.autocomplete ?? "",
+        ),
+      Boolean(element.readOnly || element.disabled),
+    ].join(":");
   const mechanism = (element) =>
     element?.editContext
       ? "editcontext"
@@ -1343,7 +1357,7 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
       if (r && Number.isFinite(r.x) && Number.isFinite(r.y) && Number.isFinite(r.height))
         caret = { x: r.x, y: r.y, height: r.height };
     } catch {}
-    const message = JSON.stringify({ fieldId: identity(element), selectionRevision, field, caret });
+    const message = JSON.stringify({ fieldId: fieldKey(element), selectionRevision, field, caret });
     if (message !== last) {
       last = message;
       globalThis[${JSON.stringify(binding)}](message);
@@ -1356,7 +1370,7 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
   const prepare = (request) => {
     const element = active(),
       kind = mechanism(element);
-    if (!kind || !document.hasFocus() || identity(element) !== request.fieldId)
+    if (!kind || !document.hasFocus() || fieldKey(element) !== request.fieldId)
       return { ok: false, reason: "focus-changed" };
     syncSelection();
     // An insertion goes in at the caret as it is now, whatever the page did since.

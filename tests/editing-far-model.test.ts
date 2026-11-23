@@ -502,6 +502,51 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     expect((await read(page, kind)).value).toBe("ab");
   });
 
+  /*
+   * CY1: a field that becomes another kind of field is another field. A page that reuses one
+   * <input> for a username and then a password gives it a new context, and nothing typed for the
+   * one lands in the other: an insertion and a Backspace in flight under the old context are each
+   * refused alone. And the reverse.
+   */
+  it.each([
+    ["text", "password"],
+    ["password", "text"],
+  ] as const)("refuses what was typed for a %s field once it is a %s field", async (from, to) => {
+    await page.evaluate((type) => {
+      const input = document.createElement("input");
+      input.id = "k";
+      input.type = type;
+      document.body.append(input);
+      input.focus();
+    }, from);
+    await settle();
+    const before = observer.context.contextId!;
+    expect(
+      await send({ kind: "edit", edit: { contextId: before, text: "u", before: "", after: "" } }),
+    ).toBe(true);
+    await page.evaluate((type) => {
+      const input = document.getElementById("k") as HTMLInputElement;
+      input.type = type;
+      input.value = "";
+    }, to);
+    await settle();
+    expect(observer.context.contextId).not.toBe(before);
+    expect(
+      await send({ kind: "edit", edit: { contextId: before, text: "x", before: "", after: "" } }),
+    ).toBe(false);
+    expect(await send({ kind: "command", command: "deleteBackward", contextId: before })).toBe(
+      false,
+    );
+    expect(
+      await page.evaluate(() => (document.getElementById("k") as HTMLInputElement).value),
+    ).toBe("");
+    await page.evaluate(() => {
+      document.getElementById("k")!.remove();
+      document.getElementById("f")!.focus();
+    });
+    await settle();
+  });
+
   // CS1: a refusal inside the context while composing. The page moved the selection under an
   // open composition (Blink keeps the composition open), so the next update is refused for the
   // changed selection; the composition stays the composer's. The person keeps what they
