@@ -591,6 +591,8 @@ export interface BrowserRuntimeTarget {
   readonly passkeys?: boolean;
   readonly editing?: 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
+  /** CV1: the Runtime honours an editing command's context. */
+  readonly editingCommandContext?: boolean | undefined;
   /** The computer whose Runner relays this Runtime, as this Deployment names it. */
   readonly computer?: { readonly name: string; readonly runnerId: RunnerId };
   connect(ticket: string, reconnect?: PersonBrowserReconnect): BrowserRuntimeConnection;
@@ -1287,6 +1289,9 @@ export class BrowserService {
           ...(target.popupFollowVersion ? { popupFollowVersion: 1 as const } : {}),
           ...(target.editing ? { editingVersion: target.editing } : {}),
           ...(target.editing === 2 ? { clipboard: target.clipboard === true } : {}),
+          ...(target.editing && target.editingCommandContext
+            ? { editingCommandContext: 1 as const }
+            : {}),
         }),
       );
       // The person's use of tabs survives the park with the session.
@@ -6351,6 +6356,8 @@ export class BrowserService {
       readonly editing?: 1 | 2 | undefined;
       readonly basicInput?: 1 | undefined;
       readonly surfaceState?: 1 | undefined;
+      /** The viewer understands an editing command's context (CV1). */
+      readonly editingCommands?: 1 | undefined;
       /**
        * Whether the login that opened the socket is still signed in. Read once,
        * after this peer can be reached by `closeAuthSession`, so a login ended
@@ -6430,6 +6437,7 @@ export class BrowserService {
           basicInput: options.basicInput,
           surfaceState: options.surfaceState,
           autofill: options.autofill,
+          editingCommands: options.editingCommands,
         },
       );
     } catch (error) {
@@ -6849,6 +6857,7 @@ export class BrowserService {
           ? {
               editingVersion: target.editing,
               ...(target.editing === 2 ? { clipboard: target.clipboard === true } : {}),
+              ...(target.editingCommandContext ? { editingCommandContext: 1 as const } : {}),
             }
           : {}),
         ...(tabRestore
@@ -8490,6 +8499,7 @@ export class HostedBrowserBroker {
       readonly basicInput?: 1 | undefined;
       readonly surfaceState?: 1 | undefined;
       readonly autofill?: PersonFillVersion | undefined;
+      readonly editingCommands?: 1 | undefined;
     } = {},
   ): Promise<BrowserConsumerAttachment> {
     if (this.#settled) throw new OpensteerError({ code: "conflict", message: "Browser closed." });
@@ -8542,6 +8552,10 @@ export class HostedBrowserBroker {
       outlet.surfaceState = negotiation.surfaceState === 1 && this.#snapshot.surfaceState === 1;
       const version = this.#snapshot.editingVersion;
       outlet.editing = browserViewerEditingVersion(this.#snapshot, editing);
+      outlet.editingCommands =
+        outlet.editing !== undefined &&
+        negotiation.editingCommands === 1 &&
+        this.#snapshot.editingCommandContext === 1;
       outlet.clipboard = Boolean(
         outlet.editing && (version === 1 || this.#snapshot.clipboard === true),
       );
@@ -8567,6 +8581,7 @@ export class HostedBrowserBroker {
               basicInput: outlet.basicInput,
               surfaceState: outlet.surfaceState,
               autofill: outlet.autofill,
+              editingCommands: outlet.editingCommands,
             },
           ),
         ),
@@ -9511,6 +9526,7 @@ export class HostedBrowserBroker {
                 basicInput: consumer.basicInput,
                 surfaceState: consumer.surfaceState,
                 autofill: consumer.autofill,
+                editingCommands: consumer.editingCommands,
               },
             ),
           ),
@@ -10522,6 +10538,8 @@ export class BrowserConsumerOutlet {
   rasterDensity: BrowserRasterDensity = 2;
   basicInput = false;
   surfaceState = false;
+  /** The viewer understands an editing command's context, and the far side honours it (CV1). */
+  editingCommands = false;
   readonly basicClipboardResults = new Map<string, { next: number; readonly total: number }>();
   editing: 1 | 2 | undefined;
   clipboard = false;

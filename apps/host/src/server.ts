@@ -630,6 +630,7 @@ export async function createHostServer(
       readonly editing: 1 | 2 | undefined;
       readonly basicInput: 1 | undefined;
       readonly surfaceState: 1 | undefined;
+      readonly editingCommands: 1 | undefined;
       readonly passkeys: "native" | "notice" | undefined;
       readonly popups: boolean;
       readonly autofill: PersonFillVersion | undefined;
@@ -3028,6 +3029,7 @@ export async function createHostServer(
       popups?: string;
       basicInput?: string;
       surfaceState?: string;
+      editingCommands?: string;
       autofill?: string;
     };
   }>(
@@ -3057,6 +3059,7 @@ export async function createHostServer(
           popups: request.query.popups === "1",
           basicInput: request.query.basicInput === "1" ? 1 : undefined,
           surfaceState: request.query.surfaceState === "1" ? 1 : undefined,
+          editingCommands: request.query.editingCommands === "1" ? 1 : undefined,
           autofill:
             mode !== "control"
               ? undefined
@@ -3084,6 +3087,7 @@ export async function createHostServer(
         {
           basicInput: admitted.basicInput,
           surfaceState: admitted.surfaceState,
+          editingCommands: admitted.editingCommands,
           autofill: admitted.autofill,
         },
         async () => {
@@ -3201,6 +3205,7 @@ function attachBrowserSocket(
   negotiation: {
     readonly basicInput: 1 | undefined;
     readonly surfaceState: 1 | undefined;
+    readonly editingCommands: 1 | undefined;
     readonly autofill: PersonFillVersion | undefined;
   },
   signedIn: () => Promise<boolean>,

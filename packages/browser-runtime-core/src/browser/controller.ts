@@ -693,6 +693,7 @@ export class BrowserController {
             ...(this.claims.editingVersion === 2
               ? { clipboard: this.clipboard !== undefined }
               : {}),
+            ...(this.claims.editingCommandContext === 1 ? { editingCommandContext: 1 } : {}),
           }
         : {}),
       type: "browser.snapshot",
@@ -1976,13 +1977,19 @@ export class BrowserController {
               (m) => this.send(m),
             ),
           );
-        await observer.input(() => {
-          this.recordPasskeyInput(message, active.surface.id);
-          return cdp.send(
-            "Input.dispatchKeyEvent",
-            editingCommandParameters(message.command, this.platform),
-          );
-        }, message.producerId);
+        const applied = await observer.command(
+          message.contextId,
+          /^(move|delete)/.test(message.command),
+          () => {
+            this.recordPasskeyInput(message, active.surface.id);
+            return cdp.send(
+              "Input.dispatchKeyEvent",
+              editingCommandParameters(message.command, this.platform),
+            );
+          },
+          message.producerId,
+        );
+        if (!applied) this.editingCounters.stale = (this.editingCounters.stale ?? 0) + 1;
         return;
       }
       const outcome = (result: "refused" | "pasted" | "empty" | "too-large") =>

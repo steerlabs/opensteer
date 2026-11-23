@@ -67,3 +67,34 @@ it("projects passkey fields only to opted-in viewers while preserving old snapsh
     ),
   ).toMatchObject({ consumerToken: "e2799da2-9fe9-438e-a160-47e275ee2703" });
 });
+// CV1: a command's context is projected only to a viewer that asked for it with an editing
+// version. A released phone parses the snapshot strictly (BrowserServerMessageSchema, a union of
+// strict objects): one that did not ask never sees the field.
+it("projects a command's context only to a viewer that asked for it, with editing", () => {
+  const snapshot = BrowserServerMessageSchema.parse({
+    type: "browser.snapshot",
+    access: "read-write",
+    dialog: null,
+    sessionId: "bsn_e2799da2-9fe9-438e-a160-47e275ee2703",
+    state: "ready",
+    editingVersion: 2,
+    clipboard: true,
+    editingCommandContext: 1,
+    surfaces: [],
+  });
+  const asked = { basicInput: false, surfaceState: false, editingCommands: true };
+  expect(browserViewerMessage(snapshot, 2)).not.toHaveProperty("editingCommandContext");
+  expect(
+    browserViewerMessage(snapshot, undefined, undefined, undefined, false, asked),
+  ).not.toHaveProperty("editingCommandContext");
+  const projected = browserViewerMessage(snapshot, 2, undefined, undefined, false, asked);
+  expect(projected).toMatchObject({ editingVersion: 2, editingCommandContext: 1 });
+  expect(BrowserServerMessageSchema.safeParse(projected).success).toBe(true);
+  // A far side that does not honour it: nothing to project, whatever the viewer asked.
+  const { editingCommandContext: _context, ...older } = snapshot as typeof snapshot & {
+    editingCommandContext?: 1;
+  };
+  expect(browserViewerMessage(older, 2, undefined, undefined, false, asked)).not.toHaveProperty(
+    "editingCommandContext",
+  );
+});

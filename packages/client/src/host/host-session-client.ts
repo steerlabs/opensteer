@@ -434,6 +434,7 @@ export class HttpHostClient {
           surfaceId,
           message.clipboard,
           message.basicInput,
+          message.editingCommandContext,
         );
       else this.#browserEditing.receive(sessionId, message, surfaceId);
       if (message.type === "browser.surface") this.#update(this.#snapshot);
@@ -491,6 +492,8 @@ export class HttpHostClient {
       url.searchParams.set("autofill", "2");
     }
     url.searchParams.set("editing", "2");
+    // CV1: this viewer sends a command's context to a far side that says it honours it.
+    url.searchParams.set("editingCommands", "1");
     return this.#webSocketFactory(url.toString());
   }
   /** A page viewer may attach only to a listed page tab this device activated into that session. */

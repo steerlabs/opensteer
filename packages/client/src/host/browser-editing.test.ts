@@ -17,6 +17,31 @@ function setup(negotiated = true) {
   return { store, target, commands };
 }
 describe("browser editing transport", () => {
+  // CV1: a command says its context only to a far side that negotiated it. A released Host
+  // parses input.command strictly (BrowserClientMessageSchema): it never sees the field, because
+  // it never projects editingCommandContext.
+  it.each([
+    [undefined, false],
+    [1, true],
+  ] as const)(
+    "sends a command's context only when negotiated (%s)",
+    async (commandContext, sent) => {
+      const commands: BrowserCommand[] = [];
+      const store = new BrowserEditingStore(
+        (_session, _surface, command) => commands.push(command),
+        () => "pc",
+      );
+      store.negotiate(sessionId, 2, undefined, false, undefined, commandContext);
+      const target = store.target(sessionId, surfaceId);
+      expect(target.get().commandContext).toBe(sent);
+      const contextId = crypto.randomUUID();
+      await target.send({ kind: "command", command: "deleteBackward", contextId });
+      const command = commands.find((candidate) => candidate.type === "input.command");
+      expect(command).toMatchObject({ type: "input.command", command: "deleteBackward" });
+      if (sent) expect(command).toMatchObject({ contextId });
+      else expect(command).not.toHaveProperty("contextId");
+    },
+  );
   it.each(["mac", "pc", null] as const)(
     "uses runtime primary for v2 text clipboard from %s viewers",
     async (platform) => {

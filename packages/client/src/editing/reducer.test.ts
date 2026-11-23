@@ -79,7 +79,8 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     expect(result.operations).toEqual([
       { kind: "command", command: "deleteBackward" },
       { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
-      { kind: "edit", edit: { contextId: context.contextId, text: "", before: "a", after: "" } },
+      // CV1: the later deletion is the page's Backspace.
+      { kind: "command", command: "deleteBackward" },
     ]);
   });
   // Found by the same random sequences (seed 4363): a selection typed over through the delegate
@@ -254,7 +255,8 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     expect(result.operations).toEqual([
       { kind: "command", command: "deleteBackward" },
       { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
-      { kind: "edit", edit: { contextId: context.contextId, text: "", before: "a", after: "" } },
+      // CV1: the deletion is the page's Backspace.
+      { kind: "command", command: "deleteBackward" },
     ]);
   });
   // Found by the person oracle (third generator, seed 697): a paste over a selection replaces it,

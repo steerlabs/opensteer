@@ -168,6 +168,8 @@ async function open(abilities?: EditingTargetAbilities) {
           return harness.take ? harness.take(operation) : remote.take(operation);
         }}
         onDone={() => undefined}
+        // The far field honours a command's context, as a far side that negotiated it does.
+        commandContext
         {...(abilities ? { abilities } : {})}
       />,
     );

@@ -445,6 +445,29 @@ export class PageEditingObserver {
     }
   }
 
+  /**
+   * CV1: a command made in `contextId`. A move or a deletion is relative to the caret: under an
+   * earlier context of the focused field it applies at the caret as it now is. Any command under
+   * another context (another field's) is refused alone, and nothing rotates. Without a context
+   * (a viewer that does not send one) it applies as always.
+   */
+  async command(
+    contextId: string | undefined,
+    relative: boolean,
+    action: () => Promise<unknown>,
+    producer?: string,
+  ): Promise<boolean> {
+    if (this.#activeChild) return this.#activeChild.command(contextId, relative, action, producer);
+    if (
+      contextId !== undefined &&
+      contextId !== this.#context.contextId &&
+      !(relative && this.#focused && this.#earlier.has(contextId))
+    )
+      return false;
+    await this.input(action, producer);
+    return true;
+  }
+
   async input<T>(action: () => Promise<T>, producer?: string): Promise<T> {
     if (this.#activeChild) return this.#activeChild.input(action, producer);
     const focus = this.#focused;

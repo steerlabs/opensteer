@@ -870,12 +870,16 @@ export class FarField {
         ? operation.edit.contextId
         : operation.kind === "compose"
           ? operation.composition.contextId
-          : null;
+          : operation.kind === "command"
+            ? (operation.contextId ?? null)
+            : null;
+    // Relative to the caret: an insertion, or a move or deletion command (CV1).
     const insertion =
-      operation.kind === "edit" &&
-      operation.edit.text !== "" &&
-      !operation.edit.before &&
-      !operation.edit.after;
+      (operation.kind === "edit" &&
+        operation.edit.text !== "" &&
+        !operation.edit.before &&
+        !operation.edit.after) ||
+      (operation.kind === "command" && /^(move|delete)/.test(operation.command));
     if (context !== null && this.contextId !== null && context !== this.contextId) {
       // An insertion typed under an earlier context of this field still goes in at the caret;
       // anything else is refused alone, the field's context kept.

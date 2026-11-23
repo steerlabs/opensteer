@@ -25,6 +25,8 @@ export function browserViewerMessage(
     readonly surfaceState: boolean;
     /** The person fill version the viewer understands, or 0. */
     readonly autofill?: 0 | PersonFillVersion;
+    /** The viewer asked for, and the far side honours, an editing command's context (CV1). */
+    readonly editingCommands?: boolean;
   } = { basicInput: false, surfaceState: false },
 ): BrowserServerMessage {
   if (message.type === "browser.snapshot") {
@@ -34,6 +36,7 @@ export function browserViewerMessage(
       surfaceState: _surfaceState,
       navigationAttributionVersion: _navigationAttributionVersion,
       editingVersion: _editingVersion,
+      editingCommandContext: _editingCommandContext,
       personFillVersion: _personFillVersion,
       clipboard: _clipboard,
       passkeys: _passkeys,
@@ -56,6 +59,13 @@ export function browserViewerMessage(
       message = { ...message, basicInput: 1 };
     if (negotiation.surfaceState && message.type === "browser.snapshot")
       message = { ...message, surfaceState: 1 };
+    if (
+      negotiation.editingCommands &&
+      editing !== undefined &&
+      _editingCommandContext === 1 &&
+      message.type === "browser.snapshot"
+    )
+      message = { ...message, editingCommandContext: 1 };
     if (passkeys) message = { ...message, passkeys, passkeyConsumerToken: consumerToken };
     if (popups) message = { ...message, consumerToken };
     const personFill = Math.min(_personFillVersion ?? 0, negotiation.autofill ?? 0);

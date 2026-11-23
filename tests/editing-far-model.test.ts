@@ -183,7 +183,9 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
       return true;
     }
     if (operation.kind === "command")
-      await observer.input(
+      return observer.command(
+        operation.contextId,
+        /^(move|delete)/.test(operation.command),
         () =>
           cdp.send(
             "Input.dispatchKeyEvent",
@@ -533,6 +535,16 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     expect(await insert(current, "x")).toBe(true);
     expect(await insert(masked, "y")).toBe(true);
     expect(await read(page, kind)).toEqual({ value: "0xy512", caret: 3, collapsed: true });
+    // A Backspace and a move in flight across the page's rewrite apply at its caret.
+    const command = (contextId: string, name: "deleteBackward" | "moveBackward" | "selectAll") =>
+      send({ kind: "command", command: name, contextId });
+    expect(await command(first, "deleteBackward")).toBe(true);
+    expect(await command(masked, "moveBackward")).toBe(true);
+    expect(await read(page, kind)).toEqual({ value: "0x512", caret: 1, collapsed: true });
+    // Only what is relative to the caret: anything else of an earlier context is refused alone.
+    const now = observer.context.contextId!;
+    expect(await command(first, "selectAll")).toBe(false);
+    expect(observer.context.contextId).toBe(now);
     // Another field: nothing typed for the first lands there, and its context stays.
     await page.evaluate(() => {
       const other = document.createElement("textarea");
@@ -543,6 +555,9 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     await settle();
     const other = observer.context.contextId!;
     expect(await insert(current, "z")).toBe(false);
+    // A Backspace and a move of the field left are refused alone there too.
+    expect(await command(current, "deleteBackward")).toBe(false);
+    expect(await command(masked, "moveBackward")).toBe(false);
     expect(observer.context.contextId).toBe(other);
     expect(
       await page.evaluate(() => (document.getElementById("g") as HTMLTextAreaElement).value),
@@ -782,7 +797,7 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
             };
             label = `paste ${JSON.stringify(text)}`;
             totals.pastes += 1;
-          } else {
+          } else if (next() < 0.5) {
             operation = {
               kind: "edit",
               edit: {
@@ -793,6 +808,16 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
               },
             };
             label = "stale edit";
+            totals.stale += 1;
+          } else {
+            // CV1: a command made in an earlier context (or another field's).
+            operation = {
+              kind: "command",
+              // The model's commands (selectAll, which it does not model, is the named test's).
+              command: pick(commands),
+              contextId: old.at(-1) ?? crypto.randomUUID(),
+            };
+            label = "stale command";
             totals.stale += 1;
           }
           steps.push(

@@ -338,6 +338,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       passkeys: browser.passkeys === 1,
       editing: browser.editing,
       clipboard: browser.editing === 1 || browser.clipboard === true,
+      editingCommandContext: browser.editingCommandContext === 1,
       targetControl: browser.targetControl === 1,
       navigationVersion: browser.navigationVersion === 1,
       navigationAttributionVersion: browser.navigationAttributionVersion === 1,

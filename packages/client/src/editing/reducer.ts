@@ -822,9 +822,10 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         reset();
         break;
       }
-      // Backspace is the page's: a letter written with combining marks loses only its last mark
-      // there, where the native field removed the whole letter. The page's own Backspace goes, and
-      // the mirror takes what the page then holds.
+      // Backspace is the page's, relative to its caret (CU4, CV1): the page's own Backspace goes,
+      // never a range deletion the page could find changed, and the mirror takes what the page
+      // then holds. A letter written with combining marks loses only its last mark there, where
+      // the native field removed the whole letter.
       const at = event.proxy.selectionEnd;
       const removed = base.value.length - event.proxy.value.length;
       if (
@@ -833,28 +834,30 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         event.inputType === "deleteContentBackward" &&
         // A Backspace at a caret; a selection deleted is the selection.
         base.selectionStart === base.selectionEnd &&
-        state.abilities.rangeEdits &&
         state.abilities.commands &&
         event.proxy.selectionStart === at &&
         removed > 0 &&
         caret === at + removed &&
         base.value.slice(0, at) === event.proxy.value.slice(0, at) &&
-        base.value.slice(at + removed) === event.proxy.value.slice(at)
+        base.value.slice(at + removed) === event.proxy.value.slice(at) &&
+        countGraphemes(base.value.slice(at, at + removed)) === 1
       ) {
         const letter = base.value.slice(at, at + removed);
         const mark = Array.from(letter).at(-1)!;
-        if (countGraphemes(letter) === 1 && letter.length > mark.length && /\p{M}/u.test(mark)) {
-          emit({ kind: "command", command: "deleteBackward" });
-          const kept = letter.slice(0, letter.length - mark.length);
-          state.proxy = {
-            value: base.value.slice(0, at) + kept + base.value.slice(at + removed),
-            selectionStart: at + kept.length,
-            selectionEnd: at + kept.length,
-          };
-          state.caret = at + kept.length;
-          instruction = { ...instruction, set: state.proxy };
-          break;
-        }
+        const kept =
+          letter.length > mark.length && /\p{M}/u.test(mark)
+            ? letter.slice(0, letter.length - mark.length)
+            : "";
+        emit({ kind: "command", command: "deleteBackward" });
+        state.proxy = {
+          value: base.value.slice(0, at) + kept + base.value.slice(at + removed),
+          selectionStart: at + kept.length,
+          selectionEnd: at + kept.length,
+        };
+        state.caret = at + kept.length;
+        if (kept) instruction = { ...instruction, set: state.proxy };
+        if (!state.abilities.rangeEdits || state.resetPending) reset();
+        break;
       }
       // CV1: what the person types goes as an insertion at the page's caret, with nothing around
       // it the page could find changed: the far caret is brought to where it goes, and over a

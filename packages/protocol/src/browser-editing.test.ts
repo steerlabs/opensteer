@@ -41,4 +41,24 @@ describe("browser editing split capability", () => {
     expect(future.editing).toBeUndefined();
     expect(future.clipboard).toBeUndefined();
   });
+  // CV1: a runtime advertises that it honours a command's context; anything else of that name
+  // is dropped, and the rest of the module stands (a released Host strips the unknown field).
+  it("reads a command context advertisement and ignores a malformed one", () => {
+    expect(
+      RunnerBrowserModuleSchema.parse({
+        runtimeId: "browser",
+        editing: 2,
+        clipboard: true,
+        editingCommandContext: 1,
+      }),
+    ).toMatchObject({ editing: 2, editingCommandContext: 1 });
+    const malformed = RunnerBrowserModuleSchema.parse({
+      runtimeId: "browser",
+      editing: 2,
+      clipboard: true,
+      editingCommandContext: 2,
+    });
+    expect(malformed).toMatchObject({ editing: 2, clipboard: true });
+    expect(malformed.editingCommandContext).toBeUndefined();
+  });
 });

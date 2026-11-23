@@ -47,6 +47,7 @@ export function NativeEditingProxy({
   cancelCompositionOnBlur = false,
   abilities = nativeBrowserAbilities,
   label = "Type into the page",
+  commandContext = false,
   ref,
 }: {
   readonly context: EditingContext | null;
@@ -57,9 +58,15 @@ export function NativeEditingProxy({
   readonly onDone: () => void;
   readonly abilities?: EditingTargetAbilities;
   readonly label?: string;
+  /**
+   * CV1: the far side honours a command's context (negotiated). Every command then says the
+   * context it was made in, and a command of a context just left still goes, under it; without
+   * it a late command is dropped, as before.
+   */
+  readonly commandContext?: boolean;
   readonly ref?: Ref<NativeEditingProxyHandle>;
 }) {
-  const { step, late } = useMemo(() => {
+  const { step, late, current } = useMemo(() => {
     let state = createEditingState(Platform.OS === "ios" ? "ios" : "android", abilities);
     /**
      * The contexts lately left, as the reducer had each: their late events are reduced there.
@@ -68,18 +75,32 @@ export function NativeEditingProxy({
      */
     const retired = new Map<string, typeof state>();
     return {
+      /** The context the reducer is in now. */
+      current: () => state.context?.contextId,
       step: (event: EditingProxyEvent) => {
         if (
           event.type === "context" &&
           state.context &&
           event.context?.contextId !== state.context.contextId
         ) {
-          // The context change commits an open composition: in the context left it has ended.
+          // The context change commits an open composition: in the context left it has ended. A
+          // composition an earlier context left is that context's, not this one's: this one's
+          // mirror, cleared by the native field at its configure, begins blank.
+          const left = state.context.contextId;
+          const own = state.composition?.contextId === left;
           retired.set(
-            state.context.contextId,
-            state.composition
-              ? { ...state, composition: { ...state.composition, detached: true } }
-              : state,
+            left,
+            own
+              ? { ...state, composition: { ...state.composition!, detached: true } }
+              : state.composition
+                ? {
+                    ...state,
+                    composition: null,
+                    proxy: { value: "", selectionStart: 0, selectionEnd: 0 },
+                    caret: 0,
+                    resetPending: false,
+                  }
+                : state,
           );
           if (retired.size > 16) retired.delete(retired.keys().next().value!);
         }
@@ -96,8 +117,13 @@ export function NativeEditingProxy({
       },
     };
   }, [abilities]);
-  const latest = useRef({ sendOperation, onDone });
-  latest.current = { sendOperation, onDone };
+  /** A command says the context it was made in, to a far side that honours it. */
+  const scoped = (operation: EditingOperation, contextId = current()): EditingOperation =>
+    commandContext && operation.kind === "command" && contextId
+      ? { ...operation, contextId }
+      : operation;
+  const latest = useRef({ sendOperation, onDone, scoped });
+  latest.current = { sendOperation, onDone, scoped };
   const nativeComposing = useRef(false);
   const [finishCompositionRequest, requestFinish] = useState(0);
   const [instruction, setInstruction] = useState<EditingProxyInstruction>({});
@@ -114,7 +140,8 @@ export function NativeEditingProxy({
       },
       interrupt(type = "pointerdown") {
         const result = step({ type });
-        for (const operation of result.operations) latest.current.sendOperation(operation);
+        for (const operation of result.operations)
+          latest.current.sendOperation(latest.current.scoped(operation));
         setInstruction(result.instruction);
         if (nativeComposing.current) requestFinish((previous) => previous + 1);
         setPreedit("");
@@ -127,12 +154,13 @@ export function NativeEditingProxy({
     // Native configure owns the old composition ending and the new context's reset.
     setInstruction({});
     setPreedit("");
-    for (const operation of result.operations) latest.current.sendOperation(operation);
+    for (const operation of result.operations)
+      latest.current.sendOperation(latest.current.scoped(operation));
   }, [context, step]);
   useEffect(
     () => () => {
       for (const operation of step({ type: "blur" }).operations)
-        latest.current.sendOperation(operation);
+        latest.current.sendOperation(latest.current.scoped(operation));
     },
     [step],
   );
@@ -149,10 +177,11 @@ export function NativeEditingProxy({
           finishCompositionRequest={finishCompositionRequest}
           onError={() => setRefusal("Native input unavailable. Reopen the keyboard to retry.")}
           onLateEvent={(contextId, event) => {
-            // CV1: what the person typed in the context just left still goes, under that context:
-            // the page takes an insertion of the same field at its caret and refuses the rest
-            // alone. Only what names its context leaves (an edit or a composition; a paste as the
-            // text it inserts); a caret command or a key would land in whatever has focus now.
+            // CV1: what the person did in the context just left still goes, under that context:
+            // the page applies what is relative to its caret (an insertion, a backward deletion, a
+            // move) in the same field and refuses anything else alone. Only what names its context
+            // leaves: an edit or a composition, a paste as the text it inserts, and a command only
+            // to a far side that honours its context; a key would land in whatever has focus now.
             const result = late(contextId, event);
             if (!result) return null;
             // The native field composes or not whatever the context: the same bookkeeping.
@@ -170,6 +199,8 @@ export function NativeEditingProxy({
                   : null;
               if (operation.kind === "edit" || operation.kind === "compose")
                 sendOperation(operation);
+              else if (operation.kind === "command" && commandContext)
+                sendOperation(scoped(operation, contextId));
               else if (text)
                 sendOperation({
                   kind: "edit",
@@ -201,7 +232,7 @@ export function NativeEditingProxy({
                 setPreedit("");
             }
             for (const operation of result.operations)
-              if (!sendOperation(operation)) {
+              if (!sendOperation(scoped(operation))) {
                 // It never left: a composition it carried goes again as a fresh start.
                 step({ type: "refused", operation });
                 setRefusal("Editing refused. Waiting for the remote field.");

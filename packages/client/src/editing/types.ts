@@ -88,7 +88,16 @@ export type EditingProxyEvent =
 /** What the person did, ready for the target's wire. */
 export type EditingOperation =
   | { readonly kind: "key"; readonly keystroke: EditingKeystroke }
-  | { readonly kind: "command"; readonly command: EditingCommand }
+  | {
+      readonly kind: "command";
+      readonly command: EditingCommand;
+      /**
+       * The context it was made in (CV1): a far side that negotiated it applies a move or a
+       * deletion at its caret under an earlier context of the same field, and refuses any
+       * command of another field's. Others receive the command without it.
+       */
+      readonly contextId?: string | undefined;
+    }
   | { readonly kind: "compose"; readonly composition: EditingComposition }
   | { readonly kind: "edit"; readonly edit: EditingTextEdit }
   | { readonly kind: "copy" | "cut" }
