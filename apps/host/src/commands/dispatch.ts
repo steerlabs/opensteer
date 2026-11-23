@@ -3,8 +3,8 @@ import { z } from "zod";
 import {
   admitCommand,
   commandAdmission,
-  commandCallerScope,
-  commandHeld,
+  commandCallerHolder,
+  commandHolds,
   commandNotFoundMessage,
   commandSubject,
   type CommandAdmission,
@@ -24,6 +24,7 @@ import {
   commandTable,
   type CommandAnsweredAsk,
   type CommandRow,
+  type CommandType,
 } from "@opensteer/protocol/command-table";
 import type { Kysely } from "kysely";
 import type { AgentCaller } from "../mcp/agent-caller.js";
@@ -73,7 +74,16 @@ export interface AgentCommandDoor extends CommandDoor {
    * The grant the caller's lineage holds as the Home has it now, never as it was at sign-in:
    * `gone` once its connection works for no one. Null for your own agents.
    */
-  readonly scope: (caller: AgentCaller) => Promise<"everything" | "selected" | "gone" | null>;
+  readonly scope: (
+    caller: AgentCaller,
+  ) => Promise<
+    | {
+        readonly scope: "everything" | "selected";
+        readonly grant: import("@opensteer/core").AgentGrant;
+      }
+    | "gone"
+    | null
+  >;
   /** Opens the person's Request for a command that waits for them; without it, `ask` is returned. */
   readonly propose?: (
     caller: AgentCaller,
@@ -86,7 +96,7 @@ export interface AgentCommandDoor extends CommandDoor {
 /** The scope of the caller's connection from its own row; your own agents read nothing. */
 export function agentCommandScope(database: Kysely<DatabaseSchema>): AgentCommandDoor["scope"] {
   return (caller) =>
-    commandCallerScope(
+    commandCallerHolder(
       database,
       caller.kind === "connection"
         ? caller.connectionId
@@ -146,10 +156,14 @@ export async function dispatchCommand(
   if (!Object.hasOwn(commandTable, command.type)) throw notFound();
   const row = commandRow(command.type) as CommandRow;
   // A type this caller does not hold reads as nothing at all, before its input is looked at.
-  const scope = await door.scope(actor);
+  const holder = await door.scope(actor);
   if (
-    scope === "gone" ||
-    !commandHeld(row, { connection: scope ? { grant: scope } : null, mode: actor.accessMode })
+    holder === "gone" ||
+    !commandHolds(command.type as CommandType, {
+      scope: holder?.scope ?? null,
+      grant: holder?.grant ?? null,
+      mode: actor.accessMode,
+    })
   )
     throw notFound();
   // A type it holds is read with its schema; what is wrong with it may be said. A value only the

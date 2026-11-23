@@ -188,6 +188,20 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
         .execute(),
     ).toEqual([]);
 
+    // State is admitted like a command, from the live grant (AD2): narrowed, it is seen at once.
+    const narrowing = await connect({ scope: "everything" });
+    expect(
+      (await call(narrowing.client, "opensteer_state", { area: "settings" })).isError,
+    ).not.toBe(true);
+    await connections.update(owner, {
+      connectionId: narrowing.id,
+      expectedRevision: 1,
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const narrowed = await call(narrowing.client, "opensteer_state", { area: "settings" });
+    // Not offered any longer, so not there: the tool is gone from its list.
+    expect(narrowed.isError).toBe(true);
+
     // A Supervised connection: exactly one Request, the door's; Disconnect closes it, and
     // nothing runs (X9).
     const asking = await connect({ scope: "everything" });

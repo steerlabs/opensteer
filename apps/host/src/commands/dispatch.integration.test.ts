@@ -3,7 +3,7 @@ import type { AgentGrant, UserId } from "@opensteer/core";
 import {
   AgentConnectionStore,
   admitCommand,
-  commandHeld,
+  commandHolds,
   commandSubject,
 } from "@opensteer/database";
 import { describeStore } from "@opensteer/database/test-support/store";
@@ -82,9 +82,9 @@ describeStore("the door with the Home's own admission", (it) => {
     const everything = await connect({ scope: "everything" });
     const selected = await connect({ scope: "selected", tasks: true, resources: [] });
     const occurrence = await storeFixture.startTriggerOccurrence(f, `door-${randomUUID()}`);
-    const grants = new Map<string, "everything" | "selected">([
-      [`connection:${everything.id}`, "everything"],
-      [`connection:${selected.id}`, "selected"],
+    const grants = new Map<string, AgentGrant>([
+      [`connection:${everything.id}`, { scope: "everything" }],
+      [`connection:${selected.id}`, { scope: "selected", tasks: true, resources: [] }],
     ]);
     const caller = (key: string, kind: AgentCaller["kind"]): AgentCaller =>
       ({
@@ -92,9 +92,7 @@ describeStore("the door with the Home's own admission", (it) => {
         key,
         userId: f.userId as UserId,
         accessMode: "full-access",
-        ...(grants.has(key)
-          ? { grant: { scope: grants.get(key) }, connectionId: key.slice(11) }
-          : {}),
+        ...(grants.has(key) ? { grant: grants.get(key), connectionId: key.slice(11) } : {}),
       }) as AgentCaller;
     const callers = [
       caller(`run:${f.run.id}`, "run"),
@@ -119,8 +117,12 @@ describeStore("the door with the Home's own admission", (it) => {
             command: command as never,
           });
           const outcome = dispatchCommand(agent, command, door);
-          const held = commandHeld(commandTable[type] as CommandRow, {
-            connection: agent.kind === "connection" ? { grant: grants.get(agent.key)! } : null,
+          // The listing's own answer, from the caller's grant (AD1).
+          const grant =
+            agent.kind === "connection" ? agent.grant : (agent.agentConnection?.grant ?? null);
+          const held = commandHolds(type, {
+            scope: grant?.scope ?? null,
+            grant,
             mode: agent.accessMode,
           });
           if (!held)

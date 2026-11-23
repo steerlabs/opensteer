@@ -28,11 +28,14 @@ import {
 import {
   commandFace,
   commandFaceStep,
+  commandGovernedKinds,
   commandRow,
   type Command,
   type CommandFace,
   type CommandResource,
+  type CommandResourceKind,
   type CommandRow,
+  type CommandType,
   type CommandScope,
   type EffectClass,
 } from "@opensteer/protocol/command-table";
@@ -996,6 +999,96 @@ export async function commandCallerScope(
   return grant.success
     ? commandGrantScope({ grant: grant.data, bridgeSenders: row.bridgeSenders })
     : "gone";
+}
+
+/** A caller as whether it holds a command reads it: its live scope and grant, and its mode. */
+export interface CommandHolder {
+  readonly scope: "everything" | "selected" | null;
+  readonly grant: AgentGrant | null;
+  readonly mode: ThreadAccessMode;
+}
+
+/**
+ * Whether a caller holds a command type at all: the one function the listing and the door both
+ * ask, from the caller's live grant, before any input is read (rule 5). A selected grant holds a
+ * type only if it holds the kind of thing the type governs, as admission reaches it per thing.
+ */
+export function commandHolds(type: CommandType, holder: CommandHolder): boolean {
+  const row = commandRow(type) as CommandRow;
+  if (
+    !commandHeld(row, {
+      connection: holder.scope ? { grant: holder.scope } : null,
+      mode: holder.mode,
+    })
+  )
+    return false;
+  const grant = holder.grant;
+  if (holder.scope !== "selected" || grant?.scope !== "selected") return true;
+  // A new thing has nothing to be outside of: admission reaches it, and a selected grant asks.
+  if (row.scope === "new") return true;
+  return commandGovernedKinds(type).some((kind) => selectedHoldsKind(kind, grant));
+}
+
+/** What a selected grant reaches of each kind, exactly as `commandReach` resolves it. */
+function selectedHoldsKind(
+  kind: CommandResourceKind,
+  grant: Extract<AgentGrant, { scope: "selected" }>,
+): boolean {
+  const has = (resource: string) => grant.resources.some((entry) => entry.kind === resource);
+  const plugin = (target: string) =>
+    grant.resources.some((entry) => entry.kind === "plugin" && entry.target.kind === target);
+  switch (kind) {
+    case "task":
+    case "assignment":
+    case "automation":
+      return agentGrantAllowsTasks(grant);
+    // Its own session's Requests and sessions, and its own connection (D9).
+    case "request":
+    case "agent-session":
+    case "connection":
+      return true;
+    case "browser-profile":
+    case "browser-session":
+    case "tabs":
+      return has("browser-profile");
+    case "chrome":
+      return has("chrome-tabs");
+    case "plugin":
+      return plugin("installed");
+    case "local-server":
+    case "device-plugin":
+      return plugin("local-server");
+    default:
+      return false;
+  }
+}
+
+/** The live grant of a lineage's connection, for `commandHolds`; `gone` once it ended. */
+export async function commandCallerHolder(
+  database: Kysely<DatabaseSchema>,
+  connectionId: string | null,
+): Promise<
+  { readonly scope: "everything" | "selected"; readonly grant: AgentGrant } | "gone" | null
+> {
+  if (connectionId === null) return null;
+  const row = await database
+    .selectFrom("agentConnections")
+    .select(["grant", "bridgeSenders"])
+    .where("id", "=", connectionId)
+    .where(liveConnection(database))
+    .executeTakeFirst();
+  if (!row) return "gone";
+  const grant = AgentGrantSchema.safeParse(row.grant);
+  if (!grant.success) return "gone";
+  const scope = commandGrantScope({ grant: grant.data, bridgeSenders: row.bridgeSenders })!;
+  // A chat anyone may speak in holds what a selected grant with nothing in it holds (X15).
+  return {
+    scope,
+    grant:
+      scope === "selected" && grant.data.scope === "everything"
+        ? { scope: "selected", tasks: false, resources: [] }
+        : grant.data,
+  };
 }
 
 export const commandNotFoundMessage = "That item is unavailable.";

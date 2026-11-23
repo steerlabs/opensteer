@@ -98,35 +98,38 @@ export interface CommandFace {
   readonly lineage?: true;
 }
 
-export type CommandResourceKind =
-  | "task"
-  | "request"
-  | "automation"
-  | "tabs"
-  | "tab-group"
-  | "assignment"
-  | "device-setup"
-  | "app"
-  | "engine"
-  | "device"
-  | "device-session"
-  | "enrollment"
-  | "session"
-  | "connection"
-  | "agent-session"
-  | "browser-profile"
-  | "browser-session"
-  | "chrome"
-  | "plugin"
-  | "plugin-account"
-  | "plugin-sign-in"
-  | "device-app"
-  | "device-data"
-  | "local-server"
-  | "device-plugin"
-  | "plugin-setting"
-  | "chat-account"
-  | "home";
+export type CommandResourceKind = (typeof commandResourceKinds)[number];
+/** Every kind of thing a command can govern. */
+export const commandResourceKinds = [
+  "task",
+  "request",
+  "automation",
+  "tabs",
+  "tab-group",
+  "assignment",
+  "device-setup",
+  "app",
+  "engine",
+  "device",
+  "device-session",
+  "enrollment",
+  "session",
+  "connection",
+  "agent-session",
+  "browser-profile",
+  "browser-session",
+  "chrome",
+  "plugin",
+  "plugin-account",
+  "plugin-sign-in",
+  "device-app",
+  "device-data",
+  "local-server",
+  "device-plugin",
+  "plugin-setting",
+  "chat-account",
+  "home",
+] as const;
 
 /**
  * The thing a command changes, read from its input and nothing else: stable ids, sorted, no
@@ -1415,6 +1418,20 @@ export function commandFaceStep(
  * Where a command's effect can be: only the Home's database, or possibly beyond it. Unknown is
  * the default: a row says `database` only where its handler was read to do one transaction.
  */
+/**
+ * The kinds of thing a command type can govern, read from its own `governs` (every kind it can
+ * name, whichever its input selects): what a listing cut by kind asks a grant about.
+ */
+export function commandGovernedKinds(type: CommandType): readonly CommandResourceKind[] {
+  const known = new Set<string>(commandResourceKinds);
+  const source = String((commandTable[type] as CommandRow).governs);
+  const named = [...source.matchAll(/"([a-z-]+)"/gu)].map((match) => match[1]!);
+  // The `task` helper names its kind inside itself.
+  const kinds = new Set(named.filter((name) => known.has(name)));
+  if (/\btask\b/u.test(source) && kinds.size === 0) kinds.add("task");
+  return [...kinds] as CommandResourceKind[];
+}
+
 export function commandEffect(row: Pick<CommandRow, "effect">): "database" | "outside" {
   return row.effect ?? "outside";
 }

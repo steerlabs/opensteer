@@ -1,8 +1,7 @@
 import { OpensteerError, type RequestId, type ThreadId } from "@opensteer/core";
 import {
   beginAgentSession,
-  commandGrantScope,
-  commandHeld,
+  commandHolds,
   commandNotFoundMessage,
   commandRule,
   type CommandRequestOrigin,
@@ -77,15 +76,20 @@ export class CommandTools {
 
   /** What this caller holds, and how the Home answers each: from the rule, cut to the caller. */
   async #held(caller: AgentCaller) {
-    const scope = await agentCommandScope(this.#database)(caller);
-    if (scope === "gone") return [];
+    // The live grant, as the door reads it, and the one function the door asks (AD1).
+    const holder = await agentCommandScope(this.#database)(caller);
+    if (holder === "gone") return [];
+    const scope = holder?.scope ?? null;
     const connection = scope ? { grant: scope } : null;
-    const grant = caller.kind === "connection" ? caller.grant : caller.agentConnection?.grant;
     return (Object.keys(commandTable) as CommandType[]).flatMap((type) => {
       const row = commandRow(type) as CommandRow;
-      if (!commandHeld(row, { connection, mode: caller.accessMode })) return [];
-      // A selected grant lists only what it could name: nothing of a kind it does not hold.
-      if (scope === "selected" && grant?.scope === "selected" && !selectedCovers(type, row, grant))
+      if (
+        !commandHolds(type, {
+          scope,
+          grant: holder?.grant ?? null,
+          mode: caller.accessMode,
+        })
+      )
         return [];
       const answers = new Set<"now" | "ask">();
       row.faces.forEach((_, face) => {
@@ -229,12 +233,12 @@ export class CommandTools {
   }
 
   async opensteer_state({ caller, input }: ToolCall<"opensteer_state">) {
-    const scope =
-      caller.kind === "connection"
-        ? commandGrantScope({ grant: caller.grant, bridgeSenders: null })
-        : null;
+    // Admitted like a command: the live scope from the same read the door makes (AD2). An ended
+    // connection reads nothing; a chat anyone may speak in counts as selected.
+    const holder = await agentCommandScope(this.#database)(caller);
+    if (holder === "gone") throw notFound();
     // Settings are the person's own: not there for a selected grant.
-    if (input.area === "settings" && scope === "selected") throw notFound();
+    if (input.area === "settings" && holder?.scope === "selected") throw notFound();
     return { area: input.area, view: await this.#administration.settingsView(caller) };
   }
 
@@ -359,39 +363,6 @@ function dropPath(node: unknown, path: readonly string[]): void {
     return;
   }
   dropPath(properties[path[0]!], path.slice(1));
-}
-
-/**
- * Whether a selected grant holds anything of the kind a command type governs: its tasks, a
- * browser profile or a paired Chrome, a plugin, a device app; its own connection always.
- */
-function selectedCovers(
-  type: CommandType,
-  row: CommandRow,
-  grant: Extract<NonNullable<AgentCaller["agentConnection"]>["grant"], { scope: "selected" }>,
-): boolean {
-  const has = (kind: string) => grant.resources.some((resource) => resource.kind === kind);
-  switch (row.family) {
-    case "connections":
-      return row.scope === "connection";
-    case "tasks":
-    case "automations":
-      return grant.tasks;
-    case "browser":
-      return type.startsWith("browser.source.") ? has("chrome-tabs") : has("browser-profile");
-    case "tabs-apps":
-      return type.startsWith("tab.") && (has("browser-profile") || has("chrome-tabs"));
-    case "plugins":
-      return has("plugin");
-    case "device-apps":
-      return type === "plugin.remove"
-        ? grant.resources.some(
-            (resource) => resource.kind === "plugin" && resource.target.kind === "local-server",
-          )
-        : has("computer-app");
-    default:
-      return false;
-  }
 }
 
 /** What the door's answer reads as to the tool's caller. */
