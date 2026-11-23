@@ -5264,6 +5264,26 @@ describe("whose configuration Claude Code starts with", () => {
 });
 
 describe("how Claude Code reaches the network", () => {
+  it("passes the lowercase HTTPS proxy from the process environment to Claude Code", async () => {
+    const proxy = "http://proxy.invalid:8080";
+    vi.stubEnv("https_proxy", proxy);
+    try {
+      const sdk = new FakeSdk((parameters) => {
+        const id = providerSessionId(parameters.options);
+        return scriptedQuery([initMessage(id), successMessage(id, "Done.")]);
+      });
+      const fixture = await openSession(sdk);
+      try {
+        await send(fixture.session, "Hello");
+        expect(sdk.calls[0]!.options.env?.https_proxy).toBe(proxy);
+      } finally {
+        await fixture.adapter.close();
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("hands Claude Code the proxy and certificates and keeps a proxy password out of its errors", async () => {
     const proxy = "http://person:fake-proxy-password@proxy.example.test:8080";
     const sdk = new FakeSdk((parameters) =>

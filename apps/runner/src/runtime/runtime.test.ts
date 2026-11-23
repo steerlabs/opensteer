@@ -5419,6 +5419,12 @@ describe("RunnerRuntime", () => {
 });
 
 describe("harness process environment", () => {
+  it("passes the lowercase HTTPS proxy through to engines on macOS and Linux", () => {
+    const source = { https_proxy: "http://proxy.invalid:8080" };
+    expect(harnessProcessEnvironment(source, [], "darwin")).toEqual(source);
+    expect(harnessProcessEnvironment(source, [], "linux")).toEqual(source);
+  });
+
   it("keeps the Windows baseline and engine variables but no Runner credentials", () => {
     const source = {
       CLAUDE_CONFIG_DIR: "C:\\Users\\Ada\\.claude",

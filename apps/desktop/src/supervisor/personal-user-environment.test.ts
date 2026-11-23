@@ -24,6 +24,15 @@ afterEach(async () => {
 });
 
 describe("Personal user environment", () => {
+  it("keeps both spellings of the HTTPS proxy on macOS and Linux", () => {
+    const source = {
+      HTTPS_PROXY: "http://proxy-upper.invalid:8080",
+      https_proxy: "http://proxy-lower.invalid:8080",
+    };
+    expect(filterUserEnvironment(source, "darwin")).toEqual(source);
+    expect(filterUserEnvironment(source, "linux")).toEqual(source);
+  });
+
   it("parses only bounded path/config fields after the login-shell sentinel", () => {
     const output = Buffer.from(
       [
