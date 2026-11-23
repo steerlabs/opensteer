@@ -67,6 +67,55 @@ it("drains on startup and commit, and retries at the durable deadline", async ()
   }
 });
 
+it("describes outcome-unknown notices as lost contact rather than interrupted (Z5 / Finding 9)", async () => {
+  vi.useFakeTimers();
+  const threadId = createId("thread");
+  const notice: PendingAutomationFailure = {
+    anchorThreadId: threadId,
+    anchorThreadTitle: "Task",
+    attempts: 0,
+    createdBy: createId("user"),
+    detail: "Outcome unknown: the computer reconnected without this firing.",
+    destinationThreadId: threadId,
+    id: crypto.randomUUID(),
+    reason: "outcome-unknown",
+    triggerId: createId("trigger"),
+    triggerName: "Nightly backup",
+  };
+  let delivered = false;
+  const enqueueThreadInput = vi.fn<CommandService["enqueueThreadInput"]>(async () => ({
+    disposition: "queued" as const,
+    inputId: createId("threadInput"),
+    runId: null,
+  }));
+  const service = new AutomationFailureService({
+    commands: { enqueueThreadInput },
+    onError: () => undefined,
+    store: {
+      listDue: vi.fn(async () => (delivered ? [] : [notice])),
+      nextDeadline: async () => null,
+      retryLater: vi.fn(async () => undefined),
+      settle: vi.fn(async () => {
+        delivered = true;
+      }),
+    },
+  });
+  try {
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(enqueueThreadInput).toHaveBeenCalledOnce();
+    const text = enqueueThreadInput.mock.calls[0]?.[0]?.content
+      .map((part) => ("text" in part ? part.text : ""))
+      .join("");
+    expect(text).toMatch(/lost contact/iu);
+    expect(text).toMatch(/outcome is unknown/iu);
+    expect(text).not.toMatch(/was interrupted/iu);
+  } finally {
+    await service.close();
+    vi.useRealTimers();
+  }
+});
+
 it("backs off when a due notice cannot be listed, instead of spinning", async () => {
   vi.useFakeTimers();
   let reads = 0;

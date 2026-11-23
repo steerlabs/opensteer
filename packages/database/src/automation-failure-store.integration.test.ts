@@ -216,6 +216,7 @@ integration.sequential("automation failure notices", () => {
       fixture: Fixture,
       occurrence: TriggerOccurrence,
       runnerBootId: string,
+      options?: { readonly sent?: boolean },
     ): Promise<
       TriggerOccurrence & {
         readonly executionGeneration: number;
@@ -228,6 +229,9 @@ integration.sequential("automation failure notices", () => {
         runnerBootId,
         runnerId: fixture.runnerId,
       });
+      if (options?.sent !== false) {
+        await store.markCommandFrameSent(occurrence.commandId);
+      }
       return {
         ...occurrence,
         executionGeneration: started.executionGeneration,
@@ -692,6 +696,112 @@ integration.sequential("automation failure notices", () => {
     expect(lateSettled?.status).toBe("succeeded");
     expect(lateSettled?.exitCode).toBe(0);
     expect(lateSettled?.stdout).toBe("finished before restart\n");
+    // Finding 9: late proof withdraws the undelivered outcome-unknown notice so the anchor is not
+    // woken with a stale "it may not have finished" prompt.
+    const noticesAfterLateProof = await storedNotices();
+    expect(noticesAfterLateProof).toHaveLength(1);
+    expect(noticesAfterLateProof[0]?.settledAt).not.toBeNull();
+    expect(await storeFixture.notices.listDue()).toEqual([]);
+  });
+
+  it("resets unsent firings (frame_sent_at IS NULL) to pending on attach and restores active unknown firings (Z5 / Finding 12)", async ({
+    storeFixture,
+  }) => {
+    const {
+      createFixture,
+      createOneShotTrigger,
+      database,
+      detail,
+      fireOneShot,
+      notices,
+      start,
+      storedNotices,
+      triggers,
+    } = storeFixture;
+    const fixture = await createFixture("z5-unsent-and-restore");
+    const unsentTrigger = await createOneShotTrigger(fixture, "z5-unsent");
+    const unsent = await start(fixture, await fireOneShot(unsentTrigger.trigger.id), "boot-a", {
+      sent: false,
+    });
+
+    // Home crashed after startExecution and before markCommandFrameSent: attach sees frame_sent_at IS NULL
+    // and returns the firing to pending with zero notices and settledUnknownCount === 0.
+    const attachedUnsent = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [],
+      firings: [],
+      runnerBootId: "boot-a",
+      runnerId: fixture.runnerId,
+    });
+    expect(attachedUnsent.settledUnknownCount).toBe(0);
+    expect(await storedNotices()).toEqual([]);
+    const unsentRow = await database
+      .selectFrom("triggerOccurrences")
+      .select(["outcome", "runnerBootId", "runnerId", "startedAt", "status"])
+      .where("id", "=", unsent.id)
+      .executeTakeFirstOrThrow();
+    expect(unsentRow).toEqual({
+      outcome: "pending",
+      runnerBootId: null,
+      runnerId: null,
+      startedAt: null,
+      status: "pending",
+    });
+    const unsentCommand = await database
+      .selectFrom("commands")
+      .select(["dispatcherId", "frameSentAt", "status"])
+      .where("id", "=", unsent.commandId)
+      .executeTakeFirstOrThrow();
+    expect(unsentCommand).toEqual({
+      dispatcherId: null,
+      frameSentAt: null,
+      status: "pending",
+    });
+
+    // Finding 12: if a sent firing was settled unknown, and the exact (runner, boot, generation)
+    // later reattaches announcing it is still running (terminal: false), restore running and
+    // withdraw the undelivered outcome-unknown notice so its tools and renewals work again.
+    const lateTrigger = await createOneShotTrigger(fixture, "z5-restore");
+    const sent = await start(fixture, await fireOneShot(lateTrigger.trigger.id), "boot-b", {
+      sent: true,
+    });
+    const settledUnknown = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [],
+      firings: [],
+      runnerBootId: "boot-b",
+      runnerId: fixture.runnerId,
+    });
+    expect(settledUnknown.settledUnknownCount).toBe(1);
+    expect(await notices.listDue()).toHaveLength(1);
+
+    const restored = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [],
+      firings: [
+        {
+          environmentId: fixture.environmentId,
+          executionGeneration: sent.executionGeneration,
+          occurrenceId: sent.id,
+          terminal: false,
+        },
+      ],
+      runnerBootId: "boot-b",
+      runnerId: fixture.runnerId,
+    });
+    expect(restored.results).toEqual([{ occurrenceId: sent.id, status: "attached" }]);
+    expect((await detail(lateTrigger.trigger.id, fixture.userId)).occurrences[0]?.status).toBe(
+      "running",
+    );
+    await expect(
+      triggers.assertActiveExecutionBinding({
+        environmentId: fixture.environmentId,
+        executionGeneration: sent.executionGeneration,
+        occurrenceId: sent.id,
+        requestedBy: fixture.userId,
+        runnerBootId: "boot-b",
+        runnerId: fixture.runnerId,
+        threadId: fixture.threadId,
+      }),
+    ).resolves.toBeUndefined();
+    expect(await notices.listDue()).toEqual([]);
   });
 
   it("handles dispatch racing attach in both orders and isolates a week-gone computer's firing to its own automation", async ({

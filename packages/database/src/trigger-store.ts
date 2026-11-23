@@ -2104,6 +2104,12 @@ export class TriggerStore {
         .where("id", "=", occurrence.id)
         .returningAll()
         .executeTakeFirstOrThrow();
+      let failureNotice:
+        | {
+            readonly detail: string;
+            readonly reason: "final-occurrence-failed" | "paused";
+          }
+        | undefined;
       if (input.output.status === "succeeded") {
         const recovered =
           occurrence.revisionId === trigger.currentRevisionId && trigger.consecutiveFailures !== 0;
@@ -2153,12 +2159,10 @@ export class TriggerStore {
           .execute();
         const final = await isFinalOccurrence(transaction, occurrence);
         if (final || autoPause) {
-          await recordAutomationFailure(transaction, {
+          failureNotice = {
             detail: input.output.error ?? "The program failed without an error message.",
-            occurrenceId: occurrence.id,
             reason: final ? "final-occurrence-failed" : "paused",
-            triggerId: trigger.id,
-          });
+          };
         }
       }
       await transaction
@@ -2171,6 +2175,38 @@ export class TriggerStore {
         .where("id", "=", occurrence.commandId)
         .where("status", "in", ["dispatched", "unknown"])
         .execute();
+      if (failureNotice) {
+        const replaced = settledAsUnknown
+          ? await transaction
+              .updateTable("automationFailureNotices")
+              .set({
+                detail: [...(failureNotice.detail.trim() || "No error was reported.")]
+                  .slice(0, 2_000)
+                  .join(""),
+                reason: failureNotice.reason,
+              })
+              .where("occurrenceId", "=", occurrence.id)
+              .where("reason", "=", "outcome-unknown")
+              .where("settledAt", "is", null)
+              .executeTakeFirst()
+          : undefined;
+        if (!replaced || replaced.numUpdatedRows === 0n) {
+          await recordAutomationFailure(transaction, {
+            detail: failureNotice.detail,
+            occurrenceId: occurrence.id,
+            reason: failureNotice.reason,
+            triggerId: trigger.id,
+          });
+        }
+      } else if (settledAsUnknown) {
+        await transaction
+          .updateTable("automationFailureNotices")
+          .set({ lastError: null, settledAt: now })
+          .where("occurrenceId", "=", occurrence.id)
+          .where("reason", "=", "outcome-unknown")
+          .where("settledAt", "is", null)
+          .execute();
+      }
       return occurrenceFromRow(updated);
     });
   }
@@ -2216,6 +2252,8 @@ export class TriggerStore {
       )[] = [];
       const heldIds = new Set<TriggerOccurrenceId>();
       const attachedRunningIds: TriggerOccurrenceId[] = [];
+      const restoredUnknownIds: TriggerOccurrenceId[] = [];
+      const restoredCommandIds: CommandId[] = [];
       const dispatchingIds = new Set<TriggerOccurrenceId>(input.dispatchingOccurrenceIds);
 
       const sortedFirings = [...input.firings].toSorted((a, b) =>
@@ -2227,6 +2265,7 @@ export class TriggerStore {
           .selectFrom("triggerOccurrences")
           .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
           .select([
+            "triggerOccurrences.commandId",
             "triggerOccurrences.connectionId",
             "triggerOccurrences.contactLostAt",
             "triggerOccurrences.environmentId",
@@ -2272,7 +2311,10 @@ export class TriggerStore {
           });
           continue;
         }
-        if (
+        if (!firing.terminal && row.outcome === "unknown") {
+          restoredUnknownIds.push(row.id);
+          restoredCommandIds.push(row.commandId);
+        } else if (
           row.status === "running" &&
           row.contactLostAt !== null &&
           row.terminalEvidenceAt === null
@@ -2282,13 +2324,29 @@ export class TriggerStore {
         results.push({ occurrenceId: firing.occurrenceId, status: "attached" });
       }
 
+      const now = new Date();
       if (attachedRunningIds.length > 0) {
         await transaction
           .updateTable("triggerOccurrences")
-          .set({ contactLostAt: null, updatedAt: new Date() })
+          .set({ contactLostAt: null, updatedAt: now })
           .where("id", "in", attachedRunningIds)
           .where("status", "=", "running")
           .where("terminalEvidenceAt", "is", null)
+          .execute();
+      }
+      if (restoredUnknownIds.length > 0) {
+        await transaction
+          .updateTable("triggerOccurrences")
+          .set({
+            completedAt: null,
+            contactLostAt: null,
+            error: null,
+            terminalEvidenceAt: null,
+            ...triggerOccurrenceStateColumns("running"),
+            updatedAt: now,
+          })
+          .where("id", "in", restoredUnknownIds)
+          .where("outcome", "=", "unknown")
           .execute();
       }
 
@@ -2301,8 +2359,35 @@ export class TriggerStore {
             }
           : {}),
         message: "Outcome unknown: the computer reconnected without this firing.",
+        resetUnsentToPending: true,
         runnerId: input.runnerId,
       });
+
+      if (restoredCommandIds.length > 0) {
+        const sortedRestoredCommands = [...restoredCommandIds].toSorted((a, b) =>
+          a.localeCompare(b),
+        );
+        await transaction
+          .selectFrom("commands")
+          .select("id")
+          .where("id", "in", sortedRestoredCommands)
+          .orderBy("id", "asc")
+          .forNoKeyUpdate()
+          .execute();
+        await transaction
+          .updateTable("commands")
+          .set({ lastError: null, status: "succeeded", updatedAt: now })
+          .where("id", "in", sortedRestoredCommands)
+          .where("status", "=", "unknown")
+          .execute();
+        await transaction
+          .updateTable("automationFailureNotices")
+          .set({ lastError: null, settledAt: now })
+          .where("occurrenceId", "in", restoredUnknownIds)
+          .where("reason", "=", "outcome-unknown")
+          .where("settledAt", "is", null)
+          .execute();
+      }
 
       return { results, settledUnknownCount };
     });
@@ -2328,6 +2413,7 @@ export class TriggerStore {
       readonly excludeOccurrenceIds?: readonly TriggerOccurrenceId[];
       readonly excludeSameBootOccurrenceIds?: readonly TriggerOccurrenceId[];
       readonly message: string;
+      readonly resetUnsentToPending?: boolean;
       readonly runnerBootId?: string;
       readonly runnerId: RunnerId;
       readonly sameBootId?: string;
@@ -2357,8 +2443,59 @@ export class TriggerStore {
     if (rows.length === 0) return 0;
 
     const now = new Date();
-    const ids = rows.map((row) => row.id);
     const commandIds = rows.map((row) => row.commandId);
+    const commandRows = await transaction
+      .selectFrom("commands")
+      .select(["frameSentAt", "id"])
+      .where("id", "in", commandIds)
+      .orderBy("id", "asc")
+      .forNoKeyUpdate()
+      .execute();
+    const frameSentByCommandId = new Map(commandRows.map((row) => [row.id, row.frameSentAt]));
+    const unsentRows = input.resetUnsentToPending
+      ? rows.filter((row) => frameSentByCommandId.get(row.commandId) === null)
+      : [];
+    const unknownRows = input.resetUnsentToPending
+      ? rows.filter((row) => frameSentByCommandId.get(row.commandId) !== null)
+      : rows;
+
+    if (unsentRows.length > 0) {
+      const unsentIds = unsentRows.map((row) => row.id);
+      const unsentCommandIds = unsentRows.map((row) => row.commandId);
+      await transaction
+        .updateTable("triggerOccurrences")
+        .set({
+          admittedAccessMode: null,
+          admittedGrantRevision: null,
+          contactLostAt: null,
+          runnerBootId: null,
+          runnerId: null,
+          startedAt: null,
+          terminalEvidenceAt: null,
+          ...triggerOccurrenceStateColumns("pending"),
+          updatedAt: now,
+        })
+        .where("id", "in", unsentIds)
+        .where("status", "=", "running")
+        .execute();
+      await transaction
+        .updateTable("commands")
+        .set({
+          dispatcherId: null,
+          frameSentAt: null,
+          lastError: null,
+          status: "pending",
+          updatedAt: now,
+        })
+        .where("id", "in", unsentCommandIds)
+        .where("status", "=", "dispatched")
+        .execute();
+    }
+
+    if (unknownRows.length === 0) return 0;
+
+    const unknownIds = unknownRows.map((row) => row.id);
+    const unknownCommandIds = unknownRows.map((row) => row.commandId);
     const errorPayload = jsonValue({
       code: "outcome_unknown",
       message: input.message,
@@ -2374,17 +2511,10 @@ export class TriggerStore {
         terminalEvidenceAt: sql`case when connection_id is not null then coalesce(terminal_evidence_at, ${now}) else terminal_evidence_at end`,
         updatedAt: now,
       })
-      .where("id", "in", ids)
+      .where("id", "in", unknownIds)
       .where("status", "=", "running")
       .execute();
 
-    await transaction
-      .selectFrom("commands")
-      .select("id")
-      .where("id", "in", commandIds)
-      .orderBy("id", "asc")
-      .forNoKeyUpdate()
-      .execute();
     await transaction
       .updateTable("commands")
       .set({
@@ -2392,11 +2522,11 @@ export class TriggerStore {
         status: "unknown",
         updatedAt: now,
       })
-      .where("id", "in", commandIds)
+      .where("id", "in", unknownCommandIds)
       .where("status", "=", "dispatched")
       .execute();
 
-    for (const row of rows) {
+    for (const row of unknownRows) {
       if (!(await isFinalOccurrence(transaction, row))) continue;
       await recordAutomationFailure(transaction, {
         detail: input.message,
@@ -2405,7 +2535,7 @@ export class TriggerStore {
         triggerId: row.triggerId,
       });
     }
-    return rows.length;
+    return unknownRows.length;
   }
 }
 

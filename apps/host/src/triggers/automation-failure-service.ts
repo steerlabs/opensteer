@@ -96,9 +96,18 @@ function noticeText(notice: PendingAutomationFailure): string {
     notice.destinationThreadId === notice.anchorThreadId
       ? `The automation "${notice.triggerName}"`
       : `The automation "${notice.triggerName}", which runs in its own task ${JSON.stringify(notice.anchorThreadTitle)} (${notice.anchorThreadId}),`;
-  if (notice.reason === "final-occurrence-interrupted" || notice.reason === "outcome-unknown") {
-    // Opensteer cannot know whether the program's effects happened, and running
+  if (notice.reason === "outcome-unknown") {
+    // Opensteer cannot know whether the script's effects happened, and running
     // it again is the agent's decision, not something to do silently.
+    return [
+      `${automation} lost contact with its computer during its only scheduled run, so its outcome is unknown. It may not have finished, and it will not run again on its own.`,
+      "",
+      `Check what it already did, then run it again with opensteer_automation_control action "run_now" (automationId ${notice.triggerId}) if it still needs to happen.`,
+      "",
+      `Detail: ${JSON.stringify(notice.detail)}`,
+    ].join("\n");
+  }
+  if (notice.reason === "final-occurrence-interrupted") {
     return [
       `${automation} was interrupted on its only scheduled run when Opensteer restarted or its computer disconnected. It may not have finished, and it will not run again on its own.`,
       "",
