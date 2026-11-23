@@ -11,6 +11,7 @@ import {
   type Packet,
   type Proxy,
 } from "./remote-input-port.js";
+import { splitGraphemes } from "unicode-segmenter/grapheme";
 import { Oracle, Person, type Action } from "./typing-oracle.js";
 import { browserEditingAbilities } from "../../../../../packages/client/src/host/browser-editing.js";
 import { displayEditingAbilities } from "../../../../../packages/client/src/integrations/display-editing.js";
@@ -699,6 +700,27 @@ describe("a person's caret moves and selections in the native field", () => {
         await keyboard((f) => f.moveSelection(start, end));
         record(["moveSelection", start, end]);
       },
+      /**
+       * CW6 (a): the person swipes the caret by `distance` characters. The oracle applies exactly
+       * that distance; where it lands in the native field is counted with another segmenter than
+       * the port's (unicode-segmenter's), and a swipe the native field would stop short of is not
+       * drawn (UIKit stops at the ends of its text).
+       */
+      swipe: async (distance: number) => {
+        const ends = [0];
+        for (const grapheme of splitGraphemes(native.text))
+          ends.push(ends.at(-1)! + grapheme.length);
+        const { start, end } = native.selection;
+        if (start !== end) return;
+        const index = ends.indexOf(end);
+        const to = ends[index + distance];
+        if (index < 0 || to === undefined || index + distance < 0) return;
+        steps.push(`swipe(${distance})`);
+        oracle.choose((p) => p.move(distance));
+        trace(steps.at(-1)!);
+        await keyboard((f) => f.moveSelection(to));
+        record(["moveSelection", to, to]);
+      },
       /** UIKit's own replacement (an autocorrect), made when the native field has caught up. */
       replaceRange: async (start: number, end: number, word: string, ahead = false) => {
         // `ahead`: made before an answer, on purpose (F5), where nothing waiting changes the text.
@@ -765,7 +787,10 @@ describe("a person's caret moves and selections in the native field", () => {
           remote.value,
           `${failure} (far ${JSON.stringify(escape(remote.value))}, person ${JSON.stringify(escape(shown))})`,
         ).toBe(shown);
-        if (selection.start === selection.end && marked === null)
+        // CW6 (b): the far caret wherever the person has one, a composition's included on a
+        // target that shows it live (its caret is the person's, in the marked text). A target
+        // without live composition holds the composition only at its commit: no caret there yet.
+        if (selection.start === selection.end && (marked === null || target.composition))
           expect(remote.caret, `${failure}: caret`).toBe(selection.start);
         await act(async () => root.render(null));
         harness.answers = [];
@@ -863,7 +888,11 @@ describe("a person's caret moves and selections in the native field", () => {
           await run.deleteBackward();
         }
       } else if (choice < 0.45) await run.deleteBackward();
-      else if (choice < 0.54) await run.moveSelection(pick(boundaries));
+      else if (choice < 0.54)
+        // A swipe of a distance the person chose (CW6 a); the draw is one, as the boundary's was.
+        await (third
+          ? run.swipe(pick([-3, -2, -1, 1, 2, 3]))
+          : run.moveSelection(pick(boundaries)));
       else if (choice < 0.58) {
         const [start, end] = [pick(boundaries), pick(boundaries)].sort((x, y) => x - y);
         if (!display) await run.moveSelection(start!, end!);
