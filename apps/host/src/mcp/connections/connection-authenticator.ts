@@ -32,7 +32,8 @@ export class ConnectionAuthenticator {
   async authenticate(bearer: string, resource?: string): Promise<AuthenticatedConnection> {
     if (!/^ost_mcp_[A-Za-z0-9_-]{43}$/.test(bearer)) throw invalidConnection();
     const connection = await this.store.authenticate(credentialHash(bearer), resource);
-    if (!connection) throw invalidConnection();
+    // Only an MCP connection signs in, and every one of them expires.
+    if (!connection?.expiresAt) throw invalidConnection();
     return {
       connectionId: connection.id,
       userId: connection.userId,

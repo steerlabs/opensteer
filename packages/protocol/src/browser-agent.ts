@@ -8,6 +8,8 @@ export const PageAgentBindingSchema = z.strictObject({
   sessionId: BrowserSessionIdSchema,
   backend: z.enum(["cdp", "actions"]),
   reloaded: z.boolean(),
+  /** V4: the tab was woken by opening it again at its address; what it held is gone. */
+  reopened: z.boolean().optional(),
 });
 export type PageAgentBinding = z.infer<typeof PageAgentBindingSchema>;
 

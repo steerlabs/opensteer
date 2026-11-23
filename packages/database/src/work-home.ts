@@ -152,7 +152,12 @@ export class WorkHomeStore {
           state !== "active" ||
           (row.grant.scope === "everything" && !workPolicyAllowsGrant(policy, row.grant))
         ) {
-          changes.push({ kind: "revoke", userId: row.userId, connectionId: row.id });
+          changes.push({
+            kind: "revoke",
+            userId: row.userId,
+            connectionId: row.id,
+            endedBy: state !== "active" ? "work-home" : "organization",
+          });
           continue;
         }
         const grant: AgentGrant =

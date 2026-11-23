@@ -120,6 +120,6 @@ describe("Connected agents: adding an agent", () => {
         },
       });
     });
-    await vi.waitFor(() => expect(dialog.textContent).toContain("Terminal agent is connected."));
+    await vi.waitFor(() => expect(dialog.textContent).toContain("“Terminal agent” is connected."));
   });
 });

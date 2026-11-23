@@ -318,6 +318,19 @@ describe("native profile runtime", () => {
       navigation.mockRestore();
     }
   });
+  it("lets its profile go when its shutdown fails, so the same process can start on it again", async () => {
+    const f = await fixture();
+    // The browser died under it: closing its engine fails at shutdown.
+    const dead = new FakeLaunchedBrowser(new FakeContext([new FakePage()]), new Error("gone"));
+    vi.spyOn(f.launcher, "launch").mockResolvedValueOnce(dead);
+    await f.open(1, 1);
+    try {
+      await expect(f.runtime.shutdown()).rejects.toThrow(/could not be closed/);
+      await expect(fixture(f.root)).resolves.toBeDefined();
+    } finally {
+      vi.spyOn(dead, "close").mockResolvedValue();
+    }
+  });
   it("allows only one runtime to own a storage root", async () => {
     const f = await fixture();
     await expect(fixture(f.root)).rejects.toThrow(/in use/);

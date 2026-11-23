@@ -10,7 +10,6 @@ import {
 } from "./requests.js";
 import { pluginTools } from "./plugins.js";
 import { localServerTools } from "./local-servers.js";
-import { messagingBridgeTools } from "./messaging-bridges.js";
 import {
   opensteer_task_create,
   opensteer_delegation_wait,
@@ -47,7 +46,6 @@ export const agentTools = [
   ...browserTools,
   ...pluginTools,
   ...localServerTools,
-  ...messagingBridgeTools,
   opensteer_request_list,
   opensteer_request_read,
   opensteer_request_answer,
@@ -89,7 +87,6 @@ export * from "./apps.js";
 export * from "./browser.js";
 export * from "./computer.js";
 export * from "./ai-accounts.js";
-export * from "./messaging-bridges.js";
 export * from "./person.js";
 export * from "./plugins.js";
 export * from "./local-servers.js";

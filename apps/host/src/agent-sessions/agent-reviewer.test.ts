@@ -198,4 +198,16 @@ Review data:\n${JSON.stringify(data)}`,
     backgroundText.mockRejectedValueOnce(new Error("offline"));
     expect(await reviewer.review(input, signal)).toBe("ask");
   });
+
+  it("tries the next background candidate when the first refuses or fails", async () => {
+    const second = { ...candidate, harnessInstanceId: createId("harnessInstance") };
+    const { reviewer, backgroundText } = fixture();
+    resolve.mockResolvedValueOnce({ candidates: [candidate, second] });
+    backgroundText
+      .mockResolvedValueOnce({ ok: false, failure: "unavailable" })
+      .mockResolvedValueOnce({ ok: true, text: "allow" });
+    expect(await reviewer.review(input, new AbortController().signal)).toBe("allow");
+    expect(backgroundText).toHaveBeenCalledTimes(2);
+    expect(backgroundText.mock.calls[1]?.[0].harnessInstanceId).toBe(second.harnessInstanceId);
+  });
 });

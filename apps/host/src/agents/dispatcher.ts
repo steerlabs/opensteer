@@ -1,6 +1,13 @@
 import { runHasBrowserPages } from "./browser-capability.js";
 import { promptCacheExpiresAt } from "@opensteer/core";
-import { dispatchNodeStop, grantedContent, NodeStopAuthoritySchema } from "@opensteer/database";
+import {
+  connectionIsWaiting,
+  triggerChatIsWaiting,
+  dispatchNodeStop,
+  grantedContent,
+  NodeStopAuthoritySchema,
+  senderUnlinkedFailure,
+} from "@opensteer/database";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import {
   ModelSelectionSchema,
@@ -449,6 +456,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             subject: { kind: "binding", bindingId: `run:${context.run.id}` },
           })
     ).catch((error: unknown) => {
+      // A chat that is only paused holds its Run until it is back; only an end fails it. The
+      // read that refused it said which.
+      if (runConnectionId !== null && connectionIsWaiting(error)) throw chatRunHeld();
       throw new CommandDispatchError(
         error instanceof OpensteerError ? error.message : "This task's access ended.",
         "failed",
@@ -767,14 +777,25 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const dispatch = {
       beforeSend: async () => {
         if (authority.agentConnection) {
-          await this.#assertPlannedAuthority(context.run, authority);
-          await this.#store.recordConnectionRunHandoff({
-            runId: context.run.id,
-            bindingGeneration: binding.bindingGeneration,
-            connectionId: authority.agentConnection.agentConnectionId,
-            grantRevision: authority.agentConnection.grantRevision,
-            mode: authority.mode,
-          });
+          const connectionId = authority.agentConnection.agentConnectionId;
+          try {
+            await this.#assertPlannedAuthority(context.run, authority);
+            await this.#store.recordConnectionRunHandoff({
+              runId: context.run.id,
+              bindingGeneration: binding.bindingGeneration,
+              connectionId,
+              grantRevision: authority.agentConnection.grantRevision,
+              mode: authority.mode,
+            });
+          } catch (error) {
+            // Paused while the Run was being prepared: held for the chat, as at the first check.
+            if (connectionIsWaiting(error)) throw chatRunHeld();
+            // Its message's sender stopped being "me" since the claim: it ends, and the chat
+            // hears nothing (run-finalization reads this failure).
+            if (error instanceof OpensteerError && error.message === senderUnlinkedFailure)
+              throw new CommandDispatchError(senderUnlinkedFailure, "failed");
+            throw error;
+          }
         }
         await this.#store.assertActiveGrant({
           bindingGeneration: binding.bindingGeneration,
@@ -795,16 +816,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         : {}),
       connectionGeneration: identity.connectionGeneration,
     };
-    if (command.authoritySource.kind === "channel-ingress") {
-      await this.#store.dispatchChannelCommand(command.id, async (beforeAck) => {
-        await this.#runners.dispatch(runnerCommand, signal, {
-          ...dispatch,
-          beforeAck,
-        });
-      });
-    } else {
-      await this.#runners.dispatch(runnerCommand, signal, dispatch);
-    }
+    await this.#runners.dispatch(runnerCommand, signal, dispatch);
   }
   async #assertPlannedAuthority(
     run: { readonly id: RunId; readonly requestedBy: UserId },
@@ -829,7 +841,19 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     const identity = this.#runners.identityForEnvironment(command.environmentId);
     if (!identity) throw new CommandDispatchError("Runner is offline", "retry");
-    const initial = await this.#triggers.loadDispatchContext(command.id);
+    // An automation of a paused chat is held, never failed: only when the one read of its standing
+    // refused it for that, before anything is handed to the Runner. A conflict, a missing row or a
+    // lineage without personal context fails as itself, paused or not. Once the send has passed,
+    // what happens is the Runner's, and an unknown end stays unknown.
+    const heldIfChatWaits = async <T>(step: () => Promise<T>): Promise<T> => {
+      try {
+        return await step();
+      } catch (error) {
+        if (triggerChatIsWaiting(error)) throw chatRunHeld();
+        throw error;
+      }
+    };
+    const initial = await heldIfChatWaits(() => this.#triggers.loadDispatchContext(command.id));
     const incompatibility = await triggerProgramCompatibilityReason(
       this.#store,
       initial.anchorThread.environmentId,
@@ -844,11 +868,13 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
-    const { context, executionGeneration, connectionId } = await this.#triggers.startExecution({
-      commandId: command.id,
-      runnerBootId: identity.bootId,
-      runnerId: identity.runnerId,
-    });
+    const { context, executionGeneration, connectionId } = await heldIfChatWaits(() =>
+      this.#triggers.startExecution({
+        commandId: command.id,
+        runnerBootId: identity.bootId,
+        runnerId: identity.runnerId,
+      }),
+    );
     const notAdmitted = connectionId
       ? () => this.#triggers.recordOccurrenceNotAdmitted(context.occurrence.id, executionGeneration)
       : undefined;
@@ -922,16 +948,20 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           runnerBootId: identity.bootId,
           runnerId: identity.runnerId,
         }),
+      // Held here, the Runner never had it: the registry records it not admitted, which undoes
+      // the running stamp, and the coordinator returns it to pending.
       beforeSend: () =>
-        this.#triggers.assertActiveExecutionBinding({
-          environmentId: context.anchorThread.environmentId,
-          executionGeneration,
-          occurrenceId: context.occurrence.id,
-          requestedBy: context.trigger.createdBy,
-          runnerBootId: identity.bootId,
-          runnerId: identity.runnerId,
-          threadId: context.anchorThread.id,
-        }),
+        heldIfChatWaits(() =>
+          this.#triggers.assertActiveExecutionBinding({
+            environmentId: context.anchorThread.environmentId,
+            executionGeneration,
+            occurrenceId: context.occurrence.id,
+            requestedBy: context.trigger.createdBy,
+            runnerBootId: identity.bootId,
+            runnerId: identity.runnerId,
+            threadId: context.anchorThread.id,
+          }),
+        ),
       ...(notAdmitted ? { onNotAdmitted: notAdmitted } : {}),
     });
   }
@@ -1132,15 +1162,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             throw new CommandDispatchError(error.message, "failed");
           }
         });
-      if (command.authoritySource.kind === "channel-ingress") {
-        await this.#store.dispatchChannelCommand(command.id, async (beforeAck) => {
-          await this.#runners.dispatch(runnerCommand, signal, {
-            beforeAck,
-            ...(beforeSend ? { beforeSend } : {}),
-          });
-        });
-        return;
-      }
       await this.#runners.dispatch(runnerCommand, signal, beforeSend ? { beforeSend } : undefined);
     } catch (error) {
       if (!(error instanceof CommandDispatchError) || error.disposition !== "failed") throw error;
@@ -1153,4 +1174,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     await this.#store.succeedCommand(command.id);
   }
+}
+
+/** A Run of a paused chat waits for the chat: no failure, no error, no timer; its resume wakes it. */
+function chatRunHeld(): CommandDispatchError {
+  return new CommandDispatchError("Its chat is paused; this waits until it is back.", "held");
 }

@@ -637,10 +637,21 @@ export class BrowserRuntimeServer {
       }
       websocket.terminate();
     }
-    await Promise.all(closed);
+    // A listener whose close never settles (a socket a peer holds) does not hold the stop; the
+    // saving of profiles is awaited in full, within the runtime's own bound (TS17).
+    const listenersClosed = await withTimeout(
+      Promise.all(closed).then(() => true),
+      serverCloseMs,
+      { timeoutError: () => new Error("Browser runtime listeners did not close.") },
+    ).catch(() => false);
+    if (!listenersClosed)
+      process.stderr.write('{"event":"browser-runtime.listeners-unconfirmed"}\n');
     await persistence;
   }
 }
+
+/** How long the runtime's listeners may take to close before the stop goes on without them. */
+const serverCloseMs = 2_000;
 
 class WebSocketBrowserSink implements BrowserControllerSink {
   private readonly maxBufferedBytes: number;

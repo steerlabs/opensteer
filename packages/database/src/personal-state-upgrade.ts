@@ -662,7 +662,7 @@ async function deriveThreadSummaries(tx: Tx, source: Source, cursor: UpgradeCurs
         ${runNewsAt("latest")} as completed_at,
         current_run.status as active_status,
         last_run.status='failed' and last_run.maintenance is null as latest_failed,
-        case when last_run.status='failed' and last_run.maintenance is null then left(last_run.failure->>'message',280) end as failure,
+        case when last_run.status='failed' and last_run.maintenance is null then left(coalesce(last_run.failure->>'ownerMessage',last_run.failure->>'message'),280) end as failure,
         reply.id as reply_id,left(reply.view->>'preview',280) as reply
       from threads source_thread
       left join lateral (

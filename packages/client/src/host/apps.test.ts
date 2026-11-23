@@ -1,3 +1,4 @@
+import { HostClientRequestError } from "./client.js";
 import { createId, AppIdSchema, type App } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { AppsList, appNoticeTitle } from "./apps.js";
@@ -150,7 +151,15 @@ describe("AppsList", () => {
     const notice = { appId: app("Budget").appId, name: "Budget", action: "delete" };
     expect(list.state.notices).toEqual([{ ...notice, message: null }]);
     expect(appNoticeTitle(list.state.notices[0]!)).toBe("Deleting “Budget”…");
-    fail(new Error("Its computer could not confirm the server stopped; deletion is pending."));
+    // The Home refused, in its own words for the person.
+    fail(
+      new HostClientRequestError({
+        code: "conflict",
+        provenance: "host",
+        status: 409,
+        message: "Its computer could not confirm the server stopped; deletion is pending.",
+      }),
+    );
     await expect(deleting).resolves.toBe(false);
     expect(list.state.notices).toEqual([
       {
@@ -174,7 +183,14 @@ describe("AppsList", () => {
     expect(list.state.pending.get(app("Budget").appId)).toBe("start");
     // A second action on the same app waits for the first instead of racing it.
     await expect(list.stop(app("Budget").appId)).resolves.toBe(false);
-    fail(new Error("Port 50000 is in use."));
+    fail(
+      new HostClientRequestError({
+        code: "conflict",
+        provenance: "host",
+        status: 409,
+        message: "Port 50000 is in use.",
+      }),
+    );
     await expect(started).resolves.toBe(false);
     expect(list.state.pending.size).toBe(0);
     expect(list.state.failures.get(app("Budget").appId)).toEqual({

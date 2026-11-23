@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { publishThreadCard } from "./message-visibility.js";
 import { itemView } from "./personal-sync-store.js";
 import { transcriptPreview } from "./transcript-store.js";
@@ -400,9 +401,10 @@ export class AppStore {
           message: "App version changed during publication",
         });
       const now = new Date();
+      const cleanName = outsideName(name, 160) || "App";
       await tx
         .updateTable("apps")
-        .set({ name, latestVersion: version, updatedAt: now })
+        .set({ name: cleanName, latestVersion: version, updatedAt: now })
         .where("id", "=", app.id)
         .execute();
       await tx
@@ -458,7 +460,7 @@ export class AppStore {
           kind: "app",
           appId: app.id,
           createdAt: mutation.state.now,
-          view: transcriptPreview({ title: name, version }),
+          view: transcriptPreview({ title: cleanName, version }),
         },
         true,
       );
@@ -469,11 +471,12 @@ export class AppStore {
 
   async rename(ownerId: UserId, appId: AppId, name: string): Promise<void> {
     const parsed = AppNameSchema.parse(name);
+    const cleanName = outsideName(parsed, 160) || "App";
     await commitPersonalMutation(this.database, async (tx, mutation) => {
       const app = await lockApp(tx, ownerId, appId);
       await tx
         .updateTable("apps")
-        .set({ name: parsed, updatedAt: mutation.state.now })
+        .set({ name: cleanName, updatedAt: mutation.state.now })
         .where("id", "=", app.id)
         .execute();
       await tx
@@ -486,7 +489,7 @@ export class AppStore {
         .execute();
       const cards = await tx
         .updateTable("transcriptItems")
-        .set({ view: transcriptPreview({ title: parsed }), revision: mutation.sequence })
+        .set({ view: transcriptPreview({ title: cleanName }), revision: mutation.sequence })
         .where("appId", "=", app.id)
         .where("visible", "=", true)
         .returningAll()
@@ -734,7 +737,8 @@ async function createApp(
       computerId: input.computerId,
       threadId: input.scope.threadId,
       runId: input.scope.runId,
-      name: input.name,
+      // An agent names its app: the name enters clean, as every name from outside.
+      name: outsideName(input.name, 160) || "App",
       creationKey: input.creationKey,
       latestVersion: 0,
       createdAt: now,

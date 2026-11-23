@@ -186,7 +186,8 @@ export function BrowserPage(props: {
   const listed = useTab(hostClient, tabId);
   // A Cloud Computer's browser sleeps and wakes; every other browser is `not-pooled` and shows
   // nothing of it.
-  const sleep = useBrowserSleep(hostClient, tabId);
+  const viewer = useBrowserViewerSurface(hostClient, session.id, tabId);
+  const sleep = useBrowserSleep(hostClient, tabId, viewer?.reopenedAt);
   const pooledComputer = sleep.browser.kind === "not-pooled" ? null : sleep.browser.computerId;
   const [restarting, setRestarting] = useState(false);
   const restartBrowser = () => {
@@ -216,7 +217,6 @@ export function BrowserPage(props: {
   useEffect(() => {
     if (noteWords !== null) AccessibilityInfo.announceForAccessibility(noteWords);
   }, [noteWords]);
-  const viewer = useBrowserViewerSurface(hostClient, session.id, tabId);
   // The row as the page chrome reads it: the viewer's page adds what the page shows now.
   const row = useMemo(
     () =>

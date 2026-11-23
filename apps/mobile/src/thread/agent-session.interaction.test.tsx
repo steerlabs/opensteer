@@ -156,8 +156,10 @@ describe("a connected agent's own task on the phone", () => {
     expect(text).toContain("Allowed by Auto · Failed");
     expect(text).toContain("Uncertain");
     expect(text).toContain("can’t say whether this happened");
-    expect(text).toContain("Claude is working");
-    expect(text).toContain("Claude works this task itself. You can’t write to it here.");
+    expect(text).toContain("“\u2068Claude\u2069” is working");
+    expect(text).toContain(
+      "“\u2068Claude\u2069” works this task itself. You can’t write to it here.",
+    );
     expect(page.querySelector("textarea, input")).toBeNull();
   });
 
@@ -167,7 +169,7 @@ describe("a connected agent's own task on the phone", () => {
     const sessionId = sessionTaskOf(client.getSnapshot(), threadId)!.stop!.sessionId;
     const dispatch = vi.spyOn(client, "dispatch");
     const page = await render(client, threadId);
-    await act(async () => button(page, "Stop Claude")!.click());
+    await act(async () => button(page, "Stop “\u2068Claude\u2069”")!.click());
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ type: "agent.session.stop", threadId, agentSessionId: sessionId }),
     );
@@ -192,13 +194,13 @@ describe("a connected agent's own task on the phone", () => {
     const page = await render(client, threadId);
     await vi.waitFor(() => expect(page.textContent).toContain("Run a script in Shopping?"));
     expect(page.textContent).toContain("Shopping · Studio Mac");
-    expect(page.textContent).toContain("Grok says:");
+    expect(page.textContent).toContain("“\u2068Grok\u2069” says:");
     expect(page.textContent).toContain("Buy the $12 phone case you asked for.");
     expect(page.textContent).not.toContain("Place order");
     await act(async () => button(page, "Show exactly what it will run")!.click());
     expect(page.textContent).toContain("Place order");
     expect(page.textContent).toContain(
-      "Grok is told your answer. Allowing this once doesn’t give it any more access.",
+      "“\u2068Grok\u2069” is told your answer. Allowing this once doesn’t give it any more access.",
     );
     await act(async () => button(page, "Allow once")!.click());
     expect(dispatch).toHaveBeenCalledWith(

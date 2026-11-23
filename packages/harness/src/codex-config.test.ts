@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import {
+  checkCodexEffectiveConfig,
   checkCodexOthersHome,
   extractCodexModelConfig,
   parseCodexConfigToml,
@@ -209,4 +210,48 @@ it("refuses active AWS/Bedrock providers (including aws.profile, aws.region and 
   expect(serialized).not.toContain("unused-bedrock");
   expect(serialized).not.toContain("corp-sso");
   expect(serialized).not.toContain("aws");
+});
+
+it("checks merged Codex effective config for system/managed notify, auth, aws, and Bedrock settings", () => {
+  expect(checkCodexEffectiveConfig({})).toEqual({ ok: true });
+  expect(
+    checkCodexEffectiveConfig({
+      notify: null,
+      model_provider: "openai",
+      model_providers: {
+        openai: { name: "OpenAI", auth: null, aws: null },
+        unused: { auth: { command: "unused-cmd" } },
+      },
+    }),
+  ).toEqual({ ok: true });
+  expect(checkCodexEffectiveConfig({ notify: ["touch", "/tmp/n"] })).toMatchObject({
+    ok: false,
+    message: expect.stringMatching(/notify/iu),
+  });
+  expect(checkCodexEffectiveConfig({ model_provider: "amazon-bedrock" })).toMatchObject({
+    ok: false,
+    message: expect.stringMatching(/AWS|credential/iu),
+  });
+  expect(checkCodexEffectiveConfig({ model_provider: "amazon-bedrock-runtime" })).toMatchObject({
+    ok: false,
+    message: expect.stringMatching(/AWS|credential/iu),
+  });
+  expect(
+    checkCodexEffectiveConfig({
+      model_provider: "corp",
+      model_providers: { corp: { auth: { command: "corp-token" } } },
+    }),
+  ).toMatchObject({
+    ok: false,
+    message: expect.stringMatching(/command/iu),
+  });
+  expect(
+    checkCodexEffectiveConfig({
+      model_provider: "corp",
+      model_providers: { corp: { aws: { profile: "corp-sso" } } },
+    }),
+  ).toMatchObject({
+    ok: false,
+    message: expect.stringMatching(/AWS|credential/iu),
+  });
 });

@@ -1,10 +1,12 @@
 import {
-  agentWhoName,
-  agentWhoOriginLine,
+  agentWhoNameParts,
+  agentWhoOriginParts,
   agentWithdrawnLine,
   workWords,
   type AgentWho,
+  type SentencePart,
 } from "@opensteer/client/host";
+import { SentenceText } from "../../ui/address-text.js";
 import { Icon } from "../icon.js";
 
 /**
@@ -15,37 +17,43 @@ import { Icon } from "../icon.js";
 export function AgentWhoLine({
   who,
   claim,
+  claimParts,
   nameShown = true,
 }: {
   readonly who: AgentWho;
   readonly claim?: string | undefined;
+  readonly claimParts?: readonly SentencePart[] | undefined;
   /** False where the heading beside it is already this name: "Verified", or only the origins. */
   readonly nameShown?: boolean;
 }) {
   // A withdrawn verification is said once, where Disconnect is offered; here only its origins.
-  const name = claim ?? whoName(who, nameShown);
+  const nameParts = claimParts ?? (claim ? [claim] : whoNameParts(who, nameShown));
   return (
     <p className={`agent-who${who.verified ? " agent-who--verified" : ""}`}>
-      {claim ? null : (
+      {claim || claimParts ? null : (
         <Icon
           className="agent-who__icon"
           name={who.verified ? "check-circle" : who.local ? "laptop" : "globe"}
         />
       )}
       <span className="agent-who__text">
-        {name ? (
-          <span className={claim ? "agent-who__name agent-who__claim" : "agent-who__name"}>
-            {name}
+        {nameParts ? (
+          <span
+            className={claim || claimParts ? "agent-who__name agent-who__claim" : "agent-who__name"}
+          >
+            <SentenceText parts={nameParts} />
           </span>
         ) : null}
         {who.origins.length ? (
           who.origins.map((origin) => (
             <span className="agent-who__detail" key={origin.role}>
-              {agentWhoOriginLine(origin)}
+              <SentenceText parts={agentWhoOriginParts(origin)} />
             </span>
           ))
         ) : (
-          <span className="agent-who__detail">{who.detail}</span>
+          <span className="agent-who__detail">
+            <SentenceText parts={who.detailParts} />
+          </span>
         )}
       </span>
     </p>
@@ -53,9 +61,9 @@ export function AgentWhoLine({
 }
 
 /** "Verified" where the heading beside it is already the verified name; nothing to repeat otherwise. */
-function whoName(who: AgentWho, nameShown: boolean): string | null {
-  if (nameShown || who.selfAsserted) return agentWhoName(who);
-  return who.verified ? workWords("who.verified") : null;
+function whoNameParts(who: AgentWho, nameShown: boolean): readonly SentencePart[] | null {
+  if (nameShown || who.selfAsserted) return agentWhoNameParts(who);
+  return who.verified ? [workWords("who.verified")] : null;
 }
 
 /** On a connection whose verification was withdrawn: what that means, and Disconnect. */

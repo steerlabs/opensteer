@@ -22,12 +22,7 @@ export const mcpPresentationScenarios = [
   ["computer_list", {}, "Looking up computers", "Looked up computers"],
   ["computer_remove", { target: "computer" }, "Removing a computer", "Removed a computer"],
   ["local_server_remove", { name: "tv" }, "Removing a local server", "Removed a local server"],
-  [
-    "opensteer_messaging_bridge_update",
-    { paused: true },
-    "Pausing a messaging bridge",
-    "Paused a messaging bridge",
-  ],
+  ["opensteer_messaging_bridge_update", { paused: true }, "Pausing a chat", "Paused a chat"],
   [
     "browser_profile_remove",
     { target: "profile" },

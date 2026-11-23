@@ -79,6 +79,7 @@ export function createTabsClient(port: TabsClientPort): TabsClient {
         const result = await send({ type: "tab.activate", tabId }, options?.signal);
         if (activations.get(tabId) === request)
           port.activated?.(result.tab as Tab, result.viewer, options?.wake === true);
+        options?.answered?.(result.tab as Tab);
         return result.viewer;
       } finally {
         if (activations.get(tabId) === request) activations.delete(tabId);

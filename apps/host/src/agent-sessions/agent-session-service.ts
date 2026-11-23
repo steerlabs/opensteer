@@ -107,22 +107,31 @@ function directOperationAction(tool: string, target: string): string {
   }
 }
 
-function directOperationCopy(tool: string, target: AgentOperationTarget, agent: string) {
+function quoteIsolatedOutsideName(value: string): string {
+  const safe = value
+    .replace(/[\u201C\u201F\u301D\u301E]/gu, "\u2018")
+    .replace(/[\u201D\u201E\u301F]/gu, "\u2019")
+    .replace(/[\u0022\uFF02]/gu, "\u0027");
+  return `“\u2068${safe}\u2069”`;
+}
+
+export function directOperationCopy(tool: string, target: AgentOperationTarget, agent: string) {
   const phone = target.grant.kind === "computer-app" && target.grant.app.kind === "phone-screen";
   const device = target.device?.name;
   const action =
     directOperationAction(tool, target.name) +
     (tool === "computer_use" && device && !phone ? ` on ${device}` : "");
+  const quotedAgent = quoteIsolatedOutsideName(agent);
   const title =
     tool === "browser_connect" || tool === "computer_use" || tool === "plugin_call"
-      ? `Let ${agent} ${action}?`
+      ? `Let ${quotedAgent} ${action}?`
       : `${action[0]!.toUpperCase()}${action.slice(1)}?`;
   const context = device ? (phone ? device : `${target.name} · ${device}`) : null;
   const scope =
     tool === "browser_connect" && target.grant.kind === "browser-profile"
       ? " It can control its own pages and access every cookie and signed-in site in this profile."
       : "";
-  const sentence = `${agent} wants to ${action}.${scope}`;
+  const sentence = `${quotedAgent} wants to ${action}.${scope}`;
   return { title, summary: context ? `${context}\n${sentence}` : sentence };
 }
 

@@ -10,6 +10,7 @@ export * from "./browser/sign-in.js";
 export * from "./browser/site-cookies.js";
 export * from "./browser/page-ownership.js";
 export * from "./browser/surface-ledger.js";
+export { TabSleeper } from "./browser/tab-sleeper.js";
 export { BrowserRuntimeError } from "./errors.js";
 export * from "./local-profile-store.js";
 export * from "./runtime.js";

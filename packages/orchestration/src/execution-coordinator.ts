@@ -4,7 +4,12 @@ import { OpensteerError } from "@opensteer/core";
 import type { CommandRow, OpensteerStore, PendingCommandRow } from "@opensteer/database";
 import { CoalescedWake } from "@opensteer/shared/coalescedWake";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
-export type DispatchDisposition = "retry" | "uncertain" | "failed";
+/**
+ * `held`: the command's work waits for something that wakes it (a paused chat that is back), not
+ * for time. It goes back to pending with no backoff timer and no error, and is not listed while
+ * it waits.
+ */
+export type DispatchDisposition = "retry" | "held" | "uncertain" | "failed";
 export class CommandDispatchError extends Error {
   readonly disposition: DispatchDisposition;
   constructor(
@@ -329,8 +334,15 @@ export class ExecutionCoordinator {
       await this.#dispatcher.dispatch(claimed.command, signal);
       this.#dispatchBackoff.delete(command.id);
     } catch (error) {
-      this.#onDispatchError?.(error, claimed.command);
       const dispatchError = normalizeDispatchError(error);
+      if (dispatchError.disposition === "held") {
+        // Waiting is not an error: nothing is logged, and no timer is set. It is listed again
+        // only once what it waits for is back, and that wakes the coordinator.
+        this.#dispatchBackoff.delete(command.id);
+        await this.#settle(command.id, () => this.#store.retryCommand(command.id, dispatchError));
+        return true;
+      }
+      this.#onDispatchError?.(error, claimed.command);
       // A Run outlives the connection that lost its control command, and so
       // must the command: one a Runner records once by ID is sent again.
       const resendable =

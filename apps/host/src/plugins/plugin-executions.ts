@@ -21,6 +21,7 @@ import {
   type AgentOperationRow,
   type OpensteerStore,
   type PluginExecutionRecord,
+  liveConnection,
 } from "@opensteer/database";
 import {
   commitPersonalMutation,
@@ -237,9 +238,7 @@ export class PluginExecutions {
         .select(["grantRevision", "accessMode"])
         .where("id", "=", lineage.agentConnectionId)
         .where("userId", "=", caller.userId)
-        .where("revokedAt", "is", null)
-        .where("tokenHash", "is not", null)
-        .where("expiresAt", ">", new Date())
+        .where(liveConnection(database))
         .$if(lock, (query) => query.forShare())
         .executeTakeFirst();
       if (

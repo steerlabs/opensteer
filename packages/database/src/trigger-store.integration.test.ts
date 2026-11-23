@@ -1,3 +1,4 @@
+import { personTaskReader } from "./task-reader.js";
 import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { installPersonalMutationHooks } from "./personal-mutation.js";
@@ -273,7 +274,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       });
     }
     async function detail(triggerId: TriggerId, userId: ReturnType<typeof createId<"user">>) {
-      const value = await triggers.getForOwner(triggerId, userId, 25);
+      const value = await triggers.getForOwner(triggerId, userId, 25, personTaskReader);
       if (!value) throw new Error("Expected Trigger detail");
       return value;
     }
@@ -554,7 +555,11 @@ integration.sequential("Trigger failure auto-pause", () => {
       })
       .execute();
     await create("Worker's", worker.id);
-    const family = await triggers.listForOwner({ anchorThreadId: f.threadId, ownerId: f.userId });
+    const family = await triggers.listForOwner({
+      reader: personTaskReader,
+      anchorThreadId: f.threadId,
+      ownerId: f.userId,
+    });
     expect(family.map(({ name, status }) => [name, status])).toEqual([
       ["Monitor", "active"],
       ["Own live", "active"],
@@ -567,7 +572,12 @@ integration.sequential("Trigger failure auto-pause", () => {
     // Ended ones never crowd out a live one.
     expect(
       (
-        await triggers.listForOwner({ anchorThreadId: f.threadId, limit: 2, ownerId: f.userId })
+        await triggers.listForOwner({
+          reader: personTaskReader,
+          anchorThreadId: f.threadId,
+          limit: 2,
+          ownerId: f.userId,
+        })
       ).map(({ id }) => id),
     ).toEqual([monitor.trigger.id, own.trigger.id]);
   });

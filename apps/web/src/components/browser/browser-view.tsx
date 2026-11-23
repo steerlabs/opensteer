@@ -8,6 +8,7 @@ import {
   browserSleepWords,
   browserStartFailure,
   browserWakeLine,
+  tabWakingWords,
   restartPooledBrowser,
   type BrowserCommand,
   type BrowserFrameView,
@@ -308,7 +309,7 @@ export function PlaceBrowserView({
   const picture = useFreshPicture(hostClient, sessionId, tabId, viewer);
   // A Cloud Computer's browser sleeps and wakes; every other browser is `not-pooled` and shows
   // nothing of it.
-  const sleep = useBrowserSleep(hostClient, tabId);
+  const sleep = useBrowserSleep(hostClient, tabId, viewed?.reopenedAt);
   const pooled = sleep.browser.kind !== "not-pooled";
   const [restartAsked, setRestartAsked] = useState(false);
   const [restarting, setRestarting] = useState(false);
@@ -705,6 +706,16 @@ export function PlaceBrowserView({
     return () => window.clearTimeout(timer);
   }, [prePaint, tabId, visible]);
   const waiting = prePaint && waitingTab === tabId;
+  // V10: a tab that was asleep says it is waking, at once and with its address, from the moment it
+  // is asleep here until its first picture: the stage is never empty and never says the browser
+  // is starting. Nothing about frames changes.
+  const asleepHere = listed?.state === "asleep";
+  const [wokenTab, setWokenTab] = useState<string | null>(null);
+  useEffect(() => {
+    if (asleepHere) setWokenTab(tabId);
+    else if (!prePaint) setWokenTab(null);
+  }, [asleepHere, prePaint, tabId]);
+  const waking = prePaint && (asleepHere || wokenTab === tabId);
   // Until this viewer draws a fresh frame the picture is the page as it last was: it stays, dimmed
   // under its own chip, and takes no input. The viewer's own feed decides, not the pill: either
   // can come back first.
@@ -1019,6 +1030,10 @@ export function PlaceBrowserView({
             <div className="browser-status browser-status--wake" role="status">
               {wakeAlone.text}
             </div>
+          ) : waking ? (
+            <div className="place-state" role="status">
+              <BrowserOpening address={listed?.url ?? row?.site ?? ""} waking />
+            </div>
           ) : waiting ? (
             <div className="browser-status" role="status">
               {connected && (dormant || session?.state === "starting")
@@ -1129,7 +1144,22 @@ function placeEnded(
   return null;
 }
 
-export function BrowserOpening({ address }: { readonly address: string }) {
+export function BrowserOpening({
+  address,
+  waking = false,
+}: {
+  readonly address: string;
+  /** V10: a sleeping tab says it is waking, above its address. */
+  readonly waking?: boolean;
+}) {
+  if (waking)
+    return (
+      <>
+        <span aria-hidden="true" className="spinner" />
+        <p className="place-state__title">{tabWakingWords}</p>
+        <p className="place-state__detail">{address}</p>
+      </>
+    );
   return (
     <>
       <span aria-label={`Opening ${address}`} className="spinner" />

@@ -6479,3 +6479,27 @@ it("keeps a declined message's text, files and quote without claiming or dispatc
     expect.objectContaining({ type: "thread.sendMessage" }),
   );
 });
+
+it("hides the composer and shows the ended notice on the phone when the task's chat or connected agent ended", async () => {
+  for (const [origin, expected] of [
+    [
+      "chat",
+      "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging.",
+    ],
+    [
+      "agent",
+      "This connected agent's access ended, so this task takes no new messages. Start a new task, or reconnect it from Connected agents.",
+    ],
+  ] as const) {
+    const snap = snapshotFor({ entries: [], run: null, threadId: workId });
+    const host = fakeHost({
+      ...snap,
+      threads: snap.threads.map((candidate) =>
+        candidate.id === workId ? { ...candidate, endedOrigin: origin } : candidate,
+      ),
+    });
+    const { container } = await mount(host, workId);
+    expect(container.querySelector('[aria-label="Send message"]')).toBeNull();
+    expect(text(container)).toContain(expected);
+  }
+});

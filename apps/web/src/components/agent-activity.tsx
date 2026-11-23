@@ -3119,7 +3119,9 @@ function RunOutcome({
             <Icon name="alert-circle" />
             {conversation ? "Opensteer couldn’t finish" : "Run failed"}
           </span>
-          {run.error ? <p className="run-failure__message">{run.error.message}</p> : null}
+          {run.error ? (
+            <p className="run-failure__message">{run.error.ownerMessage ?? run.error.message}</p>
+          ) : null}
           {run.error?.retryable ? (
             <p className="action-note">This looks temporary — sending again may work.</p>
           ) : null}

@@ -280,3 +280,73 @@ export function minThreadAccessMode(
       : lowest,
   );
 }
+
+/**
+ * What a chat's grant may contain, the one rule (the Home refuses by it, sends it with each chat,
+ * and the screens offer only it): Tasks always, since a chat can only ask your own agents to
+ * work; where anyone in its one channel may speak, only Tasks and the plugins chosen; otherwise
+ * everything a connected agent may hold.
+ */
+export interface ChatGrantShape {
+  readonly everything: boolean;
+  readonly resources: readonly AgentGrantResource["kind"][];
+  readonly tasks: "required";
+}
+export function chatGrantShape(senders: "owner" | "anyone"): ChatGrantShape {
+  return senders === "anyone"
+    ? { everything: false, resources: ["plugin"], tasks: "required" }
+    : {
+        everything: true,
+        resources: ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+        tasks: "required",
+      };
+}
+/** Why a chat may not hold this grant, in the Home's words; null when it may. */
+export function chatGrantRefusal(
+  shape: ChatGrantShape,
+  grant: AgentGrant,
+): {
+  readonly reason: "bridge-needs-tasks" | "bridge-anyone-grant";
+  readonly message: string;
+} | null {
+  if (grant.scope === "selected" && !grant.tasks)
+    return {
+      reason: "bridge-needs-tasks",
+      message: "A chat can only ask your own agents to work, so it always needs tasks.",
+    };
+  if (
+    (grant.scope === "everything" && !shape.everything) ||
+    (grant.scope === "selected" &&
+      grant.resources.some((resource) => !shape.resources.includes(resource.kind)))
+  )
+    return {
+      reason: "bridge-anyone-grant",
+      message:
+        "When anyone in the conversation can message it, it can use only tasks and the plugins you choose.",
+    };
+  return null;
+}
+
+/** The Home's words when a chat can't be added; the Home and its preview say the same. */
+export const chatAddRefusals = {
+  accountGone: "That messaging account is no longer connected.",
+  conversationTaken: "Another chat already answers in this conversation.",
+  directMessagesOwnerOnly: "Direct messages answer only you.",
+} as const;
+
+/**
+ * Why a chat may not be added with these senders and this grant, before anything is read: direct
+ * messages answer only you, and the grant must fit who may speak (`chatGrantRefusal`).
+ */
+export function chatConsentRefusal(
+  senders: "owner" | "anyone",
+  coversOneConversation: boolean,
+  grant: AgentGrant,
+): {
+  readonly reason?: "bridge-needs-tasks" | "bridge-anyone-grant";
+  readonly message: string;
+} | null {
+  if (senders === "anyone" && !coversOneConversation)
+    return { message: chatAddRefusals.directMessagesOwnerOnly };
+  return chatGrantRefusal(chatGrantShape(senders), grant);
+}

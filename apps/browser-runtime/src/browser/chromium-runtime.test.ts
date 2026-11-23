@@ -130,7 +130,11 @@ it("adopts a frozen Chromium document, streams it, and edits its unsent draft", 
   fence = { ...fence, epoch: 2 };
   const adoption = await control("adopt");
   expect(adoption.fence?.epoch).toBe(2);
+  const adopted = runtime.poolState();
   await expect(control("adopt")).rejects.toThrow("The browser adoption is not ready.");
+  // The refused repeat changed nothing.
+  expect(runtime.poolState()).toEqual(adopted);
+  expect(runtime.poolState()).toMatchObject({ phase: "adopting", fence: { epoch: 2 } });
   verifier.setClaims("old", {
     ...claims,
     reattach: true,
@@ -2872,6 +2876,325 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     ).toBe(true);
   });
 });
+
+it("never puts a tab to sleep under an agent's command on either path: a long evaluate under memory pressure completes, and the tab sleeps after it (TS12)", async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "text/html");
+    response.end("<!doctype html><title>work</title><p>work</p>");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing fixture address");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const profile = await nativeRuntimeProfile();
+  cleanup.push(profile.close);
+  const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000912");
+  const claims = validClaims({ identity: profile.identity, sessionId, tabRestoreVersion: 1 });
+  const verifier = new FakeTicketVerifier(claims);
+  verifier.setClaims("standard", { ...claims, standardCdp: "session" });
+  const launcher = new PlaywrightChromiumLauncher({
+    chromiumSandbox: false,
+    executablePath,
+    headless: true,
+  });
+  // Memory stays over the start threshold the whole time, as on a full Linux machine.
+  const limitBytes = 2 * 1024 ** 3;
+  Object.defineProperty(launcher, "memoryPressure", {
+    value: async () => ({ usedBytes: Math.round(limitBytes * 0.8), limitBytes }),
+  });
+  const runtime = new BrowserRuntime({
+    localProfiles: profile.localProfiles,
+    launcher,
+    runtimeId: claims.runtimeId,
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: verifier,
+  });
+  cleanup.push(() => runtime.shutdown());
+  const sink = new FakeSink();
+  const attachment = await runtime.attach("ticket", sink);
+  const deliver = (message: BrowserClientMessage) => attachment.handle(JSON.stringify(message));
+  const agent = (method: string, parameters?: CdpParameters, cdpSessionId?: string) =>
+    sendAsAgent(deliver, sink.messages, method, parameters, cdpSessionId);
+  const standard = await runtime.attachStandardCdp(
+    "standard",
+    () => undefined,
+    new AbortController().signal,
+  );
+  cleanup.push(async () => standard.close());
+  const opened = async () => {
+    const targetId = String(
+      asRecord(await agent("Target.createTarget", { url: `${origin}/work` })).targetId,
+    );
+    const page = String(
+      asRecord(await agent("Target.attachToTarget", { flatten: true, targetId })).sessionId,
+    );
+    await waitForAsync(
+      async () =>
+        evaluationValue(
+          await agent(
+            "Runtime.evaluate",
+            { expression: "document.readyState", returnByValue: true },
+            page,
+          ),
+        ) === "complete",
+    );
+    return { targetId, page };
+  };
+  const viaHome = await opened();
+  const viaStandard = await opened();
+  const direct = String(
+    asRecord(
+      await standard.send({
+        method: "Target.attachToTarget",
+        parameters: { targetId: viaStandard.targetId, flatten: true },
+      }),
+    ).sessionId,
+  );
+  const suspendedTabs = () =>
+    sink.messages.filter((message) => JSON.stringify(message).includes('"state":"suspended"'))
+      .length;
+  await attachment.handle(
+    JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
+  );
+  // Longer than the quiet time, with the sleeper's last resort free to take any young tab.
+  const long = {
+    expression: `new Promise((resolve) => setTimeout(() => resolve(location.pathname), 12000))`,
+    awaitPromise: true,
+    returnByValue: true,
+  };
+  const started = performance.now();
+  const [home, direct_] = await Promise.all([
+    agent("Runtime.evaluate", long, viaHome.page).then(evaluationValue),
+    standard
+      .send({ method: "Runtime.evaluate", parameters: long, sessionId: direct })
+      .then(evaluationValue),
+  ]);
+  expect({ home, direct: direct_ }).toEqual({ home: "/work", direct: "/work" });
+  expect(performance.now() - started).toBeGreaterThanOrEqual(11_500);
+  // The pressure was real: once the commands have ended, the sleeper takes the tabs.
+  await waitFor(() => suspendedTabs() >= 2, 20_000);
+}, 90_000);
+
+it("wakes a sleeping tab for an agent and answers once its page has loaded, so the agent never acts on a half-loaded page (TS11)", async () => {
+  const server = createServer((request, response) => {
+    if (request.url === "/hold") {
+      // The page's load waits on this image.
+      setTimeout(() => {
+        response.setHeader("cache-control", "no-store");
+        response.setHeader("content-type", "image/gif");
+        response.end(Buffer.from("R0lGODlhAQABAAAAACw=", "base64"));
+      }, 3_000);
+      return;
+    }
+    // Nothing is kept, so the wake's reload waits on the image again.
+    response.setHeader("cache-control", "no-store");
+    response.setHeader("content-type", "text/html");
+    response.end('<!doctype html><title>slow</title><p id="text">slow</p><img src="/hold">');
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing fixture address");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const profile = await nativeRuntimeProfile();
+  cleanup.push(profile.close);
+  const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000911");
+  const claims = validClaims({
+    identity: profile.identity,
+    sessionId,
+    tabRestoreVersion: 1,
+    surfaceState: 1,
+  });
+  const launcher = new PlaywrightChromiumLauncher({
+    chromiumSandbox: false,
+    executablePath,
+    headless: true,
+  });
+  // Memory over the start threshold, so the sleeper takes the tab once it has loaded.
+  const limitBytes = 2 * 1024 ** 3;
+  Object.defineProperty(launcher, "memoryPressure", {
+    value: async () => ({ usedBytes: Math.round(limitBytes * 0.8), limitBytes }),
+  });
+  const runtime = new BrowserRuntime({
+    localProfiles: profile.localProfiles,
+    launcher,
+    runtimeId: claims.runtimeId,
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: new FakeTicketVerifier(claims),
+  });
+  cleanup.push(() => runtime.shutdown());
+  const sink = new FakeSink();
+  const attachment = await runtime.attach("ticket", sink);
+  const deliver = (message: BrowserClientMessage) => attachment.handle(JSON.stringify(message));
+  const agent = (method: string, parameters?: CdpParameters, cdpSessionId?: string) =>
+    sendAsAgent(deliver, sink.messages, method, parameters, cdpSessionId);
+  const targetId = String(
+    asRecord(await agent("Target.createTarget", { url: `${origin}/slow` })).targetId,
+  );
+  const tabs = async () =>
+    z
+      .object({
+        tabs: z.array(
+          z.object({ surfaceId: z.string(), targetId: z.string().nullable(), state: z.string() }),
+        ),
+      })
+      .parse(await agent("Opensteer.listTabs", {})).tabs;
+  const surfaceId = (await tabs()).find((tab) => tab.targetId === targetId)!.surfaceId;
+  await attachment.handle(
+    JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
+  );
+  await waitForAsync(
+    async () => (await tabs()).find((tab) => tab.surfaceId === surfaceId)?.state === "suspended",
+    30_000,
+  );
+  // Nothing more sleeps it while the agent works in it.
+  await attachment.handle(
+    JSON.stringify({
+      type: "session.state",
+      runs: 0,
+      personUsed: [],
+      viewed: [],
+      pinned: [surfaceId],
+    }),
+  );
+  const asked = performance.now();
+  const woken = asRecord(await agent("Opensteer.resumeTab", { surfaceId, loaded: true }));
+  const answeredMs = performance.now() - asked;
+  expect(woken.reloaded).toBe(true);
+  const page = String(
+    asRecord(
+      await agent("Target.attachToTarget", { flatten: true, targetId: String(woken.targetId) }),
+    ).sessionId,
+  );
+  // Its first command finds the whole page, the image the load waited on included.
+  expect(
+    evaluationValue(
+      await agent(
+        "Runtime.evaluate",
+        {
+          expression: "[document.readyState, location.pathname, document.images[0].complete]",
+          returnByValue: true,
+        },
+        page,
+      ),
+    ),
+  ).toEqual(["complete", "/slow", true]);
+  expect(answeredMs).toBeGreaterThanOrEqual(2_500);
+}, 90_000);
+
+/*
+ * V9, evidence first: a person signs in (the site sets a lasting cookie) and types in a field, and
+ * the browser service is stopped at once, as a Home's service is when its machine restarts. When
+ * it starts again the sign-in is still there, and the Home's tab opens again at its address
+ * (Linux loads nothing of Chromium's last session; typed text is not kept, by design: L1).
+ */
+it.each([1, 2, 3, 4, 5])(
+  "keeps a sign-in through a stop at once and a start, and opens the tab again at its address (V9, run %i)",
+  async (run) => {
+    const cookies: string[] = [];
+    const server = createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/check") cookies.push(request.headers.cookie ?? "");
+      response.setHeader("cache-control", "no-store");
+      response.setHeader("content-type", "text/html");
+      if (url.pathname === "/sign-in")
+        response.setHeader(
+          "set-cookie",
+          `session=signed-in-${run}; Max-Age=86400; Path=/; HttpOnly`,
+        );
+      response.end(`<!doctype html><title>${url.pathname}</title><input id="field">`);
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const profile = await nativeRuntimeProfile();
+    cleanup.push(profile.close);
+    const sessionId = BrowserSessionIdSchema.parse(`bsn_00000000-0000-4000-8000-00000000090${run}`);
+    const claims = validClaims({ identity: profile.identity, sessionId, tabRestoreVersion: 1 });
+    const start = async () => {
+      const runtime = new BrowserRuntime({
+        localProfiles: profile.localProfiles,
+        launcher: new PlaywrightChromiumLauncher({
+          chromiumSandbox: false,
+          executablePath,
+          headless: true,
+        }),
+        runtimeId: claims.runtimeId,
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: new FakeTicketVerifier(claims),
+      });
+      const sink = new FakeSink();
+      const attachment = await runtime.attach("ticket", sink);
+      const deliver = (message: BrowserClientMessage) => attachment.handle(JSON.stringify(message));
+      const agent = (method: string, parameters?: CdpParameters, cdpSessionId?: string) =>
+        sendAsAgent(deliver, sink.messages, method, parameters, cdpSessionId);
+      return { runtime, agent };
+    };
+
+    const first = await start();
+    let firstStopped = false;
+    cleanup.push(() => (firstStopped ? Promise.resolve() : first.runtime.shutdown()));
+    const targetId = String(
+      asRecord(await first.agent("Target.createTarget", { url: `${origin}/sign-in` })).targetId,
+    );
+    const page = String(
+      asRecord(await first.agent("Target.attachToTarget", { flatten: true, targetId })).sessionId,
+    );
+    await waitForAsync(
+      async () =>
+        evaluationValue(
+          await first.agent(
+            "Runtime.evaluate",
+            { expression: "document.readyState", returnByValue: true },
+            page,
+          ),
+        ) === "complete",
+      10_000,
+    );
+    await first.agent(
+      "Runtime.evaluate",
+      { expression: "document.querySelector('#field').focus()" },
+      page,
+    );
+    await first.agent("Input.insertText", { text: "typed before the stop" }, page);
+    const listed = z
+      .object({
+        tabs: z.array(z.object({ surfaceId: z.string(), targetId: z.string().nullable() })),
+      })
+      .parse(await first.agent("Opensteer.listTabs", {})).tabs;
+    const surfaceId = listed.find((tab) => tab.targetId === targetId)!.surfaceId;
+
+    // Stopped at once: nothing waits for Chromium to write anything first.
+    const stopping = performance.now();
+    await first.runtime.shutdown();
+    firstStopped = true;
+    const stopMs = Math.round(performance.now() - stopping);
+
+    const second = await start();
+    cleanup.push(() => second.runtime.shutdown());
+    // The Home opens its tab again, by its identity, at its address.
+    const reopened = asRecord(
+      await second.agent("Opensteer.openTab", {
+        idempotencyKey: randomUUID(),
+        surfaceId,
+        url: `${origin}/check`,
+      }),
+    );
+    expect(reopened.tabId).toBe(surfaceId);
+    await waitForAsync(async () => cookies.length > 0, 10_000);
+    process.stderr.write(
+      `${JSON.stringify({ event: "v9.stop-start", run, stopMs, cookie: cookies[0] })}\n`,
+    );
+    expect(cookies[0]).toContain(`session=signed-in-${run}`);
+  },
+  90_000,
+);
 
 /**
  * CZ5: the context of the field a page surface has focused, as it last published it: what a

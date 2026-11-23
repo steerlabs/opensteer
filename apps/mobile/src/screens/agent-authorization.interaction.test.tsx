@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act } from "react";
+import { readAsDrawn } from "./read-as-drawn.test-support.js";
 import { createRoot, type Root } from "react-dom/client";
 import { createId } from "@opensteer/core";
 import type { AgentConnectionConsent } from "@opensteer/protocol";
@@ -39,7 +40,7 @@ vi.mock("./deployment-gate.js", () => ({
 }));
 vi.mock("./agent-authorization-form.js", () => ({
   AgentAuthorizationForm: (props: AgentAuthorizationFormProps) => {
-    state.form = props;
+    state.form = readAsDrawn(props);
     return props.kind === "ready" ? <span>{props.title}</span> : null;
   },
 }));
@@ -195,6 +196,7 @@ describe("agent consent on the phone", () => {
       const client = consentHost({
         homes: [],
         consent: {
+          // The preview, as the Home, cleans the name where the client registers it.
           clientName: "Grok\u202e\nVerified",
           chromeTabs: [{ sourceId, computerName: "Work Mac", paired: true }],
           chromeTabsNeedPairing: true,
@@ -207,7 +209,7 @@ describe("agent consent on the phone", () => {
         title: "An agent wants to connect",
         mark: null,
         label: "Grok Verified",
-        who: { heading: "It calls itself: Grok Verified" },
+        who: { heading: "It calls itself: “Grok Verified”" },
       });
       const choice = row("resources", sourceId);
       expect(choice).toMatchObject({
@@ -261,8 +263,8 @@ describe("agent consent on the phone", () => {
         title: "Errand via AgentPay",
         who: {
           origins: [
-            "Asked for this: Errand · https://errand.example",
-            "Holds the access: AgentPay · https://agentpay.example",
+            "Asked for this: “Errand” · https://errand.example",
+            "Holds the access: “AgentPay” · https://agentpay.example",
           ],
         },
       });
@@ -279,7 +281,7 @@ describe("agent consent on the phone", () => {
     expect(form.mark).toBeNull();
     // Grok named itself: the Home verified nothing, so no check and no logo.
     expect(form.who).toEqual({
-      heading: "It calls itself: Grok",
+      heading: "It calls itself: “Grok”",
       origins: [],
       verified: false,
       warning: "Only allow this if you started it yourself.",
@@ -586,7 +588,7 @@ describe("agent consent on the phone", () => {
     expect(ready()).toMatchObject({
       title: "An agent wants to connect",
       mark: null,
-      who: { heading: "It calls itself: Claude", verified: false },
+      who: { heading: "It calls itself: “Claude”", verified: false },
       notice: "This agent’s verification changed. Review it again.",
       error: null,
       label: "Mine",

@@ -161,32 +161,6 @@ describe("HostCommandDispatcher Request responses", () => {
   });
 });
 describe("HostCommandDispatcher steering", () => {
-  it("does not send an external steer when access was revoked after claim", async () => {
-    const runnersDispatch = vi.fn(async () => undefined);
-    const dispatchChannelCommand = vi.fn(async () => {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Messaging access changed before dispatch",
-      });
-    });
-    const dispatcher = steerDispatcher({
-      dispatchChannelCommand,
-      runnersDispatch,
-      refuseSteer: vi.fn(async () => undefined),
-      succeedCommand: vi.fn(async () => undefined),
-    });
-    const command = {
-      ...steerCommand(),
-      authoritySource: {
-        kind: "channel-ingress",
-      },
-    };
-    await expect(dispatcher.dispatch(command, new AbortController().signal)).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    expect(dispatchChannelCommand).toHaveBeenCalledWith(command.id, expect.any(Function));
-    expect(runnersDispatch).not.toHaveBeenCalled();
-  });
   it.each([undefined, "request-pending"])(
     "compensates through the Thread Inbox when the Runner refuses steering (%s)",
     async (reason) => {
@@ -1172,7 +1146,6 @@ describe("HostCommandDispatcher run planning", () => {
   );
 });
 function steerDispatcher(input: {
-  readonly dispatchChannelCommand?: OpensteerStore["dispatchChannelCommand"];
   readonly refuseSteer: OpensteerStore["refuseSteer"];
   readonly runnersDispatch: () => Promise<undefined>;
   readonly succeedCommand: OpensteerStore["succeedCommand"];
@@ -1196,7 +1169,6 @@ function steerDispatcher(input: {
       dispatch: input.runnersDispatch,
     } as never,
     store: {
-      dispatchChannelCommand: input.dispatchChannelCommand,
       loadSteerDispatchInput: async () => ({
         message: steerMessage(),
         runId: createId("run"),

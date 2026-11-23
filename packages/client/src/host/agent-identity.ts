@@ -1,6 +1,7 @@
 import type { AgentConnectionIdentityAtConsent } from "@opensteer/control-plane-protocol";
 import type { AgentConnectionIdentityPresentation } from "@opensteer/protocol";
-import { workWords } from "./agent-work-copy.js";
+import { workSentence, workText, workWords } from "./agent-work-copy.js";
+import { plainSentence, siteOrigin, type SentencePart } from "./sentence-parts.js";
 
 /**
  * Who a connected agent is, as far as the Home could prove at consent. The Home's own
@@ -14,8 +15,10 @@ export interface AgentWho {
    * show on one line. Beside a mark only when `verified`; otherwise only inside a claim.
    */
   readonly heading: string;
-  /** The verified origin, the redirect origin, or "an app on this computer". */
+  /** The verified origin, the redirect origin, or "an app on this computer", as plain text. */
   readonly detail: string;
+  /** `detail` as parts: each origin an address, each name someone else gave a name. */
+  readonly detailParts: readonly SentencePart[];
   readonly verified: boolean;
   /** The heading is only what the client calls itself. */
   readonly selfAsserted: boolean;
@@ -49,24 +52,18 @@ export interface AgentWhoOrigin {
 export const agentClaimMaxLength = 40;
 
 /**
- * A client-chosen name as text that can only read as itself: control, format (including
- * bidirectional overrides and zero-width joiners) and line or paragraph separators removed,
- * whitespace collapsed to single spaces, and long names cut. Check marks and look-alike
- * words stay as plain characters; the claim's label and styling say what they are.
+ * A client-chosen name shown on one line, as a labelled claim: the Home cleaned it where it
+ * entered (`outsideName`), so all that is left here is the cut for a claim's short space.
  */
 export function agentClaim(name: string, maxLength = agentClaimMaxLength): string {
-  const flat = name
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-  const chars = Array.from(flat);
+  const chars = Array.from(name.trim());
   if (!chars.length) return workWords("who.unnamed");
   return chars.length > maxLength
     ? `${chars
         .slice(0, maxLength - 1)
         .join("")
         .trimEnd()}…`
-    : flat;
+    : name.trim();
 }
 
 /** Logos the apps draw, keyed by the verified directory's own platform id. */
@@ -95,10 +92,23 @@ export function agentWho(input: {
     const verified = presented.verified && withdrawnSince === null;
     // An unverified heading is the client's own name: only ever a claim, made safe to show.
     const claim = presented.verified ? null : agentClaim(input.clientName);
+    // The line under the heading, from what the Home recorded, each value by what it is.
+    const named = (role: "embedder" | "platform") =>
+      presented.origins.find((origin) => origin.role === role);
+    const embedder = named("embedder");
+    const platform = named("platform");
+    const detailParts: readonly SentencePart[] = local
+      ? [workWords("who.local")]
+      : embedder && platform
+        ? workSentence("who.pairDetail", {
+            embedder: { name: embedder.label },
+            platform: { name: platform.label },
+          })
+        : originParts(platform?.origin ?? input.redirect);
     return {
       heading: claim ?? presented.heading,
-      detail:
-        presented.detail || (local ? workWords("who.local") : (originOf(input.redirect) ?? "")),
+      detail: plainSentence(detailParts),
+      detailParts,
       verified,
       selfAsserted: presented.selfAsserted,
       providerId:
@@ -136,12 +146,13 @@ export function agentWho(input: {
       });
     return {
       heading: pair
-        ? workWords("who.pair", {
+        ? workText("who.pair", {
             embedder: recorded.embedderName,
             platform: recorded.platformName,
           })
         : recorded.platformName,
-      detail: recorded.platformOrigin,
+      detail: plainSentence(originParts(recorded.platformOrigin)),
+      detailParts: originParts(recorded.platformOrigin),
       verified: withdrawnSince === null,
       selfAsserted: false,
       providerId:
@@ -154,10 +165,13 @@ export function agentWho(input: {
     };
   }
   const claim = agentClaim(input.clientName);
-  const redirectOrigin = local ? null : originOf(input.redirect);
+  const redirectOrigin = local || input.redirect === null ? null : siteOrigin(input.redirect);
+  const detailParts: readonly SentencePart[] =
+    local || input.redirect === null ? [workWords("who.local")] : originParts(input.redirect);
   return {
     heading: claim,
-    detail: local ? workWords("who.local") : (originOf(input.redirect) ?? workWords("who.local")),
+    detail: plainSentence(detailParts),
+    detailParts,
     verified: false,
     selfAsserted: true,
     providerId: null,
@@ -187,33 +201,54 @@ export function agentConsentHeading(who: AgentWho): {
   readonly title: string;
   readonly mark: boolean;
   readonly claim: string | null;
+  readonly claimParts: readonly SentencePart[] | null;
 } {
-  return who.verified
-    ? { title: who.heading, mark: true, claim: null }
-    : {
-        title: workWords("who.consentHeading"),
-        mark: false,
-        claim: who.claim && workWords("who.claim", { name: who.claim }),
-      };
+  if (who.verified) return { title: who.heading, mark: true, claim: null, claimParts: null };
+  const claimParts = who.claim ? workSentence("who.claim", { name: { name: who.claim } }) : null;
+  return {
+    title: workWords("who.consentHeading"),
+    mark: false,
+    claim: claimParts ? plainSentence(claimParts) : null,
+    claimParts,
+  };
 }
 
 export function agentWhoOriginLine(origin: AgentWhoOrigin): string {
-  return origin.name
-    ? workWords("who.namedOrigin", {
-        role: origin.roleLabel,
-        name: origin.name,
-        origin: origin.origin,
-      })
-    : workWords("who.redirectOrigin", { role: origin.roleLabel, origin: origin.origin });
+  return plainSentence(agentWhoOriginParts(origin));
 }
 
 /**
- * The agent's name as every surface says it: "Verified: Claude", "Says it is Grok", or the
+ * The same line as parts: the Home's verified name a name, the origin an address. An origin that
+ * does not parse as one is never drawn as an address: it stands as text from outside, a name.
+ */
+export function agentWhoOriginParts(origin: AgentWhoOrigin): readonly SentencePart[] {
+  const parsed = siteOrigin(origin.origin);
+  const address = parsed === null ? { name: origin.origin } : { address: parsed };
+  return origin.name
+    ? workSentence(
+        "who.namedOrigin",
+        { name: { name: origin.name }, origin: address },
+        { role: origin.roleLabel },
+      )
+    : workSentence("who.redirectOrigin", { origin: address }, { role: origin.roleLabel });
+}
+
+/**
+ * The agent's name as parts: `Verified: “Claude”`, `Says it is “Grok”`, or the plain name of an
+ * app on this computer or one whose verification was withdrawn.
+ */
+export function agentWhoNameParts(who: AgentWho): readonly SentencePart[] {
+  if (who.verified) return workSentence("who.verifiedAs", { name: { name: who.heading } });
+  if (who.selfAsserted) return workSentence("who.saysItIs", { name: { name: who.heading } });
+  return [{ name: who.heading }];
+}
+
+/**
+ * The agent's name as every surface says it: "Verified: “Claude”", "Says it is “Grok”", or the
  * plain name of an app on this computer or one whose verification was withdrawn.
  */
 export function agentWhoName(who: AgentWho): string {
-  if (who.verified) return workWords("who.verifiedAs", { name: who.heading });
-  if (who.selfAsserted) return workWords("who.saysItIs", { name: who.heading });
+  if (who.verified || who.selfAsserted) return plainSentence(agentWhoNameParts(who));
   return who.heading;
 }
 
@@ -237,12 +272,8 @@ function hostOf(value: string | null): string | null {
   }
 }
 
-function originOf(value: string | null): string | null {
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    return url.origin === "null" ? null : url.origin;
-  } catch {
-    return null;
-  }
+/** An origin as an address, from URL parsing (`siteOrigin`); nothing for one that does not parse. */
+function originParts(value: string | null): readonly SentencePart[] {
+  const origin = value === null ? null : siteOrigin(value);
+  return origin === null ? [] : [{ address: origin }];
 }

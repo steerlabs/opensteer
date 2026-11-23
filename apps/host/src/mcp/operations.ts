@@ -140,7 +140,11 @@ export function delegationOrigin(caller: AgentCaller, observationId: string) {
 }
 export function messageSource(caller: AgentCaller, observationId: string) {
   if (caller.kind === "connection")
-    return { kind: "connection" as const, connectionId: caller.connectionId };
+    return {
+      kind: "connection" as const,
+      connectionId: caller.connectionId,
+      ...(caller.chat ? { chat: caller.chat } : {}),
+    };
   const origin = delegationOrigin(caller, observationId);
   if (origin.kind === "run") return { kind: "agent" as const, runId: origin.parentRunId };
   if (origin.kind === "trigger")
@@ -170,7 +174,20 @@ export function toolOperationKey(caller: AgentCaller, input: object, fallback: s
 export function threadCallerAuthority(caller: AgentCaller): ThreadCallerAuthority {
   const base = { userId: caller.userId, accessMode: caller.accessMode };
   if (caller.kind === "connection")
-    return { ...base, kind: "connection", connectionId: caller.connectionId };
+    return {
+      ...base,
+      kind: "connection",
+      connectionId: caller.connectionId,
+      ...(caller.chat
+        ? {
+            chat: {
+              conversationId: caller.chat.conversationId,
+              externalUserId: caller.chat.sender.externalUserId,
+              revision: caller.chat.revision,
+            },
+          }
+        : {}),
+    };
   if (caller.kind === "run") return { ...base, kind: "run", scope: caller.claims };
   return caller.program.kind === "trigger"
     ? { ...base, kind: "trigger", scope: caller.program }

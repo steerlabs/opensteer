@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   createId,
   DeviceIdSchema,
@@ -197,7 +198,7 @@ export async function attachIphoneScreen(
               deploymentId,
               ownerKind: "user",
               ownerUserId: input.userId,
-              name: target.name,
+              name: outsideName(target.name, 120) || "Device",
               kind: "phone",
               platform: "ios",
               form: "phone",
