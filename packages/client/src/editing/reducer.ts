@@ -33,9 +33,10 @@ interface Composition {
   readonly sent: boolean;
   readonly detached: boolean;
   /**
-   * CY4: detached by committing its text to the far side (an interruption, a change of context):
-   * what was committed then. The input method's own commit that follows still goes, as far as it
-   * differs from it.
+   * CY4: detached by the change of its context, its text committed to the far side then: what was
+   * committed. The input method's own commit that follows, in that context's own reducer, still
+   * goes as far as it differs from it. An interruption (a click, a blur) sets none: focus may have
+   * moved, and what the input method commits after it belongs to no field.
    */
   readonly committed?: string;
 }
@@ -392,7 +393,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
     const transaction = state.composition;
     if (transaction && !transaction.detached) {
       commit(transaction, transaction.text);
-      state.composition = { ...transaction, detached: true, committed: transaction.text };
+      state.composition = { ...transaction, detached: true };
     }
     reset();
   };
@@ -585,12 +586,11 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       if (!transaction) break;
       let proxy = event.proxy,
         remoteCaret = proxy.selectionEnd;
-      // CY4: the input method commits a composition already committed for it (the field rotated
-      // or was interrupted under it). What it commits goes as an insertion under the
-      // composition's own context, deleting nothing: the part after what was committed when that
-      // extends it, nothing when it is that, else all of it. Only the reducer of that context
-      // sends it (the context left keeps its own reducer; a change of context leaves this one
-      // with the composition it ended).
+      // CY4: the input method commits a composition the change of its context already committed.
+      // What it commits goes as an insertion under the composition's own context, deleting
+      // nothing: the part after what was committed when that extends it, nothing when it is that,
+      // else all of it. Only the reducer of that context sends it (the context left keeps its own
+      // reducer; a change of context leaves this one with the composition it ended).
       if (
         transaction.detached &&
         transaction.committed !== undefined &&
