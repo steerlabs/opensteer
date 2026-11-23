@@ -105,7 +105,7 @@ try {
     }
     await page.goto(`${origin}${route}`);
     await waitForHost(page);
-    const reply = page.locator(".md-prose").filter({ hasText: replyText });
+    const reply = page.locator(".md-prose:not(.md-prose--plain)").filter({ hasText: replyText });
     await reply.waitFor();
     await page.locator(".workspace--talk").waitFor();
     await page.evaluate(() =>
@@ -145,9 +145,14 @@ try {
 
   await check("a relative file link keeps the app on its page", async () => {
     const { document, reply } = await open(storageTaskPath, sourcesReplyText);
+    const label = reply.getByText("storage-contract.md", { exact: true });
+    // Bring the reply into view via the stable link text so the unavailable local image
+    // (`![Mount sequence]`) enters near-viewport loading and finishes replacing its
+    // `.asset-image` placeholder with fallback words before scrolling to it.
+    await label.scrollIntoViewIfNeeded();
+    await reply.locator(".asset-image").waitFor({ state: "detached" });
     await reply.getByText("Mount sequence", { exact: true }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(artifactDirectory, "sources-reply.png") });
-    const label = reply.getByText("storage-contract.md", { exact: true });
     const isLink = await label.evaluate((element) => element.closest("a") !== null);
     const before = requests.length;
     const opened = await clickWithoutOpening(page, label);
