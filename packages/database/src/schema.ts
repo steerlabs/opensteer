@@ -1221,6 +1221,9 @@ export interface TriggerOccurrenceTable {
   sourceKey: string;
   event: JsonColumn<TriggerProgramEvent>;
   status: "pending" | "running" | "succeeded" | "failed" | "canceled" | "unknown";
+  frameSentAt: Generated<Date | null>;
+  runnerReportedAt: Generated<Date | null>;
+  provenNotStartedAt: Generated<Date | null>;
   outputPrunedAt: Generated<Date | null>;
   webhookBody: Generated<Buffer | null>;
   executionGeneration: Generated<number>;

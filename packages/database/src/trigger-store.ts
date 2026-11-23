@@ -7,7 +7,6 @@ import {
 } from "./personal-mutation.js";
 import { TransactionScopeChanged } from "./connection.js";
 import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
-import { triggerOccurrenceStateColumns } from "./trigger-occurrence-state.js";
 import { createHash } from "node:crypto";
 import {
   minThreadAccessMode,
@@ -971,7 +970,7 @@ export class TriggerStore {
                 .set({
                   completedAt: now,
                   error: jsonValue(cancellation),
-                  ...triggerOccurrenceStateColumns("canceled"),
+                  status: "canceled",
                   updatedAt: now,
                 })
                 .where("id", "=", row.id)
@@ -1003,7 +1002,7 @@ export class TriggerStore {
                 .set({
                   completedAt: now,
                   error: unknownPayload,
-                  ...triggerOccurrenceStateColumns("unknown"),
+                  status: "unknown",
                   updatedAt: now,
                 })
                 .where("id", "=", row.id)
@@ -2085,7 +2084,7 @@ export class TriggerStore {
               .set({
                 completedAt: now,
                 error: jsonValue(lostUnknown),
-                ...triggerOccurrenceStateColumns("unknown"),
+                status: "unknown",
                 updatedAt: now,
               })
               .where("id", "=", row.id)
@@ -2110,7 +2109,7 @@ export class TriggerStore {
             .set({
               completedAt: now,
               error: jsonValue(cancellation),
-              ...triggerOccurrenceStateColumns("canceled"),
+              status: "canceled",
               updatedAt: now,
             })
             .where("id", "=", row.id)
@@ -2452,7 +2451,7 @@ export class TriggerStore {
             terminalEvidenceAt: null,
             contactLostAt: null,
             executionGeneration,
-            ...triggerOccurrenceStateColumns("running"),
+            status: "running",
             runnerBootId: input.runnerBootId,
             runnerId: input.runnerId,
             startedAt: new Date(),
@@ -2669,7 +2668,8 @@ export class TriggerStore {
               })
             : null,
           exitCode: input.output.exitCode,
-          ...triggerOccurrenceStateColumns(input.output.status),
+          runnerReportedAt: now,
+          status: input.output.status,
           result: input.output.result === null ? null : jsonValue(input.output.result),
           stderr: input.output.stderr,
           stdout: input.output.stdout,
@@ -3044,7 +3044,7 @@ export class TriggerStore {
             contactLostAt: null,
             error: null,
             terminalEvidenceAt: null,
-            ...triggerOccurrenceStateColumns("running"),
+            status: "running",
             updatedAt: now,
           })
           .where("id", "in", restoredUnknownIds)
@@ -3062,7 +3062,7 @@ export class TriggerStore {
             runnerId: null,
             startedAt: null,
             terminalEvidenceAt: null,
-            ...triggerOccurrenceStateColumns("pending"),
+            status: "pending",
             updatedAt: now,
           })
           .where(
@@ -3085,7 +3085,7 @@ export class TriggerStore {
             completedAt: now,
             contactLostAt: sql`case when connection_id is not null then coalesce(contact_lost_at, ${now}) else contact_lost_at end`,
             error: unknownErrorPayload,
-            ...triggerOccurrenceStateColumns("unknown"),
+            status: "unknown",
             terminalEvidenceAt: sql`case when connection_id is not null then coalesce(terminal_evidence_at, ${now}) else terminal_evidence_at end`,
             updatedAt: now,
           })
@@ -3224,7 +3224,7 @@ export class TriggerStore {
         .set({
           completedAt: now,
           error: cancelError,
-          ...triggerOccurrenceStateColumns("canceled"),
+          status: "canceled",
           terminalEvidenceAt: sql`case when connection_id is not null then coalesce(terminal_evidence_at, ${now}) else terminal_evidence_at end`,
           updatedAt: now,
         })
@@ -3259,7 +3259,7 @@ export class TriggerStore {
         completedAt: now,
         contactLostAt: sql`case when connection_id is not null then coalesce(contact_lost_at, ${now}) else contact_lost_at end`,
         error: errorPayload,
-        ...triggerOccurrenceStateColumns("unknown"),
+        status: "unknown",
         terminalEvidenceAt: sql`case when connection_id is not null then coalesce(terminal_evidence_at, ${now}) else terminal_evidence_at end`,
         updatedAt: now,
       })
@@ -3496,7 +3496,7 @@ async function enqueueOccurrence(
       runnerId: null,
       sourceKey,
       startedAt: null,
-      ...triggerOccurrenceStateColumns("pending"),
+      status: "pending",
       stderr: "",
       stdout: "",
       triggerId: trigger.id,

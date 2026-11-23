@@ -19,7 +19,6 @@ import {
 import { sql, type Kysely, type Transaction } from "kysely";
 import { TransactionScopeChanged } from "./connection.js";
 import type { DatabaseSchema, ThreadRow } from "./schema.js";
-import { triggerOccurrenceStateColumns } from "./trigger-occurrence-state.js";
 import {
   publishAssignmentSummaries,
   cancelAssignmentRowsInTransaction,
@@ -491,7 +490,7 @@ export async function setThreadDone(
                   .set({
                     completedAt: now,
                     error: jsonValue(cancellation),
-                    ...triggerOccurrenceStateColumns("canceled"),
+                    status: "canceled",
                     updatedAt: now,
                   })
                   .where("id", "=", row.id)

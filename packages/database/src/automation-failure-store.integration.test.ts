@@ -1342,6 +1342,11 @@ integration.sequential("automation failure notices", () => {
       .where("id", "=", unsentOnRemove.commandId)
       .execute();
     await database
+      .updateTable("triggerOccurrences")
+      .set({ frameSentAt: null })
+      .where("id", "=", unsentOnRemove.id)
+      .execute();
+    await database
       .updateTable("runners")
       .set({ kind: "local", ownerKind: "user", ownerUserId: fixture.userId })
       .where("id", "=", fixture.runnerId)

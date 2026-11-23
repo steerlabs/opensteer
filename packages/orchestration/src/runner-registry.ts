@@ -2811,7 +2811,7 @@ export class RunnerRegistry {
               message.error.retryable ? "retry" : "failed",
               {
                 cause: message.error,
-                ...(message.error.retryable ? { provenNotStarted: true } : {}),
+                provenNotStarted: true,
               },
             ),
           );

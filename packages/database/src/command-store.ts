@@ -19,7 +19,6 @@ import {
 import type { z } from "zod";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
-import { triggerOccurrenceStateColumns } from "./trigger-occurrence-state.js";
 import "./connection.js";
 import {
   revokeRunGrants,
@@ -1701,6 +1700,13 @@ export async function markCommandFrameSent(
 ): Promise<void> {
   await commitPersonalMutation(database, async (transaction) => {
     const now = new Date();
+    // Follow lock-order.ts: trigger_occurrences (120) before commands (218).
+    await transaction
+      .updateTable("triggerOccurrences")
+      .set({ frameSentAt: now, provenNotStartedAt: null, updatedAt: now })
+      .where("commandId", "=", commandId)
+      .where("status", "=", "running")
+      .execute();
     await transaction
       .updateTable("commands")
       .set({ frameSentAt: now, updatedAt: now })
@@ -1815,6 +1821,7 @@ export async function retryCommand(
           and connection_id is not null and runner_id is not null and runner_boot_id is not null
           and (terminal_evidence_at is null or contact_lost_at is not null)
       `.execute(transaction);
+      const now = new Date();
       await transaction
         .updateTable("triggerOccurrences")
         .set({
@@ -1822,11 +1829,12 @@ export async function retryCommand(
           admittedAccessMode: null,
           terminalEvidenceAt: null,
           contactLostAt: null,
+          ...(options?.provenNotStarted ? { provenNotStartedAt: now } : {}),
           runnerBootId: null,
           runnerId: null,
           startedAt: null,
-          ...triggerOccurrenceStateColumns("pending"),
-          updatedAt: new Date(),
+          status: "pending",
+          updatedAt: now,
         })
         .where("commandId", "=", commandId)
         .where("status", "=", "running")
@@ -1843,6 +1851,7 @@ export async function failCommand(
   queuedInputCancellation:
     "activation-input" | "authority-cohort" | "seed-input" = "activation-input",
   failureCode: "dispatch_failed" | "runner_restarted" = "dispatch_failed",
+  options?: { readonly provenNotStarted?: boolean | undefined },
 ): Promise<void> {
   const observed = await database
     .selectFrom("commands")
@@ -1898,7 +1907,8 @@ export async function failCommand(
           .set({
             completedAt: now,
             error: jsonValue(failure),
-            ...triggerOccurrenceStateColumns("failed"),
+            ...(options?.provenNotStarted ? { provenNotStartedAt: now } : {}),
+            status: "failed",
             updatedAt: now,
           })
           .where("commandId", "=", commandId)

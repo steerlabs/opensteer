@@ -1762,6 +1762,7 @@ export class OpensteerStore {
     queuedInputCancellation:
       "activation-input" | "authority-cohort" | "seed-input" = "activation-input",
     failureCode: "dispatch_failed" | "runner_restarted" = "dispatch_failed",
+    options?: { readonly provenNotStarted?: boolean | undefined },
   ): Promise<void> {
     return commandStore.failCommand(
       this.#database,
@@ -1770,6 +1771,7 @@ export class OpensteerStore {
       publicMessage,
       queuedInputCancellation,
       failureCode,
+      options,
     );
   }
   async refuseSteer(

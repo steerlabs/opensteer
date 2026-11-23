@@ -102,11 +102,46 @@ export async function applyAutomationsContract(database: Kysely<DatabaseSchema>)
       end loop;
     end $$;
 
+    alter table commands
+      add column frame_sent_at timestamptz;
+    update commands
+      set frame_sent_at = updated_at
+      where type = 'trigger.execute'
+        and status = 'dispatched'
+        and frame_sent_at is null;
+
     alter table trigger_occurrences
       add column output_pruned_at timestamptz,
       add column webhook_body bytea,
+      add column frame_sent_at timestamptz,
+      add column runner_reported_at timestamptz,
+      add column proven_not_started_at timestamptz,
       add constraint trigger_occurrences_status_check check (
         status in ('pending', 'running', 'succeeded', 'failed', 'canceled', 'unknown')
+      );
+
+    update trigger_occurrences
+      set runner_reported_at = coalesce(completed_at, updated_at)
+      where runner_id is not null
+        and status in ('succeeded', 'failed', 'canceled')
+        and runner_reported_at is null;
+
+    update trigger_occurrences
+      set frame_sent_at = coalesce(commands.frame_sent_at, commands.updated_at)
+      from commands
+      where commands.id = trigger_occurrences.command_id
+        and commands.type = 'trigger.execute'
+        and commands.status = 'dispatched'
+        and trigger_occurrences.status = 'running'
+        and trigger_occurrences.frame_sent_at is null;
+
+    alter table trigger_occurrences
+      add constraint trigger_occurrences_sent_evidence_check check (
+        frame_sent_at is null
+        or status in ('running', 'unknown')
+        or (status = 'pending' and proven_not_started_at is not null)
+        or (status in ('succeeded', 'canceled') and runner_reported_at is not null)
+        or (status = 'failed' and (runner_reported_at is not null or proven_not_started_at is not null))
       );
 
     do $$
@@ -150,13 +185,5 @@ export async function applyAutomationsContract(database: Kysely<DatabaseSchema>)
       );
 
     drop table if exists watch_control_requests;
-
-    alter table commands
-      add column frame_sent_at timestamptz;
-    update commands
-      set frame_sent_at = updated_at
-      where type = 'trigger.execute'
-        and status = 'dispatched'
-        and frame_sent_at is null;
   `.execute(database);
 }

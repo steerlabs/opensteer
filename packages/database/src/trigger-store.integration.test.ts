@@ -3075,6 +3075,103 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
   });
 
+  it("enforces trigger_occurrences_sent_evidence_check in PostgreSQL after frame_sent_at is stamped (AB5)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createScheduleTrigger, database, store, triggers } = storeFixture;
+    const fixture = await createFixture("ab5-check");
+    const created = await createScheduleTrigger(fixture, "ab5-check");
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    await store.claimCommand(occurrence.commandId, "ab5-dispatcher");
+    const started = await triggers.startExecution({
+      commandId: occurrence.commandId,
+      runnerBootId: "ab5-boot",
+      runnerId: fixture.runnerId,
+    });
+    await store.markCommandFrameSent(occurrence.commandId);
+
+    // Without runner_reported_at or proven_not_started_at, PostgreSQL refuses failed/succeeded/pending/canceled.
+    await expect(
+      database
+        .updateTable("triggerOccurrences")
+        .set({ status: "failed" })
+        .where("id", "=", occurrence.id)
+        .execute(),
+    ).rejects.toThrow(/trigger_occurrences_sent_evidence_check/u);
+    await expect(
+      database
+        .updateTable("triggerOccurrences")
+        .set({ status: "succeeded" })
+        .where("id", "=", occurrence.id)
+        .execute(),
+    ).rejects.toThrow(/trigger_occurrences_sent_evidence_check/u);
+    await expect(
+      database
+        .updateTable("triggerOccurrences")
+        .set({ status: "pending" })
+        .where("id", "=", occurrence.id)
+        .execute(),
+    ).rejects.toThrow(/trigger_occurrences_sent_evidence_check/u);
+    await expect(
+      database
+        .updateTable("triggerOccurrences")
+        .set({ status: "canceled" })
+        .where("id", "=", occurrence.id)
+        .execute(),
+    ).rejects.toThrow(/trigger_occurrences_sent_evidence_check/u);
+
+    // failCommand without provenNotStarted is also refused by PostgreSQL once frame_sent_at is stamped.
+    await expect(store.failCommand(occurrence.commandId, "Late failure")).rejects.toThrow(
+      /trigger_occurrences_sent_evidence_check/u,
+    );
+
+    // Settling via completeExecution stamps runner_reported_at and passes the CHECK.
+    const completed = await triggers.completeExecution({
+      executionGeneration: started.executionGeneration,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        occurrenceId: occurrence.id,
+        result: null,
+        status: "succeeded",
+        stderr: "",
+        stdout: "",
+      },
+      runnerBootId: "ab5-boot",
+      runnerId: fixture.runnerId,
+    });
+    expect(completed?.status).toBe("succeeded");
+
+    // Requeuing a sent firing WITH provenNotStarted: true stamps proven_not_started_at and passes.
+    const second = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    await store.claimCommand(second.commandId, "ab5-dispatcher-2");
+    await triggers.startExecution({
+      commandId: second.commandId,
+      runnerBootId: "ab5-boot",
+      runnerId: fixture.runnerId,
+    });
+    await store.markCommandFrameSent(second.commandId);
+    await store.retryCommand(second.commandId, new Error("rejected before start"), {
+      provenNotStarted: true,
+    });
+    const requeued = await database
+      .selectFrom("triggerOccurrences")
+      .select(["provenNotStartedAt", "status"])
+      .where("id", "=", second.id)
+      .executeTakeFirstOrThrow();
+    expect(requeued.status).toBe("pending");
+    expect(requeued.provenNotStartedAt).not.toBeNull();
+  });
+
   /**
    * Marks a Run running without dispatching it, with the grant a dispatched
    * Run holds: only a Run whose authority stands takes a steer.

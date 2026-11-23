@@ -424,7 +424,15 @@ export class ExecutionCoordinator {
         });
       } else if (dispatchError.disposition === "failed") {
         await this.#settle(command.id, () =>
-          this.#store.failCommand(command.id, dispatchError.message),
+          dispatchError.provenNotStarted
+            ? this.#store.failCommand(
+                command.id,
+                dispatchError.message,
+                undefined,
+                undefined,
+                { provenNotStarted: true },
+              )
+            : this.#store.failCommand(command.id, dispatchError.message),
         );
       } else if (command.type === "run.steer") {
         await this.#settle(command.id, () =>
