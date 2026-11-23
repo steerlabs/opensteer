@@ -1,5 +1,6 @@
 import type { AgentConnectionIdentityAtConsent } from "@opensteer/control-plane-protocol";
 import type { AgentConnectionIdentityPresentation } from "@opensteer/protocol";
+import { outsideName } from "@opensteer/shared/outsideName";
 import { workSentence, workText, workWords } from "./agent-work-copy.js";
 import { plainSentence, siteOrigin, type SentencePart } from "./sentence-parts.js";
 
@@ -53,17 +54,15 @@ export const agentClaimMaxLength = 40;
 
 /**
  * A client-chosen name shown on one line, as a labelled claim: the Home cleaned it where it
- * entered (`outsideName`), so all that is left here is the cut for a claim's short space.
+ * entered (`outsideName`), so all that is left here is the cut for a claim's short space, made
+ * by the same cleaner so it never splits an emoji, a flag or a letter from its marks.
  */
 export function agentClaim(name: string, maxLength = agentClaimMaxLength): string {
-  const chars = Array.from(name.trim());
-  if (!chars.length) return workWords("who.unnamed");
-  return chars.length > maxLength
-    ? `${chars
-        .slice(0, maxLength - 1)
-        .join("")
-        .trimEnd()}…`
-    : name.trim();
+  const trimmed = name.trim();
+  if (!trimmed) return workWords("who.unnamed");
+  return Array.from(trimmed).length > maxLength
+    ? `${outsideName(trimmed, maxLength - 1)}…`
+    : trimmed;
 }
 
 /** Logos the apps draw, keyed by the verified directory's own platform id. */
