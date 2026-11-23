@@ -63,7 +63,7 @@ describe("FiringInterruptLoop (AA10)", () => {
     }
   });
 
-  it("reconciles paused-trigger running firings on wake and sends interrupt as soon as an offline Runner reconnects", async () => {
+  it("runs zero queries and schedules no timer while the Runner is offline, and relies on attach revocation on reconnect (AB4)", async () => {
     vi.useFakeTimers();
     const environmentId = createId("environment");
     const runnerId = createId("runner");
@@ -76,51 +76,38 @@ describe("FiringInterruptLoop (AA10)", () => {
       runnerBootId: "boot-reconnect",
       runnerId,
     };
-    let online = false;
-    let stillRunning = true;
     const dispatch = vi.fn(async () => ({ kind: "accepted" }));
+    const isFiringStillRunning = vi.fn(async () => true);
     const loop = new FiringInterruptLoop({
       runners: {
         dispatch,
-        identityForEnvironment: () =>
-          online
-            ? {
-                bootId: "boot-reconnect",
-                capabilities: [triggerStopGenerationCapability],
-                connectionGeneration: 2,
-                runnerId,
-              }
-            : undefined,
+        identityForEnvironment: () => undefined,
       } as never,
       store: {
-        isFiringStillRunning: vi.fn(async () => stillRunning),
-        listPausedRunningFirings: vi.fn(async () => (stillRunning ? [firing] : [])),
+        isFiringStillRunning,
+        listPausedRunningFirings: vi.fn(async () => [firing]),
       },
     });
 
     try {
-      await loop.wake();
+      loop.interrupt(firing);
+      await vi.advanceTimersByTimeAsync(0);
       expect(dispatch).toHaveBeenCalledTimes(0);
-      expect(loop.pendingCount()).toBe(1);
+      expect(isFiringStillRunning).toHaveBeenCalledTimes(0);
+      expect(vi.getTimerCount()).toBe(0);
 
-      // Runner reconnects with the same boot: interrupt dispatches immediately without waiting.
-      online = true;
+      // Advance 10 minutes while Runner stays offline: zero queries, zero dispatches, zero timers.
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(isFiringStillRunning).toHaveBeenCalledTimes(0);
+      expect(dispatch).toHaveBeenCalledTimes(0);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // When the Runner reattaches, attachRunnerFirings already answers `revoked` (or settles
+      // unknown on a new boot), so FiringInterruptLoop drops the pending entry without a duplicate
+      // trigger.interrupt.
       loop.runnerAttached(runnerId, "boot-reconnect");
       await vi.advanceTimersByTimeAsync(0);
-      expect(dispatch).toHaveBeenCalledTimes(1);
-      expect(dispatch).toHaveBeenCalledWith(
-        expect.objectContaining({
-          environmentId,
-          executionGeneration: 1,
-          occurrenceId,
-          type: "trigger.interrupt",
-        }),
-        expect.any(AbortSignal),
-        { connectionGeneration: 2 },
-      );
-
-      stillRunning = false;
-      loop.settled(occurrenceId);
+      expect(dispatch).toHaveBeenCalledTimes(0);
       expect(loop.pendingCount()).toBe(0);
     } finally {
       loop.close();

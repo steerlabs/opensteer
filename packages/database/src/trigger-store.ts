@@ -2865,7 +2865,6 @@ export class TriggerStore {
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
   }): Promise<{
-    readonly pausedRunningFirings: readonly RunningFiringRef[];
     readonly results: readonly (
       | { readonly occurrenceId: TriggerOccurrenceId; readonly status: "attached" }
       | {
@@ -2877,7 +2876,6 @@ export class TriggerStore {
     readonly settledUnknownCount: number;
   }> {
     return commitPersonalMutation(this.#database, async (transaction) => {
-      const pausedRunningFirings: RunningFiringRef[] = [];
       const results: (
         | { readonly occurrenceId: TriggerOccurrenceId; readonly status: "attached" }
         | {
@@ -2967,16 +2965,6 @@ export class TriggerStore {
         }
         if (!firing.terminal) {
           if (row.triggerStatus !== "active") {
-            if (row.runnerId && row.runnerBootId) {
-              pausedRunningFirings.push({
-                commandId: row.commandId,
-                environmentId: row.environmentId,
-                executionGeneration: row.executionGeneration,
-                occurrenceId: row.id,
-                runnerBootId: row.runnerBootId,
-                runnerId: row.runnerId,
-              });
-            }
             results.push({
               occurrenceId: firing.occurrenceId,
               reason:
@@ -3175,7 +3163,7 @@ export class TriggerStore {
         await wakeExecutionCommands(transaction);
       }
 
-      return { pausedRunningFirings, results, settledUnknownCount: unknownRows.length };
+      return { results, settledUnknownCount: unknownRows.length };
     });
   }
 

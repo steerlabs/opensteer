@@ -2583,11 +2583,7 @@ export async function createHostRuntime(
             runnerId: identity.runnerId,
           });
           if (attached.settledUnknownCount > 0) realtime.publishTriggersChanged();
-          firingInterrupts?.runnerAttached(
-            identity.runnerId,
-            identity.bootId,
-            attached.pausedRunningFirings,
-          );
+          firingInterrupts?.runnerAttached(identity.runnerId, identity.bootId);
           return attached.results;
         },
         onRenewProxyToken: async (identity, request) =>

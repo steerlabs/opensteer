@@ -76,25 +76,18 @@ export class FiringInterruptLoop {
     return this.#waking;
   }
 
-  /** Immediately retries pending interrupts targeting a reconnected Runner and tracks any paused firings observed during attach. */
-  runnerAttached(
-    runnerId: RunnerId,
-    bootId: string,
-    pausedRunningFirings: readonly RunningFiringRef[] = [],
-  ): void {
+  /**
+   * Clears pending interrupts once a Runner reattaches: attachRunnerFirings already answers
+   * `revoked` for any paused/archived firing on the same boot (so the Runner aborts it directly)
+   * and settles unannounced firings on a new boot to `unknown` (AB4).
+   */
+  runnerAttached(runnerId: RunnerId, _bootId: string): void {
     if (this.#closed) return;
-    for (const entry of this.#pending.values()) {
+    for (const [occurrenceId, entry] of this.#pending) {
       if (entry.firing.runnerId !== runnerId) continue;
-      if (entry.firing.runnerBootId !== bootId) {
-        // Different boot: attachRunnerFirings settles the prior boot's firings; re-check DB.
-        this.#clearTimer(entry);
-        if (!entry.inFlight) void this.#attempt(entry, true);
-        continue;
-      }
       this.#clearTimer(entry);
-      if (!entry.inFlight) void this.#attempt(entry, true);
+      this.#pending.delete(occurrenceId);
     }
-    for (const firing of pausedRunningFirings) this.interrupt(firing);
   }
 
   /** Marks an occurrence settled once terminal evidence arrives in completeExecution. */
@@ -122,6 +115,11 @@ export class FiringInterruptLoop {
     entry.inFlight = true;
     this.#clearTimer(entry);
     try {
+      // AB4 (rule 7): Never query PostgreSQL or arm a retry timer while the Runner is away.
+      // Reattach revokes paused firings directly in the attach reply.
+      const identity = this.#connectedIdentity(entry.firing);
+      if (!identity) return;
+
       if (checkStoreFirst) {
         const stillRunning = await this.#store.isFiringStillRunning(entry.firing).catch(() => true);
         if (this.#closed || this.#pending.get(entry.firing.occurrenceId) !== entry) return;
@@ -131,16 +129,8 @@ export class FiringInterruptLoop {
         }
       }
 
-      const identity = this.#runners.identityForEnvironment(entry.firing.environmentId);
-      if (
-        !identity ||
-        identity.runnerId !== entry.firing.runnerId ||
-        identity.bootId !== entry.firing.runnerBootId ||
-        !identity.capabilities.includes(triggerStopGenerationCapability)
-      ) {
-        this.#scheduleRetry(entry);
-        return;
-      }
+      const currentIdentity = this.#connectedIdentity(entry.firing);
+      if (!currentIdentity) return;
 
       const stopId = createId("command");
       await this.#runners.dispatch(
@@ -153,20 +143,37 @@ export class FiringInterruptLoop {
           type: "trigger.interrupt",
         },
         AbortSignal.timeout(dispatchTimeoutMs),
-        { connectionGeneration: identity.connectionGeneration },
+        { connectionGeneration: currentIdentity.connectionGeneration },
       );
 
       // Dispatching the interrupt frame does not by itself prove termination: keep checking
-      // until completeExecution or attachRunnerFirings settles the occurrence.
+      // only while the Runner remains connected; if it disconnects, attach handles it on return.
       if (this.#closed || this.#pending.get(entry.firing.occurrenceId) !== entry) return;
-      this.#scheduleRetry(entry);
+      if (this.#connectedIdentity(entry.firing)) {
+        this.#scheduleRetry(entry);
+      }
     } catch (error) {
       this.#onWarn?.(error, entry.firing);
       if (this.#closed || this.#pending.get(entry.firing.occurrenceId) !== entry) return;
-      this.#scheduleRetry(entry);
+      if (this.#connectedIdentity(entry.firing)) {
+        this.#scheduleRetry(entry);
+      }
     } finally {
       entry.inFlight = false;
     }
+  }
+
+  #connectedIdentity(firing: RunningFiringRef) {
+    const identity = this.#runners.identityForEnvironment(firing.environmentId);
+    if (
+      !identity ||
+      identity.runnerId !== firing.runnerId ||
+      identity.bootId !== firing.runnerBootId ||
+      !identity.capabilities.includes(triggerStopGenerationCapability)
+    ) {
+      return null;
+    }
+    return identity;
   }
 
   #scheduleRetry(entry: PendingInterrupt): void {
