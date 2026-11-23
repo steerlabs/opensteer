@@ -13,7 +13,7 @@ import {
   type RequestId,
 } from "@opensteer/core";
 import { z } from "zod";
-import type { Kysely, SelectQueryBuilder, Transaction } from "kysely";
+import { sql, type Kysely, type SelectQueryBuilder, type Transaction } from "kysely";
 import "./connection.js";
 import { assertRequestRevision, requestFromRow } from "./request-persistence.js";
 import { connectionState } from "./connection-liveness.js";

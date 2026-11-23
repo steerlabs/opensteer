@@ -678,9 +678,12 @@ export class ProductToolHandlers {
     );
     if (!node) throw missing();
     const connectionAuthority = connectionAuthorityForLineage(caller);
-    const thread = await this.#store.readTask(callerReader(caller), node.threadId, caller.userId, {
-      ...(connectionAuthority ? { connectionAuthority } : {}),
-    });
+    const thread = await this.#store.readTask(
+      callerReader(caller),
+      node.threadId,
+      caller.userId,
+      connectionAuthority ? { connectionAuthority } : undefined,
+    );
     if (!thread) throw missing();
     const { node: subagent, ...activity } = await this.#activity(caller, thread.id, input, node.id);
     return {
@@ -1323,9 +1326,12 @@ export class ProductToolHandlers {
           : mutationAdmission(caller, "opensteer_task_send", input, requestId, [created.id]),
       );
       const connectionAuthority = connectionAuthorityForLineage(caller);
-      const thread = (await this.#store.readTask(callerReader(caller), created.id, caller.userId, {
-        ...(connectionAuthority ? { connectionAuthority } : {}),
-      }))!;
+      const thread = (await this.#store.readTask(
+        callerReader(caller),
+        created.id,
+        caller.userId,
+        connectionAuthority ? { connectionAuthority } : undefined,
+      ))!;
       return {
         assignmentId: null,
         link: formatReferenceLink(thread.id, thread.title),

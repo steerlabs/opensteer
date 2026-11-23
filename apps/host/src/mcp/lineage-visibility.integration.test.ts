@@ -1358,6 +1358,7 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     const scopedAssignmentA = await storeFixture.store.getAssignmentForOwner({
       assignmentId: childA.assignment.id,
       ownerId: f.userId,
+      reader: { kind: "person" },
       connectionAuthority: authorityA,
     });
     expect(scopedAssignmentA?.pendingRequests).toBe(0);
