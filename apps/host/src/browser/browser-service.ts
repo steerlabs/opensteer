@@ -4530,27 +4530,30 @@ export class BrowserService {
     const profiles = await this.#repository.listBrowserProfiles(ownerId);
     if (profiles.length === 0) return false;
     if (!agentBindingId || !this.#repository.resolveResourceAccess) return true;
-    try {
-      const authority = await this.#repository.resolveResourceAccess({
-        agentBindingId,
-        explicitAccess: "read-write",
-        ownerUserId: ownerId,
-      });
-      if (executionAccess(authority.execution, "read-write") !== "read-write") return false;
-      const grant = selectedGrantOf(authority.execution);
-      if (!grant) return true;
-      return profiles.some((profile) =>
-        agentGrantAllows(grant, { kind: "browser-profile", profileId: profile.id }, "read-write"),
-      );
-    } catch (error) {
-      if (
-        error instanceof OpensteerError &&
-        (error.code === "forbidden" || error.code === "not_found")
-      ) {
-        return false;
+    // Decide each profile through the single authority function (`resolveResourceAccess` /
+    // `authorizeTarget`, Rule 1) with Run parity (`explicitAccess: "read"` so lower task modes
+    // receive the browser address just like a Run of the same task, while per-action checks
+    // enforce read vs write, Z9 / T5).
+    for (const profile of profiles) {
+      try {
+        const authority = await this.#repository.resolveResourceAccess({
+          agentBindingId,
+          explicitAccess: "read",
+          grantTarget: { kind: "browser-profile", profileId: profile.id },
+          ownerUserId: ownerId,
+        });
+        if (authority.access !== null) return true;
+      } catch (error) {
+        if (error instanceof OpensteerError && error.code === "not_found") {
+          continue;
+        }
+        if (error instanceof OpensteerError && error.code === "forbidden") {
+          return false;
+        }
+        throw error;
       }
-      throw error;
     }
+    return false;
   }
 
   async closeAgentSession(input: {
