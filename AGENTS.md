@@ -28,7 +28,11 @@ Stop or Disconnect.
    `full-access`, and read a connection's grant and policy in the same statement.
 2. **Direct tools of a connected agent go through `AgentSessionService.run()`**
    (`apps/host/src/agent-sessions/agent-session-service.ts`): one recorded operation, the witness
-   re-checked before each command, the person asked when the mode says so.
+   re-checked before each command, the person asked when the mode says so. **A change to the Home
+   is a command through one door**, `dispatchCommand` (`apps/host/src/commands/dispatch.ts`),
+   admitted by `admitCommand` in rule 1's file, sent by your app, a Run, an automation or a
+   connected agent. A connected agent's command is that connection acting at the door, never a
+   `run()` operation (`apps/host/src/commands/command-tools.integration.test.ts`).
 3. **Nothing leaves the Home before it is in the Disconnect set**
    (`packages/database/src/connection-disconnect.ts`). Write the attempt row before the frame,
    the IPC call or the ticket. Disconnect shows an end only with evidence.
