@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { editingClipboardPartMaxBytes } from "@opensteer/protocol/editing";
 import { BrowserEditingStore } from "./browser-editing.js";
@@ -276,42 +276,51 @@ describe("browser editing transport", () => {
     store.dispose();
   });
   it("settles pending clipboard operations immediately on browser.error instead of timing out", async () => {
+    vi.useFakeTimers();
     const { store, target } = setup();
-    const paste = target.send({
-      kind: "paste",
-      items: [{ type: "text/plain", bytes: encoder.encode("hi") }],
-      contextId: crypto.randomUUID(),
-    });
-    store.receive(sessionId, {
-      type: "browser.error",
-      error: {
-        code: "conflict",
-        reason: "stale-document",
-        message: "The field changed.",
-        retryable: false,
-      },
-    });
-    const outcome = await Promise.race([
-      paste,
-      new Promise<string>((resolve) => setTimeout(() => resolve("hung"), 50)),
-    ]);
-    expect(outcome).toEqual({ outcome: "refused", items: [] });
-    const large = target.send({
-      kind: "paste",
-      items: [{ type: "text/plain", bytes: encoder.encode("hi") }],
-      contextId: crypto.randomUUID(),
-    });
-    store.receive(sessionId, {
-      type: "browser.error",
-      error: {
-        code: "invalid_argument",
-        reason: "too-large",
-        message: "Too large.",
-        retryable: false,
-      },
-    });
-    expect(await large).toEqual({ outcome: "too-large", items: [] });
-    store.dispose();
+    try {
+      const paste = target.send({
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: encoder.encode("hi") }],
+        contextId: crypto.randomUUID(),
+      });
+      store.receive(sessionId, {
+        type: "browser.error",
+        error: {
+          code: "conflict",
+          reason: "stale-document",
+          message: "The field changed.",
+          retryable: false,
+        },
+      });
+      // Resolves on the microtask queue without advancing the 15 s clipboard timeout.
+      const outcome = await Promise.race([
+        paste,
+        Promise.resolve()
+          .then(() => undefined)
+          .then(() => undefined)
+          .then(() => "hung"),
+      ]);
+      expect(outcome).toEqual({ outcome: "refused", items: [] });
+      const large = target.send({
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: encoder.encode("hi") }],
+        contextId: crypto.randomUUID(),
+      });
+      store.receive(sessionId, {
+        type: "browser.error",
+        error: {
+          code: "invalid_argument",
+          reason: "too-large",
+          message: "Too large.",
+          retryable: false,
+        },
+      });
+      expect(await large).toEqual({ outcome: "too-large", items: [] });
+    } finally {
+      store.dispose();
+      vi.useRealTimers();
+    }
   });
 });
 
