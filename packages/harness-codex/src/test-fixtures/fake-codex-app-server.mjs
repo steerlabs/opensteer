@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import readline from "node:readline";
 
 /**
@@ -3884,17 +3884,20 @@ function sendSeveralResponsesUsage() {
 
 /** Durable side effects and real child processes for restart-recovery acceptance. */
 function recoveryHeldTurn(message) {
-  const { id: threadId, turnId } = current();
+  const thread = current();
+  const { id: threadId, turnId } = thread;
+  const turnCwd = message.params.cwd ?? thread.settings.cwd ?? process.cwd();
   const input = JSON.stringify(message.params.input);
   const recovery = input.includes("Your conversation is intact.");
   const effect = process.argv.find((value) => value.startsWith("--effect-file="))?.slice(14);
   if (effect && !recovery) appendFileSync(effect, "effect\n");
   if (input.includes("[effect]") && !recovery)
-    appendFileSync(join(process.cwd(), "recovery-effect"), "effect\n");
+    appendFileSync(join(turnCwd, "recovery-effect"), "effect\n");
   const watchPids = process.argv.find((value) => value.startsWith("--watch-pids-file="))?.slice(18);
+  const watchPidsFile = watchPids ? resolve(turnCwd, watchPids) : undefined;
   const priorPidsAlive =
-    watchPids && existsSync(watchPids)
-      ? JSON.parse(readFileSync(watchPids, "utf8")).map((pid) => {
+    watchPidsFile && existsSync(watchPidsFile)
+      ? JSON.parse(readFileSync(watchPidsFile, "utf8")).map((pid) => {
           try {
             process.kill(pid, 0);
             return true;
@@ -3940,7 +3943,7 @@ function recoveryHeldTurn(message) {
           id: "recovery-command",
           type: "commandExecution",
           command: "sleep 600 # recovery acceptance",
-          cwd: process.cwd(),
+          cwd: turnCwd,
           status: "inProgress",
         },
       },

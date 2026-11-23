@@ -96,7 +96,7 @@ integration("Task naming through the Runner", () => {
         config: {},
         driverKind: "codex",
         sourceId: "openai",
-        stateKind: "isolated",
+        stateKind: "ambient",
       },
       harnesses: () => {
         const registry = new HarnessRegistry();
