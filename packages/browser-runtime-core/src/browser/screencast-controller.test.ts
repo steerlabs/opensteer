@@ -1392,6 +1392,95 @@ describe("the follow view, when the engine ends the casts of a session it holds 
 });
 
 /*
+ * Re-check 11, finding 3 (U3): once the cast's key moves on (e.g. a resize), `observed` clears a
+ * stale paint backoff so `reconcile` re-acquires `retainRendering()` and cancels the old timer.
+ */
+describe("the follow view, when a paint-timed-out tab moves to a new size (U3)", async () => {
+  const { ScreencastController } = await import("./screencast-controller.js");
+  const { LatestFrameStream } = await import("../stream/latest-frame-stream.js");
+  const { FakeCdpSession } = await import("../test-support/fakes.js");
+  const { BrowserPaintTimeoutError } = await import("./backend.js");
+  const settle = async () => {
+    for (let turn = 0; turn < 6; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  it("restores retainRendering and clears the old paint timer when the tab resizes", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const cdp = new FakeCdpSession();
+      let retained = 0;
+      (cdp as unknown as { retainRendering: () => () => void }).retainRendering = () => {
+        retained += 1;
+        return () => {
+          retained -= 1;
+        };
+      };
+      let size = { height: 600, width: 800 };
+      const surface = {
+        active: true,
+        documentId: "a",
+        geometryRevision: 1,
+        id: "tab",
+        loading: false,
+      };
+      let failPaint = true;
+      const holdStart = Promise.withResolvers<void>();
+      cdp.responses.set("Page.startScreencast", async () => {
+        await holdStart.promise;
+        return {};
+      });
+      const page = {
+        applyGeometry: async () => undefined,
+        settleRendering: async () => {
+          if (failPaint) throw new BrowserPaintTimeoutError("stalled");
+        },
+      };
+      const binding = { cdp, page, surface };
+      const listeners = new Set<(event: unknown) => void>();
+      const follow = new ScreencastController({
+        frames: new LatestFrameStream({ sendFrame: async () => undefined }),
+        ledger: {
+          active: () => binding,
+          binding: () => binding,
+          dialogOf: () => null,
+          dialogOpen: () => false,
+          recordPageScale: () => undefined,
+          subscribe: (listener: (event: unknown) => void) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+          use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+          viewportOf: () => size,
+          withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+        } as never,
+        onDialogChanged: () => undefined,
+      });
+      await follow.start();
+      await follow.setStreaming(true);
+      await settle();
+      // Paint timed out: rendering demand was released and the 1 s backoff timer is armed.
+      expect(retained).toBe(0);
+      expect(vi.getTimerCount()).toBe(1);
+      // Resize before the backoff fires; the new start holds on Chromium.
+      failPaint = false;
+      size = { height: 700, width: 900 };
+      surface.geometryRevision = 2;
+      for (const listener of listeners)
+        listener({ change: "updated", surface: { ...surface }, type: "changed" });
+      await settle();
+      // Stale paint wait must be cleared: rendering demand is back on and old timer is gone.
+      expect(retained).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+      holdStart.resolve();
+      await settle();
+      await follow.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/*
  * Re-check 9, R1: the state of a bound tab has one writer, the pure `after` in screencast-plan.ts.
  * The controller turns what happened into an event and stores what `after` returns; it never sets
  * a field of that state itself.

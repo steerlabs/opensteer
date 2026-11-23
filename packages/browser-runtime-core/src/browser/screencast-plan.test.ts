@@ -557,6 +557,48 @@ describe("the state after each event", () => {
     expect(navigated).toMatchObject({ failed: null, unpictured: 0 });
   });
 
+  // Re-check 11, finding 3 (U3): a paint wait belongs to the picture it timed out for; once the
+  // size, capture revision or geometry revision moves on, `observed` clears it so `reconcile`
+  // restores rendering demand and clears the stale backoff timer.
+  it("clears a stale paint backoff on observed once the cast's key moves on", () => {
+    const waiting = after(
+      { ...initialTabCastState(), told: { state: "preparing" } },
+      { kind: "paint-timed-out" },
+      base,
+    );
+    expect(waiting.paint).not.toBeNull();
+    // Same size, capture and geometry: paint wait stays.
+    expect(after(waiting, { kind: "observed" }, base).paint).toEqual(waiting.paint);
+    // Resize / geometry move: paint wait is cleared.
+    expect(
+      after(
+        waiting,
+        { kind: "observed" },
+        facts({}, { geometryRevision: 2, size: { height: 700, width: 900 } }),
+      ).paint,
+    ).toBeNull();
+    // Capture revision move on a native page: paint wait is cleared.
+    const nativeWaiting = after(
+      { ...initialTabCastState(), told: { state: "preparing" } },
+      { kind: "paint-timed-out" },
+      native,
+    );
+    expect(
+      after(
+        nativeWaiting,
+        { kind: "observed" },
+        facts(
+          {},
+          {
+            capture: { height: 600, rasterScale: 2, revision: 2, width: 800 },
+            native: true,
+            sizesView: false,
+          },
+        ),
+      ).paint,
+    ).toBeNull();
+  });
+
   it("gives a running cast's first picture its time only while the plan still gives one (R10)", () => {
     const running: TabCastState = {
       ...initialTabCastState(),

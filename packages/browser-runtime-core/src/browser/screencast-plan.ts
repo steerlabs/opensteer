@@ -550,13 +550,7 @@ export function nextStep(
   }
   if (state.failed !== null && sameCast(state.failed.key, key))
     return { kind: "wait", why: `its cast was given up: ${state.failed.why}` };
-  const paint = state.paint;
-  if (
-    paint &&
-    sameSize(paint.size, key.size) &&
-    paint.captureRevision === key.captureRevision &&
-    paint.geometryRevision === key.geometryRevision
-  )
+  if (state.paint && samePaint(state.paint, key))
     return { kind: "wait", why: "the page did not paint" };
   const can = canTakeStart(tab, state.refusal);
   if (!can.ok) return { kind: "wait", why: can.why };
@@ -658,8 +652,14 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
         !sameCast(next.lastKey, want.key)
       )
         next = { ...next, lastKey: null, unpictured: 0 };
-      // A pause ends a paint wait: the next stream asks the page afresh.
-      if (next.paint && (!facts.streaming || facts.closed)) next = { ...next, paint: null };
+      // A pause, or a picture whose size, capture or geometry moved on, ends a paint wait (U3).
+      if (
+        next.paint &&
+        (!facts.streaming ||
+          facts.closed ||
+          (want.kind === "cast" && !samePaint(next.paint, want.key)))
+      )
+        next = { ...next, paint: null };
       return next;
     }
     case "start-begun":
@@ -830,4 +830,12 @@ export function fitsRegion(geometry: PageSize | null, region: PageSize): boolean
 
 export function sameSize(left: PageSize, right: PageSize | null): boolean {
   return left.width === right?.width && left.height === right.height;
+}
+
+function samePaint(paint: PaintWait, key: CastKey): boolean {
+  return (
+    sameSize(paint.size, key.size) &&
+    paint.captureRevision === key.captureRevision &&
+    paint.geometryRevision === key.geometryRevision
+  );
 }
