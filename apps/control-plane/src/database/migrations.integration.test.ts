@@ -460,6 +460,7 @@ integration("organizations removed (0037_remove_organizations)", () => {
   };
   const assignee = "acct_00000000-0000-4000-8000-0000000000a1";
   const admin = "acct_00000000-0000-4000-8000-0000000000a2";
+  const otherPerson = "acct_00000000-0000-4000-8000-0000000000a3";
   const organization = "org_00000000-0000-4000-8000-0000000000b1";
   const assignment = "was_00000000-0000-4000-8000-0000000000c1";
   const personal = "cc_00000000-0000-4000-8000-0000000000d1";
@@ -495,7 +496,8 @@ integration("organizations removed (0037_remove_organizations)", () => {
     await sql`
       insert into public.users (id, display_name, email, email_verified) values
         (${assignee}, 'Ada', 'ada@example.test', true),
-        (${admin}, 'Grace', 'grace@example.test', true)
+        (${admin}, 'Grace', 'grace@example.test', true),
+        (${otherPerson}, 'Alan', 'alan@example.test', true)
     `.execute(database);
     await sql`
       insert into public.organizations (id, name, stripe_customer_id, stripe_subscription_id,
@@ -514,7 +516,7 @@ integration("organizations removed (0037_remove_organizations)", () => {
         stripe_subscription_id, stripe_price_id, billing_currency, billing_status,
         created_at, updated_at, sealed_setup_code, setup_code_digest
       ) values
-        (${personal}, ${assignee}, 1, 'active', 'cc-d1.home.example.test', 'us-central1-a',
+        (${personal}, ${otherPerson}, 1, 'active', 'cc-d1.home.example.test', 'us-central1-a',
           'default', '{}'::jsonb, now(), 'ready', 'cs_d1', 'cus_d1', 'sub_d1', 'price_1', 'usd',
           'active', now(), now(), 'sealed-d1', 'digest-d1'),
         (${work}, null, 1, 'active', 'cc-d2.home.example.test', 'us-central1-a', 'default',
@@ -578,8 +580,8 @@ integration("organizations removed (0037_remove_organizations)", () => {
     // alive without an owning account, or still carrying any work: placeholder billing id.
     await sql`
       update public.cloud_computers set work_assignment_id = null,
-          stripe_checkout_id = 'cs_admin', stripe_customer_id = 'cus_admin',
-          stripe_subscription_id = 'sub_admin', stripe_price_id = 'price_1', billing_currency = 'usd'
+          stripe_checkout_id = 'cs_assignee', stripe_customer_id = 'cus_assignee',
+          stripe_subscription_id = 'sub_assignee', stripe_price_id = 'price_1', billing_currency = 'usd'
         where id = ${work}
     `.execute(database);
     await sql`delete from public.work_assignments`.execute(database);
@@ -591,32 +593,71 @@ integration("organizations removed (0037_remove_organizations)", () => {
       ["stripe_subscription_id", `work:${assignment}`],
       ["stripe_customer_id", `work:${assignment}`],
       ["stripe_checkout_id", `work:${assignment}`],
+      ["stripe_price_id", `work:${assignment}`],
     ] as const) {
       await sql`
-        update public.cloud_computers set account_id = ${admin},
-            stripe_checkout_id = ${column === "stripe_checkout_id" ? value : "cs_admin"},
-            stripe_customer_id = ${column === "stripe_customer_id" ? value : "cus_admin"},
-            stripe_subscription_id = ${column === "stripe_subscription_id" ? value : "sub_admin"}
+        update public.cloud_computers set account_id = ${assignee},
+            stripe_checkout_id = ${column === "stripe_checkout_id" ? value : "cs_assignee"},
+            stripe_customer_id = ${column === "stripe_customer_id" ? value : "cus_assignee"},
+            stripe_subscription_id = ${column === "stripe_subscription_id" ? value : "sub_assignee"},
+            stripe_price_id = ${column === "stripe_price_id" ? value : "price_1"}
           where id = ${work}
       `.execute(database);
       await expectRefused(new RegExp(`Cloud Computer ${work}.*${column}`, "u"));
     }
 
-    // An operator finishes resolving it: owned by the organization's admin with real Stripe ids.
-    // Then the migration runs, and keeps both computers.
+    // An operator finishes resolving it: a Home is handed only to its assignee, with real Stripe
+    // ids. First verify the guard locks organizations before dropping, so a concurrent insert
+    // from an older instance commits before the check and causes refusal instead of silent loss.
     await sql`
-      update public.cloud_computers set account_id = ${admin},
-          stripe_checkout_id = 'cs_admin', stripe_customer_id = 'cus_admin',
-          stripe_subscription_id = 'sub_admin', stripe_price_id = 'price_1', billing_currency = 'usd'
+      update public.cloud_computers set account_id = ${assignee},
+          stripe_checkout_id = 'cs_assignee', stripe_customer_id = 'cus_assignee',
+          stripe_subscription_id = 'sub_assignee', stripe_price_id = 'price_1', billing_currency = 'usd'
         where id = ${work}
     `.execute(database);
+    const racing = new Pool({ connectionString: urlForDatabase(databaseName) });
+    const client = await racing.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `insert into public.organizations (id, name, stripe_customer_id, stripe_subscription_id,
+           stripe_price_id, billing_currency, billing_status, paid_seats, policy)
+         values ($1, 'Racing', 'cus_race', 'sub_race', 'price_seat', 'usd', 'active', 1, '{}')`,
+        [organization],
+      );
+      let settled = false;
+      const migrating = migrateControlPlaneToLatest(database).then(
+        () => {
+          settled = true;
+          return null;
+        },
+        (error: unknown) => {
+          settled = true;
+          return error as Error & { cause?: Error };
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(settled).toBe(false);
+      await client.query("commit");
+      const raceError = await migrating;
+      expect(String(raceError?.cause?.message)).toMatch(
+        new RegExp(`organization ${organization}`, "u"),
+      );
+      expect(await left()).toEqual(shapeBefore);
+    } finally {
+      client.release();
+      await racing.end();
+    }
+    await sql`delete from public.organizations where id = ${organization}`.execute(database);
+
+    // Then the migration runs, and keeps both computers.
     await migrateControlPlaneToLatest(database);
     expect(await left()).toEqual([]);
     // Every column it had is kept, but the one the migration drops.
     const { workAssignmentId, ...kept } = { ...before };
     expect(workAssignmentId).toBeNull();
     expect(await computer(personal)).toEqual(kept);
-    expect(await computer(work)).toMatchObject({ accountId: admin, state: "active" });
+    expect(await computer(work)).toMatchObject({ accountId: assignee, state: "active" });
     // The seat it reserved is a free backup target.
     const target = await sql<{ id: string }>`
       select id from public.cloud_computer_backup_targets where id = ${reservedTarget}

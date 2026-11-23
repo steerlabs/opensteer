@@ -21,6 +21,15 @@ export const removeOrganizationsMigrationName = "0037_remove_organizations";
 async function removeOrganizations(database: Parameters<Migration["up"]>[0]): Promise<void> {
   await sql`
     do $remove$ declare held text; begin
+      -- Hold the guarded tables before checking them so a rolling-deploy instance cannot write
+      -- a new organization or work row between the guard check and the drops below.
+      if to_regclass('public.cloud_computers') is not null then
+        lock table public.cloud_computers in access exclusive mode;
+      end if;
+      if to_regclass('public.organizations') is not null then
+        lock table public.organizations, public.organization_checkouts, public.work_assignments
+          in access exclusive mode;
+      end if;
       if to_regclass('public.organizations') is not null then
         select string_agg(name, ', ') into held from (
           select 'organization ' || id as name from public.organizations
