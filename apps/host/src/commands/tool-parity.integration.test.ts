@@ -142,11 +142,11 @@ const withoutTool: Readonly<Record<string, string>> = {
  * owed before this branch is trial-merged (the lead's item 2). The list only shrinks.
  */
 const owed: Readonly<Record<string, string>> = {
+  "thread.execution.update": "opensteer_task_configure",
   "thread.inputQueue.resume": "opensteer_task_queue (resume)",
   "thread.input.steer": "opensteer_task_queue (steer)",
   "thread.input.cancel": "opensteer_task_queue (cancel)",
   "thread.input.move": "opensteer_task_queue (move)",
-  "thread.execution.update": "opensteer_task_configure",
   "run.interrupt": "opensteer_task_interrupt",
   "node.stop": "opensteer_subagent_stop (a subagent)",
   "assignment.cancel": "opensteer_delegation_cancel",
@@ -668,16 +668,22 @@ it("records what today's tools let each caller do, and the door answers the same
         // The person sets the same limits once the engine offers them again: a Runner's new
         // descriptor (its browser) is read in the background, and the agent's call meets it ready.
         before: async () => {
-          await catalogued();
+          // The Runner's descriptor, read in the background after the engine came back, can
+          // replace the catalog written here: each attempt writes it again over whatever is
+          // current, so the wait is for the write to stand, not for a race to fall our way.
           await until(
             "the spare engine to offer gpt-5.6-sol again, so the person's same limits apply",
-            () =>
-              asPerson({
-                type: "harness.model.configure",
-                ...spare,
-                nativeModelId: "gpt-5.6-sol",
-                settings: { contextWindow: 100_000 },
-              }).then(() => true),
+            async () =>
+              catalogued()
+                .then(() =>
+                  asPerson({
+                    type: "harness.model.configure",
+                    ...spare,
+                    nativeModelId: "gpt-5.6-sol",
+                    settings: { contextWindow: 100_000 },
+                  }),
+                )
+                .then(() => true),
             30_000,
           );
         },
