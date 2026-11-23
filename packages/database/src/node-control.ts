@@ -35,7 +35,7 @@ import {
   lockThreadCaller,
   type ThreadCallerAuthority,
 } from "./thread-caller.js";
-import "./store-primitives.js";
+import { lockThreadRow } from "./store-primitives.js";
 import { runHasActiveGrant } from "./run-grants.js";
 type Database = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
 /**
@@ -178,6 +178,9 @@ export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: N
       };
     }
     const { node, run, bindingGeneration } = await assertNodeStop(tx, input);
+    // Publishing the stopping node writes the task's transcript, so the task's row is held now,
+    // after its Run and before the command and the node, as the lock order ranks them.
+    await lockThreadRow(tx, run.threadId);
     const payload = {
       type: "node.stop",
       nodeId: node.id,
