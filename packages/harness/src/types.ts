@@ -80,6 +80,11 @@ export interface HarnessCapabilities {
    * stream closed, so the Runner waits for that event instead of stopping it.
    */
   readonly warmReuse?: boolean;
+  /**
+   * True when the adapter's sessions can run on a shared engine process that
+   * outlives a Run and carries no Run's containment scope.
+   */
+  readonly sharedEngineProcess?: boolean;
   /** The model selection a reused engine applies itself on its next turn; the rest restarts it. */
   readonly warmSelection?: {
     readonly model?: boolean;
@@ -324,11 +329,42 @@ export interface HarnessSharedEngineLaunch {
 export function assertFreshProviderSessionContext(context: HarnessSessionContext): void {
   if (context.initialContext) return;
   if (context.history.length === 0 && !context.historyWindow.hasEarlier) return;
-  throw new OpensteerError({
-    code: "conflict",
-    message:
-      "A native provider session can start at the beginning of a Thread or with Host-authorized initial context. History cannot be replayed as a continuation fallback.",
-  });
+  throw markOpenStopProven(
+    new OpensteerError({
+      code: "conflict",
+      message:
+        "A native provider session can start at the beginning of a Thread or with Host-authorized initial context. History cannot be replayed as a continuation fallback.",
+    }),
+  );
+}
+
+/**
+ * Thrown when a shared-engine open or stop could not prove that its session's
+ * work on the shared process ended.
+ */
+export class HarnessStopUnprovenError extends OpensteerError {
+  constructor(message: string, options?: { readonly cause?: unknown }) {
+    super({ code: "harness_error", message, retryable: true });
+    this.name = "HarnessStopUnprovenError";
+    if (options?.cause !== undefined) this.cause = options.cause;
+  }
+}
+
+const provenStoppedOnOpen = new WeakSet<object>();
+
+/**
+ * Marks an error thrown from `startSession` / `resumeSession` as having
+ * already proven that nothing of that open remains live on a shared engine
+ * (either nothing was started on the shared process, or its stop settled on
+ * evidence). A rejected open without this mark is not evidence by itself.
+ */
+export function markOpenStopProven<T>(error: T): T {
+  if (typeof error === "object" && error !== null) provenStoppedOnOpen.add(error);
+  return error;
+}
+
+export function isOpenStopProven(error: unknown): boolean {
+  return typeof error === "object" && error !== null && provenStoppedOnOpen.has(error);
 }
 
 /**

@@ -3893,6 +3893,98 @@ describe("RunnerRuntime", () => {
       }
     });
 
+    it("does not take a rejected shared-engine open as proof that the session stopped", async () => {
+      const reached = deferred<void>();
+      const rejected = deferred<void>();
+      const driver = new FakeHarnessDriver("test-driver", () => new SharedEngineSession(Promise.resolve()));
+      const create = driver.create.bind(driver);
+      driver.create = async (input) => {
+        const adapter = await create(input);
+        return {
+          ...adapter,
+          capabilities: { ...adapter.capabilities, sharedEngineProcess: true },
+          startSession: async () => {
+            reached.resolve();
+            await rejected.promise;
+            throw new Error("Open rejected without proving stop");
+          },
+          resumeSession: async () => {
+            reached.resolve();
+            await rejected.promise;
+            throw new Error("Open rejected without proving stop");
+          },
+        };
+      };
+      const registry = new HarnessRegistry();
+      registry.registerDriver(driver);
+      const environmentId = createId("environment");
+      const runtime = runtimeWithLeaseGrants({
+        nativeFsHelperBinary: testNativeFsHelperBinary,
+        nodeExecutable: process.execPath,
+        agentSkills: testAgentSkills,
+        plugins: noPlugins,
+        bootId: "boot-test",
+        browserHarnessExecutable: testBrowserHarnessExecutable,
+        deploymentShape: testDeploymentShape,
+        environmentId,
+        harnesses: registry,
+        maxConcurrentRuns: 2,
+        dataDirectory: dirname(testPrivateStateRoot),
+        privateStateDirectory: testPrivateStateRoot,
+        projectContinuationIdentity,
+        agentHome: {
+          folder: async ({ path }: { readonly path: string }) => path,
+          prepare: async () => ({ instructions: undefined, path: "/runner/runs/test/workspace" }),
+        },
+        containment: new ExecutionContainment({
+          bootId: "boot-test",
+          dataDirectory: dirname(testPrivateStateRoot),
+          listProcesses: async () => [],
+        }),
+        stopTimings: { graceMs: 20, sharedEngineSettleMs: 50 },
+      });
+      const messages: RunnerOperationalReport[] = [];
+      const sink: RunnerMessageSink = {
+        send: async (message) => {
+          messages.push(message);
+        },
+      };
+      const ends = () =>
+        messages.flatMap((message) =>
+          message.type === "runner.event" &&
+          (message.event.type === "run.interrupted" ||
+            message.event.type === "run.failed" ||
+            message.event.type === "run.completed")
+            ? [message.event]
+            : [],
+        );
+      const execute = executeCommand(environmentId);
+      await reconcile(registry, execute);
+      try {
+        await runtime.handleCommand(execute, sink);
+        await reached.promise;
+        await runtime.handleCommand(stopOf(execute), sink);
+        rejected.resolve();
+        await waitUntil(() => ends().length === 1);
+        expect(ends()[0]).toMatchObject({
+          type: "run.failed",
+          data: { code: runTerminationUnprovenCode },
+        });
+        await waitUntil(() => runtime.activeRunIds().length === 0);
+        expect(await runtime.handleCommand(nextTurn(execute), sink)).toEqual({
+          status: "rejected",
+          error: {
+            code: "conflict",
+            message: "The Thread's previous Run is still stopping",
+            retryable: true,
+          },
+        });
+      } finally {
+        rejected.resolve();
+        await runtime.close();
+      }
+    });
+
     it("says the end is unverified and holds the task when the stop outlasts its bound", async () => {
       const stopped = deferred<void>();
       const f = sharedStopFixture({

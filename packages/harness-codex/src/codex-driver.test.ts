@@ -3324,6 +3324,67 @@ describe("one Codex app-server per account", () => {
     },
   );
 
+  it("awaits the in-flight unload when Stop arrives during resume boundary check, before freeing the conversation", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "opensteer-codex-stop-open-"));
+    const mcpRelease = join(dir, "mcp-release");
+    const closeRelease = join(dir, "close-release");
+    const fixture = await setup("reasoning", {
+      serverArguments: [
+        "--unique-threads",
+        `--hold-mcp-status-file=${mcpRelease}`,
+        `--hold-close-file=${closeRelease}`,
+      ],
+    });
+    try {
+      const initial = await fixture.adapter.startSession(taskContext(fixture, "initial"));
+      const conversation = initial.providerSessionReference;
+      // Let initial stop close immediately so we only hold the resumed stop's close.
+      await writeFile(closeRelease, "");
+      await initial.stop();
+      await rm(closeRelease);
+
+      const stopSignal = new AbortController();
+      let settled = false;
+      const resuming = fixture.adapter
+        .resumeSession(conversation, {
+          ...taskContext(fixture, "resuming"),
+          signal: stopSignal.signal,
+        })
+        .then(
+          (session) => {
+            settled = true;
+            return { ok: true as const, session };
+          },
+          (error: unknown) => {
+            settled = true;
+            return { ok: false as const, error };
+          },
+        );
+
+      await vi.waitFor(async () =>
+        expect(await fixture.capture()).toContainEqual({ fakeMcpStatusHeld: conversation }),
+      );
+      stopSignal.abort(new Error("Stop during boundary check"));
+      await vi.waitFor(async () =>
+        expect(await fixture.capture()).toContainEqual({ fakeCloseHeld: conversation }),
+      );
+      // Boundary check returns while unload is still waiting on thread/closed.
+      await writeFile(mcpRelease, "");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(settled).toBe(false);
+
+      await writeFile(closeRelease, "");
+      const outcome = await resuming;
+      expect(outcome.ok).toBe(false);
+      // The next resume does not meet "Another Opensteer session holds this Codex conversation".
+      const next = await fixture.adapter.resumeSession(conversation, taskContext(fixture, "next"));
+      expect(next.providerSessionReference).toBe(conversation);
+      await next.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
   it("stops a Run's turns before the app-server it owns ends with the Run's lifetime", async () => {
     const fixture = await setup("subagents-late-start", { sharedEngine: false });
     try {

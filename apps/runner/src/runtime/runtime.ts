@@ -59,8 +59,10 @@ import {
   assertFreshProviderSessionContext,
   discoverModelServers,
   HarnessSteerDeliveryUnknownError,
+  HarnessStopUnprovenError,
   identifyModelServer,
   isHarnessLiveEvent,
+  isOpenStopProven,
   LiveSessionDirectory,
   type HarnessGenerateTextResult,
   type HarnessDurableEvent,
@@ -2113,14 +2115,15 @@ export class RunnerRuntime {
     session: HarnessSession | undefined,
     opening: Promise<HarnessSession> | undefined,
     asked: Promise<void> | undefined,
+    sharedEngine = false,
   ): Promise<{ readonly stopping: Promise<void> } | undefined> {
     const deadline = Date.now() + this.#sharedEngineSettleMs;
     let current = session;
     if (!current && opening) {
       const opened = await settleBy(
         opening.then(
-          (value) => value,
-          () => null,
+          (value) => ({ ok: true as const, session: value }),
+          (error: unknown) => ({ ok: false as const, error }),
         ),
         deadline,
       );
@@ -2128,11 +2131,21 @@ export class RunnerRuntime {
         return {
           stopping: opening.then(
             (late) => stopEvidence(late),
-            () => undefined,
+            (error: unknown) =>
+              !sharedEngine && !(error instanceof HarnessStopUnprovenError)
+                ? undefined
+                : isOpenStopProven(error)
+                  ? undefined
+                  : new Promise<void>(() => undefined),
           ),
         };
-      if (!opened) return undefined;
-      current = opened;
+      if (!opened.ok) {
+        if (!sharedEngine && !(opened.error instanceof HarnessStopUnprovenError)) return undefined;
+        return isOpenStopProven(opened.error)
+          ? undefined
+          : { stopping: new Promise<void>(() => undefined) };
+      }
+      current = opened.session;
       // A session that opened after its Run was stopped is stopped like any other.
       const stopping = stopEvidence(current);
       return (await settleBy(stopping, deadline)) === boundPassed ? { stopping } : undefined;
@@ -2727,6 +2740,7 @@ export class RunnerRuntime {
     // A session still opening when the Run is stopped holds its conversation
     // until it settles; the end waits for it, within a bound.
     let opening: Promise<HarnessSession> | undefined;
+    let sharedEngineProcess = false;
     // Settles once a stopped Run's grace has passed and its processes have
     // been ended for it, so no wait on the engine outlasts that.
     const halted = this.#haltAfterGrace(active);
@@ -2759,6 +2773,7 @@ export class RunnerRuntime {
       });
       active.agentHome = workspace;
       const adapter = await this.#harnesses.adapter(context.harnessInstanceId);
+      sharedEngineProcess = adapter.capabilities.sharedEngineProcess === true && !context.voiceCall;
       const transport = { deploymentShape: this.#deploymentShape, mode: this.#mode };
       const credentials = new RunCredentials(context);
       active.credentials = credentials;
@@ -3317,6 +3332,7 @@ export class RunnerRuntime {
               warmEngine?.session ?? active.session,
               opening,
               stop.session,
+              sharedEngineProcess,
             )
           )?.stopping;
       if (engineStopping) termination = "unknown";

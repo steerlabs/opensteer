@@ -133,6 +133,14 @@ const exitAfterTurnStart = (() => {
 const emitUnscoped = process.argv.includes("--emit-unscoped");
 // Opt-in: unsubscribing leaves the thread loaded, and it never closes.
 const neverClose = process.argv.includes("--never-close");
+// Opt-in: hold thread/closed until this file appears.
+const holdCloseFile = process.argv
+  .find((argument) => argument.startsWith("--hold-close-file="))
+  ?.slice("--hold-close-file=".length);
+// Opt-in: hold mcpServerStatus/list on a resumed thread until this file appears.
+const holdMcpStatusFile = process.argv
+  .find((argument) => argument.startsWith("--hold-mcp-status-file="))
+  ?.slice("--hold-mcp-status-file=".length);
 // Opt-in: the first resume after an unsubscribe meets the thread still closing.
 const closingOnce = process.argv.includes("--closing-once");
 let closingOnceUsed = false;
@@ -699,61 +707,81 @@ function handleClientMethod(message) {
       thread.subscribed = false;
       send({ id: message.id, result: { status: "unsubscribed" } });
       if (neverClose) break;
-      if (closingOnce && !closingOnceUsed) thread.closing = "held";
+      if (holdCloseFile && !existsSync(holdCloseFile)) {
+        capture({ fakeCloseHeld: thread.id });
+        thread.closing = setInterval(() => {
+          if (!existsSync(holdCloseFile)) return;
+          closeThread(thread);
+        }, 10);
+      } else if (closingOnce && !closingOnceUsed) thread.closing = "held";
       else thread.closing = setTimeout(() => closeThread(thread), 0);
       break;
     }
-    case "mcpServerStatus/list":
+    case "mcpServerStatus/list": {
       requireInitialized(message);
-      const ambientNames = scenario === "ambient-extensions" ? ["company.docs", "github"] : [];
-      const managedNames = ["opensteer", "opensteer-direct"].filter(
-        (name) => configValue(current().config, `mcp_servers.${name}.enabled`) === true,
-      );
-      send({
-        id: message.id,
-        result: {
-          data: [
-            ...managedNames.map((name) => ({
-              name,
-              resourceTemplates: [],
-              resources: [],
-              serverInfo: { name, version: "1.0.0" },
-              tools: Object.fromEntries(
-                [
-                  ...(
-                    configValue(current().config, `mcp_servers.${name}.enabled_tools`) ?? []
-                  ).filter(
-                    (tool) =>
-                      (name !== "opensteer" ||
-                        ((scenario !== "previous-host" || tool !== "computer_use") &&
-                          (scenario !== "mcp-missing-required-tool" ||
-                            tool !== "plugin_search"))) &&
-                      (scenario !== "mcp-direct-missing-required-tool" ||
-                        name !== "opensteer-direct" ||
-                        tool !== "saved_login_request"),
-                  ),
-                  ...((scenario === "mcp-extra-tool" && name === "opensteer") ||
-                  (scenario === "mcp-direct-extra-tool" && name === "opensteer-direct")
-                    ? ["unexpected_tool"]
-                    : []),
-                ].map((tool) => [tool, { inputSchema: { type: "object" }, name: tool }]),
-              ),
-            })),
-            ...[...ambientNames, ...(scenario === "mcp-boundary-leak" ? ["ambient"] : [])].map(
-              (name) => ({
+      const replyMcpStatus = () => {
+        const ambientNames = scenario === "ambient-extensions" ? ["company.docs", "github"] : [];
+        const managedNames = ["opensteer", "opensteer-direct"].filter(
+          (name) => configValue(current().config, `mcp_servers.${name}.enabled`) === true,
+        );
+        send({
+          id: message.id,
+          result: {
+            data: [
+              ...managedNames.map((name) => ({
                 name,
                 resourceTemplates: [],
                 resources: [],
-                serverInfo:
-                  scenario === "mcp-boundary-leak" && name === "ambient" ? { name } : null,
-                tools: {},
-              }),
-            ),
-          ],
-          nextCursor: null,
-        },
-      });
+                serverInfo: { name, version: "1.0.0" },
+                tools: Object.fromEntries(
+                  [
+                    ...(
+                      configValue(current().config, `mcp_servers.${name}.enabled_tools`) ?? []
+                    ).filter(
+                      (tool) =>
+                        (name !== "opensteer" ||
+                          ((scenario !== "previous-host" || tool !== "computer_use") &&
+                            (scenario !== "mcp-missing-required-tool" ||
+                              tool !== "plugin_search"))) &&
+                        (scenario !== "mcp-direct-missing-required-tool" ||
+                          name !== "opensteer-direct" ||
+                          tool !== "saved_login_request"),
+                    ),
+                    ...((scenario === "mcp-extra-tool" && name === "opensteer") ||
+                    (scenario === "mcp-direct-extra-tool" && name === "opensteer-direct")
+                      ? ["unexpected_tool"]
+                      : []),
+                  ].map((tool) => [tool, { inputSchema: { type: "object" }, name: tool }]),
+                ),
+              })),
+              ...[...ambientNames, ...(scenario === "mcp-boundary-leak" ? ["ambient"] : [])].map(
+                (name) => ({
+                  name,
+                  resourceTemplates: [],
+                  resources: [],
+                  serverInfo:
+                    scenario === "mcp-boundary-leak" && name === "ambient" ? { name } : null,
+                  tools: {},
+                }),
+              ),
+            ],
+            nextCursor: null,
+          },
+        });
+      };
+      if (holdMcpStatusFile && current().resumed && !existsSync(holdMcpStatusFile)) {
+        const heldThread = current();
+        capture({ fakeMcpStatusHeld: heldThread.id });
+        const timer = setInterval(() => {
+          if (!existsSync(holdMcpStatusFile)) return;
+          clearInterval(timer);
+          threadScope.run(heldThread, replyMcpStatus);
+        }, 10);
+      } else {
+        replyMcpStatus();
+      }
       break;
+    }
     case "turn/start":
       if (!current().loaded) {
         send({
@@ -1045,6 +1073,7 @@ function loadThread(threadId, message) {
   }
   thread.loaded = true;
   thread.subscribed = true;
+  thread.resumed = message.method === "thread/resume";
   lastThread = thread;
   if (!message.params.ephemeral) reusedThreadId = threadId;
   captureRunId = threadId;

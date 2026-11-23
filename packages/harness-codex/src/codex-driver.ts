@@ -66,10 +66,12 @@ import {
   type HarnessGenerateTextInput,
   type HarnessGenerateTextResult,
   HarnessSteerDeliveryUnknownError,
+  HarnessStopUnprovenError,
   HarnessSessionRegistry,
   SubagentNodes,
   TurnPublisher,
   assertFreshProviderSessionContext,
+  markOpenStopProven,
   initialContinuationContextPrompt,
   boundedDenialNote,
   compatibleModelDescriptors,
@@ -313,6 +315,7 @@ const codexHarnessCapabilities: HarnessCapabilities = Object.freeze({
   // One app-server serves a session's Runs; its tokens are the Runner proxy's,
   // which the Runner points at each Run, and each Run's leftovers are cleaned.
   warmReuse: true,
+  sharedEngineProcess: true,
 });
 
 /** OpenAI itself: a ChatGPT plan or an OpenAI API key, through Codex's own sign-in. */
@@ -1047,7 +1050,12 @@ class CodexHarnessAdapter implements HarnessAdapter {
     context: HarnessSessionContext,
   ): Promise<HarnessSession> {
     this.#sessions.assertOpen();
-    const reference = validateProviderReference(providerSessionReference);
+    let reference: string;
+    try {
+      reference = validateProviderReference(providerSessionReference);
+    } catch (error) {
+      throw markOpenStopProven(error);
+    }
     return this.#sessions.open(reference, () => this.#open(context, { reference, type: "resume" }));
   }
 
@@ -1264,18 +1272,36 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     onClose: (session: CodexHarnessSession) => void,
   ): Promise<CodexHarnessSession> {
     if (context.signal.aborted) {
-      throw new OpensteerError({
-        code: "harness_error",
-        message: "Codex session was cancelled before startup",
-      });
+      throw markOpenStopProven(
+        new OpensteerError({
+          code: "harness_error",
+          message: "Codex session was cancelled before startup",
+        }),
+      );
     }
     const session = new CodexHarnessSession(config, context, acquire, log, onClose);
     try {
       await session.#initialize(mode);
       return session;
     } catch (error) {
-      await session.#stop(false);
-      throw error;
+      if (error instanceof HarnessStopUnprovenError) {
+        session.#server?.detach(session);
+        throw error;
+      }
+      // A stop that began during open runs under #stopPromise; awaiting it
+      // waits for #unload / retire to settle on the same evidence.
+      const stop = (session.#stopPromise ??= session.#stop(false));
+      try {
+        await stop;
+      } catch (stopError) {
+        throw new HarnessStopUnprovenError(
+          "Codex session could not be proven stopped during startup",
+          { cause: stopError },
+        );
+      } finally {
+        session.#server?.detach(session);
+      }
+      throw markOpenStopProven(error);
     }
   }
 
@@ -1843,14 +1869,26 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         `Codex thread/resume returned ${reference} while Opensteer requested ${prior}`,
       );
     }
-    server.claim(reference, this);
     this.#codexThreadId = reference;
     this.#resumedConversation = resume;
     if (this.#closed) {
-      // Stopped while Codex was loading it: nothing of it may stay loaded.
-      await this.#unload(server, undefined);
+      // Stopped while Codex was loading it: wait for any in-flight stop, then
+      // ensure nothing this load brought in stays loaded.
+      try {
+        await this.#stopPromise;
+        server.claim(reference, this);
+        await this.#unload(server, undefined);
+      } catch (stopError) {
+        throw new HarnessStopUnprovenError(
+          "Codex session could not be proven stopped during startup",
+          { cause: stopError },
+        );
+      } finally {
+        server.detach(this);
+      }
       this.#assertOpening();
     }
+    server.claim(reference, this);
     this.#providerSessionReference = reference;
     await assertCodexMcpBoundary(client, reference, this.#context, this.#config.startupTimeoutMs);
     this.#assertOpening();
