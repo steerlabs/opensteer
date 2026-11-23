@@ -85,7 +85,9 @@ export function ConnectedAgentController(props: {
   const [note, setNote] = useState<"saved" | "profile-failed" | null>(null);
   const [creating, setCreating] = useState(false);
   // The task whose Stop is in flight: shown as Stopping, and no second Stop is sent meanwhile.
-  const [stopping, setStopping] = useState<string | null>(null);
+  // A task whose Stop was asked reads Stopping… until the Home says it no longer runs (its
+  // device answers), never Stop again beside Running; a Stop the Home refused says why.
+  const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
   const connection = agents.connections?.find((row) => row.id === connectionId) ?? null;
   const snapshot = host.getSnapshot();
   const names = { profiles: snapshot.browserProfiles };
@@ -267,19 +269,17 @@ export function ConnectedAgentController(props: {
             onScope: changeScope,
             onWatch: (threadId) => navigation.navigate("Thread", { deploymentId, threadId }),
             onStop: (threadId) => {
-              if (stopping !== null) return;
-              setStopping(threadId);
-              void chatHost
-                .stopRun(threadId)
-                .catch((error: unknown) => {
-                  const words = failureWords(error, {
-                    label: "stop this task",
-                    done: "stopped",
-                    happened: "the task was stopped",
-                  });
-                  if (words !== null) Alert.alert(agentWords("chat.tasks.stop"), words);
-                })
-                .finally(() => setStopping(null));
+              if (stopping.has(threadId)) return;
+              setStopping((current) => new Set([...current, threadId]));
+              void chatHost.stopRun(threadId).catch((error: unknown) => {
+                setStopping((current) => new Set([...current].filter((id) => id !== threadId)));
+                const words = failureWords(error, {
+                  label: "stop this task",
+                  done: "stopped",
+                  happened: "the task was stopped",
+                });
+                if (words !== null) Alert.alert(agentWords("chat.tasks.stop"), words);
+              });
             },
             stopping,
             onChromeTab: (resource, on) =>
@@ -338,8 +338,8 @@ export function connectedAgentSections(props: {
   readonly onWatch: (threadId: string) => void;
   /** Stops a chat's running task; one it can't stop says why. */
   readonly onStop?: (threadId: string) => void;
-  /** The task whose Stop is in flight. */
-  readonly stopping?: string | null;
+  /** The tasks whose Stop was asked: they read Stopping… while they still run. */
+  readonly stopping?: ReadonlySet<string>;
   readonly pending: "revoke" | "update" | "remove" | null;
   /** Under a work Home's ceiling the choices wait for it, so none is offered and then refused. */
   readonly workPolicyRead?: boolean;
@@ -500,11 +500,11 @@ export function connectedAgentSections(props: {
                         key: `${task.id}-stop`,
                         kind: "button" as const,
                         label:
-                          props.stopping === task.id
+                          props.stopping?.has(task.id) === true
                             ? agentWords("chat.tasks.stopping")
                             : agentWords("chat.tasks.stop"),
                         destructive: true,
-                        disabled: props.busy || (props.stopping ?? null) !== null,
+                        disabled: props.busy || props.stopping?.has(task.id) === true,
                         onPress: () => props.onStop?.(task.id),
                       },
                     ]

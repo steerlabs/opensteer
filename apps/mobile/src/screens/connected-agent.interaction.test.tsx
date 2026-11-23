@@ -468,6 +468,11 @@ describe("a chat on the phone", () => {
     const stop = vi.spyOn(client, "stopRun").mockResolvedValue(undefined);
     await press(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop"));
     expect(stop).toHaveBeenCalledWith("thr_00000000-0000-4000-8000-0000000000c1");
+    // Taken, and the task still runs until its device answers: it says so, and asks no second time.
+    expect(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop")).toMatchObject({
+      label: "Stopping…",
+      disabled: true,
+    });
     expect(row("end", "disconnect").label).toBe("Disconnect Slack");
   });
 

@@ -451,6 +451,8 @@ describe("a chat, as a connected agent", () => {
     const stopRun = vi.spyOn(host, "stopRun").mockResolvedValue(undefined);
     await act(async () => buttonNamed(page, "Stop").click());
     expect(stopRun).toHaveBeenCalledWith("thr_00000000-0000-4000-8000-0000000000c1");
+    // Taken, and the task still runs until its device answers: it says so, and asks no second time.
+    expect(buttonNamed(page, "Stopping…")).toMatchObject({ disabled: true });
     expect(buttonNamed(page, "Disconnect Slack")).toBeTruthy();
     // What it can use is edited with the same grant editor as any connected agent.
     expect(page.querySelector('[aria-labelledby="agent-grant-tasks"]')).not.toBeNull();
