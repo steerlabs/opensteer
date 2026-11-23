@@ -2935,6 +2935,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     await agent("Target.closeTarget", { targetId: created.targetId });
 
     const openSince = performance.now();
+    const followAtOpen = followDiagnostics().length;
     await controller.handle({
       type: "surface.open",
       url: `${origin}/follow?person-opened`,
@@ -2971,6 +2972,8 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
       redraws: redrawsBetween(openSince, performance.now(), personTabDebugger),
       // What the tab's debugger saw, start to stop, so a count over the bound shows why.
       timeline: castTimeline(personTabDebugger, openSince),
+      // The follow view's own reason for each start it asked for, and each it set aside.
+      followView: followDiagnostics().slice(followAtOpen),
       // Who started each cast, so a count over the bound names its senders.
       senders: debuggerCommands
         .filter(
