@@ -38,7 +38,11 @@ import {
   requestHoldLimitMs,
   shortRequestHoldMs,
 } from "@opensteer/core";
-import { findAgentOperation, type OpensteerStore } from "@opensteer/database";
+import {
+  findAgentOperation,
+  lineageAllowsPersonalContext,
+  type OpensteerStore,
+} from "@opensteer/database";
 import {
   AgentOperationFailure,
   agentOperationRefusal,
@@ -950,6 +954,9 @@ export class OpensteerMcpService {
       ...caller,
       // The same grant-derived set a lineage Run's dispatch plan carries.
       ...(callerLineage(caller) ? { grant: callerLineage(caller)!.grant } : {}),
+      personalContext:
+        caller.kind === "connection" ||
+        lineageAllowsPersonalContext(caller.agentConnection ?? null),
     });
     const passwords = this.options.connectionPasswords;
     return caller.kind === "connection" &&

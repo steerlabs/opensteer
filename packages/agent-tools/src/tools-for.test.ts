@@ -26,3 +26,17 @@ it("offers discovery for both browser grants and reserves saved fills for profil
     "saved_login_request",
   ]);
 });
+
+it("offers no automation to work without the person's personal context", () => {
+  const names = (personalContext: boolean) =>
+    toolsFor({
+      kind: "run",
+      accessMode: "full-access",
+      grant: { scope: "selected", tasks: true, resources: [] },
+      personalContext,
+    })
+      .map(({ name }) => name)
+      .filter((name) => name.startsWith("opensteer_automation_"));
+  expect(names(true)).toContain("opensteer_automation_create");
+  expect(names(false)).toEqual([]);
+});

@@ -750,6 +750,62 @@ describeStore("a connected agent's authority at the send", (it) => {
     ).rejects.toMatchObject(refusal);
   });
 
+  it("launches no automation that already exists in a chat anyone can message, however it fires", async ({
+    storeFixture,
+  }) => {
+    const anyone = await chatWithTask(storeFixture, "existing-anyone", "anyone");
+    const owner = await chatWithTask(storeFixture, "existing-owner");
+    const triggers = new TriggerStore(storeFixture.database);
+    // Made before such a chat could not have one: an owner chat's, moved to the anyone chat.
+    const { trigger } = await triggers.create({
+      actorThreadId: null,
+      actorConnectionId: owner.chat.id,
+      actorAccessMode: "full-access",
+      anchorThreadId: owner.thread.id,
+      createdBy: owner.fixture.userId,
+      idempotencyKey: "existing-anyone",
+      name: "Every minute",
+      ...everyMinute,
+    });
+    await storeFixture.database
+      .updateTable("triggers")
+      .set({ originConnectionId: anyone.chat.id, nextFireAt: new Date(Date.now() - 60_000) })
+      .where("id", "=", trigger.id)
+      .execute();
+    const refusal = {
+      code: "forbidden",
+      message: "A chat that anyone in the conversation can message can't have an automation.",
+    };
+    // Run now: refused, nothing queued.
+    await expect(
+      triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId: owner.fixture.userId,
+        triggerId: trigger.id,
+      }),
+    ).rejects.toMatchObject(refusal);
+    // Due: nothing fires, and it is paused saying why.
+    const claimed = await triggers.claimDueSchedules(new Date());
+    expect(claimed.occurrences).toEqual([]);
+    const row = await storeFixture.database
+      .selectFrom("triggers")
+      .select(["status", "pauseReason"])
+      .where("id", "=", trigger.id)
+      .executeTakeFirstOrThrow();
+    expect(row).toEqual({
+      status: "paused",
+      pauseReason:
+        "Paused because a chat that anyone in the conversation can message can't have an automation.",
+    });
+    expect(
+      await storeFixture.database
+        .selectFrom("triggerOccurrences")
+        .select("id")
+        .where("triggerId", "=", trigger.id)
+        .execute(),
+    ).toEqual([]);
+  });
+
   for (const who of ["made by the chat's own agent"] as const)
     it(`fires no automation of a paused chat (${who}): no occurrence, no error, still active, and once when it is back`, async ({
       storeFixture,

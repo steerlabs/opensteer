@@ -94,6 +94,8 @@ type TriggerWatchActivationRow = Selectable<TriggerWatchActivationTable>;
 const maxPostgresInteger = 2_147_483_647;
 const currentProgramVersion = TriggerProgramSchema.shape.toolContractVersion.value;
 const executableProgram = sql<boolean>`trigger_revisions.program->'toolContractVersion' = to_jsonb(${currentProgramVersion}::integer)`;
+const noAutomationPauseReason =
+  "Paused because a chat that anyone in the conversation can message can't have an automation.";
 const triggerAuthorityLossPauseReason =
   "Paused because its conversation could not run when it was due.";
 interface CreateTriggerInput {
@@ -1009,16 +1011,12 @@ export class TriggerStore {
           .selectAll()
           .where("id", "=", row.triggerId)
           .executeTakeFirstOrThrow();
-        const admission = await admitLineageExecution(transaction, {
-          threadId: row.anchorThreadId,
-          userId: row.createdBy,
-          agentConnectionId: trigger.originConnectionId,
-        });
+        const admission = await triggerLaunchStanding(transaction, trigger);
         if (
           trigger.status !== "active" ||
           trigger.currentRevisionId !== row.revisionId ||
           !row.executable ||
-          !admission ||
+          admission.kind !== "admitted" ||
           admission.environmentId !== row.environmentId
         ) {
           await transaction
@@ -1716,6 +1714,19 @@ export class TriggerStore {
         const standing = await triggerLaunchStanding(transaction, trigger);
         await seam?.afterAuthority?.();
         if (standing.kind === "waiting") return held;
+        if (standing.kind === "refused") {
+          await transaction
+            .updateTable("triggers")
+            .set({
+              nextFireAt: null,
+              pauseReason: noAutomationPauseReason,
+              status: "paused",
+              updatedAt: new Date(),
+            })
+            .where("id", "=", trigger.id)
+            .execute();
+          return undefined;
+        }
         if (standing.kind === "lost") {
           // Authority can be unavailable transiently — an offline Runner. Pausing keeps the Trigger recoverable by
           // its owner; archiving would be a permanent answer to a temporary
@@ -2752,10 +2763,22 @@ class TriggerChatWaiting extends OpensteerError {
 }
 
 /** Admitted, held (its chat is waiting) or lost, as one fact (`lineageExecutionStanding`). */
-function triggerLaunchStanding(
+/**
+ * Whether an automation may launch now: the one check every firing passes (a schedule's claim,
+ * run now, a webhook, a resume or a change that queues an occurrence, its dispatch to a Runner,
+ * and a watch's activation). A lineage without personal context (a chat anyone in the
+ * conversation can message) never launches one: its program would run as the person, in their
+ * Agent home. Its connection's senders never change, so this reads apart from the standing.
+ */
+async function triggerLaunchStanding(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy" | "originConnectionId">,
-) {
+): Promise<
+  | Awaited<ReturnType<typeof lineageExecutionStanding>>
+  | { readonly kind: "refused"; readonly reason: string }
+> {
+  if (!(await lineagePersonalContext(database, trigger.originConnectionId)))
+    return { kind: "refused", reason: noProgramWithoutPersonalContext().message };
   return lineageExecutionStanding(database, {
     threadId: trigger.anchorThreadId,
     userId: trigger.createdBy,
@@ -2768,6 +2791,7 @@ async function requireTriggerLaunchAuthority(
 ) {
   const standing = await triggerLaunchStanding(database, trigger);
   if (standing.kind === "waiting") throw new TriggerChatWaiting();
+  if (standing.kind === "refused") throw noProgramWithoutPersonalContext();
   if (standing.kind === "lost")
     throw new OpensteerError({
       code: "forbidden",
