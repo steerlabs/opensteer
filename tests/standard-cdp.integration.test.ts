@@ -51,7 +51,12 @@ import { hostServerTestDependencies } from "../apps/host/src/server/host-server-
 import { authorizeTabActor, authorizeTabTarget } from "../apps/host/src/tabs/tab-authority.js";
 import { TabService } from "../apps/host/src/tabs/tab-service.js";
 
-async function startRelayFixture(workspaceTabs: boolean, signal: AbortSignal) {
+async function startRelayFixture(
+  workspaceTabs: boolean,
+  signal: AbortSignal,
+  /** Advertises sleeping tabs as the shipped browser service does (main.ts). */
+  sleepingTabs = false,
+) {
   const fixture = await createStoreFixture();
   const first = await fixture.startRunFixture("standard-cdp-first");
   const { database, store } = fixture;
@@ -142,6 +147,7 @@ async function startRelayFixture(workspaceTabs: boolean, signal: AbortSignal) {
           ...capabilities,
           cdpBoundary: 1,
           sharedControl: 1,
+          ...(sleepingTabs ? { tabRestoreVersion: 1, surfaceState: 1 } : {}),
         },
       },
     },
@@ -458,6 +464,80 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     });
     const png = await page.screenshot({ fullPage: true, timeout: 8_000 });
     expect(png.length).toBeGreaterThan(1_048_576);
+  },
+);
+
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "wakes a sleeping tab for browser_connect and hands it over once its page has loaded, never as a closed page (TS11)",
+  async ({ signal }) => {
+    const { first, database, browser, tabs, clients, homeUrl, origin } = await startRelayFixture(
+      true,
+      signal,
+      true,
+    );
+    if (!tabs) throw new Error("The fixture has no tab catalog.");
+    const { connection, session } = await startConnectedTask(database, first.userId);
+    const authority = { agentBindingId: `session:${session.id}`, ownerId: first.userId };
+    const profile = await browser.createProfile({
+      homeRunnerId: first.runnerId,
+      ownerId: first.userId,
+      name: "Sleeping seed",
+      idempotencyKey: "standard-cdp-sleeping-profile",
+    });
+    // The runtime's ledgers (in this process): the tab's own puts it to sleep, as its sleeper would.
+    const ledgers = new Set<SurfaceLedger>();
+    const start = SurfaceLedger.prototype.start;
+    const spy = vi.spyOn(SurfaceLedger.prototype, "start").mockImplementation(function (
+      this: SurfaceLedger,
+      ...args: Parameters<SurfaceLedger["start"]>
+    ) {
+      ledgers.add(this);
+      return start.apply(this, args);
+    });
+    const actor = { kind: "browser-binding", authority, threadId: session.threadId } as const;
+    const write = await browser.pageTabs.open(
+      actor,
+      { kind: "page", profileId: profile.id, url: origin },
+      "standard-cdp-sleeping-tab",
+    );
+    await tabs.open(write, "standard-cdp-sleeping-tab");
+    await browser.pageTabs.admitted!(write);
+    spy.mockRestore();
+    const row = await tabs.get(first.userId, write.id);
+    if (!row) throw new Error("The fixture has no task tab.");
+    const surfaceId = row.id as unknown as Parameters<SurfaceLedger["stateOf"]>[0];
+    const ledger = [...ledgers].find((candidate) => candidate.stateOf(surfaceId) === "live");
+    if (!ledger) throw new Error("The tab's ledger was not found.");
+    await vi.waitFor(async () => expect(await ledger.documentLoaded(surfaceId, 1_000)).toBe(true));
+    // Accepted once the browser's look for the tab helper has ended.
+    await vi.waitFor(async () => expect(await ledger.sleep(surfaceId, () => null)).toBe(true), {
+      timeout: 15_000,
+      interval: 250,
+    });
+    await vi.waitFor(() =>
+      expect(browser.tabStateOf(row.pageBinding!.sessionId, surfaceId)).toBe("suspended"),
+    );
+    // browser_connect's bind, then its ticket and connection.
+    const seed = await browser.pageTabs.bindBrowserScript!(actor, row);
+    if (connection.grantRevision === undefined) throw new Error("No grant revision.");
+    const ticket = await browser.issueStandardCdpTicket({
+      authority,
+      browserSessionId: seed.sessionId,
+      seedTabId: seed.tabId,
+      mode: "session",
+      operationWitness: {
+        grantRevision: connection.grantRevision,
+        mode: "full-access",
+        targetGeneration: row.generation,
+      },
+    });
+    const client = await chromium.connectOverCDP(homeUrl + ticket.path, { noDefaults: true });
+    clients.push(client);
+    const page = client.contexts()[0]!.pages()[0]!;
+    expect(await page.evaluate(() => [document.readyState, document.title])).toEqual([
+      "complete",
+      "Home CDP fixture",
+    ]);
   },
 );
 
