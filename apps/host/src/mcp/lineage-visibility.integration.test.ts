@@ -1364,11 +1364,12 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     expect(scopedAssignmentA?.pendingRequests).toBe(0);
     expect("countPendingConnectionRequests" in databaseModule).toBe(false);
     // Before P3: subagentRead=28, delegationStatus=78, settledWait=239 (each had a separate
-    // 5-statement countPendingConnectionRequests transaction; folding drops 4 statements each).
+    // 5-statement countPendingConnectionRequests transaction; folding dropped 4 statements each,
+    // and merging 808b6d4b1 trimmed 1 more from delegationStatus and 2 from settledWait).
     expect(counts).toEqual({
       subagentRead: 24,
-      delegationStatus: 74,
-      settledWait: 235,
+      delegationStatus: 73,
+      settledWait: 233,
     });
   });
 });
