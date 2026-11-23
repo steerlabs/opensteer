@@ -79,6 +79,15 @@ export function placeAutomation(summary: PlaceableAutomation, now: number): Auto
       "Stopped and will not restart until you pause and resume it — check its computer for leftover processes.",
     );
   }
+  if (
+    summary.watch?.contactLostAt &&
+    summary.watch.observed !== "stopped" &&
+    summary.watch.observed !== "expired"
+  ) {
+    return attention(
+      `Computer out of contact since ${formatMoment(summary.watch.contactLostAt, now, true)} — the script may still be running there.`,
+    );
+  }
   if (shape === "repeating") return { group: "repeating", problem: null };
   if (shape === "webhook" || shape === "watch") return { group: "events", problem: null };
   if (summary.nextFireAt) return { group: "upcoming", problem: null };
@@ -302,10 +311,26 @@ export type Tone = "ok" | "warn" | "bad" | "accent" | "muted";
  * What a watch is doing right now. It restarts on its own after a crash and
  * pauses after repeated ones, so only those states need words beyond "Watching".
  */
-export function watchState(observed: NonNullable<TriggerSummary["watch"]>["observed"]): {
+export function watchState(
+  observed: NonNullable<TriggerSummary["watch"]>["observed"],
+  contactLostAt?: string | null,
+  now?: number,
+): {
   readonly text: string;
   readonly tone: Tone;
 } {
+  if (
+    contactLostAt &&
+    (observed === "starting" || observed === "running" || observed === "backoff")
+  ) {
+    return {
+      text:
+        now !== undefined
+          ? `Computer out of contact since ${formatMoment(contactLostAt, now, true)} — may still be running`
+          : "Computer out of contact — may still be running",
+      tone: "warn",
+    };
+  }
   switch (observed) {
     case "running":
       return { text: "Watching", tone: "ok" };

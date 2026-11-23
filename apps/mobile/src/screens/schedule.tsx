@@ -282,7 +282,7 @@ function ScheduleBody(props: {
   const now = Date.now();
   const watch =
     item.kind === "watch" && definition.activation !== null
-      ? watchState(definition.activation.observed)
+      ? watchState(definition.activation.observed, definition.activation.contactLostAt, now)
       : null;
   const status = [
     item.statusWord,

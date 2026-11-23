@@ -617,7 +617,7 @@ function When({
     );
   }
   if (shape === "watch" && detail.activation) {
-    const state = watchState(detail.activation.observed);
+    const state = watchState(detail.activation.observed, detail.activation.contactLostAt, now);
     return (
       <>
         {describeEvent("watch", machine)}

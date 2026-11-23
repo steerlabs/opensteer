@@ -3250,6 +3250,78 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect(thirdBoot.activations).toEqual([]);
   });
 
+  it("marks a person's own active watch contact-lost on disconnect, exposes it on list/get, and clears it on reconnect (AB8)", async () => {
+    const fixture = await seedFixture("/tmp/opensteer-ab8-personal-watch-contact-lost");
+    const task = await createTask(fixture, "Personal watch anchor");
+    const created = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: task.id,
+      createdBy: fixture.userId,
+      idempotencyKey: `ab8-personal-watch-${randomUUID()}`,
+      name: "Personal file watch",
+      script: { interpreter: null, text: "setInterval(() => {}, 1000);" },
+      source: { kind: "watch" },
+    });
+
+    const reconciled = await triggers.reconcileWatchesForRunner({
+      earlierBootsContained: true,
+      environmentId: fixture.environmentId,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: "personal-boot-1",
+      runnerConnectionGeneration: 1,
+      runnerId: fixture.runnerId,
+    });
+    const activation = reconciled.activations[0]!.activation;
+    await triggers.applyWatchStatus({
+      activationId: activation.id,
+      executionGeneration: activation.executionGeneration,
+      healthySince: new Date(),
+      lastError: null,
+      lastExitCode: null,
+      observed: "running",
+      restartCount: 0,
+      runnerBootId: "personal-boot-1",
+      runnerConnectionGeneration: 1,
+      runnerId: fixture.runnerId,
+      stderrTail: "",
+      stdoutTail: "",
+      verifiedContainment: true,
+    });
+
+    await store.markConnectionAttemptsContactLost({
+      runnerBootId: "personal-boot-1",
+      runnerId: fixture.runnerId,
+    });
+
+    const listed = await triggers.listForOwner({
+      ownerId: fixture.userId,
+      reader: personTaskReader,
+    });
+    const summary = listed.find((item) => item.id === created.trigger.id);
+    expect(summary?.watch?.observed).toBe("running");
+    expect(summary?.watch?.contactLostAt).toEqual(expect.any(String));
+
+    const detail = await triggers.getForOwner(created.trigger.id, fixture.userId, 5, personTaskReader);
+    expect(detail?.activation?.contactLostAt).toEqual(expect.any(String));
+
+    // Reconnecting on the same boot clears contactLostAt so it returns to healthy Watching.
+    await triggers.reconcileWatchesForRunner({
+      earlierBootsContained: true,
+      environmentId: fixture.environmentId,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: "personal-boot-1",
+      runnerConnectionGeneration: 2,
+      runnerId: fixture.runnerId,
+    });
+    const afterReconnect = await triggers.getForOwner(
+      created.trigger.id,
+      fixture.userId,
+      5,
+      personTaskReader,
+    );
+    expect(afterReconnect?.activation?.contactLostAt).toBeNull();
+  });
+
   /**
    * Marks a Run running without dispatching it, with the grant a dispatched
    * Run holds: only a Run whose authority stands takes a steer.

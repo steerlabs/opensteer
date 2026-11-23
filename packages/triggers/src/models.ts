@@ -156,6 +156,7 @@ export const TriggerWatchObservedSchema = z.enum([
 export const TriggerWatchActivationSchema = z.strictObject({
   anchorThreadId: ThreadIdSchema,
   consecutiveFailures: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  contactLostAt: IsoDateTimeSchema.nullable().optional(),
   createdAt: IsoDateTimeSchema,
   createdBy: UserIdSchema,
   desired: TriggerWatchDesiredSchema,
@@ -260,6 +261,7 @@ export const TriggerSummarySchema = z.strictObject({
   source: TriggerSourceSchema,
   watch: z
     .strictObject({
+      contactLostAt: IsoDateTimeSchema.nullable().optional(),
       lastError: z.string().nullable(),
       observed: TriggerWatchObservedSchema,
     })

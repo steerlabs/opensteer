@@ -1187,7 +1187,7 @@ export class TriggerStore {
         .execute(),
       this.#database
         .selectFrom("triggerWatchActivations")
-        .select(["lastError", "observed", "triggerId"])
+        .select(["contactLostAt", "lastError", "observed", "triggerId"])
         .distinctOn("triggerId")
         .where("triggerId", "in", triggerIds)
         .orderBy("triggerId")
@@ -1222,6 +1222,7 @@ export class TriggerStore {
         source: withoutSchedulePayload(TriggerSourceSchema.parse(revision?.source)),
         watch: watch
           ? {
+              contactLostAt: watch.contactLostAt?.toISOString() ?? null,
               lastError: watch.lastError,
               observed: watch.observed,
             }
@@ -1409,7 +1410,8 @@ export class TriggerStore {
           });
         }
         const binding = {
-          ...(sameExecution ? {} : { ...witness, terminalEvidenceAt: null, contactLostAt: null }),
+          ...(sameExecution ? {} : { ...witness, terminalEvidenceAt: null }),
+          contactLostAt: null,
           executionGeneration: nextExecutionGeneration,
           leaseExpiresAt: input.leaseExpiresAt,
           ...(sameExecution
@@ -1717,7 +1719,7 @@ export class TriggerStore {
                     ? null
                     : now,
               }
-            : {}),
+            : { contactLostAt: null }),
           restartCount: input.restartCount,
           stderrTail: input.stderrTail,
           stdoutTail: input.stdoutTail,
@@ -4096,11 +4098,11 @@ function watchActivationFromRow(row: TriggerWatchActivationRow): TriggerWatchAct
     admittedGrantRevision: _admittedGrantRevision,
     admittedAccessMode: _admittedAccessMode,
     terminalEvidenceAt: _terminalEvidenceAt,
-    contactLostAt: _contactLostAt,
     ...activation
   } = row;
   return TriggerWatchActivationSchema.parse({
     ...activation,
+    contactLostAt: row.contactLostAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     executionGeneration: Number(row.executionGeneration),
     healthySince: row.healthySince?.toISOString() ?? null,

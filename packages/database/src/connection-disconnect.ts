@@ -866,7 +866,12 @@ export async function markConnectionAttemptsContactLost(
           ? query.where((eb) =>
               eb.or([eb("connectionId", "is not", null), eb("status", "=", "running")]),
             )
-          : query.where("connectionId", "is not", null);
+          : query.where((eb) =>
+              eb.or([
+                eb("connectionId", "is not", null),
+                eb("observed", "in", ["starting", "running", "backoff"]),
+              ]),
+            );
       const affected = await query.orderBy("id").forNoKeyUpdate().execute();
       if (affected.length === 0) continue;
       await tx

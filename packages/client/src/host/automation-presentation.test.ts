@@ -6,6 +6,7 @@ import {
   placeAutomation,
   runOutcome,
   sectionAutomations,
+  watchState,
 } from "./automation-presentation.js";
 
 const now = new Date(2026, 10, 6, 16, 31).getTime();
@@ -221,6 +222,28 @@ describe("placing automations", () => {
       group: "attention",
       problem:
         "Stopped and will not restart until you pause and resume it — check its computer for leftover processes.",
+    });
+  });
+
+  it("qualifies a running watch when its computer is out of contact (AB8)", () => {
+    const contactLostAt = at(-1, 14, 15);
+    const lostWatch = automation({
+      source: { kind: "watch" },
+      watch: {
+        contactLostAt,
+        lastError: null,
+        observed: "running",
+      } as NonNullable<TriggerSummary["watch"]>,
+    });
+    expect(placeAutomation(lostWatch, now)).toEqual({
+      group: "attention",
+      problem: expect.stringMatching(
+        /^Computer out of contact since yesterday, .*may still be running there\.$/u,
+      ),
+    });
+    expect(watchState("running", contactLostAt, now)).toEqual({
+      text: expect.stringMatching(/^Computer out of contact since yesterday, .*may still be running$/u),
+      tone: "warn",
     });
   });
 });
