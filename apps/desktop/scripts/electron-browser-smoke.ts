@@ -3240,6 +3240,18 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
   // answer answers it.
   await section("stale-dialog-answers", async () => {
     const from = messages.length;
+    const sectionSince = performance.now();
+    const sinceSection = () => `${Math.round(performance.now() - sectionSince)}ms`;
+    // The follow view's own record from B's opening on, each entry with when and for which tab.
+    const followLog: Array<{ readonly at: string; readonly entry: Record<string, unknown> }> = [];
+    const diagnostics = (
+      controller as unknown as { readonly screencast: { readonly diagnostics: unknown[] } }
+    ).screencast.diagnostics;
+    const keep = diagnostics.push.bind(diagnostics);
+    diagnostics.push = (...entries: unknown[]) => {
+      for (const entry of entries) followLog.push({ at: sinceSection(), entry: asRecord(entry) });
+      return keep(...entries);
+    };
     await controller.handle({
       type: "surface.open",
       url: `${origin}/follow?dialog-b`,
@@ -3247,6 +3259,38 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     const other = ledger.active();
     if (!other || other.surface.id === surfaceId) throw new Error("The second tab did not open.");
     const tabB = other.surface.id;
+    // The hub's part for B, from both its sides: what the follow view asked it on B's channel and
+    // how it answered, and each frame it handed that channel. A start it answered with no start
+    // reaching B's debugger (debuggerLog) is one it joined to a running cast; a refusal says why.
+    const hubForB: string[] = [];
+    {
+      const send = other.cdp.send.bind(other.cdp);
+      other.cdp.send = ((method: string, parameters?: Record<string, unknown>) => {
+        const sent = send(method, parameters);
+        if (method === "Page.startScreencast" || method === "Page.stopScreencast") {
+          const askedAt = performance.now();
+          hubForB.push(`${sinceSection()} asked ${method}`);
+          void sent.then(
+            () =>
+              hubForB.push(
+                `${sinceSection()} answered ${method} +${Math.round(performance.now() - askedAt)}ms`,
+              ),
+            (error: unknown) =>
+              hubForB.push(
+                `${sinceSection()} refused ${method}: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+          );
+        }
+        return sent;
+      }) as typeof other.cdp.send;
+      other.cdp.on("Page.screencastFrame", (parameters: unknown) => {
+        const frame = asRecord(parameters);
+        const metadata = asRecord(frame.metadata);
+        hubForB.push(
+          `${sinceSection()} handed frame ${String(frame.sessionId)} ${String(metadata.deviceWidth)}x${String(metadata.deviceHeight)}`,
+        );
+      });
+    }
     const readB = async (expression: string) =>
       asEvaluationValue(
         await other.cdp.send("Runtime.evaluate", {
@@ -3356,6 +3400,14 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
           answeredB: Math.round(answeredAt - turnedAwayAt),
         },
         followView: followDiagnostics().slice(followSeen),
+        // From B's opening, the follow view's record for B (and the tab it turned to between).
+        followViewSinceOpening: followLog
+          .slice(-120)
+          .map(
+            ({ at, entry }) =>
+              `${at} ${String(entry.stage)}${entry.reason === undefined ? "" : ` ${String(entry.reason)}`}${entry.castId === undefined ? "" : ` #${String(entry.castId)}`}${entry.surfaceId === tabB ? " B" : entry.surfaceId === surfaceId ? " A" : ""}`,
+          ),
+        hub: hubForB.slice(-60),
         debuggerLog: watchB.log(turnedAwayAt),
         streamed: frames
           .filter((frame) => frame.at >= answeredAt && frame.header.surfaceId === tabB)
@@ -3404,6 +3456,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
       );
       return outcome;
     } finally {
+      diagnostics.push = keep;
       watchB?.stop();
       for (const surface of [surfaceId, tabB]) {
         const open = ledger.dialogOf(surface);
