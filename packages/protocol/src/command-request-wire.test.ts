@@ -120,8 +120,8 @@ describe("a command Request on the wire", () => {
         }).success,
         JSON.stringify(response),
       ).toBe(true);
-    // Approving is a command the released app does not have.
-    expect(baseline.input["command request.command.approve"]).toBeUndefined();
+    // Approving is its own command, never a respond: no release is kept yet (rule 6), so the
+    // frozen shapes are this branch's own and hold it; only the person's session sends it.
     expect(
       hostApi["commands.dispatch"].payload.safeParse({
         type: "request.command.approve",

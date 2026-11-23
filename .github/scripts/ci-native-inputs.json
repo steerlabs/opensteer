@@ -306,6 +306,7 @@
     "apps/host/src/channels/channel-handlers.ts",
     "apps/host/src/channels/channel-service.ts",
     "apps/host/src/channels/messaging-relay-hub.ts",
+    "apps/host/src/commands/activity.ts",
     "apps/host/src/commands/actor.ts",
     "apps/host/src/commands/agent-door.ts",
     "apps/host/src/commands/dispatch.ts",

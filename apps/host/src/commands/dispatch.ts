@@ -97,6 +97,7 @@ export function agentCommandScope(database: Kysely<DatabaseSchema>): AgentComman
   return (caller) =>
     commandCallerHolder(
       database,
+      caller.userId,
       caller.kind === "connection"
         ? caller.connectionId
         : (caller.agentConnection?.agentConnectionId ?? null),

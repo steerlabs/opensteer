@@ -42,7 +42,7 @@ import {
 } from "@opensteer/protocol/command-table";
 import { sql, type Kysely, type RawBuilder } from "kysely";
 import type { BridgeSenders, DatabaseSchema } from "./schema.js";
-import { connectionState, liveConnection } from "./connection-liveness.js";
+import { connectionState } from "./connection-liveness.js";
 import { withDatabaseTransaction } from "./connection.js";
 
 /**
@@ -1098,28 +1098,6 @@ export function commandGrantScope(
   return lineageAllowsPersonalContext(connection) ? connection.grant.scope : "selected";
 }
 
-/**
- * The scope of a lineage's connection as its own row has it now, for whether a caller holds a
- * command type at all: `gone` once it works for no one. Your own agents read nothing.
- */
-export async function commandCallerScope(
-  database: Kysely<DatabaseSchema>,
-  connectionId: string | null,
-): Promise<"everything" | "selected" | "gone" | null> {
-  if (connectionId === null) return null;
-  const row = await database
-    .selectFrom("agentConnections")
-    .select(["grant", "bridgeSenders"])
-    .where("id", "=", connectionId)
-    .where(liveConnection(database))
-    .executeTakeFirst();
-  if (!row) return "gone";
-  const grant = AgentGrantSchema.safeParse(row.grant);
-  return grant.success
-    ? commandGrantScope({ grant: grant.data, bridgeSenders: row.bridgeSenders })
-    : "gone";
-}
-
 /** A caller as whether it holds a command reads it: its live scope and grant, and its mode. */
 export interface CommandHolder {
   readonly scope: "everything" | "selected" | null;
@@ -1182,24 +1160,26 @@ function selectedHoldsKind(
   }
 }
 
-/** The live grant of a lineage's connection, for `commandHolds`; `gone` once it ended. */
+/**
+ * The live grant of a lineage's connection, for `commandHolds`, read by the one standing
+ * statement; `gone` once it is not live.
+ */
 export async function commandCallerHolder(
   database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
   connectionId: string | null,
 ): Promise<
   { readonly scope: "everything" | "selected"; readonly grant: AgentGrant } | "gone" | null
 > {
   if (connectionId === null) return null;
-  const row = await database
-    .selectFrom("agentConnections")
-    .select(["grant", "bridgeSenders"])
-    .where("id", "=", connectionId)
-    .where(liveConnection(database))
-    .executeTakeFirst();
-  if (!row) return "gone";
-  const grant = AgentGrantSchema.safeParse(row.grant);
+  const read = await readConnectionStanding(database, ownerUserId, connectionId, false);
+  if (!read || standingOf(read) !== "live") return "gone";
+  const grant = AgentGrantSchema.safeParse(read.connection.grant);
   if (!grant.success) return "gone";
-  const scope = commandGrantScope({ grant: grant.data, bridgeSenders: row.bridgeSenders })!;
+  const scope = commandGrantScope({
+    grant: grant.data,
+    bridgeSenders: read.connection.bridgeSenders,
+  })!;
   // A chat anyone may speak in holds what a selected grant with nothing in it holds (X15).
   return {
     scope,
