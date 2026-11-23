@@ -40,7 +40,6 @@ import {
   opensteer_task_queue,
   opensteer_task_delegate,
   opensteer_task_update,
-  opensteer_delegation_status,
   opensteer_task_interrupt,
   opensteer_delegation_wait,
   opensteer_request_list,

@@ -24,7 +24,7 @@ import {
 } from "./resource-access.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { threadCallerLineageId } from "./thread-caller.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
 import { assertThreadCaller, type ThreadCallerAuthority } from "./thread-caller.js";
@@ -94,7 +94,7 @@ export function assertAgentRequestAnswer(
     });
   assertRequestRevision({ revision }, responder.expectedRevision);
 }
-export async function connectionRequests(
+async function connectionRequests(
   tx: Transaction<DatabaseSchema>,
   authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
 ) {
@@ -162,6 +162,53 @@ export async function connectionRequests(
         ]),
       ]);
     });
+}
+
+export async function queryConnectionRequestPage(
+  tx: Transaction<DatabaseSchema>,
+  input: {
+    readonly authority: Extract<ThreadCallerAuthority, { kind: "connection" }>;
+    readonly lineageRootThreadId: Request["originatingThreadId"] | null;
+    readonly originatingThreadId?: Request["originatingThreadId"];
+    readonly status: "pending" | "all";
+    readonly anchor: { readonly createdAt: Date; readonly id: RequestId } | null;
+    readonly limit: number;
+  },
+): Promise<{ readonly rows: readonly RequestRow[]; readonly total: number }> {
+  const scoped = await connectionRequests(tx, input.authority);
+  const base = () => {
+    let query = scoped.clearSelect().where("threads.removedAt", "is", null);
+    if (input.lineageRootThreadId !== null)
+      query = query.where("threads.lineageRootThreadId", "=", input.lineageRootThreadId);
+    if (input.originatingThreadId)
+      query = query.where("requests.originatingThreadId", "=", input.originatingThreadId);
+    if (input.status === "pending") query = query.where("requests.status", "=", "pending");
+    return query;
+  };
+  let pageQuery = base()
+    .selectAll("requests")
+    .orderBy("requests.createdAt", "desc")
+    .orderBy("requests.id", "desc")
+    .limit(input.limit + 1);
+  if (input.anchor) {
+    const anchor = input.anchor;
+    pageQuery = pageQuery.where((expression) =>
+      expression.or([
+        expression("requests.createdAt", "<", anchor.createdAt),
+        expression.and([
+          expression("requests.createdAt", "=", anchor.createdAt),
+          expression("requests.id", "<", anchor.id),
+        ]),
+      ]),
+    );
+  }
+  const [rows, count] = await Promise.all([
+    pageQuery.execute(),
+    base()
+      .select(({ fn }) => fn.countAll<string>().as("count"))
+      .executeTakeFirstOrThrow(),
+  ]);
+  return { rows, total: Number(count.count) };
 }
 
 export async function readPendingConnectionRequest(

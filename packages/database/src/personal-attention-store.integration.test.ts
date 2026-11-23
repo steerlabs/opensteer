@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { sql } from "kysely";
 import { createId } from "@opensteer/core";
 import { refreshLatestRunCompletion, unreadTaskSql } from "./personal-attention-store.js";
 import { applyStoppedRunsNotNews } from "./personal-state-schema.js";

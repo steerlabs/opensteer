@@ -101,7 +101,7 @@ import { approveComputerAppAutomaticallyInTransaction } from "./computer-connect
 import { deviceAccessStates } from "./device-store.js";
 import { machineIsManagedBy } from "./machine-ownership.js";
 import { cancelPending } from "./request-cancellation.js";
-import { connectionRequests } from "./request-agent-response.js";
+import { queryConnectionRequestPage } from "./request-agent-response.js";
 import {
   assertRequestRevision,
   refreshRequestState,
@@ -927,20 +927,28 @@ export class RequestStore {
                   .executeTakeFirstOrThrow()
               ).lineageRootThreadId
             : null;
-        const scopedConnectionQuery = input.connectionAuthority
-          ? await connectionRequests(transaction, input.connectionAuthority)
-          : null;
+        if (input.connectionAuthority) {
+          const { rows, total } = await queryConnectionRequestPage(transaction, {
+            authority: input.connectionAuthority,
+            lineageRootThreadId,
+            ...(input.originatingThreadId
+              ? { originatingThreadId: input.originatingThreadId }
+              : {}),
+            status,
+            anchor,
+            limit,
+          });
+          return requestPage(rows, total, limit, cursorScope);
+        }
         const base = () => {
-          let query = scopedConnectionQuery
-            ? scopedConnectionQuery.clearSelect().where("threads.removedAt", "is", null)
-            : transaction
-                .selectFrom("requests")
-                .innerJoin("threads", "threads.id", "requests.originatingThreadId")
-                .where("threads.createdBy", "=", input.ownerId)
-                .where("threads.removedAt", "is", null);
+          let query = transaction
+            .selectFrom("requests")
+            .innerJoin("threads", "threads.id", "requests.originatingThreadId")
+            .where("threads.createdBy", "=", input.ownerId)
+            .where("threads.removedAt", "is", null);
           if (lineageRootThreadId !== null)
             query = query.where("threads.lineageRootThreadId", "=", lineageRootThreadId);
-          if (!scopedConnectionQuery && input.scope.kind === "connection")
+          if (input.scope.kind === "connection")
             query = query.where("threads.originConnectionId", "=", input.scope.connectionId);
           if (input.originatingThreadId)
             query = query.where("requests.originatingThreadId", "=", input.originatingThreadId);
