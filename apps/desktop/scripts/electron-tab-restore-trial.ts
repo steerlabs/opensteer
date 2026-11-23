@@ -814,6 +814,10 @@ export async function runTabRestoreTrial(input: {
       await click(groupHeader());
       await checkGroup("drag-collapsed", true);
       state.order = [pop, p1, f1];
+      // What a quit must bring back is the list as the person left it: after the drags.
+      const settled = rows(await bootstrap());
+      state.rows = settled.map(({ id, title, order }) => ({ id, title, order }));
+      state.icons = settled.map((row) => ({ id: row.id, ref: z.string().parse(row.iconRef) }));
       save();
     });
   } else {
