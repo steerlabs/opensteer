@@ -255,6 +255,14 @@ export const TriggerOccurrenceViewSchema = z.object({
 });
 export type TriggerOccurrence = z.infer<typeof TriggerOccurrenceSchema>;
 
+export const TriggerWebhookAddressSchema = z.strictObject({
+  scope: z.enum(["public", "local"]),
+  /** Present when the caller may run the automation; null when redacted. */
+  url: z.url().nullable(),
+});
+export const TriggerWebhookAddressViewSchema = z.object(TriggerWebhookAddressSchema.shape);
+export type TriggerWebhookAddress = z.infer<typeof TriggerWebhookAddressSchema>;
+
 /**
  * A Trigger as a list shows it: when it runs, how its latest run went and,
  * for a watch, whether it is running — enough to tell what each one does and
@@ -284,12 +292,14 @@ export const TriggerSummarySchema = z.strictObject({
       observed: TriggerWatchObservedSchema,
     })
     .nullable(),
+  webhook: TriggerWebhookAddressSchema.nullable().optional(),
 });
 export const TriggerSummaryViewSchema = z.object({
   ...TriggerSummarySchema.shape,
   latestOccurrence: z.object(TriggerSummarySchema.shape.latestOccurrence.unwrap().shape).nullable(),
   source: TriggerSourceViewSchema,
   watch: z.object(TriggerSummarySchema.shape.watch.unwrap().shape).nullable(),
+  webhook: TriggerWebhookAddressViewSchema.nullable().optional(),
 });
 export type TriggerSummary = z.infer<typeof TriggerSummarySchema>;
 

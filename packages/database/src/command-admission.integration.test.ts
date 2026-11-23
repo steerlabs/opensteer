@@ -947,7 +947,6 @@ describeStore("one admission for Home commands", (it) => {
       },
       source: { kind: "webhook" },
       webhookRouteKey: routeKey,
-      webhookSecretHash: "a".repeat(64),
     });
     // It is the connection's automation: its lineage is the connection's.
     await database

@@ -40,6 +40,7 @@ import {
   TriggerOccurrenceViewSchema,
   TriggerSummaryViewSchema,
   TriggerWatchActivationViewSchema,
+  TriggerWebhookAddressViewSchema,
 } from "@opensteer/triggers";
 import { AgentLinkSchema } from "./agent-links.js";
 export { AgentLinkSchema } from "./agent-links.js";
@@ -453,10 +454,11 @@ export const TriggerOutputSchema = z.object({
     .optional(),
   downstreamRunsTruncated: z.boolean().optional(),
   replayed: z.boolean().optional(),
+  webhook: TriggerWebhookAddressViewSchema.nullable().optional(),
 });
 
 export const TriggerWriteOutputSchema = TriggerOutputSchema.extend({
-  webhook: z.object({ url: z.url(), secret: z.string().min(1) }).optional(),
+  webhook: z.object({ scope: z.enum(["public", "local"]), url: z.url() }).optional(),
 });
 
 export { AgentMediaContentSchema, ComputerUseOutputSchema } from "./computer-outputs.js";

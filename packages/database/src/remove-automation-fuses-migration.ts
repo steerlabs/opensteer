@@ -12,6 +12,7 @@ export async function applyRemoveAutomationFuses(database: Kysely<unknown>): Pro
   await sql`
     drop table if exists automation_wakes;
     alter table triggers drop column if exists wake_limit_per_hour;
+    alter table triggers drop column if exists webhook_secret_hash;
     alter table execution_environments drop column if exists max_active_watches;
 
     delete from automation_failure_notices where reason = 'wake-limit-reached';

@@ -111,7 +111,6 @@ interface CreateTriggerInput {
   readonly script: AutomationScript;
   readonly source: TriggerSource;
   readonly webhookRouteKey?: string;
-  readonly webhookSecretHash?: string;
 }
 export interface TriggerDetail {
   readonly anchorThread: Thread | null;
@@ -455,7 +454,6 @@ export async function createTriggerInTransaction(
       status: managed?.paused ? "paused" : "active",
       updatedAt: now,
       webhookRouteKey: source.kind === "webhook" ? required(input.webhookRouteKey) : null,
-      webhookSecretHash: source.kind === "webhook" ? required(input.webhookSecretHash) : null,
     })
     .execute();
   if (nextFireAt) await wakeTriggerSchedules(transaction);
@@ -1427,18 +1425,30 @@ export class TriggerStore {
     if (!row) throw notFound("Automation not found");
     return row.encryptedSecrets ?? null;
   }
-  async setEncryptedSecrets(input: {
+  async updateEncryptedSecrets<Result>(input: {
     readonly actorAccessMode?: ThreadAccessMode;
     readonly actorConnectionId?: string;
     readonly actorThreadId: ThreadId | null;
     readonly ownerId: UserId;
-    readonly sealed: { readonly envelope: Buffer; readonly keyVersion: number } | null;
+    readonly transform: (current: Buffer | null) => Promise<{
+      readonly result: Result;
+      readonly sealed: { readonly envelope: Buffer; readonly keyVersion: number } | null;
+    }>;
     readonly triggerId: TriggerId;
-  }): Promise<Trigger> {
+  }): Promise<{ readonly result: Result; readonly trigger: Trigger }> {
     return commitPersonalMutation(this.#database, async (transaction) => {
-      const admitted = (await admitTriggerActor(transaction, input.ownerId, input)).input;
-      const trigger = await lockTriggerForMutation(transaction, admitted, "define");
-      if (admitted.actorConnectionId && trigger.originConnectionId !== admitted.actorConnectionId) {
+      const admitted = await admitTriggerActor(transaction, input.ownerId, input);
+      const trigger = await lockTriggerForMutation(transaction, admitted.input, "define");
+      if (
+        admitted.connection?.grant.scope === "selected" &&
+        trigger.originConnectionId !== admitted.input.actorConnectionId
+      ) {
+        throw notFound();
+      }
+      if (
+        admitted.input.actorConnectionId &&
+        trigger.originConnectionId !== admitted.input.actorConnectionId
+      ) {
         throw new OpensteerError({
           code: "forbidden",
           message:
@@ -1447,17 +1457,18 @@ export class TriggerStore {
       }
       if (trigger.systemRole) throw conflict(MANAGED_MEMORY_REFUSAL);
       if (trigger.status === "archived") throw conflict("Archived automations cannot be changed");
+      const { result, sealed } = await input.transform(trigger.encryptedSecrets ?? null);
       const updated = await transaction
         .updateTable("triggers")
         .set({
-          encryptedSecrets: input.sealed?.envelope ?? null,
-          secretsKeyVersion: input.sealed?.keyVersion ?? null,
+          encryptedSecrets: sealed?.envelope ?? null,
+          secretsKeyVersion: sealed?.keyVersion ?? null,
           updatedAt: new Date(),
         })
         .where("id", "=", trigger.id)
         .returningAll()
         .executeTakeFirstOrThrow();
-      return triggerFromRow(updated);
+      return { result, trigger: triggerFromRow(updated) };
     });
   }
   async applyWatchStatus(input: {
@@ -1740,21 +1751,6 @@ export class TriggerStore {
       trigger: triggerFromRow(trigger, parsed.script === null),
     };
   }
-  async webhookRoute(routeKey: string): Promise<{
-    readonly secretHash: string;
-    readonly trigger: Trigger;
-  } | null> {
-    const row = await this.#database
-      .selectFrom("triggers")
-      .selectAll()
-      .where("webhookRouteKey", "=", routeKey)
-      .executeTakeFirst();
-    if (!row?.webhookSecretHash) return null;
-    return {
-      secretHash: row.webhookSecretHash,
-      trigger: triggerFromRow(row),
-    };
-  }
   enqueueWebhook(input: {
     readonly headers: Readonly<Record<string, string>>;
     readonly method: string;
@@ -1814,11 +1810,26 @@ export class TriggerStore {
     readonly ownerId: UserId;
     readonly triggerId: TriggerId;
     readonly webhookRouteKey: string;
-    readonly webhookSecretHash: string;
   }): Promise<Trigger> {
     return commitPersonalMutation(this.#database, async (transaction) => {
-      input = (await admitTriggerActor(transaction, input.ownerId, input)).input;
-      const trigger = await lockTriggerForMutation(transaction, input, "define");
+      const admitted = await admitTriggerActor(transaction, input.ownerId, input);
+      const trigger = await lockTriggerForMutation(transaction, admitted.input, "define");
+      if (
+        admitted.connection?.grant.scope === "selected" &&
+        trigger.originConnectionId !== admitted.input.actorConnectionId
+      ) {
+        throw notFound();
+      }
+      if (
+        admitted.input.actorConnectionId &&
+        trigger.originConnectionId !== admitted.input.actorConnectionId
+      ) {
+        throw new OpensteerError({
+          code: "forbidden",
+          message:
+            "A connected agent cannot rotate the webhook address of an automation it did not create.",
+        });
+      }
       if (trigger.kind !== "webhook") {
         throw new OpensteerError({
           code: "bad_request",
@@ -1833,7 +1844,6 @@ export class TriggerStore {
         .set({
           updatedAt: new Date(),
           webhookRouteKey: input.webhookRouteKey,
-          webhookSecretHash: input.webhookSecretHash,
         })
         .where("id", "=", trigger.id)
         .returningAll()

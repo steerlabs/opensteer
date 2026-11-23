@@ -1162,7 +1162,6 @@ interface TriggerTable {
   secretsKeyVersion: Generated<number | null>;
   waitingReason: Generated<string | null>;
   webhookRouteKey: string | null;
-  webhookSecretHash: string | null;
   /** The connected agent whose lineage created it; occurrences and Watches derive from it. */
   originConnectionId: Generated<string | null>;
   createdAt: Timestamp;

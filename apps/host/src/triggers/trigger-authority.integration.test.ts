@@ -50,7 +50,7 @@ import {
   type TriggerSource,
 } from "@opensteer/triggers";
 import { sql } from "kysely";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -170,9 +170,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
       publicUrl: new URL("https://trigger-authority.opensteer.test"),
       store: backing,
       threads: store,
-      tokens: {
-        deriveSecret: (_purpose, key) => createHash("sha256").update(key).digest("hex"),
-      },
     });
   }
   const triggers = triggerService();

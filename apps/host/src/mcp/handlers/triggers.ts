@@ -103,18 +103,35 @@ export class TriggerToolHandlers {
       if (!lineage) return true;
       return origins?.get(id) === lineage.agentConnectionId;
     };
+    const redactWebhookField = (webhook: unknown) => {
+      if (webhook && typeof webhook === "object" && "scope" in webhook) {
+        return { ...(webhook as Record<string, unknown>), url: null };
+      }
+      return webhook;
+    };
     const redactWebhook = <
-      T extends { readonly id: TriggerId; readonly webhookRouteKey?: unknown },
+      T extends {
+        readonly id: TriggerId;
+        readonly webhookRouteKey?: unknown;
+        readonly webhook?: unknown;
+      },
     >(
       item: T,
-    ): T =>
-      "webhookRouteKey" in item && item.webhookRouteKey && !canSeeWebhook(item.id)
-        ? { ...item, webhookRouteKey: null }
-        : item;
+    ): T => {
+      if (canSeeWebhook(item.id)) return item;
+      const next: Record<string, unknown> = { ...item };
+      if ("webhookRouteKey" in item && item.webhookRouteKey) next.webhookRouteKey = null;
+      if ("webhook" in item && item.webhook) next.webhook = redactWebhookField(item.webhook);
+      return next as T;
+    };
     if (output.trigger) {
+      const allowed = canSeeWebhook(output.trigger.id);
       return {
         ...output,
         trigger: redactWebhook(output.trigger),
+        ...("webhook" in output && output.webhook && !allowed
+          ? { webhook: redactWebhookField(output.webhook) }
+          : {}),
       };
     }
     if (!output.triggers) return output;

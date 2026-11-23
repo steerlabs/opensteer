@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type {
   ThreadAccessMode,
   ThreadId,
@@ -19,13 +19,13 @@ import {
   type TriggerControlInput,
   type TriggerOccurrence,
   type TriggerSource,
+  type TriggerWebhookAddress,
 } from "@opensteer/triggers";
 import {
   automationScriptCompatibilityReason,
   type AutomationScriptRunnerStore,
 } from "./automation-script-compatibility.js";
 import type { AutomationSecrets, AutomationSecretsPatch } from "./automation-secrets.js";
-import type { SignedTokenService } from "../identity/host-keys.js";
 import type { Clock } from "@opensteer/shared/clock";
 import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
 interface TriggerServiceOptions {
@@ -40,7 +40,6 @@ interface TriggerServiceOptions {
   readonly store: TriggerStore;
   readonly runnerStore: AutomationScriptRunnerStore;
   readonly threads: Pick<OpensteerStore, "readTask">;
-  readonly tokens: Pick<SignedTokenService, "deriveSecret">;
 }
 export class TriggerService {
   readonly #onChanged: TriggerServiceOptions["onChanged"];
@@ -53,7 +52,6 @@ export class TriggerService {
   readonly #store: TriggerStore;
   readonly #runnerStore: AutomationScriptRunnerStore;
   readonly #threads: TriggerServiceOptions["threads"];
-  readonly #tokens: Pick<SignedTokenService, "deriveSecret">;
   constructor(options: TriggerServiceOptions) {
     this.#onChanged = options.onChanged;
     this.#onInterruptFiring = options.onInterruptFiring;
@@ -65,16 +63,25 @@ export class TriggerService {
     this.#store = options.store;
     this.#runnerStore = options.runnerStore;
     this.#threads = options.threads;
-    this.#tokens = options.tokens;
+  }
+  async #resolveWebhookOrigin(): Promise<{
+    readonly origin: URL;
+    readonly scope: "public" | "local";
+  }> {
+    const remote = await this.#remoteOrigin?.().catch(() => null);
+    const origin = remote ? new URL(remote) : this.#publicUrl;
+    return {
+      origin,
+      scope: isLoopbackHostname(origin.hostname) ? "local" : "public",
+    };
   }
   async resolveWebhookAddress(routeKey: string): Promise<{
     readonly scope: "public" | "local";
     readonly url: string;
   }> {
-    const remote = await this.#remoteOrigin?.().catch(() => null);
-    const origin = remote ? new URL(remote) : this.#publicUrl;
+    const { origin, scope } = await this.#resolveWebhookOrigin();
     return {
-      scope: isLoopbackHostname(origin.hostname) ? "local" : "public",
+      scope,
       url: new URL(`/hooks/v1/${routeKey}`, origin).toString(),
     };
   }
@@ -99,7 +106,6 @@ export class TriggerService {
     );
     const webhookRouteKey =
       input.source.kind === "webhook" ? `whk_${randomBytes(32).toString("base64url")}` : undefined;
-    const webhookSecret = webhookRouteKey ? this.#webhookSecret(webhookRouteKey) : undefined;
     const { trigger, revision, wasDuplicate } = await this.#store.create({
       actorThreadId,
       ...(actorAccessMode ? { actorAccessMode } : {}),
@@ -111,12 +117,7 @@ export class TriggerService {
       ...(input.ownTask ? { ownTask: true } : {}),
       script: input.script,
       source: input.source,
-      ...(webhookRouteKey
-        ? {
-            webhookRouteKey,
-            webhookSecretHash: hashSecret(required(webhookSecret)),
-          }
-        : {}),
+      ...(webhookRouteKey ? { webhookRouteKey } : {}),
     });
     this.#onChanged?.();
     const result = { trigger, revision, wasDuplicate };
@@ -128,7 +129,6 @@ export class TriggerService {
       ...result,
       webhook: {
         scope: address.scope,
-        secret: this.#webhookSecret(stableRouteKey),
         url: address.url,
       },
     };
@@ -141,7 +141,6 @@ export class TriggerService {
     actorConnectionId?: string,
   ) {
     const webhookRouteKey = `whk_${randomBytes(32).toString("base64url")}`;
-    const webhookSecret = this.#webhookSecret(webhookRouteKey);
     const trigger = await this.#store.rotateWebhookKey({
       actorThreadId,
       ...(actorAccessMode ? { actorAccessMode } : {}),
@@ -149,7 +148,6 @@ export class TriggerService {
       ownerId,
       triggerId,
       webhookRouteKey,
-      webhookSecretHash: hashSecret(webhookSecret),
     });
     this.#onChanged?.();
     const address = await this.resolveWebhookAddress(webhookRouteKey);
@@ -161,7 +159,7 @@ export class TriggerService {
       },
     };
   }
-  list(
+  async list(
     ownerId: UserId,
     input: {
       readonly systemRole?: Parameters<TriggerStore["listForOwner"]>[0]["systemRole"];
@@ -172,7 +170,7 @@ export class TriggerService {
       readonly reader: TaskReader;
     },
   ) {
-    return this.#store.listForOwner({
+    const triggers = await this.#store.listForOwner({
       reader: input.reader,
       ...(input.originConnectionId === undefined
         ? {}
@@ -194,6 +192,20 @@ export class TriggerService {
           }),
       ownerId,
     });
+    const hasWebhook = triggers.some((item) => item.kind === "webhook");
+    const resolved = hasWebhook && this.#publicUrl ? await this.#resolveWebhookOrigin() : null;
+    return triggers.map((item) => {
+      const webhook: TriggerWebhookAddress | null =
+        item.kind === "webhook" && resolved
+          ? {
+              scope: resolved.scope,
+              url: item.webhookRouteKey
+                ? new URL(`/hooks/v1/${item.webhookRouteKey}`, resolved.origin).toString()
+                : null,
+            }
+          : null;
+      return { ...item, webhook };
+    });
   }
   async get(ownerId: UserId, triggerId: TriggerId, occurrenceLimit: number, reader: TaskReader) {
     const detail = await this.#store.getForOwner(triggerId, ownerId, occurrenceLimit, reader);
@@ -202,7 +214,13 @@ export class TriggerService {
         code: "not_found",
         message: "Automation not found",
       });
-    return detail;
+    const webhook: TriggerWebhookAddress | null =
+      detail.trigger.kind === "webhook" && this.#publicUrl
+        ? detail.trigger.webhookRouteKey
+          ? await this.resolveWebhookAddress(detail.trigger.webhookRouteKey)
+          : { scope: (await this.#resolveWebhookOrigin()).scope, url: null }
+        : null;
+    return { ...detail, webhook };
   }
   async update(
     ownerId: UserId,
@@ -241,26 +259,29 @@ export class TriggerService {
     actorAccessMode?: ThreadAccessMode,
     actorConnectionId?: string,
   ) {
-    if (!this.#secrets) {
+    const vault = this.#secrets;
+    if (!vault) {
       throw new OpensteerError({
         code: "internal",
         message: "Automation secrets vault is unavailable on this Host.",
       });
     }
-    const current = await this.#store.getEncryptedSecrets(ownerId, triggerId);
-    const sealed = await this.#secrets.apply(triggerId, current, patch);
-    const trigger = await this.#store.setEncryptedSecrets({
+    const { result: secretNames, trigger } = await this.#store.updateEncryptedSecrets({
       ...(actorAccessMode ? { actorAccessMode } : {}),
       ...(actorConnectionId ? { actorConnectionId } : {}),
       actorThreadId,
       ownerId,
-      sealed,
+      transform: async (current) => {
+        const sealed = await vault.apply(triggerId, current, patch);
+        const names = await vault.names(triggerId, sealed?.envelope ?? null);
+        return { result: names, sealed };
+      },
       triggerId,
     });
     this.#onChanged?.();
     if (trigger.kind === "watch") this.#onWatchChanged?.(trigger.id);
     return {
-      secretNames: await this.#secrets.names(triggerId, sealed?.envelope ?? null),
+      secretNames,
       trigger,
     };
   }
@@ -504,9 +525,6 @@ export class TriggerService {
         message: reason,
       });
   }
-  #webhookSecret(routeKey: string): string {
-    return `oswh_${this.#tokens.deriveSecret("webhook", routeKey)}`;
-  }
 }
 /**
  * Fires due schedules at the earliest armed `next_fire_at`, and again whenever
@@ -558,9 +576,6 @@ export class TriggerScheduleLoop {
     // backs off rather than spinning; one that it moved on is simply re-armed.
     return next && next.getTime() <= now && !changed ? retryWithBackoff : next;
   }
-}
-function hashSecret(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 function required(value: string | undefined): string {
   if (!value) throw new Error("Webhook identity is missing");

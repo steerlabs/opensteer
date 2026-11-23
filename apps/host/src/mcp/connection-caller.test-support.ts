@@ -278,6 +278,7 @@ export async function serveMcp(
       devices,
       triggers: new TriggerToolHandlers(
         new TriggerService({
+          publicUrl: url,
           store: new TriggerStore(store.database),
           threads: store,
         } as unknown as ConstructorParameters<typeof TriggerService>[0]),

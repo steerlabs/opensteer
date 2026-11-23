@@ -1635,7 +1635,6 @@ describeStore("PostgreSQL store", (it) => {
         kind: "webhook",
       },
       webhookRouteKey: "wh_12345678901234567890123456789012",
-      webhookSecretHash: "a".repeat(64),
     });
     const firstBody = Buffer.from('{"ref":"main","seq":1}', "utf8");
     const secondBody = Buffer.from('{"ref":"main","seq":2}', "utf8");
@@ -1676,7 +1675,6 @@ describeStore("PostgreSQL store", (it) => {
       ownerId: fixture.userId,
       triggerId: created.trigger.id,
       webhookRouteKey: rotatedKey,
-      webhookSecretHash: "c".repeat(64),
     });
     expect(rotated.webhookRouteKey).toBe(rotatedKey);
     await expect(
@@ -1713,7 +1711,6 @@ describeStore("PostgreSQL store", (it) => {
         kind: "webhook",
       },
       webhookRouteKey: "wh_backlog0123456789012345678901234",
-      webhookSecretHash: "b".repeat(64),
     });
     const routeKey = created.trigger.webhookRouteKey ?? "";
     for (let index = 0; index < MAX_PENDING_TRIGGER_OCCURRENCES; index += 1) {
@@ -1833,7 +1830,6 @@ describeStore("PostgreSQL store", (it) => {
         kind: "webhook",
       },
       webhookRouteKey: "wh_cancel01234567890123456789012345",
-      webhookSecretHash: "c".repeat(64),
     });
     const routeKey = created.trigger.webhookRouteKey ?? "";
     const delivered = [];
@@ -2083,7 +2079,6 @@ describeStore("PostgreSQL store", (it) => {
         kind: "webhook",
       },
       webhookRouteKey: "wh_admission012345678901234567890123",
-      webhookSecretHash: "d".repeat(64),
     });
     const { occurrence } = await triggers.enqueueWebhook({
       headers: {},

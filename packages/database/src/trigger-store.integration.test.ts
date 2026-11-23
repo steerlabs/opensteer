@@ -490,7 +490,6 @@ integration.sequential("Trigger failure auto-pause", () => {
         script,
         source: { kind: "webhook" },
         webhookRouteKey: `wh_${randomUUID().replaceAll("-", "")}`,
-        webhookSecretHash: "0".repeat(64),
       });
     const archive = (triggerId: TriggerId) =>
       triggers.setStatus({ actorThreadId: null, ownerId: f.userId, status: "archived", triggerId });
@@ -1280,7 +1279,6 @@ integration.sequential("Trigger failure auto-pause", () => {
         kind: "webhook",
       },
       webhookRouteKey: "wh_paused_webhook_123456789012345678",
-      webhookSecretHash: "a".repeat(64),
     });
     await failManual(fixture, created.trigger.id, "first");
     await failManual(fixture, created.trigger.id, "second");
@@ -1328,7 +1326,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       },
       source: { kind: "webhook" },
       webhookRouteKey: "wh_stale_success_1234567890123456789",
-      webhookSecretHash: "a".repeat(64),
     });
     const stale = (
       await triggers.enqueueWebhook({
@@ -2291,7 +2288,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       },
       source: { kind: "webhook" },
       webhookRouteKey: "wh_fifo_hook_123456789012345678901234",
-      webhookSecretHash: "b".repeat(64),
     });
     const wh1 = (
       await triggers.enqueueWebhook({
@@ -2623,6 +2619,93 @@ integration.sequential("Trigger failure auto-pause", () => {
     ).resolves.toEqual({
       wasDuplicate: false,
     });
+  });
+
+  it("serializes concurrent updateEncryptedSecrets under a row lock and returns identical not_found for missing vs out-of-reach (AA9)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, triggers } = storeFixture;
+    const fixture = await createFixture("secrets-atomic");
+    const other = await createFixture("secrets-other");
+    const created = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "secrets-atomic",
+      name: "Secrets hook",
+      script: { interpreter: null, text: "console.log('ok')" },
+      source: { kind: "webhook" },
+      webhookRouteKey: "whk_secrets_atomic_12345678901234567890123",
+    });
+
+    const mergeJson = (current: Buffer | null, key: string, value: string) => {
+      const parsed = current
+        ? (JSON.parse(current.toString("utf8")) as Record<string, string>)
+        : {};
+      parsed[key] = value;
+      return {
+        result: Object.keys(parsed).sort(),
+        sealed: { envelope: Buffer.from(JSON.stringify(parsed), "utf8"), keyVersion: 1 },
+      };
+    };
+
+    let releaseFirst!: () => void;
+    let enteredFirstLock!: () => void;
+    const firstLocked = new Promise<void>((resolve) => {
+      enteredFirstLock = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    const p1 = triggers.updateEncryptedSecrets({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      transform: async (current) => {
+        enteredFirstLock();
+        await gate;
+        return mergeJson(current, "FIRST", "one");
+      },
+      triggerId: created.trigger.id,
+    });
+    await firstLocked;
+    const p2 = triggers.updateEncryptedSecrets({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      transform: async (current) => mergeJson(current, "SECOND", "two"),
+      triggerId: created.trigger.id,
+    });
+    // Yield so p2 reaches the FOR NO KEY UPDATE lock behind p1 before releasing p1.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    releaseFirst();
+
+    await Promise.all([p1, p2]);
+    const finalEnvelope = await triggers.getEncryptedSecrets(fixture.userId, created.trigger.id);
+    expect(JSON.parse(finalEnvelope!.toString("utf8"))).toEqual({
+      FIRST: "one",
+      SECOND: "two",
+    });
+
+    // Rule 5: missing automation and another owner's automation produce identical not_found errors.
+    const missingErr = await triggers
+      .updateEncryptedSecrets({
+        actorThreadId: null,
+        ownerId: other.userId,
+        transform: async (current) => mergeJson(current, "X", "1"),
+        triggerId: createId("trigger"),
+      })
+      .catch((error: unknown) => error);
+    const foreignErr = await triggers
+      .updateEncryptedSecrets({
+        actorThreadId: null,
+        ownerId: other.userId,
+        transform: async (current) => mergeJson(current, "X", "1"),
+        triggerId: created.trigger.id,
+      })
+      .catch((error: unknown) => error);
+    expect(missingErr).toMatchObject({ code: "not_found", message: "Trigger not found" });
+    expect(foreignErr).toMatchObject({ code: "not_found", message: "Trigger not found" });
+    expect((foreignErr as Error).message).toBe((missingErr as Error).message);
   });
 
   /**

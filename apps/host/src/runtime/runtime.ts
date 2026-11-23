@@ -3058,7 +3058,6 @@ export async function createHostRuntime(
         (await personalRemoteAccess?.status())?.route?.document.route.origin ?? null,
       store: triggerStore,
       threads: store,
-      tokens,
     });
     let bridgeToolService: OpensteerMcpService | undefined;
     const channels = new ChannelService({

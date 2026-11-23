@@ -77,9 +77,6 @@ describe("TriggerService", () => {
       store: {
         create,
       } as unknown as TriggerStore,
-      tokens: {
-        deriveSecret: () => "unused",
-      },
     });
     await expect(
       service.create(
@@ -148,9 +145,6 @@ describe("TriggerService", () => {
       store: {
         create,
       } as unknown as TriggerStore,
-      tokens: {
-        deriveSecret: (_purpose, routeKey) => `derived_${routeKey}`,
-      },
     });
     const result = await service.create(
       {
@@ -175,14 +169,13 @@ describe("TriggerService", () => {
       },
       webhook: {
         scope: "public",
-        secret: expect.stringMatching(/^oswh_derived_whk_/u),
         url: expect.stringMatching(/^https:\/\/opensteer\.example\/hooks\/v1\/whk_/u),
       },
     });
     if (!("webhook" in result)) throw new Error("Expected webhook creation result");
+    expect("secret" in result.webhook).toBe(false);
     const persisted = create.mock.calls[0]?.[0];
-    expect(persisted?.webhookSecretHash).toMatch(/^[0-9a-f]{64}$/u);
-    expect(persisted?.webhookSecretHash).not.toContain(result.webhook.secret);
+    expect("webhookSecretHash" in (persisted ?? {})).toBe(false);
   });
   it("resolves dynamic remoteOrigin as public and loopback canonicalOrigin as local, and rotates keys", async () => {
     const ownerId = createId("user");
@@ -212,7 +205,6 @@ describe("TriggerService", () => {
       runnerStore: {} as never,
       store: { rotateWebhookKey } as unknown as TriggerStore,
       threads: {} as never,
-      tokens: { deriveSecret: (_p, key) => `derived_${key}` },
     });
 
     const local = await service.resolveWebhookAddress("whk_12345678901234567890123456789012");
@@ -249,9 +241,6 @@ describe("TriggerService", () => {
       store: {
         enqueueWebhook,
       } as unknown as TriggerStore,
-      tokens: {
-        deriveSecret: () => "unused",
-      },
     });
     const rawBody = Buffer.from('{"ref":"main"}', "utf8");
     await expect(
@@ -305,7 +294,6 @@ describe("TriggerService", () => {
       runnerStore: {} as never,
       store: { setStatusWithEffects } as unknown as TriggerStore,
       threads: {} as never,
-      tokens: { deriveSecret: () => "unused" },
     });
     const paused = await service.setStatus(ownerId, { status: "paused", triggerId }, null);
     expect(paused.status).toBe("paused");
@@ -317,36 +305,132 @@ describe("TriggerService", () => {
       runnerId,
     });
   });
-  it("hides webhookRouteKey from agents lacking run authority (Y3)", async () => {
+  it("returns current webhook address in get/list state and redacts url for agents lacking run authority (AA9)", async () => {
+    const ownerId = createId("user");
     const triggerId = createId("trigger");
     const routeKey = "whk_secret_route_key_0123456789abcdef0123456";
-    const service = {
-      manage: vi.fn(async () => ({
-        trigger: { id: triggerId, name: "Deploy hook", webhookRouteKey: routeKey },
-      })),
+    const triggerRow = {
+      id: triggerId,
+      kind: "webhook" as const,
+      name: "Deploy hook",
+      webhookRouteKey: routeKey,
     };
+    const service = new TriggerService({
+      onOccurrenceQueued: vi.fn(),
+      publicUrl: new URL("http://127.0.0.1:4310"),
+      remoteOrigin: async () => "https://home.opensteer.example",
+      runnerStore: {} as never,
+      store: {
+        getForOwner: vi.fn(async () => ({ trigger: triggerRow })),
+        listForOwner: vi.fn(async () => [triggerRow]),
+      } as unknown as TriggerStore,
+      threads: {} as never,
+    });
+
+    const personGet = (await service.get(ownerId, triggerId, 10, { kind: "person" })) as {
+      readonly trigger: typeof triggerRow;
+      readonly webhook?: { readonly scope: string; readonly url: string | null } | null;
+    };
+    expect(personGet.webhook).toEqual({
+      scope: "public",
+      url: `https://home.opensteer.example/hooks/v1/${routeKey}`,
+    });
+
+    const personList = (await service.list(ownerId, {
+      reader: { kind: "person" },
+    })) as ReadonlyArray<
+      typeof triggerRow & {
+        readonly webhook?: { readonly scope: string; readonly url: string | null } | null;
+      }
+    >;
+    expect(personList[0]?.webhook).toEqual({
+      scope: "public",
+      url: `https://home.opensteer.example/hooks/v1/${routeKey}`,
+    });
+
     const handlers = new TriggerToolHandlers(service, { triggerOrigins: async () => new Map() });
     const askCaller = {
       accessMode: "ask",
       kind: "run",
       key: "run:ask",
-      userId: createId("user"),
+      userId: ownerId,
       thread: { id: createId("thread") },
     } as unknown as RunCaller;
-    const askResult = await handlers.read({
+    const askResult = (await handlers.read({
       caller: askCaller,
       input: { automationId: triggerId, occurrenceLimit: 10 },
       operationKey: "read-ask",
-    });
+    })) as {
+      readonly trigger?: { readonly webhookRouteKey?: string | null };
+      readonly webhook?: { readonly scope: string; readonly url: string | null } | null;
+    };
     expect(askResult.trigger?.webhookRouteKey).toBeNull();
+    expect(askResult.webhook).toEqual({ scope: "public", url: null });
+
+    const askListResult = (await handlers.read({
+      caller: askCaller,
+      input: { limit: 10 },
+      operationKey: "list-ask",
+    })) as {
+      readonly triggers?: ReadonlyArray<{
+        readonly webhookRouteKey?: string | null;
+        readonly webhook?: { readonly scope: string; readonly url: string | null } | null;
+      }>;
+    };
+    expect(askListResult.triggers?.[0]?.webhookRouteKey).toBeNull();
+    expect(askListResult.triggers?.[0]?.webhook).toEqual({ scope: "public", url: null });
 
     const fullCaller = { ...askCaller, accessMode: "full-access" } as RunCaller;
-    const fullResult = await handlers.read({
+    const fullResult = (await handlers.read({
       caller: fullCaller,
       input: { automationId: triggerId, occurrenceLimit: 10 },
       operationKey: "read-full",
-    });
+    })) as {
+      readonly trigger?: { readonly webhookRouteKey?: string | null };
+      readonly webhook?: { readonly scope: string; readonly url: string | null } | null;
+    };
     expect(fullResult.trigger?.webhookRouteKey).toBe(routeKey);
+    expect(fullResult.webhook).toEqual({
+      scope: "public",
+      url: `https://home.opensteer.example/hooks/v1/${routeKey}`,
+    });
+  });
+  it("applies patchSecrets through one locked store read-modify-write transaction (AA9)", async () => {
+    const ownerId = createId("user");
+    const triggerId = createId("trigger");
+    const updateEncryptedSecrets = vi.fn(
+      async (input: Parameters<TriggerStore["updateEncryptedSecrets"]>[0]) => {
+        const { result } = await input.transform(null);
+        return {
+          result,
+          trigger: { id: triggerId, kind: "webhook", status: "active" },
+        };
+      },
+    );
+    const getEncryptedSecrets = vi.fn();
+    const service = new TriggerService({
+      onOccurrenceQueued: vi.fn(),
+      publicUrl: new URL("https://opensteer.example"),
+      runnerStore: {} as never,
+      secrets: {
+        apply: vi.fn(async () => ({ envelope: Buffer.from("sealed"), keyVersion: 1 })),
+        names: vi.fn(async () => ["GITHUB_SECRET"]),
+      } as never,
+      store: {
+        getEncryptedSecrets,
+        updateEncryptedSecrets,
+      } as unknown as TriggerStore,
+      threads: {} as never,
+    });
+    const patched = await service.patchSecrets(
+      ownerId,
+      triggerId,
+      { set: { GITHUB_SECRET: "s3cr3t" } },
+      null,
+    );
+    expect(patched.secretNames).toEqual(["GITHUB_SECRET"]);
+    expect(updateEncryptedSecrets).toHaveBeenCalledTimes(1);
+    expect(getEncryptedSecrets).not.toHaveBeenCalled();
   });
   it("fires schedules at their deadline or a wake, wakes dispatch only for new occurrences, and never polls", async () => {
     vi.useFakeTimers();
