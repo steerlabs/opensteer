@@ -490,5 +490,35 @@ describeStore("what a caller is shown is what it can send (G2)", (test) => {
       }
     }
     expect(wrong).toEqual([]);
+
+    // A chat anyone may speak in holds no automation command (K3): a stranger's message never ends
+    // in a standing automation. Not shown, not found when sent, and refused where it is admitted
+    // (the readmission at the effect asks the same admission).
+    const [, anyoneCaller, anyoneThings] = callers.find(([name]) => name.includes("anyone"))!;
+    const anyoneHolder = (await agentCommandScope(database)(anyoneCaller)) as CommandHolder;
+    const automations = types.filter(
+      (type) => (commandTable[type] as CommandRow).family === "automations",
+    );
+    expect(automations).toEqual([
+      "trigger.create",
+      "trigger.update",
+      "trigger.status.set",
+      "trigger.run",
+      "trigger.cancel",
+    ]);
+    const anyoneWrong: string[] = [];
+    for (const type of automations) {
+      const command = {
+        idempotencyKey: randomUUID(),
+        ...retargeted(type, anyoneThings),
+      } as HostApiCommand;
+      if (commandHolds(type, anyoneHolder)) anyoneWrong.push(`${type}: shown`);
+      const sent = await outcome(anyoneCaller, command);
+      if (sent.code !== "not_found") anyoneWrong.push(`${type}: sent, ${sent.code}`);
+      const admitted = await door.admit(anyoneCaller, command);
+      if (admitted.answer !== "not_found")
+        anyoneWrong.push(`${type}: admitted, ${admitted.answer}`);
+    }
+    expect(anyoneWrong).toEqual([]);
   }, 120_000);
 });
