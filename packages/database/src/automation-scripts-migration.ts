@@ -118,6 +118,7 @@ export async function applyAutomationsContract(database: Kysely<DatabaseSchema>)
           'final-occurrence-interrupted',
           'paused',
           'started-failing',
+          'started-unknown',
           'overran-schedule',
           'watch-crash-loop',
           'outcome-unknown'

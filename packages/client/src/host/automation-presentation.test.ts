@@ -146,6 +146,54 @@ describe("placing automations", () => {
       problem: "Its computer was removed while it was running.",
     });
   });
+
+  it("shows stored exit codes for failed, unknown, and stopped outcomes (AB2)", () => {
+    const unknownExit3 = {
+      completedAt: at(0, 16, 20),
+      createdAt: at(0, 16, 15),
+      exitCode: 3,
+      status: "unknown",
+    } as NonNullable<TriggerSummary["latestOccurrence"]>;
+    const failedExit2 = {
+      completedAt: at(0, 16, 20),
+      createdAt: at(0, 16, 15),
+      exitCode: 2,
+      status: "failed",
+    } as NonNullable<TriggerSummary["latestOccurrence"]>;
+    const stoppedExit0 = {
+      completedAt: at(0, 16, 20),
+      createdAt: at(0, 16, 15),
+      exitCode: 0,
+      sent: true,
+      status: "canceled",
+    } as NonNullable<TriggerSummary["latestOccurrence"]>;
+
+    expect(runOutcome(unknownExit3 as never, null, null, now)).toBe("Outcome unknown (exit 3)");
+    expect(latestRun(unknownExit3, now)).toEqual({
+      text: "Last run outcome unknown (exit 3)",
+      tone: "warn",
+    });
+    expect(runOutcome(failedExit2 as never, null, null, now)).toBe("Failed (exit 2)");
+    expect(latestRun(failedExit2, now)).toEqual({
+      text: "Last run failed (exit 2)",
+      tone: "bad",
+    });
+    expect(runOutcome(stoppedExit0 as never, null, null, now)).toBe("Stopped (exit 0)");
+    expect(latestRun(stoppedExit0, now)).toEqual({
+      text: "Last run stopped (exit 0)",
+      tone: "muted",
+    });
+
+    const onceExit3 = automation({
+      latestOccurrence: unknownExit3,
+      nextFireAt: null,
+      source: { kind: "schedule", schedule: { at: at(0, 16, 15), kind: "at" } },
+    });
+    expect(placeAutomation(onceExit3, now)).toEqual({
+      group: "attention",
+      problem: "It ended without saying whether its effect happened (exit 3).",
+    });
+  });
 });
 
 describe("the next run", () => {

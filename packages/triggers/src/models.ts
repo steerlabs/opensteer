@@ -249,6 +249,7 @@ export const TriggerSummarySchema = z.strictObject({
       contactLostAt: IsoDateTimeSchema.nullable().optional(),
       createdAt: IsoDateTimeSchema,
       error: z.string().nullable(),
+      exitCode: z.number().int().nullable().optional(),
       id: TriggerOccurrenceIdSchema,
       sent: z.boolean().optional(),
       source: TriggerOccurrenceSourceKindSchema,

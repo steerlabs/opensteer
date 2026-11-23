@@ -99,13 +99,19 @@ function noticeText(notice: PendingAutomationFailure): string {
   if (notice.reason === "outcome-unknown") {
     // Opensteer cannot know whether the script's effects happened, and running
     // it again is the agent's decision, not something to do silently.
+    const headline = /\bexited with code\b/iu.test(notice.detail)
+      ? `${automation} ended without saying whether its effect happened during its only scheduled run, so its outcome is unknown. It was not run again.`
+      : `${automation} lost contact with its computer during its only scheduled run, so its outcome is unknown. It may not have finished, and it will not run again on its own.`;
     return [
-      `${automation} lost contact with its computer during its only scheduled run, so its outcome is unknown. It may not have finished, and it will not run again on its own.`,
+      headline,
       "",
       `Check what it already did, then run it again with opensteer_automation_control action "run_now" (automationId ${notice.triggerId}) if it still needs to happen.`,
       "",
       `Detail: ${JSON.stringify(notice.detail)}`,
     ].join("\n");
+  }
+  if (notice.reason === "started-unknown") {
+    return `${automation} ended without saying whether its effect happened, so its outcome is unknown. It was not run again, and the automation is still active.\n\nDetail: ${JSON.stringify(notice.detail)}`;
   }
   if (notice.reason === "final-occurrence-interrupted") {
     return [

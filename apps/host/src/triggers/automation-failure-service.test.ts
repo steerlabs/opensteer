@@ -318,3 +318,55 @@ it("gives every due notice its turn when one notice's write keeps failing", asyn
     vi.useRealTimers();
   }
 });
+
+it("sends the outcome-unknown sentence for started-unknown without wording it as failed (AB2)", async () => {
+  vi.useFakeTimers();
+  const threadId = createId("thread");
+  const notice: PendingAutomationFailure = {
+    anchorThreadId: threadId,
+    anchorThreadTitle: "Task",
+    attempts: 0,
+    createdBy: createId("user"),
+    detail: "Automation script exited with code 3: outcome unknown (an effect may have happened)",
+    destinationThreadId: threadId,
+    id: crypto.randomUUID(),
+    reason: "started-unknown",
+    triggerId: createId("trigger"),
+    triggerName: "Deploy webhook",
+  };
+  let delivered = false;
+  const enqueueThreadInput = vi.fn<CommandService["enqueueThreadInput"]>(
+    async () =>
+      ({
+        disposition: "queued",
+        inputId: createId("message"),
+        runId: null,
+      }) as never,
+  );
+  const service = new AutomationFailureService({
+    commands: { enqueueThreadInput },
+    onError: () => undefined,
+    store: {
+      listDue: vi.fn(async () => (delivered ? [] : [notice])),
+      nextDeadline: async () => null,
+      retryLater: vi.fn(async () => undefined),
+      settle: vi.fn(async () => {
+        delivered = true;
+      }),
+    },
+  });
+  try {
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(enqueueThreadInput).toHaveBeenCalledOnce();
+    const text = enqueueThreadInput.mock.calls[0]?.[0]?.content
+      .map((part) => ("text" in part ? part.text : ""))
+      .join("");
+    expect(text).toContain("ended without saying whether its effect happened");
+    expect(text).toContain("was not run again");
+    expect(text).not.toContain("started failing");
+  } finally {
+    await service.close();
+    vi.useRealTimers();
+  }
+});

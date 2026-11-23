@@ -1174,6 +1174,7 @@ export class TriggerStore {
           "triggerOccurrences.createdAt",
           "triggerOccurrences.error",
           "triggerOccurrences.event",
+          "triggerOccurrences.exitCode",
           "triggerOccurrences.id",
           "triggerOccurrences.status",
           "triggerOccurrences.triggerId",
@@ -1212,6 +1213,7 @@ export class TriggerStore {
               contactLostAt: occurrence.contactLostAt?.toISOString() ?? null,
               createdAt: occurrence.createdAt.toISOString(),
               error: triggerOccurrenceErrorMessage(occurrence.error),
+              exitCode: occurrence.exitCode,
               id: occurrence.id,
               sent: occurrence.frameSentAt !== null,
               source: TriggerProgramEventSchema.parse(occurrence.event).source.kind,
@@ -2681,7 +2683,11 @@ export class TriggerStore {
       let failureNotice:
         | {
             readonly detail: string;
-            readonly reason: "final-occurrence-failed" | "started-failing" | "outcome-unknown";
+            readonly reason:
+              | "final-occurrence-failed"
+              | "started-failing"
+              | "started-unknown"
+              | "outcome-unknown";
           }
         | undefined;
       if (input.output.status === "succeeded") {
@@ -2734,23 +2740,50 @@ export class TriggerStore {
         if (final || notifyStartedFailing) {
           const stderr = input.output.stderr.trim();
           const base = input.output.error?.trim() ?? "";
-          const detail =
+          const rawDetail =
             base && stderr && !base.includes(stderr)
               ? `${base}\n${stderr}`
               : base || stderr || "The script failed without an error message.";
+          const detail =
+            input.output.exitCode !== null && !/\bexit(?:ed)?(?:\s+with)?\s+code\s+\d+/iu.test(rawDetail)
+              ? `Exit code ${input.output.exitCode}: ${rawDetail}`
+              : rawDetail;
           failureNotice = {
             detail,
             reason: final ? "final-occurrence-failed" : "started-failing",
           };
         }
       } else if (input.output.status === "unknown") {
+        // AB2: unknown never runs again, never words as failed, and never clears failingSince.
+        // Emit the one-time notice if the automation was previously succeeding (failureNotifiedAt is null).
         const final = await isFinalOccurrence(transaction, occurrence);
-        if (final) {
+        const notifyStartedUnknown =
+          !final &&
+          occurrence.revisionId === trigger.currentRevisionId &&
+          trigger.status === "active" &&
+          trigger.failureNotifiedAt === null;
+        if (notifyStartedUnknown) {
+          await transaction
+            .updateTable("triggers")
+            .set({
+              failureNotifiedAt: now,
+              updatedAt: now,
+            })
+            .where("id", "=", trigger.id)
+            .execute();
+        }
+        if (final || notifyStartedUnknown) {
+          const stderr = input.output.stderr.trim();
+          const base =
+            input.output.error?.trim() ||
+            (input.output.exitCode !== null
+              ? `Automation script exited with code ${input.output.exitCode}: outcome unknown (an effect may have happened)`
+              : "Automation script exit status could not be determined.");
+          const detail =
+            base && stderr && !base.includes(stderr) ? `${base}\n${stderr}` : base;
           failureNotice = {
-            detail:
-              input.output.error?.trim() ||
-              "Automation script exit status could not be determined.",
-            reason: "outcome-unknown",
+            detail,
+            reason: final ? "outcome-unknown" : "started-unknown",
           };
         }
       }

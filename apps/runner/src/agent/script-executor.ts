@@ -306,6 +306,19 @@ export class AutomationScriptExecutor {
           stdout: stdoutText,
         };
       }
+      if (exit.code === 3) {
+        return {
+          completedAt,
+          error:
+            "Automation script exited with code 3: outcome unknown (an effect may have happened)",
+          exitCode: 3,
+          occurrenceId: input.firingId,
+          result: null,
+          status: "unknown",
+          stderr: stderrText,
+          stdout: stdoutText,
+        };
+      }
       return {
         completedAt,
         error: exit.signal

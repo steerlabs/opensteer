@@ -82,18 +82,20 @@ export function placeAutomation(summary: PlaceableAutomation, now: number): Auto
     case "running":
       return { group: "upcoming", problem: null };
     case "failed":
-      return attention("It failed when it ran.");
+      return attention(`It failed when it ran${exitCodeSuffix(summary.latestOccurrence.exitCode)}.`);
     case "unknown":
       return attention(
-        summary.latestOccurrence.error &&
-          /computer was removed/iu.test(summary.latestOccurrence.error)
-          ? "Its computer was removed while it was running."
-          : "Opensteer lost contact while it was running.",
+        summary.latestOccurrence.exitCode !== null && summary.latestOccurrence.exitCode !== undefined
+          ? `It ended without saying whether its effect happened${exitCodeSuffix(summary.latestOccurrence.exitCode)}.`
+          : summary.latestOccurrence.error &&
+              /computer was removed/iu.test(summary.latestOccurrence.error)
+            ? "Its computer was removed while it was running."
+            : "Opensteer lost contact while it was running.",
       );
     case "canceled":
       return attention(
         summary.latestOccurrence.sent
-          ? "It was stopped while running."
+          ? `It was stopped while running${exitCodeSuffix(summary.latestOccurrence.exitCode)}.`
           : "It was canceled before it ran.",
       );
     case "succeeded":
@@ -315,12 +317,17 @@ export function watchState(observed: NonNullable<TriggerSummary["watch"]>["obser
 /** A run not started this long after it was queued is waiting on its computer. */
 const startGraceMilliseconds = 60_000;
 
+function exitCodeSuffix(exitCode: number | null | undefined): string {
+  return exitCode !== null && exitCode !== undefined ? ` (exit ${exitCode})` : "";
+}
+
 /** How the latest run went, in a few words, for a row's second line. */
 export function latestRun(
   occurrence: TriggerSummary["latestOccurrence"],
   now: number,
 ): { readonly text: string; readonly tone: Tone } | null {
   if (!occurrence) return null;
+  const exit = exitCodeSuffix(occurrence.exitCode);
   switch (occurrence.status) {
     case "succeeded":
       return {
@@ -328,11 +335,14 @@ export function latestRun(
         tone: "ok",
       };
     case "failed":
-      return { text: "Last run failed", tone: "bad" };
+      return { text: `Last run failed${exit}`, tone: "bad" };
     case "unknown":
-      return { text: "Last run outcome unknown", tone: "warn" };
+      return { text: `Last run outcome unknown${exit}`, tone: "warn" };
     case "canceled":
-      return { text: occurrence.sent ? "Last run stopped" : "Last run canceled", tone: "muted" };
+      return {
+        text: occurrence.sent ? `Last run stopped${exit}` : "Last run canceled",
+        tone: "muted",
+      };
     case "running":
       return occurrence.contactLostAt
         ? {
@@ -353,6 +363,7 @@ export function runOutcome(
   replyStatus: TriggerDetail["downstreamRuns"][number]["run"]["status"] | null,
   now: number,
 ): string {
+  const exit = exitCodeSuffix(occurrence.exitCode);
   switch (occurrence.status) {
     case "pending":
       return now - Date.parse(occurrence.createdAt) < 60_000
@@ -363,11 +374,11 @@ export function runOutcome(
         ? `Running as far as Opensteer knows — contact lost ${formatMoment(occurrence.contactLostAt, now, true)}`
         : "Running now";
     case "canceled":
-      return occurrence.sent ? "Stopped" : "Canceled";
+      return occurrence.sent ? `Stopped${exit}` : "Canceled";
     case "failed":
-      return "Failed";
+      return `Failed${exit}`;
     case "unknown":
-      return "Outcome unknown";
+      return `Outcome unknown${exit}`;
     case "succeeded":
       if (replyIn === null) return "Finished without a message";
       switch (replyStatus) {
