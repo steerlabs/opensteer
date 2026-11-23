@@ -106,6 +106,9 @@ export class TabSleeper {
   private rendererUsage: BrowserRendererUsage | null = null;
   private nextRendererSample = 0;
   private samplingRenderers = false;
+  /** When the last memory reading was taken, and when a tab last went to sleep (TS12). */
+  private memorySampledAt = Number.NEGATIVE_INFINITY;
+  private lastSleptAt = Number.NEGATIVE_INFINITY;
   private memoryPressureState: {
     readonly known: boolean;
     readonly reading: BrowserMemoryPressure | null;
@@ -352,6 +355,8 @@ export class TabSleeper {
     now: number,
     links?: ReadonlySet<BrowserSurfaceId>,
     young = false,
+    /** The last resort under pressure: a tab a live agent is bound to may sleep (TS12). */
+    lastResort = false,
   ): SleepBlocker | null {
     const session = this.sessions.get(id);
     const state = session?.hostState;
@@ -364,6 +369,10 @@ export class TabSleeper {
     if (external) return external;
     if (record.lease.busy || !["live", "sleeping"].includes(record.lease.state)) return "operation";
     if (state.runs > 0 && record.agentActed) return "agent-input";
+    // TS12: a tab a live Run or connected agent's session works in is slept last, only when nothing
+    // else is left and memory is still over the threshold; an agent that comes back finds it as
+    // it left it.
+    if (!lastResort && state.runs > 0 && state.agentTabs?.includes(record.id)) return "agent-bound";
     if (record.typed) return "typed";
     if (!young && now - record.usedAt < quietMs) return "quiet";
     const live = record.live;
@@ -599,7 +608,7 @@ export class TabSleeper {
       const links = this.openerLinks(session);
       for (const record of session.ledger.policyRecords()) {
         if (!record.live || (this.nextProbe.get(record) ?? 0) > now) continue;
-        if (this.blocked(id, record, now, links, true) === null) return true;
+        if (this.blocked(id, record, now, links, true, true) === null) return true;
       }
     }
     return false;
@@ -645,6 +654,7 @@ export class TabSleeper {
   }
 
   private applyMemoryPressureSample(reading: BrowserMemoryPressure | null, now: number): void {
+    if (reading !== null) this.memorySampledAt = now;
     this.memoryPressureState = { known: reading !== null, reading };
     if (reading === null) {
       // Not known: the page estimate decides this pass, and nothing is recorded as a reclaim
@@ -811,6 +821,9 @@ export class TabSleeper {
           .map((record) => ({ id, session, record })),
       );
       livePages = candidates.length;
+      // Whether this pass's candidates were weighed over the threshold (a reading can land later
+      // in the pass): a bound tab is never the last resort of a pass that skipped the others.
+      const releasingAtStart = this.releasing;
       candidates.sort(
         (a, b) =>
           Number(this.declined.has(a.record)) - Number(this.declined.has(b.record)) ||
@@ -852,8 +865,10 @@ export class TabSleeper {
         const sleeping = session.ledger
           .sleep(record.id, (next) => this.blocked(id, next, Date.now()))
           .then((committed) => {
-            if (committed) slept++;
-            else {
+            if (committed) {
+              slept++;
+              this.lastSleptAt = Date.now();
+            } else {
               this.declined.add(record);
               this.nextProbe.set(record, Date.now() + quietMs);
             }
@@ -879,24 +894,34 @@ export class TabSleeper {
         Date.now() >= this.pressureHoldUntil()
       ) {
         const now = Date.now();
-        const youngest = candidates
-          .filter(
-            ({ id, session, record }) =>
-              this.sessions.get(id) === session &&
-              (this.nextProbe.get(record) ?? 0) <= now &&
-              this.blocked(id, record, now) === "quiet" &&
-              this.blocked(id, record, now, undefined, true) === null,
-          )
-          .sort((a, b) => a.record.usedAt - b.record.usedAt)[0];
+        const lastResort = (reason: SleepBlocker, bound: boolean) =>
+          candidates
+            .filter(
+              ({ id, session, record }) =>
+                this.sessions.get(id) === session &&
+                (this.nextProbe.get(record) ?? 0) <= now &&
+                this.blocked(id, record, now) === reason &&
+                this.blocked(id, record, now, undefined, true, bound) === null,
+            )
+            .sort((a, b) => a.record.usedAt - b.record.usedAt)[0];
+        // A young tab first; a tab a live agent is bound to only when no other is left (TS12).
+        const young = lastResort("quiet", false);
+        // A bound tab only on a reading taken after the last sleep had settled: memory still over.
+        const freshReading =
+          releasingAtStart && this.memorySampledAt > this.lastSleptAt + linuxPressureSettleMs;
+        const youngest = young ?? (freshReading ? lastResort("agent-bound", true) : undefined);
         if (youngest) {
           const { id, session, record } = youngest;
+          const bound = !young;
           attempted++;
           this.reclaimInFlight++;
           const committed = await session.ledger
-            .sleep(record.id, (next) => this.blocked(id, next, Date.now(), undefined, true))
+            .sleep(record.id, (next) => this.blocked(id, next, Date.now(), undefined, true, bound))
             .finally(() => this.reclaimInFlight--);
-          if (committed) slept++;
-          else {
+          if (committed) {
+            slept++;
+            this.lastSleptAt = Date.now();
+          } else {
             this.declined.add(record);
             this.nextProbe.set(record, Date.now() + quietMs);
           }

@@ -652,7 +652,11 @@ export class BrowserController {
       send: async (command) => {
         const targetId = command.sessionId ? client.attachedTargetId(command.sessionId) : null;
         if (targetId) this.ledger.recordAgentCommand(targetId);
-        return client.send(command, (id) => this.#passkeys?.record(id, "agent"));
+        const send = () => client.send(command, (id) => this.#passkeys?.record(id, "agent"));
+        // As every command the Home relays: the tab is held for the command's whole duration,
+        // so it is never put to sleep under it (TS12). A sleep already under way is called off.
+        const surfaceId = targetId ? this.ledger.surfaceIdForTarget(targetId) : undefined;
+        return surfaceId ? this.ledger.use(surfaceId, send) : send();
       },
     };
   }

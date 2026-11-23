@@ -3053,6 +3053,8 @@ export class BrowserService {
 
   #clearActor(actor: BrowserActor): void {
     this.#actors.delete(actor.token);
+    // Its tabs are no longer slept last (TS12).
+    if (actor.surfaces.size) this.#brokers.get(actor.sessionId)?.refreshSessionState();
     this.#actorEpochs.delete(`${actor.sessionId}:${actor.binding}`);
     this.#actorKeys.delete(`${actor.sessionId}:${actor.binding}`);
     for (const surfaceId of actor.surfaces.keys()) {
@@ -3343,16 +3345,21 @@ export class BrowserService {
           ),
         ),
       );
+      let bound = false;
       for (const holding of holdings) {
         const token = this.#actorKeys.get(`${sessionId}:${holding.agentBindingId}`);
         const actor = token ? this.#actors.get(token) : undefined;
-        if (actor && holding.tabId && !actor.surfaces.has(holding.tabId))
+        if (actor && holding.tabId && !actor.surfaces.has(holding.tabId)) {
           actor.surfaces.set(holding.tabId, {
             at: 0,
             seq: 0,
             heldAt: holding.lastUsedAt.getTime(),
           });
+          bound = true;
+        }
       }
+      // A tab an agent holds is slept last from now on (TS12).
+      if (bound) this.#brokers.get(sessionId)?.refreshSessionState();
       this.#invalidatePageSessions([sessionId]);
     });
   }
@@ -3489,6 +3496,7 @@ export class BrowserService {
     if (!force && previous?.recordedPage?.key === key) return actor.usageTail ?? Promise.resolve();
     const recordedPage = { key, at: this.#activityClock.now() };
     actor.surfaces.set(surfaceId, { at: 0, seq: 0, ...previous, recordedPage });
+    if (!previous) broker?.refreshSessionState();
     const page = broker?.pageOf(surfaceId) ?? null;
     // Separate transactions keep lastUsedAt ordered; now() is fixed inside a transaction.
     const tail = (actor.usageTail ?? Promise.resolve())
@@ -3544,7 +3552,8 @@ export class BrowserService {
     const previous = actor.surfaces.get(activity.surfaceId);
     const wasActing = previous !== undefined && at - previous.at < this.#actingWindowMs;
     actor.surfaces.set(activity.surfaceId, { ...previous, at, seq: activity.seq });
-    if (this.#requestPins.size) broker.refreshSessionState();
+    // A tab an agent starts working in is slept last from now on (TS12).
+    if (this.#requestPins.size || !previous) broker.refreshSessionState();
     void this.#recordActorUse(actor, activity.surfaceId);
     const previousTimer = this.#actingTimers.get(sessionId);
     if (previousTimer) previousTimer();
@@ -6217,7 +6226,7 @@ export class BrowserService {
 
   async #sessionState(
     sessionId: BrowserSessionId,
-  ): Promise<Pick<BrowserSessionState, "runs" | "pinned" | "keepAwake">> {
+  ): Promise<Pick<BrowserSessionState, "runs" | "pinned" | "keepAwake" | "agentTabs">> {
     const runs = await this.#repository.countBrowserSessionAttachments(sessionId);
     const pinned = new Set<BrowserSurfaceId>();
     let keepAwake = false;
@@ -6230,7 +6239,18 @@ export class BrowserService {
           pinned.add(surfaceId);
         } else keepAwake = true;
       }
-    return { runs, pinned: [...pinned], ...(keepAwake ? { keepAwake: true } : {}) };
+    // TS12: the tabs a live Run or connected agent's session works in, slept last.
+    const agentTabs = new Set<BrowserSurfaceId>();
+    for (const actor of this.#actors.values())
+      if (actor.sessionId === sessionId)
+        for (const surfaceId of actor.surfaces.keys())
+          agentTabs.add(BrowserSurfaceIdSchema.parse(surfaceId));
+    return {
+      runs,
+      pinned: [...pinned],
+      ...(keepAwake ? { keepAwake: true } : {}),
+      ...(agentTabs.size ? { agentTabs: [...agentTabs].sort() } : {}),
+    };
   }
 
   /**
@@ -7790,7 +7810,7 @@ interface HostedBrowserBrokerOptions {
   readonly personUse?: { tabs: Set<BrowserSurfaceId>; ended: boolean };
   readonly onPersonUseChanged?: () => void;
   readonly readSessionState: () => Promise<
-    Pick<BrowserSessionState, "runs" | "pinned" | "keepAwake">
+    Pick<BrowserSessionState, "runs" | "pinned" | "keepAwake" | "agentTabs">
   >;
   readonly savedTabIds?: readonly BrowserSurfaceId[];
   readonly tabRestoreVersion?: boolean | undefined;

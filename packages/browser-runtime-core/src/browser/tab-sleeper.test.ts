@@ -679,6 +679,62 @@ describe("TabSleeper", () => {
     }
   });
 
+  it("sleeps a tab bound to a live Run or connected agent's session last: under pressure the unbound idle tab sleeps first, the bound one only when nothing else is left (TS12)", async () => {
+    const limit = 2 * 1024 ** 3;
+    let over = false;
+    let unbound = "" as string;
+    const f = await fixture({
+      // Over the threshold while asked to be; the unbound tab's sleep frees enough to fall below.
+      memoryPressure: () =>
+        Promise.resolve({
+          usedBytes: Math.round(
+            limit * (over && f.ledger.stateOf(unbound as never) !== "suspended" ? 0.8 : 0.5),
+          ),
+          limitBytes: limit,
+        }),
+    });
+    try {
+      unbound = (await f.ledger.openSurface()).id;
+      const bound = f.record.id;
+      // A live session works in `bound`; both tabs are idle for a minute.
+      f.sleeper.setSessionState("session", {
+        runs: 1,
+        personUsed: [],
+        viewed: [],
+        pinned: [],
+        agentTabs: [bound],
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(f.ledger.stateOf(bound)).not.toBe("suspended");
+      expect(f.ledger.stateOf(unbound as never)).not.toBe("suspended");
+      over = true;
+      await vi.advanceTimersByTimeAsync(5_000);
+      // Under pressure the unbound tab sleeps; the bound one does not.
+      expect(f.ledger.stateOf(unbound as never)).toBe("suspended");
+      expect(f.ledger.stateOf(bound)).not.toBe("suspended");
+      // Memory over the threshold again, and nothing unprotected left: then it sleeps.
+      f.sleeper.setSessionState("session", {
+        runs: 1,
+        personUsed: [],
+        viewed: [],
+        pinned: [],
+        agentTabs: [bound],
+      });
+      const internals = f.sleeper as unknown as {
+        applyMemoryPressureSample(reading: unknown, now: number): void;
+      };
+      internals.applyMemoryPressureSample(
+        { usedBytes: limit * 0.8, limitBytes: limit },
+        Date.now(),
+      );
+      unbound = "none";
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(f.ledger.stateOf(bound)).toBe("suspended");
+    } finally {
+      await f.close();
+    }
+  });
+
   it("holds a burst of 46 opens so the sample never passes the limit: sleeping starts at the threshold and each wait is bounded (K9 corrected)", async () => {
     const mib = 1024 ** 2;
     const limit = 2048 * mib;

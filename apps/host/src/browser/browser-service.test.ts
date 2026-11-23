@@ -8532,6 +8532,77 @@ it("retains the requesting tab's pin after its actor ends and keeps unknown Host
   cdp.close();
 });
 
+it("tells the runtime which tabs a live agent works in, so they are slept last, and forgets them when the agent leaves (TS12)", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+    targetedStreaming: true,
+  });
+  const ownerId = createId("user"),
+    runId = createId("run"),
+    threadId = createId("thread");
+  const repository = new MemoryBrowserRepository(ownerId);
+  vi.spyOn(repository as BrowserSessionRepository, "resolvePlaceActors").mockImplementation(
+    async () => [
+      {
+        agentBindingId: `run:${runId}`,
+        ownerId,
+        runId,
+        threadId,
+        generation: 1,
+        lineageThreadIds: [threadId],
+      },
+    ],
+  );
+  const service = freshService({ keys, runtime, repository, surfaceState: true });
+  const authority = { ownerId, agentBindingId: `run:${runId}` };
+  const { session } = await service.openAgentSession({ ...authority, fresh: true });
+  const cdp = await service.attachCdpForAgent(
+    { ...authority, sessionId: session.id },
+    () => undefined,
+  );
+  const attached = await cdp.dispatch({
+    method: "Target.attachToTarget",
+    parameters: { targetId: "target-1", flatten: true },
+  });
+  await vi.waitFor(() =>
+    expect(runtime.receivedCommands().findLast((m) => m.type === "cdp.command")).toBeDefined(),
+  );
+  const command = runtime.receivedCommands().findLast((m) => m.type === "cdp.command")!;
+  runtime.sendServer({
+    type: "cdp.result",
+    requestId: command.requestId,
+    result: { surfaceId: "page-1", sessionId: "attached" },
+  });
+  await attached.result;
+  runtime.publishTabs({
+    surfaces: ["page-1", "page-2"].map((id, index) => ({
+      id,
+      active: index === 0,
+      state: "live",
+      title: id,
+      url: "https://example.com",
+      geometryRevision: 1,
+    })),
+  });
+  const last = () => runtime.receivedCommands().findLast((m) => m.type === "session.state");
+  // The tab it attached to is bound at once; a tab it then works in joins it.
+  await vi.waitFor(() => expect(last()).toMatchObject({ runs: 1, agentTabs: ["page-1"] }));
+  runtime.sendServer({
+    type: "browser.activity",
+    actorToken: command.actorToken,
+    surfaceId: "page-2",
+    seq: 1,
+    geometryRevision: 1,
+    pointer: null,
+  });
+  await vi.waitFor(() =>
+    expect(last()).toMatchObject({ runs: 1, agentTabs: ["page-1", "page-2"] }),
+  );
+  await service.detachAgentSessionsForBinding(authority.agentBindingId);
+  await vi.waitFor(() => expect(last()).toMatchObject({ runs: 0 }));
+  expect(last()).not.toHaveProperty("agentTabs");
+});
+
 it("publishes a passkey offer as a pin until the ceremony is cancelled", async () => {
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {

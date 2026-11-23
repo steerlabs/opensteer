@@ -2873,3 +2873,103 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     ).toBe(true);
   });
 });
+
+it("never puts a tab to sleep under an agent's command on either path: a long evaluate under memory pressure completes, and the tab sleeps after it (TS12)", async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "text/html");
+    response.end("<!doctype html><title>work</title><p>work</p>");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing fixture address");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const profile = await nativeRuntimeProfile();
+  cleanup.push(profile.close);
+  const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000912");
+  const claims = validClaims({ identity: profile.identity, sessionId, tabRestoreVersion: 1 });
+  const verifier = new FakeTicketVerifier(claims);
+  verifier.setClaims("standard", { ...claims, standardCdp: "session" });
+  const launcher = new PlaywrightChromiumLauncher({
+    chromiumSandbox: false,
+    executablePath,
+    headless: true,
+  });
+  // Memory stays over the start threshold the whole time, as on a full Linux machine.
+  const limitBytes = 2 * 1024 ** 3;
+  Object.defineProperty(launcher, "memoryPressure", {
+    value: async () => ({ usedBytes: Math.round(limitBytes * 0.8), limitBytes }),
+  });
+  const runtime = new BrowserRuntime({
+    localProfiles: profile.localProfiles,
+    launcher,
+    runtimeId: claims.runtimeId,
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: verifier,
+  });
+  cleanup.push(() => runtime.shutdown());
+  const sink = new FakeSink();
+  const attachment = await runtime.attach("ticket", sink);
+  const deliver = (message: BrowserClientMessage) => attachment.handle(JSON.stringify(message));
+  const agent = (method: string, parameters?: CdpParameters, cdpSessionId?: string) =>
+    sendAsAgent(deliver, sink.messages, method, parameters, cdpSessionId);
+  const standard = await runtime.attachStandardCdp(
+    "standard",
+    () => undefined,
+    new AbortController().signal,
+  );
+  cleanup.push(async () => standard.close());
+  const opened = async () => {
+    const targetId = String(
+      asRecord(await agent("Target.createTarget", { url: `${origin}/work` })).targetId,
+    );
+    const page = String(
+      asRecord(await agent("Target.attachToTarget", { flatten: true, targetId })).sessionId,
+    );
+    await waitForAsync(
+      async () =>
+        evaluationValue(
+          await agent(
+            "Runtime.evaluate",
+            { expression: "document.readyState", returnByValue: true },
+            page,
+          ),
+        ) === "complete",
+    );
+    return { targetId, page };
+  };
+  const viaHome = await opened();
+  const viaStandard = await opened();
+  const direct = String(
+    asRecord(
+      await standard.send({
+        method: "Target.attachToTarget",
+        parameters: { targetId: viaStandard.targetId, flatten: true },
+      }),
+    ).sessionId,
+  );
+  const suspendedTabs = () =>
+    sink.messages.filter((message) => JSON.stringify(message).includes('"state":"suspended"'))
+      .length;
+  await attachment.handle(
+    JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
+  );
+  // Longer than the quiet time, with the sleeper's last resort free to take any young tab.
+  const long = {
+    expression: `new Promise((resolve) => setTimeout(() => resolve(location.pathname), 12000))`,
+    awaitPromise: true,
+    returnByValue: true,
+  };
+  const started = performance.now();
+  const [home, direct_] = await Promise.all([
+    agent("Runtime.evaluate", long, viaHome.page).then(evaluationValue),
+    standard
+      .send({ method: "Runtime.evaluate", parameters: long, sessionId: direct })
+      .then(evaluationValue),
+  ]);
+  expect({ home, direct: direct_ }).toEqual({ home: "/work", direct: "/work" });
+  expect(performance.now() - started).toBeGreaterThanOrEqual(11_500);
+  // The pressure was real: once the commands have ended, the sleeper takes the tabs.
+  await waitFor(() => suspendedTabs() >= 2, 20_000);
+}, 90_000);

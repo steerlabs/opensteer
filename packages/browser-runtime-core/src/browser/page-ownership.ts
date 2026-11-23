@@ -52,6 +52,7 @@ export type SleepBlocker =
   | "sign-in"
   | "operation"
   | "agent-input"
+  | "agent-bound"
   | "typed"
   | "quiet"
   | "suspended"
