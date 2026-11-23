@@ -547,6 +547,60 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     await settle();
   });
 
+  /*
+   * CY6: a command is applied under its own context, and nothing read before an await is used
+   * after it. (A) A late Backspace of an earlier context while the current one composes: the
+   * composition is closed by its composer first, never typed into. (B) Focus moving to another
+   * field while the close runs: the command is refused there, and that field is untouched.
+   */
+  it("closes the current composition before a late command of an earlier context", async () => {
+    await seed(page, kind, "ab", 2);
+    await settle();
+    const earlier = observer.context.contextId!;
+    await seed(page, kind, "ab", 2);
+    await page.evaluate(() => getSelection()?.collapseToEnd());
+    // The page rewrites the field: the context before is an earlier one of the same field.
+    await page.evaluate((kind) => {
+      const element = document.getElementById("f")!;
+      if (kind === "textarea") (element as HTMLTextAreaElement).value = "abc";
+      else element.textContent = "abc";
+    }, kind);
+    await seed(page, kind, "abc", 3);
+    await settle();
+    expect(observer.context.contextId).not.toBe(earlier);
+    expect(await composeA("日本")).toBe(true);
+    record.length = 0;
+    expect(
+      await send({ kind: "command", command: "deleteBackward", contextId: earlier }, "A"),
+    ).toBe(true);
+    expect(record.slice(0, 2)).toEqual(["attributed A", "text 日本"]);
+    expect((await read(page, kind)).value).toBe("abc日");
+  });
+  it("refuses a command whose field lost focus while the close ran", async () => {
+    await seed(page, kind, "", 0);
+    await settle();
+    expect(await composeA("日本")).toBe(true);
+    const contextId = observer.context.contextId!;
+    between = () =>
+      page.evaluate(() => {
+        const other = document.createElement("input");
+        other.id = "g";
+        other.value = "keep";
+        document.body.append(other);
+        other.focus();
+        other.setSelectionRange(4, 4);
+      });
+    expect(await send({ kind: "command", command: "deleteBackward", contextId }, "B")).toBe(false);
+    expect(
+      await page.evaluate(() => (document.getElementById("g") as HTMLInputElement).value),
+    ).toBe("keep");
+    await page.evaluate(() => {
+      document.getElementById("g")!.remove();
+      document.getElementById("f")!.focus();
+    });
+    await settle();
+  });
+
   // CS1: a refusal inside the context while composing. The page moved the selection under an
   // open composition (Blink keeps the composition open), so the next update is refused for the
   // changed selection; the composition stays the composer's. The person keeps what they

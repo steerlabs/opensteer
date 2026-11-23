@@ -480,14 +480,35 @@ export class PageEditingObserver {
     producer?: string,
   ): Promise<boolean> {
     if (this.#activeChild) return this.#activeChild.command(contextId, relative, action, producer);
-    if (
-      contextId !== undefined &&
-      contextId !== this.#context.contextId &&
-      !(relative && this.#focused && this.#earlier.has(contextId))
-    )
-      return false;
-    await this.input(action, producer);
-    return true;
+    // CY6: admitted under its own context, and admitted again after every await, against focus
+    // and context as they are then: anything moved, and it is refused alone.
+    const focus = this.#focused;
+    const admitted = () =>
+      this.#focused?.fieldId === focus?.fieldId &&
+      this.#focused?.context === focus?.context &&
+      (contextId === undefined ||
+        contextId === this.#context.contextId ||
+        (relative && this.#focused !== null && this.#earlier.has(contextId)));
+    if (!admitted()) return false;
+    if (!focus) {
+      await action();
+      return true;
+    }
+    // Another composer's composition is closed by the command's own context, not the current one.
+    await this.#close(focus, contextId ?? this.#context.contextId, producer);
+    if (!admitted()) return false;
+    await this.#cdp.send("Runtime.evaluate", {
+      contextId: focus.context,
+      expression: "globalThis.editingOwner?.beginInput()",
+      silent: true,
+    });
+    try {
+      if (!admitted()) return false;
+      await action();
+      return true;
+    } finally {
+      await this.#finishInput(focus.context);
+    }
   }
 
   async input<T>(action: () => Promise<T>, producer?: string): Promise<T> {
