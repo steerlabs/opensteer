@@ -49,7 +49,7 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   private val selection = RemoteInputSelection()
   /** A text change outside the gate: one input after it has settled, its caret part of it (CW4). */
   private val outside = RemoteInputOutsideEdit {
-    gate.notify(mapOf("type" to "input", "inputType" to "insertReplacementText", "composing" to composing(), "proxy" to snapshot()))
+    gate.reserve { mapOf("type" to "input", "inputType" to "insertReplacementText", "composing" to composing(), "proxy" to snapshot()) }
   }
   private val touch = RemoteInputTouch(ViewConfiguration.getLongPressTimeout().toLong(), ViewConfiguration.get(context).scaledTouchSlop.toFloat())
   private val longPress = Runnable { if (touch.longPress(android.os.SystemClock.uptimeMillis()) != null) offerPaste() }
@@ -117,7 +117,8 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     if (action in refusedAccessibilityActions) return false
     // CW4: an accessibility set-text goes through the gate whole: its text and the caret it puts
     // at the end are one edit, sent with a beforeinput like any other.
-    if (action == AccessibilityNodeInfo.ACTION_SET_TEXT && isEnabled) {
+    // CY10: only where the field is editable, as a person's typing is.
+    if (action == AccessibilityNodeInfo.ACTION_SET_TEXT && isEditable()) {
       val text = arguments?.getCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE)?.toString() ?: ""
       change("insertReplacementText", text) { super.performAccessibilityAction(action, arguments) }
       return true
@@ -214,8 +215,9 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   override fun onSelectionChanged(start: Int, end: Int) {
     super.onSelectionChanged(start, end)
     if (!initialized) return
-    // The caret an outside change moves is that change's: kept, and carried by its input.
-    if (outside.ownsSelection()) {
+    // The caret an outside change moves is that change's: kept, and carried by its input. A gate
+    // turn's own selection is that turn's, reported as ever (CY10).
+    if (outside.ownsSelection(inTurn = gate.inTurn || mutating)) {
       selection.changed(start, end, inGateTurn = true, mutating = true)
       return
     }
@@ -313,11 +315,22 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
     // Android owns Back/system keys, and Meta shortcuts remain available to the app.
     if (event.keyCode == KeyEvent.KEYCODE_BACK || (event.isMetaPressed && event.action != KeyEvent.ACTION_UP)) return super.dispatchKeyEvent(event)
-    // CW4: a multi-character key event types its characters through the gate, whole.
+    // CW4, CY10: a multiple key event goes through the gate, whole: its characters typed as one
+    // insertion, or a key repeated as each press in turn. The event is copied before it waits:
+    // the framework may recycle it once this returns.
     @Suppress("DEPRECATION")
-    if (event.action == KeyEvent.ACTION_MULTIPLE && event.keyCode == KeyEvent.KEYCODE_UNKNOWN && event.characters != null) {
-      val characters = event.characters
-      change("insertText", characters) { super.dispatchKeyEvent(event) }
+    if (event.action == KeyEvent.ACTION_MULTIPLE) {
+      when (val multiple = RemoteInputMultipleKey.of(event.keyCode == KeyEvent.KEYCODE_UNKNOWN, event.repeatCount, event.characters)) {
+        is RemoteInputMultipleKey.Insert -> {
+          val retained = KeyEvent(event)
+          change("insertText", multiple.text) { super.dispatchKeyEvent(retained) }
+        }
+        is RemoteInputMultipleKey.Presses -> repeat(multiple.count) {
+          for (action in listOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP))
+            dispatchKeyEvent(KeyEvent(event.downTime, event.eventTime, action, event.keyCode, 0, event.metaState, event.deviceId, event.scanCode, event.flags, event.source))
+        }
+        RemoteInputMultipleKey.Nothing -> {}
+      }
       return true
     }
     if (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_UP) return super.dispatchKeyEvent(event)

@@ -7,30 +7,32 @@ package com.opensteer.remotetextinput
  * than once for one change: setText puts it at the start, an accessibility set-text then at the
  * end) is part of it, never a selection report of its own, never undone. The known sources (an
  * accessibility set-text, a multi-character key) go through the gate whole instead.
+ *
+ * CY10: it takes its place in the gate's order when it arrives (`reserve`, the gate's), so nothing
+ * typed after it can go before it; and it owns only the selection changes made outside a gate
+ * turn while it settles, never another edit's.
  */
-internal class RemoteInputOutsideEdit(private val send: () -> Unit) {
-  var active = false
-    private set
+internal class RemoteInputOutsideEdit(private val reserve: () -> (() -> Unit)) {
+  private var give: (() -> Unit)? = null
 
   /** The text is about to change; `byGate`: in a gate turn or the view's own apply. */
   fun changing(byGate: Boolean) {
-    if (!byGate) active = true
+    if (!byGate && give == null) give = reserve()
   }
 
-  /** A selection change now belongs to the outside change: carried by its input, not reported. */
-  fun ownsSelection(): Boolean = active
+  /** Whether a selection change belongs to the outside change: carried by its input, not reported. */
+  fun ownsSelection(inTurn: Boolean): Boolean = give != null && !inTurn
 
   /**
    * The text changed. `later` runs its argument after the current call stack (the view's post),
    * when whatever set the selection for the same change has run too.
    */
   fun changed(byGate: Boolean, later: (() -> Unit) -> Unit) {
-    if (byGate || !active) return
+    if (byGate || give == null) return
     later {
-      if (active) {
-        active = false
-        send()
-      }
+      val given = give ?: return@later
+      give = null
+      given()
     }
   }
 }
