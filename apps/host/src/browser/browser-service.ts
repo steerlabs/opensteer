@@ -913,6 +913,7 @@ export class BrowserService {
     Map<BrowserSurfaceId, { fence?: Promise<void>; initial: Promise<void> }>
   >();
   readonly #brokers = new Map<BrowserSessionId, HostedBrowserBroker>();
+  readonly #sessionAccessChecks = new Map<string, Promise<boolean>>();
   readonly #personUseGroups = new Map<
     BrowserSessionId,
     {
@@ -6612,9 +6613,9 @@ export class BrowserService {
         throw new OpensteerError({ code: "forbidden", message: "Browser access ended." });
       }
       // Access can end without a login ending, as when a person leaves the
-      // personal inventory; the outlet rereads it on a clock rather than per frame.
-      const stillVisible = async () =>
-        Boolean(await this.#repository.getBrowserSessionForOwner(sessionId, ownerId));
+      // personal inventory; the outlet rereads it on a clock rather than per frame,
+      // coalesced across viewers of the same (session, owner) scope.
+      const stillVisible = () => this.#checkSessionAccess(sessionId, ownerId);
       return await broker.attach(
         peer,
         options.mode,
@@ -6635,6 +6636,25 @@ export class BrowserService {
       detachAuth();
       throw error;
     }
+  }
+
+  /**
+   * Coalesces concurrent in-flight viewer access checks for the same
+   * `(sessionId, ownerId)` scope so simultaneous polls share one database read
+   * without extending revocation latency or retaining entries after settlement.
+   */
+  #checkSessionAccess(sessionId: BrowserSessionId, ownerId: UserId): Promise<boolean> {
+    const key = `${sessionId}:${ownerId}`;
+    const inflight = this.#sessionAccessChecks.get(key);
+    if (inflight) return inflight;
+    const promise = this.#repository
+      .getBrowserSessionForOwner(sessionId, ownerId)
+      .then((session) => Boolean(session))
+      .finally(() => {
+        if (this.#sessionAccessChecks.get(key) === promise) this.#sessionAccessChecks.delete(key);
+      });
+    this.#sessionAccessChecks.set(key, promise);
+    return promise;
   }
 
   /**

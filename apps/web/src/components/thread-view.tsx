@@ -296,6 +296,9 @@ function ThreadView({
   } | null>(null);
   // A reading position being restored: its row is put back as the rows around it lay out.
   const restoring = useRef<ReadingAnchor | null>(null);
+  // Anchor row keys and message IDs held mounted across virtualized restores and earlier prepends.
+  const [pinnedRowKeys, setPinnedRowKeys] = useState<readonly string[]>([]);
+  const [pinnedMessageIds, setPinnedMessageIds] = useState<readonly string[]>([]);
   const earlierFocus = useRef<{ button: HTMLElement; scroller: HTMLElement } | null>(null);
   const earlierMotion = useRef<Animation | null>(null);
   useEffect(() => () => earlierMotion.current?.cancel(), []);
@@ -531,6 +534,9 @@ function ThreadView({
       scroller.scrollTop = saved.scrollTop;
       // The row the reader stood on, not the pixel: rows above it may measure differently now.
       restoring.current = saved.anchor;
+      if (saved.anchor) {
+        setPinnedRowKeys([saved.anchor.key, ...(saved.anchor.neighbours ?? [])]);
+      }
       restoreReading();
     }
     return () => {
@@ -565,6 +571,11 @@ function ThreadView({
     );
     if (row === null) return;
     if (row === "latest") {
+      // With virtualization, a surviving anchor row may not be mounted until its pin commits.
+      const items = rowItems();
+      if (items.has(anchor.key) || (anchor.neighbours ?? []).some((key) => items.has(key))) {
+        return;
+      }
       setFollows(true);
       keepTailInView();
       return;
@@ -583,7 +594,9 @@ function ThreadView({
       (element): element is HTMLDivElement => element !== null,
     );
     const stop = () => {
+      moves.current += 1;
       restoring.current = null;
+      setPinnedRowKeys((current) => (current.length === 0 ? current : []));
     };
     const events = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
     for (const scroller of scrollers)
@@ -599,6 +612,7 @@ function ThreadView({
     setAtTail(follows);
     if (!follows) return;
     restoring.current = null;
+    setPinnedRowKeys((current) => (current.length === 0 ? current : []));
     seenSequenceRef.current = observed;
     setPendingUpdates(0);
   };
@@ -705,6 +719,7 @@ function ThreadView({
     reading.current = null;
     if (tailRef.current.follows || !measured) return;
     restoring.current = measured;
+    setPinnedRowKeys([measured.key, ...(measured.neighbours ?? [])]);
     restoreReading();
   }, [cuts]);
   useLayoutEffect(() => {
@@ -776,6 +791,8 @@ function ThreadView({
     if (element) scroller.scrollTop += element.getBoundingClientRect().top - top;
     if (loadingEarlier) return;
     earlierAnchor.current = null;
+    setPinnedRowKeys((current) => (current.length === 0 ? current : []));
+    setPinnedMessageIds((current) => (current.length === 0 ? current : []));
     if (!element) return;
     const rows = [...scroller.querySelectorAll<HTMLElement>("[data-transcript-row]:not(:empty)")];
     const newestEarlier = rows.findLast(
@@ -833,11 +850,13 @@ function ThreadView({
     const anchor = anchorMessage ?? anchorRow;
     const button = scroller?.querySelector<HTMLElement>(".transcript__load-earlier") ?? null;
     earlierMotion.current?.cancel();
-    if (scroller)
+    if (scroller) {
+      const anchorKey = anchorRow?.dataset.transcriptRow ?? null;
+      const anchorMsgId = anchorMessage?.dataset.messageId ?? null;
       earlierAnchor.current = {
         scroller,
-        key: anchorRow?.dataset.transcriptRow ?? null,
-        messageId: anchorMessage?.dataset.messageId ?? null,
+        key: anchorKey,
+        messageId: anchorMsgId,
         top: anchor?.getBoundingClientRect().top ?? top,
         rows: new Set(
           [...scroller.querySelectorAll<HTMLElement>("[data-transcript-row]:not(:empty)")].map(
@@ -845,6 +864,9 @@ function ThreadView({
           ),
         ),
       };
+      if (anchorKey) setPinnedRowKeys([anchorKey]);
+      if (anchorMsgId) setPinnedMessageIds([anchorMsgId]);
+    }
     if (scroller && button && document.activeElement === button)
       earlierFocus.current = { button, scroller };
     setFollows(false);
@@ -896,6 +918,15 @@ function ThreadView({
         target.classList.add("transcript__found");
         window.setTimeout(() => target.classList.remove("transcript__found"), 2400);
       }
+      const { messageId, move } = pendingReveal;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (move !== moves.current) return;
+          currentScroller()
+            ?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`)
+            ?.scrollIntoView({ block: "center" });
+        });
+      });
     }
     hostClient.revealedTranscriptMove(thread.id);
     setPendingReveal(null);
@@ -1128,6 +1159,26 @@ function ThreadView({
   const computers = useMemo(
     () => ({ hostClient, machines: snapshot.machines }),
     [hostClient, snapshot.machines],
+  );
+  // Narrow reader so unrelated snapshot changes (tabs, machines, browserUses) do not
+  // broadcast to every subagent card in the transcript.
+  const subagentReader = useMemo(
+    () => ({
+      assignments: snapshot.assignments,
+      connection: snapshot.connection,
+      environments: snapshot.environments,
+      network: snapshot.network,
+      threads: snapshot.threads,
+      waitingRequests: snapshot.waitingRequests,
+    }),
+    [
+      snapshot.assignments,
+      snapshot.connection,
+      snapshot.environments,
+      snapshot.network,
+      snapshot.threads,
+      snapshot.waitingRequests,
+    ],
   );
   // What the jump button says while the reader is away from a turn at work on
   // their Mac: that is where its Stop is. Only asked while they are away, so a
@@ -1415,6 +1466,9 @@ function ThreadView({
                         <SessionActivity view={sessionView} />
                       ) : (
                         <AgentTranscript
+                          followTail={atTail && !historical}
+                          pinnedMessageIds={pinnedMessageIds}
+                          pinnedRowKeys={pinnedRowKeys}
                           revealMessage={revealMessage}
                           scroller={transcriptScroller}
                           key={thread.id}
@@ -1471,7 +1525,7 @@ function ThreadView({
                           renderTask={(entries) => <TaskRows entries={entries} />}
                           requestShown={dockedRequests.length > 0}
                           startHold={startHold}
-                          subagentReader={snapshot}
+                          subagentReader={subagentReader}
                           threadId={thread.id}
                           viewerUserId={snapshot.user?.id ?? null}
                         />

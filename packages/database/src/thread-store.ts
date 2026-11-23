@@ -123,7 +123,7 @@ import {
 import { boundedSerializedPrefix } from "./message-window.js";
 import { republishPendingRequestsShowing } from "./personal-attention-store.js";
 import {
-  assignmentSummaryInTransaction,
+  assignmentSummariesInTransaction,
   refreshAssignmentWorkerSummaries,
   lockThreadNameDestinations,
   type CancelAssignmentInput,
@@ -802,8 +802,9 @@ export async function listThreadAssignmentsForOwner(
           .execute(),
         base.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
       ]);
-      const candidates = await Promise.all(
-        rows.slice(0, maxItems).map((row) => assignmentSummaryInTransaction(transaction, row)),
+      const candidates = await assignmentSummariesInTransaction(
+        transaction,
+        rows.slice(0, maxItems),
       );
       const window = boundedSerializedPrefix(candidates, maxItems, maxBytes);
       if (rows.length > 0 && window.items.length === 0) {
