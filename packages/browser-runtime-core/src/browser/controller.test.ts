@@ -2602,7 +2602,8 @@ describe("BrowserController", () => {
         expect(ledger.binding(surfaceId)?.surface.loading).toBe(loading);
         expect(retainRendering).toHaveBeenCalledTimes(3);
         expect(holds).toBe(1);
-        expect(vi.getTimerCount()).toBe(0);
+        // The paint backoff timer is gone; only the running cast's first-frame timer remains.
+        expect(vi.getTimerCount()).toBe(1);
         page.cdpSession.emit("Page.screencastFrame", {
           sessionId: 1,
           data: jpeg(1280, 720).toString("base64"),
@@ -2610,6 +2611,7 @@ describe("BrowserController", () => {
         });
         await flushMicrotasks();
         expect(sink.frames).toHaveLength(1);
+        expect(vi.getTimerCount()).toBe(0);
         await controller.handle({ type: "stream.unsubscribe" });
         expect(holds).toBe(0);
       } finally {
