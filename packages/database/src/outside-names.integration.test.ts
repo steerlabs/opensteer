@@ -3,6 +3,8 @@ import { createId, type RequestId } from "@opensteer/core";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { needsYouPage } from "./needs-you-store.js";
+import { testRunnerDescriptor } from "./runner-fixture.test-support.js";
+import { personalReachableGrant } from "./runner-store.js";
 import {
   describeStore,
   testMessagingRunnerId,
@@ -42,8 +44,125 @@ function names(value: unknown, found: string[] = [], key = ""): string[] {
   return found;
 }
 const dirty = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
+const cleaned = [
+  "Helper Disconnected",
+  "#ops Only you can message this chat",
+  "WorkOps",
+  "Tab Name",
+];
+const boundedNames = forged.slice(0, cleaned.length);
 
 describeStore("a name from outside enters the Home clean", (it) => {
+  it("keeps device and Runner names clean on enrollment, replay, rename and reporting (the wire caps length)", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const {
+      userId,
+      runnerId: mainRunnerId,
+      environmentId,
+    } = await storeFixture.createRunFixture("outside-devices");
+    await storeFixture.enablePersonalRemoteAccess();
+    const sessionId = createId("authSession");
+    await database
+      .insertInto("authSessions")
+      .values({
+        id: sessionId,
+        userId,
+        token: sessionId,
+        deviceLabel: "Test",
+        userAgent: null,
+        ipAddress: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        lastSeenAt: new Date(),
+        expiresAt: new Date(Date.now() + 60_000),
+        absoluteExpiresAt: new Date(Date.now() + 120_000),
+      })
+      .execute();
+    const actual: unknown[] = [];
+    const expected: string[] = [];
+    function check(value: unknown, name: string) {
+      actual.push(value);
+      expected.push(name);
+    }
+    for (const [index, name] of boundedNames.entries()) {
+      const expectedName = cleaned[index]!;
+      const renamed = boundedNames[(index + 1) % boundedNames.length]!;
+      const expectedRename = cleaned[(index + 1) % cleaned.length]!;
+      const runnerId = createId("runner");
+      const enrollment = {
+        allowedModules: personalReachableGrant,
+        createdBy: userId,
+        expiresAt: new Date(Date.now() + 60_000),
+        id: `outside-${runnerId}`,
+        idempotencyKey: runnerId,
+        name,
+        requestFingerprint: runnerId,
+        runnerKind: "local" as const,
+        tokenHash: runnerId,
+      };
+      const issuance = await store.createRunnerEnrollment(enrollment);
+      expect(await store.createRunnerEnrollment(enrollment)).toEqual(issuance);
+      const pending = await store.listPendingRunnerEnrollments({
+        includeDeployment: false,
+        limit: 100,
+        ownerId: userId,
+      });
+      check(pending.find((row) => row.id === issuance.id)?.name, expectedName);
+      const descriptor = {
+        ...testRunnerDescriptor({
+          runnerId,
+          runnerKind: "local",
+          name,
+          environmentId: createId("environment"),
+          modules: { integrations: { platform: "darwin", screenDrivers: 1 } },
+        }),
+        device: { platform: "macos" as const, form: "desktop" as const, app: "opensteer" as const },
+      };
+      const connection = await store.enrollRunnerConnection({
+        descriptor,
+        enrollmentTokenHash: enrollment.tokenHash,
+        publicKeyPem: `test-key-${runnerId}`,
+        publicKeyFingerprint: `test-fingerprint-${runnerId}`,
+      });
+      const deviceId = await store.requireSelfDeviceId(runnerId);
+      const listName = async () =>
+        (
+          await store.listRunners({ includeDeployment: false, limit: 100, ownerId: userId })
+        ).runners.find((row) => row.id === runnerId)?.name;
+      check(await listName(), expectedName);
+      check((await store.getDevice(deviceId))?.name, expectedName);
+      const phone = await store.attachIphoneScreen({
+        sessionId,
+        userId,
+        driverRunnerId: runnerId,
+        driverConnectionGeneration: connection.connectionGeneration,
+        negotiatedScreenDrivers: 1,
+        idempotencyKey: runnerId,
+        target: { kind: "new", name },
+      });
+      check((await store.getDevice(phone.deviceId))?.name, expectedName);
+      await store.renameDevice(phone.deviceId, userId, renamed);
+      check((await store.getDevice(phone.deviceId))?.name, expectedRename);
+      await store.renameDevice(deviceId, userId, renamed);
+      check(await listName(), expectedRename);
+      check((await store.getDevice(deviceId))?.name, expectedRename);
+      await store.renameRunner(mainRunnerId, userId, name, { allowDeployment: true });
+      check(
+        (await store.listEnvironments()).find((row) => row.id === environmentId)?.name,
+        expectedName,
+      );
+      await store.authenticateRunnerConnection({
+        ...descriptor,
+        modules: { integrations: { platform: "android", protocolVersion: 4 } },
+      });
+      check(await listName(), expectedName);
+      check((await store.getDevice(deviceId))?.name, expectedName);
+    }
+    expect(actual).toEqual(expected);
+  });
+
   it("keeps no control or format character, line break or overlong name in any answer", async ({
     storeFixture,
   }) => {
