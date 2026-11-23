@@ -217,11 +217,11 @@ export function agentWords(
 /**
  * How the safety mode reads where a connection's mode is chosen. Task composers keep
  * `accessModeOptions`; these say what the mode means for an agent's own direct actions too.
- * Auto-accept edits behaves like Supervised for those.
+ * Auto-accept edits and Auto behave like Supervised for those: each asks you before a change.
  */
 export const connectionModeDescriptions: Readonly<Record<ThreadAccessMode, string>> = {
   "approval-required": "Asks you before anything that changes something.",
   "auto-accept-edits": "Edits files in its tasks without asking. Asks before anything else.",
-  auto: "Opensteer checks each action and asks you when it isn’t sure.",
+  auto: "Its tasks run under the engine’s own safety check. Its own direct actions ask you before anything that changes something.",
   "full-access": "Never asks. Only for an agent you trust completely.",
 };

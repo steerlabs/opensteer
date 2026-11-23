@@ -21,12 +21,10 @@ import {
   NotificationStore,
   installBrowserPoolSlot,
   agentOperationRequestLifetimeMs,
-  decideAgentOperation,
   listAgentOperations,
   needsYouPage,
   readTranscriptItem,
   readBrowserPoolSlot,
-  reopenAgentOperation,
 } from "@opensteer/database";
 import { createStoreFixture, describeStore } from "@opensteer/database/test-support/store";
 import { expect, vi } from "vitest";
@@ -50,11 +48,7 @@ import {
   lastService,
 } from "../mcp/connection-caller.test-support.js";
 import type { TabServicePort } from "../tabs/ports.js";
-import {
-  AgentSessionService,
-  OperationOutcomeUnknown,
-  type AgentReviewerPort,
-} from "./agent-session-service.js";
+import { AgentSessionService, OperationOutcomeUnknown } from "./agent-session-service.js";
 
 type Fixture = Awaited<ReturnType<typeof createStoreFixture>>;
 const profile = createId("browserProfile") as BrowserProfileId;
@@ -113,8 +107,6 @@ async function setUp(
   options: {
     readonly accessMode?: ThreadAccessMode;
     readonly grant?: AgentGrant;
-    readonly reviewer?: AgentReviewerPort;
-    readonly reviewTimeoutMs?: number;
     readonly run?: Awaited<ReturnType<Fixture["startRunFixture"]>>;
     readonly browserConnect?: Pick<BrowserToolPorts, "issueTicket"> &
       Pick<BrowserToolPorts["tabs"], "open" | "bindBrowserScript">;
@@ -126,8 +118,6 @@ async function setUp(
   const sessions = new AgentSessionService({
     store: storeFixture.store,
     holdMs: 0,
-    ...(options.reviewer ? { reviewer: options.reviewer } : {}),
-    ...(options.reviewTimeoutMs !== undefined ? { reviewTimeoutMs: options.reviewTimeoutMs } : {}),
   });
   const unexpectedTabOperation = () => {
     throw new Error("This fixture runs scripts by profile ID.");
@@ -523,72 +513,6 @@ describeStore("an external agent's direct work through sessions", (it) => {
       gate.set({ hold: null });
       expect(gate.held).toBe(0);
     });
-
-  it("asks the person when the reviewer never returns or observes cancellation", async ({
-    storeFixture,
-  }) => {
-    const answer = Promise.withResolvers<"allow">();
-    const review = vi.fn(() => answer.promise);
-    const s = await setUp(storeFixture, "session-review-timeout", {
-      accessMode: "auto",
-      reviewer: { review },
-      reviewTimeoutMs: 25,
-    });
-    try {
-      expect(await s.ok("browser_use", script)).toMatchObject({
-        status: "pending",
-        requestId: expect.any(String),
-      });
-      expect(review).toHaveBeenCalledOnce();
-      expect(s.runBrowserScript).not.toHaveBeenCalled();
-    } finally {
-      answer.resolve("allow");
-    }
-  });
-
-  it.for(["revision", "mode", "generation"] as const)(
-    "rejects a late Auto review after the %s changes",
-    async (changed, { storeFixture }) => {
-      const entered = Promise.withResolvers<void>();
-      const answer = Promise.withResolvers<"allow">();
-      const review = vi
-        .fn<AgentReviewerPort["review"]>()
-        .mockImplementationOnce(() => {
-          entered.resolve();
-          return answer.promise;
-        })
-        .mockResolvedValue("ask");
-      const s = await setUp(storeFixture, "session-review-cas", {
-        accessMode: "auto",
-        reviewer: { review },
-      });
-      const running = s.ok("browser_use", script);
-      try {
-        await entered.promise;
-        const old = await storeFixture.database
-          .selectFrom("agentOperations")
-          .selectAll()
-          .where("connectionId", "=", s.agent.id)
-          .executeTakeFirstOrThrow();
-        const approved = await decideAgentOperation(storeFixture.database, old, { by: "reviewer" });
-        const facts = {
-          ...old,
-          ...(changed === "revision" ? { grantRevision: old.grantRevision + 1 } : {}),
-          ...(changed === "mode" ? { mode: "approval-required" as const } : {}),
-          ...(changed === "generation" ? { targetGeneration: "replacement" } : {}),
-        };
-        const newRound = await reopenAgentOperation(storeFixture.database, approved, facts);
-        expect(newRound).toMatchObject({ state: "admitted", decision: null });
-        expect(
-          await decideAgentOperation(storeFixture.database, old, { by: "reviewer" }),
-        ).toMatchObject({ state: "admitted", decision: null });
-        expect(s.runBrowserScript).not.toHaveBeenCalled();
-      } finally {
-        answer.resolve("allow");
-        await running.catch(() => undefined);
-      }
-    },
-  );
 
   it("starts a session on the first direct call, continues it across transports, and refuses input to its task", async ({
     storeFixture,

@@ -196,9 +196,9 @@ Each call is one reviewed **operation** of an **agent session**:
   one. Every result carries it.
 - An operation (`agent_operations`) is written before review or dispatch. It records the caller,
   an operation key and id, a digest of the arguments, the concrete target and its generation, the
-  grant revision, the effective mode, who decided (`structural-read`, `full-access`, `reviewer`,
-  `person`, `refused`), the hand-off time and the outcome: `completed`, `failed`, `refused` or
-  `unknown`.
+  grant revision, the effective mode, who decided (`structural-read`, `full-access`, `person`,
+  `refused`; a past `reviewer` decision stays readable as recorded), the hand-off time and the
+  outcome: `completed`, `failed`, `refused` or `unknown`.
 
 ### The guarantees
 

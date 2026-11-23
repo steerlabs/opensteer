@@ -7,7 +7,6 @@ import {
   refused,
   requestOperationCallsMaxLength,
   threadAccessModeAtMost,
-  type AgentGrant,
   type AgentOperationDecision,
   type AgentOperationId,
   type AgentOperationTarget,
@@ -27,6 +26,7 @@ import {
   askForAgentOperation,
   beginAgentSession,
   decideAgentOperation,
+  type AgentOperationWrittenDecision,
   endAgentSessions,
   expireAgentOperationRequests,
   findAgentOperation,
@@ -46,33 +46,10 @@ import {
   type OpensteerStore,
 } from "@opensteer/database";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import { DeadlineDrain } from "../runtime/deadline-drain.js";
 import { ReplFailureSchema, type ReplFailure } from "../computer-use/computer-repl/messages.js";
 import type { BrowserPoolReservation } from "../browser/browser-pool-gate.js";
 
-/**
- * Decides an effect in `auto`: allow it, or ask the person. It sees the grant, the mode, the
- * trusted target, the exact script or calls, and the agent's reason marked as untrusted. It never
- * refuses on its own; doubt, an error, a timeout or a malformed answer means ask.
- */
-export interface AgentReviewerPort {
-  review(
-    input: {
-      readonly ownerUserId: UserId;
-      readonly grant: AgentGrant;
-      readonly mode: ThreadAccessMode;
-      readonly tool: string;
-      readonly target: AgentOperationTarget;
-      readonly calls: string;
-      readonly agentReason: { readonly untrusted: true; readonly text: string } | null;
-    },
-    signal: AbortSignal,
-  ): Promise<"allow" | "ask">;
-}
-/** The Home's reviewer: in `auto`, a connected agent's direct effect asks the person. */
-export const alwaysAskReviewer: AgentReviewerPort = { review: async () => "ask" };
-export const reviewerTimeoutMs = 15_000;
 /** How long one executor call may take before its signal aborts. */
 const defaultExecutionMs = 120_000;
 
@@ -273,7 +250,6 @@ export function operationArgumentDigest(tool: string, input: unknown): string {
 
 export class AgentSessionService {
   readonly #store: OpensteerStore;
-  readonly #reviewer: AgentReviewerPort;
   readonly #closeBinding: (bindingId: string, reason: string) => void;
   readonly #onError: (error: unknown) => void;
   /** One controller per session with work in this process; aborted when the session ends. */
@@ -294,24 +270,19 @@ export class AgentSessionService {
   >();
   readonly #decisions = new EventEmitter();
   readonly #holdMs: number;
-  readonly #reviewTimeoutMs: number;
   readonly #sweeper: DeadlineDrain;
   #sweeping = false;
 
   constructor(options: {
     readonly store: OpensteerStore;
-    readonly reviewer?: AgentReviewerPort;
     /** Closes what holds a binding open elsewhere, such as a standard CDP attachment. */
     readonly closeBinding?: (bindingId: string, reason: string) => void;
     readonly onError?: (error: unknown) => void;
     /** How long a call waits for the person's decision before it returns pending. */
     readonly holdMs?: number;
-    readonly reviewTimeoutMs?: number;
   }) {
     this.#store = options.store;
     this.#holdMs = options.holdMs ?? agentOperationHoldMs;
-    this.#reviewTimeoutMs = options.reviewTimeoutMs ?? reviewerTimeoutMs;
-    this.#reviewer = options.reviewer ?? alwaysAskReviewer;
     this.#closeBinding = options.closeBinding ?? (() => {});
     this.#onError = options.onError ?? (() => {});
     this.#decisions.setMaxListeners(0);
@@ -605,7 +576,7 @@ export class AgentSessionService {
           return { status: "unknown", ...base, next: unknownNext };
         }
         case "admitted":
-          row = await this.#decide(operation, row, taskId, execution);
+          row = await this.#decide(operation, row, taskId);
           break;
         case "pending": {
           const decided = await this.#wait(row);
@@ -624,15 +595,13 @@ export class AgentSessionService {
     operation: DirectOperation<Result>,
     row: AgentOperationRow,
     taskId: ThreadId,
-    execution: ExecutionAuthority,
   ): Promise<AgentOperationRow> {
-    const decide = (decision: AgentOperationDecision) =>
+    const decide = (decision: AgentOperationWrittenDecision) =>
       decideAgentOperation(this.#store.database, row, decision);
+    // Every other mode, Auto included, asks the person before an effect.
     if (!operation.question) {
       if (row.effect === "read") return decide({ by: "structural-read" });
       if (row.mode === "full-access") return decide({ by: "full-access" });
-      if (row.mode === "auto" && (await this.#review(row, execution)) === "allow")
-        return decide({ by: "reviewer" });
     }
     return askForAgentOperation(this.#store.database, this.#store.requests, {
       operation: row,
@@ -641,31 +610,6 @@ export class AgentSessionService {
       ...(operation.question ? { presentation: await operation.question(taskId) } : {}),
       copy: (agent) => directOperationCopy(row.tool, row.target, agent),
     });
-  }
-
-  async #review(row: AgentOperationRow, execution: ExecutionAuthority): Promise<"allow" | "ask"> {
-    const signal = AbortSignal.timeout(this.#reviewTimeoutMs);
-    try {
-      const answer = await withTimeout(
-        this.#reviewer.review(
-          {
-            ownerUserId: execution.ownerUserId,
-            grant: execution.agentConnection!.grant,
-            mode: row.mode,
-            tool: row.tool,
-            target: row.target,
-            calls: row.calls,
-            agentReason: row.agentReason ? { untrusted: true, text: row.agentReason } : null,
-          },
-          signal,
-        ),
-        this.#reviewTimeoutMs,
-        { signal, timeoutError: () => new Error("Agent review timed out") },
-      );
-      return answer === "allow" && !signal.aborted ? "allow" : "ask";
-    } catch {
-      return "ask";
-    }
   }
 
   /** Waits up to the hold for the person's decision, woken by `respond` after its commit. */

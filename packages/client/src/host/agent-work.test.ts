@@ -198,7 +198,7 @@ describe("one operation in a task's activity", () => {
     });
     expect(rows[2]).toMatchObject({
       action: "Ran a script on Travel on Studio Mac",
-      allowedBy: "Allowed by Auto",
+      allowedBy: "Allowed by you",
       outcome: { label: "Failed", tone: "bad" },
     });
   });
