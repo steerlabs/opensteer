@@ -1,4 +1,9 @@
-import { OpensteerError, type RequestId, type ThreadId } from "@opensteer/core";
+import {
+  OpensteerError,
+  type RequestId,
+  type ThreadAccessMode,
+  type ThreadId,
+} from "@opensteer/core";
 import {
   beginAgentSession,
   commandHolds,
@@ -9,7 +14,6 @@ import {
 } from "@opensteer/database";
 import { hostApi, type HostApiCommand } from "@opensteer/protocol";
 import {
-  commandFaceStep,
   commandFamilies,
   commandRow,
   commandTable,
@@ -22,6 +26,7 @@ import { z } from "zod";
 import { agentCommandDoor } from "../../commands/agent-door.js";
 import {
   agentCommandScope,
+  agentRunsNow,
   dispatchCommand,
   type AgentCommandOutcome,
 } from "../../commands/dispatch.js";
@@ -63,13 +68,10 @@ export class CommandTools {
   readonly #requests: () => CommandRequestService | undefined;
   readonly #administration: AdministrationToolHandlers;
   readonly #reads: () => Readonly<Record<string, unknown>> | undefined;
-  readonly #engines: ((caller: AgentCaller) => Promise<Record<string, unknown>>) | undefined;
   readonly #policy: (() => Promise<unknown>) | undefined;
   constructor(options: {
     /** The person's read handlers, as the Host registered them. */
     readonly reads?: () => Readonly<Record<string, unknown>> | undefined;
-    /** The engine accounts as the person's apps list them. */
-    readonly engines?: (caller: AgentCaller) => Promise<Record<string, unknown>>;
     /** The organization's effective policy on a work Home; nothing on a personal one. */
     readonly policy?: () => Promise<unknown>;
     readonly database: Kysely<DatabaseSchema>;
@@ -83,7 +85,6 @@ export class CommandTools {
     this.#requests = options.requests;
     this.#administration = options.administration;
     this.#reads = options.reads ?? (() => undefined);
-    this.#engines = options.engines;
     this.#policy = options.policy;
   }
 
@@ -93,7 +94,6 @@ export class CommandTools {
     const holder = await agentCommandScope(this.#database)(caller);
     if (holder === "gone") return [];
     const scope = holder?.scope ?? null;
-    const connection = scope ? { grant: scope } : null;
     return (Object.keys(commandTable) as CommandType[]).flatMap((type) => {
       const row = commandRow(type) as CommandRow;
       if (
@@ -104,30 +104,7 @@ export class CommandTools {
         })
       )
         return [];
-      const answers = new Set<"now" | "ask">();
-      row.faces.forEach((_, face) => {
-        for (const own of [true, false]) {
-          const rule = commandRule(row, face, {
-            connection,
-            mode: caller.accessMode,
-            reach: true,
-            ownWork: own,
-            ownLineage: own,
-          });
-          if (rule.answer === "not_found") continue;
-          const step = commandFaceStep(row, face, {
-            connection: connection !== null,
-            selected: scope === "selected",
-          });
-          // A `now` whose handler is still the person's waits for the person too.
-          answers.add(
-            rule.answer === "now" && step === "A" && this.#registry[type].accepts === "any"
-              ? "now"
-              : "ask",
-          );
-        }
-      });
-      const answer: Answer = answers.size === 2 ? "now or ask" : answers.has("now") ? "now" : "ask";
+      const { answer } = commandMark(type, { scope, mode: caller.accessMode }, this.#registry);
       return [{ type, family: row.family, title: commandTitles[type], answer }];
     });
   }
@@ -311,9 +288,18 @@ export class CommandTools {
           view: { machines: machines.filter(({ id }) => devices.has(id)) },
         };
       }
-      case "engines":
+      case "engines": {
         if (scope === "selected") throw notFound();
-        return { area: input.area, view: (await this.#engines?.(caller)) ?? {} };
+        // The person's own read of their engine accounts, the snapshot's `harness` resource;
+        // cut to leave out `config`, the source fields the person typed for an engine.
+        // A page of the snapshot's resource: its rows under `data`.
+        const view = await read("resources.detail.get", { kind: "harness" });
+        const page = (view.data ?? {}) as {
+          readonly harnesses?: readonly Record<string, unknown>[];
+        };
+        const harnesses = (page.harnesses ?? []).map(({ config: _config, ...harness }) => harness);
+        return { area: input.area, view: { harnesses } };
+      }
       case "requests": {
         const view = await read("requests.list", {});
         // Each item as the person's Needs you list holds it: the Request, and how it is shown.
@@ -484,6 +470,54 @@ function dropPath(node: unknown, path: readonly string[]): void {
     return;
   }
   dropPath(properties[path[0]!], path.slice(1));
+}
+
+/** Why a listed command asks the person: by the rule, or because no agent handler exists yet. */
+export type CommandAskReason = "by rule" | "no agent handler yet";
+
+/**
+ * How the listing marks one command for a caller: what dispatch will do, over its faces and over
+ * a thing in and outside its own lineage. A `now` of the rule whose handler is still the
+ * person's asks too, for its own reason, so a later step that adds the handler flips only that.
+ */
+export function commandMark(
+  type: CommandType,
+  caller: { readonly scope: "everything" | "selected" | null; readonly mode: ThreadAccessMode },
+  registry: CommandRegistry,
+  face?: number,
+): { readonly answer: Answer; readonly asks: readonly CommandAskReason[] } {
+  const row = commandRow(type) as CommandRow;
+  const connection = caller.scope ? { grant: caller.scope } : null;
+  const answers = new Set<"now" | "ask">();
+  const asks = new Set<CommandAskReason>();
+  row.faces.forEach((_, index) => {
+    if (face !== undefined && index !== face) return;
+    for (const own of [true, false]) {
+      const rule = commandRule(row, index, {
+        connection,
+        mode: caller.mode,
+        reach: true,
+        ownWork: own,
+        ownLineage: own,
+      });
+      if (rule.answer === "not_found") continue;
+      if (rule.answer === "ask") {
+        answers.add("ask");
+        asks.add("by rule");
+        continue;
+      }
+      // The one predicate dispatch uses: a rule's `now` runs at once only where agents can.
+      if (agentRunsNow(row, index, registry[type], caller.scope)) answers.add("now");
+      else {
+        answers.add("ask");
+        asks.add("no agent handler yet");
+      }
+    }
+  });
+  return {
+    answer: answers.size === 2 ? "now or ask" : answers.has("now") ? "now" : "ask",
+    asks: [...asks],
+  };
 }
 
 /** What the door's answer reads as to the tool's caller. */

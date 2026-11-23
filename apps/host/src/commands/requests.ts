@@ -15,7 +15,6 @@ import {
 } from "@opensteer/core";
 import {
   admitCommand,
-  commandRequestLifetimeMs,
   commandSubject,
   type CommandRequestOrigin,
   type CommandRequestStore,
@@ -112,7 +111,6 @@ export type CommandProposed =
       readonly existing: boolean;
     }
   | { readonly status: "declined"; readonly requestId: RequestId }
-  | { readonly status: "expired"; readonly requestId: RequestId }
   | { readonly status: "withdrawn"; readonly requestId: RequestId }
   /** Closed without an answer: the agent could no longer ask for it, or its task ended. */
   | { readonly status: "closed"; readonly requestId: RequestId }
@@ -125,7 +123,6 @@ export type CommandProposed =
 
 /** The form field an app without the command part answers; whatever it sends declines. */
 export const commandDecisionFieldId = "decision";
-const approvingNeedsAnUpdatedApp = "Approving this needs an up-to-date Opensteer app.";
 const maxResultBytes = 64 * 1_024;
 /** A name inside the Home's sentence is cut, so the sentence itself always fits whole. */
 const maxNameLength = 80;
@@ -157,18 +154,14 @@ export class CommandRequestService {
   readonly #store: CommandRequestStore;
   readonly #database: Kysely<DatabaseSchema>;
   readonly #requests: { get(id: RequestId): Promise<Request | null> };
-  readonly #expiry: CommandRequestExpiry | undefined;
   constructor(options: {
     readonly store: CommandRequestStore;
     readonly database: Kysely<DatabaseSchema>;
     readonly requests: { get(id: RequestId): Promise<Request | null> };
-    /** The one timer for the earliest open ask's end; armed as asks open. */
-    readonly expiry?: CommandRequestExpiry;
   }) {
     this.#store = options.store;
     this.#database = options.database;
     this.#requests = options.requests;
-    this.#expiry = options.expiry;
   }
 
   /** Opens the person's Request for a command the door put to the person. */
@@ -219,8 +212,6 @@ export class CommandRequestService {
       presentation: commandPresentation(part, named, asker),
     });
     if (opened.status !== "pending") return opened;
-    if (!opened.replayed)
-      this.#expiry?.arm(new Date(Date.parse(opened.request.createdAt) + commandRequestLifetimeMs));
     return { status: "pending", requestId: opened.request.id, existing: opened.replayed };
   }
 
@@ -503,7 +494,6 @@ export function commandPresentation(
     `As proposed: ${JSON.stringify(part.command)}`.slice(0, 4_000),
   ];
   if (part.gives) lines.push(part.gives);
-  lines.push(approvingNeedsAnUpdatedApp);
   if (part.agentReason)
     lines.push(`The agent's own reason (its words, not checked): ${part.agentReason}`);
   return {
@@ -514,7 +504,7 @@ export function commandPresentation(
     fields: [
       {
         id: commandDecisionFieldId,
-        prompt: "Decline it here, or approve it in an up-to-date Opensteer app.",
+        prompt: "Decline it here, or approve it on its own screen.",
         choices: [{ label: "Decline", value: "decline" }],
         custom: true,
         multiSelect: false,
@@ -522,54 +512,6 @@ export function commandPresentation(
       },
     ],
   };
-}
-
-/**
- * One timer for the earliest open ask's end, and none while none is open: an idle Home does no
- * periodic work for asks. Each pass expires what is due and arms for the next.
- */
-export class CommandRequestExpiry {
-  readonly #store: CommandRequestStore;
-  readonly #onError: (error: unknown) => void;
-  #timer: ReturnType<typeof setTimeout> | undefined;
-  #at: number | undefined;
-  #stopped = false;
-  constructor(store: CommandRequestStore, onError: (error: unknown) => void) {
-    this.#store = store;
-    this.#onError = onError;
-  }
-  /** Wakes at `at` unless an earlier wake is armed. */
-  arm(at: Date | null): void {
-    if (this.#stopped || at === null) return;
-    const when = at.getTime();
-    if (this.#at !== undefined && this.#at <= when) return;
-    if (this.#timer) clearTimeout(this.#timer);
-    this.#at = when;
-    // A timer holds at most about 24.8 days; an ask lives one.
-    this.#timer = setTimeout(() => void this.#pass(), Math.max(0, when - Date.now()));
-    this.#timer.unref?.();
-  }
-  /** Whether a wake is armed. */
-  get armed(): boolean {
-    return this.#timer !== undefined;
-  }
-  stop(): void {
-    this.#stopped = true;
-    if (this.#timer) clearTimeout(this.#timer);
-    this.#timer = undefined;
-  }
-  async #pass(): Promise<void> {
-    this.#timer = undefined;
-    this.#at = undefined;
-    try {
-      await this.#store.expire();
-      this.arm(await this.#store.nextExpiry());
-    } catch (error) {
-      this.#onError(error);
-      // A failed pass is tried again; it never leaves asks unexpired for good.
-      this.arm(new Date(Date.now() + 60_000));
-    }
-  }
 }
 
 function changesWhatWasAsked(): OpensteerError {

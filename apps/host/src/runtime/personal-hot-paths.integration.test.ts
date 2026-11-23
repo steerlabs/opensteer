@@ -261,8 +261,8 @@ it.skipIf(Boolean(reportPath))(
         ]),
       );
       close.unshift(() => host.close());
-      // Startup's one read for command Requests is served by its two partial indexes (a running
-      // approval, an open ask), never a scan of every Request the Home has ever had.
+      // Startup's one read for command Requests (an approval a restart cut off) is served by its
+      // partial index, never a scan of every Request the Home has ever had.
       const recovery = recorded["home startup"]!.find((statement) =>
         statement.includes("'running'"),
       );
@@ -276,7 +276,6 @@ it.skipIf(Boolean(reportPath))(
           .map((row: Record<string, string>) => row["QUERY PLAN"])
           .join("\n");
         expect(plan).toContain("requests_command_running");
-        expect(plan).toContain("requests_command_open");
         expect(plan).not.toContain("Seq Scan");
         await planner.query("rollback");
       } finally {

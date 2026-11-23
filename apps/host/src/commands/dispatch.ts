@@ -20,6 +20,7 @@ import {
 } from "@opensteer/protocol";
 import {
   commandAgentOutput,
+  commandFaceStep,
   commandRow,
   commandTable,
   type CommandAnsweredAsk,
@@ -54,7 +55,7 @@ export type AgentCommandOutcome =
   /** The person declined this ask within the last day: answered at once, nothing opened. */
   | { readonly status: "declined"; readonly requestId: string }
   /** The same call again, after its Request ended unapproved: what became of it. */
-  | { readonly status: "expired" | "withdrawn" | "closed"; readonly requestId: string }
+  | { readonly status: "withdrawn" | "closed"; readonly requestId: string }
   /** The same call again, after the person approved it: what it came to. */
   | {
       readonly status: "answered";
@@ -180,7 +181,11 @@ export async function dispatchCommand(
   if (admission.answer === "not_found") throw notFound();
   assertNoSecretPaths(row, command);
   const handler = door.registry[command.type] as CommandHandler<HostApiCommand["type"]>;
-  if (admission.answer === "now" && handler.accepts === "any") {
+  if (
+    admission.answer === "now" &&
+    handler.accepts === "any" &&
+    agentRunsNow(row, admission.face, handler, holder?.scope ?? null)
+  ) {
     const authority = commandAuthority(actor, command);
     const output = await handler.run(actor, command as never, { context: null, authority });
     return { status: "done", output: commandAgentOutput(command, output) };
@@ -201,6 +206,24 @@ export async function dispatchCommand(
   if (answers || !door.propose) return ask;
   const proposed = await door.propose(actor, command, ask, admission.face);
   return proposed.status === "pending" ? { ...proposed, reason: ask.reason } : proposed;
+}
+
+/**
+ * Whether a `now` of the rule runs at once for an agent: its face is built for agents (step A
+ * for this caller) and its handler is written for agents. Otherwise it waits for the person,
+ * "no agent handler yet". The listing marks a command with this same answer.
+ */
+export function agentRunsNow(
+  row: CommandRow,
+  face: number | undefined,
+  handler: { readonly accepts: string },
+  scope: "everything" | "selected" | null,
+): boolean {
+  if (handler.accepts !== "any") return false;
+  const caller = { connection: scope !== null, selected: scope === "selected" };
+  // Where only the store can tell the face, every face it may be must be built for agents.
+  const faces = face === undefined ? row.faces.map((_, index) => index) : [face];
+  return faces.every((index) => commandFaceStep(row, index, caller) === "A");
 }
 
 /** What a handler written for agents is given: the identity its store admits at commit. */

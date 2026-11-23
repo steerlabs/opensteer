@@ -3,12 +3,7 @@ import type { CommandRequestPart, RequestId, RequestPresentation } from "@openst
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { beginAgentSession } from "./agent-session-store.js";
-import {
-  commandRequestLifetimeMs,
-  commandRequestsPerProposer,
-  CommandRequestStore,
-  type CommandRequestOpened,
-} from "./command-request-store.js";
+import { CommandRequestStore, type CommandRequestOpened } from "./command-request-store.js";
 import { connectionAttempts } from "./connection-disconnect.js";
 import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
 
@@ -46,11 +41,11 @@ function part(input: {
 const presentation: RequestPresentation = {
   kind: "form",
   title: "Claude Code, from the task “Tidy up”, wants to: Rename an AI engine account",
-  detail: "Approving this needs an up-to-date Opensteer app.",
+  detail: "What changes: Rename an AI engine account",
   fields: [
     {
       id: "decision",
-      prompt: "Decline it here, or approve it in an up-to-date Opensteer app.",
+      prompt: "Decline it here, or approve it on its own screen.",
       choices: [{ label: "Decline", value: "decline" }],
       custom: true,
       multiSelect: false,
@@ -103,106 +98,34 @@ describeStore("command Requests in the store", (it) => {
     });
   });
 
-  it("caps open asks per proposer", async ({ storeFixture }) => {
-    const { open } = await setup(storeFixture);
-    for (let index = 0; index < commandRequestsPerProposer; index++)
-      await open({ askKey: `cap${index}` });
-    await expect(open({ askKey: "cap-over" })).rejects.toMatchObject({
-      code: "resource_exhausted",
-      reason: "command-requests-full",
-    });
-  });
-
-  it("counts toward the cap only asks still open by their own time, and expires in order (AD7)", async ({
+  it("lets an ask wait until it is answered, and a declined one be asked again (one rule)", async ({
     storeFixture,
   }) => {
     const { f, store, open, database } = await setup(storeFixture);
-    const opened = [];
-    for (let index = 0; index < commandRequestsPerProposer; index++)
-      opened.push(await open({ askKey: `stale${index}` }));
-    // The Mac slept past their lifetime: unswept, but no longer open by their own time.
+    // No count holds an ask back, however many one proposer has open.
+    const many = [];
+    for (let index = 0; index < 8; index++) many.push(await open({ askKey: `many${index}` }));
+    for (const opened of many) expect(opened).toMatchObject({ status: "pending", replayed: false });
+    // No lifetime ends one: days later it still waits, and the person may still approve it.
     await database
       .updateTable("requests")
-      .set({ createdAt: new Date(Date.now() - commandRequestLifetimeMs - 60_000) })
-      .where("id", "in", opened.map(idOf))
+      .set({ createdAt: new Date(Date.now() - 3 * 24 * 60 * 60_000) })
+      .where("id", "=", idOf(many[0]!))
       .execute();
-    const fresh = await open({ askKey: "fresh" });
-    expect(fresh).toMatchObject({ status: "pending", replayed: false });
-    for (const id of opened.map(idOf))
-      expect(await storeFixture.store.requests.get(id)).toMatchObject({
-        status: "cancelled",
-        command: { expired: true },
-      });
-    // Several due at once, across tasks: swept under the enforced lock order.
-    const other = await storeFixture.startRunFixture(`expire-${randomUUID().slice(0, 8)}`);
-    const elsewhere = await store.open({
-      ownerUserId: other.userId,
-      callId: randomUUID(),
-      origin: { runId: other.run.id },
-      originatingThreadId: other.threadId,
-      part: part({ askKey: "elsewhere" }),
-      presentation,
+    expect(await open({ askKey: "many0" })).toMatchObject({
+      status: "pending",
+      request: { id: idOf(many[0]!) },
     });
-    await database
-      .updateTable("requests")
-      .set({ createdAt: new Date(Date.now() - commandRequestLifetimeMs - 60_000) })
-      .where("id", "in", [idOf(elsewhere), idOf(fresh)])
-      .execute();
-    expect((await store.expire()).toSorted()).toEqual([idOf(elsewhere), idOf(fresh)].toSorted());
-    void f;
-  });
-
-  it("remembers a decline for a day and answers it at once", async ({ storeFixture }) => {
-    const { f, store, open, database } = await setup(storeFixture);
-    const first = await open({ askKey: "d1" });
+    // Declined, it may be asked again: a new Request, the agent's judgement whether to.
     await store.decline({
-      requestId: idOf(first),
-      expectedRevision: (await storeFixture.store.requests.revision(idOf(first)))!,
+      requestId: idOf(many[1]!),
+      expectedRevision: (await storeFixture.store.requests.revision(idOf(many[1]!)))!,
       resolvedBy: f.userId,
       response: { kind: "external", value: { decision: "declined" } },
     });
-    const again = await open({ askKey: "d1", args: "other" });
-    expect(again).toEqual({ status: "declined", requestId: idOf(first) });
-    const open_ = await database
-      .selectFrom("requests")
-      .select("id")
-      .where("status", "=", "pending")
-      .where("command", "is not", null)
-      .execute();
-    expect(open_).toEqual([]);
-    // After the day it may be asked again.
-    await database
-      .updateTable("requests")
-      .set({ resolvedAt: new Date(Date.now() - commandRequestLifetimeMs - 60_000) })
-      .where("id", "=", idOf(first))
-      .execute();
-    expect(await open({ askKey: "d1" })).toMatchObject({ status: "pending", replayed: false });
-  });
-
-  it("expires an ask no one answered, and refuses to approve it", async ({ storeFixture }) => {
-    const { f, store, open, database } = await setup(storeFixture);
-    const opened = await open({ askKey: "e1" });
-    await database
-      .updateTable("requests")
-      .set({ createdAt: new Date(Date.now() - commandRequestLifetimeMs - 60_000) })
-      .where("id", "=", idOf(opened))
-      .execute();
-    const revision = (await storeFixture.store.requests.revision(idOf(opened)))!;
-    await expect(
-      store.beginApproval({
-        requestId: idOf(opened),
-        expectedRevision: revision,
-        resolvedBy: f.userId,
-        accept: () => undefined,
-        approvalKey: randomUUID(),
-        approved: { command: {}, changed: false },
-      }),
-    ).rejects.toMatchObject({ code: "conflict", reason: "request-expired" });
-    expect(await store.expire()).toEqual([idOf(opened)]);
-    expect(await storeFixture.store.requests.get(idOf(opened))).toMatchObject({
-      status: "cancelled",
-      command: { expired: true },
-    });
+    const again = await open({ askKey: "many1" });
+    expect(again).toMatchObject({ status: "pending", replayed: false });
+    expect(idOf(again)).not.toBe(idOf(many[1]!));
   });
 
   it("records the answer before it runs and an outcome lost to a restart as unknown", async ({
@@ -223,7 +146,7 @@ describeStore("command Requests in the store", (it) => {
       command: { outcome: { status: "running" } },
     });
     // The Home stopped here: on restart it is unknown, and settling it again changes nothing.
-    expect(await store.recoverRunning()).toEqual({ recovered: [idOf(opened)], nextExpiry: null });
+    expect(await store.recoverRunning()).toEqual({ recovered: [idOf(opened)] });
     await store.settle(idOf(opened), { status: "done" });
     expect(await storeFixture.store.requests.get(idOf(opened))).toMatchObject({
       command: { outcome: { status: "unknown" } },

@@ -251,7 +251,7 @@ import {
   type NotificationPublicationTarget,
 } from "../notifications/notification-publication-client.js";
 import { createHostServer } from "../server.js";
-import { CommandRequestExpiry, CommandRequestService } from "../commands/requests.js";
+import { CommandRequestService } from "../commands/requests.js";
 import { agentCommandRegistry } from "../commands/agent-door.js";
 import { CommandTools } from "../mcp/handlers/commands.js";
 import { CommandRequestStore } from "@opensteer/database";
@@ -525,7 +525,6 @@ export async function createHostRuntime(
   let notificationDispatcher: NotificationDispatcher | undefined;
   let removeMutationHooks: (() => void) | undefined;
   let deadlines: RequestDeadlines | undefined;
-  let stopCommandRequestExpiry: (() => void) | undefined;
   // The agents' tools are built before the Home's command Requests; they read it when called.
   let commandRequestsForTools: CommandRequestService | undefined;
   // The person's read handlers, handed over when the server builds them; read by the state tool.
@@ -3287,33 +3286,6 @@ export async function createHostRuntime(
         commands: new CommandTools({
           database,
           reads: () => personReadHandlers,
-          engines: async (caller) => {
-            const listed = (await productHandlers.opensteer_ai_account_list({
-              caller,
-              input: {},
-              operationKey: "opensteer_state",
-            } as never)) as { readonly accounts?: readonly { readonly aiAccountId: string }[] };
-            // Each account with the work location its engine commands name (`environmentId`).
-            const ids = (listed.accounts ?? []).map(({ aiAccountId }) => aiAccountId);
-            const places = new Map(
-              ids.length
-                ? (
-                    await database
-                      .selectFrom("harnessInstances")
-                      .select(["id", "environmentId"])
-                      .where("id", "in", ids as never)
-                      .execute()
-                  ).map(({ id, environmentId }) => [id as string, environmentId as string])
-                : [],
-            );
-            return {
-              ...listed,
-              accounts: (listed.accounts ?? []).map((account) => ({
-                ...account,
-                environmentId: places.get(account.aiAccountId) ?? null,
-              })),
-            } as Record<string, unknown>;
-          },
           policy: async () => (claimedWork ? claimedWork.applied() : null),
           registry: agentCommandRegistry(administration.service),
           requests: () => commandRequestsForTools,
@@ -3536,21 +3508,13 @@ export async function createHostRuntime(
       });
     }
     const commandRequestStore = new CommandRequestStore(store.database, store.requests);
-    // A proposed command waits a day: one timer for the earliest open ask's end, none while none
-    // is open, so an idle Home does no periodic work for asks. Approving a stale one is refused.
-    const commandRequestExpiry = new CommandRequestExpiry(commandRequestStore, (error) =>
-      reportMutationFailure(error),
-    );
-    stopCommandRequestExpiry = () => commandRequestExpiry.stop();
     const commandRequests = (commandRequestsForTools = new CommandRequestService({
       store: commandRequestStore,
       database: store.database,
       requests: store.requests,
-      expiry: commandRequestExpiry,
     }));
     // An approval cut off by a restart may have taken effect: it is unknown, never run again.
-    // The same read says when the earliest open ask ends.
-    commandRequestExpiry.arm((await commandRequestStore.recoverRunning()).nextExpiry);
+    await commandRequestStore.recoverRunning();
     const app = await createHostServer(
       {
         commandRequests,
@@ -3971,7 +3935,6 @@ export async function createHostRuntime(
     await assignmentReturns?.close();
     await connectionMaintenance?.close();
     await catalogConvergence?.close();
-    stopCommandRequestExpiry?.();
     await deadlines?.close();
     removeMutationHooks?.();
     await pluginChangeNotices?.close();

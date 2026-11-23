@@ -156,7 +156,6 @@ export const AgentCommandActivitySchema = z.object({
     "asked",
     "approved",
     "declined",
-    "expired",
     "withdrawn",
     "closed",
   ]),

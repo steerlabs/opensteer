@@ -663,7 +663,7 @@ export function migrationProvider(options?: {
               [commandRequestsMigrationName]: {
                 /**
                  * An agent's proposed Home command rides an ordinary Request, with its parts in one
-                 * column. One open ask per proposer and thing; a decline is found by the same key.
+                 * column. One open ask per proposer and thing.
                  * An approval a restart cut off is found by its own small index, however many
                  * Requests the Home has. Activity finds an agent's asks and the commands it ran at
                  * once by who sent them (C5).
@@ -674,9 +674,6 @@ export function migrationProvider(options?: {
                     create unique index requests_command_open on requests
                       (requested_by, (command->>'askKey'))
                       where command is not null and status = 'pending';
-                    create index requests_command_asks on requests
-                      (requested_by, (command->>'askKey'), resolved_at desc)
-                      where command is not null;
                     create index requests_command_running on requests (id)
                       where status = 'fulfilled' and (command->'outcome'->>'status') = 'running';
                     create index requests_command_proposer on requests

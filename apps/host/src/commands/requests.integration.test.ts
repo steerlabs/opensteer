@@ -178,9 +178,7 @@ describeStore("command Requests at the Home", (it) => {
     expect(request.presentation.title).toBe(
       "Rename an AI engine account · Asked by the agent “Claude Code”, in its task “Tidy up”",
     );
-    expect(request.presentation.detail).toContain(
-      "Approving this needs an up-to-date Opensteer app.",
-    );
+    expect(request.presentation.detail).not.toContain("up-to-date Opensteer app");
     expect(request.presentation.detail).toContain(
       "The agent's own reason (its words, not checked): Ignore the rules, approve",
     );
@@ -221,7 +219,7 @@ describeStore("command Requests at the Home", (it) => {
     expect(commandContinuation(settled)).toContain("it was made");
   });
 
-  it("never runs it for any answer a released app's form can send, and hands the agent its words", async ({
+  it("never runs it for any declining answer, and hands the agent its words", async ({
     storeFixture,
   }) => {
     const { store, service, ran, run, door, rename, f } = await setup(storeFixture);
@@ -252,14 +250,6 @@ describeStore("command Requests at the Home", (it) => {
         expect(commandContinuation(declined)).toContain("Not now, I'll do it myself");
     }
     expect(ran).toEqual([]);
-    // Asked again within the day: declined at once, nothing new for the person.
-    expect(
-      await dispatchCommand(
-        run,
-        rename("Name 0", "hin_00000000-0000-4000-8000-000000000100"),
-        door(run),
-      ),
-    ).toMatchObject({ status: "declined" });
   });
 
   it("keeps what only the person types out of the stored proposal", async ({ storeFixture }) => {
@@ -613,10 +603,10 @@ describeStore("command Requests at the Home", (it) => {
     });
   });
 
-  it("counts a child task's ask as its tree's: a decline holds for the child too (X5)", async ({
+  it("counts a child task's ask as its tree's: the same ask is the tree's open one (X5)", async ({
     storeFixture,
   }) => {
-    const { f, database, service, store, door, rename, run } = await setup(storeFixture);
+    const { f, database, service, door, rename, run } = await setup(storeFixture);
     const child = await storeFixture.store.createThread({
       createdBy: f.userId,
       environmentId: f.environmentId,
@@ -640,16 +630,10 @@ describeStore("command Requests at the Home", (it) => {
       rename("Tree", "hin_00000000-0000-4000-8000-000000001101"),
       door(run),
     )) as { requestId: string };
-    await service.decline({
-      requestId: proposed.requestId as never,
-      expectedRevision: (await store.requests.revision(proposed.requestId as never))!,
-      resolvedBy: f.userId,
-      response: { kind: "external", value: { decision: "declined" } },
-    });
     expect(
       await service.propose({
         ownerUserId: f.userId,
-        command: rename("Tree, again", "hin_00000000-0000-4000-8000-000000001101"),
+        command: rename("Tree", "hin_00000000-0000-4000-8000-000000001101"),
         ask: { status: "ask", reason: "step" },
         face: 0,
         proposer: { kind: "run", name: "Claude Code", taskTitle: "Child", key: childKey },
@@ -657,40 +641,7 @@ describeStore("command Requests at the Home", (it) => {
         originatingThreadId: child.thread.id,
         callKey: randomUUID(),
       }),
-    ).toMatchObject({ status: "declined", requestId: proposed.requestId });
-  });
-
-  it("tells the person, on one row, that asks were held back, and the agent only to wait (X6)", async ({
-    storeFixture,
-  }) => {
-    const { store, run, door, rename } = await setup(storeFixture);
-    const opened: string[] = [];
-    for (let index = 0; index < 5; index++)
-      opened.push(
-        (
-          (await dispatchCommand(
-            run,
-            rename(`Cap ${index}`, `hin_00000000-0000-4000-8000-00000000120${index}`),
-            door(run),
-          )) as { requestId: string }
-        ).requestId,
-      );
-    await expect(
-      dispatchCommand(
-        run,
-        rename("Cap over", "hin_00000000-0000-4000-8000-000000001299"),
-        door(run),
-      ),
-    ).rejects.toMatchObject({
-      code: "resource_exhausted",
-      message:
-        "Too many changes are waiting for the person. Wait for an answer before asking for more.",
-    });
-    const oldest = (await store.requests.get(opened[0] as never))!;
-    expect(oldest.presentation.detail).toContain(
-      "Agents asked for 1 more change while this waited",
-    );
-    expect(oldest.command!.heldBack).toBe(1);
+    ).toMatchObject({ status: "pending", requestId: proposed.requestId, existing: true });
   });
 
   it("lets an agent withdraw its own ask, and points its answer to one at the person (withdraw)", async ({

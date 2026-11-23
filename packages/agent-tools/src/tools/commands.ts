@@ -65,7 +65,7 @@ export const opensteer_command = defineAgentTool({
       next: z.string(),
     }),
     z.object({
-      status: z.enum(["declined", "expired", "withdrawn", "closed"]),
+      status: z.enum(["declined", "withdrawn", "closed"]),
       requestId: RequestIdSchema,
     }),
     z.object({
