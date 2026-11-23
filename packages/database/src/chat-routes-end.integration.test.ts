@@ -46,8 +46,8 @@ async function restoreRoutes(database: Kysely<DatabaseSchema>): Promise<void> {
       routeTables.includes(/ on (\S+) /u.exec(part)![1]!)
     )
       await sql.raw(part).execute(database);
-  // Its migration has not run on this database yet.
-  await sql`delete from kysely_migration where name = ${chatRoutesEndMigrationName}`.execute(
+  // Its migration and any after it have not run on this database yet.
+  await sql`delete from kysely_migration where name >= ${chatRoutesEndMigrationName}`.execute(
     database,
   );
 }
