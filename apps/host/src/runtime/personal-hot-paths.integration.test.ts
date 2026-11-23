@@ -584,10 +584,7 @@ it.skipIf(Boolean(reportPath))(
           try {
             if (activeAttaches === 1) {
               firstEntered.resolve();
-              await Promise.race([
-                releaseFirst.promise,
-                new Promise<void>((resolve) => setTimeout(resolve, 250)),
-              ]);
+              await withTimeout(releaseFirst.promise, 250).catch(() => undefined);
             } else {
               overlapped = true;
               releaseFirst.resolve();

@@ -1487,25 +1487,27 @@ export async function retireBrowserPoolTarget(
             .onConflict((conflict) => conflict.columns(["slotId", "term"]).doNothing())
             .execute(databaseOperationOptions());
       }
-      const open = await tx
-        .selectFrom("browserPoolControllerCalls")
-        .select("id")
-        .where("runnerId", "=", runnerId)
-        .where("slotId", "=", slot.slotId)
-        .where("term", "=", slot.term)
-        .where("settledAt", "is", null)
-        .orderBy("id")
-        .forNoKeyUpdate()
-        .execute(databaseOperationOptions());
-      for (const { id } of open)
-        await tx
-          .updateTable("browserPoolControllerCalls")
-          .set({
-            result: { id, outcome: "unknown", reason: "target-replaced" },
-            settledAt: new Date(),
-          })
-          .where("id", "=", id)
+      if (slot) {
+        const open = await tx
+          .selectFrom("browserPoolControllerCalls")
+          .select("id")
+          .where("runnerId", "=", runnerId)
+          .where("slotId", "=", slot.slotId)
+          .where("term", "=", slot.term)
+          .where("settledAt", "is", null)
+          .orderBy("id")
+          .forNoKeyUpdate()
           .execute(databaseOperationOptions());
+        for (const { id } of open)
+          await tx
+            .updateTable("browserPoolControllerCalls")
+            .set({
+              result: { id, outcome: "unknown", reason: "target-replaced" },
+              settledAt: new Date(),
+            })
+            .where("id", "=", id)
+            .execute(databaseOperationOptions());
+      }
       const relays = await tx
         .selectFrom("browserPoolRelays")
         .select("id")
