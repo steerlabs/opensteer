@@ -10,6 +10,7 @@ import {
 } from "@opensteer/integration-core";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
+import { beginAgentSession } from "./agent-session-store.js";
 import { computerAppAccessPresentation } from "./computer-app-setup.js";
 import {
   computerConnectionTargetInTransaction,
@@ -706,5 +707,28 @@ describeStore("a name from outside enters the Home clean", (it) => {
       const [tool] = await platform.listTools(installationId);
       expect(tool).toMatchObject({ name, title: cleanTitle, annotations: { title: cleanTitle } });
     }
+  });
+  it("keeps a connected agent's direct-work title on one line", async ({ storeFixture }) => {
+    const { database, store } = storeFixture;
+    const { userId } = await storeFixture.createRunFixture("outside-direct-work");
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId,
+      label: "Helper",
+      clientName: "Helper",
+      accessMode: "approval-required",
+      resource: "https://home.example/mcp",
+      expiresAt: new Date(Date.now() + 86_400_000),
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    expect(await connections.activate(connection.id, "outside-direct-work-token")).toBe(true);
+    const { session } = await beginAgentSession(database, {
+      agentConnectionId: connection.id,
+      userId,
+      purpose: "Check\u202E\nApproved by you",
+    });
+    expect(await store.getThreadForOwner(session.threadId, userId)).toMatchObject({
+      title: "Helper: Check Approved by you",
+    });
   });
 });
