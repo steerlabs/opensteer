@@ -74,24 +74,96 @@ export type Want =
   | { readonly kind: "hold"; readonly why: string }
   | { readonly kind: "cast"; readonly key: CastKey };
 
-/** What the follow view last told Chromium on the bound tab's session, as far as it knows. */
+/**
+ * What the follow view last told Chromium on the bound tab's session, as far as it knows. A stop
+ * it sent is the session's (`SessionCastState`), not the tab's: after one, the tab is told none.
+ */
 export type Told =
   | { readonly state: "none" }
   /** A start is being prepared: nothing of it has reached Chromium. */
   | { readonly state: "preparing" }
-  | { readonly state: "sent"; readonly key: CastKey }
-  | { readonly state: "running"; readonly key: CastKey }
-  /** A stop was sent on this session and is not answered: no frame on it is this cast's. */
-  | { readonly state: "stopping" };
+  /** A start was sent; `at`, the facts that bear on whether the page could take it, then. */
+  | { readonly state: "sent"; readonly key: CastKey; readonly at: StartFacts }
+  | { readonly state: "running"; readonly key: CastKey };
 
-/** Why the page could not take a start: each fact that bears on it, as it was when sent. */
-export interface Refusal {
+/** The facts that bear on whether the page can take a start, as they were when one was sent. */
+export interface StartFacts {
   /** The page's finished navigations; null without a navigation port. */
   readonly finished: number | null;
   readonly pending: boolean;
   readonly loading: boolean;
   readonly document: string | null;
+}
+
+export function startFacts(tab: TabFacts): StartFacts {
+  return {
+    document: tab.document,
+    finished: tab.navigation?.finished ?? null,
+    loading: tab.loading,
+    pending: tab.navigation?.pending ?? false,
+  };
+}
+
+/** Why the page could not take a start: Chromium's answer to it, and the facts when it was sent. */
+export interface Refusal extends StartFacts {
   readonly why: string;
+}
+
+/**
+ * What the follow view told one page session that outlives the tab bound to it: the stops it
+ * sent there that Chromium has not answered. While one is, no frame on the session is a cast's
+ * and no start goes out on it. Written only by `afterSession`.
+ */
+export interface SessionCastState {
+  /**
+   * Bumped when the engine ended the session's casts or a stop's answer was given up on: a stop
+   * sent in an earlier generation is settled, and its late answer changes nothing.
+   */
+  readonly generation: number;
+  /** Stops sent in this generation and not answered. */
+  readonly stops: number;
+}
+
+export const initialSessionCastState: SessionCastState = { generation: 0, stops: 0 };
+
+/**
+ * How long a stop's answer is waited for on a live session (S3) before it counts as answered. A
+ * frame of the stopped cast may then still come, and at the same size be taken for the next
+ * cast's picture of the same page; that is accepted over a tab that waits for ever. A frame of
+ * another size, or of a document from before, is still caught by `frameVerdict`.
+ */
+export const stopAnswerWaitMs = 5_000;
+
+export type SessionEvent =
+  | { readonly kind: "stop-sent" }
+  /** A stop's answer, of the generation it was sent in. */
+  | { readonly kind: "stop-answered"; readonly generation: number }
+  /** The engine ended the session's casts: nothing of them is outstanding. */
+  | { readonly kind: "casts-ended" }
+  /** The time a stop's answer was given, in that generation, is up. */
+  | { readonly kind: "stop-timed-out"; readonly generation: number };
+
+/** The session's state after `event`, the only way it changes. */
+export function afterSession(state: SessionCastState, event: SessionEvent): SessionCastState {
+  switch (event.kind) {
+    case "stop-sent":
+      return { ...state, stops: state.stops + 1 };
+    case "stop-answered":
+      return event.generation === state.generation && state.stops > 0
+        ? { ...state, stops: state.stops - 1 }
+        : state;
+    case "casts-ended":
+      return { generation: state.generation + 1, stops: 0 };
+    case "stop-timed-out":
+      return event.generation === state.generation && state.stops > 0
+        ? { generation: state.generation + 1, stops: 0 }
+        : state;
+  }
+}
+
+/** A start sent or a cast running is stopped by a stop sent to Chromium; one prepared is not. */
+export function stopReachesChromium(told: Told): boolean {
+  return told.state === "sent" || told.state === "running";
 }
 
 /**
@@ -161,8 +233,8 @@ export interface TabCastState {
   readonly lastKey: CastKey | null;
 }
 
-/** A tab bound anew; its session's stop may still be with Chromium. */
-export function initialTabCastState(stopping: boolean): TabCastState {
+/** A tab bound anew; its session's stops are the session's own. */
+export function initialTabCastState(): TabCastState {
   return {
     failed: null,
     lastKey: null,
@@ -171,7 +243,7 @@ export function initialTabCastState(stopping: boolean): TabCastState {
     refusal: null,
     repairing: null,
     shown: false,
-    told: stopping ? { state: "stopping" } : { state: "none" },
+    told: { state: "none" },
     trouble: null,
     unpictured: 0,
   };
@@ -239,30 +311,31 @@ export type CastEvent =
   /** A pass read the facts: a refusal or a given-up cast they release is released. */
   | { readonly kind: "observed" }
   | { readonly kind: "start-begun" }
-  | { readonly kind: "sent"; readonly key: CastKey }
+  /** The start was handed to Chromium; `at`, the facts that bear on it as it went. */
+  | { readonly kind: "sent"; readonly key: CastKey; readonly at: StartFacts }
   | { readonly kind: "answered" }
-  | { readonly kind: "refused"; readonly refusal: Refusal }
+  /**
+   * The start failed: Chromium's refusal if it was sent; if it failed before (its paint settled
+   * with an error, the view could not be sized), an attempt with no picture (S2).
+   */
+  | { readonly kind: "start-failed"; readonly why: string }
   /** A start being prepared came to nothing: given up, or the facts no longer wanted it. */
   | { readonly kind: "not-sent" }
-  | { readonly kind: "paint-timed-out"; readonly paint: PaintWait | null }
+  | { readonly kind: "paint-timed-out" }
   | { readonly kind: "paint-backoff-ended" }
   /** A stop step: a restart (`retry` when on the same facts), a pause, a leaving, or a give-up. */
-  | {
-      readonly kind: "stopped";
-      readonly retry: boolean;
-      readonly failed?: { readonly key: CastKey; readonly why: string };
-    }
+  | { readonly kind: "stopped"; readonly retry: boolean; readonly givenUp?: string }
   | { readonly kind: "repair-begun"; readonly retry: boolean }
   | { readonly kind: "repair-drawn" }
-  /** A stop on the session was answered; `remaining` are still with Chromium. */
-  | { readonly kind: "stop-answered"; readonly remaining: number }
   /** The engine ended the session's casts itself (a renderer gone, a debugger detached). */
   | { readonly kind: "casts-ended" }
+  /** The session's stop was not answered in its time: the next start is an attempt (S3). */
+  | { readonly kind: "stop-timed-out" }
   | { readonly kind: "frame"; readonly verdict: FrameVerdict }
   /** The time the plan gave the running cast for a picture (`wait` with a timer) is up. */
   | { readonly kind: "first-frame-timeout" }
   | { readonly kind: "resumed" }
-  | { readonly kind: "tab-closed-beside"; readonly native: boolean }
+  | { readonly kind: "tab-closed-beside" }
   | {
       readonly kind: "restamped";
       readonly geometryRevision: number;
@@ -373,16 +446,31 @@ export function difference(told: CastKey, want: CastKey): string {
 }
 
 /**
- * Whether a fact that bears on a refusal settled since it was recorded: a navigation finished, a
- * pending one ended, loading stopped, or another document committed. A refusal with nothing
- * pending, nothing loading and no navigation stays one until the document changes.
+ * Whether a fact that bears on a refusal differs from when its start was sent (S5): the finished
+ * navigations, a pending one, loading (either way: a refusal sent before loading began is
+ * released as it begins), or the document. A refusal is released as soon as one is seen to.
  */
 export function refusalReleased(tab: TabFacts, refusal: Refusal): boolean {
+  const now = startFacts(tab);
   return (
-    (tab.navigation !== null && tab.navigation.finished > (refusal.finished ?? -1)) ||
-    (refusal.pending && tab.navigation?.pending !== true) ||
-    (refusal.loading && !tab.loading) ||
-    tab.document !== refusal.document
+    now.finished !== refusal.finished ||
+    now.pending !== refusal.pending ||
+    now.loading !== refusal.loading ||
+    now.document !== refusal.document
+  );
+}
+
+/**
+ * Whether a refusal came of a navigation (the page took no command while one was under way),
+ * rather than of the page itself: only one outside any is the caller's to hear.
+ */
+export function refusedInNavigation(tab: TabFacts, refusal: Refusal): boolean {
+  return (
+    refusal.loading ||
+    refusal.pending ||
+    tab.loading ||
+    tab.navigation?.pending === true ||
+    refusalReleased(tab, refusal)
   );
 }
 
@@ -398,17 +486,19 @@ export function canTakeStart(
   if (tab.navigation?.pending && tab.navigation.blankDocument)
     return { ok: false, why: "its first document has not committed" };
   if (!refusal || refusalReleased(tab, refusal)) return { ok: true };
-  const until = [
-    tab.navigation ? "a navigation finishes" : null,
-    refusal.pending ? "its navigation ends" : null,
-    refusal.loading ? "its loading stops" : null,
-    "another document commits",
-  ].filter((fact) => fact !== null);
-  return { ok: false, why: `refused (${refusal.why}) until ${until.join(" or ")}` };
+  const until = [tab.navigation ? "its navigations" : null, "its loading", "its document"].filter(
+    (fact) => fact !== null,
+  );
+  return { ok: false, why: `refused (${refusal.why}) until ${until.join(", ")} change` };
 }
 
-/** The one next step for the bound tab, from the facts and what was told. */
-export function nextStep(facts: CastFacts, bound: string | null, state: TabCastState | null): Step {
+/** The one next step for the bound tab, from the facts, what was told, and its session's stops. */
+export function nextStep(
+  facts: CastFacts,
+  bound: string | null,
+  state: TabCastState | null,
+  session: SessionCastState = initialSessionCastState,
+): Step {
   const inView = facts.closed ? null : (facts.tab?.binding ?? null);
   if (bound !== inView) return { kind: "bind" };
   const tab = facts.tab;
@@ -417,13 +507,11 @@ export function nextStep(facts: CastFacts, bound: string | null, state: TabCastS
   const told = state.told;
   // A start being prepared is given up as well: nothing of it has reached Chromium.
   if (want.kind === "none")
-    return told.state === "none" || told.state === "stopping"
-      ? { kind: "idle" }
-      : { kind: "stop", why: want.why };
+    return told.state === "none" ? { kind: "idle" } : { kind: "stop", why: want.why };
   if (told.state === "preparing") return { kind: "wait", why: "a start is being prepared" };
   // No start goes out on a session whose stop is with Chromium: a frame of a new cast can then
-  // never be taken for the old one's, or the old one's for it.
-  if (told.state === "stopping") return { kind: "wait", why: "a stop is with Chromium" };
+  // never be taken for the old one's, or the old one's for it. The session's own timer bounds it.
+  if (session.stops > 0) return { kind: "wait", why: "a stop is with Chromium" };
   if (state.repairing) return { kind: "wait", why: "the page is drawn again" };
   if (want.kind === "hold") return { kind: "wait", why: want.why };
   const key = want.key;
@@ -434,15 +522,17 @@ export function nextStep(facts: CastFacts, bound: string | null, state: TabCastS
     if (fit === "new-document")
       return { document: key.document, geometryRevision: key.geometryRevision, kind: "restamp" };
     if (!fit) return { kind: "restart", retry: false, why: difference(told.key, key) };
+    const trouble = state.shown ? null : state.trouble;
+    // At the bound the cast is given up, whatever else asks for a repair (S6).
+    if (trouble !== null && trouble !== "other-size" && state.unpictured >= limit)
+      return { kind: "fail", why: givenUpFor[trouble] };
+    // A tab closed beside it: a change, which a repair answers once per such event (R2).
     if (state.redraw) return { kind: "repair", retry: false, why: "a tab closed" };
     if (state.shown) return { kind: "idle" };
-    const trouble = state.trouble;
-    if (trouble !== null && trouble !== "other-size") {
-      if (state.unpictured >= limit) return { kind: "fail", why: givenUpFor[trouble] };
-      return trouble === "set-aside"
-        ? { kind: "restart", retry: true, why: "its frame was set aside" }
-        : { kind: "repair", retry: true, why: givenUpFor[trouble] };
-    }
+    if (trouble === "set-aside")
+      return { kind: "restart", retry: true, why: "its frame was set aside" };
+    if (trouble === "misfit" || trouble === "no-picture")
+      return { kind: "repair", retry: true, why: givenUpFor[trouble] };
     if (trouble === "other-size")
       return {
         kind: "wait",
@@ -474,6 +564,27 @@ export function nextStep(facts: CastFacts, bound: string | null, state: TabCastS
 }
 
 /**
+ * The cast a start being prepared is still to be sent for: the one the plan would start now, had
+ * it not begun. Null when the facts moved so that it would not (a dialog, a pause, a refusal).
+ */
+export function startStillWanted(
+  facts: CastFacts,
+  bound: string,
+  state: TabCastState,
+  session: SessionCastState,
+): CastKey | null {
+  if (state.told.state !== "preparing") return null;
+  const step = nextStep(facts, bound, { ...state, told: { state: "none" } }, session);
+  const want = wanted(facts);
+  return step.kind === "start" && want.kind === "cast" ? want.key : null;
+}
+
+/** The running cast's key, restamped for the new document it pictures at the same size. */
+export function restamped(told: CastKey, want: CastKey): CastKey {
+  return { ...told, document: want.document, geometryRevision: want.geometryRevision };
+}
+
+/**
  * A frame as the follow view measured it: the size it says, its raster's when it decodes, and the
  * document the follow view had seen when it arrived, which is the document it can picture.
  */
@@ -486,12 +597,16 @@ export interface FrameMeasure {
 /** What a frame is, from what was told, the facts, and its measure. */
 export function frameVerdict(
   state: TabCastState,
+  session: SessionCastState,
   frame: FrameMeasure,
   facts: CastFacts,
 ): FrameVerdict {
   const told = state.told;
+  // A frame on a session whose stop is with Chromium is the stopped cast's: no one's now. One
+  // while nothing is streamed is no one's either (S6).
+  if (session.stops > 0 || !facts.streaming) return "dropped";
   if (told.state === "sent") {
-    if (facts.streaming && fitsRegion(frame.geometry, told.key.region)) return "held";
+    if (fitsRegion(frame.geometry, told.key.region)) return "held";
     return told.key.sizesView ? "misfit-with-start" : "other-size-with-start";
   }
   if (told.state !== "running") return "dropped";
@@ -533,6 +648,8 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
       // A cast given up is tried again, with fresh counts, once what it would picture changed.
       if (next.failed && want.kind === "cast" && !sameCast(next.failed.key, want.key))
         next = { ...next, failed: null, unpictured: 0 };
+      // A pause ends a paint wait: the next stream asks the page afresh.
+      if (next.paint && (!facts.streaming || facts.closed)) next = { ...next, paint: null };
       return next;
     }
     case "start-begun":
@@ -544,7 +661,7 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
         ...state,
         lastKey: event.key,
         shown: false,
-        told: { key: event.key, state: "sent" },
+        told: { at: event.at, key: event.key, state: "sent" },
         trouble: null,
         unpictured: another ? 0 : state.unpictured,
       };
@@ -553,24 +670,53 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
       return told.state === "sent"
         ? { ...state, paint: null, refusal: null, told: { key: told.key, state: "running" } }
         : state;
-    case "refused":
-      return { ...state, refusal: event.refusal, told: { state: "none" } };
-    case "not-sent":
-      return told.state === "preparing" ? { ...state, told: { state: "none" } } : state;
-    case "paint-timed-out":
+    case "start-failed": {
+      // Chromium's answer to the start itself: the page could not take it, as it was then.
+      if (told.state === "sent")
+        return { ...state, refusal: { ...told.at, why: event.why }, told: { state: "none" } };
+      if (told.state !== "preparing") return state;
+      // It failed before it reached Chromium (S2): an attempt with no picture, under the bound.
+      const unpictured = state.unpictured + 1;
+      const want = wanted(facts);
+      const atBound =
+        want.kind === "cast" && unpictured >= pictureLimit(facts.tab?.native ?? false);
       return {
         ...state,
-        paint: event.paint,
+        failed: atBound
+          ? { key: want.key, why: `its start could not be made (${event.why})` }
+          : state.failed,
+        told: { state: "none" },
+        unpictured,
+      };
+    }
+    case "not-sent":
+      return told.state === "preparing" ? { ...state, told: { state: "none" } } : state;
+    case "paint-timed-out": {
+      const want = wanted(facts);
+      return {
+        ...state,
+        paint:
+          want.kind === "cast"
+            ? {
+                captureRevision: want.key.captureRevision,
+                geometryRevision: want.key.geometryRevision,
+                size: want.key.size,
+              }
+            : null,
         told: told.state === "preparing" ? { state: "none" } : told,
       };
+    }
     case "paint-backoff-ended":
       return { ...state, paint: null };
     case "stopped":
       return {
         ...state,
-        ...(event.failed ? { failed: event.failed } : {}),
+        failed:
+          event.givenUp !== undefined && told.state === "running"
+            ? { key: told.key, why: event.givenUp }
+            : state.failed,
         shown: false,
-        told: stoppedFrom(told),
+        told: { state: "none" },
         trouble: null,
         // R2: a retry on the same facts with no picture counts against the cast. A restart for a
         // new fact (another key) is a change, not a retry, and does not; its start counts afresh.
@@ -582,7 +728,7 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
         redraw: false,
         repairing: event.retry ? "retry" : "change",
         shown: false,
-        told: stoppedFrom(told),
+        told: { state: "none" },
         trouble: null,
       };
     case "repair-drawn":
@@ -593,14 +739,14 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
         repairing: null,
         unpictured: state.repairing === "retry" ? state.unpictured + 1 : state.unpictured,
       };
-    case "stop-answered":
-      return told.state === "stopping" && event.remaining === 0
-        ? { ...state, told: { state: "none" } }
-        : state;
     case "casts-ended":
-      return told.state === "sent" || told.state === "running" || told.state === "stopping"
+      // The start in flight is ended with them: the follow view lets it go (S1).
+      return told.state === "sent" || told.state === "running"
         ? { ...state, shown: false, told: { state: "none" }, trouble: null }
         : state;
+    case "stop-timed-out":
+      // S3: the stop counts as answered, and the start after it as an attempt with no picture.
+      return { ...state, unpictured: state.unpictured + 1 };
     case "frame":
       switch (event.verdict) {
         case "other-size-with-start":
@@ -619,14 +765,7 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
             shown: true,
             told:
               event.verdict === "restamp-show" && told.state === "running" && want.kind === "cast"
-                ? {
-                    key: {
-                      ...told.key,
-                      document: want.key.document,
-                      geometryRevision: want.key.geometryRevision,
-                    },
-                    state: "running",
-                  }
+                ? { key: restamped(told.key, want.key), state: "running" }
                 : told,
             trouble: null,
             unpictured: 0,
@@ -648,7 +787,7 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
     case "resumed":
       return { ...state, failed: null, refusal: null, unpictured: 0 };
     case "tab-closed-beside":
-      return told.state === "running" && !event.native
+      return told.state === "running" && facts.tab?.native === false
         ? { ...state, redraw: true, shown: false }
         : state;
     case "restamped":
@@ -667,13 +806,6 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
           }
         : state;
   }
-}
-
-/** What a stop leaves: a start sent or a cast running is stopping; one prepared, nothing. */
-function stoppedFrom(told: Told): Told {
-  if (told.state === "sent" || told.state === "running") return { state: "stopping" };
-  if (told.state === "preparing") return { state: "none" };
-  return told;
 }
 
 /** Whether a frame of `geometry` pictures `region`, within the pixel a scrollbar can add. */

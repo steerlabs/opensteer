@@ -72,6 +72,10 @@ class Chromium {
   framesFit = true;
   /** It answers its starts and paints none of them (R10): a page still under load. */
   silent = false;
+  /** It holds the answer to its stops, as it holds a start's (`lateAnswers`). */
+  stopLate = false;
+  /** It never answers its next stop, though the stop takes effect (S3). */
+  stopHangs = false;
   private readonly world: World;
   private readonly id: Id;
   constructor(world: World, id: Id) {
@@ -103,9 +107,24 @@ class Chromium {
     // What stood when the follow view sent it: a session takes commands in order, later.
     const sentWith = method === "Page.startScreencast" ? this.world.refusalFacts(this.id) : null;
     const knownRefused = sentWith !== null && sameRefusal(this.lastRefusal, sentWith);
+    // A stop whose answer is lost: it takes effect, and the commands after it go on.
+    if (method === "Page.stopScreencast" && this.stopHangs && !this.dead) {
+      this.stopHangs = false;
+      void this.chain.then(() => {
+        this.casting = false;
+      });
+      return new Promise(() => undefined);
+    }
     const run = async () => {
       if (this.dead) throw new Error("Target closed.");
-      if (method === "Page.stopScreencast") this.casting = false;
+      if (method === "Emulation.setVisibleSize" && this.world.tabs[this.id].failPrepare) {
+        this.world.tabs[this.id].failPrepare = false;
+        throw new Error("Emulation.setVisibleSize failed");
+      }
+      if (method === "Page.stopScreencast") {
+        this.casting = false;
+        if (this.stopLate) await new Promise<void>((resolve) => this.lateAnswers.push(resolve));
+      }
       if (method !== "Page.startScreencast") return {};
       if (!this.attached) {
         if (knownRefused)
@@ -228,6 +247,8 @@ interface TabWorld {
   /** Each start's frame comes while the page is held (a dialog open over it). */
   flicker: boolean;
   stallPaint: boolean;
+  /** The next start's preparation fails: its paint, or sizing its view, with an error (S2). */
+  failPrepare: boolean;
   /** Its last paint wait timed out, and none since succeeded. */
   paintTimedOut: boolean;
   /** Each showing of the tab: turned to, streamed again, a new session. */
@@ -277,6 +298,7 @@ class World {
       dialog: false,
       documentId: `${id}0`,
       epoch: 0,
+      failPrepare: false,
       flicker: false,
       geometryRevision: 1,
       id,
@@ -376,6 +398,11 @@ class World {
           if (tab.chromium.silent && this.chance(0.5)) tab.chromium.silent = false;
         },
         settleRendering: async () => {
+          // The desktop page moved to another window as its paint was awaited.
+          if (tab.failPrepare && desktop) {
+            tab.failPrepare = false;
+            throw new Error("Electron browser page is closed.");
+          }
           if (tab.stallPaint) {
             tab.stallPaint = false;
             tab.paintTimedOut = true;
@@ -539,9 +566,10 @@ function actions(
     },
     {
       name: "pause",
-      run: () => {
+      // A pause waits for nothing Chromium holds: the follow view answers it at once.
+      run: async () => {
         world.streaming = false;
-        void follow.setStreaming(false).catch(() => undefined);
+        await follow.setStreaming(false).catch(() => undefined);
       },
     },
     {
@@ -690,6 +718,35 @@ function actions(
       },
     },
     {
+      name: "the engine ends the session's casts while what it holds stays held",
+      run: () => {
+        // The desktop hub, as a debugger detaches: it says so before the commands it holds are
+        // answered (re-check 10, finding 1). Linux Chrome says nothing.
+        if (world.engine !== "desktop") return;
+        const chromium = inView().chromium;
+        chromium.casting = false;
+        chromium.emit(screencastEndedEvent, {});
+      },
+    },
+    {
+      name: "Chromium holds its stops' answers, or no longer",
+      run: () => {
+        inView().chromium.stopLate = !inView().chromium.stopLate;
+      },
+    },
+    {
+      name: "Chromium never answers the next stop",
+      run: () => {
+        inView().chromium.stopHangs = true;
+      },
+    },
+    {
+      name: "the next start's preparation fails",
+      run: () => {
+        inView().failPrepare = true;
+      },
+    },
+    {
       name: "a tab closes beside it",
       run: () => {
         // Another tab of the window closes: headless Chrome may show this one at the window's size
@@ -774,10 +831,11 @@ async function turns(count: number) {
 
 interface Internals {
   readonly passing: boolean;
+  readonly stopTimers?: WeakMap<object, unknown>;
   readonly bound: {
     readonly id: Id;
     readonly cdp: Chromium;
-    readonly held: unknown;
+    readonly held: { readonly parameters?: unknown } | null;
     readonly waiting: string | null;
     readonly firstFrameTimer?: unknown;
     readonly paintTimer: unknown;
@@ -809,7 +867,9 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
     const why = bound.waiting ?? "";
     const holding = chromium.lateAnswers.length > 0;
     // The plan gave the wait a time, and it is running for this tab: the wait ends with it.
-    const timed = bound.firstFrameTimer !== undefined && bound.firstFrameTimer !== null;
+    const timed =
+      (bound.firstFrameTimer !== undefined && bound.firstFrameTimer !== null) ||
+      (why === "a stop is with Chromium" && internals.stopTimers?.has(chromium) === true);
     const named =
       timed ||
       // Chromium takes a session's commands in order: one it holds the answer to holds the next.
@@ -845,7 +905,8 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
     if (session.doubleAck) broken.push(`a frame of ${id} was acked twice`);
     const unacked = [...session.acks].filter(([, count]) => count === 0).map(([frame]) => frame);
     const held = bound?.cdp === session ? bound.held : null;
-    const heldId = held ? Number((held as { sessionId: number }).sessionId) : null;
+    const heldFrame = (held?.parameters ?? held) as { sessionId?: number } | null;
+    const heldId = heldFrame ? Number(heldFrame.sessionId) : null;
     const left = unacked.filter((frame) => frame !== heldId);
     if (left.length > 0) broken.push(`frames ${left.join(", ")} of ${id} were never acked`);
     // For each thing that happened outside it, one start and as many retries as the bound gives
@@ -917,26 +978,31 @@ async function run(seed: number, engine: "desktop" | "linux", length: number) {
 describe("the follow view, under random sequences of what the person, the page and Chromium do", () => {
   afterEach(() => vi.useRealTimers());
 
+  const seeds = Number(process.env.OPENSTEER_FOLLOW_GENERATED_SEEDS ?? 100);
   for (const engine of ["desktop", "linux"] as const)
-    it(`keeps every invariant at every quiet point (${engine})`, async () => {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      const seeds = Number(process.env.OPENSTEER_FOLLOW_GENERATED_SEEDS ?? 100);
-      const only = process.env.OPENSTEER_FOLLOW_GENERATED_SEED;
-      // A larger search runs in batches, each from its own first seed.
-      const from = Number(process.env.OPENSTEER_FOLLOW_GENERATED_FROM ?? 1);
-      const failures = [];
-      for (let seed = from; seed < from + seeds; seed += 1) {
-        const value = only ? Number(only) : seed * 7_919 + (engine === "desktop" ? 0 : 1);
-        if (only && seed > from) break;
-        const failure = await run(value, engine, 40);
-        if (failure) {
-          failures.push(failure);
-          if (failures.length >= Number(process.env.OPENSTEER_FOLLOW_GENERATED_FAILURES ?? 3))
-            break;
+    it(
+      `keeps every invariant at every quiet point (${engine})`,
+      // oxlint-disable-next-line opensteer/no-unit-test-timeout -- The seed count sets the work: a larger search is given time in proportion (20 ms a seed), so it needs no flag.
+      { timeout: 5_000 + seeds * 20 },
+      async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const only = process.env.OPENSTEER_FOLLOW_GENERATED_SEED;
+        // A larger search runs in batches, each from its own first seed.
+        const from = Number(process.env.OPENSTEER_FOLLOW_GENERATED_FROM ?? 1);
+        const failures = [];
+        for (let seed = from; seed < from + seeds; seed += 1) {
+          const value = only ? Number(only) : seed * 7_919 + (engine === "desktop" ? 0 : 1);
+          if (only && seed > from) break;
+          const failure = await run(value, engine, 40);
+          if (failure) {
+            failures.push(failure);
+            if (failures.length >= Number(process.env.OPENSTEER_FOLLOW_GENERATED_FAILURES ?? 3))
+              break;
+          }
         }
-      }
-      expect(failures.map((failure) => ({ ...failure, trace: failure.trace.join(" → ") }))).toEqual(
-        [],
-      );
-    });
+        expect(
+          failures.map((failure) => ({ ...failure, trace: failure.trace.join(" → ") })),
+        ).toEqual([]);
+      },
+    );
 });

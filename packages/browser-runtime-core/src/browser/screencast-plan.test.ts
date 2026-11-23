@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   after,
+  afterSession,
   canTakeStart,
   firstFrameWaitMs,
   fits,
   frameVerdict,
+  initialSessionCastState,
   initialTabCastState,
   nextStep,
   otherSizeWaitMs,
   pictureLimit,
   refusalReleased,
   sameCast,
+  startFacts,
   wanted,
   type CastEvent,
   type CastFacts,
@@ -156,7 +159,7 @@ describe("whether the page can take a start", () => {
         for (const document of ["a", "b"])
           refusals.push(refusal({ document, finished, loading, pending }));
 
-  it("refuses exactly while the first document is to commit, or until a fact a refusal recorded settles", () => {
+  it("refuses exactly while the first document is to commit, or until a fact a refusal recorded differs", () => {
     let cases = 0;
     for (const navigation of navigations)
       for (const recorded of refusals)
@@ -165,11 +168,12 @@ describe("whether the page can take a start", () => {
             cases += 1;
             const now = tab({ document, loading, navigation });
             const gate = navigation?.pending === true && navigation.blankDocument;
+            // S5: released as soon as any fact it recorded differs, loading either way.
             const released =
               recorded === null ||
-              (navigation !== null && navigation.finished > (recorded.finished ?? -1)) ||
-              (recorded.pending && navigation?.pending !== true) ||
-              (recorded.loading && !loading) ||
+              (navigation?.finished ?? null) !== recorded.finished ||
+              (navigation?.pending ?? false) !== recorded.pending ||
+              loading !== recorded.loading ||
               document !== recorded.document;
             if (recorded) expect(refusalReleased(now, recorded)).toBe(released);
             const result = canTakeStart(now, recorded);
@@ -179,6 +183,13 @@ describe("whether the page can take a start", () => {
             if (!result.ok) expect(result.why.length).toBeGreaterThan(0);
           }
     expect(cases).toBe(navigations.length * refusals.length * 4);
+  });
+
+  // Re-check 10, finding 6 (S5): on Linux a start refused before the page said it loads, then a
+  // load that began and ended on the same document, never let the refusal go.
+  it("releases a refusal sent before loading began as loading begins, and one sent while it loaded as it ends", () => {
+    expect(refusalReleased(tab({ loading: true }), refusal({ loading: false }))).toBe(true);
+    expect(refusalReleased(tab({ loading: false }), refusal({ loading: true }))).toBe(true);
   });
 
   it("keeps a refusal with nothing pending, nothing loading and no navigation until the document changes", () => {
@@ -203,10 +214,9 @@ const otherKey = keyOf(facts({}, { size: { height: 700, width: 900 } }));
 const tolds: Told[] = [
   { state: "none" },
   { state: "preparing" },
-  { key, state: "sent" },
+  { at: startFacts(base.tab!), key, state: "sent" },
   { key, state: "running" },
   { key: otherKey, state: "running" },
-  { state: "stopping" },
 ];
 const wants: Array<[string, CastFacts]> = [
   ["cast", base],
@@ -232,7 +242,7 @@ for (const told of tolds)
               for (const recorded of [null, refusal()])
                 for (const failed of [null, { key, why: "no picture arrived" }])
                   states.push({
-                    ...initialTabCastState(false),
+                    ...initialTabCastState(),
                     failed,
                     paint,
                     redraw,
@@ -247,8 +257,8 @@ for (const told of tolds)
 describe("the next step", () => {
   it("binds the tab in view first, and is idle with nothing bound", () => {
     expect(nextStep(base, null, null)).toEqual({ kind: "bind" });
-    expect(nextStep(base, "other#1", initialTabCastState(false))).toEqual({ kind: "bind" });
-    expect(nextStep(facts({ closed: true }), "tab#1", initialTabCastState(false))).toEqual({
+    expect(nextStep(base, "other#1", initialTabCastState())).toEqual({ kind: "bind" });
+    expect(nextStep(facts({ closed: true }), "tab#1", initialTabCastState())).toEqual({
       kind: "bind",
     });
     expect(nextStep({ ...base, tab: null }, null, null)).toEqual({ kind: "idle" });
@@ -274,16 +284,10 @@ describe("the next step", () => {
                 told.state === "running" && fit === "same" && state.shown && !state.redraw,
                 at,
               ).toBe(true);
-            if (want.kind === "none")
-              expect(told.state === "none" || told.state === "stopping" || now.closed, at).toBe(
-                true,
-              );
+            if (want.kind === "none") expect(told.state === "none" || now.closed, at).toBe(true);
             break;
           case "stop":
-            expect(
-              want.kind === "none" && told.state !== "none" && told.state !== "stopping",
-              at,
-            ).toBe(true);
+            expect(want.kind === "none" && told.state !== "none", at).toBe(true);
             break;
           case "start": {
             expect(want.kind === "cast" && told.state === "none" && !state.repairing, at).toBe(
@@ -354,15 +358,20 @@ describe("the next step", () => {
   });
 
   it("sends no start while one is prepared or with Chromium, or while the session's stop is", () => {
+    const stopping = { generation: 0, stops: 1 };
     for (const [, now] of wants)
-      for (const state of states)
-        if (["preparing", "sent", "stopping"].includes(state.told.state) || state.repairing)
+      for (const state of states) {
+        expect(nextStep(now, "tab#1", state, stopping).kind).not.toMatch(
+          /^(start|restart|repair)$/u,
+        );
+        if (["preparing", "sent"].includes(state.told.state) || state.repairing)
           expect(nextStep(now, "tab#1", state).kind).not.toMatch(/^(start|restart|repair)$/u);
+      }
   });
 
   it("reaches the bound for frames set aside, and gives up then (finding 1)", () => {
     const running: TabCastState = {
-      ...initialTabCastState(false),
+      ...initialTabCastState(),
       lastKey: key,
       told: { key, state: "running" },
     };
@@ -375,8 +384,7 @@ describe("the next step", () => {
       expect(step.kind).toBe("restart");
       // The restart, its start for the same cast, its answer, and its frame set aside again.
       state = after(state, { kind: "stopped", retry: true }, base);
-      state = after(state, { kind: "stop-answered", remaining: 0 }, base);
-      state = after(state, { key, kind: "sent" }, base);
+      state = after(state, { at: startFacts(base.tab!), key, kind: "sent" }, base);
       state = after(state, { kind: "answered" }, base);
       state = after(state, { kind: "frame", verdict: "set-aside" }, base);
     }
@@ -390,40 +398,63 @@ describe("what a frame is", () => {
     geometry,
     raster,
   });
-  const sent: TabCastState = { ...initialTabCastState(false), told: { key, state: "sent" } };
-  const running: TabCastState = { ...initialTabCastState(false), told: { key, state: "running" } };
+  const sent: TabCastState = {
+    ...initialTabCastState(),
+    told: { at: startFacts(base.tab!), key, state: "sent" },
+  };
+  const none = initialSessionCastState;
+  const running: TabCastState = { ...initialTabCastState(), told: { key, state: "running" } };
 
   it("is held with its start when it pictures what the start asked for, and of another size otherwise", () => {
-    expect(frameVerdict(sent, measured(), base)).toBe("held");
-    expect(frameVerdict(sent, measured({ height: 650, width: 900 }), base)).toBe(
+    expect(frameVerdict(sent, none, measured(), base)).toBe("held");
+    expect(frameVerdict(sent, none, measured({ height: 650, width: 900 }), base)).toBe(
       "misfit-with-start",
     );
     const sentNative: TabCastState = {
       ...sent,
-      told: { key: keyOf(native), state: "sent" },
+      told: { at: startFacts(native.tab!), key: keyOf(native), state: "sent" },
     };
-    expect(frameVerdict(sentNative, measured({ height: 650, width: 900 }), native)).toBe(
+    expect(frameVerdict(sentNative, none, measured({ height: 650, width: 900 }), native)).toBe(
       "other-size-with-start",
     );
   });
 
   it("is shown, set aside, a misfit or dropped once its cast runs", () => {
-    expect(frameVerdict(running, measured(), base)).toBe("show");
-    expect(frameVerdict(running, measured(), facts({}, { dialogOpen: true }))).toBe("set-aside");
-    expect(frameVerdict(running, measured(), facts({ density: 1 }))).toBe("set-aside");
-    expect(frameVerdict(running, measured({ height: 650, width: 900 }), base)).toBe("misfit");
-    expect(frameVerdict(running, measured(size, { height: 600, width: 1600 }), base)).toBe(
+    expect(frameVerdict(running, none, measured(), base)).toBe("show");
+    expect(frameVerdict(running, none, measured(), facts({}, { dialogOpen: true }))).toBe(
+      "set-aside",
+    );
+    expect(frameVerdict(running, none, measured(), facts({ density: 1 }))).toBe("set-aside");
+    expect(frameVerdict(running, none, measured({ height: 650, width: 900 }), base)).toBe("misfit");
+    expect(frameVerdict(running, none, measured(size, { height: 600, width: 1600 }), base)).toBe(
       "misfit",
     );
-    expect(frameVerdict({ ...running, told: { state: "stopping" } }, measured(), base)).toBe(
+    expect(frameVerdict({ ...running, told: { state: "none" } }, none, measured(), base)).toBe(
       "dropped",
     );
   });
 
+  // Re-check 10, S1 and S6: whether a frame is no one's is the plan's to say, from the session's
+  // stops and whether anything is streamed.
+  it("is dropped on a session whose stop is with Chromium, and while nothing is streamed", () => {
+    const stopping = { generation: 0, stops: 1 };
+    for (const state of [sent, running])
+      for (const now of [base, facts({ streaming: false })])
+        expect(frameVerdict(state, stopping, measured(), now)).toBe("dropped");
+    expect(frameVerdict(sent, none, measured(), facts({ streaming: false }))).toBe("dropped");
+    expect(
+      frameVerdict(sent, none, measured({ height: 650, width: 900 }), facts({ streaming: false })),
+    ).toBe("dropped");
+  });
+
   it("is the old document's when it came before the follow view saw the new one, and the new one's after", () => {
     const committed = facts({}, { document: "b", geometryRevision: 2 });
-    expect(frameVerdict(running, { ...measured(), document: "a" }, committed)).toBe("dropped");
-    expect(frameVerdict(running, { ...measured(), document: "b" }, committed)).toBe("restamp-show");
+    expect(frameVerdict(running, none, { ...measured(), document: "a" }, committed)).toBe(
+      "dropped",
+    );
+    expect(frameVerdict(running, none, { ...measured(), document: "b" }, committed)).toBe(
+      "restamp-show",
+    );
   });
 });
 
@@ -431,21 +462,20 @@ describe("the state after each event", () => {
   const events: CastEvent[] = [
     { kind: "observed" },
     { kind: "start-begun" },
-    { key, kind: "sent" },
-    { key: otherKey, kind: "sent" },
+    { at: startFacts(base.tab!), key, kind: "sent" },
+    { at: startFacts(base.tab!), key: otherKey, kind: "sent" },
     { kind: "answered" },
-    { kind: "refused", refusal: refusal() },
+    { kind: "start-failed", why: "x" },
     { kind: "not-sent" },
-    { kind: "paint-timed-out", paint: { captureRevision: null, geometryRevision: 1, size } },
+    { kind: "paint-timed-out" },
     { kind: "paint-backoff-ended" },
     { kind: "stopped", retry: false },
     { kind: "stopped", retry: true },
-    { failed: { key, why: "no picture arrived" }, kind: "stopped", retry: false },
+    { givenUp: "no picture arrived", kind: "stopped", retry: false },
     { kind: "repair-begun", retry: true },
     { kind: "repair-begun", retry: false },
     { kind: "repair-drawn" },
-    { kind: "stop-answered", remaining: 0 },
-    { kind: "stop-answered", remaining: 1 },
+    { kind: "stop-timed-out" },
     { kind: "casts-ended" },
     { kind: "frame", verdict: "show" },
     { kind: "frame", verdict: "set-aside" },
@@ -453,7 +483,7 @@ describe("the state after each event", () => {
     { kind: "frame", verdict: "other-size-with-start" },
     { kind: "first-frame-timeout" },
     { kind: "resumed" },
-    { kind: "tab-closed-beside", native: false },
+    { kind: "tab-closed-beside" },
     { document: "b", geometryRevision: 2, kind: "restamped" },
   ];
 
@@ -474,25 +504,20 @@ describe("the state after each event", () => {
             "casts-ended": ["none"],
             "not-sent": told === "preparing" ? ["none"] : [],
             "paint-timed-out": told === "preparing" ? ["none"] : [],
-            refused: ["none"],
-            "repair-begun": ["stopping", "none"],
+            "repair-begun": ["none"],
             sent: ["sent"],
             "start-begun": ["preparing"],
-            "stop-answered": told === "stopping" ? ["none"] : [],
-            stopped: ["stopping", "none"],
+            "start-failed": told === "preparing" || told === "sent" ? ["none"] : [],
+            stopped: ["none"],
           };
           expect(allowed[event.kind] ?? [], at).toContain(to);
-          // A stop leaves a sent or running cast stopping, never nothing: its frames are dropped
-          // until the stop's answer.
-          if (event.kind === "stopped" && (told === "sent" || told === "running"))
-            expect(to, at).toBe("stopping");
         }
     expect(cases).toBeGreaterThan(10_000);
   });
 
   it("counts every retry with no picture, a repair once it is drawn, and counts afresh for another cast or a resume", () => {
     const running: TabCastState = {
-      ...initialTabCastState(false),
+      ...initialTabCastState(),
       lastKey: key,
       told: { key, state: "running" },
     };
@@ -509,14 +534,15 @@ describe("the state after each event", () => {
     const changed = after(running, { kind: "repair-begun", retry: false }, base);
     expect(after(changed, { kind: "repair-drawn" }, base).unpictured).toBe(0);
     const counted = { ...running, unpictured: 2 };
-    expect(after(counted, { key, kind: "sent" }, base).unpictured).toBe(2);
-    expect(after(counted, { key: otherKey, kind: "sent" }, base).unpictured).toBe(0);
+    const at = startFacts(base.tab!);
+    expect(after(counted, { at, key, kind: "sent" }, base).unpictured).toBe(2);
+    expect(after(counted, { at, key: otherKey, kind: "sent" }, base).unpictured).toBe(0);
     expect(after(counted, { kind: "resumed" }, base).unpictured).toBe(0);
   });
 
   it("tries a cast given up again, counted afresh, when its size, capture, raster or document changes", () => {
     const failed: TabCastState = {
-      ...initialTabCastState(false),
+      ...initialTabCastState(),
       failed: { key, why: "no picture arrived" },
       unpictured: 3,
     };
@@ -533,7 +559,7 @@ describe("the state after each event", () => {
 
   it("gives a running cast's first picture its time only while the plan still gives one (R10)", () => {
     const running: TabCastState = {
-      ...initialTabCastState(false),
+      ...initialTabCastState(),
       lastKey: key,
       told: { key, state: "running" },
     };
@@ -574,10 +600,76 @@ describe("the state after each event", () => {
   });
 
   it("finds a session's stop still with Chromium when the tab is bound again", () => {
-    expect(initialTabCastState(true).told).toEqual({ state: "stopping" });
-    expect(nextStep(base, "tab#1", initialTabCastState(true))).toEqual({
+    expect(nextStep(base, "tab#1", initialTabCastState(), { generation: 0, stops: 1 })).toEqual({
       kind: "wait",
       why: "a stop is with Chromium",
     });
+  });
+
+  // Re-check 10, S2 (finding 2): a start that failed before it reached Chromium is no refusal.
+  it("counts a start that failed before it was sent as an attempt, and gives up at the bound", () => {
+    const preparing: TabCastState = { ...initialTabCastState(), told: { state: "preparing" } };
+    let state = preparing;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      state = after(state, { kind: "start-failed", why: "Electron browser page is closed." }, base);
+      expect(state).toMatchObject({ refusal: null, told: { state: "none" }, unpictured: attempt });
+      if (attempt < 3) {
+        expect(state.failed).toBeNull();
+        expect(nextStep(base, "tab#1", state).kind).toBe("start");
+        state = after(state, { kind: "start-begun" }, base);
+      }
+    }
+    expect(state.failed?.why).toBe(
+      "its start could not be made (Electron browser page is closed.)",
+    );
+    expect(nextStep(base, "tab#1", state).kind).toBe("wait");
+    // A start Chromium refused is a refusal, of the facts when it was sent.
+    const sentAt = startFacts(tab({ loading: true }));
+    const sent: TabCastState = {
+      ...initialTabCastState(),
+      told: { at: sentAt, key, state: "sent" },
+    };
+    expect(after(sent, { kind: "start-failed", why: "no" }, base)).toMatchObject({
+      refusal: { ...sentAt, why: "no" },
+      unpictured: 0,
+    });
+  });
+
+  // Re-check 10, S6: a cast at its bound is given up, even when a closed tab asks for a repair.
+  it("gives up a cast at its bound before a repair a closed tab asks for", () => {
+    const running: TabCastState = {
+      ...initialTabCastState(),
+      lastKey: key,
+      redraw: true,
+      told: { key, state: "running" },
+      trouble: "misfit",
+      unpictured: 3,
+    };
+    expect(nextStep(base, "tab#1", running).kind).toBe("fail");
+    expect(nextStep(base, "tab#1", { ...running, unpictured: 2 })).toEqual({
+      kind: "repair",
+      retry: false,
+      why: "a tab closed",
+    });
+  });
+
+  // Re-check 10, S1 and S3: the session's stops, written by one pure function.
+  it("settles a session's stops when the engine ends its casts or a stop's time is up, and ignores a late answer", () => {
+    let session = initialSessionCastState;
+    session = afterSession(session, { kind: "stop-sent" });
+    session = afterSession(session, { kind: "stop-sent" });
+    expect(session).toEqual({ generation: 0, stops: 2 });
+    expect(afterSession(session, { generation: 0, kind: "stop-answered" }).stops).toBe(1);
+    const ended = afterSession(session, { kind: "casts-ended" });
+    expect(ended).toEqual({ generation: 1, stops: 0 });
+    // The ended generation's answers change nothing, and never go below none.
+    expect(afterSession(ended, { generation: 0, kind: "stop-answered" })).toBe(ended);
+    const timedOut = afterSession(session, { generation: 0, kind: "stop-timed-out" });
+    expect(timedOut).toEqual({ generation: 1, stops: 0 });
+    expect(afterSession(timedOut, { generation: 0, kind: "stop-timed-out" })).toBe(timedOut);
+    const again = afterSession(timedOut, { kind: "stop-sent" });
+    expect(afterSession(again, { generation: 0, kind: "stop-answered" })).toBe(again);
+    // The tab's next start after a stop given up on counts as an attempt.
+    expect(after(initialTabCastState(), { kind: "stop-timed-out" }, base).unpictured).toBe(1);
   });
 });

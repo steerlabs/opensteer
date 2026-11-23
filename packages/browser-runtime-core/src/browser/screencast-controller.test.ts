@@ -1238,6 +1238,133 @@ describe("the follow view, in re-check 9's sequences (R7)", async () => {
 });
 
 /*
+ * Re-check 10, finding 1: when the engine ends a session's casts, the session's stops end with
+ * them and the start in flight is let go (S1). Before, the follow view's own count of stops kept
+ * every frame of the next cast dropped, and a pause waited on the start no one answered.
+ */
+describe("the follow view, when the engine ends the casts of a session it holds work on", async () => {
+  const { ScreencastController } = await import("./screencast-controller.js");
+  const { LatestFrameStream } = await import("../stream/latest-frame-stream.js");
+  const { FakeCdpSession, jpeg } = await import("../test-support/fakes.js");
+  const { screencastEndedEvent } = await import("./backend.js");
+  const settle = async () => {
+    for (let turn = 0; turn < 6; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+  const shown = { height: 600, width: 800 };
+
+  function stage() {
+    const cdp = new FakeCdpSession();
+    let frameId = 0;
+    const held = { starts: false, stops: false };
+    const answers: Array<() => void> = [];
+    const hold = (which: "starts" | "stops") =>
+      held[which] ? new Promise<void>((resolve) => answers.push(resolve)) : Promise.resolve();
+    let size = { ...shown };
+    cdp.responses.set("Page.startScreencast", async () => {
+      // A still page: the start's one frame, of the page as it is, once it is taken.
+      const drawn = size;
+      setImmediate(() =>
+        cdp.emit("Page.screencastFrame", {
+          data: jpeg(drawn.width, drawn.height).toString("base64"),
+          metadata: { deviceHeight: drawn.height, deviceWidth: drawn.width },
+          sessionId: ++frameId,
+        }),
+      );
+      await hold("starts");
+      return {};
+    });
+    cdp.responses.set("Page.stopScreencast", async () => {
+      await hold("stops");
+      return {};
+    });
+    const surface = {
+      active: true,
+      documentId: "a",
+      geometryRevision: 1,
+      id: "tab",
+      loading: false,
+    };
+    const page = {
+      applyGeometry: async () => undefined,
+      capture: {
+        read: () => ({ ...size, rasterScale: 1, revision: surface.geometryRevision }),
+        subscribe: () => () => undefined,
+      },
+      settleRendering: async () => undefined,
+    };
+    const binding = { cdp, page, surface };
+    const listeners = new Set<(event: unknown) => void>();
+    const delivered: unknown[] = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+      ledger: {
+        active: () => binding,
+        binding: () => binding,
+        dialogOf: () => null,
+        dialogOpen: () => false,
+        recordPageScale: () => undefined,
+        subscribe: (listener: (event: unknown) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+        viewportOf: () => size,
+        withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      } as never,
+      onDialogChanged: () => undefined,
+    });
+    return {
+      cdp,
+      delivered,
+      follow,
+      held,
+      resize: () => {
+        size = { height: 700, width: 900 };
+        surface.geometryRevision += 1;
+        for (const listener of listeners)
+          listener({ change: "updated", surface: { ...surface }, type: "changed" });
+      },
+      starts: () => cdp.sent.filter(({ method }) => method === "Page.startScreencast").length,
+    };
+  }
+
+  it("pictures the next cast at once when the engine ended them while a stop was unanswered", async () => {
+    const view = stage();
+    await view.follow.start();
+    await view.follow.setStreaming(true);
+    await settle();
+    expect(view.delivered).toHaveLength(1);
+    // A restart's stop that Chromium holds, and then the engine ends the session's casts.
+    view.held.stops = true;
+    view.resize();
+    await settle();
+    view.cdp.emit(screencastEndedEvent, {});
+    await settle();
+    // The next cast starts, and its frame is shown: the unanswered stop is settled with the casts.
+    expect(view.starts()).toBe(2);
+    expect(view.delivered).toHaveLength(2);
+    await view.follow.close();
+  });
+
+  it("answers a pause at once when the engine ended them while a start was unanswered", async () => {
+    const view = stage();
+    view.held.starts = true;
+    await view.follow.start();
+    void view.follow.setStreaming(true).catch(() => undefined);
+    await settle();
+    expect(view.starts()).toBe(1);
+    view.cdp.emit(screencastEndedEvent, {});
+    let paused = false;
+    void view.follow.setStreaming(false).then(() => {
+      paused = true;
+    });
+    await settle();
+    expect(paused).toBe(true);
+    await view.follow.close();
+  });
+});
+
+/*
  * Re-check 9, R1: the state of a bound tab has one writer, the pure `after` in screencast-plan.ts.
  * The controller turns what happened into an event and stores what `after` returns; it never sets
  * a field of that state itself.

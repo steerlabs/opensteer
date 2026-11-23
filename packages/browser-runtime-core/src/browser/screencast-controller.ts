@@ -16,17 +16,26 @@ import {
 } from "./backend.js";
 import {
   after,
-  canTakeStart,
+  afterSession,
   fits,
   frameVerdict,
+  initialSessionCastState,
   initialTabCastState,
   nextStep,
+  refusedInNavigation,
+  restamped,
   sameSize,
+  startFacts,
+  startStillWanted,
+  stopAnswerWaitMs,
+  stopReachesChromium,
   wanted,
   type CastEvent,
   type CastFacts,
   type CastKey,
-  type Refusal,
+  type SessionCastState,
+  type SessionEvent,
+  type StartFacts,
   type Step,
   type TabCastState,
 } from "./screencast-plan.js";
@@ -51,35 +60,44 @@ interface CdpScreencastFrame {
   data: string;
 }
 
-/** The tab the follow view is bound to, and what it told Chromium there. */
+/**
+ * The tab the follow view is bound to. What it told Chromium there is `state`, written only by
+ * `after`; every other field is a handle, a timer or a record that `reconcile` makes agree with
+ * the state after each change of it, or a value no decision reads (S1).
+ */
 interface Bound {
   readonly id: BrowserSurfaceId;
   readonly binding: string;
   readonly cdp: CdpSession;
   readonly page: SurfaceBinding["page"];
+  readonly unbind: () => void;
   /** Written only by `after`: `this.apply` stores what it returns. */
   state: TabCastState;
-  /** The latest frame that came with the start in flight, of what it asked for: not yet acked. */
-  held: unknown;
-  /** The document the follow view had seen when the held frame arrived. */
-  heldDocument: string | null;
-  /** A start, or a repair's redraw, under way: given up by aborting it. */
-  inFlight: AbortController | null;
-  /** The page zoom of the latest picture shown, which input on it undoes. */
-  pageScale: number;
-  paintDelay: number;
-  releaseRendering: (() => void) | null;
-  /** Why the next start is sent: what last stopped the cast, or what bound the tab. */
-  startWhy: string;
-  /** The last wait recorded, so each is recorded once. */
-  waiting: string | null;
-  paintTimer: ReturnType<typeof setTimeout> | null;
   /**
-   * The time the plan gives the running cast for a picture, and how long it is: one timer serves
-   * the first frame and a start's own frame after one of another size, at the plan's length.
+   * The latest frame that came with the start sent, of what it asked for, not yet acked, and the
+   * document the follow view had seen when it arrived. Only while the start is sent: `reconcile`
+   * acks and drops it otherwise.
    */
+  held: { readonly parameters: unknown; readonly document: string | null } | null;
+  /**
+   * The start, or the repair's redraw, under way, to abort it by. Only while the state has it (a
+   * start preparing or sent, a repair): `reconcile` aborts it otherwise.
+   */
+  inFlight: { readonly kind: "start" | "repair"; readonly abort: AbortController } | null;
+  /** Kept while the state wants the page drawn (streamed, no paint wait): by `reconcile`. */
+  releaseRendering: (() => void) | null;
+  /** Armed while the state has a paint wait: by `reconcile`. */
+  paintTimer: ReturnType<typeof setTimeout> | null;
+  /** How long the next paint backoff is; reset on a pause and an answered start. */
+  paintDelay: number;
+  /** Armed for the length the plan's wait gives, while it gives one: by `reconcile`. */
   firstFrameTimer: { readonly timer: ReturnType<typeof setTimeout>; readonly ms: number } | null;
-  readonly unbind: () => void;
+  /** The plan's wait now, recorded once each: by `reconcile`. Read by no decision. */
+  waiting: string | null;
+  /** Why the next start is sent, recorded with it. Read by no decision. */
+  startWhy: string;
+  /** The page zoom of the latest picture shown, which input on it undoes. Not of casting. */
+  pageScale: number;
 }
 
 interface ScreencastControllerOptions {
@@ -162,8 +180,13 @@ export class ScreencastController {
   private failure: unknown = null;
   private readonly sessions = new WeakMap<CdpSession, number>();
   private sessionCount = 0;
-  /** Each session's stops still with Chromium: a session, not a binding, holds them. */
-  private readonly stops = new WeakMap<CdpSession, number>();
+  /** Each page session's stops (`SessionCastState`): a session outlives the tab bound to it. */
+  private readonly sessionStates = new WeakMap<CdpSession, SessionCastState>();
+  /** The time each session's oldest stop is given for its answer, while one is with Chromium. */
+  private readonly stopTimers = new WeakMap<
+    CdpSession,
+    { readonly generation: number; readonly timer: ReturnType<typeof setTimeout> }
+  >();
 
   constructor(options: ScreencastControllerOptions) {
     this.surfaceId = options.surfaceId;
@@ -322,8 +345,7 @@ export class ScreencastController {
       this.lastPictures.delete(event.surface.id);
       // When a tab closes, headless Chrome shows the tab that remains at its window's size again,
       // whichever of the two the person was watching: the picture is to be made again.
-      if (this.bound)
-        this.apply(this.bound, { kind: "tab-closed-beside", native: !!this.bound.page.capture });
+      if (this.bound) this.apply(this.bound, { kind: "tab-closed-beside" });
     }
     if (event.type === "snapshot") {
       for (const surfaceId of this.lastPictures.keys()) {
@@ -337,7 +359,61 @@ export class ScreencastController {
 
   /** Stores the state that follows from `event`: the one way a bound tab's state changes. */
   private apply(bound: Bound, event: CastEvent): void {
-    bound.state = after(bound.state, event, this.readFacts());
+    const before = bound.state;
+    bound.state = after(before, event, this.readFacts());
+    this.reconcile(bound, before);
+  }
+
+  private session(cdp: CdpSession): SessionCastState {
+    return this.sessionStates.get(cdp) ?? initialSessionCastState;
+  }
+
+  /** Stores the session's state that follows from `event`: the one way it changes. */
+  private applySession(cdp: CdpSession, event: SessionEvent): void {
+    this.sessionStates.set(cdp, afterSession(this.session(cdp), event));
+    this.keepStopTimer(cdp);
+    if (this.bound?.cdp === cdp) this.reconcile(this.bound, this.bound.state);
+  }
+
+  /**
+   * Makes every effect agree with the state, after each change of it (S1): work in flight the
+   * state no longer has is let go, the frame held for a start no longer sent is acked, the page
+   * is kept drawing while it is streamed, the timers are those the plan gives, the wait recorded
+   * is the plan's, and a cast newly given up says so.
+   */
+  private reconcile(bound: Bound, before: TabCastState): void {
+    if (this.bound !== bound) return;
+    const state = bound.state;
+    const told = state.told.state;
+    const work = bound.inFlight;
+    if (
+      work &&
+      (work.kind === "start" ? told !== "preparing" && told !== "sent" : state.repairing === null)
+    ) {
+      work.abort.abort();
+      bound.inFlight = null;
+    }
+    if (told !== "sent") this.dropHeld(bound);
+    if (state.failed && state.failed !== before.failed) {
+      this.diagnose({ stage: "cast-failed", reason: state.failed.why });
+      // The code is the one the clients know; the text says what is true of this cast.
+      this.onError?.(
+        new BrowserRuntimeError(
+          "internal",
+          `The picture of the page was given up: ${state.failed.why}.`,
+          { reason: "browser-capture-mismatch" },
+        ),
+      );
+    }
+    const facts = this.readFacts();
+    const step = nextStep(facts, bound.binding, state, this.session(bound.cdp));
+    this.keepRendering(bound, facts);
+    this.keepTimers(bound, step);
+    const waiting = step.kind === "wait" ? step.why : null;
+    if (waiting !== bound.waiting) {
+      bound.waiting = waiting;
+      if (waiting !== null) this.diagnose({ stage: "cast-held", reason: waiting });
+    }
   }
 
   /**
@@ -370,10 +446,11 @@ export class ScreencastController {
   }
 
   private settleQuiet(): void {
-    if (this.passing || this.bound?.inFlight) return;
+    const bound = this.bound;
+    if (this.passing || bound?.inFlight) return;
     // A restart's stop is with Chromium and its start is still to come; a stop while nothing is
     // wanted (a pause, a page under a dialog) is waited on by no one.
-    if (this.bound?.state.told.state === "stopping" && wanted(this.readFacts()).kind === "cast")
+    if (bound && this.session(bound.cdp).stops > 0 && wanted(this.readFacts()).kind === "cast")
       return;
     const waiters = this.quietWaiters;
     this.quietWaiters = [];
@@ -387,9 +464,12 @@ export class ScreencastController {
       const facts = this.readFacts();
       const bound = this.bound;
       if (bound && facts.tab?.binding === bound.binding) this.apply(bound, { kind: "observed" });
-      const step = nextStep(facts, bound?.binding ?? null, bound?.state ?? null);
-      this.keepRendering(facts);
-      this.keepTimers(step);
+      const step = nextStep(
+        this.readFacts(),
+        bound?.binding ?? null,
+        bound?.state ?? null,
+        bound ? this.session(bound.cdp) : initialSessionCastState,
+      );
       if (step.kind === "idle" || step.kind === "wait") {
         this.rest(step);
         continue;
@@ -447,17 +527,11 @@ export class ScreencastController {
     };
   }
 
-  /** A pass with nothing to do now: say what it waits on, once. */
+  /** A pass with nothing to do now: a page under a dialog shows its last picture. */
   private rest(step: Extract<Step, { kind: "idle" | "wait" }>): void {
     const bound = this.bound;
-    if (!bound) return;
-    if (step.kind === "wait") {
-      if (bound.waiting !== step.why) {
-        bound.waiting = step.why;
-        this.diagnose({ stage: "cast-held", reason: step.why });
-      }
-      if (step.why === "a dialog is open") this.showRetainedPicture(bound);
-    } else bound.waiting = null;
+    if (bound && step.kind === "wait" && step.why === "a dialog is open")
+      this.showRetainedPicture(bound);
   }
 
   private async take(step: Exclude<Step, { kind: "idle" | "wait" }>): Promise<void> {
@@ -467,7 +541,6 @@ export class ScreencastController {
     }
     const bound = this.bound;
     if (!bound) return;
-    bound.waiting = null;
     switch (step.kind) {
       case "stop":
         this.stopCast(bound, step.why, false);
@@ -489,25 +562,10 @@ export class ScreencastController {
       case "repair":
         this.beginRepair(bound, step);
         return;
-      case "fail": {
-        const told = bound.state.told;
-        this.stopCast(
-          bound,
-          step.why,
-          false,
-          told.state === "running" ? { key: told.key, why: step.why } : undefined,
-        );
-        this.diagnose({ stage: "cast-failed", reason: step.why });
-        // The code is the one the clients know; the text says what is true of this cast.
-        this.onError?.(
-          new BrowserRuntimeError(
-            "internal",
-            `The picture of the page was given up: ${step.why}.`,
-            { reason: "browser-capture-mismatch" },
-          ),
-        );
+      case "fail":
+        // Given up: `reconcile` records it and says so.
+        this.stopCast(bound, step.why, false, step.why);
         return;
-      }
     }
   }
 
@@ -538,8 +596,9 @@ export class ScreencastController {
     const session = this.sessions.get(binding.cdp);
     const onFrame = (parameters: unknown) => this.onFrame(bound, parameters);
     const onEnded = () => {
+      // The session's stops end with its casts, whichever tab is bound (S1).
+      this.applySession(binding.cdp, { kind: "casts-ended" });
       if (this.bound !== bound) return;
-      this.dropHeld(bound);
       this.apply(bound, { kind: "casts-ended" });
       bound.startWhy = "the engine ended its cast";
       this.diagnose({ stage: "cast-ended" });
@@ -554,9 +613,8 @@ export class ScreencastController {
     const bound: Bound = {
       binding: `${binding.surface.id}#${String(session)}`,
       cdp: binding.cdp,
-      held: null,
-      heldDocument: null,
       firstFrameTimer: null,
+      held: null,
       id: binding.surface.id,
       inFlight: null,
       page: binding.page,
@@ -565,8 +623,7 @@ export class ScreencastController {
       paintTimer: null,
       releaseRendering: null,
       startWhy: "bind",
-      // A stop of this session still with Chromium, from before it was left, is still awaited.
-      state: initialTabCastState((this.stops.get(binding.cdp) ?? 0) > 0),
+      state: initialTabCastState(),
       unbind: () => {
         offNavigations();
         offCapture();
@@ -580,7 +637,7 @@ export class ScreencastController {
 
   /** Lets go of a tab's listeners, its rendering and its timers, its start given up. */
   private release(bound: Bound): void {
-    bound.inFlight?.abort();
+    bound.inFlight?.abort.abort();
     bound.inFlight = null;
     this.dropHeld(bound);
     bound.releaseRendering?.();
@@ -593,59 +650,40 @@ export class ScreencastController {
   }
 
   private dropHeld(bound: Bound): void {
-    if (bound.held !== null) acknowledgeFrame(bound.cdp, bound.held);
+    if (bound.held !== null) acknowledgeFrame(bound.cdp, bound.held.parameters);
     bound.held = null;
-    bound.heldDocument = null;
   }
 
   /**
    * Stops what the tab was told. A start being prepared is given up before it reaches Chromium; a
    * start sent, or a cast running, is stopped without waiting (a page under a dialog answers
-   * nothing else, and Chromium takes a session's commands in order), and the session is stopping
-   * until the stop is answered.
+   * nothing else, and Chromium takes a session's commands in order), and its session holds the
+   * stop until it is answered.
    */
-  private stopCast(
-    bound: Bound,
-    why: string,
-    retry: boolean,
-    failed?: { readonly key: CastKey; readonly why: string },
-  ): void {
-    const told = bound.state.told;
-    bound.inFlight?.abort();
-    bound.inFlight = null;
-    if (told.state === "sent" || told.state === "running") this.sendStop(bound, why);
-    this.dropHeld(bound);
-    this.apply(bound, { kind: "stopped", retry, ...(failed ? { failed } : {}) });
+  private stopCast(bound: Bound, why: string, retry: boolean, givenUp?: string): void {
+    if (stopReachesChromium(bound.state.told)) this.sendStop(bound, why);
+    this.apply(bound, { kind: "stopped", retry, ...(givenUp === undefined ? {} : { givenUp }) });
     bound.startWhy = why;
   }
 
   private sendStop(bound: Bound, why: string): void {
     const cdp = bound.cdp;
-    this.stops.set(cdp, (this.stops.get(cdp) ?? 0) + 1);
+    const generation = this.session(cdp).generation;
+    this.applySession(cdp, { kind: "stop-sent" });
     this.diagnose({ stage: "cast-stop", reason: why });
     void this.ledger
       .use(bound.id, () => cdp.send("Page.stopScreencast"))
       .catch(() => undefined)
       .finally(() => {
-        const remaining = Math.max(0, (this.stops.get(cdp) ?? 1) - 1);
-        this.stops.set(cdp, remaining);
-        const current = this.bound;
-        if (current?.cdp === cdp) this.apply(current, { kind: "stop-answered", remaining });
+        this.applySession(cdp, { generation, kind: "stop-answered" });
         this.requestPass();
       });
   }
 
-  /**
-   * Keeps the tab drawing while it is streamed, except while its paint is waited out; a pause
-   * ends that wait, and the next stream starts its backoff afresh.
-   */
-  private keepRendering(facts: CastFacts): void {
-    const bound = this.bound;
-    if (!bound) return;
-    if (!facts.streaming || facts.closed) {
-      if (bound.state.paint) this.apply(bound, { kind: "paint-backoff-ended" });
-      bound.paintDelay = paintRetryInitialMs;
-    }
+  /** Keeps the tab drawing while it is streamed, except while its paint is waited out. */
+  private keepRendering(bound: Bound, facts: CastFacts): void {
+    // A pause ends a paint wait, and the next stream starts its backoff afresh.
+    if (!facts.streaming || facts.closed) bound.paintDelay = paintRetryInitialMs;
     const keep = facts.streaming && !facts.closed && !bound.state.paint;
     if (keep) bound.releaseRendering ??= bound.cdp.retainRendering?.() ?? null;
     else {
@@ -655,13 +693,12 @@ export class ScreencastController {
   }
 
   /**
-   * The timers follow the plan: a paint backoff while one is recorded, and the time the plan gives
-   * the running cast for a picture while its step waits on one. Any other step (a hold, a pause, a
-   * stop, another tab) clears that timer; it only says the time is up, and `after` decides.
+   * The timers follow the state and the plan: a paint backoff while one is recorded, and the time
+   * the plan gives the running cast for a picture while its step waits on one. Any other step (a
+   * hold, a pause, a stop, another tab) clears that timer; it only says the time is up, and
+   * `after` decides.
    */
-  private keepTimers(step: Step): void {
-    const bound = this.bound;
-    if (!bound) return;
+  private keepTimers(bound: Bound, step: Step): void {
     const state = bound.state;
     if (state.paint && !bound.paintTimer) {
       const timer = setTimeout(() => {
@@ -700,70 +737,78 @@ export class ScreencastController {
   }
 
   /**
+   * The time a session's stop is given for its answer (S3), armed while one is with Chromium and
+   * cleared once none is, or once its generation is settled.
+   */
+  private keepStopTimer(cdp: CdpSession): void {
+    const session = this.session(cdp);
+    const armed = this.stopTimers.get(cdp);
+    if (armed && (session.stops === 0 || armed.generation !== session.generation)) {
+      clearTimeout(armed.timer);
+      this.stopTimers.delete(cdp);
+    }
+    if (session.stops === 0 || this.stopTimers.has(cdp) || this.closed) return;
+    const generation = session.generation;
+    const timer = setTimeout(() => {
+      if (this.stopTimers.get(cdp)?.timer !== timer) return;
+      this.stopTimers.delete(cdp);
+      const bound = this.bound?.cdp === cdp ? this.bound : null;
+      this.diagnose({ stage: "cast-stop-timeout", durationMs: stopAnswerWaitMs });
+      this.applySession(cdp, { generation, kind: "stop-timed-out" });
+      if (bound && this.bound === bound) this.apply(bound, { kind: "stop-timed-out" });
+      this.requestPass();
+    }, stopAnswerWaitMs);
+    timer.unref();
+    this.stopTimers.set(cdp, { generation, timer });
+  }
+
+  /**
    * Prepares and sends a start: the page's paint first, then, inside the page's geometry lock, a
-   * look at the facts as they are (a start the facts no longer want is not sent), and the start.
-   * Resolves once its first command to Chromium is handed off, or it came to nothing: the pass
-   * waits for no answer, and goes on to wait on it as a fact.
+   * look at the facts as they are (a start the plan would no longer make is not sent), and the
+   * start. Resolves once its first command to Chromium is handed off, or it came to nothing: the
+   * pass waits for no answer, and goes on to wait on it as a fact.
    */
   private beginStart(bound: Bound): Promise<void> {
-    const abort = new AbortController();
-    bound.inFlight = abort;
     this.apply(bound, { kind: "start-begun" });
+    const abort = new AbortController();
+    bound.inFlight = { abort, kind: "start" };
     const handedOff = Promise.withResolvers<void>();
     const signal = AbortSignal.any([this.lifecycle.signal, abort.signal]);
-    const current = () => bound.inFlight === abort && this.bound === bound;
+    const current = () => bound.inFlight?.abort === abort && this.bound === bound;
     const why = bound.startWhy;
-    let sentAt: Refusal | null = null;
-    /** The cast the facts want now, if this start is still to be sent for it. */
-    const stillWanted = (): CastKey | null => {
+    /** The cast the plan would start now, and the facts that bear on it, if still to be sent. */
+    const stillWanted = (): { readonly key: CastKey; readonly at: StartFacts } | null => {
       if (signal.aborted || !current()) return null;
       const facts = this.readFacts();
-      const want = wanted(facts);
-      if (
-        facts.tab?.binding !== bound.binding ||
-        want.kind !== "cast" ||
-        bound.state.told.state !== "preparing" ||
-        !canTakeStart(facts.tab, bound.state.refusal).ok
-      )
-        return null;
-      return want.key;
+      const key = startStillWanted(facts, bound.binding, bound.state, this.session(bound.cdp));
+      return key && facts.tab ? { at: startFacts(facts.tab), key } : null;
     };
     const send = async (): Promise<"answered" | "not-now"> => {
-      const key = stillWanted();
-      if (!key) return "not-now";
+      const first = stillWanted();
+      if (!first) return "not-now";
       // Chromium takes a session's commands in order: from here the start waits on Chromium.
       handedOff.resolve();
-      if (key.sizesView) {
+      if (first.key.sizesView)
         await bound.cdp.send("Emulation.setVisibleSize", {
-          height: key.size.height,
-          width: key.size.width,
+          height: first.key.size.height,
+          width: first.key.size.width,
         });
-        // The facts may have moved while Chromium sized the view: a dialog, a new size.
-        const now = stillWanted();
-        if (!now || fits(key, now) !== "same") return "not-now";
-      }
-      const facts = this.readFacts();
-      sentAt = {
-        document: facts.tab?.document ?? null,
-        finished: facts.tab?.navigation?.finished ?? null,
-        loading: facts.tab?.loading ?? false,
-        pending: facts.tab?.navigation?.pending ?? false,
-        why: "",
-      };
+      // The facts may have moved while Chromium sized the view: a dialog, a new size.
+      const now = stillWanted();
+      if (!now || fits(first.key, now.key) !== "same") return "not-now";
       this.diagnose({
         stage: "cast-start",
         reason: why,
         castId: ++this.castId,
-        geometryRevision: key.geometryRevision,
-        ...(key.captureRevision === null ? {} : { captureRevision: key.captureRevision }),
+        geometryRevision: now.key.geometryRevision,
+        ...(now.key.captureRevision === null ? {} : { captureRevision: now.key.captureRevision }),
       });
-      this.dropHeld(bound);
-      this.apply(bound, { key, kind: "sent" });
+      this.apply(bound, { at: now.at, key: now.key, kind: "sent" });
       await bound.cdp.send("Page.startScreencast", {
         everyNthFrame: 1,
         format: "jpeg",
-        maxHeight: key.raster.height,
-        maxWidth: key.raster.width,
+        maxHeight: now.key.raster.height,
+        maxWidth: now.key.raster.width,
         quality: this.frameQuality,
       });
       return "answered";
@@ -779,45 +824,29 @@ export class ScreencastController {
           if (!current()) return;
           bound.inFlight = null;
           if (outcome === "answered") {
+            // The frame that came with the start is judged now that it runs, as of when it came.
+            const held = bound.held;
+            bound.held = null;
             this.apply(bound, { kind: "answered" });
             bound.paintDelay = paintRetryInitialMs;
-            const held = bound.held;
-            const seen = bound.heldDocument;
-            bound.held = null;
-            // The frame that came with the start is judged now that it runs, as of when it came.
-            if (held !== null) this.onFrame(bound, held, seen);
-          } else {
-            this.dropHeld(bound);
-            this.apply(bound, { kind: "not-sent" });
-          }
+            if (held !== null) this.onFrame(bound, held.parameters, held.document);
+          } else this.apply(bound, { kind: "not-sent" });
         },
         (error: unknown) => {
           if (!current()) return;
           bound.inFlight = null;
-          this.dropHeld(bound);
           if (signal.aborted) {
             this.apply(bound, { kind: "not-sent" });
             return;
           }
           if (error instanceof BrowserPaintTimeoutError) {
-            const want = wanted(this.readFacts());
-            this.apply(bound, {
-              kind: "paint-timed-out",
-              paint:
-                want.kind === "cast"
-                  ? {
-                      captureRevision: want.key.captureRevision,
-                      geometryRevision: want.key.geometryRevision,
-                      size: want.key.size,
-                    }
-                  : null,
-            });
+            this.apply(bound, { kind: "paint-timed-out" });
             bound.startWhy = "paint-retry";
             this.diagnose({ stage: "cast-paint-timeout" });
             this.showRetainedPicture(bound);
             return;
           }
-          this.refused(bound, error, sentAt);
+          this.startFailed(bound, error);
         },
       )
       .finally(() => {
@@ -828,31 +857,25 @@ export class ScreencastController {
   }
 
   /**
-   * Records what the page could not take a start for, from each fact that bears on it as it was
-   * when the start was sent: the next start waits for one of them to settle. A refusal outside any
-   * navigation is told to the caller whose change led to it; the tab stays bound either way.
+   * A start that failed. Sent, it is Chromium's refusal, held until a fact that bears on it
+   * differs from when it was sent, and one outside any navigation is told to the caller whose
+   * change led to it. Failed before it was sent (S2), it is an attempt with no picture: the pass
+   * tries again under the same bound. The tab stays bound either way.
    */
-  private refused(bound: Bound, error: unknown, sentAt: Refusal | null): void {
+  private startFailed(bound: Bound, error: unknown): void {
+    const sent = bound.state.told.state === "sent";
+    const why = error instanceof Error ? error.message : String(error);
+    this.apply(bound, { kind: "start-failed", why });
+    if (!sent) {
+      bound.startWhy = "a start that could not be made";
+      this.diagnose({ stage: "cast-not-made", reason: why });
+      return;
+    }
+    bound.startWhy = "refusal released";
     const facts = this.readFacts();
     const tab = facts.tab?.binding === bound.binding ? facts.tab : null;
-    const why = error instanceof Error ? error.message : String(error);
-    const at = sentAt ?? {
-      document: tab?.document ?? null,
-      finished: tab?.navigation?.finished ?? null,
-      loading: tab?.loading ?? false,
-      pending: tab?.navigation?.pending ?? false,
-      why,
-    };
-    this.apply(bound, { kind: "refused", refusal: { ...at, why } });
-    bound.startWhy = "refusal released";
-    const navigating =
-      !!tab &&
-      (at.loading ||
-        at.pending ||
-        tab.loading ||
-        tab.navigation?.pending === true ||
-        tab.document !== at.document ||
-        (tab.navigation?.finished ?? 0) !== (at.finished ?? 0));
+    const refusal = bound.state.refusal;
+    const navigating = !!tab && !!refusal && refusedInNavigation(tab, refusal);
     this.diagnose({ stage: navigating ? "cast-deferred" : "cast-refused", reason: why });
     if (!navigating) this.failure = error;
   }
@@ -860,19 +883,16 @@ export class ScreencastController {
   /** Stops the cast and asks the page to draw its surface again; the pass then starts it. */
   private beginRepair(bound: Bound, step: Extract<Step, { kind: "repair" }>): void {
     const why = step.why;
-    const told = bound.state.told;
-    bound.inFlight?.abort();
-    if (told.state === "sent" || told.state === "running") this.sendStop(bound, why);
-    this.dropHeld(bound);
+    if (stopReachesChromium(bound.state.told)) this.sendStop(bound, why);
     this.apply(bound, { kind: "repair-begun", retry: step.retry });
     bound.startWhy = why;
     const abort = new AbortController();
-    bound.inFlight = abort;
+    bound.inFlight = { abort, kind: "repair" };
     this.diagnose({ stage: "cast-repair", reason: `${bound.state.unpictured}` });
     void (bound.page.invalidateSurface?.() ?? Promise.resolve())
       .catch(() => undefined)
       .then(() => {
-        if (bound.inFlight !== abort || this.bound !== bound) return;
+        if (bound.inFlight?.abort !== abort || this.bound !== bound) return;
         bound.inFlight = null;
         this.apply(bound, { kind: "repair-drawn" });
       })
@@ -888,8 +908,7 @@ export class ScreencastController {
       acknowledgeFrame(bound.cdp, parameters);
       return;
     }
-    // A frame of a session whose stop is with Chromium is the stopped cast's: no one's now.
-    if (this.bound !== bound || this.closed || (this.stops.get(bound.cdp) ?? 0) > 0) {
+    if (this.bound !== bound || this.closed) {
       acknowledgeFrame(bound.cdp, parameters);
       return;
     }
@@ -900,6 +919,7 @@ export class ScreencastController {
     const document = seenDocument === undefined ? (facts.tab?.document ?? null) : seenDocument;
     const verdict = frameVerdict(
       bound.state,
+      this.session(bound.cdp),
       { document, geometry: event.geometry, raster },
       facts,
     );
@@ -908,8 +928,7 @@ export class ScreencastController {
         // A frame that comes with a start, of what it asked for, is its picture: it waits for
         // the answer.
         this.dropHeld(bound);
-        bound.held = parameters;
-        bound.heldDocument = document;
+        bound.held = { document, parameters };
         this.diagnose({ stage: "capture-held" });
         return;
       case "show":
@@ -918,14 +937,7 @@ export class ScreencastController {
         const want = wanted(facts);
         if (told.state !== "running" || !raster || want.kind !== "cast") break;
         // A frame of the new document is pictured as it, with the revision it committed at.
-        const key =
-          verdict === "restamp-show"
-            ? {
-                ...told.key,
-                document: want.key.document,
-                geometryRevision: want.key.geometryRevision,
-              }
-            : told.key;
+        const key = verdict === "restamp-show" ? restamped(told.key, want.key) : told.key;
         const delivered = this.admit(bound, key, event, data, raster);
         this.apply(bound, { kind: "frame", verdict: delivered ? verdict : "dropped" });
         break;
