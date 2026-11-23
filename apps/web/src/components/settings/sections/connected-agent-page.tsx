@@ -8,6 +8,7 @@ import {
   connectedAgentConnected,
   connectionsRead,
   connectedAgentDetail,
+  chatScreenHost,
   createDedicatedProfile,
   chatDraftRefusal,
   draftFromGrant,
@@ -55,6 +56,8 @@ export function ConnectedAgentPage({
   const shell = useShell();
   const navigate = useNavigate();
   const agents = useConnectedAgents(client);
+  // What this page sends is what the chat parity script covers.
+  const chatHost = chatScreenHost(client);
   const live = useConnectedAgentLive(client, connectionId);
   const chromeTabs = useChromeTabGrantCatalog(client, true);
   const workPolicy = useWorkPolicy(client);
@@ -149,7 +152,7 @@ export function ConnectedAgentPage({
       setCreating(true);
       setProfileError(null);
       try {
-        created = await createDedicatedProfile(client, {
+        created = await createDedicatedProfile(chatHost, {
           name: agent,
           homeRunnerId: draftToSave.newProfile.homeRunnerId,
         });

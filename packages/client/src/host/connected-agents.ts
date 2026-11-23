@@ -19,6 +19,7 @@ import {
 import { accessModeOptions } from "./access-modes.js";
 import { connectionStateEnded } from "./connected-agent-view.js";
 import type { HostClient } from "./client.js";
+import type { ChatScreenHost } from "./chat-screen-host.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "./host-session-client.js";
 import { formatRelativeTime } from "./thread-list-model.js";
 
@@ -60,10 +61,12 @@ export function connectedAgentsClient(client: HostClient): ConnectedAgentsClient
   }
   return resource;
 }
+// What it sends and reads is what the chat and connected-agent screens may (`ChatScreenHost`).
 type ConnectedAgentsHost = Pick<
   HostClient,
-  "connection" | "rpc" | "dispatch" | "subscribe" | "getSnapshot" | "subscribeConnectionsChanged"
->;
+  "connection" | "subscribe" | "getSnapshot" | "subscribeConnectionsChanged"
+> &
+  Pick<ChatScreenHost, "dispatch" | "rpc">;
 
 async function readConnectedAgents(client: Pick<ConnectedAgentsHost, "rpc">, signal?: AbortSignal) {
   const { connections, endedConnections } = unwrapRpcResult(
@@ -603,7 +606,7 @@ export function connectionAccessLabel(mode: AgentConnection["accessMode"]): stri
  * reuses it rather than creating a second profile.
  */
 export async function createDedicatedProfile(
-  client: Pick<HostClient, "dispatch">,
+  client: Pick<ChatScreenHost, "dispatch">,
   input: { readonly name: string; readonly homeRunnerId: string | null },
 ): Promise<string> {
   const result = await client.dispatch({

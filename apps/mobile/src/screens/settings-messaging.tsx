@@ -11,7 +11,7 @@ import {
   unwrapRpcResult,
   type HostClient,
 } from "@opensteer/client/host";
-import type { ClientCommandInput } from "@opensteer/client/host";
+import { chatScreenHost, type ChatScreenCommand } from "@opensteer/client/host";
 import { Alert } from "react-native";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { Sheet } from "../ui/sheet.js";
@@ -51,6 +51,8 @@ function Messaging({
 }) {
   const navigation = useNavigation();
   const agents = useConnectedAgents(host);
+  // What this screen sends and reads is what the chat parity script covers.
+  const chatHost = chatScreenHost(host);
   const [shownCode, setShownCode] = useState<{
     readonly accountId: string;
     readonly code: string;
@@ -61,9 +63,9 @@ function Messaging({
       createClientRead(host, {
         key: "channels",
         label: "messaging",
-        read: async () => unwrapRpcResult(await host.rpc["channels.get"]({})),
+        read: async () => unwrapRpcResult(await chatHost.rpc["channels.get"]({})),
       }),
-    [host],
+    [chatHost, host],
   );
   const dashboard = useClientRead(resource);
   // While a code is shown, read again every ten seconds, as the web does, so the account shows
@@ -91,8 +93,8 @@ function Messaging({
     label: "save the change",
     done: "saved",
     happened: "the change was saved",
-    execute: async (command: ClientCommandInput) => {
-      const result = (await host.dispatch(command)) as {
+    execute: async (command: ChatScreenCommand) => {
+      const result = (await chatHost.dispatch(command)) as {
         readonly type: string;
         readonly code?: string;
         readonly expiresAt?: string;
@@ -123,14 +125,15 @@ function Messaging({
     done: "checked",
     happened: "the connection was checked",
     execute: async (connectionId: string) =>
-      unwrapRpcResult(await host.rpc["channel.connection.check"]({ connectionId })).ready,
+      unwrapRpcResult(await chatHost.rpc["channel.connection.check"]({ connectionId })).ready,
     reconcile: async (connectionId) => ({
       kind: "confirmed",
-      value: unwrapRpcResult(await host.rpc["channel.connection.check"]({ connectionId })).ready,
+      value: unwrapRpcResult(await chatHost.rpc["channel.connection.check"]({ connectionId }))
+        .ready,
     }),
   });
   const pending = change.running || check.running;
-  const dispatch = (command: ClientCommandInput, section: string) => {
+  const dispatch = (command: ChatScreenCommand, section: string) => {
     if (pending) return;
     setActedOn(section);
     setNote(null);
@@ -522,7 +525,7 @@ function Messaging({
 }
 
 /** Whether the messaging settings show a change took: null where they can't tell. */
-function changeSettled(data: Dashboard, command: ClientCommandInput): boolean | null {
+function changeSettled(data: Dashboard, command: ChatScreenCommand): boolean | null {
   switch (command.type) {
     case "channel.connection.status.set": {
       const account = data.accounts.find((row) => row.connectionId === command.connectionId);

@@ -9,6 +9,7 @@ import {
   connectedAgentConnected,
   connectionsRead,
   connectedAgentDetail,
+  chatScreenHost,
   createDedicatedProfile,
   chatDraftRefusal,
   draftFromGrant,
@@ -70,6 +71,8 @@ export function ConnectedAgentController(props: {
   const { host, connectionId, deploymentId } = props;
   const navigation = useNavigation();
   const agents = useConnectedAgents(host);
+  // What this screen sends is what the chat parity script covers.
+  const chatHost = chatScreenHost(host);
   const live = useConnectedAgentLive(host, connectionId);
   const chromeTabs = useChromeTabGrantCatalog(host, true);
   const workPolicy = useWorkPolicy(host);
@@ -172,7 +175,7 @@ export function ConnectedAgentController(props: {
     if (draft.scope === "selected" && draft.newProfile) {
       setCreating(true);
       try {
-        created = await createDedicatedProfile(host, {
+        created = await createDedicatedProfile(chatHost, {
           name: agent,
           homeRunnerId: draft.newProfile.homeRunnerId,
         });
@@ -258,7 +261,7 @@ export function ConnectedAgentController(props: {
           onStop: (threadId) => {
             if (stopping !== null) return;
             setStopping(threadId);
-            void host
+            void chatHost
               .stopRun(threadId)
               .catch((error: unknown) => {
                 const words = failureWords(error, {

@@ -90,6 +90,7 @@ export * from "./home-account-link.js";
 export * from "./remote-access.js";
 export * from "./browser-cursor.js";
 export * from "./connected-agents.js";
+export * from "./chat-screen-host.js";
 export * from "./connected-agents-copy.js";
 export * from "./connected-agent-view.js";
 export * from "./chat-view.js";

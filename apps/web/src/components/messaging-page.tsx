@@ -21,7 +21,8 @@ import {
   mutationIdempotencyKey,
   unwrapRpcResult,
   type CreatedChannelConnection,
-  type HostClient,
+  chatScreenHost,
+  type ChatScreenHost,
 } from "@opensteer/client/host";
 import { useConnectedAgents } from "@opensteer/client/react";
 import type { AgentConnection } from "@opensteer/protocol";
@@ -62,6 +63,8 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
     : null;
   const { hostClient, openMobileNavigation, snapshot } = useShell();
   const agents = useConnectedAgents(hostClient);
+  // What this page sends and reads is what the chat parity script covers.
+  const chatHost = chatScreenHost(hostClient);
   const [dashboard, setDashboard] = useState<ChannelDashboard | null>(null);
   const [view, setView] = useState<View>("overview");
   const [pending, setPending] = useState(false);
@@ -76,13 +79,13 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
   const [draft, setDraft] = useState<ChannelDraft>({ credentials: {}, provider: "" });
 
   const reload = useCallback(async () => {
-    setDashboard(unwrapRpcResult(await hostClient.rpc["channels.get"]({})));
+    setDashboard(unwrapRpcResult(await chatHost.rpc["channels.get"]({})));
     setReadFailed(false);
-  }, [hostClient]);
+  }, [chatHost]);
 
   useEffect(() => {
     let cancelled = false;
-    hostClient.rpc["channels.get"]({})
+    chatHost.rpc["channels.get"]({})
       .then((result) => {
         if (!cancelled) setDashboard(unwrapRpcResult(result));
       })
@@ -92,7 +95,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
     return () => {
       cancelled = true;
     };
-  }, [hostClient]);
+  }, [chatHost]);
 
   useEffect(() => {
     if (view !== "overview" && view !== "success") return;
@@ -149,7 +152,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
     event.preventDefault();
     if (!credentialsReady) return;
     await run(async () => {
-      const result = await hostClient.dispatch({
+      const result = await chatHost.dispatch({
         credentials: Object.fromEntries(
           Object.entries(draft.credentials).map(([key, value]) => [key, value.trim()]),
         ),
@@ -174,7 +177,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
     );
     if (!provider.credentialFields.every(({ key }) => credentials[key])) return;
     await run(async () => {
-      await hostClient.dispatch({
+      await chatHost.dispatch({
         connectionId: repairing.connectionId,
         credentials,
         idempotencyKey: mutationIdempotencyKey(`channel-credentials:${repairing.connectionId}`),
@@ -190,7 +193,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
   async function check(connectionId: string, displayName: string) {
     await run(async () => {
       const inspection = unwrapRpcResult(
-        await hostClient.rpc["channel.connection.check"]({ connectionId }),
+        await chatHost.rpc["channel.connection.check"]({ connectionId }),
       );
       await reload();
       if (inspection.ready) {
@@ -205,7 +208,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
 
   async function changeStatus(connectionId: string, status: "connected" | "paused" | "revoked") {
     await run(async () => {
-      await hostClient.dispatch({
+      await chatHost.dispatch({
         connectionId,
         idempotencyKey: mutationIdempotencyKey(`channel-status:${connectionId}`),
         status,
@@ -218,7 +221,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
 
   async function linkMe(accountId: string) {
     await run(async () => {
-      const result = await hostClient.dispatch({
+      const result = await chatHost.dispatch({
         accountId: accountId as never,
         idempotencyKey: mutationIdempotencyKey("channel-me-link"),
         type: "channel.me.link",
@@ -293,7 +296,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
             chatsRead={connectionsRead(agents)}
             onRetryChats={() => void agents.refresh?.()}
             onRetry={() => void reload().catch(() => setReadFailed(true))}
-            client={hostClient}
+            client={chatHost}
             code={code}
             dashboard={
               dashboard && connectionId
@@ -329,7 +332,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
 
         {view === "computer-setup" && provider ? (
           <ComputerChannelSetup
-            hostClient={hostClient}
+            hostClient={chatHost}
             machines={snapshot.machines}
             onCancel={() => setView("providers")}
             onCreated={(result) => {
@@ -455,7 +458,7 @@ export function ChannelOverview({
   readonly onRetryChats: () => void;
   /** Read the accounts again after a read that failed. */
   readonly onRetry: () => void;
-  readonly client: Pick<HostClient, "dispatch">;
+  readonly client: Pick<ChatScreenHost, "dispatch">;
   readonly code: ShownCode | null;
   readonly dashboard: ChannelDashboard | null;
   readonly error: string | null;
@@ -675,7 +678,7 @@ export function AccountChats({
   /** Its chats once read; or that they are still being read, or could not be. */
   readonly chats: readonly AgentConnection[] | "loading" | "failed";
   readonly onRetryChats: () => void;
-  readonly client: Pick<HostClient, "dispatch">;
+  readonly client: Pick<ChatScreenHost, "dispatch">;
   readonly code: ShownCode | null;
   readonly manifest: ChannelProviderManifest | undefined;
   readonly me: { readonly displayName: string } | null;
@@ -836,7 +839,7 @@ export function AddChatForm({
   readonly account: ChannelAccount;
   /** The provider has channels a chat can listen in; otherwise only direct messages. */
   readonly channels: boolean;
-  readonly client: Pick<HostClient, "dispatch">;
+  readonly client: Pick<ChatScreenHost, "dispatch">;
   readonly onCancel: () => void;
   readonly onCreated: (chat: AgentConnection) => void;
   readonly providerLabel: string;

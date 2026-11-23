@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router";
-import { agentWords, type ChatFacts, type HostClient } from "@opensteer/client/host";
+import { agentWords, type ChatFacts, type ChatScreenHost } from "@opensteer/client/host";
 import { SentenceText } from "../../../ui/address-text.js";
 import { presentFailure } from "../../use-action.js";
 import { SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
@@ -15,7 +15,7 @@ export function ChatFactsSection({
   facts,
   live,
 }: {
-  readonly client: HostClient;
+  readonly client: Pick<ChatScreenHost, "stopRun">;
   readonly facts: ChatFacts;
   /** Still connected: its running tasks can be stopped from here. */
   readonly live: boolean;
