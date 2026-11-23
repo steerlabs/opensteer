@@ -2127,18 +2127,18 @@ export class RunnerRuntime {
       if (opened === boundPassed)
         return {
           stopping: opening.then(
-            (late) => late.stop().catch(() => undefined),
+            (late) => stopEvidence(late),
             () => undefined,
           ),
         };
       if (!opened) return undefined;
       current = opened;
       // A session that opened after its Run was stopped is stopped like any other.
-      const stopping = current.stop().catch(() => undefined);
+      const stopping = stopEvidence(current);
       return (await settleBy(stopping, deadline)) === boundPassed ? { stopping } : undefined;
     }
     if (!current || current.engineProcess !== "shared") return undefined;
-    const stopping = asked ?? current.stop().catch(() => undefined);
+    const stopping = asked ?? stopEvidence(current);
     return (await settleBy(stopping, deadline)) === boundPassed ? { stopping } : undefined;
   }
 
@@ -3297,7 +3297,7 @@ export class RunnerRuntime {
         termination = await this.#containment
           .terminate(active.containmentScope, () =>
             withinStopGrace(
-              (stop.session = active.session?.stop().catch(() => undefined)),
+              (stop.session = active.session && stopEvidence(active.session)),
               this.#stopGraceMs,
             ),
           )
@@ -3449,7 +3449,7 @@ export class RunnerRuntime {
     const termination = await this.#containment
       .terminate(engine.scope, () => {
         engine.lifetime.abort(new Error("Warm engine retired"));
-        stop.session = engine.session.stop().catch(() => undefined);
+        stop.session = stopEvidence(engine.session);
         return withinStopGrace(stop.session, this.#stopGraceMs);
       })
       .catch(() => "unknown" as const);
@@ -4091,6 +4091,18 @@ function leaseLeadMs(leaseMs: number): number {
 
 /** Waits for `work`, but no longer than a stopped Run's grace. */
 const boundPassed = Symbol("bound passed");
+
+/**
+ * A session's stop, settling once it has. On a shared engine the stop is the
+ * only evidence the session's work ended, and one that failed proved nothing:
+ * it never settles, so the Run's end stays unknown and its task held.
+ */
+function stopEvidence(session: HarnessSession): Promise<void> {
+  const stopping = session.stop();
+  return session.engineProcess === "shared"
+    ? stopping.catch(() => new Promise<void>(() => undefined))
+    : stopping.catch(() => undefined);
+}
 
 /** The work's value if it settles by `deadline`, or `boundPassed`. */
 async function settleBy<T>(work: Promise<T>, deadline: number): Promise<T | typeof boundPassed> {

@@ -3188,6 +3188,75 @@ describe("one Codex app-server per account", () => {
     }
   });
 
+  it("stops a turn its engine never ends at once on the shared app-server, once Codex closes its conversation", async () => {
+    const neverReleased = join(await mkdtemp(join(tmpdir(), "opensteer-codex-held-")), "release");
+    // Waiting for the interrupted turn would take this long.
+    const fixture = await setup("long-stream-held", {
+      requestTimeoutMs: 120_000,
+      serverArguments: [
+        "--unique-threads",
+        "--ignore-interrupt",
+        `--release-file=${neverReleased}`,
+      ],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+      const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+      const observer = observe(stopping.events);
+      void stopping.execute(fixture.turn("Write at length"));
+      await observer.waitFor("assistant.delta");
+      await stopping.stop();
+      await observer.done;
+      expect(normalizedTypes(observer.events)).toContain("run.interrupted");
+      expect(normalizedTypes(observer.events)).not.toContain("run.failed");
+      // What ended the wait: Codex said the conversation closed. The server lives on.
+      const captured = await fixture.capture();
+      expect(captured).toContainEqual({ fakeThreadClosed: stopping.providerSessionReference });
+      const pids = await runServerPids(fixture);
+      expect(pids).toHaveLength(1);
+      expect(processAlive(pids[0]!)).toBe(true);
+      expect(other.usable).toBe(true);
+      await other.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("retires the shared app-server when a stopped turn's conversation never closes, and cuts its other turns short", async () => {
+    const neverReleased = join(await mkdtemp(join(tmpdir(), "opensteer-codex-held-")), "release");
+    const fixture = await setup("long-stream-held", {
+      requestTimeoutMs: 500,
+      serverArguments: [
+        "--unique-threads",
+        "--ignore-interrupt",
+        "--never-close",
+        `--release-file=${neverReleased}`,
+      ],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+      const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+      const stoppingObserver = observe(stopping.events);
+      const otherObserver = observe(other.events);
+      void stopping.execute(fixture.turn("Write at length"));
+      await stoppingObserver.waitFor("assistant.delta");
+      void other.execute(fixture.turn("Write at length too"));
+      await otherObserver.waitFor("assistant.delta");
+      await stopping.stop();
+      // What ended the wait: the server's process has exited.
+      const [pid] = await runServerPids(fixture);
+      expect(processAlive(pid!)).toBe(false);
+      await otherObserver.done;
+      // The other task's turn was cut short by the server's end, not failed.
+      expect(normalizedTypes(otherObserver.events)).toContain("run.interrupted");
+      expect(normalizedTypes(otherObserver.events)).not.toContain("run.failed");
+      expect(other.usable).toBe(false);
+      await other.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
   it("stops a Run's turns before the app-server it owns ends with the Run's lifetime", async () => {
     const fixture = await setup("subagents-late-start", { sharedEngine: false });
     try {
@@ -4214,3 +4283,12 @@ it("retains tool-result image files without provider base64", async () => {
     await fixture.adapter.close();
   }
 });
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}

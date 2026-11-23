@@ -859,9 +859,20 @@ integration("Warm engines", () => {
       expect(failure.failure).toBeNull();
       expect((await runRow(active, next)).status).toBe("completed");
       expect(nextMs).toBeLessThan(requestTimeoutMs / 4);
+      // What freed it: Codex said the stopped conversation closed before the
+      // next turn opened, so the account's shared app-server served that turn.
+      const capture = await captured(captureFile);
+      const conversation = await codexThreadOf(active, threadId);
+      const closedAt = capture.findIndex((line) => line.fakeThreadClosed === conversation);
+      const turnStarts = capture.flatMap((line, index) =>
+        line.method === "turn/start" ? [index] : [],
+      );
+      expect(closedAt).toBeGreaterThan(-1);
+      expect(turnStarts).toHaveLength(2);
+      expect(closedAt).toBeLessThan(turnStarts[1]!);
       const [first, second] = await turnPids();
-      expect(second).not.toBe(first);
-      expect(alive(first!)).toBe(false);
+      expect(second).toBe(first);
+      expect(alive(first!)).toBe(true);
       journeys.push({
         engines: turnServers(await captured(captureFile)),
         name: "stop of an engine that never finishes the turn",
@@ -1011,6 +1022,8 @@ interface Captured {
     readonly threadId?: string;
   };
   readonly backgroundTerminalsCleaned?: string;
+  /** A conversation the stand-in Codex reported closed. */
+  readonly fakeThreadClosed?: string;
   /** A request the driver sent the app server. */
   readonly method?: string;
   readonly fakeMcpCall?: {

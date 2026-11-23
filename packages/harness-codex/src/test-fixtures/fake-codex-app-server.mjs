@@ -1071,6 +1071,7 @@ function closeThread(thread) {
   thread.sessionTools = undefined;
   for (const terminal of thread.terminals) terminal.kill("SIGTERM");
   thread.terminals.clear();
+  capture({ fakeThreadClosed: thread.id });
   send({ method: "thread/closed", params: { threadId: thread.id } });
 }
 

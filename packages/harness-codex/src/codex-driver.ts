@@ -1903,8 +1903,9 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       this.#publishFailure(active, failure);
       this.#publisher.latchUnusable(failure);
       this.#closeEventStream(failure);
-      // A turn that would not stop is stopped with the process it runs in.
-      await this.#server?.retire(failure);
+      // A turn that would not stop is stopped with the process it runs in;
+      // the account's other turns on it are cut short with it, not failed.
+      await this.#server?.retire(failure, { othersInterrupted: true });
     }
   }
 
@@ -1916,6 +1917,13 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     await this.#trackCancellation(this.#drainPendingRequests("run-ended"));
     await Promise.allSettled(this.#pendingCancellationResponses);
     const active = this.#activeTurn;
+    const server = this.#server;
+    // On the account's shared app-server a stopped turn ends with its
+    // conversation: the unload below interrupts it and waits for Codex to say
+    // the conversation closed, or retires the server and waits for it to
+    // exit. Waiting for the turn to end first would hold the task for Codex's
+    // whole request budget when the turn never ends.
+    const closesConversation = server !== undefined && !server.dedicated;
     if (active && !active.terminal) {
       active.interruptRequested = true;
       this.#cancelImageGenerations(active);
@@ -1931,13 +1939,16 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
             .request("turn/interrupt", { threadId, turnId: active.providerTurnId }, 1_000)
             .catch(() => undefined);
         this.#publishTerminal(active, "interrupted");
-      } else await this.#interruptActive(active).catch(() => undefined);
+      } else if (!closesConversation) await this.#interruptActive(active).catch(() => undefined);
     }
     this.#respondingProviderRequests.clear();
-    const server = this.#server;
     try {
       if (server?.dedicated) await server.close();
-      else if (server) await this.#unload(server, active);
+      else if (server) {
+        await this.#unload(server, active);
+        // Its conversation closed, or its server is gone: the turn is over.
+        if (active && !active.terminal) this.#publishTerminal(active, "interrupted");
+      }
     } finally {
       server?.detach(this);
       this.#processLifetime.abort(new Error("Codex session stopped"));
@@ -1956,7 +1967,11 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
    * session starts on a new one.
    */
   async #unload(server: CodexAppServer, active: ActiveTurn | undefined): Promise<void> {
-    if (server.failure) return;
+    // A server that failed is ended; its exit is what proves its conversations gone.
+    if (server.failure) {
+      await server.close();
+      return;
+    }
     const closeTimeoutMs = Math.min(codexThreadCloseMaxMs, this.#config.requestTimeoutMs);
     const client = server.client;
     const root = this.#codexThreadId;
@@ -1992,13 +2007,22 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       );
       closed &&= results.every(Boolean);
     }
+    // A conversation reads as closed once its server ended, which proves it
+    // only once the process has exited.
+    if (server.ended) {
+      await server.close();
+      return;
+    }
     if (closed && server.threadsOf(this).length === 0) return;
+    // The account's other conversations on it end with it: their turns were
+    // cut short, not failed.
     await server.retire(
       new OpensteerError({
         code: "harness_error",
         message: "Codex did not close a stopped conversation, so its app-server was ended",
         retryable: true,
       }),
+      { othersInterrupted: true },
     );
   }
 
@@ -2039,8 +2063,8 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     }
   }
 
-  serverFailed(error: OpensteerError): void {
-    this.#handleConnectionFailure(error);
+  serverFailed(error: OpensteerError, options?: { readonly interrupted?: boolean }): void {
+    this.#handleConnectionFailure(error, options?.interrupted === true);
   }
 
   requestTimedOut(error: OpensteerError): void {
@@ -3009,13 +3033,13 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
    * The Run ends now, as the stop it was asked for if one was, and the session
    * stops, which frees its conversation for the next Run at once.
    */
-  #handleConnectionFailure(error: OpensteerError): void {
+  #handleConnectionFailure(error: OpensteerError, interrupted = false): void {
     if (!this.#publisher.unusable) {
       this.#publisher.latchUnusable(error);
       const active = this.#activeTurn;
       if (active) {
         try {
-          if (this.#closed || active.interruptRequested)
+          if (this.#closed || active.interruptRequested || interrupted)
             this.#publishTerminal(active, "interrupted");
           else this.#publishFailure(active, error);
         } catch {

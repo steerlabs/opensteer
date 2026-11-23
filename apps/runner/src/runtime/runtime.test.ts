@@ -3939,6 +3939,42 @@ describe("RunnerRuntime", () => {
       }
     });
 
+    it("never takes a stop that failed on a shared engine for the engine's end", async () => {
+      let failStop!: (error: Error) => void;
+      const failed = new Promise<void>((_resolve, reject) => {
+        failStop = reject;
+      });
+      failed.catch(() => undefined);
+      const f = sharedStopFixture({
+        session: () => new SharedEngineSession(failed),
+        settleMs: 50,
+      });
+      const execute = executeCommand(f.environmentId);
+      await reconcile(f.registry, execute);
+      try {
+        await f.runtime.handleCommand(execute, f.sink);
+        await waitUntil(() => f.driver.contexts.length === 1);
+        failStop(new Error("Codex never said the conversation closed"));
+        await f.runtime.handleCommand(stopOf(execute), f.sink);
+        await waitUntil(() => f.ends().length === 1);
+        expect(f.ends()[0]).toMatchObject({
+          type: "run.failed",
+          data: { code: runTerminationUnprovenCode },
+        });
+        await waitUntil(() => f.runtime.activeRunIds().length === 0);
+        expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toEqual({
+          status: "rejected",
+          error: {
+            code: "conflict",
+            message: "The Thread's previous Run is still stopping",
+            retryable: true,
+          },
+        });
+      } finally {
+        await f.runtime.close();
+      }
+    });
+
     it("ends a Run on its own engine on today's timing, without waiting for the engine's stop", async () => {
       const stopped = deferred<void>();
       const f = sharedStopFixture({
