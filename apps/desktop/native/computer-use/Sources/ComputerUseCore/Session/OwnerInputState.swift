@@ -7,17 +7,22 @@ final class AppMutationCoordinator: @unchecked Sendable {
   private let contacts = Locked<Set<String>>([])
   private let edits = Locked(0)
   private let agentEdits = Locked(0)
+  private let agentInProgress = Locked(false)
   static let refusal = HelperError(.failed, "A person is pressing in this app; try again.")
   var revision: Int { edits.current }
   /// Increments only when an external agent mutates the app (never on the person's own events).
   var agentRevision: Int { agentEdits.current }
+  /// True while an agent's mutation holds the app lane (idle context polling skips during it).
+  var agentActive: Bool { agentInProgress.current }
 
   func beginAgent() async throws {
     guard contacts.current.isEmpty else { throw Self.refusal }
     await gate.acquire()
     guard contacts.current.isEmpty else { gate.release(); throw Self.refusal }
+    agentInProgress.withLock { $0 = true }
   }
   func endAgent() {
+    agentInProgress.withLock { $0 = false }
     edits.withLock { $0 += 1 }
     agentEdits.withLock { $0 += 1 }
     gate.release()

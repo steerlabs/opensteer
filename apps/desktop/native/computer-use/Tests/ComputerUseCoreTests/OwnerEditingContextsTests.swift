@@ -301,4 +301,55 @@ final class OwnerEditingContextsTests: XCTestCase {
       XCTAssertNoThrow(try event.validate(), good)
     }
   }
+
+  /// M1: while an agent mutation holds the app lane, idle context polling is suppressed, a person
+  /// batch waits for `endAgent()`, and when its turn comes `beforeAgentContextId` is judged against
+  /// the live post-agent state (relative ops & matching named edits admitted; gone named edits and
+  /// exact commands refused as stale).
+  func testWaitingPersonBatchJudgedAfterAgentMutationAndIdlePublishSkipsDuringAgent() async throws {
+    let lane = AppMutationCoordinator()
+    let field = OwnerEditingContexts.FieldIdentity(id: "el-1", kind: "AXTextArea", sensitive: false, editable: true)
+    var contexts = OwnerEditingContexts()
+    XCTAssertTrue(contexts.observeState(field: field, state: .init(location: 5, length: 0, text: "hello")))
+    contexts.markPublished()
+    let beforeAgentContextId = contexts.current
+
+    XCTAssertFalse(lane.agentActive)
+    try await lane.beginAgent()
+    XCTAssertTrue(lane.agentActive)
+
+    let personQueued = expectation(description: "person waiting on agent")
+    let order = Locked<[String]>([])
+    let waitingPerson = Task {
+      personQueued.fulfill()
+      await lane.beginPerson()
+      order.withLock { $0.append("person") }
+      lane.endPerson()
+    }
+    await fulfillment(of: [personQueued], timeout: 1)
+    XCTAssertTrue(order.current.isEmpty)
+
+    order.withLock { $0.append("agent") }
+    lane.endAgent()
+    await waitingPerson.value
+
+    XCTAssertFalse(lane.agentActive)
+    XCTAssertEqual(lane.agentRevision, 1)
+    XCTAssertEqual(order.current, ["agent", "person"])
+
+    // When the waiting person's turn comes, refresh sees agentRevision changed and rotates the same
+    // field while keeping beforeAgentContextId in earlier.
+    XCTAssertTrue(contexts.observeState(
+      field: field,
+      state: .init(location: 11, length: 0, text: "hello world"),
+      forceChanged: true))
+    XCTAssertNotEqual(contexts.current, beforeAgentContextId)
+    // Relative edits/copy/paste land at the live collapsed caret.
+    XCTAssertTrue(contexts.admits(beforeAgentContextId, kind: .relative, collapsed: true))
+    // Named edits apply when the text they name is still present and are refused only if gone.
+    XCTAssertTrue(contexts.admits(beforeAgentContextId, kind: .named, namedMatches: true))
+    XCTAssertFalse(contexts.admits(beforeAgentContextId, kind: .named, namedMatches: false))
+    // Exact commands are refused as stale after an agent mutation.
+    XCTAssertFalse(contexts.admits(beforeAgentContextId, kind: .exact))
+  }
 }

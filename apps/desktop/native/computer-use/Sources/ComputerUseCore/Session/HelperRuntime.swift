@@ -1304,7 +1304,7 @@ public final class HelperRuntime {
       else if lease.heldDeadline.current.map({ now >= $0 }) == true { reason = "timed-out" }
       else { reason = nil }
       if let reason { releaseOwnerInput(lease, reason: reason) }
-      else if lease.admission.pendingBatches == 0, !lease.burstActive.current,
+      else if lease.admission.pendingBatches == 0, !lease.burstActive.current, !lease.mutations.agentActive,
         lease.contextPending.withLock({ value in if value { return false }; value = true; return true }) {
         Task {
           await lease.worker.publishUnlessPending(lease, idle: true)

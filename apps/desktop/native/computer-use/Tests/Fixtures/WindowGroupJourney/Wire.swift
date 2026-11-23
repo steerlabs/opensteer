@@ -383,7 +383,7 @@ extension WireJourney {
     var active: String?
     let planned = ["negotiation", "helper-baseline-negotiation", "capture-ready", "person-waits-for-agent-mutation", "two-idle-attachments-share-app", "agent-refused-held-button", "another-app-agent-unaffected",
       "native-text-key", "IME-commit-at-once", "IME-commit", "external-caret-stale", "other-field-insertion-refused", "verified-replacement", "earlier-context-replacement", "replacement-text-gone", "stale-replacement", "own-burst-keeps-context", "move-forward-keeps-context", "app-rewrite-rotates", "rich-paste-refusal",
-      "multiline-paste", "AX-copy", "save-chord", "undo-chord", "stable-generation", "native-fixture-pixel-latency", "secure-refusal", "guest-pasteboard-unchanged",
+      "multiline-paste", "AX-copy", "save-chord", "undo-chord", "redo-backspace-move", "stable-generation", "native-fixture-pixel-latency", "secure-refusal", "guest-pasteboard-unchanged",
       "resize-stale-input", "sibling-joins-composition", "sibling-leaves-composition", "contained-child-joins-composition", "contained-child-leaves-composition", "reset-preserves-agent-observation", "lost-keyup-cleanup", "hide-cleanup", "Stop-without-session", "local-cover-invariants", "disconnect-cleanup"]
     for name in planned { cases[name] = "not-run" }
     let pasteboard = NSPasteboard.general
@@ -531,6 +531,8 @@ extension WireJourney {
       try require(try modifierReleases() == count + 1, "Held Shift did not receive exactly one native cleanup release")
     }
     let shiftDown: [[String: Any]] = [["kind": "key", "action": "down", "code": "ShiftLeft", "key": "Shift", "modifiers": ["shift"]]]
+    let establish = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
+    try require(establish["outcome"] as? String == "dispatched", "Initial owner input attachment did not establish")
     let beforeAgentContext = try await editingContext(streamA, after: 0) { context in
       (context["field"] as? [String: Any])?["sensitive"] as? Bool == false
     }

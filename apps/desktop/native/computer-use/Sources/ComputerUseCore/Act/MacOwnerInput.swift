@@ -807,9 +807,11 @@ final class MacOwnerInputWorker {
     selection = observed.map { CFRange(location: $0.location, length: $0.length) }
   }
   /// Checked on this actor: a context read between a dispatch and its effect
-  /// is never offered while that or later input is still queued.
+  /// is never offered while that or later input is still queued, nor while an
+  /// agent mutation holds the app lane.
   func publishUnlessPending(_ lease: MacOwnerAttachment, idle: Bool = false) async {
-    guard lease.admission.pendingBatches == 0, !idle || !lease.burstActive.current,
+    guard lease.admission.pendingBatches == 0,
+      !idle || (!lease.burstActive.current && !lease.mutations.agentActive),
       let map = lease.producer.inputMap else { return }
     contextUnpublished = false
     await publishContext(lease, map: map)
