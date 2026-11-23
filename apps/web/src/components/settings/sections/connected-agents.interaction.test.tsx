@@ -855,6 +855,7 @@ describe("a chat, as a connected agent", () => {
         "Couldn't confirm the task was stopped.",
       ),
     );
+    expect(buttonNamed(page, "Stop").disabled).toBe(false);
   });
 
   it("says why a task could not be stopped, and keeps its Stop", async () => {

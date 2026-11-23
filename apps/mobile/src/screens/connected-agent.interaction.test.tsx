@@ -4,7 +4,12 @@ import { createId, ThreadIdSchema } from "@opensteer/core";
 import { readAsDrawn } from "./read-as-drawn.test-support.js";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
+import {
+  agentWords,
+  HostClientRequestError,
+  HostTransportError,
+  mutationIdempotencyKey,
+} from "@opensteer/client/host";
 import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -769,6 +774,22 @@ describe("a chat on the phone", () => {
         "Its messaging account was disconnected. To use it again, add the chat again on Messaging.",
       ),
     );
+  });
+
+  it("says it couldn't confirm the task was stopped when the answer is lost, and keeps Stop enabled", async () => {
+    const client = await open(chat(1), chats());
+    const real = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+      if (command.type !== "run.interrupt") return real(command);
+      throw new HostTransportError("timed-out");
+    });
+    await press(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop"));
+    await vi.waitFor(() => expect(state.alerts.at(-1)?.title).toBe("Stop"));
+    expect(state.alerts.at(-1)?.body).toContain("Couldn't confirm the task was stopped.");
+    expect(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop")).toMatchObject({
+      label: "Stop",
+      disabled: false,
+    });
   });
 
   it("says why a task could not be stopped, in words, never the raw error", async () => {
