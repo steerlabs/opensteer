@@ -886,6 +886,13 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       return (state.generation, key, state.encodePts)
     }
     guard let (generation, key, pts) = admitted else { return }
+    // A refresh or retry re-encodes a sample under a later encoder timestamp;
+    // this row, on disk before any output exists, names the capture it shows.
+    if MacVideoDiagnostic.path != nil {
+      MacVideoDiagnostic.write(["event": "encode-pts", "streamId": id, "generation": generation,
+        "ptsUs": CMTimeConvertScale(pts, timescale: 1_000_000, method: .default).value,
+        "capturePtsUs": CMTimeConvertScale(sample.pts, timescale: 1_000_000, method: .default).value])
+    }
     let properties = key ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
     let status = VTCompressionSessionEncodeFrame(
       encoder, imageBuffer: sample.buffer,
