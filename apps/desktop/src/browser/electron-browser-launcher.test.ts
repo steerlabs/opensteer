@@ -1,5 +1,9 @@
 import { cdpProfileRefusal } from "@opensteer/browser-core";
-import { SurfaceLedger, type BrowserLaunchRequest } from "@opensteer/browser-runtime-core";
+import {
+  SurfaceLedger,
+  screencastEndedEvent,
+  type BrowserLaunchRequest,
+} from "@opensteer/browser-runtime-core";
 import { createId } from "@opensteer/core";
 import type { LocalProfileBinding } from "@opensteer/protocol";
 import { BrowserSessionIdSchema } from "@opensteer/protocol";
@@ -2433,6 +2437,25 @@ describe("Electron debugger teardown", () => {
       await person.send("Page.startScreencast", small);
       hub.deliver("Page.screencastFrame", frame("small, the person's", 2));
       expect(agentSaw).toEqual([]);
+      await hub.browser.close();
+    });
+
+    // Re-check 10, finding 3 (S4): the owner of that cast is told it ended, as a crash's are.
+    it("tells the owner of a cast whose private session Chromium detached that it ended", async () => {
+      const hub = await hubPage("83b");
+      ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      let personTold = 0;
+      let agentTold = 0;
+      person.on(screencastEndedEvent, () => (personTold += 1));
+      agent.on(screencastEndedEvent, () => (agentTold += 1));
+      await agent.send("Page.startScreencast", view);
+      // The person's cast is of another size: it runs in a private session of its own.
+      await person.send("Page.startScreencast", small);
+      hub.deliver("Target.detachedFromTarget", { sessionId: "cast-1", targetId: "target-1" });
+      expect(personTold).toBe(1);
+      expect(agentTold).toBe(0);
       await hub.browser.close();
     });
 

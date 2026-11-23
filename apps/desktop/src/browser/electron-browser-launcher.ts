@@ -3857,11 +3857,13 @@ class ElectronDebuggerHub {
       run.lane = null;
       if (run.cast.run === run) run.cast.run = null;
       // Ownership ends with the run, as when a crash ends the casts: a channel owns a cast again
-      // only by asking after this.
-      for (const owner of run.cast.owners) this.#castOf.delete(owner);
+      // only by asking after this, and each owner is told so on it, as `#castsEnded` tells them.
+      const told = [...run.cast.owners];
+      for (const owner of told) this.#castOf.delete(owner);
       run.cast.owners.clear();
       this.#casts.delete(run.cast);
       this.#updateThrottling();
+      for (const channel of told) channel.castsEnded();
     }
   }
 
