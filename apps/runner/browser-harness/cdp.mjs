@@ -422,9 +422,11 @@ export function createBrowserHarness(client, initialTargetId) {
       });
   });
 
-  const resumedNotice = (surfaceId) =>
+  const resumedNotice = (surfaceId, reopened = false) =>
     process.stderr.write(
-      `[opensteer] Tab ${surfaceId} was asleep and has reloaded. Observe it again before acting; old page handles are invalid.\n`,
+      reopened
+        ? `[opensteer] Tab ${surfaceId} was asleep and has reloaded: it was reopened at its address, so its typed text, scroll position and page state are gone. Observe it again before acting; old page handles are invalid.\n`
+        : `[opensteer] Tab ${surfaceId} was asleep and has reloaded. Observe it again before acting; old page handles are invalid.\n`,
     );
   const attachedSurfaces = new Map();
   const invalidSessions = new Set();
@@ -478,7 +480,7 @@ export function createBrowserHarness(client, initialTargetId) {
       if (!selectedTargetId) throw new Error("openPage(tabId) requires an explicit tab ID.");
       const sequence = dialogSequence;
       const resumed = await client.command("Opensteer.resumeTab", { surfaceId: selectedTargetId });
-      if (resumed.reloaded) resumedNotice(selectedTargetId);
+      if (resumed.reloaded) resumedNotice(selectedTargetId, resumed.reopened === true);
       if (typeof resumed.targetId !== "string" || !resumed.targetId.length)
         throw new Error("The browser did not provide the tab identity");
       targetId = resumed.targetId;
@@ -553,7 +555,7 @@ export function createBrowserHarness(client, initialTargetId) {
       if (method === "Opensteer.resumeTab" && result.reloaded) {
         const selectedSurface = attachedSurfaces.get(sessionId);
         invalidateSurface(result.surfaceId);
-        resumedNotice(result.surfaceId);
+        resumedNotice(result.surfaceId, result.reopened === true);
         if (selectedSurface === result.surfaceId) {
           sessionId = undefined;
           targetId = undefined;

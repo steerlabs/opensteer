@@ -443,6 +443,23 @@ Pages are separated by lineage; signed-in state is not. The isolation boundary f
 sign-ins is the browser profile. A connected agent works only in profiles granted to it, never in
 Guest. Two agents granted the same profile share its signed-in state.
 
+On a Linux Home or a Cloud Computer, tabs nobody is using sleep, and wake with their state while
+the browser keeps running, which makes it unlikely that a Home with many tabs on a small machine
+runs out of memory (not impossible: when every tab is in use, a new tab still opens, and a storm of
+pages that a page opens can outrun sleeping, so background tabs can then be lost to the system). A sleeping tab is discarded in Chromium (freeing its renderer while keeping its tab
+state, driven by container working set or host memory pressure with 70%/60% hysteresis, also
+checked before each new page opens) and named, only while it sleeps, through a minimal internal
+helper extension that is never visible to tab lists, session CDP or connected agents; it is removed
+with confirmation and bounded retries when the tab closes or its session ends. When the browser
+itself restarts (a Home update, a crash, a cold start), each tab reopens at its address: what was
+typed and not sent, its scroll position and its back history are not kept across that restart;
+sign-ins are kept, since they live in the profile, except that a sign-in made in the last half
+minute before the browser is killed may not be (Chromium writes its cookies to disk on its own
+timer). The launcher deletes the last session's
+records in the profile directory it owns before launch, and refuses a launch that finds a page. On a
+Cloud Computer the browser pool keeps the exact state through idle time, so a restart is the rare
+case there.
+
 **Chrome tabs the person shares.** The companion extension, listed as "Opensteer tab sharing",
 shares tabs from the person's own Chrome (a `chrome-tabs` grant). The agent finds them with
 `tab_list` and works in them through `browser_use` or `browser_connect`. Stop, Disconnect and a

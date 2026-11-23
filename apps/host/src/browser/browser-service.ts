@@ -230,6 +230,8 @@ const maxBrowserTextBytes = 1 * 1_024 * 1_024;
 const phoneEngines = new Set(["wkwebview", "android-webview"]);
 const maxPendingAgentRequests = 32;
 const agentRequestTimeoutMs = 15_000;
+/** V3: a tab's wake (up to 18 s) and its page's load (up to 15 s), for an agent's bind. */
+const bindWakeMs = 40_000;
 /** An open's work budget; it also bounds waiting for this computer's browser to arrive. */
 const browserOpenWorkMs = 18_000;
 const maxBrowserProfiles = 128;
@@ -3080,6 +3082,8 @@ export class BrowserService {
 
   #clearActor(actor: BrowserActor): void {
     this.#actors.delete(actor.token);
+    // Its tabs are no longer slept last (TS12).
+    if (actor.surfaces.size) this.#brokers.get(actor.sessionId)?.refreshSessionState();
     this.#actorEpochs.delete(`${actor.sessionId}:${actor.binding}`);
     this.#actorKeys.delete(`${actor.sessionId}:${actor.binding}`);
     for (const surfaceId of actor.surfaces.keys()) {
@@ -3370,16 +3374,21 @@ export class BrowserService {
           ),
         ),
       );
+      let bound = false;
       for (const holding of holdings) {
         const token = this.#actorKeys.get(`${sessionId}:${holding.agentBindingId}`);
         const actor = token ? this.#actors.get(token) : undefined;
-        if (actor && holding.tabId && !actor.surfaces.has(holding.tabId))
+        if (actor && holding.tabId && !actor.surfaces.has(holding.tabId)) {
           actor.surfaces.set(holding.tabId, {
             at: 0,
             seq: 0,
             heldAt: holding.lastUsedAt.getTime(),
           });
+          bound = true;
+        }
       }
+      // A tab an agent holds is slept last from now on (TS12).
+      if (bound) this.#brokers.get(sessionId)?.refreshSessionState();
       this.#invalidatePageSessions([sessionId]);
     });
   }
@@ -3516,6 +3525,7 @@ export class BrowserService {
     if (!force && previous?.recordedPage?.key === key) return actor.usageTail ?? Promise.resolve();
     const recordedPage = { key, at: this.#activityClock.now() };
     actor.surfaces.set(surfaceId, { at: 0, seq: 0, ...previous, recordedPage });
+    if (!previous) broker?.refreshSessionState();
     const page = broker?.pageOf(surfaceId) ?? null;
     // Separate transactions keep lastUsedAt ordered; now() is fixed inside a transaction.
     const tail = (actor.usageTail ?? Promise.resolve())
@@ -3572,7 +3582,8 @@ export class BrowserService {
     const previous = actor.surfaces.get(activity.surfaceId);
     const wasActing = previous !== undefined && at - previous.at < this.#actingWindowMs;
     actor.surfaces.set(activity.surfaceId, { ...previous, at, seq: activity.seq });
-    if (this.#requestPins.size) broker.refreshSessionState();
+    // A tab an agent starts working in is slept last from now on (TS12).
+    if (this.#requestPins.size || !previous) broker.refreshSessionState();
     void this.#recordActorUse(actor, activity.surfaceId);
     const previousTimer = this.#actingTimers.get(sessionId);
     if (previousTimer) previousTimer();
@@ -3779,7 +3790,10 @@ export class BrowserService {
         const session = await this.#restoreWorkspacePage(ownerId, row, undefined, signal);
         expectedSession = session.id;
         const broker = this.#brokers.get(session.id);
-        if (broker?.surfaceStateOf(row.id) === "suspended")
+        // TS10: always asked of a runtime that sleeps tabs, never read from this Home's copy of the
+        // tab's state, which can be a sleep behind the runtime's; waking a tab that is awake is
+        // nothing there. A runtime that did not negotiate surface state has no sleeping tabs.
+        if (broker?.surfaceState === 1)
           await broker.requestCdp(
             {
               type: "cdp.command",
@@ -4154,6 +4168,10 @@ export class BrowserService {
         throw new BrowserCdpConnectionEnded("This browser page is stale.");
       const { backend } = await this.#admitAgentBackend({ ...agent, sessionId: session.id });
       await this.#requireWorkspaceGeneration(agent.ownerId, row);
+      // V5: a pooled bind records the agent's tab like every other bind, so the tab is the
+      // agent's (slept last) from the bind, not from its first input.
+      await this.#recordAgentTabPlace(agent, session, row.id);
+      this.#noteBoundTab(session.id, row.id, agent.agentBindingId);
       return { tabId: row.id, sessionId: session.id, backend, reloaded: false };
     }
     const existing =
@@ -4180,6 +4198,43 @@ export class BrowserService {
         this.#brokers.get(old.sessionId)?.live &&
         this.#brokers.get(old.sessionId)?.pageOf(row.id);
       const session = await this.#restoreWorkspacePage(agent.ownerId, current, agent, signal);
+      // TS11: a sleeping tab is woken before the agent is given it, and handed over once its page
+      // has loaded; a wake that cannot finish is refused in its own sentence.
+      // V3: the wake and its load wait end with the operation (Stop, Disconnect): the broker
+      // cancels the runtime's wait, and this bind ends at once; a slow wake has its own bound.
+      const broker = this.#brokers.get(session.id);
+      let reopened = false;
+      let woken = false;
+      // Z1: this Home's copy of the tab's state is a picture of the past and decides nothing: a
+      // runtime that sleeps tabs is always asked, and says itself whether it woke the tab and
+      // whether a wake's load is unfinished; only then does it wait.
+      if (broker?.surfaceState === 1) {
+        const woke = await withTimeout(
+          broker.requestCdp(
+            {
+              type: "cdp.command",
+              requestId: randomUUID(),
+              ...(broker.supportsCdpReplyBudget
+                ? { replyBudget: { maxBytes: 4096, maxDepth: 8, maxEntries: 64 } }
+                : {}),
+              command: {
+                method: browserHostMethods.resumeTab,
+                parameters: { surfaceId: row.id, loaded: true },
+              },
+            },
+            signal,
+          ),
+          bindWakeMs,
+          {
+            ...(signal ? { signal } : {}),
+            timeoutError: () =>
+              new BrowserCdpConnectionEnded("This tab did not wake in time. Try again shortly."),
+          },
+        );
+        const answer = woke.result as { reopened?: unknown; reloaded?: unknown } | undefined;
+        reopened = answer?.reopened === true;
+        woken = answer?.reloaded === true;
+      }
       const { backend } = await this.#admitAgentBackend(
         { ...agent, sessionId: session.id },
         undefined,
@@ -4189,7 +4244,14 @@ export class BrowserService {
       await this.pageTabs.admitted!(fresh);
       await this.admitAgentBrowser(agent, "read-write", [session]);
       await this.#recordAgentTabPlace(agent, session, row.id);
-      return { tabId: row.id, sessionId: session.id, backend, reloaded: !live };
+      this.#noteBoundTab(session.id, row.id, agent.agentBindingId);
+      return {
+        tabId: row.id,
+        sessionId: session.id,
+        backend,
+        reloaded: !live || woken || reopened,
+        ...(reopened ? { reopened: true } : {}),
+      };
     } finally {
       reservation?.release();
     }
@@ -4453,6 +4515,8 @@ export class BrowserService {
           ...currentSurface,
           recordedPage: { key, at: this.#activityClock.now() },
         });
+        // A tab an agent binds is slept last from now on (TS12).
+        if (!currentSurface) broker?.refreshSessionState();
       }
     }
   }
@@ -4944,6 +5008,11 @@ export class BrowserService {
         };
       }
       const ticket = this.standardCdpTickets.issue({ ...input, facts, mode }, pool);
+      // V4: the seed tab is the agent's from its wake until the client attaches or the link
+      // expires: nothing puts it to sleep before the agent has it. A pooled browser sleeps no tab
+      // (its parks keep every document), and a hold there would only veto its park.
+      if (facts.seed && !pooled)
+        this.#holdForAttach(record.id, facts.seed.surfaceId, input.ttl ?? 60_000);
       return { ticket, path: `${standardCdpConnectPrefix}${ticket}`, mode };
     } catch (error) {
       reserve?.release();
@@ -5223,6 +5292,8 @@ export class BrowserService {
         };
       });
       const transport = await opening;
+      // V4: the agent has its tab now; the hold from its wake ends.
+      if (claims.facts.seed) this.#releaseAttachHold(record.id, claims.facts.seed.surfaceId);
       const held = profileLease;
       if (pool && attempts) {
         transportOwnsPool = true;
@@ -5894,7 +5965,11 @@ export class BrowserService {
             ...(replyBudget ? { replyBudget } : {}),
             ...(scriptAttachmentId ? { scriptAttachmentId } : {}),
             ...(confirmed?.eventBudget ? { scriptEventBudget: confirmed.eventBudget } : {}),
-            command,
+            // TS11: an agent's wake is answered once the page it woke has loaded.
+            command:
+              command.method === browserHostMethods.resumeTab
+                ? { ...command, parameters: { ...command.parameters, loaded: true } }
+                : command,
             ...(actorToken ? { actorToken } : {}),
             ...(nativeAttachment ? { attachmentId: nativeAttachment.attachmentId } : {}),
             ...(runtimeHoldsConnection ? { connection: true as const } : {}),
@@ -6242,6 +6317,34 @@ export class BrowserService {
     return this.#brokers.get(sessionId)?.surfaceStateOf(surfaceId);
   }
 
+  readonly #attachHolds = new Map<string, NodeJS.Timeout>();
+  /** V5: the tabs each binding was handed at its bind, per session, until the binding ends. */
+  readonly #boundTabs = new Map<BrowserSessionId, Map<BrowserSurfaceId, Set<string>>>();
+  #noteBoundTab(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId, binding: string): void {
+    const tabs = this.#boundTabs.get(sessionId) ?? new Map<BrowserSurfaceId, Set<string>>();
+    this.#boundTabs.set(sessionId, tabs);
+    const bindings = tabs.get(surfaceId) ?? new Set<string>();
+    tabs.set(surfaceId, bindings);
+    if (bindings.has(binding)) return;
+    bindings.add(binding);
+    this.#brokers.get(sessionId)?.refreshSessionState();
+  }
+  /** V4: keeps a tab woken for an agent's connection awake until it attaches or the link ends. */
+  #holdForAttach(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId, ttlMs: number): void {
+    const key = `attach:${sessionId}:${surfaceId}`;
+    clearTimeout(this.#attachHolds.get(key));
+    const timer = setTimeout(() => this.#releaseAttachHold(sessionId, surfaceId), ttlMs);
+    timer.unref();
+    this.#attachHolds.set(key, timer);
+    this.setRequestPins(key, [{ sessionId, runId: null, surfaceId }]);
+  }
+  #releaseAttachHold(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId): void {
+    const key = `attach:${sessionId}:${surfaceId}`;
+    clearTimeout(this.#attachHolds.get(key));
+    if (!this.#attachHolds.delete(key)) return;
+    this.setRequestPins(key, []);
+  }
+
   setRequestPins(
     key: string,
     pins: readonly {
@@ -6306,7 +6409,7 @@ export class BrowserService {
 
   async #sessionState(
     sessionId: BrowserSessionId,
-  ): Promise<Pick<BrowserSessionState, "runs" | "pinned" | "keepAwake">> {
+  ): Promise<Pick<BrowserSessionState, "runs" | "pinned" | "keepAwake" | "agentTabs">> {
     const runs = await this.#repository.countBrowserSessionAttachments(sessionId);
     const pinned = new Set<BrowserSurfaceId>();
     let keepAwake = false;
@@ -6319,7 +6422,23 @@ export class BrowserService {
           pinned.add(surfaceId);
         } else keepAwake = true;
       }
-    return { runs, pinned: [...pinned], ...(keepAwake ? { keepAwake: true } : {}) };
+    // TS12: the tabs a live Run or connected agent's session works in, slept last.
+    const agentTabs = new Set<BrowserSurfaceId>();
+    for (const actor of this.#actors.values())
+      if (actor.sessionId === sessionId)
+        for (const surfaceId of actor.surfaces.keys())
+          agentTabs.add(BrowserSurfaceIdSchema.parse(surfaceId));
+    // V5: and every tab a live binding was handed at its bind, before the agent has an actor
+    // in this session (a connected agent's script, a pooled bind).
+    for (const [surfaceId, bindings] of this.#boundTabs.get(sessionId) ?? [])
+      if ([...bindings].some((binding) => !this.#endedBindings.has(binding)))
+        agentTabs.add(surfaceId);
+    return {
+      runs,
+      pinned: [...pinned],
+      ...(keepAwake ? { keepAwake: true } : {}),
+      ...(agentTabs.size ? { agentTabs: [...agentTabs].sort() } : {}),
+    };
   }
 
   /**
@@ -7740,6 +7859,16 @@ export class BrowserService {
       if (attachment.binding === agentBindingId) attachment.close();
     for (const actor of this.#actors.values())
       if (actor.binding === agentBindingId) this.#clearActor(actor);
+    for (const [sessionId, tabs] of this.#boundTabs) {
+      let changed = false;
+      for (const [surfaceId, bindings] of tabs)
+        if (bindings.delete(agentBindingId)) {
+          changed = true;
+          if (!bindings.size) tabs.delete(surfaceId);
+        }
+      if (!tabs.size) this.#boundTabs.delete(sessionId);
+      if (changed) this.#brokers.get(sessionId)?.refreshSessionState();
+    }
     const now = this.#activityClock.now();
     this.#endedBindings.delete(agentBindingId);
     this.#endedBindings.set(agentBindingId, now);
@@ -8012,7 +8141,7 @@ interface HostedBrowserBrokerOptions {
   readonly personUse?: { tabs: Set<BrowserSurfaceId>; ended: boolean };
   readonly onPersonUseChanged?: () => void;
   readonly readSessionState: () => Promise<
-    Pick<BrowserSessionState, "runs" | "pinned" | "keepAwake">
+    Pick<BrowserSessionState, "runs" | "pinned" | "keepAwake" | "agentTabs">
   >;
   readonly savedTabIds?: readonly BrowserSurfaceId[];
   readonly tabRestoreVersion?: boolean | undefined;

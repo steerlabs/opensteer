@@ -74,9 +74,9 @@ it.skipIf(databaseMissing)(
   () => proveChromeShares("popup isolation"),
 );
 
-it.skipIf(databaseMissing)(
-  "grants a selected connected agent one shared Chrome and detaches it on Disconnect",
-  () => proveChromeShares("connected agents"),
+it.skipIf(databaseMissing).each(["recheck first", "cleanup first"] as const)(
+  "grants a selected connected agent one shared Chrome and detaches it on Disconnect (%s)",
+  (order) => proveChromeShares("connected agents", order),
 );
 
 it.skipIf(databaseMissing)(
@@ -248,6 +248,8 @@ let companionBuilt = false;
 
 async function proveChromeShares(
   scenario: "lifecycle" | "popup isolation" | "connected agents" | "mode downgrade",
+  /** Which ends a revoked connection's shared attach first: the Home's recheck, or cleanup. */
+  revokeOrder: "recheck first" | "cleanup first" = "recheck first",
 ) {
   if (!companionBuilt) {
     execFileSync("pnpm", ["--filter", "@opensteer/browser-extension", "build:live-tabs"], {
@@ -283,10 +285,64 @@ async function proveChromeShares(
     deploymentShape: { kind: "personal" },
   });
   const deviceId = await fixture.store.requireSelfDeviceId(run.runnerId);
+  // A shared Chrome attach's end is written when its agent's socket closes. After a revoke the
+  // Home's authority recheck closes it on its own tick, before any cleanup is driven; a test that
+  // reads the state that precedes that end holds the write (`holdAttachEnds`) until it has read.
+  const attachEvidence = sharedChromeAttempts(fixture.database);
+  let attachEndsHeld: Promise<void> | null = null;
+  /** Attach ends asked for so far (each one, held or not). */
+  const attachEndsAsked = new Map<string, number>();
+  const holdAttachEnds = () => {
+    const held = Promise.withResolvers<void>();
+    attachEndsHeld = held.promise;
+    return () => {
+      attachEndsHeld = null;
+      held.resolve();
+    };
+  };
   const liveTabs = new ChromeSharedTabs(fixture.store, {
-    attempts: sharedChromeAttempts(fixture.database),
+    attempts: {
+      ...attachEvidence,
+      finish: async (...args: Parameters<typeof attachEvidence.finish>) => {
+        // Only the ends a test's own connection asks for count (TS15).
+        attachEndsAsked.set(args[0], (attachEndsAsked.get(args[0]) ?? 0) + 1);
+        await attachEndsHeld;
+        return attachEvidence.finish(...args);
+      },
+    },
     device: async () => "Hosting computer",
   });
+  // The Home's authority recheck of an attach, which a test can make pass for a while
+  // (`holdRecheck`), so that cleanup, not the recheck, ends a revoked connection's attach.
+  let recheckHeld = false;
+  // A recheck already under way when the hold begins is waited for, so none can see a revoke
+  // made after the hold (TS15).
+  const rechecks = new Set<Promise<unknown>>();
+  const holdRecheck = async () => {
+    recheckHeld = true;
+    await Promise.allSettled(rechecks);
+    return () => {
+      recheckHeld = false;
+    };
+  };
+  const attachForAgent = liveTabs.attachStandardCdpForAgent.bind(liveTabs);
+  liveTabs.attachStandardCdpForAgent = async (...args) => {
+    const attached = await attachForAgent(...args);
+    const reauthorize = attached.reauthorize;
+    return {
+      ...attached,
+      reauthorize: async (...check: Parameters<typeof reauthorize>) => {
+        if (recheckHeld) return;
+        const running = reauthorize(...check);
+        rechecks.add(running);
+        try {
+          return await running;
+        } finally {
+          rechecks.delete(running);
+        }
+      },
+    };
+  };
   const sources = new BrowserSourceService({
     deploymentId: run.deploymentId,
     browser: {
@@ -1057,18 +1113,52 @@ async function proveChromeShares(
       frameTree: expect.any(Object),
     });
     const otherEnded = disconnectedFrom(secondClient);
-    expect(await connections.revoke(ownerId, isolated.connectionId)).toBe(true);
-    expect(await connectionAttempts(fixture.database, isolated.connectionId)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: "shared-chrome", terminalEvidenceAt: null }),
-      ]),
-    );
-    expect(
+    const stateOf = async () =>
       (await connections.list(ownerId, { includeRevoked: true })).find(
         ({ id }) => id === isolated.connectionId,
-      )?.state,
-    ).toBe("stopping");
-    const cleanup = await driveCleanups();
+      )?.state;
+    const endsAsked = () => attachEndsAsked.get(isolated.connectionId) ?? 0;
+    const askedBefore = endsAsked();
+    let cleanup: Awaited<ReturnType<typeof driveCleanups>>;
+    if (revokeOrder === "recheck first") {
+      // The Home's next authority recheck ends the attach; its end is held until the state before
+      // any cleanup has been read.
+      const releaseAttachEnds = holdAttachEnds();
+      try {
+        expect(await connections.revoke(ownerId, isolated.connectionId)).toBe(true);
+        expect(await connectionAttempts(fixture.database, isolated.connectionId)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "shared-chrome", terminalEvidenceAt: null }),
+          ]),
+        );
+        await vi.waitFor(() => expect(endsAsked()).toBeGreaterThan(askedBefore), {
+          timeout: 5_000,
+          interval: 25,
+        });
+        expect(await stateOf()).toBe("stopping");
+      } finally {
+        releaseAttachEnds();
+      }
+      cleanup = await driveCleanups();
+    } else {
+      // Nothing ends the attach before cleanup does: the recheck passes until cleanup has run, and
+      // cleanup's stop (stopSharing, then the unshare) writes the attach's end.
+      const releaseRecheck = await holdRecheck();
+      try {
+        expect(await connections.revoke(ownerId, isolated.connectionId)).toBe(true);
+        expect(await connectionAttempts(fixture.database, isolated.connectionId)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "shared-chrome", terminalEvidenceAt: null }),
+          ]),
+        );
+        expect(await stateOf()).toBe("stopping");
+        expect(endsAsked()).toBe(askedBefore);
+        cleanup = await driveCleanups();
+        expect(endsAsked()).toBeGreaterThan(askedBefore);
+      } finally {
+        releaseRecheck();
+      }
+    }
     expect(cleanup.failures).toEqual([]);
     expect(cleanup.settled).toContain(isolated.connectionId);
     await otherEnded;

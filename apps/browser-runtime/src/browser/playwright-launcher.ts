@@ -17,9 +17,12 @@ import {
   type BrowserLaunchRequest,
   type BrowserLauncher,
   type BrowserPage,
+  type BrowserMemoryPressure,
+  type BrowserRendererUsage,
   type CdpSession,
   type LaunchedBrowser,
   type LocalProfileEngine,
+  type PageEndReason,
   type PageGoneCause,
   type RendererGoneCause,
   readImageDimensions,
@@ -32,6 +35,7 @@ import {
   browserPageDisabledBlinkFeatures,
   browserPagePolicyScriptFor,
 } from "@opensteer/browser-runtime-core/page-policy";
+import { delay } from "@opensteer/shared/delay";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -53,6 +57,18 @@ import {
 } from "playwright-core";
 import { z } from "zod";
 import { ChromiumClipboard } from "./chromium-clipboard.js";
+import {
+  collectLinuxMemoryPressure,
+  collectLinuxRendererUsage,
+  type LinuxProcFs,
+} from "./linux-renderer-usage.js";
+import {
+  ChromiumTabLifecycleBridge,
+  ensureTabLifecycleExtension,
+  tabLifecycleExtensionIds,
+  isInternalExtensionUrl,
+  type ChromiumTabEntry,
+} from "./tab-lifecycle-extension.js";
 
 import { flushNativeCookies, initializeNativePreferences } from "./native-profile-storage.js";
 
@@ -64,6 +80,13 @@ import {
 import type { PasskeyAuthenticator } from "@opensteer/browser-runtime-core/passkeys";
 
 const linkOpenAttributionMs = 1_000;
+/** Z5: the longest a blank page may wait to be told apart from the runtime's own open. */
+const blankArrivalHoldMs = 300;
+/** Z5: the runtime's own open starts at about:blank; nothing else it makes does. */
+function isBlankArrival(page: Page): boolean {
+  const url = typeof page.url === "function" ? page.url() : "";
+  return url === "" || url === "about:blank";
+}
 const maxPendingLinkOpens = 16;
 const modifierKeys = new Set(["Alt", "AltGraph", "Control", "Meta", "OS", "Shift"]);
 
@@ -131,6 +154,8 @@ export interface NativeProfileOpenTiming {
 
 interface PlaywrightChromiumLauncherOptions {
   authenticator?: PasskeyAuthenticator;
+  /** How long the look for the tab helper may run after a native launch (tests shorten it). */
+  tabLifecycleProbeMs?: number;
   onNativeOpenTiming?: (timing: NativeProfileOpenTiming) => void;
   probePasskeys?: boolean;
   args?: readonly string[];
@@ -138,6 +163,8 @@ interface PlaywrightChromiumLauncherOptions {
   environment?: Readonly<NodeJS.ProcessEnv>;
   executablePath: string;
   headless: boolean;
+  linuxProcFs?: LinuxProcFs;
+  platform?: NodeJS.Platform;
   proxyUrl?: string;
   preserveLoopbackBypass?: boolean;
 }
@@ -251,7 +278,11 @@ export async function probePasskeySecurityState(
 
 export class PlaywrightChromiumLauncher implements BrowserLauncher {
   readonly hostCost = "process" as const;
+  readonly rendererUsage?: () => BrowserRendererUsage | Promise<BrowserRendererUsage>;
+  readonly memoryPressure?: () =>
+    BrowserMemoryPressure | null | Promise<BrowserMemoryPressure | null>;
   private preparation: Promise<void> | undefined;
+  private readonly ownedBrowserPids = new Set<number>();
   private readonly nativeBrowsers = new Map<string, Promise<LaunchedBrowser>>();
   private readonly nativeCloseFailures = new Set<string>();
   readonly localProfiles: LocalProfileEngine = {
@@ -270,6 +301,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     },
   };
   private readonly onNativeOpenTiming: ((timing: NativeProfileOpenTiming) => void) | undefined;
+  private readonly tabLifecycleProbeMs: number;
   private readonly probePasskeys: boolean;
   private securityStateAvailable = false;
   get passkeys(): 1 | undefined {
@@ -289,6 +321,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       throw new Error("Chromium executablePath must be absolute.");
     }
     this.onNativeOpenTiming = options.onNativeOpenTiming;
+    this.tabLifecycleProbeMs = options.tabLifecycleProbeMs ?? lifecycleProbeMs;
     this.probePasskeys = options.probePasskeys === true || options.authenticator !== undefined;
     this.authenticator = options.authenticator;
     this.args = options.args ?? [];
@@ -302,6 +335,35 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     this.headless = options.headless;
     this.proxyUrl = options.proxyUrl;
     this.preserveLoopbackBypass = options.preserveLoopbackBypass === true;
+    const platform = options.platform ?? process.platform;
+    if (platform === "linux") {
+      const proc = options.linuxProcFs;
+      this.rendererUsage = () => collectLinuxRendererUsage(this.ownedBrowserPids, proc);
+      this.memoryPressure = () => collectLinuxMemoryPressure(proc);
+    }
+  }
+
+  private trackBrowserProcess(child: ChildProcess | null | undefined): () => void {
+    const pid = child?.pid;
+    if (
+      !child ||
+      typeof pid !== "number" ||
+      !Number.isSafeInteger(pid) ||
+      pid <= 0 ||
+      child.exitCode !== null ||
+      child.signalCode !== null
+    ) {
+      return () => undefined;
+    }
+    this.ownedBrowserPids.add(pid);
+    const untrack = () => {
+      this.ownedBrowserPids.delete(pid);
+    };
+    child.once("exit", untrack);
+    return () => {
+      child.off("exit", untrack);
+      this.ownedBrowserPids.delete(pid);
+    };
   }
 
   private proxyTrafficArgs(): readonly string[] {
@@ -398,10 +460,16 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     await access(this.executablePath, constants.X_OK);
     await this.prepare();
     const browserServer = await this.startServer();
+    const untrackGuestProcess = this.trackBrowserProcess(
+      typeof browserServer.process === "function" ? browserServer.process() : null,
+    );
     let stopped: Promise<void> | undefined;
     const owner = {
       close: () => {
-        stopped ??= browserServer.kill().finally(() => signal?.removeEventListener("abort", abort));
+        stopped ??= browserServer.kill().finally(() => {
+          untrackGuestProcess();
+          signal?.removeEventListener("abort", abort);
+        });
         return stopped;
       },
     };
@@ -494,6 +562,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       await context.addInitScript({
         content: browserPagePolicyScriptFor(providerConfig),
       });
+      await context.addInitScript({ content: pageStateScript });
       // Subscribe before creating pages: an inline popup dialog can precede
       // the client's per-page listener, especially over Playwright's transport.
       // Without this context subscription Playwright dismisses it at once.
@@ -609,6 +678,57 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     return pending;
   }
 
+  /** Exactly how a native profile's Chromium is launched; real-Chromium probes reuse it. */
+  nativeLaunchOptions(
+    directory: string,
+    lifecycleExtensionDir: string,
+    deadline: number,
+  ): Parameters<typeof chromium.launchPersistentContext>[1] {
+    return {
+      // Playwright owns the child before returning the context and reaps it on
+      // launch timeout. A Promise race alone would strand that owned process.
+      timeout: Math.max(1, Math.ceil(deadline - performance.now())),
+      executablePath: this.executablePath,
+      // Explicit arguments bypass Playwright's initial-page wait and test key stores.
+      ignoreDefaultArgs: true,
+      args: [
+        ...this.args,
+        `--user-data-dir=${directory}`,
+        "--remote-debugging-pipe",
+        // ignoreDefaultArgs drops Playwright's --disable-field-trial-config; without it
+        // Chrome for Testing enables TrackEmptyRendererProcessesForReuse and holds closed
+        // tab renderers alive past TabSleeper's settle window.
+        "--disable-field-trial-config",
+        // Load only Opensteer's minimal internal tab-lifecycle helper (zero host permissions)
+        // for native profiles; every other extension stays disabled.
+        `--disable-extensions-except=${lifecycleExtensionDir}`,
+        `--load-extension=${lifecycleExtensionDir}`,
+        "--disable-component-extensions-with-background-pages",
+        "--disable-component-update",
+        "--disable-background-networking",
+        // Chromium never loads a last session (L1): its session records are deleted before launch
+        // and no window opens by itself, so a restarted Home's tabs open fresh at their addresses.
+        // "Continue where you left off" stays on only so Chromium keeps session cookies (sign-ins).
+        "--no-startup-window",
+        "--restore-last-session",
+        "--no-first-run",
+        "--no-default-browser-check",
+        `--disable-blink-features=${browserPageDisabledBlinkFeatures},AutomationControlled`,
+        ...(this.headless ? ["--headless=new"] : []),
+        ...(this.chromiumSandbox ? [] : ["--no-sandbox"]),
+        ...(this.proxyUrl ? [`--proxy-server=${this.proxyUrl}`, ...this.proxyTrafficArgs()] : []),
+      ],
+      chromiumSandbox: this.chromiumSandbox,
+      headless: this.headless,
+      env: { ...this.childEnvironment },
+      handleSIGHUP: false,
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      acceptDownloads: false,
+      viewport: null,
+    };
+  }
+
   private async launchNative(
     directory: string,
     deadline: number,
@@ -637,43 +757,14 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     await this.prepare();
     timing("prepare");
     await initializeNativePreferences(directory);
+    const lifecycleExtensionDir = await ensureTabLifecycleExtension(directory);
+    const lifecycleExtensionIds = await tabLifecycleExtensionIds(lifecycleExtensionDir);
     timing("preferences");
     signal?.throwIfAborted();
-    const context = await chromium.launchPersistentContext(directory, {
-      // Playwright owns the child before returning the context and reaps it on
-      // launch timeout. A Promise race alone would strand that owned process.
-      timeout: Math.max(1, Math.ceil(deadline - performance.now())),
-      executablePath: this.executablePath,
-      // Explicit arguments bypass Playwright's initial-page wait and test key stores.
-      ignoreDefaultArgs: true,
-      args: [
-        ...this.args,
-        `--user-data-dir=${directory}`,
-        "--remote-debugging-pipe",
-        // Guest already receives these from Playwright's defaults. Native launches
-        // must not start Chromium's bundled extension workers on every cold open.
-        "--disable-extensions",
-        "--disable-component-extensions-with-background-pages",
-        "--disable-component-update",
-        "--disable-background-networking",
-        "--no-startup-window",
-        "--restore-last-session",
-        "--no-first-run",
-        "--no-default-browser-check",
-        `--disable-blink-features=${browserPageDisabledBlinkFeatures},AutomationControlled`,
-        ...(this.headless ? ["--headless=new"] : []),
-        ...(this.chromiumSandbox ? [] : ["--no-sandbox"]),
-        ...(this.proxyUrl ? [`--proxy-server=${this.proxyUrl}`, ...this.proxyTrafficArgs()] : []),
-      ],
-      chromiumSandbox: this.chromiumSandbox,
-      headless: this.headless,
-      env: { ...this.childEnvironment },
-      handleSIGHUP: false,
-      handleSIGINT: false,
-      handleSIGTERM: false,
-      acceptDownloads: false,
-      viewport: null,
-    });
+    const context = await chromium.launchPersistentContext(
+      directory,
+      this.nativeLaunchOptions(directory, lifecycleExtensionDir, deadline),
+    );
     let ownedProcess: ChildProcess;
     try {
       // The pinned Playwright patch exposes the same owner as BrowserServer.process().
@@ -697,9 +788,19 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         { cause },
       );
     }
+    const ownedPid = ownedProcess.pid;
     const exited = new Promise<void>((resolve) => {
-      if (ownedProcess.exitCode !== null || ownedProcess.signalCode !== null) resolve();
-      else ownedProcess.once("exit", () => resolve());
+      if (ownedProcess.exitCode !== null || ownedProcess.signalCode !== null) {
+        resolve();
+      } else {
+        if (typeof ownedPid === "number" && Number.isSafeInteger(ownedPid) && ownedPid > 0) {
+          this.ownedBrowserPids.add(ownedPid);
+        }
+        ownedProcess.once("exit", () => {
+          if (typeof ownedPid === "number") this.ownedBrowserPids.delete(ownedPid);
+          resolve();
+        });
+      }
     });
     timing("chromium-launch");
     const browser = context.browser();
@@ -789,6 +890,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         : undefined;
       const providerConfig = authenticator ? createPasskeyProviderConfig() : undefined;
       await context.addInitScript({ content: browserPagePolicyScriptFor(providerConfig) });
+      await context.addInitScript({ content: pageStateScript });
       timing("page-policy");
       context.on("dialog", (dialog) => {
         const page = dialog.page();
@@ -800,10 +902,22 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       if (context.pages().length) throw new Error("Chromium restored unauthorized tabs.");
       // Keep one private blank target only while this bounded profile host is warm.
       // Without it, closing the last tab also discards Chromium's warm renderer.
-      const helper = await context.newPage();
+      const helper = await withTimeout(context.newPage(), remainingMs(deadline), {
+        timeoutError: () => new Error("The private page did not open."),
+      });
       timing("cookie-target");
-      const browserCdp = await browser.newBrowserCDPSession();
+      const browserCdp = await withTimeout(browser.newBrowserCDPSession(), remainingMs(deadline), {
+        timeoutError: () => new Error("The browser debugger did not attach."),
+      });
       timing("cdp");
+      // The helper that sleeps tabs by discard, if it answers; otherwise tabs sleep by closing. It
+      // is looked for after launch, off the way to the first page (run 13).
+      const candidate =
+        typeof context.serviceWorkers === "function"
+          ? new ChromiumTabLifecycleBridge(context, browserCdp, helper)
+          : undefined;
+      // The private page's target, in memory (no round trip in the ordinary case).
+      const helperTargetId = candidate ? await lookupTargetId(context, helper, deadline) : null;
       const launched = new PlaywrightLaunchedBrowser(
         owner,
         context,
@@ -814,12 +928,15 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         providerConfig,
         helper,
         true,
+        candidate,
+        helperTargetId ?? undefined,
       );
       if (this.headless) launched.clipboard = ChromiumClipboard.lazy(browser);
       timing("clipboard");
       await browserCdp.send("Target.setDiscoverTargets", { discover: true });
       timing("target-discovery");
       signal?.throwIfAborted();
+      launched.establishTabLifecycle(this.tabLifecycleProbeMs, lifecycleExtensionIds);
       // The runtime now owns the host; ending its first attachment must not
       // tear down sibling sessions or the native warm host.
       signal?.removeEventListener("abort", abort);
@@ -853,6 +970,8 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     providerConfig?: BrowserPagePolicyConfig,
     privatePage?: Page,
     dedicatedContext = false,
+    lifecycle?: ChromiumTabLifecycleBridge,
+    privatePageTargetId?: string,
   ) {
     this.persistencePage = privatePage;
     this.owner = owner;
@@ -865,6 +984,8 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
       authenticator,
       providerConfig,
       privatePage,
+      lifecycle,
+      dedicatedContext,
     );
     if (authenticator) {
       for (const page of context.pages())
@@ -881,7 +1002,13 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     }
     this.context = this.contextHandle;
     this.contextHandle.closeTarget = async (targetId) => {
-      await browserCdp.send("Target.closeTarget", { targetId });
+      const reply = (await withTimeout(
+        browserCdp.send("Target.closeTarget", { targetId }),
+        nameTargetMs,
+        { timeoutError: () => new Error("Target.closeTarget timed out.") },
+      )) as { success?: unknown } | undefined;
+      // A resolved answer that says it did not close is no evidence of a close.
+      if (reply?.success === false) throw new Error("Chromium did not close the target.");
     };
     this.contextHandle.browserAlive = () =>
       withTimeout(browserCdp.send("Browser.getVersion"), nameTargetMs, {
@@ -890,12 +1017,30 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
         () => true,
         () => false,
       );
+    // Q1: Chromium names each new target's opener, also after that opener closed, where
+    // Playwright no longer does; the context keeps it for the page's handoff.
+    untypedCdp(browserCdp).on("Target.targetCreated", (event) => {
+      const info = (event as { targetInfo?: { targetId?: unknown; openerId?: unknown } })
+        .targetInfo;
+      if (typeof info?.targetId === "string" && typeof info.openerId === "string")
+        this.contextHandle.noteOpener(info.targetId, info.openerId);
+    });
+    untypedCdp(browserCdp).on("Target.targetDestroyed", (event) => {
+      const targetId = (event as { targetId?: unknown }).targetId;
+      if (typeof targetId === "string") this.contextHandle.forgetOpener(targetId);
+    });
     this.cdp = new PlaywrightBrowserCdpBackend(
       browserCdp,
       this.contextHandle,
       browserContextId,
       dedicatedContext,
+      privatePageTargetId,
     );
+  }
+
+  /** Looks for the tab-lifecycle helper once, in the background. */
+  establishTabLifecycle(probeMs: number, extensionIds: readonly string[]): void {
+    this.contextHandle.establishLifecycle(probeMs, extensionIds);
   }
 
   onClose(listener: () => void): void {
@@ -944,6 +1089,7 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
    * disposable Guest owners kill only their own child.
    */
   private async closeOnce(): Promise<void> {
+    this.contextHandle.markClosed();
     const detached = await Promise.allSettled([
       withTimeout((this.cdp as PlaywrightBrowserCdpBackend).close(), 500, {
         timeoutError: () => new Error("Browser CDP detach did not finish."),
@@ -965,6 +1111,219 @@ const targetLookupMs = 5_000;
 /** One debugger round trip to a page or browser that may be dying. */
 const nameTargetMs = 2_000;
 
+/** Opaque restore token for a Chromium tab discarded by `chrome.tabs.discard`. */
+const chromiumDiscardRestoreSchema = z.object({
+  kind: z.literal("chromium-discard"),
+  tokenId: z.string().min(1),
+  url: z.string(),
+});
+
+type ChromiumDiscardRestore = z.infer<typeof chromiumDiscardRestoreSchema>;
+
+function parseChromiumDiscardRestore(value: unknown): ChromiumDiscardRestore | null {
+  const parsed = chromiumDiscardRestoreSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+/** One bound for a wake: its lane wait, the activation and the arrival together. */
+const wakeDiscardedTabMs = 10_000;
+/**
+ * How long the helper is looked for once, after launch and off the way to the first page. A
+ * browser that does not load it (branded Chrome ignores `--load-extension`) answers within this
+ * and its tabs sleep by closing.
+ */
+const lifecycleProbeMs = 10_000;
+/** How long an arriving page's tab name is looked up while some tab is asleep. */
+const arrivalIdentifyMs = 2_000;
+/** How long the runtime's own new page may take; a page with no opener waits inside it (K3). */
+const openPageMs = 10_000;
+/** Background removal attempts per sleeping tab, since it was given up, before it is reported. */
+const removalRetryBound = 8;
+/**
+ * How many closed pages' handles stay strongly held. A successor is announced within moments of
+ * its opener's close; 64 closes is more than a 46-tab burst closes in that time, at the cost of
+ * 64 handle objects.
+ */
+const recentlyClosedHandles = 64;
+/** The most opener records kept for targets not yet arrived; a guard, not a working limit. */
+const openerRecordCap = 4_096;
+/** The group title a tab carries while it sleeps, and only then (L2). */
+const sleepTitlePrefix = "opensteer-sleep:";
+
+const remainingMs = (deadline: number) => Math.max(1, deadline - performance.now());
+const notWanted = () => new Error("The page is no longer wanted.");
+
+/**
+ * Reads a Playwright Chromium page's CDP targetId synchronously from its
+ * in-process CRPage delegate, avoiding async CDP round trips inside `handOff`.
+ */
+function syncTargetIdOfPage(page: Page): string | null {
+  try {
+    const impl = (
+      page as unknown as {
+        _connection?: {
+          toImpl?: (
+            obj: unknown,
+          ) =>
+            { delegate?: { _targetId?: unknown }; _delegate?: { _targetId?: unknown } } | undefined;
+        };
+      }
+    )._connection?.toImpl?.(page);
+    const candidate = impl?.delegate?._targetId ?? impl?._delegate?._targetId;
+    return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A page's target, in memory or through one debugger round trip, inside `deadline`. */
+async function lookupTargetId(
+  context: PlaywrightBrowserContext,
+  page: Page,
+  deadline: number,
+): Promise<string | null> {
+  const synced = syncTargetIdOfPage(page);
+  if (synced || page.isClosed()) return synced;
+  let session: PlaywrightCdpSession | undefined;
+  try {
+    session = await withTimeout(context.newCDPSession(page), remainingMs(deadline), {
+      timeoutError: () => new Error("Target lookup CDP attach timed out."),
+    });
+    const response = (await withTimeout(
+      session.send("Target.getTargetInfo"),
+      remainingMs(deadline),
+      { timeoutError: () => new Error("Target lookup getTargetInfo timed out.") },
+    )) as { targetInfo?: { targetId?: unknown } };
+    return typeof response.targetInfo?.targetId === "string" ? response.targetInfo.targetId : null;
+  } catch {
+    return null;
+  } finally {
+    if (session)
+      void withTimeout(session.detach(), nameTargetMs, {
+        timeoutError: () => new Error("Target lookup detach timed out."),
+      }).catch(() => undefined);
+  }
+}
+
+type Named =
+  | { readonly kind: "none" }
+  | { readonly kind: "one"; readonly row: ChromiumTabEntry }
+  | { readonly kind: "many" };
+
+/** K2: the one lookup of a name, in a read that agrees with itself. `many` is never a match. */
+function findNamed(rows: readonly ChromiumTabEntry[], name: string): Named {
+  let found: ChromiumTabEntry | undefined;
+  for (const row of rows) {
+    if (row.identity !== name) continue;
+    if (found) return { kind: "many" };
+    found = row;
+  }
+  return found ? { kind: "one", row: found } : { kind: "none" };
+}
+
+/**
+ * A sleep's name identifies its tab only together with that tab's own id or target (run 10):
+ * closing the active tab beside a sleeping tab makes Chromium activate (and load) it, and a tab a
+ * page then opens goes next to it, into its group, carrying its title (seen on real Chromium).
+ * Only the sleep's own tab is `one`; a different carrier is a newcomer, never it.
+ */
+function findOwn(
+  rows: readonly ChromiumTabEntry[],
+  sleep: { readonly title: string; readonly tabId: number; readonly targetId: string | null },
+): Named {
+  const own = rows.filter(
+    (row) =>
+      row.identity === sleep.title &&
+      (row.tabId === sleep.tabId || (sleep.targetId !== null && row.targetId === sleep.targetId)),
+  );
+  if (own.length > 1) return { kind: "many" };
+  return own[0] ? { kind: "one", row: own[0] } : { kind: "none" };
+}
+
+/** A tab that carries a sleep's name but is not that sleep's own: it joined the group. */
+function isNewcomer(
+  row: ChromiumTabEntry,
+  sleep: { readonly tabId: number; readonly targetId: string | null },
+): boolean {
+  return row.tabId !== sleep.tabId && (sleep.targetId === null || row.targetId !== sleep.targetId);
+}
+
+/** K1: one read that agrees with itself inside `deadline`, or null: not known. */
+function readRows(
+  lifecycle: ChromiumTabLifecycleBridge,
+  deadline: number,
+): Promise<readonly ChromiumTabEntry[] | null> {
+  return withTimeout(lifecycle.inventory(deadline), remainingMs(deadline), {
+    timeoutError: () => new Error("Tab inventory timed out."),
+  }).catch(() => null);
+}
+
+function reportUnconfirmedRemoval(attempts: number): void {
+  process.stderr.write(
+    `${JSON.stringify({ event: "browser-runtime.tab-removal-unconfirmed", attempts })}\n`,
+  );
+}
+
+function isBlankAddress(url: string): boolean {
+  return url === "" || url === "about:blank" || url === "chrome://newtab/";
+}
+
+/** One sleep of one tab: discarded, then named by its token, and found again by that name alone. */
+interface SleepingTab {
+  readonly title: string;
+  readonly url: string;
+  /**
+   * The tab as last known: its id from Chromium's answer to the discard (a discard gives a tab a
+   * new id, and may give it a new target too, seen on real Chromium), and its target then.
+   */
+  tabId: number;
+  targetId: string | null;
+  /** Whether the name was asked of Chromium; then the name, too, must be gone for a removal. */
+  named: boolean;
+  /** Whether a remove (or the close of its page) was answered; an unnamed tab needs one. */
+  removeAsked: boolean;
+  /** Resolves when the sleep (or the close it fell back to) has finished. */
+  readonly settled: Promise<void>;
+}
+
+/** A wake waiting for its tab's page: it takes only the one tab carrying its name (K2, L4). */
+interface ArmedWake {
+  arrived: { readonly page: Page; readonly row: ChromiumTabEntry } | null;
+  /** A second carrier, or a second arrival, was seen: the wake gives up. */
+  spoiled: boolean;
+  readonly settled: Promise<void>;
+  arrive(page: Page, row: ChromiumTabEntry): void;
+  spoil(): void;
+}
+
+function armWake(): ArmedWake {
+  const settled = Promise.withResolvers<void>();
+  const wake: ArmedWake = {
+    arrived: null,
+    spoiled: false,
+    settled: settled.promise,
+    arrive: (page, row) => {
+      // The same page seen twice (found by the wake while its name was still being read, then
+      // placed by that read) is one arrival; only another page is a second arrival of the tab.
+      if (!wake.arrived) wake.arrived = { page, row };
+      else if (wake.arrived.page !== page) wake.spoiled = true;
+      settled.resolve();
+    },
+    spoil: () => {
+      wake.spoiled = true;
+      settled.resolve();
+    },
+  };
+  return wake;
+}
+
+/**
+ * A page is published only with positive provenance (K3): the runtime's own new page, a page its
+ * published opener opened, or the tab a wake took by its name. Every other page is classified by
+ * its tab's group title: the page of a sleeping tab stays hidden, anything else is closed with
+ * evidence. A tab carries a title only while it sleeps (L2): the helper names it after Chromium
+ * discarded it, and the wake removes the name once it takes the tab.
+ */
 class PlaywrightContextHandle implements BrowserContext {
   private closed = false;
   isConnected(): boolean {
@@ -973,12 +1332,34 @@ class PlaywrightContextHandle implements BrowserContext {
   private readonly context: PlaywrightBrowserContext;
   private readonly openDialogs: Map<Page, Dialog>;
   private readonly pagesByPlaywrightPage = new Map<Page, PlaywrightPageHandle>();
+  private readonly handles = new WeakMap<Page, PlaywrightPageHandle>();
+  /** Each page's handle by its target, held weakly, so a child finds a closed opener (Q1). */
+  private readonly handleByTarget = new Map<string, WeakRef<PlaywrightPageHandle>>();
+  private readonly forgetTarget = new FinalizationRegistry<string>((targetId) => {
+    if (!this.handleByTarget.get(targetId)?.deref()) this.handleByTarget.delete(targetId);
+  });
+  /**
+   * The handles of the last pages that closed, held strongly: a child announced after its
+   * opener closed finds that opener's handle whatever the collector did meanwhile (a short-lived
+   * interstitial's handle is young, so the first scavenge would take it). Older ones stay weak.
+   */
+  private readonly recentlyClosed: PlaywrightPageHandle[] = [];
+  /** Each target's opener as Chromium named it when it was created, until it arrives or ends. */
+  private readonly openerByTarget = new Map<string, string>();
+  /** Pages being looked up by name: a child of one is handed off after its opener (Q1). */
+  private readonly classifying = new WeakMap<Page, Promise<void>>();
   private readonly pageListeners = new Set<(page: BrowserPage) => void>();
   private readonly handOffs = new Set<
     (page: BrowserPage, opener: BrowserPage | null, inferred?: boolean) => void
   >();
   private readonly explicitPages = new WeakSet<Page>();
   private readonly inFlightCreations = new Set<Promise<unknown>>();
+  /**
+   * Z3: opens the runtime no longer waits for (timed out or abandoned) whose page may still
+   * arrive. Until each settles, or its own bound passes, a page without an opener is held: it may
+   * be that page, which is closed with evidence and never handed out.
+   */
+  private readonly lateCreations = new Set<Promise<unknown>>();
   private readonly pendingLinkOpens: Array<{
     readonly opener: PlaywrightPageHandle;
     readonly disposition: LinkOpenDisposition;
@@ -988,10 +1369,46 @@ class PlaywrightContextHandle implements BrowserContext {
   closeTarget: ((targetId: string) => Promise<void>) | undefined;
   /** Whether the browser behind this context still answers its own debugger. */
   browserAlive: (() => Promise<boolean>) | undefined;
+  beforeCreatePage: (() => Promise<() => void>) | undefined;
 
   readonly authenticator: PasskeyAuthenticator | undefined;
   readonly providerConfig: BrowserPagePolicyConfig;
+  /** The tab-lifecycle helper, once it has answered after launch; until then, and without it, none. */
+  lifecycle: ChromiumTabLifecycleBridge | undefined;
+  /** The helper as launched, before it has answered. */
+  readonly lifecycleCandidate: ChromiumTabLifecycleBridge | undefined;
+  /** Settles once the look for the helper has ended, either way. */
+  lifecycleSettled: Promise<void> = Promise.resolve();
+  /** Until the look has ended, no tab sleeps: waiting costs time, closing would lose the page. */
+  lifecyclePending = false;
+  /** A native profile's context: K3 holds for every page. */
+  private readonly nativeProfile: boolean;
   private readonly privatePage: Page | undefined;
+
+  /** Sleeping tabs by token. A token is one sleep of one tab, and the key of that tab's lane. */
+  private readonly sleeping = new Map<string, SleepingTab>();
+  /** The token of the tab carrying each sleep name. */
+  private readonly sleepingTitles = new Map<string, string>();
+  /** Tokens given up: their tabs are removed in the background until proven, then forgotten. */
+  private readonly removals = new Map<string, { attempts: number }>();
+  /** Tokens whose removal could not be confirmed within the bound; still guarded. */
+  private readonly unremovable = new Set<string>();
+  private removalTimer: ReturnType<typeof setTimeout> | undefined;
+  private removalDrain: Promise<void> | null = null;
+  /** Wakes waiting for their tab's page, by the tab's sleep name. */
+  private readonly wakes = new Map<string, ArmedWake>();
+  private readonly published = new WeakSet<Page>();
+  /** Pages being closed: never published, whatever answers later. */
+  private readonly ending = new WeakSet<Page>();
+  private readonly identifyingPages = new WeakSet<Page>();
+  /**
+   * Pages of sleeping tabs Chromium loaded by itself whose `load` has fired: their form and scroll
+   * state is restored, so a freeze then saves it (run 12, 1b).
+   */
+  private readonly restoredPages = new WeakSet<Page>();
+  /** The name a hidden page was seen with, so its tab's removal closes it first. */
+  private readonly pageTitles = new WeakMap<Page, string>();
+  private readonly laneTails = new Map<string, Promise<void>>();
 
   constructor(
     context: PlaywrightBrowserContext,
@@ -999,50 +1416,821 @@ class PlaywrightContextHandle implements BrowserContext {
     authenticator?: PasskeyAuthenticator,
     providerConfig?: BrowserPagePolicyConfig,
     privatePage?: Page,
+    lifecycle?: ChromiumTabLifecycleBridge,
+    nativeProfile = false,
   ) {
     this.privatePage = privatePage;
+    this.lifecycleCandidate = lifecycle;
     this.authenticator = authenticator;
     this.providerConfig = providerConfig;
     this.context = context;
+    this.openDialogs = openDialogs;
+    this.nativeProfile = nativeProfile;
+    for (const page of context.pages()) {
+      if (this.isHiddenPage(page)) continue;
+      if (nativeProfile) this.arrive(page);
+      else this.published.add(page);
+    }
     context.on("close", () => {
-      this.closed = true;
+      this.markClosed();
       this.pendingLinkOpens.length = 0;
       // A context's end ends its pages even when Playwright reports no page close.
       for (const handle of this.pagesByPlaywrightPage.values()) handle.confirmGone("context");
     });
-    // Playwright reports a popup to its opener right after the context's page
-    // event, in the same turn; one microtask later both are known, and
-    // OpenURLFromTab pages (which emit no popup event) can be attributed from
-    // the modifier/middle-click that triggered them before announcing to ledgers.
-    context.on("page", (page) => {
-      if (page === this.privatePage) return;
-      const handle = this.wrap(page);
-      const announce = () => {
-        let inferred = false;
-        if (handle.openerHandle) {
-          const match = this.takeLinkOpenGesture(handle.openerHandle);
-          if (match) handle.openedInBackground = match.disposition === "background-tab";
-        } else if (!this.explicitPages.has(page)) {
-          const match = this.takeLinkOpenGesture();
-          if (match) {
-            handle.openerHandle = match.opener;
-            handle.openedInBackground = match.disposition === "background-tab";
-            inferred = true;
-          }
-        }
-        for (const listener of this.handOffs) listener(handle, handle.openerHandle, inferred);
-        for (const listener of this.pageListeners) listener(handle);
-      };
-      const pendingCreations = [...this.inFlightCreations];
-      if (pendingCreations.length > 0) {
-        // Identify explicit createPage() results by exact Page identity once
-        // in-flight newPage() promises settle, rather than guessing by URL.
-        void Promise.allSettled(pendingCreations).then(() => queueMicrotask(announce));
-      } else {
-        queueMicrotask(announce);
+    context.on("page", (page) => this.arrive(page));
+  }
+
+  /**
+   * M1: a page whose tab carries no sleep name is an ordinary page, handed off as the base does,
+   * opener or not. While some tab is asleep, its tab's name is read first, so a sleeping tab's
+   * page is never handed out, also not as a popup; while none is, an arrival reads nothing.
+   */
+  private arrive(page: Page): void {
+    if (this.isHiddenPage(page) || this.published.has(page) || this.ending.has(page)) return;
+    const handle = this.wrap(page);
+    // Q1: its opener as Playwright recorded it, also when that page has closed since or is still
+    // being looked up; its session is resolved when this page is handed off.
+    const known = (page as unknown as { _opener?: Page | null })._opener;
+    if (known && known !== this.privatePage) handle.openerHandle ??= this.wrap(known);
+    // Playwright forgets an opener that closed first; Chromium's own record still names it.
+    const targetId = syncTargetIdOfPage(page);
+    const openerTarget = targetId ? this.openerByTarget.get(targetId) : undefined;
+    if (targetId) this.openerByTarget.delete(targetId);
+    const recorded = openerTarget ? this.handleByTarget.get(openerTarget)?.deref() : undefined;
+    if (recorded && recorded.rawPage !== this.privatePage) handle.openerHandle ??= recorded;
+    if (!this.nativeProfile || !this.lifecycle || this.sleeping.size === 0) {
+      this.handOutOrdinary(page);
+      return;
+    }
+    this.identifyingPages.add(page);
+    const classified = this.classify(page).catch(() => this.settleUnknown(page));
+    this.classifying.set(page, classified);
+  }
+
+  /**
+   * Hands an ordinary page off as the base does, at once: a page that has already closed itself
+   * is still handed off, so its end is seen. A child of a page still being looked up by name is
+   * handed off after that page, so its opener's session is known by then (Q1).
+   */
+  private handOutOrdinary(page: Page, creationsSettled = false): void {
+    if (this.closed || this.ending.has(page) || this.published.has(page)) return;
+    const handle = this.wrap(page);
+    const opener = handle.openerHandle?.rawPage;
+    const pending =
+      opener && this.identifyingPages.has(opener) ? this.classifying.get(opener) : null;
+    if (pending) {
+      this.identifyingPages.add(page);
+      void pending.finally(() => {
+        if (!this.identifyingPages.delete(page)) return;
+        this.handOutOrdinary(page);
+      });
+      return;
+    }
+    // main #725, Z5: identity decides, never timing. The runtime's own open always starts at
+    // about:blank, so a page without an opener that arrives anywhere else is handed off at once.
+    // One at about:blank, while an open is in flight or given up, is held only briefly (well
+    // under a link gesture's window), and the hold never makes its link gesture expire: the
+    // runtime's own page is published by its open's answer, and any other page is handed off at
+    // the bound as the person's. The gesture stays where any page at a real address finds it. A given-up open's own page is closed
+    // when its answer names it, whatever was done with it meanwhile.
+    if (
+      !creationsSettled &&
+      !handle.openerHandle &&
+      !this.explicitPages.has(page) &&
+      (this.inFlightCreations.size > 0 || this.lateCreations.size > 0) &&
+      isBlankArrival(page)
+    ) {
+      this.identifyingPages.add(page);
+      const arrived = Date.now();
+      let bound: NodeJS.Timeout | undefined;
+      void Promise.race([
+        Promise.allSettled([...this.inFlightCreations, ...this.lateCreations]),
+        new Promise<void>((resolve) => {
+          bound = setTimeout(resolve, blankArrivalHoldMs);
+        }),
+      ]).then(() =>
+        queueMicrotask(() => {
+          clearTimeout(bound);
+          // The runtime's own page is its open's to publish.
+          if (!this.identifyingPages.delete(page) || this.explicitPages.has(page)) return;
+          this.published.add(page);
+          this.announce(handle, page, true, Date.now() - arrived);
+        }),
+      );
+      return;
+    }
+    this.identifyingPages.delete(page);
+    this.published.add(page);
+    this.announce(handle, page, true);
+  }
+
+  /**
+   * The one announcement of a published page (main #725): a page with an opener takes that
+   * opener's last modifier or middle click (a background tab or not); an ordinary page without
+   * one, which Chromium opened from a link (OpenURLFromTab sends no popup event), is attributed to
+   * the one recent link gesture. The runtime's own pages and a woken tab are never inferred.
+   */
+  private announce(
+    handle: PlaywrightPageHandle,
+    page: Page,
+    infer: boolean,
+    /** Z5: how long the page was held before this: its gesture's window is that much longer. */
+    heldMs = 0,
+  ): void {
+    let inferred = false;
+    if (handle.openerHandle) {
+      const match = this.takeLinkOpenGesture(handle.openerHandle);
+      if (match) handle.openedInBackground = match.disposition === "background-tab";
+    } else if (infer && !this.explicitPages.has(page)) {
+      const match = this.takeLinkOpenGesture(undefined, heldMs);
+      if (match) {
+        handle.openerHandle = match.opener;
+        handle.openedInBackground = match.disposition === "background-tab";
+        inferred = true;
       }
+    }
+    for (const listener of this.handOffs) listener(handle, handle.openerHandle, inferred);
+    for (const listener of this.pageListeners) listener(handle);
+  }
+
+  /**
+   * A page whose tab's name could not be read: ordinary, unless a wake is armed, when it may be
+   * the waking tab's own page and is closed rather than handed out (lost, never wrong).
+   */
+  private settleUnknown(page: Page): void {
+    if (this.closed || !this.identifyingPages.has(page)) return;
+    if (this.wakes.size > 0) void this.closePageWithEvidence(page);
+    else this.handOutOrdinary(page);
+  }
+
+  /** The one publication of a page with provenance. */
+  private publish(page: Page, announce: boolean): boolean {
+    // A page that closed itself is still handed off, so its end is seen; one we close is not.
+    if (this.closed || this.ending.has(page)) return false;
+    this.identifyingPages.delete(page);
+    if (this.published.has(page)) return true;
+    this.published.add(page);
+    if (!announce) return true;
+    this.announce(this.wrap(page), page, false);
+    return true;
+  }
+
+  private isHiddenPage(page: Page): boolean {
+    if (page === this.privatePage) return true;
+    const url = typeof page.url === "function" ? page.url() : "";
+    return isInternalExtensionUrl(url);
+  }
+
+  private isVisible(page: Page): boolean {
+    return this.published.has(page) && !this.isHiddenPage(page);
+  }
+
+  /**
+   * While some tab is asleep, an arriving page's tab is looked up by its name. A sleep name
+   * decides; no name is an ordinary page; a name that cannot be read within the bound is settled
+   * as unknown.
+   */
+  private async classify(page: Page): Promise<void> {
+    // Q3: it starts at arrival. The runtime's own new page carries no sleep name, so it is
+    // published as ordinary here or by its open's answer, whichever comes first.
+    const taken = () => this.closed || !this.identifyingPages.has(page);
+    const deadline = performance.now() + arrivalIdentifyMs;
+    for (let attempt = 0; ; attempt++) {
+      if (taken()) return;
+      // A page that closed while it was looked up is handed off, so its end is seen.
+      if (page.isClosed()) return this.handOutOrdinary(page);
+      const targetId = await lookupTargetId(this.context, page, deadline);
+      const rows = targetId && !taken() ? await this.read(deadline) : null;
+      if (taken()) return;
+      const row = rows?.find((entry) => entry.targetId === targetId);
+      if (rows && row) return this.place(page, row, rows);
+      if (performance.now() + 25 >= deadline) break;
+      await delay(Math.min(100 * (attempt + 1), remainingMs(deadline)));
+    }
+    this.settleUnknown(page);
+  }
+
+  /** The answer for a page whose tab's row is known. */
+  private place(page: Page, row: ChromiumTabEntry, rows: readonly ChromiumTabEntry[]): void {
+    const title = row.identity ?? null;
+    const wake = title === null ? undefined : this.wakes.get(title);
+    const tokenId = title === null ? undefined : this.sleepingTitles.get(title);
+    if (!wake && !tokenId) {
+      // No sleep name: an ordinary page (M1).
+      this.handOutOrdinary(page);
+      return;
+    }
+    const record = tokenId ? this.sleeping.get(tokenId) : undefined;
+    if (record && isNewcomer(row, record)) {
+      // A tab that joined the sleeping tab's group (Chromium does that to a tab opened next to
+      // it while it is the active tab): the name is not its own, so it goes, and the page is an
+      // ordinary one. It never spoils a wake and is never closed.
+      void this.lifecycle?.unnameTab(row.tabId).catch(() => false);
+      this.handOutOrdinary(page);
+      return;
+    }
+    this.identifyingPages.delete(page);
+    this.pageTitles.set(page, title!);
+    const one = record ? findOwn(rows, record).kind === "one" : false;
+    if (wake) {
+      // K2, L4: the wake takes only its own tab, seen once; a second arrival of it, or a page of
+      // a name it cannot tell from its own, makes it give up. The page stays hidden either way.
+      if (one) wake.arrive(page, row);
+      else wake.spoil();
+      return;
+    }
+    if (one && !this.removals.has(tokenId!) && !this.unremovable.has(tokenId!)) {
+      // A sleeping tab Chromium loaded by itself goes back to sleep, unseen, as an ordinary sleep
+      // goes: once it has restored, frozen, then discarded.
+      if (!row.discarded && row.status !== "unloaded")
+        void this.sleepAgainOnceRestored(tokenId!, page);
+      return;
+    }
+    // A page of a sleeping tab given up: closed with evidence.
+    void this.closePageWithEvidence(page);
+  }
+
+  /**
+   * Waits, off the tab's lane (so a wake is never held behind it), until the page Chromium loaded
+   * has fired `load`: Blink has then restored its form fields and scroll from the tab's saved
+   * state. Only then may the lane put it back to sleep; a wake meanwhile takes the page instead.
+   */
+  private async sleepAgainOnceRestored(tokenId: string, page: Page): Promise<void> {
+    await page.waitForLoadState("load", { timeout: 0 }).catch(() => undefined);
+    if (this.closed || page.isClosed()) return;
+    this.restoredPages.add(page);
+    await this.onLane(tokenId, () => this.sleepAgain(tokenId)).catch(() => undefined);
+  }
+
+  /** The hidden page of a tab: Chromium announced it, and nobody has it. */
+  private hiddenPageOf(targetId: string | null): Page | undefined {
+    if (!targetId) return undefined;
+    return this.context
+      .pages()
+      .find(
+        (page) =>
+          page !== this.privatePage &&
+          !page.isClosed() &&
+          !this.published.has(page) &&
+          !this.ending.has(page) &&
+          syncTargetIdOfPage(page) === targetId,
+      );
+  }
+
+  /**
+   * On the tab's lane: still this token's sleep, still loaded, and no wake for it, it sleeps again
+   * under its name, verified; a tab that does not is removed with evidence (or stays guarded).
+   * A loaded tab is discarded only with its page in hand, restored and frozen first, as an ordinary
+   * sleep is: Chromium discards from the page state the renderer last saved, and a page it restored
+   * by itself has not saved what it restored (run 12, 1b and 1c: the draft was lost).
+   */
+  private async sleepAgain(tokenId: string): Promise<void> {
+    const record = this.sleeping.get(tokenId);
+    if (!record || this.closed || this.wakes.has(record.title)) return;
+    const deadline = performance.now() + 2 * nameTargetMs;
+    const rows = await this.read(deadline);
+    const named = rows ? findOwn(rows, record) : null;
+    if (this.sleeping.get(tokenId) !== record || this.wakes.has(record.title)) return;
+    if (named?.kind === "one" && named.row.discarded) {
+      // Asleep already (a wake abandoned after it moved the tab): back among the sleeping tabs.
+      await this.placeAsleep(record, named.row.index);
+      return;
+    }
+    if (named?.kind !== "one" || named.row.status === "unloaded") return;
+    const page = this.hiddenPageOf(named.row.targetId);
+    // Its page not yet announced: its arrival puts it back to sleep.
+    if (!page) return;
+    if (!this.restoredPages.has(page)) {
+      void this.sleepAgainOnceRestored(tokenId, page);
+      return;
+    }
+    // S1: never discarded while it is the active tab (Chromium would then hold it active and
+    // discarded, and activating it again would not load it).
+    if (named.row.active) await this.activatePrivateAnchor();
+    await this.freezeBeforeDiscard(page);
+    if (this.sleeping.get(tokenId) !== record || this.wakes.has(record.title) || page.isClosed())
+      return;
+    const discardedId = await this.lifecycle?.discardByTabId(named.row.tabId).catch(() => null);
+    const after = await this.read(deadline);
+    if (discardedId != null) record.tabId = discardedId;
+    const again = after ? findOwn(after, record) : null;
+    if (again?.kind === "one" && again.row.discarded) {
+      record.tabId = again.row.tabId;
+      record.targetId = again.row.targetId;
+      await this.placeAsleep(record, again.row.index);
+      return;
+    }
+    if (discardedId != null) record.tabId = discardedId;
+    if (await this.removeSleeping(record, 1)) this.forget(tokenId, record);
+    else this.giveUp(tokenId);
+  }
+
+  /**
+   * The one bounded close with evidence: Playwright's close, then the target's own close. The page
+   * is unpublished at once and stays out of reach whether or not the close is confirmed.
+   */
+  private async closePageWithEvidence(
+    page: Page,
+    deadline = performance.now() + 2 * nameTargetMs,
+  ): Promise<boolean> {
+    this.ending.add(page);
+    this.published.delete(page);
+    this.identifyingPages.delete(page);
+    if (!page.isClosed())
+      await withTimeout(page.close({ runBeforeUnload: false }), remainingMs(deadline) / 2, {
+        timeoutError: () => new Error("Page close timed out."),
+      }).catch(() => undefined);
+    const targetId = page.isClosed() ? null : syncTargetIdOfPage(page);
+    if (targetId && this.closeTarget)
+      await withTimeout(this.closeTarget(targetId), remainingMs(deadline), {
+        timeoutError: () => new Error("Target close timed out."),
+      }).catch(() => undefined);
+    if (page.isClosed()) return true;
+    process.stderr.write('{"event":"browser-runtime.page-close-unconfirmed"}\n');
+    return false;
+  }
+
+  /** K1: one read that agrees with itself inside `deadline`, or null. */
+  private read(deadline: number): Promise<readonly ChromiumTabEntry[] | null> {
+    if (!this.lifecycle || this.closed) return Promise.resolve(null);
+    return readRows(this.lifecycle, deadline);
+  }
+
+  /** Chromium created `targetId` from `openerId` (Q1). */
+  noteOpener(targetId: string, openerId: string): void {
+    this.openerByTarget.set(targetId, openerId);
+    // A guard only: entries go as their targets arrive or end; past the cap, the oldest go.
+    for (const oldest of this.openerByTarget.keys()) {
+      if (this.openerByTarget.size <= openerRecordCap) break;
+      this.openerByTarget.delete(oldest);
+    }
+  }
+
+  /** Chromium destroyed `targetId`: its opener record goes with it. */
+  forgetOpener(targetId: string): void {
+    this.openerByTarget.delete(targetId);
+  }
+
+  /** A page's later close attempt, on the lane of the sleep it was put to (M3). */
+  onSleepLane(tokenId: string, fn: () => Promise<void>): Promise<void> {
+    return this.onLane(tokenId, fn);
+  }
+
+  /** Runs `fn` after every earlier task of the same sleeping tab; they never overlap. */
+  private onLane<T>(tokenId: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.laneTails.get(tokenId) ?? Promise.resolve();
+    const run = previous.then(fn);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.laneTails.set(tokenId, tail);
+    void tail.then(() => {
+      if (this.laneTails.get(tokenId) === tail) this.laneTails.delete(tokenId);
     });
-    this.openDialogs = openDialogs;
+    return run;
+  }
+
+  /**
+   * K6, on the tab's lane: a sleeping tab is removed only on evidence, a read that agrees with
+   * itself in which no tab carries its name and none has its id or target, after a remove
+   * resolved when it was never named. It removes only its own tab (Q2): the one carrying its
+   * name, or the one its own discard returned. Its hidden pages close first; `many` is not
+   * removed by name.
+   */
+  private async removeSleeping(record: SleepingTab, attempts: number): Promise<boolean> {
+    const lifecycle = this.lifecycle;
+    if (!lifecycle) return false;
+    const deadline = performance.now() + attempts * nameTargetMs;
+    // Its own tab: by its id or target, or a discarded carrier of its name (only Opensteer
+    // discards, so that one is its own even when a lost answer hid its new id). A live tab that
+    // only joined the group is a newcomer and is never removed.
+    const ours = (row: ChromiumTabEntry) =>
+      row.tabId === record.tabId ||
+      (record.targetId !== null && row.targetId === record.targetId) ||
+      (row.identity === record.title && row.discarded);
+    const gone = (rows: readonly ChromiumTabEntry[] | null) =>
+      rows !== null && !rows.some(ours) && (record.named || record.removeAsked);
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (this.closed) return false;
+      for (const page of this.context.pages())
+        if (!this.published.has(page) && this.pageTitles.get(page) === record.title)
+          await this.closePageWithEvidence(page, deadline);
+      const rows = await this.read(deadline);
+      if (this.closed) return false;
+      if (gone(rows)) return true;
+      const own = rows?.filter(ours) ?? [];
+      const tab = own.length === 1 ? own[0] : undefined;
+      if (tab) {
+        let resolved = await lifecycle.removeByTabId(tab.tabId).catch(() => false);
+        if (!resolved && tab.targetId && this.closeTarget)
+          resolved = await this.closeTarget(tab.targetId).then(
+            () => true,
+            () => false,
+          );
+        if (resolved) record.removeAsked = true;
+        if (gone(await this.read(deadline))) return true;
+      }
+      if (attempt < attempts - 1) await delay(40);
+    }
+    return false;
+  }
+
+  /** Forgets one sleep, only once its tab woke or is proven removed. */
+  private forget(tokenId: string, record: SleepingTab): void {
+    if (this.sleeping.get(tokenId) === record) this.sleeping.delete(tokenId);
+    if (this.sleepingTitles.get(record.title) === tokenId) this.sleepingTitles.delete(record.title);
+    this.removals.delete(tokenId);
+    this.unremovable.delete(tokenId);
+  }
+
+  /** Gives a sleep up: guarded at once, removed in the background until proven, or reported. */
+  private giveUp(tokenId: string): void {
+    if (this.closed || this.removals.has(tokenId) || this.unremovable.has(tokenId)) return;
+    this.removals.set(tokenId, { attempts: 0 });
+    this.scheduleRemovalDrain(0);
+  }
+
+  private scheduleRemovalDrain(delayMs?: number): void {
+    if (this.closed || this.removalTimer || this.removalDrain || this.removals.size === 0) return;
+    let attempts = 0;
+    for (const tracker of this.removals.values()) attempts = Math.max(attempts, tracker.attempts);
+    this.removalTimer = setTimeout(
+      () => {
+        this.removalTimer = undefined;
+        // One drain at a time: a give-up while it runs is picked up by its next pass.
+        this.removalDrain = this.drainRemovals().finally(() => {
+          this.removalDrain = null;
+          this.scheduleRemovalDrain();
+        });
+      },
+      delayMs ?? Math.min(2_000, 100 * 2 ** Math.min(attempts, 4)),
+    );
+    this.removalTimer.unref?.();
+  }
+
+  private async drainRemovals(): Promise<void> {
+    for (const [tokenId, tracker] of Array.from(this.removals)) {
+      if (this.closed) return;
+      await this.onLane(tokenId, async () => {
+        if (this.removals.get(tokenId) !== tracker) return;
+        const record = this.sleeping.get(tokenId);
+        if (!record) {
+          this.removals.delete(tokenId);
+          return;
+        }
+        tracker.attempts++;
+        if (await this.removeSleeping(record, 1)) this.forget(tokenId, record);
+        else if (tracker.attempts >= removalRetryBound) {
+          // Rule A: recorded as not removed, never retried silently forever; still guarded.
+          this.removals.delete(tokenId);
+          this.unremovable.add(tokenId);
+          reportUnconfirmedRemoval(tracker.attempts);
+        }
+      });
+    }
+  }
+
+  markClosed(): void {
+    if (this.closed) return;
+    this.closed = true;
+    void this.lifecycleCandidate?.stop();
+    for (const wake of this.wakes.values()) wake.spoil();
+    clearTimeout(this.removalTimer);
+    this.removalTimer = undefined;
+    this.sleeping.clear();
+    this.sleepingTitles.clear();
+    this.removals.clear();
+    this.unremovable.clear();
+    this.wakes.clear();
+    this.laneTails.clear();
+  }
+
+  /**
+   * Flushes Blink's page state (scroll, form controls) into Chromium's navigation entry before a
+   * discard. Best effort: the discard still goes on, so no page stays running unowned.
+   */
+  private async freezeBeforeDiscard(page: Page): Promise<void> {
+    let session: PlaywrightCdpSession | undefined;
+    try {
+      session = await withTimeout(this.context.newCDPSession(page), 1_000, {
+        timeoutError: () => new Error("Freeze CDP attach timed out."),
+      });
+      await withTimeout(session.send("Page.setWebLifecycleState", { state: "frozen" }), 1_000, {
+        timeoutError: () => new Error("Freeze timed out."),
+      });
+    } catch {
+      // Best-effort flush.
+    } finally {
+      if (session)
+        await withTimeout(session.detach(), 500, {
+          timeoutError: () => new Error("Freeze detach timed out."),
+        }).catch(() => undefined);
+    }
+  }
+
+  /**
+   * The helper is looked for once, in the background after launch: nothing on the way to the first
+   * page waits for its worker or its inventory. Until the look has ended no tab sleeps (a page says
+   * it must stay awake, so the sleeper asks again later); then a tab sleeps by discard if the
+   * helper answered, by closing if not. The only caller of a sleep is the sleeper's own pass.
+   */
+  establishLifecycle(probeMs: number, extensionIds: readonly string[] = []): void {
+    const candidate = this.lifecycleCandidate;
+    if (!candidate) return;
+    this.lifecyclePending = true;
+    const deadline = performance.now() + probeMs;
+    // R9, TS7: only a browser that refused the helper outright ends the look early; one that
+    // serves it, or whose answer is not known yet, is looked for until the look's bound.
+    const look = candidate
+      .served(extensionIds, deadline)
+      .catch(() => "unknown" as const)
+      .then(async (served) => ({
+        served,
+        rows: served === "refused" ? null : await readRows(candidate, deadline),
+      }));
+    this.lifecycleSettled = look.then(async ({ served, rows }) => {
+      // What the browser listed, read before the stop: the line says why there is no helper.
+      const listed = rows ? null : await candidate.listed().catch(() => null);
+      // A look that ran out stops before it is over: no poll or navigation follows it (R6).
+      if (!rows) await candidate.stop();
+      this.lifecyclePending = false;
+      if (this.closed) return;
+      if (rows) this.lifecycle = candidate;
+      else
+        process.stderr.write(
+          `${JSON.stringify({
+            event: "browser-runtime.tab-lifecycle-unavailable",
+            stage: served === "refused" ? "manifest-refused" : "launch-inventory",
+            extensionIds,
+            listed,
+          })}\n`,
+        );
+    });
+  }
+
+  /** Null once the look for the tab helper has ended; until then, when it will (R4). */
+  sleepReady(): Promise<void> | null {
+    return this.lifecyclePending ? this.lifecycleSettled : null;
+  }
+
+  async activatePrivateAnchor(): Promise<void> {
+    if (!this.privatePage || this.privatePage.isClosed()) return;
+    await withTimeout(this.privatePage.bringToFront(), nameTargetMs, {
+      timeoutError: () => new Error("Private anchor bringToFront timed out."),
+    }).catch(() => undefined);
+  }
+
+  /**
+   * S2: a sleeping tab is kept at the left end of the window, left of the private anchor, and every
+   * live tab right of it. Chromium activates the tab to the right of a closed active tab and puts
+   * a tab a page opens right of the active tab, in its group: neither then reaches a sleeping tab.
+   * The order is only a placement; a move that fails leaves the tab where it was.
+   */
+  private async placeAsleep(record: SleepingTab, index: number): Promise<void> {
+    if (index === 0 || !this.lifecycle) return;
+    const moved = await this.lifecycle.moveTab(record.tabId, 0).catch(() => null);
+    if (moved) record.tabId = moved.tabId;
+  }
+
+  /** S2: a tab that wakes goes to the right end, among the live tabs, before it is activated. */
+  private async placeAwake(tabId: number): Promise<void> {
+    await this.lifecycle?.moveTab(tabId, -1).catch(() => null);
+  }
+
+  /**
+   * Puts a page's tab to sleep by discard, on that sleep's own lane (L2): Chromium discards the
+   * tab first, then the helper names the tab Chromium returns with the token's name. A discarded
+   * tab runs no script, so nothing it opens can inherit the name. A tab that cannot be put to
+   * sleep under its name is closed, or removed with evidence, and wakes by address; until that
+   * evidence its token and guard stay (L4).
+   */
+  async sleepTab(
+    _handle: PlaywrightPageHandle,
+    page: Page,
+    token: { readonly tokenId: string; readonly targetId: string; readonly url: string },
+    detach: () => Promise<void>,
+  ): Promise<void> {
+    const lifecycle = this.lifecycle!;
+    const { tokenId } = token;
+    const settled = Promise.withResolvers<void>();
+    const record: SleepingTab = {
+      title: `${sleepTitlePrefix}${tokenId}`,
+      url: token.url,
+      tabId: -1,
+      targetId: token.targetId,
+      named: false,
+      removeAsked: false,
+      settled: settled.promise,
+    };
+    // The name is guarded before Chromium is asked anything.
+    this.sleeping.set(tokenId, record);
+    this.sleepingTitles.set(record.title, tokenId);
+    const detachBounded = () =>
+      withTimeout(detach(), nameTargetMs, {
+        timeoutError: () => new Error("Sleep detach timed out."),
+      }).catch(() => undefined);
+    try {
+      await this.onLane(tokenId, async () => {
+        const deadline = performance.now() + 3 * nameTargetMs;
+        const rows = await this.read(deadline);
+        const row = rows?.find((entry) => entry.targetId === token.targetId);
+        if (row) record.tabId = row.tabId;
+        if (!row || isBlankAddress(token.url) || this.closed || page.isClosed()) {
+          // Not found, or nothing to keep: the tab sleeps by closing and wakes by address.
+          await detachBounded();
+          if (await this.closePageWithEvidence(page, deadline)) this.forget(tokenId, record);
+          else this.giveUp(tokenId);
+          return;
+        }
+        if (row.active) await this.activatePrivateAnchor();
+        await this.freezeBeforeDiscard(page);
+        await detachBounded();
+        // Q2, in one helper call: the tab is named first and discarded second, so Opensteer never
+        // makes a discarded tab without a name (the name survives the discard, also when the
+        // discard gives the tab a new id: seen on real Chromium). Asked, it may be named even
+        // when the answer is lost, so the name must be gone too for a removal.
+        record.named = true;
+        const asleepId = await lifecycle.nameAndDiscard(row.tabId, record.title).catch(() => null);
+        if (asleepId !== null) record.tabId = asleepId;
+        const asleep = async () => {
+          const check = await this.read(deadline);
+          let named = check ? findOwn(check, record) : null;
+          if (named?.kind === "none" && asleepId === null) {
+            // The answer was lost and the discard may have given the tab a new id: a lone
+            // discarded carrier of the name is this tab (only Opensteer discards).
+            const lone = findNamed(check!, record.title);
+            if (lone.kind === "one" && lone.row.discarded) named = lone;
+          }
+          if (named?.kind !== "one" || this.closed) return named;
+          record.tabId = named.row.tabId;
+          record.targetId = named.row.targetId;
+          return named;
+        };
+        let named = await asleep();
+        if (named?.kind === "one" && !named.row.discarded && !page.isClosed()) {
+          // Named and still awake (the helper stopped between the two): the discard is asked
+          // once more of that one tab, never while it is the active tab (S1).
+          if (named.row.active) await this.activatePrivateAnchor();
+          await lifecycle.discardByTabId(named.row.tabId).catch(() => null);
+          named = await asleep();
+        }
+        if (named?.kind === "one" && named.row.discarded) {
+          await this.placeAsleep(record, named.row.index);
+          return;
+        }
+        // Not asleep under its name: closed and removed with evidence, it wakes by address. Its
+        // page still open proves the tab was not discarded, so closing it closes the tab.
+        if (!page.isClosed() && (await this.closePageWithEvidence(page, deadline)))
+          record.removeAsked = true;
+        if (await this.removeSleeping(record, 1)) this.forget(tokenId, record);
+        else this.giveUp(tokenId);
+      });
+    } finally {
+      settled.resolve();
+    }
+  }
+
+  async releaseRestore(restore: unknown): Promise<boolean> {
+    const discardRestore = parseChromiumDiscardRestore(restore);
+    if (!discardRestore || !this.lifecycle) return true;
+    const { tokenId } = discardRestore;
+    const record = this.sleeping.get(tokenId);
+    if (!record) return true;
+    await record.settled;
+    const removed = await this.onLane(
+      tokenId,
+      async () => this.sleeping.get(tokenId) !== record || (await this.removeSleeping(record, 1)),
+    );
+    if (!removed) {
+      // K6: not proven gone. The token stays, so a later release asks again, and the background
+      // drain retries within its bound or reports the removal unconfirmed; the name stays guarded.
+      this.giveUp(tokenId);
+      return false;
+    }
+    this.forget(tokenId, record);
+    return true;
+  }
+
+  /**
+   * M2: the lane owns a wake to its end. It wakes the one tab carrying the sleep's name, inside
+   * one deadline, and takes its page (ownership and publication) only right after checking that
+   * the wake is still wanted, the name is still on exactly one tab, and that tab is this live
+   * page's exact target; nothing is awaited between that check and the take. Then the name goes.
+   * Abandoned, the tab is left asleep under its name (put back to sleep if it loaded). Failed, the
+   * tab is removed with evidence and `null` returned, so the caller opens it by address; a removal
+   * not proven throws instead, and the tab stays guarded. No wake leaves a page nobody owns.
+   */
+  private async wakeOnLane(
+    tokenId: string,
+    record: SleepingTab,
+    deadline: number,
+    signal: AbortSignal | undefined,
+    own: ((page: BrowserPage) => void) | undefined,
+  ): Promise<BrowserPage | null> {
+    const lifecycle = this.lifecycle!;
+    const current = () =>
+      this.sleeping.get(tokenId) === record &&
+      !this.removals.has(tokenId) &&
+      !this.unremovable.has(tokenId) &&
+      !this.closed;
+    const abandoned = () => signal?.aborted === true || this.closed;
+    if (abandoned()) throw notWanted();
+    if (!current()) {
+      // A sleep already given up: opened by address only once its tab is proven removed.
+      if (this.sleeping.get(tokenId) !== record) return null;
+      if (!(await this.removeSleeping(record, 1)))
+        throw new Error("The sleeping tab is not proven removed yet.");
+      this.forget(tokenId, record);
+      return null;
+    }
+    const wake = armWake();
+    try {
+      if (!record.named || performance.now() >= deadline) throw new Error("The wake ran out.");
+      const rows = await this.read(deadline);
+      // Its own tab, by its name and its id or target: a newcomer in its group is not it.
+      const named = rows ? findOwn(rows, record) : null;
+      if (named?.kind !== "one") throw new Error("The named tab is not exactly one tab.");
+      const { row } = named;
+      this.wakes.set(record.title, wake);
+      const candidate = row.targetId
+        ? this.context
+            .pages()
+            .find(
+              (page) =>
+                page !== this.privatePage &&
+                !page.isClosed() &&
+                !this.published.has(page) &&
+                !this.ending.has(page) &&
+                syncTargetIdOfPage(page) === row.targetId,
+            )
+        : undefined;
+      if (candidate) wake.arrive(candidate, row);
+      await withTimeout(this.placeAwake(row.tabId), remainingMs(deadline), {
+        timeoutError: () => new Error("Placing the waking tab timed out."),
+      }).catch(() => undefined);
+      if (abandoned() || !current()) throw notWanted();
+      if (!candidate || row.discarded || row.status === "unloaded") {
+        // S1: a tab Chromium holds active and discarded loads only once another tab was active
+        // (activating it again answers it still discarded: seen on real Chromium).
+        if (row.active) await this.activatePrivateAnchor();
+        const reply = await withTimeout(
+          lifecycle.activateByTabId(row.tabId),
+          remainingMs(deadline),
+          { timeoutError: () => new Error("Activating sleeping Chromium tab timed out.") },
+        );
+        // K2: Chromium's own answer names the tab the read named, loaded (seen on real Chromium).
+        if (!reply.ok || reply.tabId !== row.tabId || reply.discarded)
+          throw new Error("Chromium did not activate the named tab.");
+      }
+      await withTimeout(wake.settled, remainingMs(deadline), {
+        timeoutError: () => new Error("Waking sleeping Chromium tab timed out."),
+      });
+      const arrived = wake.arrived;
+      if (!arrived || wake.spoiled) throw new Error("The woken tab was not the one tab named.");
+      const targetId = await lookupTargetId(this.context, arrived.page, deadline);
+      const last = await this.read(deadline);
+      const now = last ? findOwn(last, record) : null;
+      if (abandoned() || !current()) throw notWanted();
+      // The last check at the take, on the candidate shortcut too; the take follows at once.
+      if (
+        wake.spoiled ||
+        now?.kind !== "one" ||
+        targetId === null ||
+        now.row.targetId !== targetId ||
+        now.row.tabId !== row.tabId ||
+        arrived.page.isClosed() ||
+        this.ending.has(arrived.page) ||
+        performance.now() >= deadline
+      )
+        throw new Error("The woken tab was not the one tab named.");
+      this.forget(tokenId, record);
+      this.publish(arrived.page, false);
+      const handle = this.wrap(arrived.page);
+      own?.(handle);
+      // L2: the name goes once the tab is taken. Kept, it is harmless: the tab is awake and named
+      // until its next sleep names it anew.
+      if (!(await lifecycle.unnameTab(now.row.tabId).catch(() => false)))
+        process.stderr.write('{"event":"browser-runtime.sleep-name-kept"}\n');
+      return handle;
+    } catch (error) {
+      if (this.wakes.get(record.title) === wake) this.wakes.delete(record.title);
+      if (!current()) throw error;
+      if (abandoned()) {
+        // Left asleep under its name; a tab that loaded meanwhile is put back to sleep.
+        await this.sleepAgain(tokenId);
+        throw error;
+      }
+      // Failed: the tab is removed with evidence before anything opens it by address.
+      if (await this.removeSleeping(record, 3)) {
+        this.forget(tokenId, record);
+        return null;
+      }
+      this.giveUp(tokenId);
+      throw error;
+    } finally {
+      if (this.wakes.get(record.title) === wake) this.wakes.delete(record.title);
+    }
   }
 
   observeInput(
@@ -1071,10 +2259,10 @@ class PlaywrightContextHandle implements BrowserContext {
     if (clearsStale) this.clearLinkOpenGestures(opener);
   }
 
-  private prunePendingLinkOpens(now = Date.now()): void {
+  private prunePendingLinkOpens(now = Date.now(), heldMs = 0): void {
     for (let index = this.pendingLinkOpens.length - 1; index >= 0; index -= 1) {
       const entry = this.pendingLinkOpens[index]!;
-      if (now - entry.at > linkOpenAttributionMs || entry.opener.isClosed())
+      if (now - entry.at > linkOpenAttributionMs + heldMs || entry.opener.isClosed())
         this.pendingLinkOpens.splice(index, 1);
     }
   }
@@ -1087,8 +2275,9 @@ class PlaywrightContextHandle implements BrowserContext {
 
   private takeLinkOpenGesture(
     opener?: PlaywrightPageHandle,
+    heldMs = 0,
   ): { readonly opener: PlaywrightPageHandle; readonly disposition: LinkOpenDisposition } | null {
-    this.prunePendingLinkOpens();
+    this.prunePendingLinkOpens(Date.now(), heldMs);
     if (!opener) {
       // Never guess across distinct openers: if multiple pages have pending
       // link-open gestures, leave an openerless target unattributed.
@@ -1108,7 +2297,7 @@ class PlaywrightContextHandle implements BrowserContext {
   ): () => void {
     this.handOffs.add(listener);
     for (const page of this.context.pages()) {
-      if (page === this.privatePage || page.isClosed()) continue;
+      if (!this.isVisible(page) || page.isClosed()) continue;
       const handle = this.wrap(page);
       listener(handle, handle.openerHandle, false);
     }
@@ -1118,23 +2307,102 @@ class PlaywrightContextHandle implements BrowserContext {
   pages(): BrowserPage[] {
     return this.context
       .pages()
-      .filter((page) => page !== this.privatePage)
+      .filter((page) => this.isVisible(page))
       .map((page) => this.wrap(page));
   }
 
-  async createPage(options?: { readonly own?: (page: BrowserPage) => void }): Promise<BrowserPage> {
+  /** K3 (a): the runtime's own new page, published by Playwright's answer to this call. */
+  private async openFreshPage(signal: AbortSignal | undefined): Promise<Page> {
+    // main #725: in flight until Playwright answers, so a page arriving meanwhile waits to be
+    // told apart from this one by identity.
     const settled = Promise.withResolvers<void>();
     this.inFlightCreations.add(settled.promise);
+    // Z3: the page asked for is the runtime's from the ask until it is handed out or closed.
+    const raw = this.context.newPage();
+    let handedOut = false;
     try {
-      const page = await this.context.newPage();
+      const page = await withTimeout(raw, openPageMs, {
+        ...(signal ? { signal } : {}),
+        timeoutError: () => new Error("Opening a page timed out."),
+      });
       this.explicitPages.add(page);
-      const handle = this.wrap(page);
-      options?.own?.(handle);
-      return handle;
+      if (signal?.aborted) {
+        // Abandoned while it opened: nobody takes it, so it is closed here.
+        void this.closePageWithEvidence(page);
+        throw notWanted();
+      }
+      if (!this.publish(page, true)) throw new Error("The new page closed.");
+      handedOut = true;
+      return page;
     } finally {
       settled.resolve();
       this.inFlightCreations.delete(settled.promise);
+      if (!handedOut) this.closeWhenItArrives(raw);
     }
+  }
+
+  /**
+   * Z3, Z5: an open that timed out or was abandoned: the page its answer names, if Chromium still
+   * makes it, is the runtime's and is closed with evidence, whatever was done with it meanwhile.
+   */
+  private closeWhenItArrives(raw: Promise<Page>): void {
+    const late: Promise<void> = raw
+      .then(
+        (page) => {
+          this.explicitPages.add(page);
+          if (!this.closed) void this.closePageWithEvidence(page);
+        },
+        () => undefined,
+      )
+      .finally(() => this.lateCreations.delete(late));
+    this.lateCreations.add(late);
+  }
+
+  async createPage(options?: {
+    readonly restore?: unknown;
+    readonly own?: (page: BrowserPage) => void;
+    readonly signal?: AbortSignal;
+  }): Promise<BrowserPage> {
+    // TS13: admitted under memory pressure, one at a time; the turn ends once the page exists.
+    const done = await this.beforeCreatePage?.().catch(() => undefined);
+    try {
+      return await this.createAdmittedPage(options);
+    } finally {
+      done?.();
+    }
+  }
+
+  private async createAdmittedPage(options?: {
+    readonly restore?: unknown;
+    readonly own?: (page: BrowserPage) => void;
+    readonly signal?: AbortSignal;
+  }): Promise<BrowserPage> {
+    const signal = options?.signal;
+    if (signal?.aborted) throw notWanted();
+    const discardRestore = parseChromiumDiscardRestore(options?.restore);
+    if (discardRestore) {
+      const { tokenId } = discardRestore;
+      // Without the helper the tab slept by closing: it opens fresh at its address.
+      const record = this.lifecycle ? this.sleeping.get(tokenId) : undefined;
+      if (record) {
+        // M2: this waits for the lane's own outcome; it opens nothing while the lane may take.
+        const deadline = performance.now() + wakeDiscardedTabMs;
+        const woken = await this.onLane(tokenId, () =>
+          this.wakeOnLane(tokenId, record, deadline, signal, options?.own),
+        );
+        if (woken) return woken;
+      }
+      if (signal?.aborted) throw notWanted();
+      // The tab could not be woken and is proven gone: a fresh page, which the ledger navigates
+      // to the tab's address on its awaited path.
+      const fallback = this.wrap(await this.openFreshPage(signal));
+      fallback.openedFresh = true;
+      options?.own?.(fallback);
+      return fallback;
+    }
+    const handle = this.wrap(await this.openFreshPage(signal));
+    options?.own?.(handle);
+    return handle;
   }
 
   onPage(listener: (page: BrowserPage) => void): void {
@@ -1149,12 +2417,28 @@ class PlaywrightContextHandle implements BrowserContext {
     return this.context.isClosed();
   }
 
+  /**
+   * The one handle of a page, also after it closed (Q1): a child names its opener by Playwright's
+   * record of it, so that opener's handle, and through it its session, stays findable while the
+   * child lives. Held weakly by the raw page, so nothing is kept alive by it.
+   */
   wrap(page: Page): PlaywrightPageHandle {
-    let handle = this.pagesByPlaywrightPage.get(page);
+    let handle = this.pagesByPlaywrightPage.get(page) ?? this.handles.get(page);
     if (!handle) {
       handle = new PlaywrightPageHandle(this, this.context, page, this.openDialogs);
+      this.handles.set(page, handle);
+      const targetId = syncTargetIdOfPage(page);
+      if (targetId) {
+        this.handleByTarget.set(targetId, new WeakRef(handle));
+        this.forgetTarget.register(handle, targetId);
+      }
       this.pagesByPlaywrightPage.set(page, handle);
-      page.once("close", () => this.pagesByPlaywrightPage.delete(page));
+      const closed = handle;
+      page.once("close", () => {
+        this.pagesByPlaywrightPage.delete(page);
+        this.recentlyClosed.push(closed);
+        if (this.recentlyClosed.length > recentlyClosedHandles) this.recentlyClosed.shift();
+      });
     }
     return handle;
   }
@@ -1164,13 +2448,227 @@ class PlaywrightContextHandle implements BrowserContext {
     return pageWithTarget(
       this.context
         .pages()
-        .filter((page) => page !== this.privatePage)
+        .filter((page) => this.isVisible(page))
         .map((page) => this.wrap(page)),
       targetId,
       targetLookupMs,
       (handle) => !handle.isClosed() && !handle.closeRequested,
     );
   }
+}
+
+/**
+ * TS1, TS16: what a document holds that a sleep would lose, for the reasons desktop Chrome's own
+ * discarding refuses (Chromium 151 discard_eligibility_policy.cc) plus a beforeunload handler.
+ * Installed before the page's scripts in every frame; a page that hides its own state only loses
+ * its own state, and one that fakes it only stays awake.
+ * - capturing: live camera, microphone or screen tracks from its own getUserMedia/getDisplayMedia
+ *   (kCapturingVideo, kCapturingAudio, kCapturingWindow, kCapturingDisplay);
+ * - media, recently-audible: an unmuted audio or video element plays, or played within the last
+ *   minute (kAudible, kRecentlyAudible; Web Audio and native players are the media check);
+ * - picture-in-picture (kPictureInPicture); pdf (kPdf);
+ * - notifications: the site may notify (kNotificationsEnabled);
+ * - device: an open USB device or a connected Bluetooth GATT server (kConnectedToUSB,
+ *   kConnectedToBluetooth);
+ * - form: the person changed a form control or edited the page (kFormInteractions, kUserEdits);
+ * - beforeunload: the page asks to be warned before it goes.
+ */
+const pageStateScript = `(() => {
+  const key = Symbol.for("opensteer.keepAwake");
+  if (globalThis[key]) return;
+  const tracks = new Set();
+  const playing = new Set();
+  const devices = new Set();
+  let audibleAt = 0;
+  let webAudioRunning = () => false;
+  let edited = false;
+  let unloadHandlers = 0;
+  Object.defineProperty(globalThis, key, {
+    value: () => {
+      if ([...tracks].some((track) => track.readyState === "live")) return "capturing";
+      if (devices.size) return "device";
+      const doc = globalThis.document;
+      if (doc && (doc.pictureInPictureElement || globalThis.documentPictureInPicture?.window))
+        return "picture-in-picture";
+      if (playing.size || webAudioRunning()) return "media";
+      if (audibleAt && Date.now() - audibleAt < 60000) return "recently-audible";
+      if (doc && doc.contentType === "application/pdf") return "pdf";
+      if (globalThis.Notification && Notification.permission === "granted") return "notifications";
+      if (edited) return "form";
+      if (unloadHandlers > 0 || typeof globalThis.onbeforeunload === "function") return "beforeunload";
+      return null;
+    },
+  });
+  const media = globalThis.navigator && navigator.mediaDevices;
+  if (media) {
+    const watchTrack = (track) => {
+      tracks.add(track);
+      track.addEventListener("ended", () => tracks.delete(track));
+    };
+    // V1: a clone of a captured track captures as well.
+    const clone = MediaStreamTrack.prototype.clone;
+    MediaStreamTrack.prototype.clone = function (...args) {
+      const copy = clone.apply(this, args);
+      if (tracks.has(this)) watchTrack(copy);
+      return copy;
+    };
+    const watch = (stream) => {
+      for (const track of stream.getTracks()) {
+        tracks.add(track);
+        track.addEventListener("ended", () => tracks.delete(track));
+        const stop = track.stop.bind(track);
+        track.stop = () => {
+          tracks.delete(track);
+          stop();
+        };
+      }
+      return stream;
+    };
+    for (const name of ["getUserMedia", "getDisplayMedia"]) {
+      const original = media[name];
+      if (typeof original !== "function") continue;
+      media[name] = function (...args) {
+        return original.apply(this, args).then(watch);
+      };
+    }
+  }
+  const audible = (element) => !element.paused && !element.ended && !element.muted && element.volume > 0;
+  // V1: the event's own target, inside a shadow root too (composedPath), not the retargeted host.
+  const origin = (event) => (event.composedPath && event.composedPath()[0]) || event.target;
+  const heard = (event) => {
+    const element = origin(event);
+    if (!(element instanceof HTMLMediaElement)) return;
+    if (audible(element)) playing.add(element);
+    else if (playing.delete(element)) audibleAt = Date.now();
+  };
+  for (const type of ["playing", "pause", "ended", "volumechange", "emptied"])
+    globalThis.addEventListener(type, heard, true);
+  // V1: Web Audio is heard while it runs, and for a minute after.
+  const Audio = globalThis.AudioContext;
+  if (typeof Audio === "function") {
+    const running = new Set();
+    const audioState = (context) => {
+      if (context.state === "running") running.add(context);
+      else if (running.delete(context)) audibleAt = Date.now();
+    };
+    globalThis.AudioContext = new Proxy(Audio, {
+      construct(target, args, newTarget) {
+        const context = Reflect.construct(target, args, newTarget);
+        context.addEventListener("statechange", () => audioState(context));
+        audioState(context);
+        return context;
+      },
+    });
+    webAudioRunning = () => running.size > 0;
+  }
+  const editing = (event) => {
+    if (!event.isTrusted) return;
+    const target = origin(event);
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      (target instanceof HTMLElement && target.isContentEditable)
+    )
+      edited = true;
+  };
+  globalThis.addEventListener("input", editing, true);
+  globalThis.addEventListener("change", editing, true);
+  const add = EventTarget.prototype.addEventListener;
+  const remove = EventTarget.prototype.removeEventListener;
+  const unloads = new WeakSet();
+  EventTarget.prototype.addEventListener = function (type, listener, options) {
+    if (this === globalThis && type === "beforeunload" && listener && !unloads.has(listener)) {
+      unloads.add(listener);
+      unloadHandlers++;
+    }
+    return add.call(this, type, listener, options);
+  };
+  EventTarget.prototype.removeEventListener = function (type, listener, options) {
+    if (this === globalThis && type === "beforeunload" && listener && unloads.has(listener)) {
+      unloads.delete(listener);
+      unloadHandlers--;
+    }
+    return remove.call(this, type, listener, options);
+  };
+  const usb = globalThis.USBDevice && USBDevice.prototype;
+  if (usb && usb.open && usb.close) {
+    const open = usb.open;
+    const close = usb.close;
+    usb.open = function (...args) {
+      return open.apply(this, args).then((value) => (devices.add(this), value));
+    };
+    // V1: a device unplugged without a close is gone.
+    navigator.usb?.addEventListener?.("disconnect", (event) => devices.delete(event.device));
+    usb.close = function (...args) {
+      return close.apply(this, args).finally(() => devices.delete(this));
+    };
+  }
+  const gatt = globalThis.BluetoothRemoteGATTServer && BluetoothRemoteGATTServer.prototype;
+  if (gatt && gatt.connect && gatt.disconnect) {
+    const connect = gatt.connect;
+    const disconnect = gatt.disconnect;
+    gatt.connect = function (...args) {
+      return connect.apply(this, args).then((value) => {
+        devices.add(this);
+        // V1: a link that drops without a disconnect is gone.
+        this.device?.addEventListener?.("gattserverdisconnected", () => devices.delete(this), {
+          once: true,
+        });
+        return value;
+      });
+    };
+    gatt.disconnect = function (...args) {
+      devices.delete(this);
+      return disconnect.apply(this, args);
+    };
+  }
+})();`;
+
+type PageKeepAwake =
+  | "media"
+  | "capturing"
+  | "device"
+  | "picture-in-picture"
+  | "recently-audible"
+  | "pdf"
+  | "notifications"
+  | "form"
+  | "beforeunload"
+  | "unknown";
+const pageKeepAwakeReasons: ReadonlySet<string> = new Set<PageKeepAwake>([
+  "media",
+  "capturing",
+  "device",
+  "picture-in-picture",
+  "recently-audible",
+  "pdf",
+  "notifications",
+  "form",
+  "beforeunload",
+  "unknown",
+]);
+
+/** The first thing this frame's document holds that a sleep would lose, or null. */
+async function documentKeepAwake(frame: Frame): Promise<PageKeepAwake | null> {
+  // V1 (rule A): a read that fails is not known, and not known is not unprotected; only a frame
+  // that is really gone has nothing to protect.
+  const read = () =>
+    frame.evaluate<unknown>(
+      `(() => { const state = globalThis[Symbol.for("opensteer.keepAwake")]; return typeof state === "function" ? state() : null; })()`,
+    );
+  // A document replaced by a navigation is read again, as the media read does: the new one is the
+  // document a sleep would take.
+  const reason = await read()
+    .catch((error: unknown) =>
+      error instanceof Error && error.message.includes("Execution context was destroyed")
+        ? read()
+        : Promise.reject(error),
+    )
+    .catch(() => (frame.isDetached() ? null : "unknown"));
+  return typeof reason === "string" && pageKeepAwakeReasons.has(reason)
+    ? (reason as PageKeepAwake)
+    : null;
 }
 
 const documentMediaScript = `(() => {
@@ -1199,6 +2697,14 @@ async function documentMediaPlaying(frame: Frame): Promise<boolean | null> {
 }
 
 class PlaywrightPageHandle implements BrowserPage {
+  readonly captureRestore?: () => Promise<unknown | null>;
+  readonly sleepsAsItself: () => boolean;
+  readonly freeze: () => Promise<() => Promise<void>>;
+  private pendingDiscard: {
+    readonly tokenId: string;
+    readonly targetId: string;
+    readonly url: string;
+  } | null = null;
   private requestMethod = "GET";
   private documentMethod = "GET";
   private readonly uploads = new Set<Request>();
@@ -1216,6 +2722,10 @@ class PlaywrightPageHandle implements BrowserPage {
   /** The page whose script or link gesture opened this one. */
   openerHandle: PlaywrightPageHandle | null = null;
   openedInBackground = false;
+  /** A wake could not bring the tab back; this fresh page is navigated to its address. */
+  openedFresh = false;
+  /** The sleep this page was put to, whose lane a later close attempt waits on. */
+  private sleepToken: string | null = null;
   private targetIdPromise: Promise<string> | null = null;
   private readonly context: PlaywrightBrowserContext;
   private readonly contextHandle: PlaywrightContextHandle;
@@ -1228,6 +2738,9 @@ class PlaywrightPageHandle implements BrowserPage {
     }
   >();
   private readonly page: Page;
+  get rawPage(): Page {
+    return this.page;
+  }
   private readonly openDialogs: Map<Page, Dialog>;
 
   constructor(
@@ -1240,6 +2753,31 @@ class PlaywrightPageHandle implements BrowserPage {
     this.contextHandle = contextHandle;
     this.context = context;
     this.page = page;
+    if (contextHandle.lifecycleCandidate) {
+      this.captureRestore = () => this.captureDiscardRestore();
+    }
+    // Without the helper once the look has ended, a sleep closes the tab (finding 10).
+    this.sleepsAsItself = () => this.contextHandle.lifecycle !== undefined;
+    // V1: a sleep reads the page's protections on a frozen page; one that does not go ahead thaws
+    // it. A page that could not be frozen reads as not known.
+    this.freeze = async () => {
+      const lifecycle = async (state: "frozen" | "active") => {
+        const session = await withTimeout(this.context.newCDPSession(this.page), 1_000, {
+          timeoutError: () => new Error("Freeze CDP attach timed out."),
+        });
+        try {
+          await withTimeout(session.send("Page.setWebLifecycleState", { state }), 1_000, {
+            timeoutError: () => new Error("Freeze timed out."),
+          });
+        } finally {
+          await withTimeout(session.detach(), 500, {
+            timeoutError: () => new Error("Freeze detach timed out."),
+          }).catch(() => undefined);
+        }
+      };
+      await lifecycle("frozen");
+      return () => lifecycle("active");
+    };
     page.on("request", (request) => {
       if (!["GET", "HEAD"].includes(request.method())) this.uploads.add(request);
       if (request.isNavigationRequest() && request.frame() === page.mainFrame())
@@ -1257,7 +2795,14 @@ class PlaywrightPageHandle implements BrowserPage {
     });
   }
 
-  async keepAwake(): Promise<"upload" | "post" | "media" | null> {
+  async keepAwake(): Promise<"tab-helper" | PageKeepAwake | "upload" | "post" | "media" | null> {
+    // Not before the look for the tab helper has ended (R1): asked again later, never closed early.
+    if (this.contextHandle.lifecyclePending) return "tab-helper";
+    // TS1, TS16: what desktop Chrome would not discard, and a page that asks before it goes.
+    for (const frame of this.page.frames()) {
+      const held = await documentKeepAwake(frame);
+      if (held) return held;
+    }
     if (this.uploads.size) return "upload";
     if (!["GET", "HEAD"].includes(this.documentMethod)) return "post";
     for (const frame of this.page.frames()) {
@@ -1468,6 +3013,14 @@ class PlaywrightPageHandle implements BrowserPage {
     return this.cdpPromise;
   }
 
+  private async captureDiscardRestore(): Promise<ChromiumDiscardRestore> {
+    const targetId = this.knownTargetId ?? (await this.targetId());
+    const tokenId = randomUUID();
+    const url = this.url();
+    this.pendingDiscard = { tokenId, targetId, url };
+    return { kind: "chromium-discard", tokenId, url };
+  }
+
   /**
    * Each call is a new attempt; a page asked to close never returns to service.
    * The first closes through Playwright, which waits on its own first request
@@ -1475,31 +3028,49 @@ class PlaywrightPageHandle implements BrowserPage {
    * page's debugger again and close the one target from the browser itself.
    * Nothing wider than this page is ever closed.
    */
-  close(): Promise<void> {
+  close(options?: { readonly reason?: PageEndReason }): Promise<void> {
     if (this.isClosed()) return Promise.resolve();
     this.closing = true;
     const first = this.closeAttempts++ === 0;
-    return (async () => {
+    const sleepDiscard = first && options?.reason === "slept" ? this.pendingDiscard : null;
+    this.pendingDiscard = null;
+    if (sleepDiscard && this.contextHandle.lifecycle) this.sleepToken = sleepDiscard.tokenId;
+    const operation = (async () => {
+      if (sleepDiscard && this.contextHandle.lifecycle) {
+        await this.contextHandle.sleepTab(this, this.page, sleepDiscard, async () => {
+          await this.cdpChannel?.detach();
+        });
+        return;
+      }
       if (first) {
         // Native close can wait on a navigation still held by this private debugger.
         await this.cdpChannel?.detach();
         if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
         return;
       }
-      await this.cdpChannel?.detach().catch(() => undefined);
-      if (this.page.isClosed()) return;
-      const closeTarget = this.contextHandle.closeTarget;
-      if (!closeTarget) {
-        if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
-        return;
-      }
-      const targetId = this.knownTargetId ?? (await this.nameTarget());
-      if (!targetId)
-        throw new BrowserRuntimeError("conflict", "This page cannot be named to close it.", {
-          reason: pageUnnameableReason,
-        });
-      await closeTarget(targetId);
+      // M3: a page put to sleep is closed again only on its sleep's lane, after the sleep.
+      if (this.sleepToken)
+        return this.contextHandle.onSleepLane(this.sleepToken, () => this.closeAround());
+      await this.closeAround();
     })();
+    return operation;
+  }
+
+  /** A later close attempt goes around Playwright, to the browser's own target close. */
+  private async closeAround(): Promise<void> {
+    await this.cdpChannel?.detach().catch(() => undefined);
+    if (this.page.isClosed()) return;
+    const closeTarget = this.contextHandle.closeTarget;
+    if (!closeTarget) {
+      if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
+      return;
+    }
+    const targetId = this.knownTargetId ?? (await this.nameTarget());
+    if (!targetId)
+      throw new BrowserRuntimeError("conflict", "This page cannot be named to close it.", {
+        reason: pageUnnameableReason,
+      });
+    await closeTarget(targetId);
   }
 
   /** This exact page's target, read through a debugger opened for it alone; null if it cannot be named. */
@@ -1800,18 +3371,42 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
   private closed = false;
   private readonly context: PlaywrightContextHandle;
   private readonly handle: PlaywrightCdpHandle;
+  private readonly hiddenTargetIds = new Set<string>();
 
   constructor(
     session: PlaywrightCdpSession,
     context: PlaywrightContextHandle,
     browserContextId: string | undefined,
     dedicatedContext: boolean,
+    privatePageTargetId?: string,
   ) {
     this.dedicatedContext = dedicatedContext;
     this.browserContextId = browserContextId;
     this.context = context;
+    if (privatePageTargetId) this.hiddenTargetIds.add(privatePageTargetId);
     this.handle = new PlaywrightCdpHandle(session);
     this.handle.eventRelay.observeDomain("Target.getTargets");
+  }
+
+  private isHiddenTargetEvent(method: string, parameters: CdpParameters): boolean {
+    if (!method.startsWith("Target.")) return false;
+    const info = isRecord(parameters.targetInfo) ? parameters.targetInfo : null;
+    const targetId =
+      typeof parameters.targetId === "string"
+        ? parameters.targetId
+        : typeof info?.targetId === "string"
+          ? info.targetId
+          : null;
+    const url = typeof info?.url === "string" ? info.url : undefined;
+    if (isInternalExtensionUrl(url)) {
+      if (targetId) this.hiddenTargetIds.add(targetId);
+      return true;
+    }
+    if (targetId && this.hiddenTargetIds.has(targetId)) {
+      if (method === "Target.targetDestroyed") this.hiddenTargetIds.delete(targetId);
+      return true;
+    }
+    return false;
   }
 
   async attach(targetId: string, waitForPage = false, signal?: AbortSignal): Promise<CdpChannel> {
@@ -1870,7 +3465,10 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
   }
 
   onEvent(listener: (method: string, parameters: CdpParameters) => void): () => void {
-    return this.handle.onEvent(listener);
+    return this.handle.onEvent((method, parameters) => {
+      if (this.isHiddenTargetEvent(method, parameters)) return;
+      listener(method, parameters);
+    });
   }
 
   send(method: string, parameters?: CdpParameters): Promise<unknown> {
@@ -1879,6 +3477,32 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
       this.assertScope(method, parameters ?? {});
     } catch (error) {
       return Promise.reject(error);
+    }
+    if (
+      method.startsWith("Target.") &&
+      typeof parameters?.targetId === "string" &&
+      this.hiddenTargetIds.has(parameters.targetId)
+    ) {
+      return Promise.reject(
+        new Error("CDP target is not an attachable page in this Profile Host."),
+      );
+    }
+    if (method === "Target.getTargets") {
+      return this.handle
+        .send<{ targetInfos?: readonly Record<string, unknown>[] }>(method, parameters)
+        .then((result) => {
+          if (!Array.isArray(result?.targetInfos)) return result;
+          const visible = result.targetInfos.filter((target) => {
+            const url = typeof target.url === "string" ? target.url : undefined;
+            const targetId = typeof target.targetId === "string" ? target.targetId : null;
+            if (isInternalExtensionUrl(url)) {
+              if (targetId) this.hiddenTargetIds.add(targetId);
+              return false;
+            }
+            return true;
+          });
+          return { ...result, targetInfos: visible };
+        });
     }
     if (method === "Target.createTarget") {
       const requestedContext = parameters?.browserContextId;
