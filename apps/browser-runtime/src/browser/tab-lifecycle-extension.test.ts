@@ -255,7 +255,7 @@ describe("the look for the helper's manifest (TS7, TS14)", () => {
 });
 
 describe("waking the helper's worker (TS14)", () => {
-  function waking(options: { attachMs: number }) {
+  function waking() {
     const calls: string[] = [];
     const page = {
       isClosed: () => false,
@@ -273,28 +273,30 @@ describe("waking the helper's worker (TS14)", () => {
         calls.push("detach");
       },
     };
+    const attached = Promise.withResolvers<typeof session>();
     const context = {
       serviceWorkers: () => [{ url: () => "chrome-extension://helper/sw.js" }],
-      newCDPSession: () =>
-        new Promise((resolve) => setTimeout(() => resolve(session), options.attachMs)),
+      newCDPSession: () => attached.promise,
     };
     const bridge = new ChromiumTabLifecycleBridge(context as never, {} as never, page as never);
     const wake = (remainingMs: number) =>
       (
         bridge as unknown as { wakeServiceWorkerOnce(remainingMs: number): Promise<void> }
       ).wakeServiceWorkerOnce(remainingMs);
-    return { bridge, calls, wake };
+    return { bridge, calls, wake, attach: () => attached.resolve(session) };
   }
 
   it("lets go of a debugger session that arrives after its wait", async () => {
     vi.useFakeTimers();
     try {
-      const { calls, wake } = waking({ attachMs: 2_000 });
+      const { attach, calls, wake } = waking();
       const woke = wake(5_000);
+      // The attach outlasts its 1.5 s wait.
       await vi.advanceTimersByTimeAsync(1_600);
       await woke;
       expect(calls).not.toContain("detach");
-      await vi.advanceTimersByTimeAsync(500);
+      attach();
+      await vi.advanceTimersByTimeAsync(0);
       // The late session is detached, and nothing was sent on it.
       expect(calls).toContain("detach");
       expect(calls).not.toContain("ServiceWorker.enable");
@@ -306,9 +308,10 @@ describe("waking the helper's worker (TS14)", () => {
   it("asks nothing more once stopped between its steps", async () => {
     vi.useFakeTimers();
     try {
-      const { bridge, calls, wake } = waking({ attachMs: 100 });
+      const { attach, bridge, calls, wake } = waking();
       const woke = wake(5_000);
       void bridge.stop();
+      attach();
       await vi.advanceTimersByTimeAsync(200);
       await woke;
       expect(calls).not.toContain("ServiceWorker.enable");
