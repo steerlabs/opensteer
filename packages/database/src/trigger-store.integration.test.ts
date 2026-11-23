@@ -2708,6 +2708,133 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect((foreignErr as Error).message).toBe((missingErr as Error).message);
   });
 
+  it("records true pausedBy for person, agent, connected agent, and authority-loss pauses (AA6)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, database, triggers } = storeFixture;
+    const fixture = await createFixture("paused-by-truth");
+    const created = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "paused-by-truth",
+      name: "Paused by truth",
+      script: { interpreter: null, text: "console.log('ok')" },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "*/5 * * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const readPaused = () =>
+      database
+        .selectFrom("triggers")
+        .select(["pausedBy", "pausedByConnectionId", "pausedByThreadId", "pausedAt"])
+        .where("id", "=", created.trigger.id)
+        .executeTakeFirstOrThrow();
+
+    // 1. Person pause
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "paused",
+      triggerId: created.trigger.id,
+    });
+    expect(await readPaused()).toMatchObject({
+      pausedAt: expect.any(Date),
+      pausedBy: "person",
+      pausedByConnectionId: null,
+      pausedByThreadId: null,
+    });
+
+    // 2. Agent pause
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "active",
+      triggerId: created.trigger.id,
+    });
+    await triggers.setStatus({
+      actorAccessMode: "full-access",
+      actorThreadId: fixture.threadId,
+      ownerId: fixture.userId,
+      status: "paused",
+      triggerId: created.trigger.id,
+    });
+    expect(await readPaused()).toMatchObject({
+      pausedAt: expect.any(Date),
+      pausedBy: "agent",
+      pausedByConnectionId: null,
+      pausedByThreadId: fixture.threadId,
+    });
+
+    // 3. Connected agent pause (never recorded as "person"!)
+    const connectionId = `agc_${randomUUID()}`;
+    const now = new Date();
+    await database
+      .insertInto("agentConnections")
+      .values({
+        accessMode: "full-access",
+        clientName: "External Agent",
+        createdAt: now,
+        expiresAt: new Date(now.getTime() + 60 * 60 * 1_000),
+        grant: { scope: "everything" },
+        grantRevision: 1,
+        id: connectionId,
+        label: "External Agent",
+        lastUsedAt: null,
+        resource: "https://opensteer.test/mcp",
+        revokedAt: null,
+        tokenHash: null,
+        userId: fixture.userId,
+      })
+      .execute();
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "active",
+      triggerId: created.trigger.id,
+    });
+    await triggers.setStatus({
+      actorAccessMode: "full-access",
+      actorConnectionId: connectionId,
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "paused",
+      triggerId: created.trigger.id,
+    });
+    expect(await readPaused()).toMatchObject({
+      pausedAt: expect.any(Date),
+      pausedBy: "connection",
+      pausedByConnectionId: connectionId,
+      pausedByThreadId: null,
+    });
+
+    // 4. Authority-loss pause in claimDueSchedules sets pausedBy: "system" + pausedAt
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "active",
+      triggerId: created.trigger.id,
+    });
+    await database
+      .updateTable("threads")
+      .set({ doneAt: new Date(), status: "archived" })
+      .where("id", "=", fixture.threadId)
+      .execute();
+    await database
+      .updateTable("triggers")
+      .set({ nextFireAt: new Date(Date.now() - 1_000) })
+      .where("id", "=", created.trigger.id)
+      .execute();
+    await triggers.claimDueSchedules(new Date());
+    expect(await readPaused()).toMatchObject({
+      pausedAt: expect.any(Date),
+      pausedBy: "system",
+      pausedByConnectionId: null,
+      pausedByThreadId: null,
+    });
+  });
+
   /**
    * Marks a Run running without dispatching it, with the grant a dispatched
    * Run holds: only a Run whose authority stands takes a steer.

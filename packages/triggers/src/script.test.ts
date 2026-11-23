@@ -91,7 +91,7 @@ describe("AutomationScriptSchema", () => {
       "canceled",
       "unknown",
     ]);
-    expect(AutomationPausedBySchema.options).toEqual(["person", "agent", "system"]);
+    expect(AutomationPausedBySchema.options).toEqual(["person", "agent", "connection", "system"]);
   });
 });
 

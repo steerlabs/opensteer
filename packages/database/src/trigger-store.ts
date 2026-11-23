@@ -866,7 +866,12 @@ export class TriggerStore {
         let updatedRow: TriggerRow;
         if (input.status === "paused") {
           updatedRow = await pauseTriggerInTransaction(transaction, trigger, {
-            pausedBy: input.actorThreadId ? "agent" : "person",
+            pausedBy: input.actorConnectionId
+              ? "connection"
+              : input.actorThreadId
+                ? "agent"
+                : "person",
+            pausedByConnectionId: input.actorConnectionId ?? null,
             pausedByThreadId: input.actorThreadId,
           });
         } else {
@@ -897,6 +902,7 @@ export class TriggerStore {
               pauseReason: null,
               pausedAt: null,
               pausedBy: null,
+              pausedByConnectionId: null,
               pausedByThreadId: null,
               status: input.status,
               updatedAt: now,
@@ -3963,6 +3969,7 @@ export async function pauseTriggerInTransaction(
   options?: {
     readonly pauseReason?: string | null;
     readonly pausedBy?: AutomationPausedBy | null;
+    readonly pausedByConnectionId?: string | null;
     readonly pausedByThreadId?: ThreadId | null;
   },
 ): Promise<TriggerRow> {
@@ -3975,6 +3982,7 @@ export async function pauseTriggerInTransaction(
       pauseReason: options?.pauseReason ?? null,
       pausedAt: now,
       pausedBy: options?.pausedBy ?? null,
+      pausedByConnectionId: options?.pausedByConnectionId ?? null,
       pausedByThreadId: options?.pausedByThreadId ?? null,
       nextFireAt: trigger.kind === "schedule" ? null : trigger.nextFireAt,
       updatedAt: now,

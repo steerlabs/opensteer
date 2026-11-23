@@ -1154,6 +1154,7 @@ export async function revokeRunner(
               pauseReason: "Paused because its computer was removed.",
               pausedAt: revokedAt,
               pausedBy: "system",
+              pausedByConnectionId: null,
               pausedByThreadId: null,
               status: "paused",
               updatedAt: revokedAt,

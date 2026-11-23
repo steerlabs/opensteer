@@ -1152,6 +1152,7 @@ interface TriggerTable {
   consecutiveFailures: number;
   pauseReason: string | null;
   pausedBy: Generated<AutomationPausedBy | null>;
+  pausedByConnectionId: Generated<string | null>;
   pausedByThreadId: Generated<ThreadId | null>;
   pausedAt: Generated<Date | null>;
   failingSince: Generated<Date | null>;

@@ -13,6 +13,10 @@ export async function applyRemoveAutomationFuses(database: Kysely<unknown>): Pro
     drop table if exists automation_wakes;
     alter table triggers drop column if exists wake_limit_per_hour;
     alter table triggers drop column if exists webhook_secret_hash;
+    alter table triggers drop constraint if exists triggers_paused_by_check;
+    alter table triggers add constraint triggers_paused_by_check
+      check (paused_by in ('person', 'agent', 'connection', 'system'));
+    alter table triggers add column if not exists paused_by_connection_id text;
     alter table execution_environments drop column if exists max_active_watches;
 
     delete from automation_failure_notices where reason = 'wake-limit-reached';

@@ -81,7 +81,7 @@ export const AutomationOutcomeSchema = z.enum([
 ]);
 export type AutomationOutcome = z.infer<typeof AutomationOutcomeSchema>;
 
-export const AutomationPausedBySchema = z.enum(["person", "agent", "system"]);
+export const AutomationPausedBySchema = z.enum(["person", "agent", "connection", "system"]);
 export type AutomationPausedBy = z.infer<typeof AutomationPausedBySchema>;
 
 /** Normalizes phone/web CRLF/CR line endings on POSIX so shell/script interpreters never choke on `\r`. */
