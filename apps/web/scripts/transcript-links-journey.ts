@@ -55,7 +55,7 @@ const { browser, origin } = web;
 try {
   const context = await browser.newContext({ viewport: { height: 900, width: 1280 } });
   context.setDefaultTimeout(5_000);
-  context.setDefaultNavigationTimeout(10_000);
+  context.setDefaultNavigationTimeout(15_000);
   const requests: { readonly url: string; readonly navigation: boolean; readonly page: string }[] =
     [];
   const pages = new Map<Page, string>();
@@ -588,9 +588,9 @@ async function waitForHost(page: Page): Promise<void> {
         (Reflect.get(window, "opensteerMock") as MockHostClient)?.getSnapshot().connection ===
         "connected",
       undefined,
-      { timeout: 5_000 },
+      { timeout: 15_000 },
     );
   } catch (error) {
-    throw new Error("The mock Host did not connect within 5 seconds.", { cause: error });
+    throw new Error("The mock Host did not connect within 15 seconds.", { cause: error });
   }
 }

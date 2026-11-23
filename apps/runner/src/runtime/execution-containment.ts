@@ -39,10 +39,14 @@ export type RunnerShutdownProof = z.infer<typeof RunnerShutdownProofSchema>;
 export async function confirmRunnerShutdown(
   dataDirectory: string,
   proof?: Pick<RunnerShutdownProof, "bootId" | "processIdentities">,
+  options?: { readonly terminationGraceMs?: number },
 ): Promise<boolean> {
   const containment = new ExecutionContainment({
     bootId: proof?.bootId ?? "desktop",
     dataDirectory,
+    ...(options?.terminationGraceMs !== undefined
+      ? { terminationGraceMs: options.terminationGraceMs }
+      : {}),
   });
   if (!proof) {
     await containment.reapEarlierBoots();
@@ -93,6 +97,7 @@ export class ExecutionContainment {
   readonly #bootId: string;
   readonly #installation: string;
   readonly #list: ProcessLister | undefined;
+  readonly #terminationGraceMs: number;
   /** The processes noted for each execution before its engine was told to stop. */
   readonly #noted = new Map<string, Set<string>>();
 
@@ -102,6 +107,7 @@ export class ExecutionContainment {
     readonly dataDirectory: string;
     readonly listProcesses?: ProcessLister;
     readonly platform?: NodeJS.Platform;
+    readonly terminationGraceMs?: number;
   }) {
     this.#bootId = options.bootId;
     this.#installation = createHash("sha256")
@@ -109,6 +115,7 @@ export class ExecutionContainment {
       .digest("base64url")
       .slice(0, 16);
     this.#list = options.listProcesses ?? processListerFor(options.platform ?? process.platform);
+    this.#terminationGraceMs = options.terminationGraceMs ?? terminationGraceMs;
   }
 
   scope(executionId: string): string {
@@ -257,7 +264,7 @@ export class ExecutionContainment {
     processes = await remaining();
     if (processes.length === 0) return "proven";
     signal(processes, "SIGTERM");
-    processes = await waitUntilGone(remaining, terminationGraceMs);
+    processes = await waitUntilGone(remaining, this.#terminationGraceMs);
     if (processes.length === 0) return "proven";
     processes = await waitUntilGone(remaining, killSettleMs, "SIGKILL");
     return processes.length === 0 ? "proven" : "unknown";

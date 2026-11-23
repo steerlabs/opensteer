@@ -313,7 +313,11 @@ it("reserves the Runner's server limit across concurrent apps and refuses launch
 it("inventories detached descendants without the execution marker before stopping the server group", async () => {
   const { ExecutionContainment } = await import("../runtime/execution-containment.js");
   const root = await mkdtemp(join(tmpdir(), "opensteer-app-server-containment-"));
-  const containment = new ExecutionContainment({ bootId: "app-server-test", dataDirectory: root });
+  const containment = new ExecutionContainment({
+    bootId: "app-server-test",
+    dataDirectory: root,
+    terminationGraceMs: 100,
+  });
   const manager = new AppServerManager({
     resolveRoot: async () => root,
     privateDirectory: join(root, "private"),
@@ -360,7 +364,11 @@ it("cleans a crashed server and descendants before releasing its capacity and la
   const { ExecutionContainment } = await import("../runtime/execution-containment.js");
   const root = await mkdtemp(join(tmpdir(), "opensteer-app-crash-"));
   const privateDirectory = join(root, "private");
-  const containment = new ExecutionContainment({ bootId: "crash-test", dataDirectory: root });
+  const containment = new ExecutionContainment({
+    bootId: "crash-test",
+    dataDirectory: root,
+    terminationGraceMs: 100,
+  });
   const cleanupStarted = Promise.withResolvers<void>();
   const allowCleanup = Promise.withResolvers<void>();
   const releaseLaunches = Promise.withResolvers<void>();
