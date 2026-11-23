@@ -43,6 +43,12 @@ interface ActiveCast {
   castSize: PageSize | null;
   /** The document the running cast was started for, or last kept across. */
   castDocument: string | null;
+  /**
+   * Aborted, and made anew, each time the person leaves this tab, and when it is unbound: every
+   * wait begun for it while it was in view ends then. Work queued for it that runs after does
+   * nothing while another tab is in view (`inView`), and runs if the person came back.
+   */
+  leave: AbortController;
   raster: PageSize | null;
   casting: boolean;
   awaitingNavigation: boolean;
@@ -367,8 +373,12 @@ export class ScreencastController {
     )
       return;
     const binding = this.surfaceId ? this.ledger.binding(this.surfaceId) : this.ledger.active();
-    if (this.active && this.active.surfaceId !== binding?.surface.id)
+    if (this.active && this.active.surfaceId !== binding?.surface.id) {
       this.cancelPendingCast(this.active);
+      // What was queued for it, and is queued after this, does nothing (`inView`).
+      this.active.leave.abort();
+      this.active.leave = new AbortController();
+    }
     if (event.type === "resized") {
       void this.viewportChanged(event.surfaceId).catch(() => undefined);
       return;
@@ -450,6 +460,7 @@ export class ScreencastController {
       geometryRevision: -1,
       castSize: null,
       castDocument: null,
+      leave: new AbortController(),
       capture: null,
       castAbort: null,
       paintRetry: null,
@@ -531,6 +542,7 @@ export class ScreencastController {
     this.active = null;
     if (!active) return null;
     this.cancelPendingCast(active);
+    active.leave.abort();
     active.unsubscribeCapture?.();
     active.releaseRendering?.();
     active.releaseRendering = null;
@@ -742,15 +754,25 @@ export class ScreencastController {
    * a JavaScript dialog answers no command until the dialog closes, so its
    * cast starts then and the stream never waits on it. Runs under the mutex.
    */
+  /**
+   * Whether `active` is the tab in view: the follow view's lock is shared by every tab, and the
+   * tab it binds changes only when `rebind` gets the lock, so work queued for a tab the person has
+   * left can still find it bound. Checked on entry and after every wait.
+   */
+  private inView(active: ActiveCast): boolean {
+    if (this.closed || this.active !== active) return false;
+    const binding = this.surfaceId ? this.ledger.binding(this.surfaceId) : this.ledger.active();
+    return binding?.surface.id === active.surfaceId;
+  }
+
   private castActive(active: ActiveCast, reason: string): Promise<void> {
-    if (this.closed || this.active !== active || !this.streaming || active.casting)
-      return Promise.resolve();
+    if (!this.inView(active) || !this.streaming || active.casting) return Promise.resolve();
     this.clearPaintRetry(active);
     return this.ledger.use(active.surfaceId, () => this.castLive(active, reason));
   }
 
   private async castLive(active: ActiveCast, reason: string): Promise<void> {
-    if (this.closed || this.active !== active || !this.streaming || active.casting) return;
+    if (!this.inView(active) || !this.streaming || active.casting) return;
     if (this.ledger.dialogOpen(active.surfaceId)) {
       this.showRetainedPicture(active);
       return;
@@ -762,7 +784,11 @@ export class ScreencastController {
     const castAbort = new AbortController();
     active.castAbort = castAbort;
     active.castId = ++this.castId;
-    const canceled = AbortSignal.any([this.lifecycle.signal, castAbort.signal]);
+    const canceled = AbortSignal.any([
+      this.lifecycle.signal,
+      castAbort.signal,
+      active.leave.signal,
+    ]);
     try {
       try {
         if (page?.settleRendering) await page.settleRendering(canceled);
@@ -776,9 +802,9 @@ export class ScreencastController {
         this.schedulePaintRetry(active);
         return;
       }
-      if (this.closed || this.active !== active || !this.streaming || canceled.aborted) return;
+      if (!this.inView(active) || !this.streaming || canceled.aborted) return;
       const start = async () => {
-        if (canceled.aborted || this.closed || this.active !== active || !this.streaming) return;
+        if (canceled.aborted || !this.inView(active) || !this.streaming) return;
         const size = this.ledger.viewportOf(active.surfaceId);
         active.castSize = size ?? null;
         active.castDocument = this.ledger.binding(active.surfaceId)?.surface.documentId ?? null;
@@ -937,8 +963,7 @@ export class ScreencastController {
       .run(async () => {
         active.repairQueued = false;
         if (
-          this.closed ||
-          this.active !== active ||
+          !this.inView(active) ||
           !this.streaming ||
           !active.casting ||
           !this.ledger.viewportOf(active.surfaceId)
@@ -950,11 +975,29 @@ export class ScreencastController {
           .use(active.surfaceId, () => active.cdp.send("Page.stopScreencast"))
           .catch(() => undefined);
         const page = this.ledger.binding(active.surfaceId)?.page;
-        if (page?.invalidateSurface) await page.invalidateSurface();
+        // The page's own wait takes no signal: leaving the tab ends this one's.
+        if (page?.invalidateSurface)
+          await untilAborted(page.invalidateSurface(), active.leave.signal);
         await this.castActive(active, "raster-mismatch");
       })
       .catch(() => undefined);
   }
+}
+
+/** `work`, or nothing once `signal` aborts: no one waits on work for a tab the person left. */
+function untilAborted(work: Promise<unknown>, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const done = () => {
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    signal.addEventListener("abort", done, { once: true });
+    work.then(done, (error: unknown) => {
+      signal.removeEventListener("abort", done);
+      reject(error instanceof Error ? error : new Error(String(error)));
+    });
+  });
 }
 
 function sameSize(left: PageSize, right: PageSize | null): boolean {

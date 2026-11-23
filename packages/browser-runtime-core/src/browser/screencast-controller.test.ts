@@ -169,3 +169,107 @@ describe("the follow view's cast, when nothing about the picture changed", async
     await tab.follow.close();
   });
 });
+
+/*
+ * F41, the re-check of fb245664c..e67033f5f, finding 3 (Sequence A): the follow view's one lock is
+ * shared by every tab, and the tab it binds changes only inside `rebind`, queued on that lock. A
+ * cast queued for the tab a person has just left still ran, with a new abort handle nothing would
+ * abort, and waited the whole paint limit on a still page while holding the lock: the tab now in
+ * view could not be bound until it let go.
+ */
+describe("the follow view, when the person turns to another tab", async () => {
+  const { ScreencastController } = await import("./screencast-controller.js");
+  const { LatestFrameStream } = await import("../stream/latest-frame-stream.js");
+  const { FakeCdpSession } = await import("../test-support/fakes.js");
+  const { BrowserPaintTimeoutError } = await import("./backend.js");
+
+  it("starts the cast of the tab now in view at once, though work for the tab it left was queued", async () => {
+    const paintLimitMs = 5_000;
+    const geometryHeld = Promise.withResolvers<void>();
+    let holdGeometry = false;
+    const tab = (id: string) => {
+      const cdp = new FakeCdpSession();
+      let painted = false;
+      const surface = { active: false, documentId: id, geometryRevision: 1, id, loading: false };
+      const size = { height: 600, width: 800 };
+      const page = {
+        applyGeometry: async () => undefined,
+        // Its first paint comes at once; after that a still page paints nothing more, and a
+        // wait for a paint lasts the paint limit unless it is canceled.
+        settleRendering: (signal?: AbortSignal) => {
+          if (!painted || id === "b") {
+            painted = true;
+            return Promise.resolve();
+          }
+          return new Promise<void>((_resolve, reject) => {
+            const timer = setTimeout(
+              () => reject(new BrowserPaintTimeoutError("paint wait timed out")),
+              paintLimitMs,
+            );
+            signal?.addEventListener("abort", () => {
+              clearTimeout(timer);
+              reject(signal.reason);
+            });
+          });
+        },
+      };
+      return { cdp, page, size, surface };
+    };
+    const a = tab("a");
+    const b = tab("b");
+    let shown = a;
+    const listeners = new Set<(event: unknown) => void>();
+    const emit = (event: unknown) => {
+      for (const listener of listeners) listener(event);
+    };
+    const bindingOf = (t: typeof a) => ({ cdp: t.cdp, page: t.page, surface: t.surface });
+    const ledger = {
+      active: () => bindingOf(shown),
+      binding: (id: string) => bindingOf(id === "a" ? a : b),
+      dialogOf: () => null,
+      dialogOpen: () => false,
+      recordPageScale: () => undefined,
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      viewportOf: (id: string) => (id === "a" ? a : b).size,
+      // Tab A's dialog holds its geometry while the person turns away.
+      withGeometry: async <T>(id: string, operation: () => Promise<T>) => {
+        if (id === "a" && holdGeometry) await geometryHeld.promise;
+        return operation();
+      },
+    };
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async () => undefined }),
+      ledger: ledger as never,
+      onDialogChanged: () => undefined,
+    });
+    const starts = (t: typeof a) =>
+      t.cdp.sent.filter(({ method }) => method === "Page.startScreencast").length;
+    await follow.start();
+    await follow.setStreaming(true);
+    await vi.waitFor(() => expect(starts(a)).toBe(1));
+    // Tab A is sized anew while its dialog holds its geometry: its restart waits there, and a
+    // second restart queues behind it.
+    holdGeometry = true;
+    a.size = { height: 700, width: 900 };
+    a.surface.geometryRevision += 1;
+    emit({ change: "updated", surface: { ...a.surface }, type: "changed" });
+    await new Promise((resolve) => setImmediate(resolve));
+    a.size = { height: 720, width: 920 };
+    a.surface.geometryRevision += 1;
+    emit({ change: "updated", surface: { ...a.surface }, type: "changed" });
+    // The person turns to tab B, then A's dialog is answered and its geometry let go.
+    shown = b;
+    b.surface.active = true;
+    a.surface.active = false;
+    const turnedAt = performance.now();
+    emit({ change: "updated", surface: { ...b.surface }, type: "changed" });
+    geometryHeld.resolve();
+    await vi.waitFor(() => expect(starts(b)).toBe(1), { timeout: 1_000 });
+    expect(performance.now() - turnedAt).toBeLessThan(paintLimitMs);
+    await follow.close();
+  });
+});
