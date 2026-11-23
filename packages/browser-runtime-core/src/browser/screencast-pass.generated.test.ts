@@ -4,23 +4,27 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  * The guard against another round of the same fault: an event consumed, a path returning because
  * it believes another will act, and nothing left to do it. Random sequences of what the person
  * and the page do, and of what Chromium does (answers early and late, refusals, frames before and
- * after the answer, frames that do not fit, a page that loses its session), against the real
- * follow view. At every quiet point:
- * - a cast that is wanted has a picture shown for it, or the follow view waits on a fact it names
- *   and that is true of the page;
- * - no cast runs, or is being started, for a tab that is not wanted;
- * - every frame was acknowledged once, but the one held for a start still with Chromium;
- * - no start reached a page the follow view knew could not take one;
- * - the pass is not running, and never ran into its step limit.
+ * after the answer, frames that do not fit, a renderer gone on the same session, a session lost),
+ * against the real follow view. At every quiet point:
+ * 1. a cast that is wanted has a picture delivered for it, or the follow view waits on a fact it
+ *    names and that is true of this tab now;
+ * 2. no cast runs, or is being started, for a tab that is not wanted;
+ * 3. every frame was acknowledged once, but the one held for a start still with Chromium;
+ * 4. no start reached a page while the follow view knew it could not take one;
+ * 5. the pass is not running, and never ran into its step limit;
+ * 6. every picture delivered is of the cast running on its tab, and of the tab's document now;
+ * 7. the starts Chromium took since a tab's last picture, for one cast, stay within the bound.
+ * The stand-in is Chromium and the desktop app's hub together: it takes a session's commands in
+ * order, and on the desktop says when it ended a session's casts.
  */
 
 const { ScreencastController } = await import("./screencast-controller.js");
-const { LatestFrameStream } = await import("../stream/latest-frame-stream.js");
 const { jpeg } = await import("../test-support/fakes.js");
-const { BrowserPaintTimeoutError } = await import("./backend.js");
+const { BrowserPaintTimeoutError, screencastEndedEvent } = await import("./backend.js");
 const { fits, screencastRaster, wanted } = await import("./screencast-plan.js");
 
 type Size = { width: number; height: number };
+type Id = "A" | "B";
 
 function random(seed: number) {
   let state = seed >>> 0 || 1;
@@ -34,17 +38,32 @@ function random(seed: number) {
   };
 }
 
+/** The facts that bear on a refusal, and the showing they were seen in. */
+type RefusalFacts = {
+  readonly document: string;
+  readonly epoch: number;
+  readonly finished: number;
+  readonly loading: boolean;
+  readonly pending: boolean;
+};
+
 /** Chromium for one page session: it takes commands in order, as a session does. */
 class Chromium {
   attached = true;
   dead = false;
   casting = false;
-  /** Starts it answered, and refused. */
-  readonly starts: Array<{ readonly refused: boolean }> = [];
+  /** Each cast Chromium started on this session, counted. */
+  cast = 0;
   readonly lateAnswers: Array<() => void> = [];
-  /** Each frame it sent, by its id, and how often it was acked. */
+  /** Each frame it sent to a listener, by its id, and how often it was acked. */
   readonly acks = new Map<number, number>();
   doubleAck = false;
+  /** The facts when the follow view's last refused start was sent. */
+  lastRefusal: RefusalFacts | null = null;
+  /** The last start's frame before its answer was of another size. */
+  otherSizeBefore = false;
+  /** Frames Chromium has painted and not yet sent: on their way. */
+  framesDue = 0;
   private chain: Promise<unknown> = Promise.resolve();
   private readonly listeners = new Map<string, Set<(parameters: unknown) => void>>();
   /** How the next starts are answered and pictured. */
@@ -52,8 +71,8 @@ class Chromium {
   frameBefore = false;
   framesFit = true;
   private readonly world: World;
-  private readonly id: "A" | "B";
-  constructor(world: World, id: "A" | "B") {
+  private readonly id: Id;
+  constructor(world: World, id: Id) {
     this.world = world;
     this.id = id;
   }
@@ -64,6 +83,9 @@ class Chromium {
   }
   off(event: string, listener: (parameters: unknown) => void) {
     this.listeners.get(event)?.delete(listener);
+  }
+  emit(event: string, parameters: unknown) {
+    for (const listener of this.listeners.get(event) ?? []) listener(parameters);
   }
   retainRendering() {
     return () => undefined;
@@ -77,37 +99,69 @@ class Chromium {
       return Promise.resolve({});
     }
     // What stood when the follow view sent it: a session takes commands in order, later.
-    const refusedWhenSent = method === "Page.startScreencast" && this.world.tabs[this.id].refused;
+    const sentWith = method === "Page.startScreencast" ? this.world.refusalFacts(this.id) : null;
+    const knownRefused = sentWith !== null && sameRefusal(this.lastRefusal, sentWith);
     const run = async () => {
       if (this.dead) throw new Error("Target closed.");
       if (method === "Page.stopScreencast") this.casting = false;
       if (method !== "Page.startScreencast") return {};
       if (!this.attached) {
-        this.starts.push({ refused: true });
-        this.world.refusedOn(this.id, refusedWhenSent);
+        if (knownRefused)
+          this.world.violations.push(
+            `${this.id} was sent a start again with nothing changed since its refusal`,
+          );
+        this.lastRefusal = sentWith;
         throw new Error("Not attached to an active page");
       }
+      this.lastRefusal = null;
       this.world.startedOn(this.id);
-      this.starts.push({ refused: false });
+      this.cast += 1;
+      const cast = this.cast;
       const before = this.frameBefore;
+      // Each start's frame comes with its answer or once the answer is handled, as it falls; a
+      // frame of a cast stopped before it was due is never sent.
+      const afterHandled = this.world.chance(0.5);
+      const due = (frameFit: boolean) => {
+        this.framesDue -= 1;
+        if (this.cast === cast && this.casting) this.frame(frameFit, true);
+      };
+      const schedule = (later: boolean, frameFit: boolean) => {
+        this.framesDue += 1;
+        (later ? setImmediate : queueMicrotask)(() => due(frameFit));
+      };
       const fit = this.framesFit;
-      if (before) this.frame(fit);
-      if (this.answerLate) await new Promise<void>((resolve) => this.lateAnswers.push(resolve));
+      // The start's frame is of another size, before its answer or after: on the desktop its own
+      // follows it, or the follow view repairs the view once the time it gives it is up.
+      this.otherSizeBefore = !fit && this.world.engine === "desktop";
+      // Chromium casts from when it takes the start; its answer may reach the follow view later.
       this.casting = true;
+      if (before) this.frame(fit, true);
+      if (this.answerLate) await new Promise<void>((resolve) => this.lateAnswers.push(resolve));
       // A frame of another size before the answer is what the page last drew: on a page sized
       // natively the start's own frame follows it (F30); on one sized by command it does not.
-      if (!before) queueMicrotask(() => this.frame(fit));
-      else if (!fit && this.world.engine === "desktop") queueMicrotask(() => this.frame(true));
+      // Chromium's frame for a start usually comes once its answer is handled; while the page is
+      // held as each start's frame comes, it does, so that the frame is set aside.
+      if (!before) schedule(this.world.tabs[this.id].flicker || afterHandled, fit);
+      else if (!fit && this.world.engine === "desktop")
+        (afterHandled ? setImmediate : queueMicrotask)(() => {
+          if (this.cast === cast && this.casting) this.frame(true);
+        });
       return {};
     };
     const result = this.chain.then(run, run);
     this.chain = result.catch(() => undefined);
     return result;
   }
-  /** A frame of the page as it is now, or of another size. */
-  frame(fit: boolean) {
+  /** A frame of the page as it is now, or of another size; `forStart`, the start's own. */
+  frame(fit: boolean, forStart = false) {
     if (this.dead) return;
     const tab = this.world.tabs[this.id];
+    // The page held in a hold as each start's frame came: it is set aside.
+    const flicker = forStart && tab.flicker && !tab.dialog;
+    if (flicker) {
+      tab.dialog = true;
+      this.world.emit({ surfaceId: this.id, type: "dialog" });
+    }
     const region = tab.capture
       ? { height: tab.capture.height, width: tab.capture.width }
       : tab.size;
@@ -116,21 +170,44 @@ class Chromium {
       : region;
     const shown = fit ? region : { height: region.height + 50, width: region.width + 100 };
     const id = ++this.world.frameCount;
-    const listeners = this.listeners.get("Page.screencastFrame");
+    const listening = (this.listeners.get("Page.screencastFrame")?.size ?? 0) > 0;
     // A frame no one listens for any more is no one's to ack: the cast it belongs to was stopped.
-    if (listeners?.size) this.acks.set(id, 0);
+    if (listening) this.acks.set(id, 0);
+    if (fit) tab.unpainted = false;
     const picture = fit ? raster : { height: raster.height + 50, width: raster.width + 100 };
-    const parameters = {
-      data: jpeg(picture.width, picture.height).toString("base64"),
+    // The frame carries which cast and document painted it, after the picture's own end.
+    this.world.painted.set(id, {
+      cast: this.cast,
+      document: tab.documentId,
+      session: this,
+      tab: this.id,
+    });
+    const data = Buffer.concat([jpeg(picture.width, picture.height), Buffer.from(`#frame:${id}`)]);
+    this.emit("Page.screencastFrame", {
+      data: data.toString("base64"),
       metadata: { deviceHeight: shown.height, deviceWidth: shown.width },
       sessionId: id,
-    };
-    for (const listener of this.listeners.get("Page.screencastFrame") ?? []) listener(parameters);
+    });
+    if (flicker) {
+      tab.dialog = false;
+      this.world.emit({ surfaceId: this.id, type: "dialog" });
+    }
   }
 }
 
+function sameRefusal(left: RefusalFacts | null, right: RefusalFacts): boolean {
+  return (
+    left !== null &&
+    left.document === right.document &&
+    left.epoch === right.epoch &&
+    left.finished === right.finished &&
+    left.loading === right.loading &&
+    left.pending === right.pending
+  );
+}
+
 interface TabWorld {
-  readonly id: "A" | "B";
+  readonly id: Id;
   chromium: Chromium;
   documentId: string;
   geometryRevision: number;
@@ -140,26 +217,47 @@ interface TabWorld {
   captureLetGo: boolean;
   dialog: boolean;
   navigation: { finished: number; pending: boolean; blankDocument: boolean };
-  /** A start was refused and nothing that bears on it changed since. */
-  refused: boolean;
+  /** A document committed and has not painted yet: it paints once the page takes it. */
+  unpainted: boolean;
+  /** Each start's frame comes while the page is held (a dialog open over it). */
+  flicker: boolean;
   stallPaint: boolean;
+  /** Its last paint wait timed out, and none since succeeded. */
+  paintTimedOut: boolean;
+  /** Each showing of the tab: turned to, streamed again, a new session. */
+  epoch: number;
+  /** Starts Chromium took since its last picture, for one cast. */
+  startsSincePicture: number;
   readonly captureListeners: Set<() => void>;
   readonly navigationListeners: Set<() => void>;
 }
 
 class World {
   frameCount = 0;
+  /** The run's own chance, for Chromium's choices. */
+  chance: (p: number) => boolean = () => false;
   density: 1 | 2 = 2;
-  active: "A" | "B" = "A";
+  active: Id = "A";
   streaming = false;
   readonly violations: string[] = [];
-  readonly errors: string[] = [];
+  /** The cast each mismatch error was said for, by tab. */
+  readonly errorsFor = new Map<Id, string>();
+  readonly painted = new Map<
+    number,
+    {
+      readonly cast: number;
+      readonly document: string;
+      readonly session: Chromium;
+      readonly tab: Id;
+    }
+  >();
+  readonly delivered = new Set<number>();
   readonly ledgerListeners = new Set<(event: unknown) => void>();
-  readonly tabs: Record<"A" | "B", TabWorld>;
+  readonly tabs: Record<Id, TabWorld>;
   readonly engine: "desktop" | "linux";
   constructor(engine: "desktop" | "linux") {
     this.engine = engine;
-    const tab = (id: "A" | "B", opening: boolean): TabWorld => ({
+    const tab = (id: Id, opening: boolean): TabWorld => ({
       captureLetGo: false,
       capture:
         engine === "desktop" ? { height: 600, rasterScale: 2, revision: 1, width: 800 } : null,
@@ -167,14 +265,18 @@ class World {
       chromium: undefined as never,
       dialog: false,
       documentId: `${id}0`,
+      epoch: 0,
+      flicker: false,
       geometryRevision: 1,
       id,
       loading: opening,
       navigation: { blankDocument: opening, finished: opening ? 0 : 1, pending: opening },
       navigationListeners: new Set(),
-      refused: false,
+      paintTimedOut: false,
       size: { height: 600, width: 800 },
       stallPaint: false,
+      startsSincePicture: 0,
+      unpainted: opening,
     });
     // B is a tab the person opened with an address, its first document still to commit.
     this.tabs = { A: tab("A", false), B: tab("B", true) };
@@ -185,23 +287,43 @@ class World {
   get port() {
     return this.engine === "desktop";
   }
-  /**
-   * A start the page refused. One sent while an earlier refusal stood, with nothing that bears on
-   * it changed since, is one too many: the follow view knew the page could not take it.
-   */
-  refusedOn(id: "A" | "B", refusedWhenSent: boolean) {
-    if (refusedWhenSent)
-      this.violations.push(`${id} was sent a start again with nothing changed since its refusal`);
-    this.tabs[id].refused = true;
-  }
-  startedOn(id: "A" | "B") {
+  refusalFacts(id: Id): RefusalFacts {
     const tab = this.tabs[id];
-    // The page took a start: no refusal stands.
-    tab.refused = false;
+    return {
+      document: tab.documentId,
+      epoch: tab.epoch,
+      finished: this.port ? tab.navigation.finished : 0,
+      loading: tab.loading,
+      pending: this.port && tab.navigation.pending,
+    };
+  }
+  /**
+   * A refusal is released once a fact that bears on it is seen to differ, as the follow view
+   * records a release when it sees one: a fact that changes back does not undo it.
+   */
+  releaseRefusals() {
+    for (const id of ["A", "B"] as const) {
+      const chromium = this.tabs[id].chromium;
+      if (chromium.lastRefusal && !sameRefusal(chromium.lastRefusal, this.refusalFacts(id)))
+        chromium.lastRefusal = null;
+    }
+  }
+  startedOn(id: Id) {
+    const tab = this.tabs[id];
+    tab.startsSincePicture += 1;
     if (this.port && tab.navigation.pending && tab.navigation.blankDocument)
       this.violations.push(`a start reached ${id} before its first document committed`);
   }
-  surface(id: "A" | "B") {
+  /** A new showing, or a new cast wanted: the count of starts since a picture begins again. */
+  afresh(id: Id) {
+    this.tabs[id].startsSincePicture = 0;
+  }
+  /** Which cast the follow view should picture now on a tab, as a key. */
+  castOf(id: Id) {
+    const tab = this.tabs[id];
+    return `${tab.size.width}x${tab.size.height} ${tab.capture?.revision ?? "-"} ${this.density} ${tab.documentId}`;
+  }
+  surface(id: Id) {
     const tab = this.tabs[id];
     return {
       active: this.active === id,
@@ -212,7 +334,7 @@ class World {
       url: `https://site.test/${tab.documentId}`,
     };
   }
-  binding(id: "A" | "B") {
+  binding(id: Id) {
     const tab = this.tabs[id];
     const desktop = this.engine === "desktop";
     return {
@@ -241,8 +363,10 @@ class World {
         settleRendering: async () => {
           if (tab.stallPaint) {
             tab.stallPaint = false;
+            tab.paintTimedOut = true;
             throw new BrowserPaintTimeoutError();
           }
+          tab.paintTimedOut = false;
         },
       },
       surface: this.surface(id),
@@ -251,40 +375,85 @@ class World {
   ledger() {
     return {
       active: () => this.binding(this.active),
-      binding: (id: "A" | "B") => this.binding(id),
+      binding: (id: Id) => this.binding(id),
       dialogOf: () => null,
-      dialogOpen: (id: "A" | "B") => this.tabs[id].dialog,
+      dialogOpen: (id: Id) => this.tabs[id].dialog,
       recordPageScale: () => undefined,
       subscribe: (listener: (event: unknown) => void) => {
         this.ledgerListeners.add(listener);
         return () => this.ledgerListeners.delete(listener);
       },
       use: <T>(_id: string, operation: () => Promise<T>) => operation(),
-      viewportOf: (id: "A" | "B") => this.tabs[id].size,
+      viewportOf: (id: Id) => this.tabs[id].size,
       withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+    };
+  }
+  /** The viewers' end of the follow view: each picture delivered, judged as it is handed over. */
+  frames() {
+    return {
+      close: () => undefined,
+      enqueue: (frame: { data: Buffer; header: { surfaceId: string } }) => {
+        const tag = /#frame:(\d+)$/u.exec(frame.data.toString("latin1"));
+        const id = tag ? Number(tag[1]) : NaN;
+        const painted = this.painted.get(id);
+        const tab = this.tabs[frame.header.surfaceId as Id];
+        if (!painted || !tab) {
+          this.violations.push(`a picture was delivered that no Chromium painted`);
+          return;
+        }
+        // A picture shown again under a dialog is the tab's last one; it was judged when first.
+        if (this.delivered.has(id)) {
+          if (painted.document !== tab.documentId)
+            this.violations.push(`${tab.id} was shown again a picture of another document`);
+          return;
+        }
+        this.delivered.add(id);
+        if (painted.tab !== tab.id)
+          this.violations.push(`${tab.id} was shown ${painted.tab}'s picture`);
+        else if (painted.session !== tab.chromium || painted.cast !== tab.chromium.cast)
+          this.violations.push(
+            `${tab.id} was shown a picture of cast ${painted.cast}, not of cast ${tab.chromium.cast} that runs`,
+          );
+        else if (painted.document !== tab.documentId)
+          this.violations.push(
+            `${tab.id} was shown a picture of document ${painted.document}, not of ${tab.documentId}`,
+          );
+        tab.startsSincePicture = 0;
+      },
     };
   }
   emit(event: unknown) {
     for (const listener of this.ledgerListeners) listener(event);
   }
-  changed(id: "A" | "B") {
+  changed(id: Id) {
     this.emit({ change: "updated", surface: this.surface(id), type: "changed" });
   }
-  captureChanged(id: "A" | "B") {
+  captureChanged(id: Id) {
     for (const listener of this.tabs[id].captureListeners) listener();
   }
-  navigated(id: "A" | "B") {
+  navigated(id: Id) {
     for (const listener of this.tabs[id].navigationListeners) listener();
   }
-  /** A new document paints once the page takes it: a running cast sends that frame. */
-  paints(id: "A" | "B") {
-    const chromium = this.tabs[id].chromium;
-    if (chromium.casting && chromium.attached) queueMicrotask(() => chromium.frame(true));
+  /** A document not painted yet paints once the page takes it: a running cast sends that frame. */
+  paints(id: Id) {
+    const tab = this.tabs[id];
+    const chromium = tab.chromium;
+    if (tab.unpainted && chromium.casting && chromium.attached)
+      queueMicrotask(() => chromium.frame(true));
+  }
+  /** A new document committed: it has not painted. */
+  committed(id: Id) {
+    const tab = this.tabs[id];
+    tab.documentId += "+";
+    tab.geometryRevision += 1;
+    tab.unpainted = true;
+    this.afresh(id);
   }
   /** What is wanted cast now, from the world itself. */
   facts() {
     const tab = this.tabs[this.active];
     return {
+      captureRegions: false,
       closed: false,
       density: this.density,
       streaming: this.streaming,
@@ -313,13 +482,16 @@ function actions(
 ): Action[] {
   const inView = () => world.tabs[world.active];
   const other = () => (world.active === "A" ? "B" : "A");
-  const list: Action[] = [
+  const snapshot = () =>
+    world.emit({ surfaces: [world.surface("A"), world.surface("B")], type: "snapshot" });
+  return [
     {
       name: "turn to the other tab",
       run: () => {
         world.active = other();
-        world.tabs[world.active].refused = false;
-        world.emit({ surfaces: [world.surface("A"), world.surface("B")], type: "snapshot" });
+        inView().epoch += 1;
+        world.afresh(world.active);
+        snapshot();
       },
     },
     {
@@ -327,32 +499,41 @@ function actions(
       run: () => {
         const back = world.active;
         world.active = other();
-        world.emit({ surfaces: [world.surface("A"), world.surface("B")], type: "snapshot" });
+        snapshot();
         world.active = back;
-        world.emit({ surfaces: [world.surface("A"), world.surface("B")], type: "snapshot" });
+        snapshot();
       },
     },
     {
       name: "stream",
-      run: async () => {
+      run: () => {
         // Asking for the picture again asks the page afresh.
-        if (!world.streaming) world.tabs[world.active].refused = false;
+        if (!world.streaming) {
+          inView().epoch += 1;
+          world.afresh(world.active);
+        }
+        const before = world.streaming;
         world.streaming = true;
-        // Answered once its start is: a start Chromium holds holds it, as it would a viewer's.
-        void follow.setStreaming(true).catch(() => undefined);
+        // Answered once its start is: a start Chromium holds holds it, as it would a viewer's. A
+        // start refused outside any navigation is the subscriber's to hear, and undoes it.
+        void follow.setStreaming(true).catch(() => {
+          world.streaming = before;
+        });
       },
     },
     {
       name: "pause",
-      run: async () => {
+      run: () => {
         world.streaming = false;
         void follow.setStreaming(false).catch(() => undefined);
       },
     },
     {
       name: "change density",
-      run: async () => {
+      run: () => {
         world.density = world.density === 2 ? 1 : 2;
+        world.afresh("A");
+        world.afresh("B");
         void follow.setRasterDemand(world.density).catch(() => undefined);
       },
     },
@@ -365,6 +546,7 @@ function actions(
         tab.geometryRevision += 1;
         if (tab.capture)
           tab.capture = { ...tab.capture, ...tab.size, revision: tab.capture.revision + 1 };
+        world.afresh(tab.id);
         world.captureChanged(tab.id);
         world.emit({ surfaceId: tab.id, type: "resized" });
         world.changed(tab.id);
@@ -374,9 +556,8 @@ function actions(
       name: "a same-size document commits",
       run: () => {
         const tab = inView();
-        if (tab.navigation.pending) return;
-        tab.documentId += "+";
-        tab.geometryRevision += 1;
+        if (tab.navigation.pending || !tab.chromium.attached) return;
+        world.committed(tab.id);
         world.changed(tab.id);
         world.paints(tab.id);
       },
@@ -405,7 +586,9 @@ function actions(
       name: "a navigation starts",
       run: () => {
         const tab = inView();
-        tab.loading = true;
+        // On the desktop it may start before the page is told it loads (did-start-navigation
+        // first); on Linux loading is the only sign of it, and Chrome reports it as it starts.
+        tab.loading = !world.port || pick.chance(0.5);
         tab.navigation = { ...tab.navigation, pending: true };
         // Chromium takes no command for the page from its commit until the browser side's end of
         // the navigation; here, harder, from its start.
@@ -419,15 +602,11 @@ function actions(
       run: () => {
         const tab = inView();
         if (!tab.navigation.pending && !tab.loading) return;
-        tab.documentId += "n";
-        tab.geometryRevision += 1;
+        tab.loading = true;
+        world.committed(tab.id);
         // Without a navigation port the commit is all the follow view hears; the page may or may
         // not take commands yet.
-        if (!world.port && pick.chance(0.5)) {
-          tab.chromium.attached = true;
-          tab.refused = false;
-        }
-        if (!world.port) tab.refused = false;
+        if (!world.port && pick.chance(0.5)) tab.chromium.attached = true;
         world.changed(tab.id);
         world.paints(tab.id);
       },
@@ -443,25 +622,22 @@ function actions(
           finished: tab.navigation.finished + 1,
           pending: false,
         };
-        // Only a page with a navigation port tells the follow view of this.
-        if (world.port) tab.refused = false;
         world.navigated(tab.id);
         world.changed(tab.id);
         world.paints(tab.id);
       },
     },
     {
-      name: "loading stops",
+      name: "the navigation ends without a document (a download, a 204, an abort)",
       run: () => {
         const tab = inView();
-        if (!tab.loading) return;
-        tab.loading = false;
+        if (!tab.navigation.pending && !tab.loading) return;
         tab.chromium.attached = true;
+        tab.loading = false;
         if (tab.navigation.pending) {
           tab.navigation = { ...tab.navigation, pending: false };
           world.navigated(tab.id);
         }
-        tab.refused = false;
         world.changed(tab.id);
         world.paints(tab.id);
       },
@@ -472,6 +648,12 @@ function actions(
         const tab = inView();
         tab.dialog = !tab.dialog;
         world.emit({ surfaceId: tab.id, type: "dialog" });
+      },
+    },
+    {
+      name: "the page is held as each start's frame comes, or no longer",
+      run: () => {
+        inView().flicker = !inView().flicker;
       },
     },
     {
@@ -510,6 +692,35 @@ function actions(
       },
     },
     {
+      name: "the renderer crashes on the same session and the page reloads",
+      run: () => {
+        const tab = inView();
+        const chromium = tab.chromium;
+        for (const answer of chromium.lateAnswers.splice(0)) answer();
+        if (world.engine === "desktop") {
+          // The hub ends the session's casts and says so on it; the page's navigation ends.
+          chromium.casting = false;
+          chromium.emit(screencastEndedEvent, {});
+          tab.navigation = { ...tab.navigation, pending: false };
+          world.navigated(tab.id);
+        }
+        chromium.attached = true;
+        tab.loading = false;
+        world.committed(tab.id);
+        // The reload is the page's navigation now, finished, on either engine.
+        tab.navigation = {
+          blankDocument: false,
+          finished: tab.navigation.finished + 1,
+          pending: false,
+        };
+        world.navigated(tab.id);
+        world.changed(tab.id);
+        // Linux Chrome keeps the session's cast across a renderer it replaced (unverified): the
+        // reloaded document paints into it.
+        world.paints(tab.id);
+      },
+    },
+    {
       name: "the page loses its session and gets a new one",
       run: () => {
         const tab = inView();
@@ -518,12 +729,12 @@ function actions(
         const next = new Chromium(world, tab.id);
         next.attached = !tab.navigation.pending;
         tab.chromium = next;
-        tab.refused = false;
+        tab.epoch += 1;
+        world.afresh(tab.id);
         world.changed(tab.id);
       },
     },
   ];
-  return list;
 }
 
 async function turns(count: number) {
@@ -531,22 +742,16 @@ async function turns(count: number) {
     await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-async function settle() {
-  for (let round = 0; round < 6; round += 1)
-    await new Promise<void>((resolve) => setImmediate(resolve));
-}
-
 interface Internals {
   readonly passing: boolean;
   readonly bound: {
-    readonly id: "A" | "B";
+    readonly id: Id;
     readonly cdp: Chromium;
     readonly held: unknown;
     readonly waiting: string | null;
     readonly state: {
       readonly told: { state: string; key?: unknown };
       readonly shown: boolean;
-      readonly refusal: unknown;
     };
   } | null;
 }
@@ -560,7 +765,8 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
     broken.push("the pass ran into its step limit");
   const bound = internals.bound;
   const tab = world.tabs[world.active];
-  if (!bound || bound.id !== world.active || bound.cdp !== tab.chromium)
+  const chromium = tab.chromium;
+  if (!bound || bound.id !== world.active || bound.cdp !== chromium)
     broken.push(`the tab in view, ${world.active}, is not the one bound`);
   const facts = world.facts();
   const want = wanted(facts as never);
@@ -569,37 +775,53 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
     const pictured =
       told.state === "running" && fits(told.key as never, want.key) === "same" && bound.state.shown;
     const why = bound.waiting ?? "";
+    const holding = chromium.lateAnswers.length > 0;
     const named =
-      (why === "a start is with Chromium" && tab.chromium.lateAnswers.length > 0) ||
       // Chromium takes a session's commands in order: one it holds the answer to holds the next.
-      (why === "a start is being prepared" && tab.chromium.lateAnswers.length > 0) ||
+      ((why === "a start is with Chromium" ||
+        why === "a start is being prepared" ||
+        why === "a stop is with Chromium") &&
+        holding) ||
+      // A frame Chromium has painted is on its way.
+      (why === "its first frame" && chromium.framesDue > 0) ||
       (why === "its document's first frame, as it loads" &&
-        (tab.loading || tab.navigation.pending)) ||
+        (tab.loading || tab.navigation.pending) &&
+        tab.unpainted) ||
       (why === "its first document has not committed" &&
         world.port &&
         tab.navigation.pending &&
         tab.navigation.blankDocument) ||
-      // A refusal waits rightly while nothing released it, or while the page again takes none.
-      (why.startsWith("refused") && (tab.refused || !tab.chromium.attached)) ||
-      (why === "the page did not paint" && vi.getTimerCount() > 0) ||
-      (why === "its own frame, after one of another size" && vi.getTimerCount() > 0) ||
-      (why === "its frames never fit this page" && world.errors.length > 0);
+      // A refusal waits rightly while the page takes no command, or is about to say it can.
+      (why.startsWith("refused") &&
+        (!chromium.attached || tab.loading || (world.port && tab.navigation.pending))) ||
+      (why === "the page did not paint" && tab.paintTimedOut && vi.getTimerCount() > 0) ||
+      (why === "its own frame, after one of another size" &&
+        chromium.otherSizeBefore &&
+        vi.getTimerCount() > 0) ||
+      (why === "its frames never fit this page" &&
+        world.errorsFor.get(tab.id) === world.castOf(tab.id));
     if (!pictured && !named)
       broken.push(
         `${world.active} is wanted cast and neither pictured nor waiting on a fact true of it (told ${told.state}, shown ${String(bound.state.shown)}, waiting "${why}")`,
       );
   }
   for (const id of ["A", "B"] as const) {
-    const chromium = world.tabs[id].chromium;
+    const session = world.tabs[id].chromium;
     const wantedHere = id === world.active && want.kind !== "none";
-    if (!wantedHere && chromium.casting && chromium.lateAnswers.length === 0)
+    if (!wantedHere && session.casting && session.lateAnswers.length === 0)
       broken.push(`a cast runs on ${id}, which is not wanted`);
-    if (chromium.doubleAck) broken.push(`a frame of ${id} was acked twice`);
-    const unacked = [...chromium.acks].filter(([, count]) => count === 0).map(([frame]) => frame);
-    const held = bound?.cdp === chromium ? bound.held : null;
+    if (session.doubleAck) broken.push(`a frame of ${id} was acked twice`);
+    const unacked = [...session.acks].filter(([, count]) => count === 0).map(([frame]) => frame);
+    const held = bound?.cdp === session ? bound.held : null;
     const heldId = held ? Number((held as { sessionId: number }).sessionId) : null;
     const left = unacked.filter((frame) => frame !== heldId);
     if (left.length > 0) broken.push(`frames ${left.join(", ")} of ${id} were never acked`);
+    // One start, and as many restarts and repairs as the bound gives with no picture.
+    const limit = 1 + (world.engine === "desktop" ? 1 : 3);
+    if (world.tabs[id].startsSincePicture > limit)
+      broken.push(
+        `${id} was started ${world.tabs[id].startsSincePicture} times for one cast with no picture`,
+      );
   }
   return broken;
 }
@@ -614,18 +836,26 @@ async function closing(world: World, follow: InstanceType<typeof ScreencastContr
 async function run(seed: number, engine: "desktop" | "linux", length: number) {
   const pick = random(seed);
   const world = new World(engine);
+  world.chance = pick.chance;
   const follow = new ScreencastController({
-    frames: new LatestFrameStream({ sendFrame: async () => undefined }),
+    frames: world.frames() as never,
     ledger: world.ledger() as never,
     onDialogChanged: () => undefined,
-    onError: (error) => world.errors.push(error.message),
+    onError: (error) => {
+      if (error.reason === "browser-capture-mismatch")
+        world.errorsFor.set(world.active, world.castOf(world.active));
+    },
   });
-  const list = actions(world, follow, pick);
+  // For reading one fault alone: the actions whose names this leaves out are never taken.
+  const without = process.env.OPENSTEER_FOLLOW_GENERATED_WITHOUT;
+  const list = actions(world, follow, pick).filter(
+    (action) => !without || !new RegExp(without, "u").test(action.name),
+  );
   const trace: string[] = [];
   await follow.start();
   world.streaming = true;
   await follow.setStreaming(true).catch(() => undefined);
-  await settle();
+  await turns(6);
   for (let step = 0; step < length; step += 1) {
     const action = pick.pick(list);
     trace.push(action.name);
@@ -633,8 +863,9 @@ async function run(seed: number, engine: "desktop" | "linux", length: number) {
       Promise.resolve(action.run()).then(() => true),
       turns(200).then(() => false),
     ]);
-    await settle();
+    await turns(6);
     if (!ran) world.violations.push(`"${action.name}" did not return`);
+    world.releaseRefusals();
     const broken = [...world.violations.splice(0), ...check(world, follow)];
     if (broken.length > 0) {
       // The follow view's own record, for reading one seed (OPENSTEER_FOLLOW_GENERATED_SEED).
@@ -657,14 +888,17 @@ describe("the follow view, under random sequences of what the person, the page a
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const seeds = Number(process.env.OPENSTEER_FOLLOW_GENERATED_SEEDS ?? 100);
       const only = process.env.OPENSTEER_FOLLOW_GENERATED_SEED;
+      // A larger search runs in batches, each from its own first seed.
+      const from = Number(process.env.OPENSTEER_FOLLOW_GENERATED_FROM ?? 1);
       const failures = [];
-      for (let seed = 1; seed <= seeds; seed += 1) {
+      for (let seed = from; seed < from + seeds; seed += 1) {
         const value = only ? Number(only) : seed * 7_919 + (engine === "desktop" ? 0 : 1);
-        if (only && seed > 1) break;
+        if (only && seed > from) break;
         const failure = await run(value, engine, 40);
         if (failure) {
           failures.push(failure);
-          if (failures.length >= 3) break;
+          if (failures.length >= Number(process.env.OPENSTEER_FOLLOW_GENERATED_FAILURES ?? 3))
+            break;
         }
       }
       expect(failures.map((failure) => ({ ...failure, trace: failure.trace.join(" → ") }))).toEqual(

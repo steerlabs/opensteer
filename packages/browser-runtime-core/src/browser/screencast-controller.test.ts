@@ -870,20 +870,29 @@ describe("the follow view, in the reader's sequences on 5ebc2cbbd", async () => 
     }
   });
 
-  it("finding 2.1: shows the new document's frame that came with a start a same-size commit overtook", async () => {
-    const view = stage();
-    view.a.control.answerLater = true;
-    await view.follow.start();
-    void view.follow.setStreaming(true);
-    await settle();
-    view.a.surface.documentId = "a2";
-    view.a.surface.geometryRevision = 2;
-    view.changed("a");
-    await settle();
-    view.a.answer();
-    await settle();
-    expect(view.pictured("a")).toBe(1);
-    await view.follow.close();
+  // Re-check 9, R3: the frame that came with the start before the same-size commit is the old
+  // document's, and is dropped; the new document's own paint is its picture.
+  it("finding 2.1: shows the new document's paint, never the old one's frame, after a same-size commit overtook its start", async () => {
+    for (const paints of [false, true]) {
+      const view = stage();
+      view.a.control.answerLater = true;
+      await view.follow.start();
+      void view.follow.setStreaming(true);
+      await settle();
+      view.a.surface.documentId = "a2";
+      view.a.surface.geometryRevision = 2;
+      view.changed("a");
+      await settle();
+      // The new document paints into the cast Chromium runs.
+      if (paints) view.a.cdp.emit("Page.screencastFrame", view.a.frame());
+      await settle();
+      view.a.answer();
+      await settle();
+      expect(view.pictured("a"), paints ? "the new document's paint" : "no paint").toBe(
+        paints ? 1 : 0,
+      );
+      await view.follow.close();
+    }
   });
 
   it("finding 2.2: shows the frame that came with a start while the capture was let go and came back the same", async () => {
@@ -990,7 +999,7 @@ describe("the follow view, on a page whose frames never fit", async () => {
   const { ScreencastController } = await import("./screencast-controller.js");
   const { LatestFrameStream } = await import("../stream/latest-frame-stream.js");
   const { FakeCdpSession, jpeg } = await import("../test-support/fakes.js");
-  const { unpicturedLimit } = await import("./screencast-plan.js");
+  const { pictureLimit } = await import("./screencast-plan.js");
   const settle = async () => {
     for (let turn = 0; turn < 6; turn += 1) await new Promise((resolve) => setImmediate(resolve));
   };
@@ -1070,7 +1079,7 @@ describe("the follow view, on a page whose frames never fit", async () => {
         sessionId: ++frameId,
       });
       await settle();
-      const repairs = native ? 1 : unpicturedLimit;
+      const repairs = pictureLimit(native);
       expect(starts() - before).toBe(repairs);
       expect(errors).toEqual(["browser-capture-mismatch"]);
       // The cast stopped, and the person kept the last picture they had.
@@ -1089,4 +1098,27 @@ describe("the follow view, on a page whose frames never fit", async () => {
       expect(delivered).toHaveLength(2);
       await follow.close();
     });
+});
+
+/*
+ * Re-check 9, R1: the state of a bound tab has one writer, the pure `after` in screencast-plan.ts.
+ * The controller turns what happened into an event and stores what `after` returns; it never sets
+ * a field of that state itself.
+ */
+describe("the follow view's state", () => {
+  it("is written only by after", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(new URL("./screencast-controller.ts", import.meta.url), "utf8");
+    const lines = source.split("\n");
+    const assignments = lines.flatMap((line, index) => {
+      const where = `screencast-controller.ts:${index + 1}: ${line.trim()}`;
+      // A field of a state set in place, or a state stored from anything but `after`.
+      if (/\bstate\.\w+\s*(?:=(?!=)|\+=|-=|\+\+|--)/u.test(line)) return [where];
+      if (/\.state\s*=(?!=)/u.test(line) && !/\.state\s*=\s*after\(/u.test(line)) return [where];
+      return [];
+    });
+    expect(assignments).toEqual([]);
+    // And it is stored in one place.
+    expect(lines.filter((line) => /\.state\s*=\s*after\(/u.test(line))).toHaveLength(1);
+  });
 });

@@ -72,6 +72,13 @@ export interface PageNavigationPort {
   subscribe(listener: () => void): () => void;
 }
 
+/**
+ * The event an engine sends on a page session when it ended that session's casts itself (a
+ * renderer gone, a debugger detached), which Chromium does not report: the follow view then knows
+ * nothing runs there.
+ */
+export const screencastEndedEvent = "Opensteer.screencastEnded";
+
 export type KeepAwakeReason = "upload" | "post" | "download" | "media" | "fullscreen" | "capturing";
 
 /** A renderer after its page ended: gone, still serving other pages, or still running alone. */
