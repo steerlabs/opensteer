@@ -2537,6 +2537,10 @@ class ElectronDebuggerHub {
     { readonly run: CastRun; readonly frame: number }[]
   >();
   #castStarts = 0;
+  /** Per-channel cast generation, bumped when `#ownSessionGone` ends that channel's cast (U2). */
+  readonly #castGenerations = new WeakMap<ElectronCdpChannel, number>();
+  /** Per-channel pending cast commands, failed when `#ownSessionGone` ends that channel's cast (U2). */
+  readonly #castPending = new Map<ElectronCdpChannel, Set<(error: Error) => void>>();
   /**
    * What belongs to the debugger session now attached, and dies with it: made when the hub attaches
    * the debugger, discarded at every detach, the hub's own and Electron's (`#debuggerSessionEnded`).
@@ -2907,10 +2911,12 @@ class ElectronDebuggerHub {
       });
     }
     if (method === "Page.startScreencast") {
-      return this.#serializeOwnership(() => this.#startCast(channel, parameters, send));
+      return this.#castCommand(channel, (castGeneration) =>
+        this.#startCast(channel, parameters, send, castGeneration),
+      );
     }
     if (method === "Page.stopScreencast") {
-      return this.#serializeOwnership(async () => {
+      return this.#castCommand(channel, async () => {
         await this.#leaveCast(channel, this.#rendererGeneration, parameters);
         return {};
       });
@@ -3366,12 +3372,14 @@ class ElectronDebuggerHub {
     channel: ElectronCdpChannel,
     parameters: Record<string, unknown> | undefined,
     send: (method: string, parameters?: Record<string, unknown>) => Promise<unknown>,
+    castGeneration: number,
   ): Promise<unknown> {
     const generation = this.#rendererGeneration;
     const key = castKey(parameters);
     // A channel closed while its start was queued does nothing: it joins nothing, resolves
     // nothing and sends Chromium nothing, on every branch below.
     this.#assertOpen(channel);
+    this.#assertCastCurrent(channel, castGeneration);
     // Nothing read before an await is used after it unless read again.
     const running = () =>
       [...this.#casts].find(
@@ -3382,6 +3390,7 @@ class ElectronDebuggerHub {
       if (this.#castOf.get(channel) !== running()) {
         await this.#leaveCast(channel, generation);
         this.#assertCurrent(generation);
+        this.#assertCastCurrent(channel, castGeneration);
         this.#assertOpen(channel);
       }
       const joined = running();
@@ -3435,6 +3444,7 @@ class ElectronDebuggerHub {
     let released = false;
     try {
       this.#assertCurrent(generation);
+      this.#assertCastCurrent(channel, castGeneration);
       if (run.lane === null) {
         run.lane = this.#pageSessionFree(run)
           ? { id: undefined }
@@ -3442,6 +3452,7 @@ class ElectronDebuggerHub {
         // A crash or the debugger's detach while it attached ended this run.
         if (cast.run !== run)
           throw new Error("Electron CDP renderer changed before command dispatch.");
+        this.#assertCastCurrent(channel, castGeneration);
         this.#assertOpen(channel);
       }
       const lane = run.lane;
@@ -3459,6 +3470,7 @@ class ElectronDebuggerHub {
       if (lane.id === undefined || session.ownSessions.has(lane.id))
         starts.set(laneKey, (starts.get(laneKey) ?? 0) + 1);
       this.#assertCurrent(generation);
+      this.#assertCastCurrent(channel, castGeneration);
       if (cast.run !== run || run.lane !== lane)
         throw new Error("Electron CDP renderer changed before command dispatch.");
       run.started = true;
@@ -3487,8 +3499,10 @@ class ElectronDebuggerHub {
           lane.id,
         ).catch(() => undefined);
       run.lane = null;
-      // A renderer change or the debugger's detach has ended every cast already.
-      const interrupted = generation !== this.#rendererGeneration;
+      // A renderer change, debugger detach, or private-session detach has ended the cast already.
+      const interrupted =
+        generation !== this.#rendererGeneration ||
+        (this.#castGenerations.get(channel) ?? 0) !== castGeneration;
       if (handed && left && !interrupted && lane !== null) {
         handed.lane = lane;
         left.run = handed;
@@ -3863,7 +3877,7 @@ class ElectronDebuggerHub {
       run.cast.owners.clear();
       this.#casts.delete(run.cast);
       this.#updateThrottling();
-      for (const channel of told) channel.castsEnded();
+      this.#failChannelCasts(told, new Error("Electron screencast session detached."));
     }
   }
 
@@ -3978,6 +3992,56 @@ class ElectronDebuggerHub {
   #assertCurrent(generation: number): void {
     if (generation !== this.#rendererGeneration)
       throw new Error("Electron CDP renderer changed before command dispatch.");
+  }
+
+  #assertCastCurrent(channel: ElectronCdpChannel, castGeneration: number): void {
+    if ((this.#castGenerations.get(channel) ?? 0) !== castGeneration)
+      throw new Error("Electron screencast session ended before command dispatch.");
+  }
+
+  /**
+   * Serializes one channel's cast start or stop on `#ownershipTail` under that channel's own cast
+   * generation, so ending that channel's cast fails its queued cast commands before they take
+   * effect without touching any other channel's commands (U2).
+   */
+  #castCommand<T>(
+    channel: ElectronCdpChannel,
+    operation: (castGeneration: number) => Promise<T>,
+  ): Promise<T> {
+    const castGeneration = this.#castGenerations.get(channel) ?? 0;
+    const command = Promise.withResolvers<T>();
+    let pending = this.#castPending.get(channel);
+    if (!pending) {
+      pending = new Set();
+      this.#castPending.set(channel, pending);
+    }
+    pending.add(command.reject);
+    const settle = () => {
+      const set = this.#castPending.get(channel);
+      set?.delete(command.reject);
+      if (set?.size === 0) this.#castPending.delete(channel);
+    };
+    void command.promise.then(settle, settle);
+    void this.#serializeOwnership(() => {
+      this.#assertCastCurrent(channel, castGeneration);
+      return operation(castGeneration);
+    }).then(command.resolve, command.reject);
+    return command.promise;
+  }
+
+  /** Ends cast commands held for `channels` alone, after telling each channel its cast ended (U2). */
+  #failChannelCasts(channels: readonly ElectronCdpChannel[], error: Error): void {
+    const pending: Array<(error: Error) => void> = [];
+    for (const channel of channels) {
+      this.#castGenerations.set(channel, (this.#castGenerations.get(channel) ?? 0) + 1);
+      const set = this.#castPending.get(channel);
+      if (set) {
+        for (const reject of set) pending.push(reject);
+        this.#castPending.delete(channel);
+      }
+    }
+    for (const channel of channels) channel.castsEnded();
+    for (const reject of pending) reject(error);
   }
 
   /**

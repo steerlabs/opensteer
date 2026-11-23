@@ -8,7 +8,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  * against the real follow view. At every quiet point:
  * 1. a cast that is wanted has a picture delivered for it, or every wait names a fact true of the
  *    world, or a timer is armed for that tab: no wait may last for ever;
- * 2. no cast runs, or is being started, for a tab that is not wanted;
+ * 2. at every quiet point (with no command held), the casts running in the stand-in are exactly
+ *    the ones the state says are running, and no cast runs for a tab that is not wanted;
  * 3. every frame was acknowledged once, but the one held for a start still with Chromium;
  * 4. no start reached a page while the follow view knew it could not take one;
  * 5. the pass is not running, and never ran into its step limit;
@@ -16,8 +17,23 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  * 7. the starts Chromium took since a tab's last picture, or since the last thing that happened
  *    outside it (a person's act, a document, a tab closing beside it), stay within the bound: a
  *    restart or repair for a new fact is a change and does not count, so it cannot become a loop.
- * The stand-in is Chromium and the desktop app's hub together: it takes a session's commands in
- * order, and on the desktop says when it ended a session's casts.
+ *
+ * Stand-in rules and the real ElectronDebuggerHub behaviour each mirrors (launcher tests in
+ * apps/desktop/src/browser/electron-browser-launcher.test.ts):
+ * - Commands execute in order on `chain`: mirrors `#serializeOwnership` ordering starts and stops
+ *   ("does nothing for a closed channel's queued ask for the cast it already owns").
+ * - `screencastEndedEvent` ends the cast and bumps `era`, failing any cast command held before it
+ *   before that command can take effect: mirrors `#castsEnded` + `#interrupt` on detach/crash
+ *   ("makes no channel an owner after a crash but one that asks again") and `#ownSessionGone` +
+ *   `#failChannelCasts` on private-session detach ("tells the owner of a cast whose private session
+ *   Chromium detached that it ended" and "fails a cast owner's queued stop and start when Chromium
+ *   detaches its private session, without touching an agent's command").
+ * - A frame emitted before a start's answer or right after it is delivered once and acked once:
+ *   mirrors `#replay` and `#ackCast` ("hands a new cast's first frame to the owner that started it,
+ *   and sends its ack" and "acks every frame Chromium sent once, from the owner that paces it, and
+ *   never a replay").
+ * - Refused starts and frames on dead sessions throw or drop without starting a cast: mirrors
+ *   `#startCast` error cleanup ("acks a frame kept for a start that then fails").
  */
 
 const { ScreencastController } = await import("./screencast-controller.js");
@@ -951,8 +967,15 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
   for (const id of ["A", "B"] as const) {
     const session = world.tabs[id].chromium;
     const wantedHere = id === world.active && want.kind !== "none";
+    const stateRunning = bound?.cdp === session && bound.state.told.state === "running";
     if (!wantedHere && session.casting && session.lateAnswers.length === 0)
       broken.push(`a cast runs on ${id}, which is not wanted`);
+    if (session.lateAnswers.length === 0 && session.casting !== stateRunning)
+      broken.push(
+        session.casting
+          ? `a cast runs on ${id}, which the state does not know (told ${bound?.cdp === session ? bound.state.told.state : "unbound"})`
+          : `the state says a cast runs on ${id}, but none runs in Chromium`,
+      );
     if (session.doubleAck) broken.push(`a frame of ${id} was acked twice`);
     const unacked = [...session.acks].filter(([, count]) => count === 0).map(([frame]) => frame);
     const held = bound?.cdp === session ? bound.held : null;

@@ -2459,6 +2459,46 @@ describe("Electron debugger teardown", () => {
       await hub.browser.close();
     });
 
+    // Re-check 11, finding 2 (U2): when Chromium detaches a private cast session while an agent's
+    // ownership command holds the queue, any stop or start queued behind it for that cast's owner
+    // fails before it can take effect, and the agent's command and cast stay untouched.
+    it("fails a cast owner's queued stop and start when Chromium detaches its private session, without touching an agent's command", async () => {
+      const hub = await hubPage("83c");
+      const own = ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const agentSaw = seen(agent);
+      let personTold = 0;
+      person.on(screencastEndedEvent, () => (personTold += 1));
+      await agent.send("Page.startScreencast", view);
+      // The person's cast runs in a private session ("cast-1").
+      await person.send("Page.startScreencast", small);
+      const startsBefore = hub.sent("Page.startScreencast").length;
+      const attachedBefore = own.attached.length;
+      // An agent domain enable holds the ownership queue.
+      const held = hub.hold("DOM.enable");
+      const agentEnable = agent.send("DOM.enable");
+      await vi.waitFor(() => expect(held.replies).toHaveLength(1));
+      // The follow view queues a stop and a start behind the agent's command.
+      const queuedStop = person.send("Page.stopScreencast");
+      const queuedStart = person.send("Page.startScreencast", { ...small, maxWidth: 400 });
+      // Chromium detaches the follow view's private session while the agent's command still runs.
+      hub.deliver("Target.detachedFromTarget", { sessionId: "cast-1", targetId: "target-1" });
+      expect(personTold).toBe(1);
+      await expect(queuedStop).rejects.toThrow(/detached|ended/u);
+      await expect(queuedStart).rejects.toThrow(/detached|ended/u);
+      // The agent's command completes untouched, and the person's queued start never runs.
+      held.release();
+      held.replies[0]!.resolve({});
+      await expect(agentEnable).resolves.toEqual({});
+      expect(hub.sent("Page.startScreencast")).toHaveLength(startsBefore);
+      expect(own.attached).toHaveLength(attachedBefore);
+      // The agent's own cast on the main session keeps delivering frames.
+      hub.deliver("Page.screencastFrame", frame("agent view", 1));
+      expect(agentSaw).toEqual(["agent view"]);
+      await hub.browser.close();
+    });
+
     // Run on e7080ea31, follow-stale-dialog-answers: the second tab, answered, was pictured no
     // more. The smoke's order on that tab: opened and pictured, its cast started again in a new
     // size, then left before that start's first frame; a dialog opens there and is answered; its

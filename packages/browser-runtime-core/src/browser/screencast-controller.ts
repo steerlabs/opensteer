@@ -81,9 +81,15 @@ interface Bound {
   held: { readonly parameters: unknown; readonly document: string | null } | null;
   /**
    * The start, or the repair's redraw, under way, to abort it by. Only while the state has it (a
-   * start preparing or sent, a repair): `reconcile` aborts it otherwise.
+   * start preparing or sent, a repair): `reconcile` aborts it otherwise. `stopSent` records when
+   * a stop was already sent behind a sent start, so an abandoned start that still resolves is
+   * stopped once (U2).
    */
-  inFlight: { readonly kind: "start" | "repair"; readonly abort: AbortController } | null;
+  inFlight: {
+    readonly kind: "start" | "repair";
+    readonly abort: AbortController;
+    stopSent?: boolean;
+  } | null;
   /** Kept while the state wants the page drawn (streamed, no paint wait): by `reconcile`. */
   releaseRendering: (() => void) | null;
   /** Armed while the state has a paint wait: by `reconcile`. */
@@ -140,6 +146,7 @@ export class ScreencastController {
   private bound: Bound | null = null;
   private readonly lifecycle = new AbortController();
   private closed = false;
+  private aborted = false;
   private dialog: BrowserDialog | null = null;
   private frameId = 0;
   private castId = 0;
@@ -311,6 +318,7 @@ export class ScreencastController {
   /** Chromium is gone; release local listeners without asking its dead CDP transport to stop. */
   abort(): void {
     this.closed = true;
+    this.aborted = true;
     this.lifecycle.abort();
     this.streaming = false;
     this.unsubscribe?.();
@@ -661,7 +669,11 @@ export class ScreencastController {
    * stop until it is answered.
    */
   private stopCast(bound: Bound, why: string, retry: boolean, givenUp?: string): void {
-    if (stopReachesChromium(bound.state.told)) this.sendStop(bound, why);
+    if (stopReachesChromium(bound.state.told)) {
+      if (bound.state.told.state === "sent" && bound.inFlight?.kind === "start")
+        bound.inFlight.stopSent = true;
+      this.sendStop(bound, why);
+    }
     this.apply(bound, { kind: "stopped", retry, ...(givenUp === undefined ? {} : { givenUp }) });
     bound.startWhy = why;
   }
@@ -771,7 +783,8 @@ export class ScreencastController {
   private beginStart(bound: Bound): Promise<void> {
     this.apply(bound, { kind: "start-begun" });
     const abort = new AbortController();
-    bound.inFlight = { abort, kind: "start" };
+    const work: NonNullable<Bound["inFlight"]> = { abort, kind: "start" };
+    bound.inFlight = work;
     const handedOff = Promise.withResolvers<void>();
     const signal = AbortSignal.any([this.lifecycle.signal, abort.signal]);
     const current = () => bound.inFlight?.abort === abort && this.bound === bound;
@@ -821,7 +834,17 @@ export class ScreencastController {
       })
       .then(
         (outcome) => {
-          if (!current()) return;
+          if (!current()) {
+            // U2: no cast runs that the state does not know. A start that still answers after the
+            // state abandoned it without sending a stop (e.g. casts-ended) is stopped through the
+            // session state so stops are counted once.
+            if (outcome === "answered" && !work.stopSent && !this.aborted) {
+              if (this.bound?.cdp === bound.cdp && stopReachesChromium(this.bound.state.told))
+                this.stopCast(this.bound, "abandoned start answered", false);
+              else this.sendStop(bound, "abandoned start answered");
+            }
+            return;
+          }
           bound.inFlight = null;
           if (outcome === "answered") {
             // The frame that came with the start is judged now that it runs, as of when it came.
@@ -883,7 +906,11 @@ export class ScreencastController {
   /** Stops the cast and asks the page to draw its surface again; the pass then starts it. */
   private beginRepair(bound: Bound, step: Extract<Step, { kind: "repair" }>): void {
     const why = step.why;
-    if (stopReachesChromium(bound.state.told)) this.sendStop(bound, why);
+    if (stopReachesChromium(bound.state.told)) {
+      if (bound.state.told.state === "sent" && bound.inFlight?.kind === "start")
+        bound.inFlight.stopSent = true;
+      this.sendStop(bound, why);
+    }
     this.apply(bound, { kind: "repair-begun", retry: step.retry });
     bound.startWhy = why;
     const abort = new AbortController();

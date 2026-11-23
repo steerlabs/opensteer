@@ -1314,6 +1314,9 @@ describe("the follow view, when the engine ends the casts of a session it holds 
       onDialogChanged: () => undefined,
     });
     return {
+      answer: () => {
+        for (const resolve of answers.splice(0)) resolve();
+      },
       cdp,
       delivered,
       follow,
@@ -1325,6 +1328,7 @@ describe("the follow view, when the engine ends the casts of a session it holds 
           listener({ change: "updated", surface: { ...surface }, type: "changed" });
       },
       starts: () => cdp.sent.filter(({ method }) => method === "Page.startScreencast").length,
+      stops: () => cdp.sent.filter(({ method }) => method === "Page.stopScreencast").length,
     };
   }
 
@@ -1360,6 +1364,29 @@ describe("the follow view, when the engine ends the casts of a session it holds 
     });
     await settle();
     expect(paused).toBe(true);
+    await view.follow.close();
+  });
+
+  // Re-check 11, finding 2 (U2): as the follow view's own protection whatever the hub does, a
+  // start whose answer arrives after the state abandoned it (casts-ended followed by pause or a
+  // new start) is followed by a stop through the session state, so no cast runs unknown to state.
+  it("stops an abandoned start whose answer arrives after casts-ended and a pause", async () => {
+    const view = stage();
+    view.held.starts = true;
+    await view.follow.start();
+    void view.follow.setStreaming(true).catch(() => undefined);
+    await settle();
+    expect(view.starts()).toBe(1);
+    expect(view.stops()).toBe(0);
+    // The engine's notice arrives without failing the held start, then the person pauses.
+    view.cdp.emit(screencastEndedEvent, {});
+    await view.follow.setStreaming(false);
+    await settle();
+    expect(view.stops()).toBe(0);
+    // Now the abandoned start unexpectedly answers: the follow view stops that orphaned cast.
+    view.answer();
+    await settle();
+    expect(view.stops()).toBe(1);
     await view.follow.close();
   });
 });
