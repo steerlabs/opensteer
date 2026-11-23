@@ -4455,6 +4455,8 @@ export class BrowserService {
           ...currentSurface,
           recordedPage: { key, at: this.#activityClock.now() },
         });
+        // A tab an agent binds is slept last from now on (TS12).
+        if (!currentSurface) broker?.refreshSessionState();
       }
     }
   }
