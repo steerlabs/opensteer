@@ -13,6 +13,8 @@ export const internalToolFailureCode = "internal";
 const hiddenTargetRefusals = new Set([
   "Task is unavailable",
   "Parent task is unavailable",
+  "Item is unavailable in this task",
+  "Item is unavailable in this subagent",
   "Plugin tool is unavailable to this caller.",
   "This tab is unavailable to this connected agent.",
   "This resource is not shared with this connected agent.",

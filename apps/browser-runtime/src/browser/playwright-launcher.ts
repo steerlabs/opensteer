@@ -79,6 +79,56 @@ import {
 } from "@opensteer/browser-runtime-core/passkey-bridge";
 import type { PasskeyAuthenticator } from "@opensteer/browser-runtime-core/passkeys";
 
+const linkOpenAttributionMs = 1_000;
+const maxPendingLinkOpens = 16;
+const modifierKeys = new Set(["Alt", "AltGraph", "Control", "Meta", "OS", "Shift"]);
+
+export type LinkOpenDisposition = "background-tab" | "foreground-tab" | "new-window";
+
+/**
+ * Mirrors Chromium's `ui::DispositionFromClick` / `HTMLAnchorElement` rules so
+ * pages opened via `WebContentsDelegate::OpenURLFromTab` (which carry no CDP
+ * `openerId` or Playwright `popup` event) can be attributed to their opener and
+ * foreground/background disposition.
+ */
+export function chromiumLinkOpenDisposition(
+  method: string,
+  parameters: Record<string, unknown> | undefined,
+  platform: NodeJS.Platform = process.platform,
+): LinkOpenDisposition | null {
+  if (!parameters) return null;
+  const modifiers = typeof parameters.modifiers === "number" ? parameters.modifiers : 0;
+  const primary = platform === "darwin" ? (modifiers & 4) !== 0 : (modifiers & 2) !== 0;
+  const shift = (modifiers & 8) !== 0;
+  if (method === "Input.dispatchMouseEvent") {
+    if (parameters.type !== "mouseReleased") return null;
+    const middle = parameters.button === "middle";
+    if (middle || (parameters.button === "left" && primary))
+      return shift ? "foreground-tab" : "background-tab";
+    if (parameters.button === "left" && shift) return "new-window";
+    return null;
+  }
+  if (method === "Input.dispatchKeyEvent") {
+    if (parameters.type !== "keyDown" && parameters.type !== "rawKeyDown") return null;
+    if (parameters.key !== "Enter" && parameters.code !== "Enter") return null;
+    if (primary) return shift ? "foreground-tab" : "background-tab";
+    if (shift) return "new-window";
+    return null;
+  }
+  return null;
+}
+
+function isLinkOpenMousePress(
+  parameters: Record<string, unknown> | undefined,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (!parameters || parameters.type !== "mousePressed") return false;
+  const modifiers = typeof parameters.modifiers === "number" ? parameters.modifiers : 0;
+  const primary = platform === "darwin" ? (modifiers & 4) !== 0 : (modifiers & 2) !== 0;
+  const shift = (modifiers & 8) !== 0;
+  return parameters.button === "middle" || (parameters.button === "left" && (primary || shift));
+}
+
 export interface NativeProfileOpenTiming {
   readonly correlationId: string;
   readonly stage:
@@ -1292,7 +1342,16 @@ class PlaywrightContextHandle implements BrowserContext {
   /** Pages being looked up by name: a child of one is handed off after its opener (Q1). */
   private readonly classifying = new WeakMap<Page, Promise<void>>();
   private readonly pageListeners = new Set<(page: BrowserPage) => void>();
-  private readonly handOffs = new Set<(page: BrowserPage, opener: BrowserPage | null) => void>();
+  private readonly handOffs = new Set<
+    (page: BrowserPage, opener: BrowserPage | null, inferred?: boolean) => void
+  >();
+  private readonly explicitPages = new WeakSet<Page>();
+  private readonly inFlightCreations = new Set<Promise<unknown>>();
+  private readonly pendingLinkOpens: Array<{
+    readonly opener: PlaywrightPageHandle;
+    readonly disposition: LinkOpenDisposition;
+    readonly at: number;
+  }> = [];
   /** Closes one page target through the browser's own debugger, around Playwright. */
   closeTarget: ((targetId: string) => Promise<void>) | undefined;
   /** Whether the browser behind this context still answers its own debugger. */
@@ -1361,6 +1420,7 @@ class PlaywrightContextHandle implements BrowserContext {
     }
     context.on("close", () => {
       this.markClosed();
+      this.pendingLinkOpens.length = 0;
       // A context's end ends its pages even when Playwright reports no page close.
       for (const handle of this.pagesByPlaywrightPage.values()) handle.confirmGone("context");
     });
@@ -1399,7 +1459,7 @@ class PlaywrightContextHandle implements BrowserContext {
    * is still handed off, so its end is seen. A child of a page still being looked up by name is
    * handed off after that page, so its opener's session is known by then (Q1).
    */
-  private handOutOrdinary(page: Page): void {
+  private handOutOrdinary(page: Page, creationsSettled = false): void {
     if (this.closed || this.ending.has(page) || this.published.has(page)) return;
     const handle = this.wrap(page);
     const opener = handle.openerHandle?.rawPage;
@@ -1413,9 +1473,54 @@ class PlaywrightContextHandle implements BrowserContext {
       });
       return;
     }
+    // main #725: a page without an opener that arrives while the runtime's own opens are in
+    // flight, while a link gesture waits to be attributed, is handed off once those opens
+    // settle: the runtime's own page is then known by identity (its open's answer publishes it)
+    // and is never taken for the page that link opened. Any other page is handed off at once,
+    // never waiting on an unrelated open (Q3): a popup names its opener, and with no gesture
+    // waiting nothing is inferred.
+    if (!creationsSettled && !handle.openerHandle) this.prunePendingLinkOpens();
+    if (
+      !creationsSettled &&
+      !handle.openerHandle &&
+      this.pendingLinkOpens.length > 0 &&
+      this.inFlightCreations.size > 0 &&
+      !this.explicitPages.has(page)
+    ) {
+      this.identifyingPages.add(page);
+      void Promise.allSettled([...this.inFlightCreations]).then(() =>
+        queueMicrotask(() => {
+          if (!this.identifyingPages.delete(page)) return;
+          this.handOutOrdinary(page, true);
+        }),
+      );
+      return;
+    }
     this.identifyingPages.delete(page);
     this.published.add(page);
-    for (const listener of this.handOffs) listener(handle, handle.openerHandle);
+    this.announce(handle, page, true);
+  }
+
+  /**
+   * The one announcement of a published page (main #725): a page with an opener takes that
+   * opener's last modifier or middle click (a background tab or not); an ordinary page without
+   * one, which Chromium opened from a link (OpenURLFromTab sends no popup event), is attributed to
+   * the one recent link gesture. The runtime's own pages and a woken tab are never inferred.
+   */
+  private announce(handle: PlaywrightPageHandle, page: Page, infer: boolean): void {
+    let inferred = false;
+    if (handle.openerHandle) {
+      const match = this.takeLinkOpenGesture(handle.openerHandle);
+      if (match) handle.openedInBackground = match.disposition === "background-tab";
+    } else if (infer && !this.explicitPages.has(page)) {
+      const match = this.takeLinkOpenGesture();
+      if (match) {
+        handle.openerHandle = match.opener;
+        handle.openedInBackground = match.disposition === "background-tab";
+        inferred = true;
+      }
+    }
+    for (const listener of this.handOffs) listener(handle, handle.openerHandle, inferred);
     for (const listener of this.pageListeners) listener(handle);
   }
 
@@ -1437,9 +1542,7 @@ class PlaywrightContextHandle implements BrowserContext {
     if (this.published.has(page)) return true;
     this.published.add(page);
     if (!announce) return true;
-    const handle = this.wrap(page);
-    for (const listener of this.handOffs) listener(handle, handle.openerHandle);
-    for (const listener of this.pageListeners) listener(handle);
+    this.announce(this.wrap(page), page, false);
     return true;
   }
 
@@ -2101,12 +2204,72 @@ class PlaywrightContextHandle implements BrowserContext {
     }
   }
 
-  handOff(listener: (page: BrowserPage, opener: BrowserPage | null) => void): () => void {
+  observeInput(
+    opener: PlaywrightPageHandle,
+    method: string,
+    parameters: Record<string, unknown> | undefined,
+  ): void {
+    const disposition = chromiumLinkOpenDisposition(method, parameters);
+    if (disposition) {
+      this.prunePendingLinkOpens();
+      // Keep only the latest link-open gesture per opener so an earlier empty-space
+      // modifier click never shadows a subsequent foreground/shift click on a link.
+      this.clearLinkOpenGestures(opener);
+      this.pendingLinkOpens.push({ opener, disposition, at: Date.now() });
+      if (this.pendingLinkOpens.length > maxPendingLinkOpens)
+        this.pendingLinkOpens.splice(0, this.pendingLinkOpens.length - maxPendingLinkOpens);
+      return;
+    }
+    const clearsStale =
+      (method === "Input.dispatchMouseEvent" &&
+        (parameters?.type === "mouseReleased" ||
+          (parameters?.type === "mousePressed" && !isLinkOpenMousePress(parameters)))) ||
+      (method === "Input.dispatchKeyEvent" &&
+        (parameters?.type === "keyDown" || parameters?.type === "rawKeyDown") &&
+        !modifierKeys.has(String(parameters.key ?? "")));
+    if (clearsStale) this.clearLinkOpenGestures(opener);
+  }
+
+  private prunePendingLinkOpens(now = Date.now()): void {
+    for (let index = this.pendingLinkOpens.length - 1; index >= 0; index -= 1) {
+      const entry = this.pendingLinkOpens[index]!;
+      if (now - entry.at > linkOpenAttributionMs || entry.opener.isClosed())
+        this.pendingLinkOpens.splice(index, 1);
+    }
+  }
+
+  private clearLinkOpenGestures(opener: PlaywrightPageHandle): void {
+    for (let index = this.pendingLinkOpens.length - 1; index >= 0; index -= 1) {
+      if (this.pendingLinkOpens[index]?.opener === opener) this.pendingLinkOpens.splice(index, 1);
+    }
+  }
+
+  private takeLinkOpenGesture(
+    opener?: PlaywrightPageHandle,
+  ): { readonly opener: PlaywrightPageHandle; readonly disposition: LinkOpenDisposition } | null {
+    this.prunePendingLinkOpens();
+    if (!opener) {
+      // Never guess across distinct openers: if multiple pages have pending
+      // link-open gestures, leave an openerless target unattributed.
+      const distinctOpeners = new Set(this.pendingLinkOpens.map((entry) => entry.opener));
+      if (distinctOpeners.size !== 1) return null;
+      const entry = this.pendingLinkOpens.shift();
+      return entry ?? null;
+    }
+    const index = this.pendingLinkOpens.findIndex((entry) => entry.opener === opener);
+    if (index < 0 || index >= this.pendingLinkOpens.length) return null;
+    const [entry] = this.pendingLinkOpens.splice(index, 1);
+    return entry ?? null;
+  }
+
+  handOff(
+    listener: (page: BrowserPage, opener: BrowserPage | null, inferred?: boolean) => void,
+  ): () => void {
     this.handOffs.add(listener);
     for (const page of this.context.pages()) {
       if (!this.isVisible(page) || page.isClosed()) continue;
       const handle = this.wrap(page);
-      listener(handle, handle.openerHandle);
+      listener(handle, handle.openerHandle, false);
     }
     return () => this.handOffs.delete(listener);
   }
@@ -2120,17 +2283,27 @@ class PlaywrightContextHandle implements BrowserContext {
 
   /** K3 (a): the runtime's own new page, published by Playwright's answer to this call. */
   private async openFreshPage(signal: AbortSignal | undefined): Promise<Page> {
-    const opening = withTimeout(this.context.newPage(), openPageMs, {
-      timeoutError: () => new Error("Opening a page timed out."),
-    });
-    const page = await opening;
-    if (signal?.aborted) {
-      // Abandoned while it opened: nobody takes it, so it is closed here.
-      void this.closePageWithEvidence(page);
-      throw notWanted();
+    // main #725: in flight until Playwright answers, so a page arriving meanwhile waits to be
+    // told apart from this one by identity.
+    const settled = Promise.withResolvers<void>();
+    this.inFlightCreations.add(settled.promise);
+    try {
+      const opening = withTimeout(this.context.newPage(), openPageMs, {
+        timeoutError: () => new Error("Opening a page timed out."),
+      });
+      const page = await opening;
+      this.explicitPages.add(page);
+      if (signal?.aborted) {
+        // Abandoned while it opened: nobody takes it, so it is closed here.
+        void this.closePageWithEvidence(page);
+        throw notWanted();
+      }
+      if (!this.publish(page, true)) throw new Error("The new page closed.");
+      return page;
+    } finally {
+      settled.resolve();
+      this.inFlightCreations.delete(settled.promise);
     }
-    if (!this.publish(page, true)) throw new Error("The new page closed.");
-    return page;
   }
 
   async createPage(options?: {
@@ -2494,8 +2667,9 @@ class PlaywrightPageHandle implements BrowserPage {
   /** The confirmation: Playwright's page close event, or its context ending. */
   private gone = false;
   private readonly goneListeners = new Set<(cause?: PageGoneCause) => void>();
-  /** The page whose script opened this one, from Playwright's popup event. */
+  /** The page whose script or link gesture opened this one. */
   openerHandle: PlaywrightPageHandle | null = null;
+  openedInBackground = false;
   /** A wake could not bring the tab back; this fresh page is navigated to its address. */
   openedFresh = false;
   /** The sleep this page was put to, whose lane a later close attempt waits on. */
@@ -2737,7 +2911,9 @@ class PlaywrightPageHandle implements BrowserPage {
     if (this.closing)
       return Promise.reject(new BrowserRuntimeError("not_found", "The browser page closed."));
     return this.context.newCDPSession(this.page).then(async (session) => {
-      const channel = new PlaywrightCdpHandle(session);
+      const channel = new PlaywrightCdpHandle(session, (method, parameters) =>
+        this.contextHandle.observeInput(this, method, parameters),
+      );
       if (this.closing) {
         await channel.detach();
         throw new BrowserRuntimeError("not_found", "The browser page closed.");
@@ -2755,6 +2931,7 @@ class PlaywrightPageHandle implements BrowserPage {
         this.page,
         this.openDialogs,
         this.contextHandle.authenticator ? ["Network", "Security"] : [],
+        (method, parameters) => this.contextHandle.observeInput(this, method, parameters),
       );
       this.cdpChannel = channel;
       if (this.closing) {
@@ -2939,7 +3116,7 @@ class PlaywrightPageHandle implements BrowserPage {
 
   async opener(): Promise<BrowserPage | null> {
     const opener = await this.page.opener();
-    return opener ? this.contextHandle.wrap(opener) : null;
+    return opener ? this.contextHandle.wrap(opener) : this.openerHandle;
   }
 
   targetId(): Promise<string> {
@@ -2976,13 +3153,19 @@ class PlaywrightCdpHandle implements CdpSession {
   protected detached = false;
   readonly eventRelay: PlaywrightCdpEventRelay;
   private readonly session: PlaywrightCdpSession;
+  private readonly onSend:
+    ((method: string, parameters: Record<string, unknown> | undefined) => void) | undefined;
   private readonly subscriptions = new Map<
     string,
     Map<(parameters: unknown) => void, (parameters: unknown) => void>
   >();
 
-  constructor(session: PlaywrightCdpSession) {
+  constructor(
+    session: PlaywrightCdpSession,
+    onSend?: (method: string, parameters: Record<string, unknown> | undefined) => void,
+  ) {
     this.session = session;
+    this.onSend = onSend;
     this.eventRelay = new PlaywrightCdpEventRelay(session);
   }
 
@@ -3036,6 +3219,7 @@ class PlaywrightCdpHandle implements CdpSession {
 
   send<Result = unknown>(method: string, parameters?: Record<string, unknown>): Promise<Result> {
     if (this.detached) return Promise.reject(new Error("CDP session is closed."));
+    this.onSend?.(method, parameters);
     this.eventRelay.observeDomain(method);
     return untypedCdp(this.session).send<Result>(method, parameters);
   }
@@ -3061,8 +3245,9 @@ class PlaywrightPageCdpHandle extends PlaywrightCdpHandle {
     page: Page,
     openDialogs: Map<Page, Dialog>,
     persistentDomains: readonly string[] = [],
+    onSend?: (method: string, parameters: Record<string, unknown> | undefined) => void,
   ) {
-    super(session);
+    super(session, onSend);
     this.persistentDomains = new Set(persistentDomains);
     this.page = page;
     this.openDialogs = openDialogs;

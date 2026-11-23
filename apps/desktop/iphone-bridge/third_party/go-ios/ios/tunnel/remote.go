@@ -99,7 +99,10 @@ func verifyRemotePeer(aead cipher.AEAD, encrypted, peerEphemeral, hostEphemeral 
 }
 
 // PairRemote is called only in explicit USB setup, over an already identity-verified RSD service.
-func PairRemote(ctx context.Context, conn *xpc.Connection, udid, hostID string) (*RemotePairRecord, error) {
+//
+// The device may ask its owner to allow the computer; observe reports that so the
+// person can be told to look at the phone. host is what the phone records.
+func PairRemote(ctx context.Context, conn *xpc.Connection, udid, hostID string, host PairHost, observe func(PairStage)) (*RemotePairRecord, error) {
 	r := &RemotePairRecord{UDID: udid, HostIdentifier: hostID, HostSeed: make([]byte, 32), HostIRK: make([]byte, 16)}
 	if _, err := rand.Read(r.HostSeed); err != nil {
 		return nil, err
@@ -111,7 +114,7 @@ func PairRemote(ctx context.Context, conn *xpc.Connection, udid, hostID string) 
 	defer stop()
 	defer conn.Close()
 	t := &tunnelService{c: conn, controlChannel: newControlChannelReadWriter(conn), record: r}
-	if err := t.ManualPair(); err != nil {
+	if err := t.pairSetup(host, observe); err != nil {
 		return nil, err
 	}
 	if !r.Valid() {
@@ -133,15 +136,8 @@ func OpenRemoteUserspace(lifetime, setup context.Context, control net.Conn, r *R
 		_ = control.SetDeadline(d)
 	}
 	t := &tunnelService{c: control, controlChannel: newControlChannelReadWriter(&remoteSocket{Conn: control}), record: r}
-	if err := t.controlChannel.writeRequest(map[string]interface{}{"handshake": map[string]interface{}{"_0": map[string]interface{}{"hostOptions": map[string]interface{}{"attemptPairVerify": true}, "wireProtocolVersion": int64(19)}}}); err != nil {
+	if _, err := t.handshake(); err != nil {
 		return nil, err
-	}
-	reply, err := t.controlChannel.read()
-	if err != nil {
-		return nil, err
-	}
-	if _, err = getChildMap(reply, "plain", "_0", "response", "_1", "handshake", "_0"); err != nil {
-		return nil, ErrTunnel
 	}
 	if err := t.verifyPair(); err != nil {
 		return nil, err

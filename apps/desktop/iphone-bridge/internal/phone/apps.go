@@ -191,3 +191,45 @@ func pageApps(apps []InstalledApp, p *wire.AppsParams) InstalledApps {
 	start := min(p.Offset, len(filtered))
 	return InstalledApps{Apps: filtered[start:min(start+p.Limit, len(filtered))], Total: len(filtered), Offset: p.Offset}
 }
+
+func terminateApp(ctx context.Context, open channelOpener, dial ServiceDialer, apps []InstalledApp, id string, guard func() error) error {
+	executable := ""
+	for _, app := range apps {
+		if app.AppID == id {
+			executable = processPath(app.executable)
+			break
+		}
+	}
+	if executable == "" || id == opensteerAppID {
+		return wire.Fail(wire.AppUnavailable)
+	}
+	processes, err := runningProcesses(ctx, dial)
+	if err != nil {
+		return Classify(err, wire.NativeServiceFailed)
+	}
+	pid := runningAppPID(processes, executable)
+	if pid == 0 {
+		return wire.Fail(wire.AppUnavailable)
+	}
+	input := map[string]interface{}{
+		"process": map[string]interface{}{"processIdentifier": int64(pid)},
+		"signal":  int64(15),
+	}
+	_, err = exchange(ctx, open, appService, coredevice.BuildRequest(uuid.New().String(), "com.apple.coredevice.feature.sendsignaltoprocess", input), guard, true)
+	return err
+}
+func runningAppPID(processes []interface{}, executable string) uint64 {
+	var pid uint64
+	for _, raw := range processes {
+		process, _ := raw.(map[string]interface{})
+		if processPath(stringValue(process["realAppName"])) != executable {
+			continue
+		}
+		value, ok := unsigned(process["pid"])
+		if !ok || value < 2 || value > 1<<31-1 || (pid != 0 && pid != value) {
+			return 0
+		}
+		pid = value
+	}
+	return pid
+}

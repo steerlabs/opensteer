@@ -9,8 +9,6 @@ import (
 
 	"io"
 
-	"github.com/danielpaulus/go-ios/ios/opack"
-
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/ed25519"
 	"golang.org/x/crypto/hkdf"
@@ -30,50 +28,6 @@ type tunnelService struct {
 
 func (t *tunnelService) Close() error {
 	return t.c.Close()
-}
-
-func (t *tunnelService) ManualPair() error {
-	err := t.controlChannel.writeRequest(map[string]interface{}{
-		"handshake": map[string]interface{}{
-			"_0": map[string]interface{}{
-				"hostOptions": map[string]interface{}{
-					"attemptPairVerify": true,
-				},
-				"wireProtocolVersion": int64(19),
-			},
-		},
-	})
-
-	if err != nil {
-		return fmt.Errorf("ManualPair: failed to send 'attemptPairVerify' request: %w", err)
-	}
-	reply, err := t.controlChannel.read()
-	if err != nil {
-		return err
-	}
-	if _, err := getChildMap(reply, "plain", "_0", "response", "_1", "handshake", "_0"); err != nil {
-		return ErrTunnel
-	}
-	if err := t.controlChannel.writeEvent(pairVerifyFailed{}); err != nil {
-		return err
-	}
-
-	err = t.setupManualPairing()
-	if err != nil {
-		return fmt.Errorf("ManualPair: failed to initiate manual pairing: %w", err)
-	}
-
-	sessionKey, err := t.setupSessionKey()
-	if err != nil {
-		return fmt.Errorf("ManualPair: failed to setup SRP session key: %w", err)
-	}
-
-	err = t.exchangeDeviceInfo(sessionKey)
-	if err != nil {
-		return fmt.Errorf("ManualPair: failed to exchange device info: %w", err)
-	}
-
-	return nil
 }
 
 // createTcpTunnelListener asks the device to open a TCP tunnel listener (the
@@ -143,45 +97,6 @@ func (t *tunnelService) setupCiphers(sessionKey []byte) error {
 	t.cipher = newCipherStream(t.controlChannel, client, server)
 
 	return nil
-}
-
-func (t *tunnelService) setupManualPairing() error {
-	buf := newTlvBuffer()
-	buf.writeByte(typeMethod, 0x00)
-	buf.writeByte(typeState, pairStateStartRequest)
-
-	event := pairingData{
-		data:            buf.bytes(),
-		kind:            "setupManualPairing",
-		startNewSession: true,
-	}
-
-	err := t.controlChannel.writeEvent(&event)
-	if err != nil {
-		return err
-	}
-	_, err = t.controlChannel.read()
-	if err != nil {
-		return err
-	}
-	return err
-}
-
-func (t *tunnelService) readDeviceKey() (publicKey []byte, salt []byte, err error) {
-	var pairingData pairingData
-	err = t.controlChannel.readEvent(&pairingData)
-	if err != nil {
-		return
-	}
-	publicKey, err = tlvReader(pairingData.data).readCoalesced(typePublicKey)
-	if err != nil {
-		return
-	}
-	salt, err = tlvReader(pairingData.data).readCoalesced(typeSalt)
-	if err != nil {
-		return
-	}
-	return
 }
 
 func (t *tunnelService) verifyPair() error {
@@ -317,121 +232,4 @@ func (t *tunnelService) verifyPair() error {
 	}
 
 	return nil
-}
-
-func (t *tunnelService) setupSessionKey() ([]byte, error) {
-	devicePublicKey, deviceSalt, err := t.readDeviceKey()
-	if err != nil {
-		return nil, fmt.Errorf("setupSessionKey: failed to read device public key and salt value: %w", err)
-	}
-
-	srp, err := newSrpInfo(deviceSalt, devicePublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("setupSessionKey: failed to setup SRP: %w", err)
-	}
-
-	proofTlv := newTlvBuffer()
-	proofTlv.writeByte(typeState, pairStateVerifyRequest)
-	proofTlv.writeData(typePublicKey, srp.ClientPublic)
-	proofTlv.writeData(typeProof, srp.ClientProof)
-
-	err = t.controlChannel.writeEvent(&pairingData{
-		data: proofTlv.bytes(),
-		kind: "setupManualPairing",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("setupSessionKey: failed to send SRP proof: %w", err)
-	}
-
-	var proofPairingData pairingData
-	err = t.controlChannel.readEvent(&proofPairingData)
-	if err != nil {
-		return nil, fmt.Errorf("setupSessionKey: failed to read device SRP proof: %w", err)
-	}
-
-	serverProof, err := tlvReader(proofPairingData.data).readCoalesced(typeProof)
-	if err != nil {
-		return nil, fmt.Errorf("setupSessionKey: failed to parse device proof: %w", err)
-	}
-	verified := srp.verifyServerProof(serverProof)
-	if !verified {
-		return nil, fmt.Errorf("setupSessionKey: could not verify server proof")
-	}
-	return srp.SessionKey, nil
-}
-
-func (t *tunnelService) exchangeDeviceInfo(sessionKey []byte) error {
-	hkdfPairSetup := hkdf.New(sha512.New, sessionKey, []byte("Pair-Setup-Controller-Sign-Salt"), []byte("Pair-Setup-Controller-Sign-Info"))
-	buf := bytes.NewBuffer(nil)
-	// Write on bytes.Buffer never returns an error
-	_, _ = io.CopyN(buf, hkdfPairSetup, 32)
-	_, _ = buf.WriteString(t.record.HostIdentifier)
-	_, _ = buf.Write(t.record.publicKey())
-
-	signature := ed25519.Sign(t.record.privateKey(), buf.Bytes())
-
-	// this represents the device info of this host that is stored on the device on a successful pairing.
-	// The only relevant field is 'accountID' as it's used earlier in the pairing process already.
-	// Everything else can be random data and is not needed later in any communication.
-	deviceInfo, err := opack.Encode(map[string]interface{}{
-		"accountID":                   t.record.HostIdentifier,
-		"altIRK":                      t.record.HostIRK,
-		"btAddr":                      "FF:DD:99:66:BB:AA",
-		"mac":                         []byte{0xff, 0x44, 0x88, 0x66, 0x33, 0x99},
-		"model":                       "go-ios",
-		"name":                        "host-name",
-		"remotepairing_serial_number": "remote-serial",
-	})
-
-	deviceInfoTlv := newTlvBuffer()
-	deviceInfoTlv.writeData(typeSignature, signature)
-	deviceInfoTlv.writeData(typePublicKey, t.record.publicKey())
-	deviceInfoTlv.writeData(typeIdentifier, []byte(t.record.HostIdentifier))
-	deviceInfoTlv.writeData(typeInfo, deviceInfo)
-
-	sessionKeyBuf := bytes.NewBuffer(nil)
-	_, err = io.CopyN(sessionKeyBuf, hkdf.New(sha512.New, sessionKey, []byte("Pair-Setup-Encrypt-Salt"), []byte("Pair-Setup-Encrypt-Info")), 32)
-	if err != nil {
-		return err
-	}
-	setupKey := sessionKeyBuf.Bytes()
-
-	cipher, err := chacha20poly1305.New(setupKey)
-	if err != nil {
-		return err
-	}
-
-	nonce := make([]byte, cipher.NonceSize())
-	copy(nonce[4:], "PS-Msg05")
-	x := cipher.Seal(nil, nonce, deviceInfoTlv.bytes(), nil)
-
-	encryptedTlv := newTlvBuffer()
-	encryptedTlv.writeByte(typeState, 0x05)
-	encryptedTlv.writeData(typeEncryptedData, x)
-
-	err = t.controlChannel.writeEvent(&pairingData{
-		data:        encryptedTlv.bytes(),
-		kind:        "setupManualPairing",
-		sendingHost: "SL-1876",
-	})
-	if err != nil {
-		return err
-	}
-
-	var encRes pairingData
-	err = t.controlChannel.readEvent(&encRes)
-	if err != nil {
-		return err
-	}
-
-	encrData, err := tlvReader(encRes.data).readCoalesced(typeEncryptedData)
-	if err != nil {
-		return err
-	}
-	copy(nonce[4:], "PS-Msg06")
-	plain, err := cipher.Open(nil, nonce, encrData, nil)
-	if err != nil {
-		return ErrRemotePeerProof
-	}
-	return t.record.acceptPeer(sessionKey, plain)
 }

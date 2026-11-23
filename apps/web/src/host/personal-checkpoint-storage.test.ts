@@ -1,3 +1,4 @@
+import { createId } from "@opensteer/core";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import { createPersonalStreamCache, type HostSnapshot } from "@opensteer/client/host";
@@ -292,21 +293,22 @@ test("the session ending by a 401 on any request removes the marker and sweeps a
     storage,
     () => now,
   );
+  const sessionId = createId("authSession");
   // Only a connection the Host confirmed records the session.
   emit({
     session: "authenticated",
     connection: "offline",
     deploymentId: "dep",
-    sessionId: "session-1",
+    sessionId,
   });
   expect(marker.current("dep")).toBeNull();
   emit({ connection: "connected" });
-  expect(marker.current("dep")).toBe("session-1");
+  expect(marker.current("dep")).toBe(sessionId);
   // Each later confirmation renews it, so a session in use never ages out.
   now = confirmedAt + checkpointSessionMaxAgeMs - 1_000;
   emit({ connection: "connected" });
   now = confirmedAt + checkpointSessionMaxAgeMs + 1_000;
-  expect(marker.current("dep")).toBe("session-1");
+  expect(marker.current("dep")).toBe(sessionId);
   expect(await storage.write(key("shell"), "private", guard)).toBe(true);
   // The client's answer to a 401 on any request (and to every other end) is this state.
   emit({ session: "authentication-required" });

@@ -358,6 +358,63 @@ func TestWakeKnownOnDoesNotToggleLock(t *testing.T) {
 		t.Fatal("wake toggled an already-on display")
 	}
 }
+
+type wakeOnButtonScreen struct{ *fixtureScreen }
+
+func (w wakeOnButtonScreen) State(ctx context.Context) (DeviceState, error) {
+	state, err := w.fixtureScreen.State(ctx)
+	if len(w.channel.sent) >= 2 {
+		state.Display = "on"
+	}
+	return state, err
+}
+
+func TestScreenOffStatusAllowsOnlyWake(t *testing.T) {
+	for _, lock := range []string{"unlocked", "locked"} {
+		t.Run(lock, func(t *testing.T) {
+			s, b, _ := screenFixture(t)
+			b.state.Lock, b.state.Display = lock, "off"
+			s.backend = wakeOnButtonScreen{b}
+			include := false
+			value, err := s.observe(context.Background(), &wire.ObserveParams{
+				ScreenRef: wire.ScreenRef{BindingToken: "b", SessionID: "s", NativeEpoch: 1}, IncludeScreenshot: &include,
+			}, okay)
+			status, ok := value.(*ScreenStatus)
+			if err != nil || !ok || status.WakeToken == "" || status.GeometryRevision == 0 {
+				t.Fatalf("expected screen-off status with wake token, got %#v / %v", value, err)
+			}
+			// Non-wake actions must be refused even with the wake token.
+			nonWake := &wire.PerformParams{
+				ScreenRef:        wire.ScreenRef{BindingToken: "b", SessionID: "s", NativeEpoch: 1},
+				ObservationToken: status.WakeToken,
+				GeometryRevision: status.GeometryRevision,
+				Actions:          []wire.Action{{Kind: "tap", Target: &wire.Target{Point: &wire.Point{X: 10, Y: 10}}}},
+			}
+			_, err = s.perform(context.Background(), nonWake, okay, noWait)
+			failure(t, err, wire.StaleObservation, "not-started")
+			if len(b.channel.sent) != 0 {
+				t.Fatal("wake token admitted non-wake input")
+			}
+			// A single wake action succeeds and sends a side-button pulse.
+			wakeReq := &wire.PerformParams{
+				ScreenRef:        wire.ScreenRef{BindingToken: "b", SessionID: "s", NativeEpoch: 1},
+				ObservationToken: status.WakeToken,
+				GeometryRevision: status.GeometryRevision,
+				Actions:          []wire.Action{{Kind: "wake"}},
+			}
+			res, err := s.perform(context.Background(), wakeReq, okay, noWait)
+			if err != nil {
+				t.Fatalf("wake failed: %v", err)
+			}
+			if res.(PerformResult).Effect != "submitted" || res.(PerformResult).CompletedSteps != 1 || len(b.channel.sent) < 2 {
+				t.Fatalf("unexpected wake result %#v (sent=%d)", res, len(b.channel.sent))
+			}
+			// Replaying the same wake token is rejected.
+			_, err = s.perform(context.Background(), wakeReq, okay, noWait)
+			failure(t, err, wire.StaleObservation, "not-started")
+		})
+	}
+}
 func TestNativeServiceErrorsNeverExposePrivateText(t *testing.T) {
 	c := &fixtureChannel{receiveErr: errors.New("SENTINEL_UDID_PAIR_KEY_AX_TYPED_SECRET")}
 	e := launchApp(context.Background(), func(context.Context, string) (xpcChannel, error) { return c, nil }, "fixture.app", okay)

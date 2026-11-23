@@ -161,6 +161,8 @@ export interface BrowserPage {
   opener(): Promise<BrowserPage | null>;
   targetId(): Promise<string>;
   title(): Promise<string>;
+  /** Synchronous native back/forward availability when the engine exposes it without a CDP round-trip. */
+  navigationState?(): { readonly canGoBack: boolean; readonly canGoForward: boolean };
   url(): string;
 }
 
@@ -199,9 +201,13 @@ export interface BrowserContext {
    * The one handoff of native pages to the runtime: called synchronously as
    * each page handle comes to exist, before any asynchronous work, with the
    * page whose script opened it. Pages that already exist are handed off at
-   * subscription. Returns the unsubscribe.
+   * subscription. `inferred` is true only when the opener was deduced without
+   * engine-confirmed target parentage (so multi-session ownership fails closed).
+   * Returns the unsubscribe.
    */
-  handOff(listener: (page: BrowserPage, opener: BrowserPage | null) => void): () => void;
+  handOff(
+    listener: (page: BrowserPage, opener: BrowserPage | null, inferred?: boolean) => void,
+  ): () => void;
   offPage(listener: (page: BrowserPage) => void): void;
   onPage(listener: (page: BrowserPage) => void): void;
   pages(): BrowserPage[];

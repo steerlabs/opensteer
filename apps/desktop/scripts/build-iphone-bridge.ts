@@ -88,12 +88,17 @@ function normalizedArchitecture(value: string): "amd64" | "arm64" {
 }
 
 async function runGo(arguments_: readonly string[]): Promise<void> {
+  const targetArch = architecture === "amd64" ? "x86_64" : "arm64";
+  const minOS = "14.0";
   await new Promise<void>((resolvePromise, rejectPromise) => {
     const child = spawn("go", [...arguments_], {
       cwd: sourceDirectory,
       env: {
         ...process.env,
-        CGO_ENABLED: "0",
+        CGO_ENABLED: "1",
+        MACOSX_DEPLOYMENT_TARGET: minOS,
+        CGO_CFLAGS: `-O2 -g -arch ${targetArch} -mmacosx-version-min=${minOS}`,
+        CGO_LDFLAGS: `-O2 -g -arch ${targetArch} -mmacosx-version-min=${minOS}`,
         GOFLAGS: "-mod=readonly",
         GOARCH: architecture,
         GOOS: operatingSystem,

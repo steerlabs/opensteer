@@ -75,6 +75,8 @@ type streamState struct {
 	// granted back to the peer with a WINDOW_UPDATE yet.
 	recvUnacked int64
 	reset       bool
+	// resetCode is the peer's RST_STREAM error code, kept so a refusal names why.
+	resetCode http2.ErrCode
 }
 
 func (r *HttpConnection) Close() error {
@@ -219,6 +221,7 @@ func (r *HttpConnection) processFrame(ready func() bool) error {
 		s, ok := r.streams[rst.StreamID]
 		if ok {
 			s.reset = true
+			s.resetCode = rst.ErrCode
 		}
 		r.mu.Unlock()
 		// The device resets file transfer streams once it received all data.
@@ -313,10 +316,10 @@ func (s *Stream) Read(p []byte) (int, error) {
 			s.h.mu.Unlock()
 			return n, err
 		}
-		reset := st.reset
+		reset, code := st.reset, st.resetCode
 		s.h.mu.Unlock()
 		if reset {
-			return 0, fmt.Errorf("Read: stream %d was reset by the peer", s.id)
+			return 0, fmt.Errorf("Read: stream %d was reset by the peer (%s)", s.id, code)
 		}
 		if err := s.h.processFrame(func() bool { return s.readable(len(p)) }); err != nil {
 			return 0, fmt.Errorf("Read: %w", err)
@@ -375,7 +378,7 @@ func (s *Stream) sendWindow(want int) (int, error) {
 	defer s.h.mu.Unlock()
 	st := s.h.streams[s.id]
 	if st.reset {
-		return 0, fmt.Errorf("stream %d was reset by the peer", s.id)
+		return 0, fmt.Errorf("stream %d was reset by the peer (%s)", s.id, st.resetCode)
 	}
 	n := int64(min(want, maxFrameSize))
 	n = min(n, st.sendWindow, s.h.connSendWindow)
