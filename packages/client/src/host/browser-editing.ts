@@ -147,10 +147,12 @@ interface Pending {
   readonly target: Target;
   readonly resolve: (result: ViewerClipboardResult) => void;
   readonly reject: (reason: Error) => void;
-  readonly timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout>;
   readonly kind: "copy" | "cut" | "paste" | "written";
-  /** True once the command left this client onto the carrier (paste outcome becomes unknown if carrier ends). */
+  /** True once the command left this client onto the carrier (paste/cut outcome becomes unknown if carrier ends). */
   dispatched: boolean;
+  /** A3: true after a sent cut resolved `unknown` while staying open to write a late result to the clipboard. */
+  late?: boolean;
   items: readonly EditingClipboardItem[] | null;
   outcome: EditingClipboardOutcome;
   chunks: Uint8Array[];
@@ -481,10 +483,14 @@ export class BrowserEditingStore {
     }
   }
   #await(id: string, target: Target, kind: Pending["kind"]): Promise<ViewerClipboardResult> {
-    if (this.#pending.size >= 16) throw new Error("Too many pending clipboard operations.");
+    if (this.#pending.size >= 16) {
+      const oldestLate = [...this.#pending.entries()].find(([, pending]) => pending.late)?.[0];
+      if (oldestLate) this.#take(oldestLate);
+      else throw new Error("Too many pending clipboard operations.");
+    }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(
-        () => this.#carrierEnded(id, "The remote clipboard operation timed out."),
+        () => this.#carrierEnded(id, "The remote clipboard operation timed out.", true),
         10_000,
       );
       this.#pending.set(id, {
@@ -536,6 +542,14 @@ export class BrowserEditingStore {
       return payload;
     });
     this.#count(this.diagnostics.clipboard, pending.outcome);
+    if (pending.late) {
+      if (
+        (pending.outcome === "cut" || pending.outcome === "copied") &&
+        items.some((item) => item.bytes.byteLength > 0)
+      )
+        pending.target.active?.onWritten(items);
+      return;
+    }
     pending.resolve({ outcome: pending.outcome, items });
   }
   receive(sessionId: string, message: BrowserServerMessage, surfaceId?: string): void {
@@ -562,7 +576,7 @@ export class BrowserEditingStore {
           (pending.kind === "paste" || pending.kind === "cut") &&
           pending.dispatched
         ) {
-          this.#carrierEnded(message.operationId, message.error.message);
+          this.#carrierEnded(message.operationId, message.error.message, true);
           return;
         }
         const outcome = pending.kind === "paste" || pending.kind === "cut" ? "refused" : "empty";
@@ -578,7 +592,7 @@ export class BrowserEditingStore {
         )
           continue;
         if ((pending.kind === "paste" || pending.kind === "cut") && pending.dispatched) {
-          this.#carrierEnded(id, message.error.message);
+          this.#carrierEnded(id, message.error.message, true);
           continue;
         }
         this.#take(id)?.resolve({ outcome: "empty", items: [] });
@@ -718,6 +732,17 @@ export class BrowserEditingStore {
       )
         return;
       if (pending.items) {
+        if (pending.kind === "cut" && pending.dispatched) {
+          if (pending.late) {
+            this.#take(message.operationId);
+            pending.target.active?.onError?.(
+              "Cut finished late, but the clipboard data couldn’t be read.",
+            );
+          } else {
+            this.#carrierEnded(message.operationId, "Duplicate clipboard result.", false);
+          }
+          return;
+        }
         this.#fail(message.operationId, new Error("Duplicate clipboard result."));
         return;
       }
@@ -749,6 +774,21 @@ export class BrowserEditingStore {
         this.#buffered += bytes.length;
         if (pending.received === expected) this.#finish(part.operationId);
       } catch (error) {
+        if (pending.kind === "cut" && pending.dispatched) {
+          if (pending.late) {
+            this.#take(message.part.operationId);
+            pending.target.active?.onError?.(
+              "Cut finished late, but the clipboard data couldn’t be read.",
+            );
+          } else {
+            this.#carrierEnded(
+              message.part.operationId,
+              error instanceof Error ? error.message : "Invalid clipboard part.",
+              false,
+            );
+          }
+          return;
+        }
         this.#fail(
           message.part.operationId,
           error instanceof Error ? error : new Error("Invalid clipboard part."),
@@ -756,12 +796,32 @@ export class BrowserEditingStore {
       }
     }
   }
-  #carrierEnded(id: string, message: string): void {
+  #carrierEnded(id: string, message: string, keepLateCut = false): void {
     const pending = this.#pending.get(id);
     if (!pending) return;
-    // P1 / Q1 (AGENTS.md rule 4): a paste or cut already sent onto the carrier may have changed
-    // the far field; never report it as failed or invite a blind retry.
-    if ((pending.kind === "paste" || pending.kind === "cut") && pending.dispatched) {
+    if (pending.late) {
+      if (!keepLateCut) this.#take(id);
+      return;
+    }
+    // P1 / Q1 / A3 (AGENTS.md rule 4): a paste or cut already sent onto the carrier may have
+    // changed the far field; never report it as failed or invite a blind retry. For a sent cut
+    // whose carrier is still open, keep the pending entry open so a late cut result still writes
+    // the removed text to the active viewer's clipboard.
+    if (pending.kind === "cut" && pending.dispatched) {
+      this.#count(this.diagnostics.clipboard, "unknown");
+      if (keepLateCut) {
+        clearTimeout(pending.timer);
+        pending.late = true;
+        pending.timer = setTimeout(() => {
+          this.#take(id);
+        }, 60_000);
+        pending.resolve({ outcome: "unknown", items: [] });
+        return;
+      }
+      this.#take(id)?.resolve({ outcome: "unknown", items: [] });
+      return;
+    }
+    if (pending.kind === "paste" && pending.dispatched) {
       this.#count(this.diagnostics.clipboard, "unknown");
       this.#take(id)?.resolve({ outcome: "unknown", items: [] });
       return;
@@ -853,6 +913,7 @@ export class BrowserEditingStore {
         if (
           [...this.#pending.values()].some(
             (pending) =>
+              !pending.late &&
               pending.target.sessionId === target.sessionId &&
               (pending.kind === "copy" || pending.kind === "cut"),
           )

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { BrowserEditingStore, type BrowserCommand } from "@opensteer/client/host";
 import { createMobileBrowserEditing } from "./browser-editing.js";
@@ -48,5 +48,71 @@ describe("the phone app's browser send", () => {
     if (!takes) expect(errors.length).toBeGreaterThan(0);
     stop();
     store.dispose();
+  });
+
+  it("writes a late cut result to the clipboard and updates the status after showing unknown", async () => {
+    vi.useFakeTimers();
+    const sent: BrowserCommand[] = [];
+    const written: unknown[] = [];
+    const store = new BrowserEditingStore((_session, _surface, command) => {
+      sent.push(command);
+    });
+    store.negotiate("session", 2, surfaceId, true);
+    store.receive("session", {
+      type: "browser.editing",
+      surfaceId,
+      context: {
+        contextId,
+        field: { kind: "text", multiline: false, sensitive: false },
+        caret: null,
+      },
+    });
+    const messages: string[] = [];
+    const editing = createMobileBrowserEditing(
+      { browserFrames: { editing: store } },
+      "session",
+      surfaceId,
+      () => true,
+      {
+        write: async (items: unknown) => {
+          written.push(items);
+          return "written";
+        },
+        read: async () => ({ outcome: "empty", items: [] }),
+      } as never,
+    );
+    const stop = editing.activate((message) => messages.push(message));
+    try {
+      expect(editing.send({ kind: "cut", contextId })).toBe(true);
+      const cutCmd = sent.find((c) => c.type === "clipboard.cut");
+      if (cutCmd?.type !== "clipboard.cut") throw new Error("Missing cut command.");
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(messages).toEqual(["May have been cut: check before cutting again."]);
+
+      store.receive("session", {
+        type: "clipboard.result",
+        surfaceId,
+        operationId: cutCmd.operationId,
+        outcome: "cut",
+        items: [{ type: "text/plain", size: 8 }],
+      });
+      store.receive("session", {
+        type: "clipboard.part",
+        part: { operationId: cutCmd.operationId, index: 0, data: btoa("rescued!") },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(written).toEqual([
+        [{ type: "text/plain", bytes: new TextEncoder().encode("rescued!") }],
+      ]);
+      expect(messages).toEqual([
+        "May have been cut: check before cutting again.",
+        "Cut finished and copied to your clipboard.",
+      ]);
+    } finally {
+      stop();
+      store.dispose();
+      vi.useRealTimers();
+    }
   });
 });

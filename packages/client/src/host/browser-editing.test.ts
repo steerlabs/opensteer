@@ -518,6 +518,79 @@ describe("browser editing transport", () => {
       store.dispose();
     }
   });
+  it("keeps a sent cut open after unknown timeout so a late cut result still writes to the active clipboard, and settles malformed cut parts as unknown", async () => {
+    vi.useFakeTimers();
+    const { store, target, commands } = setup();
+    const written: unknown[] = [];
+    const errors: string[] = [];
+    const release = target.activate(
+      (items) => written.push(items),
+      (message) => errors.push(message),
+    );
+    try {
+      // 1) Sent cut times out at 10 s -> resolves unknown, stays open for late arrival.
+      const cut1 = target.send({ kind: "cut", contextId: crypto.randomUUID() });
+      const cmd1 = commands.at(-1);
+      if (cmd1?.type !== "clipboard.cut") throw new Error("Missing cut command.");
+      vi.advanceTimersByTime(10_000);
+      expect(await cut1).toEqual({ outcome: "unknown", items: [] });
+
+      // Late cut result + part arrive 2 s later -> written to the active viewer's clipboard.
+      vi.advanceTimersByTime(2_000);
+      store.receive(sessionId, {
+        type: "clipboard.result",
+        surfaceId,
+        operationId: cmd1.operationId,
+        outcome: "cut",
+        items: [{ type: "text/plain", size: 8 }],
+      });
+      store.receive(sessionId, {
+        type: "clipboard.part",
+        part: { operationId: cmd1.operationId, index: 0, data: btoa("rescued!") },
+      });
+      expect(written).toEqual([[{ type: "text/plain", bytes: encoder.encode("rescued!") }]]);
+
+      // 2) Malformed part after a live cut result -> resolves unknown (never rejects as failed).
+      const cut2 = target.send({ kind: "cut", contextId: crypto.randomUUID() });
+      const cmd2 = commands.at(-1);
+      if (cmd2?.type !== "clipboard.cut") throw new Error("Missing cut2 command.");
+      store.receive(sessionId, {
+        type: "clipboard.result",
+        surfaceId,
+        operationId: cmd2.operationId,
+        outcome: "cut",
+        items: [{ type: "text/plain", size: 4 }],
+      });
+      store.receive(sessionId, {
+        type: "clipboard.part",
+        part: { operationId: cmd2.operationId, index: 1, data: "YQ==" },
+      });
+      expect(await cut2).toEqual({ outcome: "unknown", items: [] });
+
+      // 3) Malformed part on a late cut notifies active viewer via onError.
+      const cut3 = target.send({ kind: "cut", contextId: crypto.randomUUID() });
+      const cmd3 = commands.at(-1);
+      if (cmd3?.type !== "clipboard.cut") throw new Error("Missing cut3 command.");
+      vi.advanceTimersByTime(10_000);
+      expect(await cut3).toEqual({ outcome: "unknown", items: [] });
+      store.receive(sessionId, {
+        type: "clipboard.result",
+        surfaceId,
+        operationId: cmd3.operationId,
+        outcome: "cut",
+        items: [{ type: "text/plain", size: 4 }],
+      });
+      store.receive(sessionId, {
+        type: "clipboard.part",
+        part: { operationId: cmd3.operationId, index: 1, data: "YQ==" },
+      });
+      expect(errors).toHaveLength(1);
+    } finally {
+      release();
+      store.dispose();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("browser autofill offers", () => {

@@ -391,7 +391,14 @@ export function RemoteEditingProxy({
   useEffect(() => {
     if (!enabled || !wire.subscribeClipboard) return;
     return wire.subscribeClipboard((items) => {
-      void clipboard.current!.written(items).catch(failure);
+      void clipboard.current!.written(items).then(() => {
+        if (alive.current)
+          setError((currentError) =>
+            currentError === "May have been cut: check before cutting again."
+              ? "Cut finished and copied to your clipboard."
+              : currentError,
+          );
+      }, failure);
     }, failure);
   }, [enabled, wire, failure]);
   const assign = useCallback(
