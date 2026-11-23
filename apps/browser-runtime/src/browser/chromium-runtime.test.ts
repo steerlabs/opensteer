@@ -3081,3 +3081,114 @@ it("wakes a sleeping tab for an agent and answers once its page has loaded, so t
   ).toEqual(["complete", "/slow", true]);
   expect(answeredMs).toBeGreaterThanOrEqual(2_500);
 }, 90_000);
+
+/*
+ * V9, evidence first: a person signs in (the site sets a lasting cookie) and types in a field, and
+ * the browser service is stopped at once, as a Home's service is when its machine restarts. When
+ * it starts again the sign-in is still there, and the Home's tab opens again at its address
+ * (Linux loads nothing of Chromium's last session; typed text is not kept, by design: L1).
+ */
+it.each([1, 2, 3, 4, 5])(
+  "keeps a sign-in through a stop at once and a start, and opens the tab again at its address (V9, run %i)",
+  async (run) => {
+    const cookies: string[] = [];
+    const server = createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/check") cookies.push(request.headers.cookie ?? "");
+      response.setHeader("cache-control", "no-store");
+      response.setHeader("content-type", "text/html");
+      if (url.pathname === "/sign-in")
+        response.setHeader(
+          "set-cookie",
+          `session=signed-in-${run}; Max-Age=86400; Path=/; HttpOnly`,
+        );
+      response.end(`<!doctype html><title>${url.pathname}</title><input id="field">`);
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const profile = await nativeRuntimeProfile();
+    cleanup.push(profile.close);
+    const sessionId = BrowserSessionIdSchema.parse(`bsn_00000000-0000-4000-8000-00000000090${run}`);
+    const claims = validClaims({ identity: profile.identity, sessionId, tabRestoreVersion: 1 });
+    const start = async () => {
+      const runtime = new BrowserRuntime({
+        localProfiles: profile.localProfiles,
+        launcher: new PlaywrightChromiumLauncher({
+          chromiumSandbox: false,
+          executablePath,
+          headless: true,
+        }),
+        runtimeId: claims.runtimeId,
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: new FakeTicketVerifier(claims),
+      });
+      const sink = new FakeSink();
+      const attachment = await runtime.attach("ticket", sink);
+      const deliver = (message: BrowserClientMessage) => attachment.handle(JSON.stringify(message));
+      const agent = (method: string, parameters?: CdpParameters, cdpSessionId?: string) =>
+        sendAsAgent(deliver, sink.messages, method, parameters, cdpSessionId);
+      return { runtime, agent };
+    };
+
+    const first = await start();
+    let firstStopped = false;
+    cleanup.push(() => (firstStopped ? Promise.resolve() : first.runtime.shutdown()));
+    const targetId = String(
+      asRecord(await first.agent("Target.createTarget", { url: `${origin}/sign-in` })).targetId,
+    );
+    const page = String(
+      asRecord(await first.agent("Target.attachToTarget", { flatten: true, targetId })).sessionId,
+    );
+    await waitForAsync(
+      async () =>
+        evaluationValue(
+          await first.agent(
+            "Runtime.evaluate",
+            { expression: "document.readyState", returnByValue: true },
+            page,
+          ),
+        ) === "complete",
+      10_000,
+    );
+    await first.agent(
+      "Runtime.evaluate",
+      { expression: "document.querySelector('#field').focus()" },
+      page,
+    );
+    await first.agent("Input.insertText", { text: "typed before the stop" }, page);
+    const listed = z
+      .object({
+        tabs: z.array(z.object({ surfaceId: z.string(), targetId: z.string().nullable() })),
+      })
+      .parse(await first.agent("Opensteer.listTabs", {})).tabs;
+    const surfaceId = listed.find((tab) => tab.targetId === targetId)!.surfaceId;
+
+    // Stopped at once: nothing waits for Chromium to write anything first.
+    const stopping = performance.now();
+    await first.runtime.shutdown();
+    firstStopped = true;
+    const stopMs = Math.round(performance.now() - stopping);
+
+    const second = await start();
+    cleanup.push(() => second.runtime.shutdown());
+    // The Home opens its tab again, by its identity, at its address.
+    const reopened = asRecord(
+      await second.agent("Opensteer.openTab", {
+        idempotencyKey: randomUUID(),
+        surfaceId,
+        url: `${origin}/check`,
+      }),
+    );
+    expect(reopened.tabId).toBe(surfaceId);
+    await waitForAsync(async () => cookies.length > 0, 10_000);
+    process.stderr.write(
+      `${JSON.stringify({ event: "v9.stop-start", run, stopMs, cookie: cookies[0] })}\n`,
+    );
+    expect(cookies[0]).toContain(`session=signed-in-${run}`);
+  },
+  90_000,
+);
