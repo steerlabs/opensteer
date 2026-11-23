@@ -2817,7 +2817,7 @@ async function longStreamTurn(held, input) {
             },
           );
         }
-        await waitForRelease();
+        await waitForRelease(releasePath, threadId);
       }
     }
     send({
@@ -2903,9 +2903,12 @@ async function durableStreamUntilReleased() {
   sendTurnCompleted("completed");
 }
 
-async function waitForRelease(path = releasePath) {
+async function waitForRelease(path = releasePath, threadId) {
   if (!path) return;
-  while (!existsSync(path)) await new Promise((resolve) => setTimeout(resolve, 25));
+  const scopedPath = threadId ? `${path}.${threadId}` : undefined;
+  while (!existsSync(path) && !(scopedPath && existsSync(scopedPath))) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 }
 
 /**
