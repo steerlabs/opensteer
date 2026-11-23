@@ -10,6 +10,19 @@ import { useState, type ReactNode } from "react";
  *
  * Text is measured as Roboto at its type scale: an average advance of 0.55 em, lines of 1.5 em,
  * wrapping where the width runs out. Sizes are dp; text scales with the reader's font scale.
+ *
+ * Each rule is the source's (`@expo/ui` 58.0.23, `android/src/main/java/expo/modules/ui/`):
+ * - Column, Row, Box: Compose's own (`ComposeViews.kt`).
+ * - Host: every child at the top left, over the others (`HostView.kt:312-316`, `placeRelative(0, 0)`).
+ * - Button and TextButton: their content a Row (`button/Button.kt:86, 108`, `rowScope`).
+ * - FlowRow: a Row that takes another line where the next child does not fit
+ *   (`ComposeViews.kt:95`, Compose's `FlowRow`).
+ * - A `ListItem` slot: its children handed to Material's slot as they are (`ListItemView.kt`,
+ *   `SlotView.kt:33-36`), drawn over one another.
+ *
+ * What it does not cover: padding and alignment on a sized container (a sized Box puts its
+ * children at its top left, whatever `contentAlignment` says), a container's layout direction,
+ * and line breaking inside an address (it wraps by characters, and draws no zero-width marks).
  */
 type Modifier =
   | { readonly kind: "size"; readonly width: number; readonly height: number }
@@ -56,15 +69,15 @@ const typeScale: Record<string, number> = {
 const nothing = () => null;
 export const composeLayout = {
   Box: node("Box"),
-  Button: node("Box"),
+  Button: node("Row"),
   Checkbox: nothing,
   CircularProgressIndicator: nothing,
   Column: node("Column"),
   DropdownMenu: Object.assign(node("Box"), { Items: nothing, Trigger: slot("trigger") }),
   DropdownMenuItem: Object.assign(node("Box"), { Text: slot("text") }),
   FilterChip: Object.assign(node("Box"), { Label: slot("label"), LeadingIcon: slot("icon") }),
-  FlowRow: node("Row"),
-  Host: node("Column"),
+  FlowRow: node("FlowRow"),
+  Host: node("Box"),
   IconButton: node("Box"),
   LazyColumn: node("Column"),
   ModalBottomSheet: node("Column"),
@@ -88,7 +101,7 @@ export const composeLayout = {
       {props.children}
     </span>
   ),
-  TextButton: node("Box"),
+  TextButton: node("Row"),
   useNativeState: <T,>(initial: T) => {
     const [value, set] = useState(initial);
     return { value, set };
@@ -187,6 +200,25 @@ export function composeFrames(
       }
       w += ps + pe;
       h = top - y + pb;
+    } else if (kind === "FlowRow") {
+      // A line at a time: a child that does not fit what is left of one starts the next.
+      let left = x + ps;
+      let top = y + pt;
+      let line = 0;
+      for (const child of kids(element)) {
+        const [cw, ch] = measure(child, room - ps - pe);
+        if (left > x + ps && left + cw > x + room - pe) {
+          top += line + spaced;
+          left = x + ps;
+          line = 0;
+        }
+        place(child, left, top, x + room - pe - left);
+        left += cw + spaced;
+        line = Math.max(line, ch);
+        w = Math.max(w, left - spaced - x);
+      }
+      w += pe;
+      h = top + line - y + pb;
     } else if (kind === "Row") {
       let left = x + ps;
       for (const [index, child] of kids(element).entries()) {

@@ -17,6 +17,9 @@ vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ bottom: 24 }) }));
 vi.mock("../ui/integration-icon.js", () => ({ RowMarkIcon: () => null }));
 vi.mock("../theme.js", () => ({ color: new Proxy({}, { get: () => "#000000" }) }));
+vi.mock("react-native", () => ({
+  useWindowDimensions: () => ({ fontScale: 1, height: 640, scale: 2, width: 320 }),
+}));
 const stacked = vi.hoisted(() => ({ value: false }));
 vi.mock("../ui/stacked-layout.js", () => ({ useStackedLayout: () => stacked.value }));
 

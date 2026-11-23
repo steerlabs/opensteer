@@ -85,8 +85,18 @@ describe("the Android Settings account row, on the narrowest phone", () => {
         const address = texts.find((text) => drawn(text) === email)!;
         expect(initial).toBeDefined();
         expect(address).toBeDefined();
-        const mark = initial.closest('[data-size="40,40"]')!;
+        // The initial's circle: the sized Box around it.
+        const mark = initial.closest("[data-size]")!;
         expect(frames.get(mark)).toBeDefined();
+        // The initial's line fits inside its circle, which clips what does not.
+        const circle = frames.get(mark)!;
+        const letter = frames.get(initial)!;
+        expect(
+          letter.y >= circle.y &&
+            letter.y + letter.height <= circle.y + circle.height &&
+            letter.width <= circle.width,
+          JSON.stringify({ circle, letter }),
+        ).toBe(true);
         expect(
           intersects(frames.get(mark)!, frames.get(address)!),
           JSON.stringify({

@@ -38,6 +38,7 @@ import {
   weight,
 } from "@expo/ui/jetpack-compose/modifiers";
 import { useEffect, useState, type ReactNode } from "react";
+import { useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { color } from "../theme.js";
 import { addressWords, isAddress } from "../ui/address-words.js";
@@ -671,12 +672,18 @@ export function ErrorText(props: { readonly detail: string | null }): ReactNode 
   );
 }
 
-/** A person's round initial, leading their identity row. */
+/**
+ * A person's round initial, leading their identity row. The circle grows with the reader's text
+ * size rather than the initial being held small: it is their own account's mark, beside their own
+ * address, and the circle clips whatever does not fit it. 40 dp at the default size; beyond that,
+ * the initial's line (titleMedium's 24 sp) and 8 dp around it.
+ */
 export function Avatar(props: { readonly initial: string }): ReactNode {
+  const diameter = Math.max(40, Math.ceil(24 * useWindowDimensions().fontScale) + 8);
   return (
     <Box
       contentAlignment="center"
-      modifiers={[size(40, 40), clip(Shapes.Circle), background(color.surfaceRaised)]}
+      modifiers={[size(diameter, diameter), clip(Shapes.Circle), background(color.surfaceRaised)]}
     >
       <Text color={color.textSoft} style={{ typography: "titleMedium", fontWeight: "600" }}>
         {props.initial}
