@@ -1184,8 +1184,7 @@ export class TabService implements TabServicePort {
       const ending = cleanup
         .filter(({ row }) => result.tabIds.includes(row.id))
         .map(async ({ row, closePage }) => {
-          if (row.kind === "page")
-            await this.options.pages.closeViewers(ownerId, row, closePage);
+          if (row.kind === "page") await this.options.pages.closeViewers(ownerId, row, closePage);
           else if (row.kind === "phone" || row.kind === "window")
             await this.options.nativeTargets.closeOwnerViews(ownerId, row.id, row.generation);
         });
