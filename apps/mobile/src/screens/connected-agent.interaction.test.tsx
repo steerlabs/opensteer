@@ -555,6 +555,29 @@ describe("a chat on the phone", () => {
     );
   });
 
+  it("says, where an anyone chat's mode is chosen, what the people there can have it do", async () => {
+    await open(chat(2), chats());
+    expect(row("mode", "auto")).toMatchObject({
+      detail:
+        "People in #team can have it act without asking you whenever the engine’s own safety check allows it. That can reach files outside its folder.",
+    });
+    expect(row("mode", "full-access")).toMatchObject({
+      detail:
+        "Never asks. People in #team can have it do anything on its computer that your user account can.",
+    });
+    expect(row("mode", "approval-required")).toMatchObject({
+      detail: "Asks you before anything that changes something.",
+    });
+    // A chat that answers only you reads as a connected agent does: its tasks work in Agent home.
+    host?.dispose();
+    act(() => root?.unmount());
+    await open(chat(1), chats());
+    expect(row("mode", "full-access")).toMatchObject({
+      detail:
+        "Never asks. It can change anything in your Agent home, and anything else on that computer that your user account can.",
+    });
+  });
+
   it("says a chat's page could not be read when the read failed, never that it is gone", async () => {
     const client = chats();
     Object.defineProperty(client.rpc, "connections.list", {

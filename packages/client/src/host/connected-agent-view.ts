@@ -14,7 +14,11 @@ import type { AgentConnection } from "@opensteer/protocol";
 import { accessModeOptions } from "./access-modes.js";
 import { agentWho, agentWithdrawnLine, type AgentWho } from "./agent-identity.js";
 import type { ThreadSummary } from "./client.js";
-import { agentWords } from "./connected-agents-copy.js";
+import {
+  agentWords,
+  anyoneChatModeDescriptions,
+  connectionModeDescriptions,
+} from "./connected-agents-copy.js";
 import { chatFacts } from "./chat-view.js";
 import { plainSentence, sentenceAround, type SentencePart } from "./sentence-parts.js";
 import { formatRelativeTime } from "./thread-list-model.js";
@@ -138,6 +142,8 @@ export interface ConnectedAgentDetail {
   readonly grant: AgentGrant;
   readonly revision: number;
   readonly accessMode: ThreadAccessMode;
+  /** What each safety mode means for it, where its mode is chosen (web and phone). */
+  readonly modeDescriptions: Readonly<Record<ThreadAccessMode, string>>;
   readonly live: ConnectedAgentLive | null;
   readonly activity: ConnectedAgentActivity;
   /** `valueParts`: the value as parts, an address a part of its own when it is one. */
@@ -516,6 +522,12 @@ export function connectedAgentDetail(
     grant: connectionGrant(connection),
     revision: connection.grantRevision ?? 1,
     accessMode: connection.accessMode,
+    modeDescriptions:
+      connection.bridge?.senders === "anyone"
+        ? anyoneChatModeDescriptions(
+            connection.bridge.conversationName ?? connection.bridge.conversationId ?? "",
+          )
+        : connectionModeDescriptions,
     live,
     activity: options.activity ?? { kind: "unavailable" },
     // What it calls itself and the address it signed in from are facts of an agent that signed

@@ -235,6 +235,7 @@ export function ConnectedAgentPage({
             workPolicy={workPolicy ?? undefined}
           />
           <ConnectionModeChoices
+            descriptions={detail.modeDescriptions}
             disabled={busy}
             mode={mode}
             onChange={(next) => change({ mode: next })}

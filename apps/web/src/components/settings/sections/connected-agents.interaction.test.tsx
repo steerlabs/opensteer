@@ -511,8 +511,16 @@ describe("a chat, as a connected agent", () => {
     const page = await mount(host, `${base}/${chat(2)}`);
     await vi.waitFor(() => expect(page.textContent).toContain("Anyone who can write in #team"));
     expect(page.textContent).toContain(
-      "Anyone who can write there can give this agent work. Tasks they start run without your personal context.",
+      "Anyone who can write there can give this agent work. Their tasks run without your personal context, in a folder of their own instead of your Agent home. That folder is not a wall: a task can still reach other files on that computer, as far as its safety mode allows.",
     );
+    // Where its mode is chosen, each mode says what the people in #team can have it do.
+    expect(page.textContent).toContain(
+      "People in #team can have it act without asking you whenever the engine’s own safety check allows it. That can reach files outside its folder.",
+    );
+    expect(page.textContent).toContain(
+      "Never asks. People in #team can have it do anything on its computer that your user account can.",
+    );
+    expect(page.textContent).not.toContain("Opensteer checks each action");
   });
 
   it("says a chat's page could not be read when the read failed, never that it is gone", async () => {

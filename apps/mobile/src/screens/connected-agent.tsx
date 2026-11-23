@@ -533,6 +533,7 @@ export function connectedAgentSections(props: {
       ...grant,
       agentModeSection({
         mode: detail.accessMode,
+        descriptions: detail.modeDescriptions,
         disabled: props.busy,
         onMode: props.onMode,
         workPolicy: props.context.workPolicy,

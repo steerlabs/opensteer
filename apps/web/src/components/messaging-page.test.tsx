@@ -178,7 +178,7 @@ describe("Messaging", () => {
         label.textContent?.startsWith("Anyone in the channel"),
       );
       expect(anyone?.textContent).toContain(
-        "Anyone who can write there can give this agent work. Tasks they start run without your personal context.",
+        "Anyone who can write there can give this agent work. Their tasks run without your personal context, in a folder of their own instead of your Agent home. That folder is not a wall: a task can still reach other files on that computer, as far as its safety mode allows.",
       );
       await act(async () => anyone!.querySelector("input")!.click());
       const dispatch = vi.spyOn(client, "dispatch");

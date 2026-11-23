@@ -94,7 +94,7 @@ export const connectedAgentsCopy = {
   "consent.plugins.more": "Only your first plugins are listed here.",
   "consent.tasks.title": "Tasks",
   "consent.tasks.detail":
-    "Lets it ask your own agents to work on {home}: read and change files and run commands there.",
+    "Lets it ask your own agents to work on {home}: read and change files and run commands there. The tasks it starts work in your Agent home. From Auto-accept edits up, they can change files there without asking you, your own agents’ instructions and skills among them.",
   "consent.tasks.warning":
     "This is the most powerful choice. Work it starts can change anything on {home} that your own agents can, inside the safety mode below. Opensteer can stop what happens next, but can’t undo what an agent already did.",
   "consent.safety.title": "Safety mode",
@@ -183,7 +183,7 @@ export const connectedAgentsCopy = {
     "No {provider} account is linked as you yet. Link yours on Messaging; until then, nothing sent here gives this agent work.",
   "chat.speakers.anyone": "Anyone who can write in {conversation}",
   "chat.speakers.anyoneDetail":
-    "Anyone who can write there can give this agent work. Tasks they start run without your personal context.",
+    "Anyone who can write there can give this agent work. Their tasks run without your personal context, in a folder of their own instead of your Agent home. That folder is not a wall: a task can still reach other files on that computer, as far as its safety mode allows.",
   "chat.speakers.fixed":
     "This is chosen when the chat is added and can’t be changed. To change it, disconnect this chat and add it again.",
   "chat.ended.you": "You disconnected it.",
@@ -258,7 +258,7 @@ export const connectedAgentsCopy = {
   "messaging.chat.meDetail": "Messages you send from your linked account.",
   "messaging.chat.anyone": "Anyone in the channel",
   "messaging.chat.anyoneDetail":
-    "Anyone who can write there can give this agent work. Tasks they start run without your personal context.",
+    "Anyone who can write there can give this agent work. Their tasks run without your personal context, in a folder of their own instead of your Agent home. That folder is not a wall: a task can still reach other files on that computer, as far as its safety mode allows.",
   "messaging.chat.fixed":
     "This can’t be changed later; to change it, disconnect the chat and add it again.",
   "messaging.chat.grant": "It starts with Tasks only. Choose what else it can use on its page.",
@@ -331,13 +331,29 @@ export function agentWords(
 }
 
 /**
- * How the safety mode reads where a connection's mode is chosen. Task composers keep
- * `accessModeOptions`; these say what the mode means for an agent's own direct actions too.
- * Auto-accept edits behaves like Supervised for those.
+ * How the safety mode reads where a connection's mode is chosen: for a connected agent, and for
+ * a chat that answers only you, whose tasks work in your Agent home. Task composers keep
+ * `accessModeOptions`. A safety check is the engine's own, never Opensteer's.
  */
 export const connectionModeDescriptions: Readonly<Record<ThreadAccessMode, string>> = {
   "approval-required": "Asks you before anything that changes something.",
   "auto-accept-edits": "Edits files in its tasks without asking. Asks before anything else.",
-  auto: "Opensteer checks each action and asks you when it isn’t sure.",
-  "full-access": "Never asks. Only for an agent you trust completely.",
+  auto: "Acts without asking whenever the engine’s own safety check allows it, and can change files in your Agent home.",
+  "full-access":
+    "Never asks. It can change anything in your Agent home, and anything else on that computer that your user account can.",
 };
+
+/**
+ * The same, for a chat that anyone in {conversation} can give work: what each mode lets the
+ * people there have its tasks do.
+ */
+export function anyoneChatModeDescriptions(
+  conversation: string,
+): Readonly<Record<ThreadAccessMode, string>> {
+  return {
+    "approval-required": connectionModeDescriptions["approval-required"],
+    "auto-accept-edits": connectionModeDescriptions["auto-accept-edits"],
+    auto: `People in ${conversation} can have it act without asking you whenever the engine’s own safety check allows it. That can reach files outside its folder.`,
+    "full-access": `Never asks. People in ${conversation} can have it do anything on its computer that your user account can.`,
+  };
+}
