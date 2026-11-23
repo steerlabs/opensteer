@@ -113,6 +113,10 @@ export async function startPrivateMachineHost(
   > & {
     readonly remoteAccess?: boolean;
     readonly deploymentName?: string;
+    /** Points the built plugin engine elsewhere, such as at a fixture npm registry and catalog. */
+    readonly pluginEngine?: Partial<
+      NonNullable<NonNullable<Parameters<typeof createHostRuntime>[1]>["pluginEngine"]>
+    >;
     readonly canonicalOrigin?: URL;
   } = {},
 ): Promise<PrivateMachineHost> {
@@ -142,7 +146,7 @@ export async function startPrivateMachineHost(
       const created = await createHostRuntime(config, {
         ...options,
         ...(replWorkerEntry ? { replWorkerEntry } : {}),
-        pluginEngine: builtPluginEngine,
+        pluginEngine: { ...builtPluginEngine, ...options.pluginEngine },
       });
       if (created.kind !== "personal") {
         await created.close();

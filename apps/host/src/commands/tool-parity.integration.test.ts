@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -61,6 +62,19 @@ import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js"
  * fixture is the record the door is held to.
  */
 const fixturePath = new URL("./tool-parity.fixture.json", import.meta.url);
+
+/** The plugin engine's fixture npm registry and files, which live outside this package's source. */
+interface PluginFixture {
+  pluginFixtureFiles(revision: number): { readonly path: string; readonly content: string }[];
+  pluginFixtureRegistry(
+    waiting?: () => void,
+    catalogFiles?: readonly { readonly path: string; readonly content: string }[],
+  ): Promise<{ readonly origin: string; readonly address: string; close(): Promise<void> }>;
+}
+const pluginFixture = () =>
+  import(
+    fileURLToPath(new URL("../../../../scripts/plugin-engine/fixture.ts", import.meta.url))
+  ) as Promise<PluginFixture>;
 
 type Caller = "own-full" | "own-supervised" | "everything" | "selected-covering" | "selected-not";
 type Outcome = "allowed" | "asked" | "not_found" | `refused:${string}`;
@@ -127,6 +141,12 @@ const decided: Readonly<Record<string, string>> = {
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "app.start / own-full":
     "the test's apps computer is offline: the start was admitted and then refused there (computer_offline), as tab.open (profile) is by the test's browser",
+  "plugins.remove / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "plugins.schedule.configure / own-full":
+    "differs from the tool at f4d789f84: the tool switches a schedule on with no approvalMode, which takes the store's default and may approve itself; the door asks (the approve face, reviews G2 and D5)",
+  "plugins.install / selected-not":
+    "differs from the tool at f4d789f84: a grant holding nothing has no tool server today; a new plugin is outside the grant and the door asks for more (the table's (d))",
   "tab.organize (into a new group) / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "tab.group.update (rename) / everything":
@@ -179,12 +199,6 @@ const withoutTool: Readonly<Record<string, string>> = {
  */
 const owed: Readonly<Record<string, string>> = {
   "plugin.remove": "local_server_remove",
-  "plugins.install": "opensteer_plugin_install",
-  "plugins.version.activate": "opensteer_plugin_activate",
-  "plugins.remove": "opensteer_plugin_remove",
-  "plugins.schedule.configure": "opensteer_plugin_resource_update",
-  "plugins.workflow.start": "opensteer_plugin_resource_update",
-  "plugins.workflow.stop": "opensteer_plugin_resource_update",
   "plugins.webhook.remove": "opensteer_plugin_resource_update",
 };
 
@@ -203,7 +217,18 @@ it("records what today's tools let each caller do, and the door answers the same
   const database = await cloneTestDatabase("host");
   const close: (() => Promise<unknown>)[] = [];
   try {
-    const host = await startPrivateMachineHost(database.url, { logger: false });
+    // Plugins build against the engine's fixture registry and install from its catalog.
+    const { pluginFixtureFiles, pluginFixtureRegistry } = await pluginFixture();
+    const registry = await pluginFixtureRegistry(undefined, pluginFixtureFiles(1));
+    close.unshift(() => registry.close());
+    const host = await startPrivateMachineHost(database.url, {
+      logger: false,
+      pluginEngine: {
+        npmRegistry: registry.origin,
+        catalogUrl: `${registry.origin}/catalog`,
+        selfOrigin: { origin: "https://api.fixture.invalid", address: registry.address },
+      },
+    });
     close.unshift(() => host.close());
     const machine = await connectCallerMachine(host, {
       name: "Parity computer",
@@ -544,6 +569,53 @@ it("records what today's tools let each caller do, and the door answers the same
         .execute();
       return (apps[caller] = id);
     };
+    /**
+     * Plugins the person installed: one with a schedule and a long workflow, one with two
+     * versions, and one per caller to remove. The person acts through the Home's plugin service.
+     */
+    const plugins = host.runtime.plugins;
+    const personally = { caller: "personal", mode: "automatic" } as never;
+    const featureFiles = (revision: number) => [
+      ...pluginFixtureFiles(revision).filter((file) => file.path !== "index.ts"),
+      {
+        path: "index.ts",
+        content: `
+import { defineApp, object, string, mutation, router, userInterval, workflow } from "apps";
+const tick = mutation({ input: object({ source: string() }) }, async (_ctx, { source }) => source + ${revision});
+export default defineApp({}, { tools: router({ tick }),
+  schedules: { tick: userInterval({ minutes: 1 }, tick, { source: "schedule" }) },
+  workflows: { hold: workflow({ input: object({}) }, async ctx => { await ctx.step.sleep("hold", "1 hour"); return "done"; }) } });`,
+      },
+    ];
+    const installed = async (name: string, revision = 1, plugin?: string) => {
+      const result = (await plugins.install(
+        { kind: "files", name, files: featureFiles(revision), ...(plugin ? { plugin } : {}) },
+        personally,
+      )) as { status: string; plugin?: { id: string }; version?: { id: string } };
+      if (result.status !== "installed")
+        throw new Error(`A parity plugin did not build: ${JSON.stringify(result)}`);
+      return { pluginId: result.plugin!.id, versionId: result.version!.id };
+    };
+    const featured = await installed("Parity features");
+    const firstVersion = await installed("Parity versions", 1);
+    const secondVersion = await installed("Parity versions", 2, firstVersion.pluginId);
+    const removable = {} as Record<Caller, string>;
+    const workflowRuns = {} as Record<Caller, string>;
+    const personStarts = async (caller: Caller) => {
+      const started = (await plugins.resourcesUpdate(
+        {
+          pluginId: featured.pluginId,
+          change: {
+            action: "workflow.start",
+            workflow: "hold",
+            input: {},
+            key: `person-${caller}`,
+          },
+        } as never,
+        personally,
+      )) as { id: string };
+      return (workflowRuns[caller] = started.id);
+    };
     /** The messages each caller's queue scenario acts on, made as its arguments are. */
     const queued = {} as Record<Caller, { first: string; second?: string }>;
     const callerNames = Object.keys(callers) as Caller[];
@@ -830,6 +902,87 @@ it("records what today's tools let each caller do, and the door answers the same
         tool: "app_delete",
         args: async (c) => ({ appId: await app(c, null) }),
         command: (c) => ({ type: "app.delete", appId: apps[c] }),
+      },
+      {
+        name: "plugins.install",
+        tool: "opensteer_plugin_install",
+        args: () => ({ source: "catalog", catalogId: "fixture" }),
+        command: () => ({
+          type: "plugins.install",
+          source: { kind: "catalog", catalogId: "fixture" },
+        }),
+      },
+      {
+        name: "plugins.version.activate",
+        tool: "opensteer_plugin_activate",
+        before: () =>
+          plugins.activate(
+            { plugin: secondVersion.pluginId, version: secondVersion.versionId },
+            personally,
+          ),
+        args: () => ({ pluginId: firstVersion.pluginId, versionId: firstVersion.versionId }),
+        command: () => ({
+          type: "plugins.version.activate",
+          pluginId: firstVersion.pluginId,
+          versionId: firstVersion.versionId,
+        }),
+      },
+      {
+        name: "plugins.remove",
+        tool: "opensteer_plugin_remove",
+        args: async (c) => ({
+          pluginId: (removable[c] = (await installed(`Parity removable ${c}`)).pluginId),
+        }),
+        command: (c) => ({ type: "plugins.remove", pluginId: removable[c] }),
+      },
+      {
+        name: "plugins.schedule.configure",
+        tool: "opensteer_plugin_resource_update",
+        after: () =>
+          plugins.resourcesUpdate(
+            {
+              pluginId: featured.pluginId,
+              change: { action: "schedule.configure", schedule: "tick", enabled: false },
+            } as never,
+            personally,
+          ),
+        args: () => ({
+          pluginId: featured.pluginId,
+          change: { action: "schedule.configure", schedule: "tick", enabled: true },
+        }),
+        command: () => ({
+          type: "plugins.schedule.configure",
+          pluginId: featured.pluginId,
+          schedule: "tick",
+          enabled: true,
+        }),
+      },
+      {
+        name: "plugins.workflow.start",
+        tool: "opensteer_plugin_resource_update",
+        args: (c) => ({
+          pluginId: featured.pluginId,
+          change: { action: "workflow.start", workflow: "hold", input: {}, key: `parity-${c}` },
+        }),
+        command: () => ({
+          type: "plugins.workflow.start",
+          pluginId: featured.pluginId,
+          workflow: "hold",
+          input: {},
+        }),
+      },
+      {
+        name: "plugins.workflow.stop",
+        tool: "opensteer_plugin_resource_update",
+        args: async (c) => ({
+          pluginId: featured.pluginId,
+          change: { action: "workflow.stop", runId: await personStarts(c) },
+        }),
+        command: (c) => ({
+          type: "plugins.workflow.stop",
+          pluginId: featured.pluginId,
+          runId: workflowRuns[c],
+        }),
       },
       {
         name: "thread.rename",
@@ -1356,6 +1509,35 @@ it("records what today's tools let each caller do, and the door answers the same
         type: `app.${method}`,
         appId,
       }));
+    // The Home's plugin service holds its operations as fields: they are caught on the instance.
+    intercept(plugins, "install", ([input]) => {
+      const i = input as { kind: string; id?: string };
+      return i.kind === "catalog"
+        ? { type: "plugins.install", source: { kind: "catalog", catalogId: i.id } }
+        : undefined;
+    });
+    intercept(plugins, "activate", ([input]) => {
+      const i = input as { plugin: string; version: string };
+      return { type: "plugins.version.activate", pluginId: i.plugin, versionId: i.version };
+    });
+    intercept(plugins, "remove", ([input]) => ({
+      type: "plugins.remove",
+      pluginId: (input as { plugin: string }).plugin,
+    }));
+    intercept(plugins, "resourcesUpdate", ([input]) => {
+      const { pluginId, change } = input as {
+        pluginId: string;
+        change: Record<string, unknown> & { action: string };
+      };
+      const { action, key: _key, ...rest } = change;
+      const type = {
+        "schedule.configure": "plugins.schedule.configure",
+        "workflow.start": "plugins.workflow.start",
+        "workflow.stop": "plugins.workflow.stop",
+        "webhook.remove": "plugins.webhook.remove",
+      }[action];
+      return type ? { type, pluginId, ...rest } : undefined;
+    });
     intercept(CommandService.prototype, "cancelAssignment", ([input]) => ({
       type: "assignment.cancel",
       assignmentId: (input as { assignmentId: string }).assignmentId,
