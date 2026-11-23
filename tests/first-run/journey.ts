@@ -41,6 +41,7 @@ import {
   quitApp,
 } from "./remote.js";
 import {
+  assertAccountAddressPublic,
   assertAccountTlsAccepted,
   journeyAccountTls,
   type JourneyAccountTls,
@@ -82,6 +83,8 @@ function required(name: string): string {
 const accountTls = requiredAccountTls();
 // The journey's own client accepts it, before anything is launched (run 20261122T221025Z-d20c2ea7).
 await assertAccountTlsAccepted(accountTls);
+// And the Host would fetch its keys from where the guest puts its name.
+await assertAccountAddressPublic(accountTls);
 
 function requiredAccountTls(): JourneyAccountTls {
   const tls = journeyAccountTls();

@@ -54,7 +54,11 @@ keychain="$HOME/Library/Keychains/opensteer-journey-fixture.keychain-db"
 state="$HOME/opensteer-job/fixture-keychain.state"
 
 # The fixture authority: a certificate authority made for this job, the account service's
-# certificate under a public-looking name, and that name on loopback in the hosts file. Nothing is
+# certificate under a public-looking name, and that name on an address of the guest's own loopback
+# interface in the hosts file. The Host fetches the account service's keys only from a name that
+# resolves to a public address, never from 127.0.0.1 (run on e7080ea31), so the address is one it
+# counts as public: 192.88.99.10, in the 6to4 relay prefix RFC 7526 deprecated, which no
+# destination a guest reaches uses; the alias holds that one address, in the guest. Nothing is
 # trusted here: the first-run journey hands the authority's file to the Mac app as
 # NODE_EXTRA_CA_CERTS, which the app passes to its Host, and launches the app's Chromium told to
 # accept the account service's one public key. The name and this folder are
@@ -62,12 +66,15 @@ state="$HOME/opensteer-job/fixture-keychain.state"
 authority="$HOME/opensteer-job/fixture-authority"
 authority_name="Opensteer journey fixture authority"
 account_name="account.first-run.opensteer.example"
-hosts_line="127.0.0.1 $account_name # opensteer-job-fixture-authority"
+account_address="192.88.99.10"
+hosts_line="$account_address $account_name # opensteer-job-fixture-authority"
 # What `begin` did, one line each, written before it does it: `end` undoes exactly these, and keeps
 # this record and the files until every removal succeeded.
 authority_state="$HOME/opensteer-job/fixture-authority.state"
 
 recorded_value() { sed -n "s/^$1 //p" "$authority_state" | head -n 1; }
+# Whether an interface (`-a`: any) holds the address now; looking needs no root.
+holds_address() { ifconfig "$1" | grep -qE "^[[:space:]]inet $(printf '%s' "$2" | sed 's/\./\\./g') "; }
 
 authority_begin() {
   [ ! -e "$authority_state" ] || refuse "a fixture authority is already in place"
@@ -75,15 +82,21 @@ authority_begin() {
   if [ "$(sudo -n tail -c 1 /etc/hosts | od -An -c | tr -d ' ')" != '\n' ]; then
     refuse "the guest's hosts file does not end in a newline"
   fi
+  # An address already on an interface is not this step's to add, nor to take away after.
+  if holds_address -a "$account_address"; then
+    refuse "$account_address is already an address of this guest"
+  fi
   mkdir -p "$authority"
   : >"$authority_state"
   # The runner puts this script in the job's folder (this step itself arrives over stdin).
   /bin/bash "$HOME/opensteer-job/fixture-authority-files.sh" "$authority" "$authority_name" "$account_name"
+  echo "alias $account_address" >>"$authority_state"
+  sudo -n ifconfig lo0 alias "$account_address" 255.255.255.255
   echo "hosts $hosts_line" >>"$authority_state"
   printf '%s\n' "$hosts_line" | sudo -n tee -a /etc/hosts >/dev/null
   # What the guest's resolver answers for the name now, for the run's log.
   echo "fixture authority: $account_name resolves to $(dscacheutil -q host -a name "$account_name" 2>/dev/null | sed -n 's/^ip_address: //p' | paste -sd ' ' - || true)"
-  echo "fixture authority: in place, $account_name on loopback"
+  echo "fixture authority: in place, $account_name on $account_address, an address of loopback"
 }
 
 authority_end() {
@@ -93,6 +106,12 @@ authority_end() {
   if [ -n "$line" ]; then
     # Exactly the line `begin` added: every character matched as itself.
     sudo -n sed -i "" "/^$(printf '%s' "$line" | sed 's/[][\.*^$/]/\\&/g')\$/d" /etc/hosts || status=1
+  fi
+  line="$(recorded_value alias)"
+  # `begin` refused an address already there, so one on loopback now is the one it added; one not
+  # there is gone already (or never got there), and nothing is left to undo.
+  if [ -n "$line" ] && holds_address lo0 "$line"; then
+    sudo -n ifconfig lo0 -alias "$line" || status=1
   fi
   if [ "$status" -ne 0 ]; then
     echo "fixture authority: not all of it could be removed; its record is kept for another end" >&2

@@ -42,15 +42,18 @@ cannot run outside the guest: it refuses unless macOS reports a hypervisor and t
 `~/opensteer-job/guest-job` marker (written at staging) names the job's VM.
 The same step makes a fixture authority for the job (`scripts/test-vm/fixture-authority-files.sh`,
 which checks its certificate verifies and logs both fingerprints) and puts
-`account.first-run.opensteer.example` on loopback in the guest's hosts file, recording the line
-before it writes it. It never changes the guest's trust. The first-run journey serves its account
+`account.first-run.opensteer.example` on `192.88.99.10` in the guest's hosts file, an address it
+adds to the guest's loopback interface: the Host fetches account keys only from a name that
+resolves to a public address (`packages/access/src/public-network.ts`), never 127.0.0.1, and that
+deprecated 6to4 relay address is one it counts as public. It records the address and the line
+before it adds each, and refuses an address the guest already holds. It never changes the guest's trust. The first-run journey serves its account
 service there over HTTPS and hands the app, a development launch, two things a released app never
 takes from its environment: the authority as `NODE_EXTRA_CA_CERTS`, which the app passes to its
 Host and nothing else, and the account service's one key as
 `OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY`, which only the app's account session accepts
 (`electron-service-network.ts`). No launch takes a certificate switch. A trial stopped by a certificate leaves `first-run/<trial>/tls-evidence.json`: what
 the name resolved to and which certificate answered. `end` removes exactly the recorded line and
-keeps the record until it has.
+address and keeps the record until it has.
 `pnpm exec tsx scripts/test-vm/guest-contract-journey.ts` holds it to that. To see what a suite's
 session can do with it, run `pnpm test:vm -- bash ../../scripts/test-vm/keychain-diagnostic.sh`.
 

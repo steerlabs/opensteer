@@ -73,7 +73,13 @@ export async function startJourneyAccountService(input: {
    * Served as a bare public HTTPS origin, as the Host requires of its issuer: a TLS front on
    * `https://<name>:<port>` with the fixture authority's certificate, before the service itself.
    */
-  readonly tls?: { readonly name: string; readonly cert: string; readonly key: string };
+  readonly tls?: {
+    readonly name: string;
+    readonly cert: string;
+    readonly key: string;
+    /** Where the front listens: where the name resolves (loopback where none says otherwise). */
+    readonly address?: string;
+  };
 }): Promise<JourneyAccountService> {
   const port = input.port ?? (await freePort());
   const frontPort = input.tls ? await freePort() : null;
@@ -100,7 +106,7 @@ export async function startJourneyAccountService(input: {
 
 /** HTTPS on `frontPort`, passed through as it came to the service on loopback `port`. */
 async function tlsFront(
-  tls: { readonly cert: string; readonly key: string },
+  tls: { readonly cert: string; readonly key: string; readonly address?: string },
   frontPort: number,
   port: number,
 ): Promise<{ close(): Promise<void> }> {
@@ -121,7 +127,9 @@ async function tlsFront(
     forward.on("error", () => outgoing.destroy());
     incoming.pipe(forward);
   });
-  await new Promise<void>((resolve) => server.listen(frontPort, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) =>
+    server.listen(frontPort, tls.address ?? "127.0.0.1", resolve),
+  );
   return {
     close: () =>
       new Promise<void>((resolve) => {

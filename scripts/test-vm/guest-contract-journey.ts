@@ -208,7 +208,9 @@ process.exit(0);
 `;
 // sudo, recorded and never run: what the step asks of root, with what it pipes in.
 // Of the hosts file it runs the real tail, tee and sed, as root would, on the case's own copy
-// ($HOME/etc-hosts for /etc/hosts), so the step's exact commands are run, never only read. The case
+// ($HOME/etc-hosts for /etc/hosts), so the step's exact commands are run, never only read. Of the
+// loopback interface it keeps the addresses added and taken away in $HOME/lo0-aliases, which the
+// ifconfig stand-in prints as macOS's ifconfig prints them. The case
 // may make one command fail (SUDO_FAIL), or have the step interrupted while one runs (SUDO_KILL:
 // TERM to the step, as a dropped connection or a timeout would).
 const sudoStandIn = String.raw`#!/usr/bin/env node
@@ -218,6 +220,13 @@ fs.appendFileSync(home+'/sudo-calls.jsonl',JSON.stringify({args:a,input})+'\n');
 if(process.env.SUDO_KILL&&a.includes(process.env.SUDO_KILL))process.kill(process.ppid,'SIGTERM');
 if(process.env.SUDO_FAIL&&a.includes(process.env.SUDO_FAIL))process.exit(1);
 const command=a.filter((word)=>word!=='-n');
+if(command[0]==='ifconfig'&&command[1]==='lo0'&&(command[2]==='alias'||command[2]==='-alias')){
+  const file=home+'/lo0-aliases',held=fs.existsSync(file)?fs.readFileSync(file,'utf8').split('\n').filter(Boolean):[];
+  if(command[2]==='-alias'&&!held.includes(command[3])){console.error('ifconfig: ioctl (SIOCDIFADDR): Can\'t assign requested address');process.exit(1)}
+  const next=command[2]==='alias'?[...held.filter((x)=>x!==command[3]),command[3]]:held.filter((x)=>x!==command[3]);
+  fs.writeFileSync(file,next.map((x)=>x+'\n').join(''));
+  process.exit(0);
+}
 if(['tail','tee','sed'].includes(command[0])){
   const run=spawnSync('/usr/bin/'+command[0],command.slice(1).map((word)=>word==='/etc/hosts'?home+'/etc-hosts':word),{input,stdio:['pipe','pipe','inherit']});
   process.stdout.write(command[0]==='tee'?'':run.stdout);
@@ -231,7 +240,25 @@ const guestHosts =
 const hostsOf = (root: string) => readFileSync(path.join(root, "etc-hosts"), "utf8");
 // What the guest's resolver says of the name once the line is in.
 const dscacheutilStandIn =
-  "#!/bin/sh\necho 'name: account.first-run.opensteer.example'\necho 'ip_address: 127.0.0.1'\n";
+  "#!/bin/sh\necho 'name: account.first-run.opensteer.example'\necho 'ip_address: 192.88.99.10'\n";
+/**
+ * The guest's interfaces as macOS's ifconfig prints them: loopback, with what the sudo stand-in
+ * added, and the guest's own network, with $GUEST_ADDRESS where a case gives it one more.
+ */
+const ifconfigStandIn = String.raw`#!/bin/sh
+aliases="$HOME/lo0-aliases"
+printf 'lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
+	inet 127.0.0.1 netmask 0xff000000
+'
+[ -f "$aliases" ] && while read -r address; do printf '	inet %s netmask 0xffffffff
+' "$address"; done <"$aliases"
+[ "$1" = -a ] || exit 0
+printf 'en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+	inet 192.168.64.5 netmask 0xffffff00 broadcast 192.168.64.255
+'
+[ -z "$GUEST_ADDRESS" ] || printf '	inet %s netmask 0xffffff00
+' "$GUEST_ADDRESS"
+`;
 const sysctlGuest = '#!/bin/sh\n[ "$2" = kern.hv_vmm_present ] && echo 1\n';
 function keychainCase(
   name: string,
@@ -251,6 +278,7 @@ function keychainCase(
     writeFileSync(path.join(tools, "security"), securityStandIn, { mode: 0o700 });
     writeFileSync(path.join(tools, "sudo"), sudoStandIn, { mode: 0o700 });
     writeFileSync(path.join(tools, "dscacheutil"), dscacheutilStandIn, { mode: 0o700 });
+    writeFileSync(path.join(tools, "ifconfig"), ifconfigStandIn, { mode: 0o700 });
     writeFileSync(path.join(root, "etc-hosts"), setup.hosts ?? guestHosts);
     if (setup.guest) writeFileSync(path.join(tools, "sysctl"), sysctlGuest, { mode: 0o700 });
     if (setup.marker !== null)
@@ -304,8 +332,15 @@ const sudoCalls = (root: string) =>
         .split("\n")
         .map((line) => JSON.parse(line) as { args: string[]; input: string })
     : [];
+const accountHostsLine =
+  "192.88.99.10 account.first-run.opensteer.example # opensteer-job-fixture-authority";
 const exactHostsLine =
-  "/^127\\.0\\.0\\.1 account\\.first-run\\.opensteer\\.example # opensteer-job-fixture-authority$/d";
+  "/^192\\.88\\.99\\.10 account\\.first-run\\.opensteer\\.example # opensteer-job-fixture-authority$/d";
+/** The addresses the step added to the guest's loopback interface and has not taken away. */
+const loopbackAliases = (root: string) =>
+  existsSync(path.join(root, "lo0-aliases"))
+    ? readFileSync(path.join(root, "lo0-aliases"), "utf8").split("\n").filter(Boolean)
+    : [];
 const authorityRecord = (root: string) =>
   readFileSync(path.join(root, "opensteer-job/fixture-authority.state"), "utf8").trim().split("\n");
 
@@ -360,31 +395,28 @@ keychainCase(
     assert.equal(step("unlock"), 77);
     assert.deepEqual(calls(root), []);
     assert.equal(step("begin"), 0);
-    // The fixture authority: its files and the name on loopback, and of root nothing else: the
-    // guest's trust, and the right to change it, are never touched.
+    // The fixture authority: its files, the address on loopback and the name on it, and of root
+    // nothing else: the guest's trust, and the right to change it, are never touched.
     const authority = path.join(root, "opensteer-job/fixture-authority");
     for (const file of ["ca.pem", "account.pem", "account.key"])
       assert.ok(existsSync(path.join(authority, file)), `no ${file}`);
     const asked = sudoCalls(root).map(({ args, input }) => ({ line: args.join(" "), input }));
     assert.deepEqual(
       asked.map(({ line }) => line),
-      ["-n tail -c 1 /etc/hosts", "-n tee -a /etc/hosts"],
+      [
+        "-n tail -c 1 /etc/hosts",
+        "-n ifconfig lo0 alias 192.88.99.10 255.255.255.255",
+        "-n tee -a /etc/hosts",
+      ],
     );
-    assert.equal(
-      asked[1]?.input,
-      "127.0.0.1 account.first-run.opensteer.example # opensteer-job-fixture-authority\n",
-    );
-    assert.equal(
-      hostsOf(root),
-      `${guestHosts}127.0.0.1 account.first-run.opensteer.example # opensteer-job-fixture-authority\n`,
-    );
-    // Recorded before the line was written.
-    assert.deepEqual(authorityRecord(root), [
-      "hosts 127.0.0.1 account.first-run.opensteer.example # opensteer-job-fixture-authority",
-    ]);
+    assert.equal(asked[2]?.input, `${accountHostsLine}\n`);
+    assert.equal(hostsOf(root), `${guestHosts}${accountHostsLine}\n`);
+    assert.deepEqual(loopbackAliases(root), ["192.88.99.10"]);
+    // Each recorded before it was done.
+    assert.deepEqual(authorityRecord(root), ["alias 192.88.99.10", `hosts ${accountHostsLine}`]);
     assert.match(
       readFileSync(path.join(root, "begin.log"), "utf8"),
-      /account\.first-run\.opensteer\.example resolves to 127\.0\.0\.1\n/u,
+      /account\.first-run\.opensteer\.example resolves to 192\.88\.99\.10\n/u,
     );
     const state = () =>
       JSON.parse(readFileSync(path.join(root, "security-state.json"), "utf8")) as {
@@ -435,9 +467,14 @@ keychainCase(
     const ended = sudoCalls(root)
       .slice(beforeEnd)
       .map(({ args }) => args.join(" "));
-    // Exactly what it added: the hosts line, matched as itself, and the file as it was.
-    assert.deepEqual(ended, [`-n sed -i  ${exactHostsLine} /etc/hosts`]);
+    // Exactly what it added: the hosts line, matched as itself, and the file as it was; the
+    // address, and loopback as it was.
+    assert.deepEqual(ended, [
+      `-n sed -i  ${exactHostsLine} /etc/hosts`,
+      "-n ifconfig lo0 -alias 192.88.99.10",
+    ]);
     assert.equal(hostsOf(root), guestHosts);
+    assert.deepEqual(loopbackAliases(root), []);
     assert.equal(existsSync(authority), false);
     assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority.state")), false);
     assert.deepEqual(state(), { default: login, list: [login, other] });
@@ -468,43 +505,90 @@ keychainCase(
 );
 
 // Interrupted while it writes the hosts line (a dropped connection, a timeout): the line is on
-// record from before it was written, and `end` removes exactly it.
+// record from before it was written, and `end` removes exactly it, and the address before it.
 keychainCase(
   "authority-interrupted-while-writing-hosts",
   { guest: true, marker: "opensteer-gui-job-contract" },
   (step, root) => {
     assert.notEqual(step("begin", { SUDO_KILL: "tee" }), 0);
-    assert.deepEqual(authorityRecord(root), [
-      "hosts 127.0.0.1 account.first-run.opensteer.example # opensteer-job-fixture-authority",
-    ]);
+    assert.deepEqual(authorityRecord(root), ["alias 192.88.99.10", `hosts ${accountHostsLine}`]);
     const before = sudoCalls(root).length;
     assert.equal(step("end"), 0);
     assert.deepEqual(
       sudoCalls(root)
         .slice(before)
         .map(({ args }) => args.join(" ")),
-      [`-n sed -i  ${exactHostsLine} /etc/hosts`],
+      [`-n sed -i  ${exactHostsLine} /etc/hosts`, "-n ifconfig lo0 -alias 192.88.99.10"],
     );
     assert.equal(hostsOf(root), guestHosts);
+    assert.deepEqual(loopbackAliases(root), []);
     assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority")), false);
     assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority.state")), false);
   },
 );
 
 // A removal that fails keeps the record and the files, so another `end` can finish.
-keychainCase(
-  "authority-removal-fails",
-  { guest: true, marker: "opensteer-gui-job-contract" },
-  (step, root) => {
+for (const [name, failing] of [
+  ["authority-removal-fails", "sed"],
+  ["authority-alias-removal-fails", "-alias"],
+] as const)
+  keychainCase(name, { guest: true, marker: "opensteer-gui-job-contract" }, (step, root) => {
     assert.equal(step("begin"), 0);
-    assert.equal(step("end", { SUDO_FAIL: "sed" }), 1);
-    assert.match(hostsOf(root), /opensteer-job-fixture-authority\n$/u);
+    assert.equal(step("end", { SUDO_FAIL: failing }), 1);
+    if (failing === "sed") assert.match(hostsOf(root), /opensteer-job-fixture-authority\n$/u);
+    else assert.deepEqual(loopbackAliases(root), ["192.88.99.10"]);
     assert.ok(existsSync(path.join(root, "opensteer-job/fixture-authority.state")));
     assert.ok(existsSync(path.join(root, "opensteer-job/fixture-authority/ca.pem")));
     assert.equal(step("end"), 0);
     assert.equal(hostsOf(root), guestHosts);
+    assert.deepEqual(loopbackAliases(root), []);
     assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority.state")), false);
     assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority")), false);
+  });
+
+// Interrupted while it adds the address: on record from before, and `end` takes it away; no hosts
+// line was written, so none is removed.
+keychainCase(
+  "authority-interrupted-while-adding-the-address",
+  { guest: true, marker: "opensteer-gui-job-contract" },
+  (step, root) => {
+    assert.notEqual(step("begin", { SUDO_KILL: "alias" }), 0);
+    assert.deepEqual(authorityRecord(root), ["alias 192.88.99.10"]);
+    assert.equal(hostsOf(root), guestHosts);
+    const before = sudoCalls(root).length;
+    assert.equal(step("end"), 0);
+    assert.deepEqual(
+      sudoCalls(root)
+        .slice(before)
+        .map(({ args }) => args.join(" ")),
+      ["-n ifconfig lo0 -alias 192.88.99.10"],
+    );
+    assert.deepEqual(loopbackAliases(root), []);
+    assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority.state")), false);
+  },
+);
+
+// The address is already one of the guest's: not the step's to add, nor to take away after. It
+// refuses before it records or changes anything, and `end` leaves the address where it is.
+keychainCase(
+  "authority-address-already-held",
+  { guest: true, marker: "opensteer-gui-job-contract" },
+  (step, root) => {
+    assert.equal(step("begin", { GUEST_ADDRESS: "192.88.99.10" }), 77);
+    assert.deepEqual(
+      sudoCalls(root).map(({ args }) => args.join(" ")),
+      ["-n tail -c 1 /etc/hosts"],
+    );
+    assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority.state")), false);
+    assert.match(
+      readFileSync(path.join(root, "begin.log"), "utf8"),
+      /refused: 192\.88\.99\.10 is already an address of this guest/u,
+    );
+    assert.equal(step("end", { GUEST_ADDRESS: "192.88.99.10" }), 0);
+    assert.deepEqual(
+      sudoCalls(root).map(({ args }) => args.join(" ")),
+      ["-n tail -c 1 /etc/hosts"],
+    );
   },
 );
 
