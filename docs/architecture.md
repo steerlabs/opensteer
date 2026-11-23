@@ -255,19 +255,51 @@ person had started it in Agent home themselves: their user, project and local se
 folder's `CLAUDE.md` or `AGENTS.md`, the engine's own tools (web search included), and their own
 MCP servers, hooks and skills. Opensteer adds its MCP server, its instructions and its skills, and
 overrides only what it needs, each with its reason beside it in the driver. A server of theirs named
-`opensteer` is replaced by Opensteer's in Claude Code; Codex merges the two, Opensteer's fields
-winning.
+`opensteer` is replaced by Opensteer's in Claude Code, and a Run of Claude Code that has not loaded
+Opensteer's fails. Codex merges the two, Opensteer's fields winning, so their `enabled_tools` cannot
+hide Opensteer's tools; when theirs runs a command, the Run fails with one sentence asking them to
+rename it.
 
-The person wrote those settings for their own use. A task in a connected agent's lineage or a
-chat's, with or without personal context, starts the engine with none of them: applying them would
-give the connection more than the person approved. The Host says which a Run is
-(`personLineage`, from the Run's connection, its task's origin and the chats in its context
-lineage), and `engineConfiguration` (`packages/harness/src/engine-configuration.ts`) is the one
-place that chooses. Claude Code and Codex follow it. Cursor cannot start without the person's own
-Cursor configuration, so it refuses such a task and says why. Pi is started for such a task with
-an empty system prompt, so the person's `SYSTEM.md` stays out and Pi keeps its own. Grok and Muse
-start every task as before; both read some of the person's own configuration (by their code and
-documentation, not yet shown on the engines).
+The person wrote those settings for their own use. A task outside the person's own lineage
+starts the engine with none of them, with or without personal context: applying them would give a
+connected agent or a chat more than the person approved. The lineage walk that decides personal
+context decides this too (`runContextLineage`, `packages/database/src/run-personal-context.ts`): a
+task is not the person's own when its Run has a connection, a task on the walk was started by a
+connection, any message in it or the tasks it descends from was written by a connection, the walk
+meets a chat, or it anchors one of Opensteer's own jobs, such as a memory pass. It narrows and never
+widens back: the person writing into such a task again, a task linked under it, and an automation
+of theirs that fires from it are not their own either. The Runner is told `personLineage`, and
+`engineConfiguration` (`packages/harness/src/engine-configuration.ts`) is the one place that
+chooses.
+
+Such a task keeps the task's mode, runs nothing of theirs (hooks, notify commands, command
+prefixes, MCP servers) and reads none of their instructions or memory; what the engine needs to
+sign in stays. An engine runs such a task only where an engine-lane test plants one of each kind in
+a temporary home and project and shows all three on the real engine. Otherwise
+`assertEngineMayRun`, in the same file, refuses it before any process starts, with code `forbidden`
+and one sentence: "Codex starts with your own Codex settings, so it runs only tasks you started
+yourself that no connected agent or chat has written to." The Home offers every engine to every
+task and does not refuse by engine itself, so the Runner refuses.
+
+- **Claude Code** runs both. Its own task gets the person's settings, instructions, tools and MCP
+  servers. Another's task loads no settings source, only Opensteer's MCP server, and no web search
+  (`packages/harness-claude/src/own-configuration.engine.test.ts`).
+- **Pi** runs both. Another's task starts with an agent folder of Opensteer's that links only the
+  person's `auth.json` and `models.json` and with an empty system prompt, so their settings,
+  command prefix, `SYSTEM.md`, `APPEND_SYSTEM.md`, `AGENTS.md`, prompts and the project's `.pi`
+  stay out and Pi keeps its own prompt (`packages/harness-pi/src/own-configuration.engine.test.ts`).
+- **Codex** runs only the person's own tasks. Started without their configuration it still applies
+  their command rules, runs their `notify`, and reads their global `AGENTS.md`, their custom agents
+  and a trusted project's developer instructions, none of which can be turned off one by one
+  (`packages/harness-codex/src/own-configuration.engine.test.ts`). A Codex home of Opensteer's
+  would shut them out but would need the person's sign-in shared without copying it, which is not
+  shown.
+- **Cursor**, **Grok** and **Muse Code** run only the person's own tasks: each reads the person's
+  own configuration with no way shown to start without it.
+- **OpenCode** and **Antigravity** run both and do not read the person's own configuration of
+  them, in their own task either. OpenCode starts with a configuration home Opensteer writes for the
+  session and with project configuration and Claude Code's prompt and skills switched off;
+  Antigravity starts with isolated state only. Neither has a boundary test yet.
 
 Every task's engine gets the person's proxy and certificate variables (`HTTPS_PROXY`,
 `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`)
