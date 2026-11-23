@@ -2634,6 +2634,113 @@ describe("Electron debugger teardown", () => {
     });
   });
 
+  // F30, the first half of the hypothesis for follow-never-shown-tab's four starts: a tab never
+  // shown sends, before its start's answer is handled, a first frame at the size it last drew,
+  // which 6a0311f0b made the hub hand on; the real follow view, sized as the Electron page sizes
+  // it, sees that frame. If it restarted the cast for every such frame, one show would send
+  // several starts. Here it is the follow view of browser-runtime-core, its resizeView included,
+  // on the hub's own channel; only the ledger around it is the least the follow view reads.
+  it("sends one start when a never-shown tab's first frame, of its old size, beats the answer", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const hub = await hubPage("65");
+    const channel = await hub.page.cdp();
+    const shown = { height: 900, width: 1_400 };
+    // The size the tab drew at before it was shown: its resting host's.
+    const resting = { height: 600, width: 800 };
+    const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+    let starts = 0;
+    const frame = (size: { height: number; width: number }, id: number) => ({
+      data: jpeg(size.width, size.height).toString("base64"),
+      metadata: {
+        deviceHeight: size.height,
+        deviceWidth: size.width,
+        offsetTop: 0,
+        pageScaleFactor: 1,
+        scrollOffsetX: 0,
+        scrollOffsetY: 0,
+      },
+      sessionId: id,
+    });
+    hub.contents.debugger.sendCommand.mockImplementation(
+      (method: string, parameters?: Record<string, unknown>, session?: string) => {
+        const answered = answer(method, parameters, session);
+        if (method !== "Page.startScreencast") return answered;
+        const id = (starts += 1);
+        // Chromium answers, and sends the picture it last drew before the hub hears the
+        // answer; the picture at the shown size follows.
+        return Promise.resolve(answered).then((result) => {
+          hub.deliver("Page.screencastFrame", frame(resting, id));
+          setTimeout(() => hub.deliver("Page.screencastFrame", frame(shown, id)), 5);
+          return result;
+        });
+      },
+    );
+    const surface = {
+      documentId: "document-1",
+      geometryRevision: 1,
+      id: "surface-1",
+      loading: false,
+    };
+    const capture = { height: shown.height, rasterScale: 1, revision: 1, width: shown.width };
+    const binding = {
+      cdp: channel,
+      page: {
+        applyGeometry: async () => undefined,
+        capture: { read: () => capture, subscribe: () => () => undefined },
+        invalidateSurface: async () => undefined,
+        settleRendering: async () => undefined,
+      },
+      surface,
+    };
+    const ledger = {
+      active: () => binding,
+      binding: () => binding,
+      dialogOf: () => null,
+      dialogOpen: () => false,
+      recordPageScale: () => undefined,
+      subscribe: () => () => undefined,
+      use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      viewportOf: () => shown,
+      withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+    };
+    const delivered: unknown[] = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+      ledger: ledger as never,
+      onDialogChanged: () => undefined,
+    });
+    const handed: number[] = [];
+    channel.onEvent((method, parameters) => {
+      if (method === "Page.screencastFrame")
+        handed.push((parameters as { metadata: { deviceWidth: number } }).metadata.deviceWidth);
+    });
+    await follow.start();
+    await follow.setStreaming(true);
+    const admitted = () =>
+      follow.diagnostics.filter(({ stage }) => stage === "capture-admit").length;
+    // Drawn: the frame at the shown size, which comes after any restart the first one caused.
+    await vi.waitFor(() => expect(admitted()).toBe(1));
+    await new Promise((resolve) => setImmediate(resolve));
+    const discarded = () =>
+      follow.diagnostics.filter(({ stage }) => stage === "capture-discard").length;
+    // The hub handed it the old-size frame with the start, and it took the frame for none of its
+    // own: its cast had not started when the frame came, so it neither drew it nor restarted.
+    expect(handed).toEqual([resting.width, shown.width]);
+    expect({ discarded: discarded(), starts }).toEqual({ discarded: 0, starts: 1 });
+    // The same frame once its cast runs is one it restarts for, once: what the test would see.
+    hub.deliver("Page.screencastFrame", frame(resting, starts));
+    await vi.waitFor(() => expect(admitted()).toBe(2));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect({ discarded: discarded(), starts }).toEqual({ discarded: 1, starts: 2 });
+    await follow.close();
+    await hub.browser.close();
+  });
+
   // Finding 8: a page runs a few casts at most, and equal settings are one cast.
   describe("how many casts a page runs", () => {
     // Run on 963f808d0, follow-never-shown-tab: a tab the person opened recorded four starts in
