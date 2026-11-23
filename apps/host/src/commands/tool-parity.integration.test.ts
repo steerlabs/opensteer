@@ -16,7 +16,7 @@ import {
   type CommandResource,
   type CommandRow,
 } from "@opensteer/protocol/command-table";
-import { OpensteerError } from "@opensteer/core";
+import { OpensteerError, createId } from "@opensteer/core";
 import { agentTools } from "@opensteer/agent-tools";
 import { CommandService } from "@opensteer/orchestration";
 import type { HostApiCommand } from "@opensteer/protocol";
@@ -43,7 +43,9 @@ import {
   dispatchCallerRun,
   enrollmentToken,
   rejectRunsExcept,
+  acceptCallerRun,
   startPrivateMachineHost,
+  waitForExecute,
   type CallerRun,
 } from "../runtime/private-machine-host.test-support.js";
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
@@ -110,6 +112,14 @@ const decided: Readonly<Record<string, string>> = {
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "thread.inputQueue.resume / selected-covering":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "request.respond / selected-covering":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "node.stop / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "node.stop / selected-covering":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "assignment.cancel / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "tab.organize (into a new group) / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "tab.group.update (rename) / everything":
@@ -161,9 +171,6 @@ const withoutTool: Readonly<Record<string, string>> = {
  * owed before this branch is trial-merged (the lead's item 2). The list only shrinks.
  */
 const owed: Readonly<Record<string, string>> = {
-  "node.stop": "opensteer_subagent_stop (a subagent)",
-  "assignment.cancel": "opensteer_delegation_cancel",
-  "request.respond": "opensteer_request_answer",
   "plugin.remove": "local_server_remove",
   "plugins.install": "opensteer_plugin_install",
   "plugins.version.activate": "opensteer_plugin_activate",
@@ -198,8 +205,8 @@ it("records what today's tools let each caller do, and the door answers the same
       name: "Parity computer",
       token: host.hostingRunnerEnrollmentToken,
       modelSettings: true,
-      // Two callers' own Runs, three busy tasks' and the Runs callers may not stop run at once.
-      maxConcurrentRuns: 16,
+      // Two callers' own Runs, three busy tasks', the Runs callers may not stop and those asking run at once.
+      maxConcurrentRuns: 24,
       // Its engine steers a running turn, so a waiting message can be steered into one.
       steers: true,
       browser: {
@@ -223,7 +230,9 @@ it("records what today's tools let each caller do, and the door answers the same
     // computer (a reminder that fired, a message's) is refused before admission, so none is left
     // unanswered to end the connection.
     const starting = new Set<string>();
-    rejectRunsExcept(machine.primary, (threadId) => starting.has(threadId));
+    // While a Run of the test delegates, the delegated task's Run is the test's too.
+    let adopting = false;
+    rejectRunsExcept(machine.primary, (threadId) => starting.has(threadId) || adopting);
     const accepted = async (threadId: ThreadId, key: string) => {
       starting.add(threadId);
       try {
@@ -367,7 +376,7 @@ it("records what today's tools let each caller do, and the door answers the same
           .where("id", "=", threadId)
           .execute();
       const run = await accepted(threadId, key);
-      return { threadId, runId: run.runId };
+      return { threadId, runId: run.runId, run };
     };
     const busyFull = await busyTask("parity-busy", "full-access");
     const busySupervised = await busyTask("parity-busy-supervised", "approval-required");
@@ -399,7 +408,7 @@ it("records what today's tools let each caller do, and the door answers the same
       return sent.message.id;
     };
     /** A Run each caller may stop, fresh for each: never the caller's own. */
-    const stoppable = {} as Record<Caller, { threadId: ThreadId; runId: string }>;
+    const stoppable = {} as Record<Caller, Awaited<ReturnType<typeof busyTask>>>;
     let stoppableCount = 0;
     const stoppableRun = async (caller: Caller) =>
       (stoppable[caller] = await busyTask(
@@ -407,6 +416,83 @@ it("records what today's tools let each caller do, and the door answers the same
         caller === "own-supervised" ? "approval-required" : "full-access",
         caller.startsWith("selected-") ? covering.id : undefined,
       ));
+    /** An ordinary question a fresh Run in each caller's reach asks, and the revision it is at. */
+    const question = {} as Record<Caller, { requestId: string; expectedRevision: string }>;
+    const asked = async (caller: Caller) => {
+      const { run } = await stoppableRun(caller);
+      const requestId = await run.openLiveRequest("harness.input");
+      const row = await host.store.database
+        .selectFrom("requests")
+        .select("revision")
+        .where("id", "=", requestId as never)
+        .executeTakeFirstOrThrow();
+      return (question[caller] = { requestId, expectedRevision: String(row.revision) });
+    };
+    /**
+     * A subagent at work under a Run, one per caller: the caller's own Run's for your own agents
+     * (only a Run's agent stops its subagents), the busy Run in reach for a connection.
+     */
+    const subagents = {} as Record<Caller, { nodeId: string; runId: string; threadId: ThreadId }>;
+    const subagent = async (caller: Caller) => {
+      const under = caller.startsWith("own-")
+        ? {
+            runId: caller === "own-full" ? full.runId : supervised.runId,
+            threadId: callers[caller].task,
+          }
+        : busy[caller];
+      const attempt = await host.store.database
+        .selectFrom("runAttempts")
+        .select("id")
+        .where("runId", "=", under.runId as never)
+        .where("status", "=", "current")
+        .executeTakeFirstOrThrow();
+      const nodeId = createId("executionNode");
+      await host.store.database
+        .insertInto("executionNodes")
+        .values({
+          id: nodeId,
+          attemptId: attempt.id,
+          runId: under.runId as never,
+          status: "running",
+          kind: "subagent",
+          effort: null,
+          phaseIndex: null,
+          phases: sql`'[]'::jsonb`,
+          title: `Parity subagent ${caller}`,
+          startedAt: new Date(),
+          endedAt: null,
+          nativeRef: `native:${nodeId}`,
+          originCallId: null,
+          parentNodeId: null,
+          prompt: null,
+          result: null,
+          sessionRef: null,
+          model: null,
+          stopSupported: true,
+        })
+        .execute();
+      return (subagents[caller] = { nodeId, runId: under.runId, threadId: under.threadId });
+    };
+    /**
+     * A delegation at work, one per caller, made by the Full agent's Run (a delegation is a Run's;
+     * a connection is not offered the cancel tool today), with its task's Run accepted.
+     */
+    const delegations = {} as Record<Caller, string>;
+    const delegation = async (caller: Caller) => {
+      adopting = true;
+      const executed = waitForExecute(machine.primary.socket);
+      executed.catch(() => undefined);
+      try {
+        const made = (await callers["own-full"].client.callTool({
+          name: "opensteer_task_delegate",
+          arguments: { message: `Parity delegated work for ${caller}` },
+        })) as { structuredContent?: { delegationId?: string | null } };
+        await acceptCallerRun(host, machine, await executed);
+        return (delegations[caller] = made.structuredContent!.delegationId!);
+      } finally {
+        adopting = false;
+      }
+    };
     /** The messages each caller's queue scenario acts on, made as its arguments are. */
     const queued = {} as Record<Caller, { first: string; second?: string }>;
     const callerNames = Object.keys(callers) as Caller[];
@@ -632,6 +718,37 @@ it("records what today's tools let each caller do, and the door answers the same
           threadId: stoppable[c]?.threadId,
           runId: stoppable[c]?.runId,
         }),
+      },
+      {
+        name: "request.respond",
+        tool: "opensteer_request_answer",
+        args: async (c) => {
+          const { requestId, expectedRevision } = await asked(c);
+          return { requestId, expectedRevision, response: { kind: "choice", optionId: "allow" } };
+        },
+        command: (c) => ({
+          type: "request.respond",
+          requestId: question[c]?.requestId,
+          expectedRevision: question[c]?.expectedRevision,
+          response: { kind: "choice", optionId: "allow" },
+        }),
+      },
+      {
+        name: "node.stop",
+        tool: "opensteer_subagent_stop",
+        args: async (c) => ({ subagentId: (await subagent(c)).nodeId }),
+        command: (c) => ({
+          type: "node.stop",
+          nodeId: subagents[c]?.nodeId,
+          threadId: subagents[c]?.threadId,
+          runId: subagents[c]?.runId,
+        }),
+      },
+      {
+        name: "assignment.cancel",
+        tool: "opensteer_delegation_cancel",
+        args: async (c) => ({ delegationId: await delegation(c) }),
+        command: (c) => ({ type: "assignment.cancel", assignmentId: delegations[c] }),
       },
       {
         name: "thread.rename",
@@ -1152,6 +1269,30 @@ it("records what today's tools let each caller do, and the door answers the same
     intercept(CommandService.prototype, "setThreadDone", ([input]) => {
       const i = input as { threadId: string; done: boolean };
       return { type: "thread.done.set", threadId: i.threadId, done: i.done };
+    });
+    intercept(CommandService.prototype, "cancelAssignment", ([input]) => ({
+      type: "assignment.cancel",
+      assignmentId: (input as { assignmentId: string }).assignmentId,
+    }));
+    intercept(CommandService.prototype, "stopNode", ([input]) => {
+      const i = input as { nodeId: string; threadId: string; runId: string };
+      return { type: "node.stop", nodeId: i.nodeId, threadId: i.threadId, runId: i.runId };
+    });
+    intercept(CommandService.prototype, "sendControl", ([input]) => {
+      const i = input as {
+        type: string;
+        requestId: string;
+        expectedRevision?: string;
+        response: unknown;
+      };
+      return i.type === "request.respond"
+        ? {
+            type: i.type,
+            requestId: i.requestId,
+            expectedRevision: i.expectedRevision,
+            response: i.response,
+          }
+        : undefined;
     });
     intercept(CommandService.prototype, "createThread", ([input]) => {
       const i = input as Record<string, unknown>;

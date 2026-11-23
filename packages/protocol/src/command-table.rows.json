@@ -454,7 +454,7 @@
         }
       ],
       "step": "A",
-      "note": "`h/product.ts:908` passes `authority`",
+      "note": "`h/product.ts:908` passes `authority`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "database",
         "why": "server.ts:1936 → command-service.ts:322: a stop row the dispatcher sends after the commit",
@@ -478,7 +478,7 @@
         }
       ],
       "step": "A",
-      "note": "`h/product.ts:927` passes `admission`",
+      "note": "`h/product.ts:927` passes `admission`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "database",
         "why": "server.ts:1812 → command-service.ts:269: one store write; a round that grew writes nothing",
@@ -525,7 +525,7 @@
         }
       ],
       "step": "A",
-      "note": "answer face exists (`h/product.ts:964`); allow face \"asks\" = points at the same Request (no new one); decline face B; X11: the Run that asked goes on, in its lineage, so a connection asks unless that lineage is its own",
+      "note": "answer face exists (`h/product.ts:964`); allow face \"asks\" = points at the same Request (no new one); decline face B; X11: the Run that asked goes on, in its lineage, so a connection asks unless that lineage is its own; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "outside",
         "why": "server.ts:1970: a durable answer runs its kind's continuation (browser access, a plugin approval, a device setup)",
