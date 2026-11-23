@@ -1909,7 +1909,11 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
   const agentRefusals: Array<Record<string, unknown>> = [];
   const phaseStart = performance.now();
   // The follow view's record with when each entry came and the address of the tab it is for, then.
-  const followTimed: Array<{ readonly at: number; readonly entry: string }> = [];
+  const followTimed: Array<{
+    readonly at: number;
+    readonly entry: string;
+    readonly surfaceId: string | null;
+  }> = [];
   {
     const list = (
       controller as unknown as { readonly screencast: { readonly diagnostics: unknown[] } }
@@ -1918,12 +1922,12 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     list.push = (...entries: unknown[]) => {
       for (const value of entries) {
         const entry = asRecord(value);
-        const tab =
-          typeof entry.surfaceId === "string"
-            ? ledger.binding(entry.surfaceId as typeof surfaceId)?.surface.url
-            : undefined;
+        const entrySurfaceId = typeof entry.surfaceId === "string" ? entry.surfaceId : null;
+        const tab = entrySurfaceId
+          ? ledger.binding(entrySurfaceId as typeof surfaceId)?.surface.url
+          : undefined;
         const line = `${String(entry.stage)}${entry.reason === undefined ? "" : ` ${String(entry.reason)}`}${entry.castId === undefined ? "" : ` #${String(entry.castId)}`}${tab ? ` ${tab.replace(origin, "")}` : ""}`;
-        followTimed.push({ at: performance.now(), entry: line });
+        followTimed.push({ at: performance.now(), entry: line, surfaceId: entrySurfaceId });
         if (entry.stage === "cast-first-frame-timeout")
           castFirstFrameTimeouts.push(
             `${Math.round(performance.now() - phaseStart)}ms after ${String(entry.durationMs)}ms ${line}`,
@@ -1934,14 +1938,14 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     };
   }
   /**
-   * The follow view's record since `since`, each entry with when it came and its tab's address.
-   * Read by time: the follow view keeps its own record in a ring of 256, whose length stops
-   * growing once it is full, so an index taken earlier reads nothing (the walker's runs on
-   * 8890420c6, never-shown-tab and slow-load-tab).
+   * The follow view's record since `since` (optionally for one tab only), each entry with when it
+   * came and its tab's address. Read by time: the follow view keeps its own record in a ring of
+   * 256, whose length stops growing once it is full, so an index taken earlier reads nothing (the
+   * walker's runs on 8890420c6, never-shown-tab and slow-load-tab).
    */
-  const followSince = (since: number) =>
+  const followSince = (since: number, tabId?: string) =>
     followTimed
-      .filter(({ at }) => at >= since)
+      .filter(({ at, surfaceId: entrySurfaceId }) => at >= since && (!tabId || entrySurfaceId === tabId))
       .map(({ at, entry }) => `${Math.round(at - since)}ms ${entry}`);
   /**
    * A tab that must be cast counted its start, and exported that start's record with its reason:
@@ -2195,7 +2199,8 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     throw new Error(`Person geometry used fake metrics: ${JSON.stringify(personGeometryCommands)}`);
   }
   await saveFrame("follow-large-1400x900", largePicture);
-  progress("follow-large-page-passed");
+  let timeoutsMark = castFirstFrameTimeouts.length;
+  progress("follow-large-page-passed", { castFirstFrameTimeouts: timeoutsMark });
 
   // A styled scrollbar takes width from the page's layout; the picture
   // still shows the whole viewport, and a click beside the scrollbar lands.
@@ -2225,7 +2230,10 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
       `A styled-scrollbar page did not stream or take a click: ${JSON.stringify({ largeState, edge, edgeClick })}`,
     );
   }
-  progress("follow-styled-scrollbar-passed");
+  progress("follow-styled-scrollbar-passed", {
+    castFirstFrameTimeouts: castFirstFrameTimeouts.length - timeoutsMark,
+  });
+  timeoutsMark = castFirstFrameTimeouts.length;
 
   // The same size while the person holds the button ends nothing.
   await read("window.pointerLog = []");
@@ -2239,7 +2247,10 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
   if (heldThroughNoOp?.type !== "mousemove" || heldThroughNoOp.buttons !== 1) {
     throw new Error(`A same-size write ended a held press: ${JSON.stringify(heldThroughNoOp)}`);
   }
-  progress("follow-held-press-passed");
+  progress("follow-held-press-passed", {
+    castFirstFrameTimeouts: castFirstFrameTimeouts.length - timeoutsMark,
+  });
+  timeoutsMark = castFirstFrameTimeouts.length;
 
   // A sustained drag keeps pictures coming, and the last size is
   // pictured soon after; a press aimed at an old picture is refused.
@@ -2299,27 +2310,35 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
   await saveFrame("follow-drag-final-1000x700", finalPicture);
   const midDrag = dragFrames[Math.floor(dragFrames.length / 2)];
   if (midDrag) await saveFrame("follow-drag-middle", midDrag);
-  progress("follow-drag-passed");
+  progress("follow-drag-passed", {
+    castFirstFrameTimeouts: castFirstFrameTimeouts.length - timeoutsMark,
+  });
 
   // Each check below is recorded; the run reports them all, then fails on any.
   const failures: string[] = [];
   const results: Record<string, unknown> = {};
   const section = async (name: string, run: () => Promise<Record<string, unknown>>) => {
     const since = performance.now();
+    const timeoutsBefore = castFirstFrameTimeouts.length;
     progress(`follow-${name}-started`);
     try {
-      results[name] = { ...(await run()), passed: true };
-      progress(`follow-${name}-passed`);
+      const outcome = await run();
+      const firstFrameTimeouts = castFirstFrameTimeouts.length - timeoutsBefore;
+      results[name] = { ...outcome, castFirstFrameTimeouts: firstFrameTimeouts, passed: true };
+      progress(`follow-${name}-passed`, { castFirstFrameTimeouts: firstFrameTimeouts });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const firstFrameTimeouts = castFirstFrameTimeouts.length - timeoutsBefore;
       failures.push(`${name}: ${message}`);
       results[name] = {
         passed: false,
+        castFirstFrameTimeouts: firstFrameTimeouts,
         failure: message,
         castLog: castLog(since),
         // The follow view and every tab's debugger from this check's start, as it failed.
         evidence: evidenceSince(since),
       };
+      progress(`follow-${name}-failed`, { castFirstFrameTimeouts: firstFrameTimeouts });
     }
   };
   const settles = (operation: Promise<unknown>, timeoutMs = 5_000) =>
@@ -3081,6 +3100,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     const agentTabCasts = {
       castStarts: castStartsOn(agentTabDebugger, turnSince, performance.now()),
       redraws: redrawsBetween(turnSince, performance.now(), agentTabDebugger),
+      followView: followSince(turnSince, agentTab),
     };
     await controller.handle({ surfaceId, type: "surface.activate" });
     await agent("Target.closeTarget", { targetId: created.targetId });
@@ -3142,7 +3162,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
       // What the tab's debugger saw, start to stop, so a count over the bound shows why.
       timeline: castTimeline(personTabDebugger, openSince),
       // The follow view's own reason for each start it asked for, and each it set aside.
-      followView: followSince(openSince),
+      followView: followSince(openSince, personTab.surface.id),
       ledgerEvents: ledgerEvents
         .filter((event) => event.surfaceId === null || event.surfaceId === personTab.surface.id)
         .slice(0, 40)
@@ -3188,6 +3208,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         // The engine supplies the first picture without synthetic redraws.
         agentTabCasts.redraws === 0 &&
         agentTabCasts.castStarts <= 1 + agentTabCasts.redraws &&
+        recordsItsStarts(agentTabCasts.castStarts, agentTabCasts.followView) &&
         personPagePictured === true &&
         personTabCasts.redraws === 0 &&
         // Opening can restart once after the initial viewport is sized.
@@ -3251,7 +3272,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         loadedMs: loadedAt === null ? null : Math.round(loadedAt - openSince),
         castStarts: castStartsOn(tabDebugger, openSince, performance.now()),
         timeline: castTimeline(tabDebugger, openSince),
-        followView: followSince(openSince),
+        followView: followSince(openSince, id),
         ledgerEvents: events.filter((event) => event.id === id).map((event) => event.entry),
         errors: errorsFrom(from),
       };
@@ -5258,10 +5279,10 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
 }
 </script>`;
 
-function progress(stage: string): void {
+function progress(stage: string, extra?: Record<string, unknown>): void {
   lastStage = stage;
   process.stdout.write(
-    `${JSON.stringify({ event: "electron-browser-smoke.progress", stage, at: performance.now() })}\n`,
+    `${JSON.stringify({ event: "electron-browser-smoke.progress", stage, at: performance.now(), ...extra })}\n`,
   );
 }
 

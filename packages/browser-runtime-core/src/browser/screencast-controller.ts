@@ -428,6 +428,7 @@ export class ScreencastController {
           { reason: "browser-capture-mismatch" },
         ),
       );
+      if (this.bound !== bound) return;
     }
     const facts = this.readFacts();
     const step = nextStep(facts, bound.binding, state, this.session(bound.cdp));
@@ -768,7 +769,11 @@ export class ScreencastController {
         bound.firstFrameTimer = null;
         if (this.bound === bound) {
           const before = bound.state.trouble;
-          this.apply(bound, { kind: "first-frame-timeout" });
+          this.apply(bound, {
+            binding: bound.binding,
+            kind: "first-frame-timeout",
+            session: this.session(bound.cdp),
+          });
           if (bound.state.trouble !== before)
             this.diagnose({ stage: "cast-first-frame-timeout", durationMs: ms });
         }
@@ -834,16 +839,19 @@ export class ScreencastController {
       const key = startStillWanted(facts, bound.binding, bound.state, this.session(bound.cdp));
       return key && facts.tab ? { at: startFacts(facts.tab), key } : null;
     };
+    let cdpSent: StartFacts | null = null;
     const send = async (): Promise<"answered" | "not-now"> => {
       const first = stillWanted();
       if (!first) return "not-now";
       // Chromium takes a session's commands in order: from here the start waits on Chromium.
       handedOff.resolve();
-      if (first.key.sizesView)
+      if (first.key.sizesView) {
+        cdpSent = first.at;
         await bound.cdp.send("Emulation.setVisibleSize", {
           height: first.key.size.height,
           width: first.key.size.width,
         });
+      }
       // The facts may have moved while Chromium sized the view: a dialog, a new size.
       const now = stillWanted();
       if (!now || fits(first.key, now.key) !== "same") return "not-now";
@@ -907,7 +915,7 @@ export class ScreencastController {
             this.showRetainedPicture(bound);
             return;
           }
-          this.startFailed(bound, error);
+          this.startFailed(bound, error, cdpSent);
         },
       )
       .finally(() => {
@@ -918,16 +926,18 @@ export class ScreencastController {
   }
 
   /**
-   * A start that failed. Sent, it is Chromium's refusal, held until a fact that bears on it
-   * differs from when it was sent, and one outside any navigation is told to the caller whose
-   * change led to it. Failed before it was sent (S2), it is an attempt with no picture: the pass
-   * tries again under the same bound. The tab stays bound either way.
+   * A start that failed. Sent (or a CDP preparation command that failed during a navigation, U5),
+   * it is Chromium's refusal, held until a fact that bears on it differs from when it was sent,
+   * and one outside any navigation is told to the caller whose change led to it. Failed before it
+   * was sent outside navigation (S2), it is an attempt with no picture: the pass tries again under
+   * the same bound. The tab stays bound either way.
    */
-  private startFailed(bound: Bound, error: unknown): void {
+  private startFailed(bound: Bound, error: unknown, at: StartFacts | null = null): void {
     const sent = bound.state.told.state === "sent";
     const why = error instanceof Error ? error.message : String(error);
-    this.apply(bound, { kind: "start-failed", why });
-    if (!sent) {
+    this.apply(bound, { ...(at ? { at } : {}), kind: "start-failed", why });
+    const refusal = bound.state.refusal;
+    if (!sent && !refusal) {
       bound.startWhy = "a start that could not be made";
       this.diagnose({ stage: "cast-not-made", reason: why });
       return;
@@ -935,7 +945,6 @@ export class ScreencastController {
     bound.startWhy = "refusal released";
     const facts = this.readFacts();
     const tab = facts.tab?.binding === bound.binding ? facts.tab : null;
-    const refusal = bound.state.refusal;
     const navigating = !!tab && !!refusal && refusedInNavigation(tab, refusal);
     this.diagnose({ stage: navigating ? "cast-deferred" : "cast-refused", reason: why });
     if (!navigating) this.failure = error;

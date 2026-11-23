@@ -233,8 +233,12 @@ export interface TabCastState {
   /** Retries of this cast, on the same facts, since a picture was last delivered. */
   readonly unpictured: number;
   readonly paint: PaintWait | null;
-  /** The cast given up, and why: none is started for it again until it changes. */
-  readonly failed: { readonly key: CastKey; readonly why: string } | null;
+  /** The cast given up, and why: none is started for it again until it changes or loading ends. */
+  readonly failed: {
+    readonly key: CastKey;
+    readonly why: string;
+    readonly whileLoading?: boolean;
+  } | null;
   /** The cast the last start asked for: a start for another one counts afresh. */
   readonly lastKey: CastKey | null;
 }
@@ -321,10 +325,10 @@ export type CastEvent =
   | { readonly kind: "sent"; readonly key: CastKey; readonly at: StartFacts }
   | { readonly kind: "answered" }
   /**
-   * The start failed: Chromium's refusal if it was sent; if it failed before (its paint settled
-   * with an error, the view could not be sized), an attempt with no picture (S2).
+   * The start failed: Chromium's refusal if it was sent (or a CDP preparation command failed during
+   * a navigation, with `at`); otherwise an attempt with no picture (S2, U5).
    */
-  | { readonly kind: "start-failed"; readonly why: string }
+  | { readonly kind: "start-failed"; readonly why: string; readonly at?: StartFacts }
   /** A start being prepared came to nothing: given up, or the facts no longer wanted it. */
   | { readonly kind: "not-sent" }
   | { readonly kind: "paint-timed-out" }
@@ -338,8 +342,12 @@ export type CastEvent =
   /** The session's stop was not answered in its time: the next start is an attempt (S3, U4). */
   | { readonly kind: "stop-timed-out"; readonly count?: number }
   | { readonly kind: "frame"; readonly verdict: FrameVerdict }
-  /** The time the plan gave the running cast for a picture (`wait` with a timer) is up. */
-  | { readonly kind: "first-frame-timeout" }
+  /** The time the plan gave the running cast for a picture (`wait` with a timer) is up (U5). */
+  | {
+      readonly kind: "first-frame-timeout";
+      readonly binding?: string;
+      readonly session?: SessionCastState;
+    }
   | { readonly kind: "resumed" }
   | { readonly kind: "tab-closed-beside" }
   | {
@@ -554,7 +562,12 @@ export function nextStep(
       why: "its first frame",
     };
   }
-  if (state.failed !== null && sameCast(state.failed.key, key))
+  const loadingNow = tab.loading || tab.navigation?.pending === true;
+  if (
+    state.failed !== null &&
+    sameCast(state.failed.key, key) &&
+    !(state.failed.whileLoading === true && !loadingNow)
+  )
     return { kind: "wait", why: `its cast was given up: ${state.failed.why}` };
   if (state.paint && samePaint(state.paint, key))
     return { kind: "wait", why: "the page did not paint" };
@@ -645,8 +658,14 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
       if (next.refusal && facts.tab && refusalReleased(facts.tab, next.refusal))
         next = { ...next, refusal: null };
       const want = wanted(facts);
-      // A cast given up is tried again, with fresh counts, once what it would picture changed.
-      if (next.failed && want.kind === "cast" && !sameCast(next.failed.key, want.key))
+      const loadingNow = facts.tab?.loading === true || facts.tab?.navigation?.pending === true;
+      // A cast given up is tried again, with fresh counts, once what it would picture changed, or
+      // once a load it failed during has finished (U5).
+      if (
+        next.failed &&
+        ((want.kind === "cast" && !sameCast(next.failed.key, want.key)) ||
+          (next.failed.whileLoading === true && !loadingNow))
+      )
         next = { ...next, failed: null, unpictured: 0 };
       // Retries belong to one cast: once what is wanted moves to another cast while none runs,
       // the new cast begins its own retries afresh (U1).
@@ -693,15 +712,24 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
       if (told.state === "sent")
         return { ...state, refusal: { ...told.at, why: event.why }, told: { state: "none" } };
       if (told.state !== "preparing") return state;
+      // A CDP preparation command (`Emulation.setVisibleSize`) that failed during a navigation is
+      // held as a navigation-time refusal rather than spinning through microtask retries (U5).
+      if (event.at && facts.tab && refusedInNavigation(facts.tab, { ...event.at, why: event.why }))
+        return { ...state, refusal: { ...event.at, why: event.why }, told: { state: "none" } };
       // It failed before it reached Chromium (S2): `pictureLimit` is the number of retries after
       // the first attempt, the same in every path (U1).
       const want = wanted(facts);
+      const loadingNow = facts.tab?.loading === true || facts.tab?.navigation?.pending === true;
       const atBound =
         want.kind === "cast" && state.unpictured >= pictureLimit(facts.tab?.native ?? false);
       return {
         ...state,
         failed: atBound
-          ? { key: want.key, why: `its start could not be made (${event.why})` }
+          ? {
+              key: want.key,
+              why: `its start could not be made (${event.why})`,
+              ...(loadingNow ? { whileLoading: true } : {}),
+            }
           : state.failed,
         lastKey: want.kind === "cast" ? want.key : state.lastKey,
         told: { state: "none" },
@@ -729,11 +757,16 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
       return { ...state, paint: null };
     case "stopped": {
       const change = !event.retry && event.givenUp === undefined;
+      const loadingNow = facts.tab?.loading === true || facts.tab?.navigation?.pending === true;
       return {
         ...state,
         failed:
           event.givenUp !== undefined && told.state === "running"
-            ? { key: told.key, why: event.givenUp }
+            ? {
+                key: told.key,
+                why: event.givenUp,
+                ...(loadingNow ? { whileLoading: true } : {}),
+              }
             : state.failed,
         // A stop for a change (resize, pause, leaving) starts the next cast's key afresh so a
         // timed-out stop's count is kept for the start that follows it (U4).
@@ -808,9 +841,14 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
       }
       return state;
     case "first-frame-timeout": {
-      // The time is up only if the plan still gives one now: not for a tab not wanted, under a
-      // hold, loading, or since pictured.
-      const step = nextStep(facts, facts.tab?.binding ?? null, state);
+      // The time is up only if the plan still gives one now: not for another binding, a session
+      // stop in flight, a tab not wanted, under a hold, or since pictured (U5).
+      const step = nextStep(
+        facts,
+        event.binding ?? facts.tab?.binding ?? null,
+        state,
+        event.session ?? initialSessionCastState,
+      );
       return step.kind === "wait" && step.timer !== undefined
         ? { ...state, trouble: "no-picture" }
         : state;

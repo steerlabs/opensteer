@@ -1672,12 +1672,154 @@ describe("the follow view, when a stop times out or the controller shuts down (U
 });
 
 /*
- * Re-check 9, R1: the state of a bound tab has one writer, the pure `after` in screencast-plan.ts.
- * The controller turns what happened into an event and stores what `after` returns; it never sets
- * a field of that state itself.
+ * Re-check 11, findings 5.1 & 6.6 (U5): a Linux Emulation.setVisibleSize failure during a load is
+ * held as a navigation refusal rather than spinning into failure, and onError calling abort()
+ * synchronously during reconcile leaves no timer or retained rendering behind.
+ */
+describe("the follow view, on preparation refusal during load and synchronous abort in onError (U5)", async () => {
+  const { ScreencastController } = await import("./screencast-controller.js");
+  const { LatestFrameStream } = await import("../stream/latest-frame-stream.js");
+  const { FakeCdpSession, jpeg } = await import("../test-support/fakes.js");
+  const settle = async () => {
+    for (let turn = 0; turn < 6; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  it("holds Emulation.setVisibleSize failure during load as a refusal and pictures when loading ends", async () => {
+    const cdp = new FakeCdpSession();
+    const size = { height: 600, width: 800 };
+    const surface = {
+      active: true,
+      documentId: "d1",
+      geometryRevision: 1,
+      id: "tab",
+      loading: true,
+    };
+    let frameId = 0;
+    cdp.responses.set("Emulation.setVisibleSize", () => {
+      if (surface.loading) throw new Error("Not attached to an active page");
+      return {};
+    });
+    cdp.responses.set("Page.startScreencast", () => {
+      setImmediate(() =>
+        cdp.emit("Page.screencastFrame", {
+          data: jpeg(size.width, size.height).toString("base64"),
+          metadata: { deviceHeight: size.height, deviceWidth: size.width },
+          sessionId: ++frameId,
+        }),
+      );
+      return {};
+    });
+    const binding = { cdp, page: {}, surface };
+    const listeners = new Set<(event: unknown) => void>();
+    const delivered: unknown[] = [];
+    const errors: string[] = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async (frame) => void delivered.push(frame) }),
+      ledger: {
+        active: () => ({ ...binding, surface: { ...surface } }),
+        binding: () => ({ ...binding, surface: { ...surface } }),
+        dialogOf: () => null,
+        dialogOpen: () => false,
+        recordPageScale: () => undefined,
+        subscribe: (listener: (event: unknown) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+        viewportOf: () => size,
+        withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      } as never,
+      onDialogChanged: () => undefined,
+      onError: (error) => errors.push(error.reason ?? error.message),
+    });
+    await follow.start();
+    await follow.setStreaming(true);
+    await settle();
+    // Must not spin through microtask retries or give up during load.
+    expect(cdp.sent.filter(({ method }) => method === "Emulation.setVisibleSize")).toHaveLength(1);
+    expect(errors).toEqual([]);
+    expect(follow.diagnostics.some((entry) => entry.stage === "cast-deferred")).toBe(true);
+    expect(follow.diagnostics.some((entry) => entry.stage === "cast-failed")).toBe(false);
+    // Loading ends without a new document: refusal releases, setVisibleSize succeeds, picture lands.
+    surface.loading = false;
+    for (const listener of listeners)
+      listener({ change: "updated", surface: { ...surface }, type: "changed" });
+    await settle();
+    expect(cdp.sent.filter(({ method }) => method === "Emulation.setVisibleSize")).toHaveLength(2);
+    expect(delivered).toHaveLength(1);
+    expect(errors).toEqual([]);
+    await follow.close();
+  });
+
+  it("handles onError synchronously calling abort() inside reconcile without re-arming timers or rendering", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const cdp = new FakeCdpSession();
+      let retained = 0;
+      (cdp as unknown as { retainRendering: () => () => void }).retainRendering = () => {
+        retained += 1;
+        return () => {
+          retained -= 1;
+        };
+      };
+      const size = { height: 600, width: 800 };
+      const surface = {
+        active: true,
+        documentId: "d1",
+        geometryRevision: 1,
+        id: "tab",
+        loading: false,
+      };
+      const page = {
+        applyGeometry: async () => undefined,
+        capture: {
+          read: () => ({ ...size, rasterScale: 1, revision: 1 }),
+          subscribe: () => () => undefined,
+        },
+        settleRendering: async () => {
+          throw new Error("Electron browser page is closed.");
+        },
+      };
+      const binding = { cdp, page, surface };
+      let follow!: InstanceType<typeof ScreencastController>;
+      let abortedInError = false;
+      follow = new ScreencastController({
+        frames: new LatestFrameStream({ sendFrame: async () => undefined }),
+        ledger: {
+          active: () => binding,
+          binding: () => binding,
+          dialogOf: () => null,
+          dialogOpen: () => false,
+          recordPageScale: () => undefined,
+          subscribe: () => () => undefined,
+          use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+          viewportOf: () => size,
+          withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+        } as never,
+        onDialogChanged: () => undefined,
+        onError: () => {
+          abortedInError = true;
+          follow.abort();
+        },
+      });
+      await follow.start();
+      await follow.setStreaming(true);
+      await settle();
+      expect(abortedInError).toBe(true);
+      expect(retained).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/*
+ * Re-check 9, R1 and re-check 11, finding 6.6 (U5): the state of a bound tab has one writer, the
+ * pure `after` in screencast-plan.ts, and session state has one writer, `afterSession`.
  */
 describe("the follow view's state", () => {
-  it("is written only by after", async () => {
+  it("is written only by after and afterSession", async () => {
     const { readFileSync } = await import("node:fs");
     const source = readFileSync(new URL("./screencast-controller.ts", import.meta.url), "utf8");
     const lines = source.split("\n");
@@ -1686,10 +1828,18 @@ describe("the follow view's state", () => {
       // A field of a state set in place, or a state stored from anything but `after`.
       if (/\bstate\.\w+\s*(?:=(?!=)|\+=|-=|\+\+|--)/u.test(line)) return [where];
       if (/\.state\s*=(?!=)/u.test(line) && !/\.state\s*=\s*after\(/u.test(line)) return [where];
+      if (
+        /\bsessionStates\.set\(/u.test(line) &&
+        !/sessionStates\.set\([^,]+,\s*afterSession\(/u.test(line)
+      )
+        return [where];
       return [];
     });
     expect(assignments).toEqual([]);
-    // And it is stored in one place.
+    // And each is stored in one place.
     expect(lines.filter((line) => /\.state\s*=\s*after\(/u.test(line))).toHaveLength(1);
+    expect(
+      lines.filter((line) => /sessionStates\.set\([^,]+,\s*afterSession\(/u.test(line)),
+    ).toHaveLength(1);
   });
 });

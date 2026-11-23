@@ -699,6 +699,71 @@ describe("the state after each event", () => {
     expect(moved).toMatchObject({ lastKey: null, unpictured: 0 });
   });
 
+  // Re-check 11, finding 5.1 (U5): a CDP preparation failure (Emulation.setVisibleSize) during a
+  // navigation is held as a refusal rather than spinning into `failed`; and a cast given up while
+  // loading is cleared once loading ends even without a new document.
+  it("holds a preparation CDP failure during navigation as a refusal and clears loading-time failure when load ends", () => {
+    const loadingFacts = facts({}, { loading: true });
+    const at = startFacts(loadingFacts.tab!);
+    const preparing: TabCastState = { ...initialTabCastState(), told: { state: "preparing" } };
+    const refused = after(
+      preparing,
+      { at, kind: "start-failed", why: "Target closed during navigation" },
+      loadingFacts,
+    );
+    expect(refused).toMatchObject({
+      failed: null,
+      refusal: { ...at, why: "Target closed during navigation" },
+      told: { state: "none" },
+      unpictured: 0,
+    });
+    expect(nextStep(loadingFacts, "tab#1", refused).kind).toBe("wait");
+    // Once loading ends without a new document, the refusal releases.
+    expect(after(refused, { kind: "observed" }, base).refusal).toBeNull();
+    // A cast given up while loading is cleared when loading finishes without a new document.
+    const failedWhileLoading = after(
+      { ...initialTabCastState(), told: { key, state: "running" }, unpictured: 3 },
+      { givenUp: "no picture arrived", kind: "stopped", retry: false },
+      loadingFacts,
+    );
+    expect(failedWhileLoading.failed).not.toBeNull();
+    expect(after(failedWhileLoading, { kind: "observed" }, loadingFacts).failed).not.toBeNull();
+    expect(after(failedWhileLoading, { kind: "observed" }, base)).toMatchObject({
+      failed: null,
+      unpictured: 0,
+    });
+    // A cast given up while NOT loading stays given up when loading is false.
+    const failedIdle = after(
+      { ...initialTabCastState(), told: { key, state: "running" }, unpictured: 3 },
+      { givenUp: "no picture arrived", kind: "stopped", retry: false },
+      base,
+    );
+    expect(after(failedIdle, { kind: "observed" }, base).failed).toEqual(failedIdle.failed);
+  });
+
+  // Re-check 11, finding 6.3 (U5): first-frame-timeout uses explicit binding and session state.
+  it("ignores first-frame-timeout when binding differs or a session stop is in flight", () => {
+    const running: TabCastState = {
+      ...initialTabCastState(),
+      lastKey: key,
+      told: { key, state: "running" },
+    };
+    expect(
+      after(running, { binding: "other#2", kind: "first-frame-timeout" }, base),
+    ).toBe(running);
+    expect(
+      after(
+        running,
+        {
+          binding: "tab#1",
+          kind: "first-frame-timeout",
+          session: { generation: 0, stops: 1, timedOut: 0 },
+        },
+        base,
+      ),
+    ).toBe(running);
+  });
+
   // Re-check 10, S6: a cast at its bound is given up, even when a closed tab asks for a repair.
   it("gives up a cast at its bound before a repair a closed tab asks for", () => {
     const running: TabCastState = {

@@ -127,6 +127,7 @@ class Chromium {
     }
     // What stood when the follow view sent it: a session takes commands in order, later.
     const sentWith = method === "Page.startScreencast" ? this.world.refusalFacts(this.id) : null;
+    const castTag = method === "Page.startScreencast" ? this.world.tabs[this.id].castTag : null;
     const knownRefused = sentWith !== null && sameRefusal(this.lastRefusal, sentWith);
     // A stop whose answer is lost: it takes effect, and the commands after it go on.
     if (method === "Page.stopScreencast" && this.stopHangs && !this.dead) {
@@ -145,7 +146,9 @@ class Chromium {
       interrupted();
       if (method === "Emulation.setVisibleSize" && this.world.tabs[this.id].failPrepare) {
         this.world.tabs[this.id].failPrepare = false;
-        this.world.tabs[this.id].prepareFailuresOnCast += 1;
+        const tab = this.world.tabs[this.id];
+        if (!tab.loading && !(this.world.port && tab.navigation.pending))
+          tab.prepareFailuresOnCast += 1;
         throw new Error("Emulation.setVisibleSize failed");
       }
       if (method === "Page.stopScreencast") {
@@ -163,7 +166,7 @@ class Chromium {
         throw new Error("Not attached to an active page");
       }
       this.lastRefusal = null;
-      this.world.startedOn(this.id);
+      this.world.startedOn(this.id, castTag!);
       this.cast += 1;
       const cast = this.cast;
       const before = this.frameBefore;
@@ -283,8 +286,10 @@ interface TabWorld {
   paintTimedOut: boolean;
   /** Each showing of the tab: turned to, streamed again, a new session. */
   epoch: number;
-  /** Starts Chromium took since its last picture. */
-  startsSincePicture: number;
+  /** Identifies one cast's budget (re-check 11, finding 6.2 / U5): outside events cannot bank starts. */
+  castTag: number;
+  /** Starts Chromium took for each `castTag` since the last picture. */
+  readonly startsByTag: Map<number, number>;
   /** Starts accepted on the cast now wanted (U1: giving up needs more than pictureLimit attempts). */
   startsOnCast: number;
   /** Pre-send start failures on the cast now wanted (U1). */
@@ -293,11 +298,6 @@ interface TabWorld {
   misfitsOnCast: number;
   /** Stop timeouts recorded for this tab since its last picture/resume/session end (U1/U4). */
   stopTimeouts: number;
-  /**
-   * Things that happened outside the follow view since the tab's last picture, each of which may
-   * call for a cast of its own: a change can wait behind a hold and land after a later one.
-   */
-  eventsSincePicture: number;
   readonly captureListeners: Set<() => void>;
   readonly navigationListeners: Set<() => void>;
 }
@@ -346,11 +346,11 @@ class World {
       paintTimedOut: false,
       size: { height: 600, width: 800 },
       stallPaint: false,
-      eventsSincePicture: 0,
+      castTag: 0,
       misfitsOnCast: 0,
       prepareFailuresOnCast: 0,
+      startsByTag: new Map(),
       startsOnCast: 0,
-      startsSincePicture: 0,
       stopTimeouts: 0,
       unpainted: opening,
     });
@@ -384,17 +384,17 @@ class World {
         chromium.lastRefusal = null;
     }
   }
-  startedOn(id: Id) {
+  startedOn(id: Id, castTag: number) {
     const tab = this.tabs[id];
-    tab.startsSincePicture += 1;
+    tab.startsByTag.set(castTag, (tab.startsByTag.get(castTag) ?? 0) + 1);
     tab.startsOnCast += 1;
     if (this.port && tab.navigation.pending && tab.navigation.blankDocument)
       this.violations.push(`a start reached ${id} before its first document committed`);
   }
-  /** A new showing, or a new cast wanted: one more cast's starts are allowed until a picture. */
+  /** A new showing, or a new cast wanted: one cast's starts are allowed for this tag (no banking). */
   afresh(id: Id, resetsCast = true) {
     const tab = this.tabs[id];
-    tab.eventsSincePicture += 1;
+    tab.castTag += 1;
     if (resetsCast) {
       tab.startsOnCast = 0;
       tab.prepareFailuresOnCast = 0;
@@ -510,12 +510,12 @@ class World {
           this.violations.push(
             `${tab.id} was shown a picture of document ${painted.document}, not of ${tab.documentId}`,
           );
-        tab.startsSincePicture = 0;
+        tab.castTag += 1;
+        tab.startsByTag.clear();
         tab.startsOnCast = 0;
         tab.prepareFailuresOnCast = 0;
         tab.misfitsOnCast = 0;
         tab.stopTimeouts = 0;
-        tab.eventsSincePicture = 0;
       },
     };
   }
@@ -737,6 +737,8 @@ function actions(
           tab.navigation = { ...tab.navigation, pending: false };
           world.navigated(tab.id);
         }
+        // A cast given up while loading is tried afresh once loading ends without a new document.
+        world.afresh(tab.id, false);
         world.changed(tab.id);
         world.paints(tab.id);
       },
@@ -779,8 +781,10 @@ function actions(
         // holds (re-check 10, finding 1), and a command sent before never takes effect after.
         // Linux Chrome says nothing.
         if (world.engine !== "desktop") return;
-        const chromium = inView().chromium;
-        inView().stopTimeouts = 0;
+        const tab = inView();
+        const chromium = tab.chromium;
+        tab.stopTimeouts = 0;
+        world.afresh(tab.id, false);
         chromium.casting = false;
         chromium.era += 1;
         chromium.emit(screencastEndedEvent, {});
@@ -933,8 +937,16 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
     const why = bound.waiting ?? "";
     const holding = chromium.lateAnswers.length > 0;
     // The plan gave the wait a time, and it is running for this tab: the wait ends with it.
+    // Re-check 11, finding 6.1 (U5): a first-frame timer excuses only a running cast waiting on
+    // its first frame (with Chromium casting when no answer is held).
     const timed =
-      (bound.firstFrameTimer !== undefined && bound.firstFrameTimer !== null) ||
+      (bound.firstFrameTimer !== undefined &&
+        bound.firstFrameTimer !== null &&
+        told.state === "running" &&
+        (holding || chromium.casting) &&
+        (why === "its first frame" ||
+          why === "its document's first frame, as it loads" ||
+          why === "its own frame, after one of another size")) ||
       (why === "a stop is with Chromium" && internals.stopTimers?.has(chromium) === true);
     const named =
       timed ||
@@ -947,6 +959,8 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
       (why === "its first frame" && chromium.framesDue > 0) ||
       // It loads: its first frame comes as it paints, and the time for it is given once it ends.
       (why === "its document's first frame, as it loads" &&
+        told.state === "running" &&
+        (holding || chromium.casting) &&
         (tab.loading || (world.port && tab.navigation.pending))) ||
       (why === "its first document has not committed" &&
         world.port &&
@@ -984,14 +998,13 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
     const heldId = heldFrame ? Number(heldFrame.sessionId) : null;
     const left = unacked.filter((frame) => frame !== heldId);
     if (left.length > 0) broken.push(`frames ${left.join(", ")} of ${id} were never acked`);
-    // For each thing that happened outside it, one start and as many retries as the bound gives
-    // with no picture: with no new event, no more.
-    const perEvent = 1 + (world.engine === "desktop" ? 1 : 3);
-    const { eventsSincePicture, startsSincePicture } = world.tabs[id];
-    if (startsSincePicture > perEvent * (1 + eventsSincePicture))
-      broken.push(
-        `${id} was started ${startsSincePicture} times with no picture, after ${eventsSincePicture} events`,
-      );
+    // Re-check 11, finding 6.2 (U5): each cast tag gets at most 1 + pictureLimit starts with no
+    // picture, so outside events while held cannot bank budget for one cast.
+    const perCast = 1 + (world.engine === "desktop" ? 1 : 3);
+    for (const [tag, count] of world.tabs[id].startsByTag) {
+      if (count > perCast)
+        broken.push(`${id} was started ${count} times on cast #${tag} with no picture`);
+    }
   }
   return broken;
 }
