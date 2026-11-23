@@ -989,8 +989,8 @@ function actions(
   ];
 }
 
-async function turns(count: number) {
-  for (let turn = 0; turn < count; turn += 1)
+async function turns(count: number, stop?: () => boolean) {
+  for (let turn = 0; turn < count && !stop?.(); turn += 1)
     await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
@@ -1095,11 +1095,11 @@ function lateStopAnswerChangesNothing(world: World): string[] {
 async function timedWaitEndsByItsLimit(
   world: World,
   follow: InstanceType<typeof ScreencastController>,
-): Promise<string[]> {
+): Promise<string[] | null> {
   const internals = follow as unknown as Internals;
   const bound = internals.bound;
   const want = wanted(world.facts() as never);
-  if (!bound || bound.id !== world.active || want.kind !== "cast") return [];
+  if (!bound || bound.id !== world.active || want.kind !== "cast") return null;
   const chromium = world.tabs[world.active].chromium;
   const why = bound.waiting;
   if (
@@ -1114,8 +1114,8 @@ async function timedWaitEndsByItsLimit(
     const refusalBefore = bound.state.refusal;
     const paintBefore = bound.state.paint;
     const failedBefore = bound.state.failed;
-    await vi.advanceTimersByTimeAsync(limitMs + 1);
-    await turns(6);
+    vi.advanceTimersByTime(limitMs + 1);
+    await turns(4);
     const nowBound = internals.bound;
     const progressed =
       !nowBound ||
@@ -1139,8 +1139,8 @@ async function timedWaitEndsByItsLimit(
     const genBefore = world.sessionState(world.active).generation;
     const castBefore = chromium.cast;
     const stopsBefore = chromium.stopsSent;
-    await vi.advanceTimersByTimeAsync(stopAnswerWaitMs + 1);
-    await turns(6);
+    vi.advanceTimersByTime(stopAnswerWaitMs + 1);
+    await turns(4);
     const afterSessionState = world.sessionState(world.active);
     const nowBound = internals.bound;
     const progressed =
@@ -1160,8 +1160,9 @@ async function timedWaitEndsByItsLimit(
       return [
         `${world.active} stayed waiting on "a stop is with Chromium" past its ${stopAnswerWaitMs}ms limit without settling the stop (generation ${genBefore} → ${afterSessionState.generation}, stops ${afterSessionState.stops})`,
       ];
+    return [];
   }
-  return [];
+  return null;
 }
 
 /** Invariant 12 (M16): after a change (a new key) or a resume, a cast that then fails gets its full number of retries again. */
@@ -1362,9 +1363,13 @@ async function run(seed: number, engine: "desktop" | "linux", length: number) {
   for (let step = 0; step < length; step += 1) {
     const action = pick.pick(list);
     trace.push(action.name);
+    let actionDone = false;
     const ran = await Promise.race([
-      Promise.resolve(action.run()).then(() => true),
-      turns(200).then(() => false),
+      Promise.resolve(action.run()).then(() => {
+        actionDone = true;
+        return true;
+      }),
+      turns(200, () => actionDone).then(() => false),
     ]);
     await turns(6);
     if (!ran) world.violations.push(`"${action.name}" did not return`);
@@ -1372,8 +1377,10 @@ async function run(seed: number, engine: "desktop" | "linux", length: number) {
     let broken = [...world.violations.splice(0), ...check(world, follow)];
     if (broken.length === 0) {
       const limitBroken = await timedWaitEndsByItsLimit(world, follow);
-      world.releaseRefusals();
-      broken = [...world.violations.splice(0), ...limitBroken, ...check(world, follow)];
+      if (limitBroken !== null) {
+        world.releaseRefusals();
+        broken = [...world.violations.splice(0), ...limitBroken, ...check(world, follow)];
+      }
     }
     if (broken.length > 0) {
       // The follow view's own record, for reading one seed (OPENSTEER_FOLLOW_GENERATED_SEED).
