@@ -25,7 +25,6 @@ import {
   automationScriptCompatibilityReason,
   type AutomationScriptRunnerStore,
 } from "./automation-script-compatibility.js";
-import type { AutomationSecrets, AutomationSecretsPatch } from "./automation-secrets.js";
 import type { Clock } from "@opensteer/shared/clock";
 import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
 interface TriggerServiceOptions {
@@ -36,7 +35,6 @@ interface TriggerServiceOptions {
   readonly publicUrl: URL;
   /** Live public tunnel/remote origin when Personal Remote Access is active (Y3). */
   readonly remoteOrigin?: () => Promise<string | null>;
-  readonly secrets?: AutomationSecrets;
   readonly store: TriggerStore;
   readonly runnerStore: AutomationScriptRunnerStore;
   readonly threads: Pick<OpensteerStore, "readTask">;
@@ -48,7 +46,6 @@ export class TriggerService {
   readonly #onWatchChanged: TriggerServiceOptions["onWatchChanged"];
   readonly #publicUrl: URL;
   readonly #remoteOrigin: (() => Promise<string | null>) | undefined;
-  readonly #secrets: AutomationSecrets | undefined;
   readonly #store: TriggerStore;
   readonly #runnerStore: AutomationScriptRunnerStore;
   readonly #threads: TriggerServiceOptions["threads"];
@@ -59,7 +56,6 @@ export class TriggerService {
     this.#onWatchChanged = options.onWatchChanged;
     this.#publicUrl = options.publicUrl;
     this.#remoteOrigin = options.remoteOrigin;
-    this.#secrets = options.secrets;
     this.#store = options.store;
     this.#runnerStore = options.runnerStore;
     this.#threads = options.threads;
@@ -127,32 +123,6 @@ export class TriggerService {
     const address = await this.resolveWebhookAddress(stableRouteKey);
     return {
       ...result,
-      webhook: {
-        scope: address.scope,
-        url: address.url,
-      },
-    };
-  }
-  async rotateWebhookKey(
-    ownerId: UserId,
-    triggerId: TriggerId,
-    actorThreadId: ThreadId | null,
-    actorAccessMode?: ThreadAccessMode,
-    actorConnectionId?: string,
-  ) {
-    const webhookRouteKey = `whk_${randomBytes(32).toString("base64url")}`;
-    const trigger = await this.#store.rotateWebhookKey({
-      actorThreadId,
-      ...(actorAccessMode ? { actorAccessMode } : {}),
-      ...(actorConnectionId ? { actorConnectionId } : {}),
-      ownerId,
-      triggerId,
-      webhookRouteKey,
-    });
-    this.#onChanged?.();
-    const address = await this.resolveWebhookAddress(webhookRouteKey);
-    return {
-      trigger,
       webhook: {
         scope: address.scope,
         url: address.url,
@@ -245,45 +215,6 @@ export class TriggerService {
     this.#onChanged?.();
     if (updated.trigger.kind === "watch") this.#onWatchChanged?.(updated.trigger.id);
     return updated;
-  }
-  async listSecretNames(ownerId: UserId, triggerId: TriggerId): Promise<readonly string[]> {
-    if (!this.#secrets) return [];
-    const sealed = await this.#store.getEncryptedSecrets(ownerId, triggerId);
-    return this.#secrets.names(triggerId, sealed);
-  }
-  async patchSecrets(
-    ownerId: UserId,
-    triggerId: TriggerId,
-    patch: AutomationSecretsPatch,
-    actorThreadId: ThreadId | null,
-    actorAccessMode?: ThreadAccessMode,
-    actorConnectionId?: string,
-  ) {
-    const vault = this.#secrets;
-    if (!vault) {
-      throw new OpensteerError({
-        code: "internal",
-        message: "Automation secrets vault is unavailable on this Host.",
-      });
-    }
-    const { result: secretNames, trigger } = await this.#store.updateEncryptedSecrets({
-      ...(actorAccessMode ? { actorAccessMode } : {}),
-      ...(actorConnectionId ? { actorConnectionId } : {}),
-      actorThreadId,
-      ownerId,
-      transform: async (current) => {
-        const sealed = await vault.apply(triggerId, current, patch);
-        const names = await vault.names(triggerId, sealed?.envelope ?? null);
-        return { result: names, sealed };
-      },
-      triggerId,
-    });
-    this.#onChanged?.();
-    if (trigger.kind === "watch") this.#onWatchChanged?.(trigger.id);
-    return {
-      secretNames,
-      trigger,
-    };
   }
   async setStatus(
     ownerId: UserId,

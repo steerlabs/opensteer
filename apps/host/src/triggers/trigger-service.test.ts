@@ -176,32 +176,14 @@ describe("TriggerService", () => {
     const persisted = create.mock.calls[0]?.[0];
     expect("webhookSecretHash" in (persisted ?? {})).toBe(false);
   });
-  it("resolves dynamic remoteOrigin as public and loopback canonicalOrigin as local, and rotates keys", async () => {
-    const ownerId = createId("user");
-    const triggerId = createId("trigger");
+  it("resolves dynamic remoteOrigin as public and loopback canonicalOrigin as local", async () => {
     let liveRemote: string | null = null;
-    const rotateWebhookKey = vi.fn(async (input: { readonly webhookRouteKey: string }) =>
-      TriggerSchema.parse({
-        anchorThreadId: createId("thread"),
-        createdAt: new Date().toISOString(),
-        createdBy: ownerId,
-        currentRevisionId: createId("triggerRevision"),
-        id: triggerId,
-        kind: "webhook",
-        name: "Hook",
-        nextFireAt: null,
-        pauseReason: null,
-        status: "active",
-        updatedAt: new Date().toISOString(),
-        webhookRouteKey: input.webhookRouteKey,
-      }),
-    );
     const service = new TriggerService({
       onOccurrenceQueued: vi.fn(),
       publicUrl: new URL("http://127.0.0.1:4310"),
       remoteOrigin: async () => liveRemote,
       runnerStore: {} as never,
-      store: { rotateWebhookKey } as unknown as TriggerStore,
+      store: {} as unknown as TriggerStore,
       threads: {} as never,
     });
 
@@ -212,10 +194,11 @@ describe("TriggerService", () => {
     });
 
     liveRemote = "https://home.opensteer.example";
-    const rotated = await service.rotateWebhookKey(ownerId, triggerId, null);
-    expect(rotated.webhook.scope).toBe("public");
-    expect(rotated.webhook.url).toMatch(/^https:\/\/home\.opensteer\.example\/hooks\/v1\/whk_/u);
-    expect(rotateWebhookKey).toHaveBeenCalledTimes(1);
+    const remote = await service.resolveWebhookAddress("whk_12345678901234567890123456789012");
+    expect(remote).toEqual({
+      scope: "public",
+      url: "https://home.opensteer.example/hooks/v1/whk_12345678901234567890123456789012",
+    });
   });
   it("accepts a webhook by key-in-path and wakes the dispatcher after commit (T7)", async () => {
     const occurrence = {
@@ -530,42 +513,10 @@ describe("TriggerService", () => {
     expect(result.trigger?.webhookRouteKey).toBeNull();
     expect(result.webhook).toEqual({ scope: "public", url: null });
   });
-  it("applies patchSecrets through one locked store read-modify-write transaction (AA9)", async () => {
-    const ownerId = createId("user");
-    const triggerId = createId("trigger");
-    const updateEncryptedSecrets = vi.fn(
-      async (input: Parameters<TriggerStore["updateEncryptedSecrets"]>[0]) => {
-        const { result } = await input.transform(null);
-        return {
-          result,
-          trigger: { id: triggerId, kind: "webhook", status: "active" },
-        };
-      },
-    );
-    const getEncryptedSecrets = vi.fn();
-    const service = new TriggerService({
-      onOccurrenceQueued: vi.fn(),
-      publicUrl: new URL("https://opensteer.example"),
-      runnerStore: {} as never,
-      secrets: {
-        apply: vi.fn(async () => ({ envelope: Buffer.from("sealed"), keyVersion: 1 })),
-        names: vi.fn(async () => ["GITHUB_SECRET"]),
-      } as never,
-      store: {
-        getEncryptedSecrets,
-        updateEncryptedSecrets,
-      } as unknown as TriggerStore,
-      threads: {} as never,
-    });
-    const patched = await service.patchSecrets(
-      ownerId,
-      triggerId,
-      { set: { GITHUB_SECRET: "s3cr3t" } },
-      null,
-    );
-    expect(patched.secretNames).toEqual(["GITHUB_SECRET"]);
-    expect(updateEncryptedSecrets).toHaveBeenCalledTimes(1);
-    expect(getEncryptedSecrets).not.toHaveBeenCalled();
+  it("does not expose unreachable rotateWebhookKey, patchSecrets, or listSecretNames methods (AB7)", () => {
+    expect("rotateWebhookKey" in TriggerService.prototype).toBe(false);
+    expect("patchSecrets" in TriggerService.prototype).toBe(false);
+    expect("listSecretNames" in TriggerService.prototype).toBe(false);
   });
   it("fires schedules at their deadline or a wake, wakes dispatch only for new occurrences, and never polls", async () => {
     vi.useFakeTimers();

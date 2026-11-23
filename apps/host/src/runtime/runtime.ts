@@ -3034,7 +3034,6 @@ export async function createHostRuntime(
     });
     const triggers = new TriggerService({
       runnerStore: store,
-      secrets: automationSecrets,
       onChanged: () => realtime.publishTriggersChanged(),
       onInterruptFiring: (firing) => {
         firingInterrupts?.interrupt(firing);
