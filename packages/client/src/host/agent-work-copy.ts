@@ -60,7 +60,6 @@ export const agentWorkCopy = {
   "cmd.approved": "You approved it",
   "cmd.approvedThen": "You approved it · {outcome}",
   "cmd.declined": "You declined it",
-  "cmd.expired": "No answer in time",
   "cmd.withdrawn": "The agent took it back",
   "cmd.closed": "Closed",
   "op.calls": "What it ran",

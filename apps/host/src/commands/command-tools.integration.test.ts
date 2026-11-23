@@ -228,16 +228,22 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
       ],
     } as unknown as AgentGrant);
     expect(await devicesSeen(appHolder.client)).toEqual([everyDevice[0]]);
-    // An engine account carries the work location its engine commands name.
+    // Engine accounts as the person's own snapshot reads them, with the work location their
+    // commands name, and none of the source fields the person typed (ruling 3).
     const engines = await call(full, "opensteer_state", { area: "engines" });
-    expect((engines.structuredContent!.view as { accounts: unknown[] }).accounts).toEqual(
+    const harnesses = (engines.structuredContent!.view as { harnesses: Record<string, unknown>[] })
+      .harnesses;
+    expect(harnesses).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          aiAccountId: machine.harnessInstanceId,
+          id: machine.harnessInstanceId,
           environmentId: machine.environmentId,
+          name: expect.any(String),
+          enabled: expect.any(Boolean),
         }),
       ]),
     );
+    for (const harness of harnesses) expect(harness).not.toHaveProperty("config");
     // Below Full access, your own agent's requests area is its own task tree's, not every task's.
     const asker = await runFor("approval-required", "commands-asker");
     const stranger = await runFor("approval-required", "commands-stranger");
@@ -577,7 +583,7 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
       ),
     ].sort();
     console.log(`MUTATING_ROUTES ${JSON.stringify(mutating)}`);
-    expect(mutating).toEqual([...doorRoutes.keys()].sort());
+    expect(mutating).toEqual([...doorRoutes.keys(), ...outsideTheDoor.keys()].sort());
   } finally {
     for (const step of close) await step().catch(() => undefined);
     await database.drop?.();
@@ -585,7 +591,398 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
 }, 180_000);
 
 /**
- * Every route a Home answers that can change something, and why it is not a Home command the
- * door must see. The door's own routes and the routes that send a table command to it come first.
+ * Every route a Home answers that can change something, and what it is: the door itself or a
+ * route that sends its table command there; the executor's step of a command the door admitted,
+ * refused without that operation; or not a Home command, and why. Nothing else.
  */
-const doorRoutes = new Map<string, string>([]);
+type DoorRoute =
+  | { readonly kind: "door" }
+  | { readonly kind: "executor"; readonly of: string }
+  | { readonly kind: "not a Home command"; readonly why: string };
+const doorRoutes = new Map<string, DoorRoute>([
+  ["POST /v1/rpc/commands.dispatch", { kind: "door" }],
+  ["POST /v1/personal-remote-access/account-link/consume", { kind: "door" }],
+  ["POST /v1/personal-remote-access/account-link/proof", { kind: "door" }],
+  ["POST /v1/personal-remote-access/account-link/resume", { kind: "door" }],
+  ["POST /v1/personal-remote-access/account-unlink/remove-link", { kind: "door" }],
+  ["POST /v1/personal-remote-access/account-unlink/revoke-sessions", { kind: "door" }],
+  ["POST /v1/personal-remote-access/pairing-codes", { kind: "door" }],
+  ["PUT /v1/personal-remote-access", { kind: "executor", of: "personal.remoteAccess.request" }],
+  [
+    "DELETE /v1/apps/:appId/:theme/:token/*",
+    {
+      kind: "not a Home command",
+      why: "an app’s own page, served to it: what it changes is the app’s, inside its own server",
+    },
+  ],
+  [
+    "DELETE /v1/plugin-pages/:appId/:theme/:token/*",
+    {
+      kind: "not a Home command",
+      why: "a plugin’s own page, served to it: what it changes is the plugin’s",
+    },
+  ],
+  [
+    "PATCH /v1/apps/:appId/:theme/:token/*",
+    {
+      kind: "not a Home command",
+      why: "an app’s own page, served to it: what it changes is the app’s, inside its own server",
+    },
+  ],
+  [
+    "PATCH /v1/plugin-pages/:appId/:theme/:token/*",
+    {
+      kind: "not a Home command",
+      why: "a plugin’s own page, served to it: what it changes is the plugin’s",
+    },
+  ],
+  [
+    "POST /v1/apps/:appId/:theme/:token/*",
+    {
+      kind: "not a Home command",
+      why: "an app’s own page, served to it: what it changes is the app’s, inside its own server",
+    },
+  ],
+  [
+    "POST /v1/plugin-pages/:appId/:theme/:token/*",
+    {
+      kind: "not a Home command",
+      why: "a plugin’s own page, served to it: what it changes is the plugin’s",
+    },
+  ],
+  [
+    "PUT /v1/apps/:appId/:theme/:token/*",
+    {
+      kind: "not a Home command",
+      why: "an app’s own page, served to it: what it changes is the app’s, inside its own server",
+    },
+  ],
+  [
+    "PUT /v1/plugin-pages/:appId/:theme/:token/*",
+    {
+      kind: "not a Home command",
+      why: "a plugin’s own page, served to it: what it changes is the plugin’s",
+    },
+  ],
+  [
+    "QUERY /v1/apps/:appId/:theme/:token/*",
+    {
+      kind: "not a Home command",
+      why: "an app’s own page, served to it: what it changes is the app’s, inside its own server",
+    },
+  ],
+  [
+    "QUERY /v1/plugin-pages/:appId/:theme/:token/*",
+    {
+      kind: "not a Home command",
+      why: "a plugin’s own page, served to it: what it changes is the plugin’s",
+    },
+  ],
+  [
+    "TRACE /v1/apps/:appId/:theme/:token/*",
+    {
+      kind: "not a Home command",
+      why: "an app’s own page, served to it: what it changes is the app’s, inside its own server",
+    },
+  ],
+  [
+    "TRACE /v1/plugin-pages/:appId/:theme/:token/*",
+    {
+      kind: "not a Home command",
+      why: "a plugin’s own page, served to it: what it changes is the plugin’s",
+    },
+  ],
+  [
+    "DELETE /hooks/v1/plugins/:plugin/:subscription",
+    {
+      kind: "not a Home command",
+      why: "an outside service’s event for an installed plugin’s subscription, answered by the plugin",
+    },
+  ],
+  [
+    "PATCH /hooks/v1/plugins/:plugin/:subscription",
+    {
+      kind: "not a Home command",
+      why: "an outside service’s event for an installed plugin’s subscription, answered by the plugin",
+    },
+  ],
+  [
+    "POST /hooks/v1/plugins/:plugin/:subscription",
+    {
+      kind: "not a Home command",
+      why: "an outside service’s event for an installed plugin’s subscription, answered by the plugin",
+    },
+  ],
+  [
+    "PUT /hooks/v1/plugins/:plugin/:subscription",
+    {
+      kind: "not a Home command",
+      why: "an outside service’s event for an installed plugin’s subscription, answered by the plugin",
+    },
+  ],
+  [
+    "QUERY /hooks/v1/plugins/:plugin/:subscription",
+    {
+      kind: "not a Home command",
+      why: "an outside service’s event for an installed plugin’s subscription, answered by the plugin",
+    },
+  ],
+  [
+    "TRACE /hooks/v1/plugins/:plugin/:subscription",
+    {
+      kind: "not a Home command",
+      why: "an outside service’s event for an installed plugin’s subscription, answered by the plugin",
+    },
+  ],
+  [
+    "POST /hooks/v1/:routeKey",
+    {
+      kind: "not a Home command",
+      why: "an outside service’s event for an automation’s webhook trigger, which starts work the person set up",
+    },
+  ],
+  [
+    "POST /internal/v1/agent-tools/call",
+    {
+      kind: "not a Home command",
+      why: "the agents’ tools: a direct tool goes through AgentSessionService.run(), opensteer_command through the door",
+    },
+  ],
+  [
+    "POST /internal/v1/mcp",
+    {
+      kind: "not a Home command",
+      why: "the agents’ MCP endpoint: a direct tool goes through AgentSessionService.run(), opensteer_command through the door",
+    },
+  ],
+  [
+    "DELETE /internal/v1/mcp",
+    {
+      kind: "not a Home command",
+      why: "ends an agent’s MCP transport session, not anything of the Home’s",
+    },
+  ],
+  [
+    "POST /internal/v1/browser-agent/pages/bind",
+    {
+      kind: "not a Home command",
+      why: "a Runner binding a page it already opened for a Run to that Run’s session",
+    },
+  ],
+  [
+    "POST /internal/v1/egress",
+    {
+      kind: "not a Home command",
+      why: "a Run’s outbound network request through the Home’s egress proxy",
+    },
+  ],
+  [
+    "POST /maintenance/v1/desktop-update",
+    {
+      kind: "not a Home command",
+      why: "the Mac app’s own update of itself, by its supervisor’s credential",
+    },
+  ],
+  [
+    "POST /oauth/mcp/register",
+    {
+      kind: "not a Home command",
+      why: "a connected agent registering as an OAuth client; it holds nothing until the person consents (connection.authorize, a door command)",
+    },
+  ],
+  [
+    "POST /oauth/mcp/token",
+    {
+      kind: "not a Home command",
+      why: "a connected agent’s OAuth token exchange for a consent the person gave",
+    },
+  ],
+  [
+    "POST /v1/auth/account-adoption/proofs",
+    {
+      kind: "not a Home command",
+      why: "signing in: proof for adopting an Opensteer account sign-in",
+    },
+  ],
+  [
+    "POST /v1/auth/account-adoption/proofs/:proofId/consume",
+    { kind: "not a Home command", why: "signing in: consuming that proof" },
+  ],
+  [
+    "POST /v1/auth/session-exchange",
+    { kind: "not a Home command", why: "signing in: exchanging a credential for a session" },
+  ],
+  [
+    "POST /v1/rpc/auth.native.complete",
+    { kind: "not a Home command", why: "signing in or out: the person’s own session" },
+  ],
+  [
+    "POST /v1/rpc/auth.oidc.begin",
+    { kind: "not a Home command", why: "signing in or out: the person’s own session" },
+  ],
+  [
+    "POST /v1/rpc/auth.password.recover",
+    { kind: "not a Home command", why: "signing in or out: the person’s own session" },
+  ],
+  [
+    "POST /v1/rpc/auth.password.signIn",
+    { kind: "not a Home command", why: "signing in or out: the person’s own session" },
+  ],
+  [
+    "POST /v1/rpc/auth.password.signUp",
+    { kind: "not a Home command", why: "signing in or out: the person’s own session" },
+  ],
+  [
+    "POST /v1/rpc/auth.setup.claim",
+    { kind: "not a Home command", why: "signing in or out: the person’s own session" },
+  ],
+  [
+    "POST /v1/rpc/auth.setup.exchange",
+    { kind: "not a Home command", why: "signing in or out: the person’s own session" },
+  ],
+  [
+    "POST /v1/rpc/auth.signOut",
+    { kind: "not a Home command", why: "signing in or out: the person’s own session" },
+  ],
+  ["POST /v1/rpc/apps.view", { kind: "not a Home command", why: "a read, sent as POST" }],
+  ["POST /v1/rpc/asset.urls", { kind: "not a Home command", why: "a read, sent as POST" }],
+  ["POST /v1/rpc/attention.get", { kind: "not a Home command", why: "a read, sent as POST" }],
+  [
+    "POST /v1/rpc/browser.password-sign-in.get",
+    { kind: "not a Home command", why: "a read, sent as POST" },
+  ],
+  [
+    "POST /v1/rpc/browser.sources.inspect",
+    { kind: "not a Home command", why: "a read, sent as POST" },
+  ],
+  [
+    "POST /v1/rpc/channel.connection.check",
+    { kind: "not a Home command", why: "a read, sent as POST" },
+  ],
+  [
+    "POST /v1/rpc/computer.app.windows",
+    { kind: "not a Home command", why: "a read, sent as POST" },
+  ],
+  ["POST /v1/rpc/file.open", { kind: "not a Home command", why: "a read, sent as POST" }],
+  [
+    "POST /v1/rpc/harness.modelServers.discover",
+    { kind: "not a Home command", why: "a read, sent as POST" },
+  ],
+  [
+    "POST /v1/rpc/integration.computer.apps.installed",
+    { kind: "not a Home command", why: "a read, sent as POST" },
+  ],
+  [
+    "POST /v1/rpc/integration.computer.setup.review",
+    { kind: "not a Home command", why: "a read, sent as POST" },
+  ],
+  ["POST /v1/rpc/needsYou.get", { kind: "not a Home command", why: "a read, sent as POST" }],
+  ["POST /v1/rpc/references.resolve", { kind: "not a Home command", why: "a read, sent as POST" }],
+  [
+    "POST /v1/rpc/thread.browserUsage.get",
+    { kind: "not a Home command", why: "a read, sent as POST" },
+  ],
+  [
+    "POST /v1/rpc/thread.messages.list",
+    { kind: "not a Home command", why: "a read, sent as POST" },
+  ],
+  [
+    "POST /v1/rpc/attachment.upload",
+    {
+      kind: "not a Home command",
+      why: "the bytes of an attachment the person is writing; the message that carries it is a command",
+    },
+  ],
+  [
+    "POST /v1/rpc/harness.catalog.refresh",
+    {
+      kind: "not a Home command",
+      why: "re-reads what an engine offers from its computer; nothing the person chose changes",
+    },
+  ],
+  [
+    "POST /v1/rpc/voice.context",
+    {
+      kind: "not a Home command",
+      why: "the person’s own live voice call on their signed-in session, as the table’s person-view rows",
+    },
+  ],
+  [
+    "POST /v1/rpc/voice.open",
+    {
+      kind: "not a Home command",
+      why: "the person’s own live voice call on their signed-in session, as the table’s person-view rows",
+    },
+  ],
+  [
+    "POST /v1/rpc/voice.renew",
+    {
+      kind: "not a Home command",
+      why: "the person’s own live voice call on their signed-in session, as the table’s person-view rows",
+    },
+  ],
+  [
+    "POST /v1/rpc/voice.say",
+    {
+      kind: "not a Home command",
+      why: "the person’s own live voice call on their signed-in session, as the table’s person-view rows",
+    },
+  ],
+  [
+    "POST /v1/rpc/voice.start",
+    {
+      kind: "not a Home command",
+      why: "the person’s own live voice call on their signed-in session, as the table’s person-view rows",
+    },
+  ],
+  [
+    "POST /v1/rpc/voice.stop",
+    {
+      kind: "not a Home command",
+      why: "the person’s own live voice call on their signed-in session, as the table’s person-view rows",
+    },
+  ],
+  [
+    "POST /v1/runner/enrollment/preview",
+    { kind: "not a Home command", why: "a read: what an enrollment would be" },
+  ],
+  [
+    "PUT /v1/runner/file-transfers/:id",
+    { kind: "not a Home command", why: "the bytes of a file a Run moves between computers" },
+  ],
+]);
+/**
+ * Routes that change the Home outside the door today, each put to the lead (AD10) and owed:
+ * this list only shrinks.
+ */
+const outsideTheDoor = new Map<string, string>([
+  [
+    "DELETE /v1/personal-remote-access/connect-resource",
+    "the Mac app's step of an unlink or Off; not yet refused without its operation",
+  ],
+  [
+    "PUT /v1/personal-remote-access/connect-projection",
+    "the Mac app's step of a Remote access change; not yet refused without its operation",
+  ],
+  [
+    "POST /v1/personal-remote-access/executor/connect-provision",
+    "the Mac app's step of turning Connect on; not yet refused without its operation",
+  ],
+  [
+    "POST /v1/personal-remote-access/executor/connect-rotate",
+    "the Mac app's step of a rotate; not yet refused without its operation",
+  ],
+  [
+    "POST /internal/v1/browser-sources/pair",
+    "the Chrome extension's side of a pairing (browser.source.pair); not yet refused without the person's pairing",
+  ],
+  [
+    "POST /internal/v1/browser-sources/pair/challenge",
+    "the Chrome extension's side of a pairing (browser.source.pair); not yet refused without the person's pairing",
+  ],
+  [
+    "POST /v1/rpc/integration.computer.session.stop",
+    "ends a computer-use session: a narrowing change with no table row",
+  ],
+  ["POST /v1/runner/leave", "a device removing itself by its own signed proof: no table row"],
+]);

@@ -514,8 +514,6 @@ describe("a connection's activity, its operations and its commands (C5)", () => 
     expect(rows[1]!.outcome).toEqual({ label: "You approved it · Uncertain", tone: "warn" });
     expect(rows[1]!.detail).not.toBeNull();
     expect(rows[3]!.outcome).toEqual({ label: "You declined it", tone: "muted" });
-    // An older Home sends no commands: the operations alone, as before.
-    expect(activityRows({ operations: [operation] }).map(({ id }) => id)).toEqual([operation.id]);
     const recent = connectedAgentActivity(page);
     expect(recent.kind === "ready" && recent.items.map(({ id }) => id)).toEqual([
       "later",

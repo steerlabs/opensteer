@@ -87,6 +87,47 @@ describe("PersonalRemoteAccessService", () => {
     }
   });
 
+  it("changes Remote access only as the step of an unfinished operation that asked for it (AD10)", async () => {
+    const attempt = async (operation: Parameters<typeof configureDatabase>[1]) => {
+      const fixture = configureDatabase(
+        { generation: 0, mode: "off", routeOrigin: null },
+        operation,
+      );
+      const service = new PersonalRemoteAccessService({
+        authority,
+        database: ownerAuthority(fixture.database) as never,
+        identity: fakeIdentity(),
+        keys: generateKeyPairSync("ed25519"),
+      });
+      const result = service.configure(ownerSession(), {
+        mode: "private",
+        routeOrigin: "https://private.example",
+        schemaVersion: 1,
+      });
+      return { result, fixture };
+    };
+    // With the person's admitted, unfinished request for this mode: it is carried out.
+    const carried = await attempt({
+      intent: { action: "configure", mode: "private" },
+      state: "running",
+    });
+    await expect(carried.result).resolves.toMatchObject({ mode: "private" });
+    // Without any operation, for a finished one, or for one that asked for another mode: refused
+    // before anything changes.
+    for (const operation of [
+      null,
+      { intent: { action: "configure", mode: "private" }, state: "succeeded" },
+      { intent: { action: "configure", mode: "private" }, state: "failed" },
+      { intent: { action: "configure", mode: "off" }, state: "running" },
+    ]) {
+      const refused = await attempt(operation);
+      await expect(refused.result, JSON.stringify(operation)).rejects.toMatchObject({
+        code: "conflict",
+      });
+      expect(refused.fixture.updated).not.toHaveBeenCalled();
+    }
+  });
+
   it("refuses non-owners before any administration effect", async () => {
     const fixture = configureDatabase({ generation: 0, mode: "off", routeOrigin: null });
     const service = new PersonalRemoteAccessService({
@@ -653,6 +694,9 @@ function rowQuery<T>(row: T) {
     orderBy() {
       return this;
     },
+    limit() {
+      return this;
+    },
     forUpdate() {
       return this;
     },
@@ -673,12 +717,20 @@ function rowQuery<T>(row: T) {
  * The one stored remote-access row, answered from a mutable state object so a
  * second `configure` reads back exactly what the first one wrote.
  */
-function configureDatabase(initial: {
-  readonly generation: number;
-  readonly mode: "off" | "connect" | "private";
-  readonly routeOrigin: string | null;
-}) {
+function configureDatabase(
+  initial: {
+    readonly generation: number;
+    readonly mode: "off" | "connect" | "private";
+    readonly routeOrigin: string | null;
+  },
+  /** The latest Remote access operation: by default, the person's unfinished request for private. */
+  operation: { readonly intent: Record<string, unknown>; readonly state: string } | null = {
+    intent: { action: "configure", mode: "private" },
+    state: "running",
+  },
+) {
   let state = { ...initial };
+  const operationQuery = rowQuery(operation ?? undefined);
   const remoteAccessQuery = {
     executeTakeFirstOrThrow: vi.fn(async () => state),
     forNoKeyUpdate() {
@@ -733,7 +785,9 @@ function configureDatabase(initial: {
         ? remoteAccessQuery
         : table === "authSessions"
           ? liveSessionQuery()
-          : marker,
+          : table === "personalRemoteAdministration"
+            ? operationQuery
+            : marker,
     ),
     updateTable: vi.fn(() => updateQuery),
   };

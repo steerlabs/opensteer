@@ -859,7 +859,6 @@ export async function createHostServer(
   // The Account link is its own subsystem: a Home on its own server links to an
   // Opensteer Account with no Remote access at all.
   if (dependencies.personalAccountLink) {
-    const accountLink = dependencies.personalAccountLink.service;
     // The Mac app's account-link steps are the person's commands: through the one door (AD10),
     // as the same table types the person's other apps send, each answered as this route always was.
     app.post("/v1/personal-remote-access/account-link/proof", async (request, reply) => {
@@ -886,26 +885,18 @@ export async function createHostServer(
       })) as Extract<HostApiCommandOutput, { type: "personal.accountLink.resume" }>;
       return reply.header("cache-control", "no-store").send(output.access);
     });
-    app.post(
-      "/v1/personal-remote-access/account-unlink/revoke-sessions",
-      async (request, reply) => {
+    // The Mac app's two unlink steps: the table's `personal.accountLink.unlink`, one step each,
+    // through the door (AD10).
+    for (const step of ["revoke-sessions", "remove-link"] as const)
+      app.post(`/v1/personal-remote-access/account-unlink/${step}`, async (request, reply) => {
         PersonalHostAccountUnlinkStepRequestSchema.parse(request.body);
-        const caller = await dependencies.authenticator.authenticateSessionContext(
-          request.headers,
-          { mutation: true },
-        );
-        await accountLink.revokeAccountSessions(caller, (effect) => afterResponse(reply, effect));
+        await personCommand(request, reply, {
+          type: "personal.accountLink.unlink",
+          idempotencyKey: randomUUID(),
+          step,
+        });
         return reply.code(204).send();
-      },
-    );
-    app.post("/v1/personal-remote-access/account-unlink/remove-link", async (request, reply) => {
-      PersonalHostAccountUnlinkStepRequestSchema.parse(request.body);
-      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
-        mutation: true,
       });
-      await accountLink.removeAccountLink(caller, (effect) => afterResponse(reply, effect));
-      return reply.code(204).send();
-    });
   }
   // One optional subsystem, one registration decision. A Deployment without
   // Personal reachability does not answer on these paths at all, so no handler
@@ -2480,7 +2471,12 @@ export async function createHostServer(
             code: "not_found",
             message: "Opensteer Account linking is unavailable",
           });
-        await service.unlinkAccount({ session }, context.afterResponse);
+        // The Mac app's two steps, or both at once as the person's other apps send it.
+        if (command.step === "revoke-sessions")
+          await service.revokeAccountSessions({ session }, context.afterResponse);
+        else if (command.step === "remove-link")
+          await service.removeAccountLink({ session }, context.afterResponse);
+        else await service.unlinkAccount({ session }, context.afterResponse);
         service.administration.changed();
         return { type: command.type };
       }

@@ -247,6 +247,10 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         await requestSettlementActor(transaction, caller.session.user.id, caller.session.id);
         return;
       }
+      // An executor's step (AD10): the Mac app carries out a `personal.remoteAccess.request` the
+      // door admitted, so the change stands only while that operation is unfinished and asks for
+      // this mode. Turning it on is the person's to approve, there, never here.
+      await requireRemoteAccessOperation(transaction, request.mode);
       const generation = Number(current.generation) + 1;
       if (!Number.isSafeInteger(generation)) {
         throw new OpensteerError({ code: "conflict", message: "Route generation is exhausted" });
@@ -1487,6 +1491,38 @@ function assertStoredAccountLinkConsume(
       message: "Personal Host is linked to another Account",
     });
   }
+}
+
+/**
+ * The admitted, unfinished Remote access operation a configure step carries out: turning it off
+ * belongs to any of them (unlink, rotate and a change of mode each pass through off); turning it
+ * on belongs only to the operation that asked for that mode, or a rotate of Connect.
+ */
+export async function requireRemoteAccessOperation(
+  transaction: Transaction<DatabaseSchema>,
+  mode: ConfigurePersonalRemoteAccessRequest["mode"],
+): Promise<void> {
+  const operation = await transaction
+    .selectFrom("personalRemoteAdministration")
+    .select(["intent", "state"])
+    .orderBy("position", "desc")
+    .limit(1)
+    // A plain read under the Remote access lock this step already holds: a row lock here would
+    // come before the sessions it ends, the reverse of every other path.
+    .executeTakeFirst();
+  const intent = operation?.intent as
+    { readonly action: string; readonly mode?: string } | undefined;
+  const unfinished = operation?.state === "pending" || operation?.state === "running";
+  const carries =
+    unfinished &&
+    (mode === "off" ||
+      (intent?.action === "configure" && intent.mode === mode) ||
+      (mode === "connect" && intent?.action === "rotate"));
+  if (!carries)
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Remote access changes only as part of a change you asked for in Opensteer.",
+    });
 }
 
 async function lockRemoteAccess(transaction: Transaction<DatabaseSchema>): Promise<void> {

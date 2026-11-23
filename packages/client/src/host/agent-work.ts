@@ -275,8 +275,6 @@ function commandOutcome(command: AgentCommandActivity): OperationRow["outcome"] 
     }
     case "declined":
       return { label: workWords("cmd.declined"), tone: "muted" };
-    case "expired":
-      return { label: workWords("cmd.expired"), tone: "muted" };
     case "withdrawn":
       return { label: workWords("cmd.withdrawn"), tone: "muted" };
     case "closed":
@@ -290,14 +288,14 @@ function commandOutcome(command: AgentCommandActivity): OperationRow["outcome"] 
  */
 export function activityRows(page: {
   readonly operations: readonly AgentOperationView[];
-  readonly commands?: readonly AgentCommandActivity[] | undefined;
+  readonly commands: readonly AgentCommandActivity[];
 }): readonly OperationRow[] {
   const rows = [
     ...page.operations.map((operation) => ({
       row: operationRow(operation),
       at: operation.createdAt,
     })),
-    ...(page.commands ?? []).map((command) => ({
+    ...page.commands.map((command) => ({
       row: commandActivityRow(command),
       at: command.createdAt,
     })),

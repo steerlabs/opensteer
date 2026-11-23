@@ -2147,9 +2147,9 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "needsYou.get": async (input) =>
       rpcSuccess(mockNeedsYou(client.getSnapshot(), input.before, input.limit)),
     "connections.activity": async (input) =>
-      rpcSuccess(client.agentActivity({ connectionId: input.connectionId })),
+      rpcSuccess({ ...client.agentActivity({ connectionId: input.connectionId }), commands: [] }),
     "threads.activity": async (input) =>
-      rpcSuccess(client.agentActivity({ threadId: input.threadId })),
+      rpcSuccess({ ...client.agentActivity({ threadId: input.threadId }), commands: [] }),
     "connections.list": async (input) => {
       if (client.unreadable) throw new Error("The preview Home can't be reached.");
       const connections = client.listConnections(input.includeRevoked === true);

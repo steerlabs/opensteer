@@ -277,7 +277,7 @@ export function createConnectionRpcHandlers(
       limit: 50,
       ...cursor,
     });
-    if (!commandActivityOf) return operations;
+    if (!commandActivityOf) return { ...operations, commands: [] };
     // A page that goes on stops at its oldest operation: older commands come with the next page.
     const oldest = operations.nextBefore ? operations.operations.at(-1)?.createdAt : undefined;
     const commands = await commandActivityOf({
