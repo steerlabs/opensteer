@@ -358,7 +358,11 @@ export class PageEditingObserver {
     if (!focus) return this.#stale();
     // Docs/editing-admission.md: insertions are relative (Rule 2, any context of the same field);
     // browser replacements/compositions keep exact context + selectionRevision (exactNamed: true).
-    if (!this.#admission.admits(edit.contextId, insertion ? "relative" : "named", { exactNamed: true })) {
+    if (
+      !this.#admission.admits(edit.contextId, insertion ? "relative" : "named", {
+        exactNamed: true,
+      })
+    ) {
       this.#refusedFrom.set(producer, edit.contextId);
       return false;
     }
@@ -584,7 +588,11 @@ export class PageEditingObserver {
    * PH5: performs a copy or cut after verifying the focused field LIVE in the page (same rule as
    * paste, plus live non-sensitive check).
    */
-  copyOrCut(contextId: string, action: () => Promise<unknown>, producer?: string): Promise<boolean> {
+  copyOrCut(
+    contextId: string,
+    action: () => Promise<unknown>,
+    producer?: string,
+  ): Promise<boolean> {
     return this.#clipboard(contextId, action, {
       requireNonSensitive: true,
       producer,

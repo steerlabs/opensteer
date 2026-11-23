@@ -4128,7 +4128,9 @@ describe("BrowserController", () => {
       cdp.responses.set("Runtime.evaluate", (params) => {
         const expr = String(params?.expression ?? "");
         if (expr.includes("prepareClipboard"))
-          return { result: { value: liveOk ? { ok: true } : { ok: false, reason: "focus-changed" } } };
+          return {
+            result: { value: liveOk ? { ok: true } : { ok: false, reason: "focus-changed" } },
+          };
         if (expr.includes("prepare("))
           return { result: { value: { ok: false, reason: "range-mismatch" } } };
         return { result: { value: false } };

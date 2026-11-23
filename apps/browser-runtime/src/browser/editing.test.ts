@@ -1060,7 +1060,8 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           "rich.innerHTML='<b>Bold</b> text';rich.focus();const range=document.createRange();range.selectNodeContents(rich);getSelection().removeAllRanges();getSelection().addRange(range)",
         );
         await waitForBrowserState(
-          () => context().context.contextId !== beforeRich && context().context.field?.kind === "rich",
+          () =>
+            context().context.contextId !== beforeRich && context().context.field?.kind === "rich",
         );
         const htmlCopy = randomUUID();
         send({

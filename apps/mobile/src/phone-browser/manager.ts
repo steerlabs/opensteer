@@ -1898,8 +1898,7 @@ export class PhoneBrowserManager {
     session.tabs.delete(tab.id);
     this.#tabs.delete(tab.id);
     this.#localIntents.delete(tab.id);
-    for (const [key, entry] of this.#clipboard)
-      if (entry.tab === tab) this.#clipboard.delete(key);
+    for (const [key, entry] of this.#clipboard) if (entry.tab === tab) this.#clipboard.delete(key);
     session.revision++;
     tab.state = "closed";
     tab.dialog = null;

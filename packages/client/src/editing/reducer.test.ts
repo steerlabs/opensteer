@@ -1057,7 +1057,10 @@ describe("a paste over a selection the target cannot delete", () => {
     const state = { ...typed(abilities), proxy: proxy("hello", 1, 4) };
     const result = reduceEditing(state, paste);
     expect(result.operations).toMatchObject([
-      { kind: "edit", edit: { contextId: context.contextId, before: "ello", after: "", text: "o" } },
+      {
+        kind: "edit",
+        edit: { contextId: context.contextId, before: "ello", after: "", text: "o" },
+      },
       { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
       { kind: "paste", contextId: context.contextId, follows: true },
     ]);

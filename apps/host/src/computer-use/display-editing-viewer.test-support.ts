@@ -172,7 +172,11 @@ export async function runDisplayEditingJourney(directory: string) {
               { kind: "command", command: "moveBackward", contextId: fixture.context.contextId },
               { kind: "command", command: "deleteBackward", contextId: fixture.context.contextId },
               { kind: "command", command: "deleteBackward", contextId: fixture.context.contextId },
-              { kind: "paste", text: "line one\nline two 🦊", contextId: fixture.context.contextId },
+              {
+                kind: "paste",
+                text: "line one\nline two 🦊",
+                contextId: fixture.context.contextId,
+              },
               { kind: "copy", contextId: fixture.context.contextId },
             ]);
             const producerEvents = fixture.sent.flatMap((message) =>
