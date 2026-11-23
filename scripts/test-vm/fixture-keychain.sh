@@ -73,8 +73,14 @@ hosts_line="$account_address $account_name # opensteer-job-fixture-authority"
 authority_state="$HOME/opensteer-job/fixture-authority.state"
 
 recorded_value() { sed -n "s/^$1 //p" "$authority_state" | head -n 1; }
-# Whether an interface (`-a`: any) holds the address now; looking needs no root.
-holds_address() { ifconfig "$1" | grep -qE "^[[:space:]]inet $(printf '%s' "$2" | sed 's/\./\\./g') "; }
+# Whether an interface (`-a`: any) holds the address now; looking needs no root. The listing is
+# read whole first: grep -q stops at its match, and under pipefail the listing it left unread
+# would end the pipe with SIGPIPE (141) and read as "not held". 0: held; 1: not; 2: no listing.
+holds_address() {
+  local listing
+  listing="$(ifconfig "$1")" || return 2
+  grep -qE "^[[:space:]]inet $(printf '%s' "$2" | sed 's/\./\\./g') " <<<"$listing"
+}
 
 authority_begin() {
   [ ! -e "$authority_state" ] || refuse "a fixture authority is already in place"
@@ -83,9 +89,10 @@ authority_begin() {
     refuse "the guest's hosts file does not end in a newline"
   fi
   # An address already on an interface is not this step's to add, nor to take away after.
-  if holds_address -a "$account_address"; then
-    refuse "$account_address is already an address of this guest"
-  fi
+  local held=0
+  holds_address -a "$account_address" || held=$?
+  [ "$held" -ne 2 ] || refuse "the guest's interfaces could not be listed"
+  [ "$held" -ne 0 ] || refuse "$account_address is already an address of this guest"
   mkdir -p "$authority"
   : >"$authority_state"
   # The runner puts this script in the job's folder (this step itself arrives over stdin).
@@ -110,8 +117,15 @@ authority_end() {
   line="$(recorded_value alias)"
   # `begin` refused an address already there, so one on loopback now is the one it added; one not
   # there is gone already (or never got there), and nothing is left to undo.
-  if [ -n "$line" ] && holds_address lo0 "$line"; then
-    sudo -n ifconfig lo0 -alias "$line" || status=1
+  if [ -n "$line" ]; then
+    local held=0
+    holds_address lo0 "$line" || held=$?
+    if [ "$held" -eq 0 ]; then
+      sudo -n ifconfig lo0 -alias "$line" || status=1
+    elif [ "$held" -ne 1 ]; then
+      # Not knowing whether it is still there, it keeps the record for another end.
+      status=1
+    fi
   fi
   if [ "$status" -ne 0 ]; then
     echo "fixture authority: not all of it could be removed; its record is kept for another end" >&2

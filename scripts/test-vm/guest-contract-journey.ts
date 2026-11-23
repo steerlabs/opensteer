@@ -247,6 +247,17 @@ const dscacheutilStandIn =
  */
 const ifconfigStandIn = String.raw`#!/bin/sh
 aliases="$HOME/lo0-aliases"
+# A guest whose first line already names the address, and a long listing after it: a reader that
+# stops at the match leaves the rest unwritten.
+if [ -n "$GUEST_ADDRESS_FIRST" ]; then
+  printf 'lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
+	inet %s netmask 0xffffffff
+' "$GUEST_ADDRESS_FIRST"
+  i=0; while [ "$i" -lt 4000 ]; do printf 'utun%s: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1380
+	inet6 fe80::%s%%utun%s prefixlen 64 scopeid 0x%s
+' "$i" "$i" "$i" "$i"; i=$((i + 1)); done
+  exit 0
+fi
 printf 'lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
 	inet 127.0.0.1 netmask 0xff000000
 '
@@ -569,12 +580,15 @@ keychainCase(
 );
 
 // The address is already one of the guest's: not the step's to add, nor to take away after. It
-// refuses before it records or changes anything, and `end` leaves the address where it is.
-keychainCase(
-  "authority-address-already-held",
-  { guest: true, marker: "opensteer-gui-job-contract" },
-  (step, root) => {
-    assert.equal(step("begin", { GUEST_ADDRESS: "192.88.99.10" }), 77);
+// refuses before it records or changes anything, and `end` leaves the address where it is. Also
+// where ifconfig names it on its first line and writes on long after the match (the re-check of
+// e7080ea31..963f808d0: a reader that stops early broke the pipe, and pipefail read it as absent).
+for (const [name, listing] of [
+  ["authority-address-already-held", { GUEST_ADDRESS: "192.88.99.10" }],
+  ["authority-address-held-on-the-first-line", { GUEST_ADDRESS_FIRST: "192.88.99.10" }],
+] as const)
+  keychainCase(name, { guest: true, marker: "opensteer-gui-job-contract" }, (step, root) => {
+    assert.equal(step("begin", listing), 77);
     assert.deepEqual(
       sudoCalls(root).map(({ args }) => args.join(" ")),
       ["-n tail -c 1 /etc/hosts"],
@@ -584,13 +598,12 @@ keychainCase(
       readFileSync(path.join(root, "begin.log"), "utf8"),
       /refused: 192\.88\.99\.10 is already an address of this guest/u,
     );
-    assert.equal(step("end", { GUEST_ADDRESS: "192.88.99.10" }), 0);
+    assert.equal(step("end", listing), 0);
     assert.deepEqual(
       sudoCalls(root).map(({ args }) => args.join(" ")),
       ["-n tail -c 1 /etc/hosts"],
     );
-  },
-);
+  });
 
 writeFileSync(path.join(out, "results.json"), JSON.stringify(results, null, 2));
 console.log(out, JSON.stringify(results, null, 2));
