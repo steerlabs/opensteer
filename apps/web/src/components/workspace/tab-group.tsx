@@ -200,6 +200,8 @@ function TabGroupEditor({
           maxLength={groupNameMaxLength}
           onBlur={save}
           onChange={(event) => setTitle(event.target.value)}
+          // A new group arrives named "New group": the name a person types replaces it.
+          onFocus={(event) => event.currentTarget.select()}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.nativeEvent.isComposing) {
               event.preventDefault();

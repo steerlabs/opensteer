@@ -141,6 +141,23 @@ describe("one tab list", () => {
     await key({ key: "w", metaKey: true }, () => expect(shown()).toBe(visible.at(-2)));
   });
 
+  it("a group's editor opens with its whole title selected, so typing replaces it", async () => {
+    await mount("/");
+    const group = groupId();
+    await act(async () => {
+      element(`[data-tab-group-id="${group}"]`).dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+      );
+    });
+    const title = await until("The group's menu never offered its title", () =>
+      element<HTMLInputElement>('[aria-label="Group title"]'),
+    );
+    // A new group arrives named "New group": a name typed now must not run into it.
+    expect(document.activeElement).toBe(title);
+    expect(title.value.length).toBeGreaterThan(0);
+    expect([title.selectionStart, title.selectionEnd]).toEqual([0, title.value.length]);
+  });
+
   it("a group's menu renames and ungroups it, keeping every tab where it was", async () => {
     await mount("/");
     const order = strip().ordered;
