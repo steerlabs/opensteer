@@ -1040,18 +1040,19 @@ export class OpensteerStore {
             case "request":
               await step(() => settleLineageRequests(this.#database, [attempt.id], cleanup));
               break;
-            case "input":
-              await mutate(
-                (tx) =>
-                  threadStore.cancelThreadInput(tx, {
-                    threadId: attempt.threadId!,
-                    messageId: attempt.id,
-                    idempotencyKey: key,
-                    requestedBy: userId,
-                  }),
-                true,
-              );
+            case "input": {
+              let cancelled: Awaited<
+                ReturnType<typeof threadStore.cancelDisconnectedThreadInput>
+              > | null = null;
+              await mutate(async (tx) => {
+                cancelled = await threadStore.cancelDisconnectedThreadInput(tx, {
+                  threadId: attempt.threadId!,
+                  messageId: attempt.id,
+                });
+              });
+              if (cancelled) this.#announceRevokedGrants(cancelled);
               break;
+            }
             case "trigger":
               await mutate((tx) => pauseLineageTrigger(tx, attempt.id));
               break;

@@ -105,7 +105,7 @@ describe("signed-in MCP connection consent", () => {
       expect(container.querySelector(".agent-mark")).not.toBeNull();
       expect(container.textContent).not.toContain("Asked for this");
       expect(container.textContent).toContain(
-        "Holds the access: AgentPay · https://agentpay.example",
+        "Holds the access: “AgentPay” · https://agentpay.example",
       );
       expect(container.textContent).not.toContain("Untrusted name");
       // The verified name is the heading; the line under it says only that it is verified.

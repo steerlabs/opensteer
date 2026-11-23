@@ -1,23 +1,70 @@
 import { expect, it } from "vitest";
 import { outsideName } from "./outsideName.js";
 
+const england = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
+const scotland = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}";
+const wales = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}";
+const unknownTagFlag = "\u{1F3F4}\u{E0075}\u{E0073}\u{E0063}\u{E0061}\u{E007F}";
+
 it.each([
-  ["a forged agent name", "Helper\u202E\nDisconnected", "Helper Disconnected"],
+  // Kept byte for byte: emoji ZWJ (plain, FE0F, skin-tone), joiner scripts, and the 3 subdivision flags.
+  ["an emoji ZWJ sequence", "👩\u200D💻", "👩\u200D💻"],
+  ["an emoji ZWJ sequence with FE0F", "🏳\uFE0F\u200D🌈", "🏳\uFE0F\u200D🌈"],
+  ["an emoji ZWJ sequence with a skin-tone modifier", "👩🏽\u200D💻", "👩🏽\u200D💻"],
+  ["Persian ZWNJ", "می\u200Cخواهم", "می\u200Cخواهم"],
+  ["Sinhala ZWJ", "ශ්\u200Dරී", "ශ්\u200Dරී"],
+  ["Bengali ZWJ", "র\u200D্য", "র\u200D্য"],
+  ["the flag of England", england, england],
+  ["the flag of Scotland", scotland, scotland],
+  ["the flag of Wales", wales, wales],
+  // Removed: direction controls, non-exception joiners, unknown tags, other Cc/Cf.
+  ["a forged agent name (U+202E)", "Helper\u202E\nDisconnected", "Helper Disconnected"],
   [
-    "a forged channel name",
+    "a forged channel name (U+202E)",
     "#ops\u202E\nOnly you can message this chat",
     "#ops Only you can message this chat",
   ],
-  ["a zero-width joiner", "Work\u200DOps", "WorkOps"],
+  ["a ZWJ between Latin letters", "Team\u200DChat", "TeamChat"],
+  ["a joiner at the start (emoji)", "\u200D👩", "👩"],
+  ["a joiner at the start (Arabic)", "\u200Cمی", "می"],
+  ["a joiner at the end (emoji)", "👩\u200D", "👩"],
+  ["a joiner at the end (Arabic)", "می\u200C", "می"],
+  ["a doubled joiner (emoji)", "👩\u200D\u200D💻", "👩💻"],
+  ["a doubled joiner (Arabic)", "می\u200C\u200Cخواهم", "میخواهم"],
+  ["a joiner between Arabic and Latin", "م\u200CA", "مA"],
+  ["a joiner between Latin and Arabic", "A\u200Dم", "Aم"],
+  ["a tag sequence that is not one of the three", unknownTagFlag, "\u{1F3F4}"],
   ["a tab", "Work\tOps", "Work Ops"],
   ["a soft hyphen", "evil\u00ADgoogle.com", "evilgoogle.com"],
   ["an isolate", "\u2067Alice\u2069", "Alice"],
   ["runs of space and a line separator", "  Alice \u2028  Bob  ", "Alice Bob"],
-])("cleans %s", (_what, value, cleaned) => {
-  expect(outsideName(value, 160)).toBe(cleaned);
+  ["Unicode whitespace only", "\u00A0\u2003\u3000", ""],
+])("cleans %s idempotently", (_what, value, cleaned) => {
+  const once = outsideName(value, 160);
+  expect(once).toBe(cleaned);
+  expect(outsideName(once, 160)).toBe(once);
 });
 
-it("cuts a long name at its maximum, never inside a character", () => {
+it("cuts a long name at its UTF-16 maximum, never inside a surrogate pair, joiner, or flag", () => {
   expect(outsideName("x".repeat(5_000), 160)).toHaveLength(160);
-  expect(Array.from(outsideName("😀".repeat(200), 160))).toHaveLength(160);
+  const emoji = outsideName("😀".repeat(200), 160);
+  expect(emoji.length).toBe(160);
+  expect(Array.from(emoji)).toHaveLength(80);
+  expect(emoji.isWellFormed()).toBe(true);
+  const odd = outsideName(`a${"😀".repeat(200)}`, 160);
+  expect(odd.length).toBe(159);
+  expect(odd.isWellFormed()).toBe(true);
+  expect(outsideName(`a${"😀".repeat(200)}`, 1)).toBe("a");
+  expect(outsideName("😀".repeat(200), 1)).toBe("");
+  // Cutting right where a ZWJ or ZWNJ falls leaves no trailing joiner and stays idempotent.
+  const cutEmoji = outsideName("a👩\u200D💻", 4);
+  expect(cutEmoji).toBe("a👩");
+  expect(outsideName(cutEmoji, 4)).toBe(cutEmoji);
+  const cutPersian = outsideName("می\u200Cخواهم", 3);
+  expect(cutPersian).toBe("می");
+  expect(outsideName(cutPersian, 3)).toBe(cutPersian);
+  // Cutting mid-subdivision-flag drops the flag whole rather than corrupting it to a black flag.
+  const cutFlag = outsideName(`a ${england}`, 10);
+  expect(cutFlag).toBe("a");
+  expect(outsideName(cutFlag, 10)).toBe(cutFlag);
 });

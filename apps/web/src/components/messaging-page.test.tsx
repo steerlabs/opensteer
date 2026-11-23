@@ -98,12 +98,14 @@ describe("Messaging", () => {
       expect(text).toContain("Slack says the token was revoked.");
       expect(button(page, "Fix setup")).toBeTruthy();
       // Who me is, and how to change it.
-      expect(text).toContain("Tim is you. Messages from it count as you in your chats.");
-      expect(text).toContain("Linking another account replaces Tim as you.");
+      expect(text).toContain("“Tim” is you. Messages from it count as you in your chats.");
+      expect(text).toContain("Linking another account replaces “Tim” as you.");
       // Its chats, each a connected agent with the line the list shows.
       await vi.waitFor(() => expect(text.length).toBeGreaterThan(0));
       await vi.waitFor(() => expect(page.textContent).toContain("Slack · #team"));
-      expect(page.textContent).toContain("#team on Slack, through Workshop · Tasks · Supervised");
+      expect(page.textContent).toContain(
+        "“#team” on Slack, through “Workshop” · Tasks · Supervised",
+      );
       const link = [...page.querySelectorAll("a")].find((a) => a.textContent === "Slack · #team");
       expect(link?.getAttribute("href")).toBe(
         "/settings/external-agents/mcn_00000000-0000-4000-8000-0000000000c2",
@@ -145,7 +147,7 @@ describe("Messaging", () => {
       expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "channel.me.link" }));
       await vi.waitFor(() =>
         expect(page.textContent).toMatch(
-          /Send MOCKCODE to Workshop in a direct message from your own Slack account\. It works once, until .+\. Nothing is said in the chat; this page shows your account once it’s linked\./u,
+          /Send MOCKCODE to “Workshop” in a direct message from your own Slack account\. It works once, until .+\. Nothing is said in the chat; this page shows your account once it’s linked\./u,
         ),
       );
     } finally {
@@ -387,7 +389,7 @@ describe("Messaging", () => {
         (b) => b.textContent === "Link another account" || b.textContent === "Link my account",
       );
       await act(async () => links[2]!.click());
-      await vi.waitFor(() => expect(page.textContent).toContain("Send MOCKCODE to On-call"));
+      await vi.waitFor(() => expect(page.textContent).toContain("Send MOCKCODE to “On-call”"));
       expect(page.textContent).toContain(
         "Until this account is fixed, the code can’t link your account: fix its setup first, then send it.",
       );

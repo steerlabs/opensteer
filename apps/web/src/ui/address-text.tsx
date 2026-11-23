@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import { addressParts, addressText, outsideText, type SentencePart } from "@opensteer/client/host";
 
 /**
@@ -30,8 +31,13 @@ export function OutsideName({ value }: { readonly value: string }) {
   return <bdi className="outside-name">{outsideText(value)}</bdi>;
 }
 
-/** A sentence given as parts: its words as words, each name an `OutsideName`, each address an `Address`. */
+/**
+ * A sentence given as parts: its words as words, each name an `OutsideName` (quoted when it stands
+ * inside running text so Opensteer's words cannot run into it; unquoted when drawn alone as a
+ * heading or standalone label), each address an `Address`.
+ */
 export function SentenceText({ parts }: { readonly parts: readonly SentencePart[] }) {
+  const inSentence = parts.some((part) => typeof part === "string");
   return (
     <>
       {parts.map((part, index) =>
@@ -39,6 +45,10 @@ export function SentenceText({ parts }: { readonly parts: readonly SentencePart[
           part
         ) : "address" in part ? (
           <Address key={index} value={part.address} />
+        ) : inSentence ? (
+          <Fragment key={index}>
+            “<OutsideName value={part.name} />”
+          </Fragment>
         ) : (
           <OutsideName key={index} value={part.name} />
         ),

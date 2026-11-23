@@ -25,7 +25,7 @@ import {
   threadProviderRetry,
   threadRunQueued,
 } from "./personal-task-store.js";
-import { detailThreadValue, taskView } from "./personal-snapshot-store.js";
+import { detailThreadValue, endedOriginForThread, taskView } from "./personal-snapshot-store.js";
 import { publishThreadQueues } from "./personal-queue-view.js";
 
 type Tx = Transaction<DatabaseSchema>;
@@ -75,9 +75,10 @@ export async function writeThreadSummary(
         operation: "remove",
       });
     } else {
+      const endedOrigin = await endedOriginForThread(tx, row.createdBy, row.originConnectionId);
       mutation.change(
         { scopeKey: threadScope, entityKind: "thread", entityId: threadId, operation: "upsert" },
-        () => ({ ...view, thread }),
+        () => ({ ...view, thread, endedOrigin }),
       );
     }
     if (row.listed && row.status !== "archived" && !row.removedAt) {

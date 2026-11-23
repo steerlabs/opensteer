@@ -1,4 +1,10 @@
-import { agentWords, type ExternalAgentGuide, type guideAddress } from "@opensteer/client/host";
+import {
+  agentSentence,
+  agentWords,
+  phoneSentence,
+  type ExternalAgentGuide,
+  type guideAddress,
+} from "@opensteer/client/host";
 import type { ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { color, radius, space } from "../theme.js";
@@ -44,7 +50,9 @@ export function ExternalAgentSetupSheet(props: {
             <View accessibilityLiveRegion="polite" style={styles.done}>
               <Symbol name="checkmark.circle.fill" size={40} tint={color.green} />
               <AppText role="title" style={styles.center}>
-                {agentWords("agents.add.connected", { agent: props.connected.label })}
+                {phoneSentence(
+                  agentSentence("agents.add.connected", { agent: { name: props.connected.label } }),
+                )}
               </AppText>
               <PrimaryButton label="Done" onPress={props.onClose} />
             </View>

@@ -1,7 +1,559 @@
-import { sql, type Kysely } from "kysely";
+import { outsideName } from "@opensteer/shared/outsideName";
+import { sql, type Kysely, type RawBuilder } from "kysely";
 
 /** A contract migration: it drops what a running previous Home still uses (`migrations.test.ts`). */
 export const chatRoutesEndMigrationName = "0109_chat_routes_end_contract";
+
+const cleanBatchSize = 500;
+const needsCleanPattern = "[^ -~]|^ | $|  ";
+
+function needsClean(column: RawBuilder<unknown>, max: number) {
+  return sql<boolean>`(${column} is not null and (${column} ~ ${needsCleanPattern} or length(${column}) > ${max} or ${column} = ''))`;
+}
+
+async function paginateById<Row extends { readonly id: string }>(
+  fetch: (afterId: string | null) => Promise<readonly Row[]>,
+  apply: (rows: readonly Row[]) => Promise<void>,
+): Promise<void> {
+  let afterId: string | null = null;
+  for (;;) {
+    const rows = await fetch(afterId);
+    if (rows.length === 0) break;
+    await apply(rows);
+    afterId = rows[rows.length - 1]!.id;
+    if (rows.length < cleanBatchSize) break;
+  }
+}
+
+function cleanIdentityAtConsent(value: unknown): {
+  readonly changed: boolean;
+  readonly value: unknown;
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { changed: false, value };
+  const record = value as Record<string, unknown>;
+  let changed = false;
+  const next: Record<string, unknown> = { ...record };
+  for (const [key, entry] of Object.entries(record)) {
+    if (!key.endsWith("Name") || typeof entry !== "string") continue;
+    const cleaned = outsideName(entry, 100) || "Agent";
+    if (cleaned !== entry) {
+      next[key] = cleaned;
+      changed = true;
+    }
+  }
+  return changed ? { changed: true, value: next } : { changed: false, value };
+}
+
+function cleanIngressEvent(value: unknown): { readonly changed: boolean; readonly value: unknown } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { changed: false, value };
+  const event = value as Record<string, unknown>;
+  let changed = false;
+  let actor = event.actor;
+  if (actor && typeof actor === "object" && !Array.isArray(actor)) {
+    const record = actor as Record<string, unknown>;
+    if (typeof record.displayName === "string") {
+      const fallback =
+        (typeof record.externalUserId === "string"
+          ? outsideName(record.externalUserId, 160)
+          : "") || "Someone";
+      const cleaned = outsideName(record.displayName, 160) || fallback;
+      if (cleaned !== record.displayName) {
+        actor = { ...record, displayName: cleaned };
+        changed = true;
+      }
+    }
+  }
+  let conversation = event.conversation;
+  if (conversation && typeof conversation === "object" && !Array.isArray(conversation)) {
+    const record = conversation as Record<string, unknown>;
+    if (typeof record.displayName === "string") {
+      const cleaned = outsideName(record.displayName, 240) || null;
+      if (cleaned !== record.displayName) {
+        conversation = { ...record, displayName: cleaned };
+        changed = true;
+      }
+    }
+  }
+  return changed
+    ? { changed: true, value: { ...event, actor, conversation } }
+    : { changed: false, value };
+}
+
+/**
+ * Cleans every stored name column and JSON place through the one `outsideName` implementation,
+ * batched by primary key inside the migration's transaction. Only rows whose value changes are
+ * updated; an empty cleaned value takes the store's neutral fallback.
+ */
+async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
+  const after = (afterId: string | null) => (afterId === null ? sql`true` : sql`id > ${afterId}`);
+
+  // 1. agent_connections (label, client_name, bridge_conversation_name, identity_at_consent)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{
+          readonly id: string;
+          readonly label: string;
+          readonly clientName: string;
+          readonly bridgeName: string | null;
+          readonly identity: unknown;
+        }>`
+          select id, label, client_name as "clientName",
+            bridge_conversation_name as "bridgeName", identity_at_consent as "identity"
+          from agent_connections
+          where ${after(afterId)}
+            and (${needsClean(sql`label`, 120)}
+              or ${needsClean(sql`client_name`, 100)}
+              or ${needsClean(sql`bridge_conversation_name`, 160)}
+              or ${needsClean(sql`identity_at_consent->>'clientName'`, 100)}
+              or ${needsClean(sql`identity_at_consent->>'platformName'`, 100)}
+              or ${needsClean(sql`identity_at_consent->>'embedderName'`, 100)})
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const labels: string[] = [];
+      const clientNames: string[] = [];
+      const bridgeNames: (string | null)[] = [];
+      const identities: (string | null)[] = [];
+      for (const row of rows) {
+        const clientName = outsideName(row.clientName, 100) || "Agent";
+        const label = outsideName(row.label, 120) || clientName;
+        const bridgeName =
+          row.bridgeName === null ? null : outsideName(row.bridgeName, 160) || null;
+        const identity = cleanIdentityAtConsent(row.identity);
+        if (
+          clientName === row.clientName &&
+          label === row.label &&
+          bridgeName === row.bridgeName &&
+          !identity.changed
+        )
+          continue;
+        ids.push(row.id);
+        labels.push(label);
+        clientNames.push(clientName);
+        bridgeNames.push(bridgeName);
+        identities.push(identity.value === null ? null : JSON.stringify(identity.value));
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update agent_connections as t set
+          label = u.label,
+          client_name = u.client_name,
+          bridge_conversation_name = u.bridge_conversation_name,
+          identity_at_consent = u.identity_at_consent::jsonb
+        from unnest(
+          ${ids}::text[],
+          ${labels}::text[],
+          ${clientNames}::text[],
+          ${bridgeNames}::text[],
+          ${identities}::text[]
+        ) as u(id, label, client_name, bridge_conversation_name, identity_at_consent)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 2. channel_accounts (display_name, handle)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{
+          readonly id: string;
+          readonly displayName: string;
+          readonly externalAccountId: string;
+          readonly handle: string | null;
+        }>`
+          select id, display_name as "displayName",
+            external_account_id as "externalAccountId", handle
+          from channel_accounts
+          where ${after(afterId)}
+            and (${needsClean(sql`display_name`, 160)} or ${needsClean(sql`handle`, 160)})
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const displayNames: string[] = [];
+      const handles: (string | null)[] = [];
+      for (const row of rows) {
+        const displayName =
+          outsideName(row.displayName, 160) || outsideName(row.externalAccountId, 160) || "Account";
+        const handle = row.handle === null ? null : outsideName(row.handle, 160) || null;
+        if (displayName === row.displayName && handle === row.handle) continue;
+        ids.push(row.id);
+        displayNames.push(displayName);
+        handles.push(handle);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update channel_accounts as t set
+          display_name = u.display_name,
+          handle = u.handle
+        from unnest(${ids}::text[], ${displayNames}::text[], ${handles}::text[])
+          as u(id, display_name, handle)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 3. integration_connections (channel connections: display_name)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{
+          readonly id: string;
+          readonly displayName: string;
+          readonly provider: string;
+        }>`
+          select id, display_name as "displayName", provider
+          from integration_connections
+          where connection_kind = 'channel'
+            and ${after(afterId)}
+            and ${needsClean(sql`display_name`, 160)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const displayNames: string[] = [];
+      for (const row of rows) {
+        const displayName =
+          outsideName(row.displayName, 160) || outsideName(row.provider, 160) || "Channel";
+        if (displayName === row.displayName) continue;
+        ids.push(row.id);
+        displayNames.push(displayName);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update integration_connections as t set display_name = u.display_name
+        from unnest(${ids}::text[], ${displayNames}::text[]) as u(id, display_name)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 4. channel_identities (display_name)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{
+          readonly id: string;
+          readonly displayName: string;
+          readonly externalUserId: string;
+        }>`
+          select id, display_name as "displayName", external_user_id as "externalUserId"
+          from channel_identities
+          where ${after(afterId)} and ${needsClean(sql`display_name`, 160)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const displayNames: string[] = [];
+      for (const row of rows) {
+        const displayName =
+          outsideName(row.displayName, 160) || outsideName(row.externalUserId, 160) || "Someone";
+        if (displayName === row.displayName) continue;
+        ids.push(row.id);
+        displayNames.push(displayName);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update channel_identities as t set display_name = u.display_name
+        from unnest(${ids}::text[], ${displayNames}::text[]) as u(id, display_name)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 5. principals (channel-identity: display_name)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly displayName: string }>`
+          select id, display_name as "displayName"
+          from principals
+          where kind = 'channel-identity'
+            and ${after(afterId)}
+            and ${needsClean(sql`display_name`, 160)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const displayNames: string[] = [];
+      for (const row of rows) {
+        const displayName = outsideName(row.displayName, 160) || "Someone";
+        if (displayName === row.displayName) continue;
+        ids.push(row.id);
+        displayNames.push(displayName);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update principals as t set display_name = u.display_name
+        from unnest(${ids}::text[], ${displayNames}::text[]) as u(id, display_name)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 6. bridge_conversations (display_name)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly displayName: string | null }>`
+          select id, display_name as "displayName"
+          from bridge_conversations
+          where ${after(afterId)} and ${needsClean(sql`display_name`, 240)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const displayNames: (string | null)[] = [];
+      for (const row of rows) {
+        const displayName =
+          row.displayName === null ? null : outsideName(row.displayName, 240) || null;
+        if (displayName === row.displayName) continue;
+        ids.push(row.id);
+        displayNames.push(displayName);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update bridge_conversations as t set display_name = u.display_name
+        from unnest(${ids}::text[], ${displayNames}::text[]) as u(id, display_name)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 7. threads (title)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly title: string }>`
+          select id, title
+          from threads
+          where ${after(afterId)} and ${needsClean(sql`title`, 240)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const titles: string[] = [];
+      for (const row of rows) {
+        const title = outsideName(row.title, 240) || "Task";
+        if (title === row.title) continue;
+        ids.push(row.id);
+        titles.push(title);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update threads as t set title = u.title
+        from unnest(${ids}::text[], ${titles}::text[]) as u(id, title)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 8. apps (name)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly name: string }>`
+          select id, name
+          from apps
+          where ${after(afterId)} and ${needsClean(sql`name`, 160)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const names: string[] = [];
+      for (const row of rows) {
+        const name = outsideName(row.name, 160) || "App";
+        if (name === row.name) continue;
+        ids.push(row.id);
+        names.push(name);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update apps as t set name = u.name
+        from unnest(${ids}::text[], ${names}::text[]) as u(id, name)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 9. transcript_items (app cards: view->>'title')
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly title: string }>`
+          select id, view->>'title' as title
+          from transcript_items
+          where kind = 'app'
+            and view ? 'title'
+            and ${after(afterId)}
+            and ${needsClean(sql`view->>'title'`, 160)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const titles: string[] = [];
+      for (const row of rows) {
+        const title = outsideName(row.title, 160) || "App";
+        if (title === row.title) continue;
+        ids.push(row.id);
+        titles.push(title);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update transcript_items as t set
+          view = jsonb_set(t.view, '{title}', to_jsonb(u.title))
+        from unnest(${ids}::text[], ${titles}::text[]) as u(id, title)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 10. triggers (name)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly name: string }>`
+          select id, name
+          from triggers
+          where ${after(afterId)} and ${needsClean(sql`name`, 160)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const names: string[] = [];
+      for (const row of rows) {
+        const name = outsideName(row.name, 160) || "Automation";
+        if (name === row.name) continue;
+        ids.push(row.id);
+        names.push(name);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update triggers as t set name = u.name
+        from unnest(${ids}::text[], ${names}::text[]) as u(id, name)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 11. browser_profiles (name)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly name: string }>`
+          select id, name
+          from browser_profiles
+          where ${after(afterId)} and ${needsClean(sql`name`, 120)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const names: string[] = [];
+      for (const row of rows) {
+        const name = outsideName(row.name, 120) || "Profile";
+        if (name === row.name) continue;
+        ids.push(row.id);
+        names.push(name);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update browser_profiles as t set name = u.name
+        from unnest(${ids}::text[], ${names}::text[]) as u(id, name)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 12. messages (author->>'displayName')
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly displayName: string }>`
+          select id, author->>'displayName' as "displayName"
+          from messages
+          where author ? 'displayName'
+            and ${after(afterId)}
+            and ${needsClean(sql`author->>'displayName'`, 160)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const displayNames: string[] = [];
+      for (const row of rows) {
+        const displayName = outsideName(row.displayName, 160) || "Someone";
+        if (displayName === row.displayName) continue;
+        ids.push(row.id);
+        displayNames.push(displayName);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update messages as t set
+          author = jsonb_set(t.author, '{displayName}', to_jsonb(u.display_name))
+        from unnest(${ids}::text[], ${displayNames}::text[]) as u(id, display_name)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 13. channel_ingress_events (event->'actor'->>'displayName', event->'conversation'->>'displayName')
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly event: unknown }>`
+          select id, event
+          from channel_ingress_events
+          where ${after(afterId)}
+            and (${needsClean(sql`event->'actor'->>'displayName'`, 160)}
+              or ${needsClean(sql`event->'conversation'->>'displayName'`, 240)})
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const events: string[] = [];
+      for (const row of rows) {
+        const cleaned = cleanIngressEvent(row.event);
+        if (!cleaned.changed) continue;
+        ids.push(row.id);
+        events.push(JSON.stringify(cleaned.value));
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update channel_ingress_events as t set event = u.event::jsonb
+        from unnest(${ids}::text[], ${events}::text[]) as u(id, event)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+}
 
 /**
  * The Messaging routes of the release before chats end with this update: nothing of them is
@@ -30,43 +582,9 @@ export const chatRoutesEndMigrationName = "0109_chat_routes_end_contract";
  *   connection (`ensureQueuedRun`, which start recovery runs for every task with waiting work),
  *   and a waiting message the person sent runs as theirs.
  */
-/**
- * The names stored before the Home cleaned them where they enter (`outsideName` in
- * `@opensteer/shared`), cleaned the same way: line breaks and tabs to one space, every Cc and Cf
- * character removed (Postgres has no category classes, so Cf is spelled out, Unicode 17), runs of
- * space collapsed, trimmed, cut at the field's maximum.
- */
-const cleanStoredNames = String.raw`
-  create function pg_temp.outside_name(value text, maximum integer, fallback text) returns text
-  language sql immutable as $clean$
-    select coalesce(nullif(rtrim(left(btrim(regexp_replace(regexp_replace(
-      regexp_replace(value, '\r\n|[\n\r\t\v\f\u0085\u2028\u2029]', ' ', 'g'),
-      '[\x01-\x1f\x7f-\x9f\u00ad\u0600-\u0605\u061c\u06dd\u070f\u0890-\u0891\u08e2\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0001\U000e0020-\U000e007f]', '', 'g'), '\s+', ' ', 'g')), maximum)), ''), fallback)
-  $clean$;
-  update agent_connections set
-    label = pg_temp.outside_name(label, 120, client_name),
-    client_name = pg_temp.outside_name(client_name, 100, 'Agent'),
-    bridge_conversation_name = pg_temp.outside_name(bridge_conversation_name, 160, null);
-  update channel_accounts set display_name = pg_temp.outside_name(display_name, 160, external_account_id),
-    handle = pg_temp.outside_name(handle, 160, null);
-  update integration_connections set display_name = pg_temp.outside_name(display_name, 160, provider)
-    where connection_kind = 'channel';
-  update channel_identities set display_name = pg_temp.outside_name(display_name, 160, external_user_id);
-  update principals set display_name = pg_temp.outside_name(display_name, 160, 'Someone')
-    where kind = 'channel-identity';
-  update bridge_conversations set display_name = pg_temp.outside_name(display_name, 240, null);
-  update threads set title = pg_temp.outside_name(title, 240, 'Task');
-  update apps set name = pg_temp.outside_name(name, 160, 'App');
-  update messages set author = jsonb_set(author, '{displayName}',
-      to_jsonb(pg_temp.outside_name(author->>'displayName', 160, 'Someone')))
-    where author ? 'displayName'
-      and author->>'displayName' <> pg_temp.outside_name(author->>'displayName', 160, 'Someone');
-  drop function pg_temp.outside_name(text, integer, text);
-`;
 
 export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<void> {
   await sql`
-    -- Work that ran without the person's personal context, and everything under it.
     -- Work that ran without the person's personal context, and everything it reached: tasks
     -- ('thread') and automations ('trigger'), walked together.
     create temporary table chat_routes_reached on commit drop as
@@ -75,13 +593,15 @@ export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<voi
         where c.active_thread_id is not null and not c.personal_context
         union
         select 'thread', i.thread_id from thread_inputs i
-        join channel_conversations c on c.id = i.authority_source->>'conversationId'
+        left join channel_conversations c on c.id = i.authority_source->>'conversationId'
         left join channel_identities identity on identity.principal_id = i.actor_principal_id
         join threads t on t.id = i.thread_id
         where i.authority_source->>'kind' = 'channel-ingress' and i.state <> 'cancelled'
-          and (c.conversation_type <> 'dm' or not c.personal_context
+          and (c.id is null or c.conversation_type <> 'dm' or not c.personal_context
             or identity.status is distinct from 'linked'
-            or identity.linked_user_id is distinct from t.created_by)
+            or identity.account_id is distinct from c.account_id
+            or identity.linked_user_id is distinct from t.created_by
+            or i.requested_by is distinct from t.created_by)
         union
         select next.kind, next.id from tainted
         cross join lateral (
@@ -124,16 +644,25 @@ export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<voi
       select owner.created_by as user_id, 'mcn_' || gen_random_uuid() as id
       from (select distinct created_by from chat_routes_reached) owner;
 
+    -- Removing a connection hides it; it never stops or skips its Disconnect cleanup.
+    alter table agent_connections drop constraint if exists agent_connections_cleanup;
+    alter table agent_connections add constraint agent_connections_cleanup check (
+      (cleanup_reason is null) = (cleanup_requested_at is null)
+      and (cleanup_completed_at is null or cleanup_requested_at is not null)
+      and ((cleanup_claim_token is null) = (cleanup_claim_expires_at is null))
+      and (removed_at is null or cleanup_requested_at is not null));
+
     -- Its sender rule is "anyone": the same rule that keeps work from an "anyone" bridge out of
-    -- the person's personal context keeps this work out of it, for ever. Ended and removed: it is
-    -- a chat that has ended, and no list draws it. Its cleanup is complete: no Run names it.
+    -- the person's personal context keeps this work out of it, for ever. Ended and hidden
+    -- (removed): no list draws it, and its cleanup stays open so the Home's ordinary Disconnect
+    -- interrupts any active Run, ends sessions, and cancels pending Requests and waiting work.
     insert into agent_connections (
       id, user_id, label, client_name, access_mode, resource, token_hash, created_at,
       expires_at, revoked_at, removed_at, "grant", grant_revision, consent_version,
       cleanup_reason, cleanup_requested_at, cleanup_completed_at, bridge_senders)
     select legacy.id, legacy.user_id, 'Chats from before the update', 'Messaging',
       'approval-required', 'opensteer:bridge', null, now(), now(), now(), now(),
-      '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2, 'revoked', now(), now(),
+      '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2, 'revoked', now(), null,
       'anyone'
     from chat_routes_ended legacy;
 
@@ -155,14 +684,30 @@ export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<voi
     from threads t
     where i.thread_id = t.id and t.origin_connection_id is not null
       and i.authority_source->>'kind' = 'channel-ingress';
-    update thread_inputs i set
-      authority_source = jsonb_build_object('kind', 'user-session', 'userId', i.requested_by)
-    where i.authority_source->>'kind' = 'channel-ingress';
-    update runs r set connection_id = i.connection_id
-    from thread_inputs i
-    where r.seed_input_id = i.message_id and r.connection_id is null
-      and i.connection_id in (select id from chat_routes_ended)
+    with rewritten_inputs as (
+      update thread_inputs i set
+        authority_source = jsonb_build_object('kind', 'user-session', 'userId', i.requested_by),
+        reply_target = null
+      where i.authority_source->>'kind' = 'channel-ingress'
+      returning i.message_id
+    )
+    update runs r set reply_target = null
+    from rewritten_inputs ri
+    where r.seed_input_id = ri.message_id
+      and r.status in ('queued', 'starting', 'running', 'waiting')
+      and r.reply_target is not null;
+    -- Every unfinished Run on a task tied to the ended row names that connection (whatever seeded
+    -- it), and its open attempts do too, so ordinary Disconnect and command claim handle them.
+    update runs r set connection_id = t.origin_connection_id
+    from threads t
+    where r.thread_id = t.id and r.connection_id is null
+      and t.origin_connection_id in (select id from chat_routes_ended)
       and r.status in ('queued', 'starting', 'running', 'waiting');
+    update run_attempts a set connection_id = r.connection_id
+    from runs r
+    where a.run_id = r.id and a.connection_id is null
+      and a.terminal_evidence_at is null
+      and r.connection_id in (select id from chat_routes_ended);
     drop index if exists thread_inputs_channel_authority;
 
     -- "Me", once the work above was read against the identities as they were: the one each
@@ -185,12 +730,12 @@ export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<voi
 
     -- The routes and everything only they used.
     drop index if exists thread_inputs_current_channel_binding;
-    drop table channel_deliveries;
-    drop table channel_access_grants;
-    drop table channel_link_codes;
-    alter table channel_ingress_events drop column conversation_id;
-    drop table channel_conversations;
-    drop table channel_bindings;
+    drop table if exists channel_deliveries;
+    drop table if exists channel_access_grants;
+    drop table if exists channel_link_codes;
+    alter table channel_ingress_events drop column if exists conversation_id;
+    drop table if exists channel_conversations;
+    drop table if exists channel_bindings;
   `.execute(database);
-  await sql.raw(cleanStoredNames).execute(database);
+  await cleanStoredNames(database);
 }

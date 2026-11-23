@@ -241,6 +241,8 @@ export interface ThreadSummary {
   agentSessionId?: string | null;
   /** A connected agent's own task: its session and connection, kept after the session ends. */
   externalWork?: import("@opensteer/protocol/personal-sync").PersonalTaskExternalWork | null;
+  /** The chat or connected agent that started this task ended, so it takes no new messages. */
+  endedOrigin?: "chat" | "agent" | null | undefined;
   /** Active provider retry on the task's executing Run, when retrying. */
   retry?: import("@opensteer/core").RunRetry | null;
   id: string;

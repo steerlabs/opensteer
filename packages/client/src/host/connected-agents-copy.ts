@@ -418,3 +418,13 @@ export function anyoneChatModeDescriptions(
     ],
   };
 }
+
+/**
+ * What a task says when the chat or connected agent that started it has ended, matching the Home's
+ * own refusal (`chatEndedMessage` / `agentEndedForPersonMessage`).
+ */
+export function taskOriginEndedMessage(origin: "chat" | "agent"): string {
+  return origin === "chat"
+    ? "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging."
+    : "This connected agent's access ended, so this task takes no new messages. Start a new task, or reconnect it from Connected agents.";
+}

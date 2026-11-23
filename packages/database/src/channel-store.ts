@@ -331,7 +331,10 @@ export class ChannelStore {
           connectionKind: "channel",
           connectionMethod: input.connection.connectionMethod,
           credentialId: input.credential?.id ?? null,
-          displayName: outsideName(input.connection.displayName, 160) || input.connection.provider,
+          displayName:
+            outsideName(input.connection.displayName, 160) ||
+            outsideName(input.connection.provider, 160) ||
+            "Channel",
           externalIdentityId,
           externalTenantId: input.connection.externalTenantId ?? null,
           id: createChannelId("connection"),
@@ -351,7 +354,9 @@ export class ChannelStore {
         .values({
           connectionId: connectionRow.id,
           displayName:
-            outsideName(input.account.displayName, 160) || input.account.externalAccountId,
+            outsideName(input.account.displayName, 160) ||
+            outsideName(input.account.externalAccountId, 160) ||
+            "Account",
           externalAccountId: input.account.externalAccountId,
           handle: input.account.handle ? outsideName(input.account.handle, 160) || null : null,
           id: createChannelId("account"),
@@ -736,7 +741,10 @@ export class ChannelStore {
             ...event,
             actor: {
               ...event.actor,
-              displayName: outsideName(event.actor.displayName, 160) || event.actor.externalUserId,
+              displayName:
+                outsideName(event.actor.displayName, 160) ||
+                outsideName(event.actor.externalUserId, 160) ||
+                "Someone",
             },
             conversation: {
               ...event.conversation,
@@ -1341,7 +1349,11 @@ export async function upsertChannelIdentity(
     readonly externalUserId: string;
   },
 ) {
-  input = { ...input, displayName: outsideName(input.displayName, 160) || input.externalUserId };
+  input = {
+    ...input,
+    displayName:
+      outsideName(input.displayName, 160) || outsideName(input.externalUserId, 160) || "Someone",
+  };
   const existing = await transaction
     .selectFrom("channelIdentities")
     .selectAll()

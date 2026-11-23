@@ -1,5 +1,6 @@
 import { expiredPersonalSignInRequests, nextPersonalRequestDeadline } from "./request-deadlines.js";
 import { liveConnection } from "./connection-liveness.js";
+import { assertPersonMayContinue } from "./resource-access.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import type {
   IntegrationConnectionSummary as LegacyIntegrationConnectionSummary,
@@ -3396,6 +3397,7 @@ function originMismatchMessage(input: RequestOriginSelector): string {
     : "Request origin does not match its signed Trigger Occurrence authority";
 }
 type LockedRequestOrigin = {
+  readonly connectionId: string | null;
   readonly environmentId: DatabaseSchema["runs"]["environmentId"];
   /** Present only for a Run, which signs the generation into its authority. */
 
@@ -3403,6 +3405,7 @@ type LockedRequestOrigin = {
   readonly running: boolean;
   readonly runId: RunId | null;
   readonly threadId: ThreadId;
+  readonly threadOriginConnectionId: string | null;
 };
 async function lockRequestOrigin(
   transaction: Transaction<DatabaseSchema>,
@@ -3423,16 +3426,24 @@ async function lockRequestOrigin(
     const session = await transaction
       .selectFrom("agentSessions")
       .innerJoin("threads", "threads.id", "agentSessions.threadId")
-      .select(["agentSessions.status", "agentSessions.userId", "threads.environmentId"])
+      .select([
+        "agentSessions.connectionId",
+        "agentSessions.status",
+        "agentSessions.userId",
+        "threads.environmentId",
+        "threads.originConnectionId",
+      ])
       .where("agentSessions.id", "=", origin.originatingAgentSessionId)
       .executeTakeFirst();
     return session
       ? {
+          connectionId: session.connectionId,
           environmentId: session.environmentId,
           requestedBy: session.userId,
           runId: null,
           running: session.status === "active",
           threadId: parent.threadId,
+          threadOriginConnectionId: session.originConnectionId,
         }
       : undefined;
   }
@@ -3447,17 +3458,25 @@ async function lockRequestOrigin(
     }
     const watch = await transaction
       .selectFrom("triggerWatchActivations")
-      .selectAll()
-      .where("id", "=", origin.originatingWatchActivationId)
-      .$if(lock, (q) => q.forNoKeyUpdate())
+      .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
+      .innerJoin("threads", "threads.id", "triggerWatchActivations.anchorThreadId")
+      .selectAll("triggerWatchActivations")
+      .select([
+        "triggers.originConnectionId as triggerOriginConnectionId",
+        "threads.originConnectionId as threadOriginConnectionId",
+      ])
+      .where("triggerWatchActivations.id", "=", origin.originatingWatchActivationId)
+      .$if(lock, (q) => q.forNoKeyUpdate("triggerWatchActivations"))
       .executeTakeFirst();
     return watch
       ? {
+          connectionId: watch.connectionId ?? watch.triggerOriginConnectionId,
           environmentId: watch.environmentId,
           requestedBy: watch.createdBy,
           runId: null,
           running: watch.desired === "active" && watch.observed === "running",
           threadId: watch.anchorThreadId,
+          threadOriginConnectionId: watch.threadOriginConnectionId,
         }
       : undefined;
   }
@@ -3465,38 +3484,54 @@ async function lockRequestOrigin(
     const occurrence = await transaction
       .selectFrom("triggerOccurrences")
       .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+      .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
       .select([
+        "triggerOccurrences.connectionId",
         "triggerOccurrences.environmentId",
         "triggerOccurrences.status",
         "triggers.anchorThreadId",
         "triggers.createdBy",
+        "triggers.originConnectionId as triggerOriginConnectionId",
+        "threads.originConnectionId as threadOriginConnectionId",
       ])
       .where("triggerOccurrences.id", "=", origin.originatingOccurrenceId)
       .$if(lock, (query) => query.forNoKeyUpdate("triggerOccurrences"))
       .executeTakeFirst();
     if (!occurrence) return undefined;
     return {
+      connectionId: occurrence.connectionId ?? occurrence.triggerOriginConnectionId,
       environmentId: occurrence.environmentId,
       requestedBy: occurrence.createdBy,
       runId: null,
       running: occurrence.status === "running",
       threadId: occurrence.anchorThreadId,
+      threadOriginConnectionId: occurrence.threadOriginConnectionId,
     };
   }
   const run = await transaction
     .selectFrom("runs")
     .innerJoin("threads", "threads.id", "runs.threadId")
-    .select(["runs.environmentId", "runs.id", "runs.requestedBy", "runs.status", "runs.threadId"])
+    .select([
+      "runs.connectionId",
+      "runs.environmentId",
+      "runs.id",
+      "runs.requestedBy",
+      "runs.status",
+      "runs.threadId",
+      "threads.originConnectionId",
+    ])
     .where("runs.id", "=", origin.originatingRunId)
     .$if(lock, (query) => query.forNoKeyUpdate("runs"))
     .executeTakeFirst();
   if (!run) return undefined;
   return {
+    connectionId: run.connectionId,
     environmentId: run.environmentId,
     requestedBy: run.requestedBy,
     runId: run.id,
     running: run.status === "running",
     threadId: run.threadId,
+    threadOriginConnectionId: run.originConnectionId,
   };
 }
 export async function lockActiveDurableRequestAuthority(
@@ -3545,6 +3580,14 @@ export async function lockActiveDurableRequestAuthority(
     });
   }
   await requirePersonalOwner(transaction, request.requestedBy);
+  // A Request cannot be answered once the connection its task or origin belongs to has ended.
+  await assertPersonMayContinue(transaction, request.requestedBy, origin.connectionId);
+  if (origin.threadOriginConnectionId && origin.threadOriginConnectionId !== origin.connectionId)
+    await assertPersonMayContinue(
+      transaction,
+      request.requestedBy,
+      origin.threadOriginConnectionId,
+    );
 }
 function clampLimit(limit: number): number {
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) {

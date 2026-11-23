@@ -261,7 +261,7 @@ describe("one connected agent", () => {
     host = seeded();
     const dispatch = vi.spyOn(host, "dispatch");
     const page = await mount(host, `${base}/${grok}`);
-    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect Grok"));
+    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect “Grok”"));
     expect(page.textContent).not.toContain("Save");
     await act(async () =>
       page.querySelector<HTMLInputElement>('[aria-labelledby="agent-grant-tasks"]')!.click(),
@@ -286,7 +286,7 @@ describe("one connected agent", () => {
       }),
     );
     await vi.waitFor(() =>
-      expect(page.textContent).toContain("Saved. Grok uses this from its next action."),
+      expect(page.textContent).toContain("Saved. “Grok” uses this from its next action."),
     );
     expect(page.querySelector<HTMLInputElement>('input[value="full-access"]')!.checked).toBe(true);
   });
@@ -299,11 +299,11 @@ describe("one connected agent", () => {
     await vi.waitFor(() =>
       expect(page.querySelector(".agent-who__name")?.textContent).toBe("Verified"),
     );
-    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect Claude"));
+    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect “Claude”"));
     await act(async () => page.querySelector<HTMLInputElement>('input[value="selected"]')!.click());
     await act(async () => buttonNamed(page, "Save").click());
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
-      "Limit Claude to what you choose?",
+      "Limit “Claude” to what you choose?",
     );
     expect(dispatch).not.toHaveBeenCalled();
     await act(async () => buttonNamed(page, "Limit").click());
@@ -324,7 +324,7 @@ describe("one connected agent", () => {
       return real(command);
     });
     const page = await mount(host, `${base}/${grok}`);
-    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect Grok"));
+    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect “Grok”"));
     await act(async () => page.querySelector<HTMLInputElement>('input[value="auto"]')!.click());
     await act(async () => buttonNamed(page, "Save").click());
     await vi.waitFor(() =>
@@ -341,7 +341,7 @@ describe("one connected agent", () => {
     const list = host.rpc["connections.list"];
     const held: (() => void)[] = [];
     const page = await mount(host, `${base}/${grok}`);
-    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect Grok"));
+    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect “Grok”"));
     Object.defineProperty(host.rpc, "connections.list", {
       value: vi.fn(
         (...args: Parameters<typeof list>) =>
@@ -350,7 +350,7 @@ describe("one connected agent", () => {
       configurable: true,
     });
     const dispatch = vi.spyOn(host, "dispatch");
-    await act(async () => buttonNamed(page, "Disconnect Grok").click());
+    await act(async () => buttonNamed(page, "Disconnect “Grok”").click());
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
       "It stops right away and can’t use anything again unless you connect it again.",
     );
@@ -359,7 +359,7 @@ describe("one connected agent", () => {
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ type: "connection.revoke", connectionId: grok }),
     );
-    await vi.waitFor(() => expect(status(page)).toContain("Grok can’t do anything now"));
+    await vi.waitFor(() => expect(status(page)).toContain("“Grok” can’t do anything now"));
     expect(
       [...page.querySelectorAll(".connected-agent__steps li")].map((li) =>
         li.getAttribute("data-state"),
@@ -384,12 +384,12 @@ describe("one connected agent", () => {
     const page = await mount(host, `${base}/${shopHelper}`);
     await vi.waitFor(() => expect(page.textContent).toContain("Shop helper"));
     expect(status(page)).toContain("Stopping its work");
-    expect(status(page)).toContain("Shop helper already can’t use anything");
+    expect(status(page)).toContain("“Shop helper” already can’t use anything");
     expect(page.querySelector(".connected-agent__uncertain")?.textContent).toContain(
       "Check its last action",
     );
     expect(page.textContent).not.toContain("Remove from list");
-    expect(page.textContent).not.toContain("Disconnect Shop helper");
+    expect(page.textContent).not.toContain("Disconnect “Shop helper”");
   });
 
   it("offers Remove from list for a stopped agent", async () => {
@@ -429,7 +429,7 @@ describe("one connected agent", () => {
       connections: scene.connections.map(({ grant: _grant, ...row }) => row),
     });
     const page = await mount(host, `${base}/${grok}`);
-    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect Grok"));
+    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect “Grok”"));
     expect(page.textContent).toContain(
       "Update Opensteer on your Home to choose what this agent can use.",
     );
@@ -463,8 +463,8 @@ describe("a chat, as a connected agent", () => {
     // Beside an ordinary connected agent; #team speaks through Workshop, which is connected.
     expect(rows(page, "Connected")).toEqual([
       ["Claude", "Everything · Full access"],
-      ["Slack", "Direct messages to Workshop on Slack · Tasks · Supervised"],
-      ["Slack · #team", "#team on Slack, through Workshop · Tasks · Supervised"],
+      ["Slack", "Direct messages to “Workshop” on Slack · Tasks · Supervised"],
+      ["Slack · #team", "“#team” on Slack, through “Workshop” · Tasks · Supervised"],
       ["iMessage", "Paused · its replies are held until it’s back"],
       ["Slack · On-call", "Paused · its replies are held until it’s back"],
     ]);
@@ -475,12 +475,12 @@ describe("a chat, as a connected agent", () => {
     host = chats();
     const page = await mount(host, `${base}/${chat(1)}`);
     await vi.waitFor(() =>
-      expect(page.textContent).toContain("Direct messages to Workshop on Slack"),
+      expect(page.textContent).toContain("Direct messages to “Workshop” on Slack"),
     );
     const text = page.textContent ?? "";
-    expect(text).toContain("You, as Tim");
+    expect(text).toContain("You, as “Tim”");
     expect(text).toContain(
-      "Only messages you send as Tim give this agent work. To use another account, link it on Messaging: the new one replaces this one.",
+      "Only messages you send as “Tim” give this agent work. To use another account, link it on Messaging: the new one replaces this one.",
     );
     expect(text).toContain(
       "This is chosen when the chat is added and can’t be changed. To change it, disconnect this chat and add it again.",
@@ -511,7 +511,7 @@ describe("a chat, as a connected agent", () => {
     );
     // Taken, and the task still runs until its device answers: it says so, and asks no second time.
     expect(buttonNamed(page, "Stopping…")).toMatchObject({ disabled: true });
-    expect(buttonNamed(page, "Disconnect Slack")).toBeTruthy();
+    expect(buttonNamed(page, "Disconnect “Slack”")).toBeTruthy();
     // What it can use is edited with the same grant editor as any connected agent.
     expect(page.querySelector('[aria-labelledby="agent-grant-tasks"]')).not.toBeNull();
     expect(text).not.toMatch(/bridge|lineage|ingress|route|binding|waiting/iu);
@@ -594,7 +594,7 @@ describe("a chat, as a connected agent", () => {
       expect(
         buttonNamed(
           page,
-          `Disconnect ${n === 2 ? "Slack · #team" : n === 3 ? "iMessage" : "Slack · On-call"}`,
+          `Disconnect “${n === 2 ? "Slack · #team" : n === 3 ? "iMessage" : "Slack · On-call"}”`,
         ),
       ).toBeTruthy();
       expect(status(page)).not.toContain("Not doing anything");
@@ -620,18 +620,43 @@ describe("a chat, as a connected agent", () => {
   it("shows who can give an anyone chat work, without personal context", async () => {
     host = chats();
     const page = await mount(host, `${base}/${chat(2)}`);
-    await vi.waitFor(() => expect(page.textContent).toContain("Anyone who can write in #team"));
+    await vi.waitFor(() => expect(page.textContent).toContain("Anyone who can write in “#team”"));
     expect(page.textContent).toContain(
       "Anyone who can write there can give this agent work. Their tasks run without your personal context, in a folder of their own instead of your Agent home. That folder is not a wall: a task can still reach other files on that computer, as far as its safety mode allows.",
     );
     // Where its mode is chosen, each mode says what the people in #team can have it do.
     expect(page.textContent).toContain(
-      "People in #team can have it act without asking you whenever the engine’s own safety check allows it. That can reach files outside its folder.",
+      "People in “#team” can have it act without asking you whenever the engine’s own safety check allows it. That can reach files outside its folder.",
     );
     expect(page.textContent).toContain(
-      "Never asks. People in #team can have it do anything on its computer that your user account can.",
+      "Never asks. People in “#team” can have it do anything on its computer that your user account can.",
     );
     expect(page.textContent).not.toContain("Opensteer checks each action");
+  });
+
+  it("quotes a channel name that looks like Opensteer words in Auto and Full access warnings", async () => {
+    const scene = mockConnectedAgents("chats");
+    host = new MockHostClient({
+      latencyMs: 0,
+      ...scene,
+      connections: scene.connections.map((row) =>
+        row.id === chat(2)
+          ? {
+              ...row,
+              bridge: { ...row.bridge!, conversationName: "#Helper Disconnected" },
+            }
+          : row,
+      ),
+    });
+    const page = await mount(host, `${base}/${chat(2)}`);
+    await vi.waitFor(() =>
+      expect(page.textContent).toContain(
+        "People in “#Helper Disconnected” can have it act without asking you whenever the engine’s own safety check allows it. That can reach files outside its folder.",
+      ),
+    );
+    expect(page.textContent).toContain(
+      "Never asks. People in “#Helper Disconnected” can have it do anything on its computer that your user account can.",
+    );
   });
 
   it("says a chat's page could not be read when the read failed, never that it is gone", async () => {
@@ -684,7 +709,7 @@ describe("a chat, as a connected agent", () => {
   it("shows a chat none of a signed-in agent's identity lines", async () => {
     host = chats();
     const page = await mount(host, `${base}/${chat(2)}`);
-    await vi.waitFor(() => expect(page.textContent).toContain("Anyone who can write in #team"));
+    await vi.waitFor(() => expect(page.textContent).toContain("Anyone who can write in “#team”"));
     for (const id of [
       "agent.about.says",
       "agent.about.origin",
@@ -697,7 +722,7 @@ describe("a chat, as a connected agent", () => {
   it("offers an anyone chat only what the Home says it may hold, and keeps Tasks on", async () => {
     host = chats();
     const page = await mount(host, `${base}/${chat(2)}`);
-    await vi.waitFor(() => expect(page.textContent).toContain("Anyone who can write in #team"));
+    await vi.waitFor(() => expect(page.textContent).toContain("Anyone who can write in “#team”"));
     const text = page.textContent ?? "";
     for (const id of [
       "consent.scope.everything.label",
@@ -716,7 +741,7 @@ describe("a chat, as a connected agent", () => {
   it("offers a chat for you alone everything a connected agent may hold, with Tasks still on", async () => {
     host = chats();
     const page = await mount(host, `${base}/${chat(1)}`);
-    await vi.waitFor(() => expect(page.textContent).toContain("You, as Tim"));
+    await vi.waitFor(() => expect(page.textContent).toContain("You, as “Tim”"));
     expect(page.textContent).toContain(agentWords("consent.scope.everything.label"));
     expect(page.textContent).toContain(agentWords("consent.browser.title"));
     expect(
@@ -851,7 +876,7 @@ describe("a chat, as a connected agent", () => {
     host = chats();
     const dispatch = vi.spyOn(host, "dispatch");
     const page = await mount(host, `${base}/${chat(2)}`);
-    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect Slack · #team"));
+    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect “Slack · #team”"));
     await act(async () => page.querySelector<HTMLInputElement>('input[value="auto"]')!.click());
     await act(async () => buttonNamed(page, "Save").click());
     await vi.waitFor(() =>
@@ -902,7 +927,7 @@ describe("a chat, as a connected agent", () => {
     });
     const dispatch = vi.spyOn(host, "dispatch");
     const page = await mount(host, `${base}/${chat(1)}`);
-    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect Slack"));
+    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect “Slack”"));
     await act(async () => page.querySelector<HTMLInputElement>('input[value="selected"]')!.click());
     // What is drawn is what is saved.
     expect(
@@ -941,12 +966,12 @@ describe("a chat, as a connected agent", () => {
       ),
     });
     const team = await mount(host, `${base}/${chat(2)}`);
-    await vi.waitFor(() => expect(team.textContent).toContain("Disconnect Slack · #team"));
+    await vi.waitFor(() => expect(team.textContent).toContain("Disconnect “Slack · #team”"));
     expect(team.textContent).toContain(agentWords("consent.plugins.title"));
     expect(team.textContent).not.toContain(agentWords("consent.chromeTabs.repair"));
     act(() => root?.unmount());
     const tasksOnly = await mount(host, `${base}/${chat(3)}`);
-    await vi.waitFor(() => expect(tasksOnly.textContent).toContain("Disconnect iMessage"));
+    await vi.waitFor(() => expect(tasksOnly.textContent).toContain("Disconnect “iMessage”"));
     expect(tasksOnly.textContent).not.toContain(agentWords("consent.plugins.title"));
   });
 
@@ -954,14 +979,14 @@ describe("a chat, as a connected agent", () => {
     host = chats();
     const warning = agentWords("consent.tasks.warning", { home: "" }).slice(0, 30);
     const team = await mount(host, `${base}/${chat(2)}`);
-    await vi.waitFor(() => expect(team.textContent).toContain("Disconnect Slack · #team"));
+    await vi.waitFor(() => expect(team.textContent).toContain("Disconnect “Slack · #team”"));
     expect(team.textContent).toContain("Only what you pick below.");
     expect(team.textContent).not.toContain(warning);
     act(() => root?.unmount());
     host.dispose();
     host = seeded();
     const trips = await mount(host, `${base}/mcn_00000000-0000-4000-8000-000000000003`);
-    await vi.waitFor(() => expect(trips.textContent).toContain("Disconnect Trip planner"));
+    await vi.waitFor(() => expect(trips.textContent).toContain("Disconnect “Trip planner”"));
     expect(trips.textContent).toContain(warning);
   });
 

@@ -27,6 +27,7 @@ import { sql, type Kysely } from "kysely";
 import { cancelPending } from "./request-cancellation.js";
 import { senderUnlinkedFailure } from "./bridge-admission.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { publishThreadSummary } from "./thread-status.js";
 import type { DatabaseSchema } from "./schema.js";
 import {
   chatEndReason,
@@ -202,8 +203,10 @@ export async function connectionAttempts(
       union all
       select 'input', i.message_id, null, i.thread_id, null, null, null, false, null, null, null
       from thread_inputs i
-      join floor f on f.id = i.connection_id
-      where i.state = 'pending' and i.run_id is null
+      join threads t on t.id = i.thread_id
+      cross join floor f
+      where i.state in ('pending', 'awaiting-approval') and i.run_id is null
+        and (i.connection_id = f.id or (f.disconnected and t.origin_connection_id = f.id))
         and not exists (select 1 from runs r where r.seed_input_id = i.message_id and r.status = 'queued')
         and (f.disconnected or i.thread_id not in (select id from eligible_threads))
       union all
@@ -226,6 +229,7 @@ export async function connectionAttempts(
       cross join floor f
       where q.status = 'pending' and (
         r.id is not null or o.id is not null or w.id is not null or s.connection_id = f.id
+        or (f.disconnected and t.origin_connection_id = f.id)
         or (q.originating_run_id is null and q.originating_occurrence_id is null
           and q.originating_watch_activation_id is null and q.originating_agent_session_id is null
           and t.origin_connection_id = f.id)
@@ -371,6 +375,14 @@ export async function requestExpiredCleanups(
           })
           .where("id", "=", row.id)
           .execute();
+        const originated = await tx
+          .selectFrom("threads")
+          .select("id")
+          .where("originConnectionId", "=", row.id)
+          .where("removedAt", "is", null)
+          .orderBy("id")
+          .execute();
+        for (const { id: threadId } of originated) await publishThreadSummary(tx, threadId);
         return;
       }
       if (connectionActive(row, now)) return;
@@ -383,15 +395,24 @@ export async function requestExpiredCleanups(
         })
         .where("id", "=", row.id)
         .execute();
+      const originated = await tx
+        .selectFrom("threads")
+        .select("id")
+        .where("originConnectionId", "=", row.id)
+        .where("removedAt", "is", null)
+        .orderBy("id")
+        .execute();
+      for (const { id: threadId } of originated) await publishThreadSummary(tx, threadId);
     });
 }
 
 export async function openCleanups(database: Kysely<DatabaseSchema>): Promise<string[]> {
+  // Removing a connection hides it; it never stops or skips its Disconnect.
   const rows = await database
     .selectFrom("agentConnections")
     .select("id")
     .where("cleanupRequestedAt", "is not", null)
-    .where("removedAt", "is", null)
+    .where((eb) => eb.or([eb("removedAt", "is", null), eb("cleanupCompletedAt", "is", null)]))
     .orderBy("cleanupRequestedAt")
     .orderBy("id")
     .execute();
@@ -418,7 +439,6 @@ export async function claimConnectionCleanup(
       cleanupClaimExpiresAt: new Date(now.getTime() + cleanupClaimDurationMs),
     })
     .where("id", "=", connectionId)
-    .where("removedAt", "is", null)
     .where((eb) =>
       eb.or([eb("cleanupClaimExpiresAt", "is", null), eb("cleanupClaimExpiresAt", "<=", now)]),
     )
