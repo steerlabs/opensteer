@@ -263,11 +263,17 @@ export async function readConnectionRowStanding(
       // A chat is a connection with a sender rule; what it says when it has ended is a chat's.
       chat: read !== undefined && read.connection.bridgeSenders !== null,
     };
-  const row = read.connection;
-  const access = grantTarget && agentGrantAccess(row.grant, grantTarget);
+  // The effective grant, from this one place (G1, K6): nothing past it reads the stored one. A
+  // chat anyone may speak in is narrowed here (its row cannot store more: agent_connections_bridge).
+  const grant = effectiveConnectionGrant(
+    AgentGrantSchema.parse(read.connection.grant),
+    read.connection.bridgeSenders,
+  );
+  const row = { ...read.connection, grant };
+  const access = grantTarget && agentGrantAccess(grant, grantTarget);
   if (access === null)
     throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
-  const accessMode = applyConnectionPolicy(read.work, row.grant, row.accessMode);
+  const accessMode = applyConnectionPolicy(read.work, grant, row.accessMode);
   if (access === "read" && writeTargetName !== undefined)
     throw forbidden(`${writeTargetName} is shared for reading only.`);
   return {
@@ -311,11 +317,9 @@ export async function liveAgentConnection(
     throw waiting
       ? new ConnectionWaiting()
       : forbidden(chat ? chatEndedMessage : lineageEndedMessage);
-  // The raw grant is not read past this point: a chat anyone may speak in is narrowed here.
-  const grant = effectiveConnectionGrant(AgentGrantSchema.parse(row.grant), row.bridgeSenders);
   return {
     agentConnectionId: row.id,
-    grant,
+    grant: row.grant,
     grantRevision: row.grantRevision,
     consentVersion: row.consentVersion,
     accessMode: row.accessMode,
