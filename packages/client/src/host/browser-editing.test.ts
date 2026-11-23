@@ -425,6 +425,7 @@ describe("browser editing transport", () => {
   });
   it("never settles an unnamed sent paste or cut as empty on unsupported-operation or target-suspended", async () => {
     const { store, target, commands } = setup();
+    const settled: string[] = [];
     try {
       const paste = target.send({
         kind: "paste",
@@ -433,6 +434,9 @@ describe("browser editing transport", () => {
       });
       const cut = target.send({ kind: "cut", contextId: crypto.randomUUID() });
       const copy = target.send({ kind: "copy", contextId: crypto.randomUUID() });
+      void paste.then((r) => settled.push(`paste:${r?.outcome}`));
+      void cut.then((r) => settled.push(`cut:${r?.outcome}`));
+      void copy.then((r) => settled.push(`copy:${r?.outcome}`));
       const pasteCmd = commands.find((c) => c.type === "clipboard.paste-data");
       const copyCmd = commands.find((c) => c.type === "clipboard.copy");
       if (pasteCmd?.type !== "clipboard.paste-data" || copyCmd?.type !== "clipboard.copy")
@@ -453,13 +457,8 @@ describe("browser editing transport", () => {
         },
         surfaceId,
       );
-      const afterUnnamed = await Promise.race([
-        paste.then((r) => `paste:${r?.outcome}`),
-        cut.then((r) => `cut:${r?.outcome}`),
-        copy.then((r) => `copy:${r?.outcome}`),
-        new Promise<string>((resolve) => setTimeout(() => resolve("all-pending"), 0)),
-      ]);
-      expect(afterUnnamed).toBe("all-pending");
+      for (let i = 0; i < 4; i++) await Promise.resolve();
+      expect(settled).toEqual([]);
 
       // Naming ONLY copy settles only copy; paste and cut stay pending.
       store.receive(
@@ -477,12 +476,8 @@ describe("browser editing transport", () => {
         surfaceId,
       );
       expect(await copy).toEqual({ outcome: "empty", items: [] });
-      const afterNamedCopy = await Promise.race([
-        paste.then((r) => `paste:${r?.outcome}`),
-        cut.then((r) => `cut:${r?.outcome}`),
-        new Promise<string>((resolve) => setTimeout(() => resolve("paste-and-cut-pending"), 0)),
-      ]);
-      expect(afterNamedCopy).toBe("paste-and-cut-pending");
+      for (let i = 0; i < 4; i++) await Promise.resolve();
+      expect(settled).toEqual(["copy:empty"]);
 
       // Paste receives its own result normally.
       store.receive(sessionId, {

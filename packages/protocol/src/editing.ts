@@ -122,6 +122,42 @@ function sameObservedState(a: EditingObservedState, b: EditingObservedState): bo
   );
 }
 
+function firstGraphemeStep(text: string): string {
+  const iter = text[Symbol.iterator]();
+  const head = iter.next();
+  if (head.done) return "";
+  let step = head.value;
+  let expectingJoinTarget = false;
+  for (const scalar of iter) {
+    const cp = scalar.codePointAt(0) ?? 0;
+    if (expectingJoinTarget) {
+      step += scalar;
+      expectingJoinTarget = false;
+      continue;
+    }
+    if (cp === 0x200d) {
+      step += scalar;
+      expectingJoinTarget = true;
+      continue;
+    }
+    const isCombining =
+      (cp >= 0x0300 && cp <= 0x036f) ||
+      (cp >= 0x1ab0 && cp <= 0x1aff) ||
+      (cp >= 0x1dc0 && cp <= 0x1dff) ||
+      (cp >= 0x20d0 && cp <= 0x20ff) ||
+      (cp >= 0xfe00 && cp <= 0xfe0f) ||
+      (cp >= 0xfe20 && cp <= 0xfe2f) ||
+      (cp >= 0xe0100 && cp <= 0xe01ef) ||
+      (cp >= 0x1f3fb && cp <= 0x1f3ff);
+    if (isCombining) {
+      step += scalar;
+      continue;
+    }
+    break;
+  }
+  return step;
+}
+
 function matchesExpectedState(
   observed: EditingObservedState,
   expected: EditingObservedState,
@@ -256,8 +292,9 @@ export class EditingContexts {
       return;
     }
     if (nextText.length === 0) return;
-    const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-    const first = segmenter.segment(nextText)[Symbol.iterator]().next().value?.segment;
+    // Step one Unicode scalar (plus any following combining marks, variation selectors, or
+    // ZWJ-linked scalars) in plain JS so this module stays Hermes-safe.
+    const first = firstGraphemeStep(nextText);
     if (!first) return;
     const nextTail = base.text != null ? EditingContexts.trimmedTail(base.text + first) : null;
     this.expectOwnEffect({
