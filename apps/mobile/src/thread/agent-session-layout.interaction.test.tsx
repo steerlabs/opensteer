@@ -286,7 +286,7 @@ describe("what a person reads and presses in a connected agent's task", () => {
           phone.window.height * 0.4,
         );
         // The agent's state and its Stop, above the screen's own bottom edge.
-        const stop = container.querySelector('[aria-label="Stop “Claude”"]');
+        const stop = container.querySelector('[aria-label="Stop “\u2068Claude\u2069”"]');
         if (!stop) throw new Error("No Stop");
         expectClear(container, frames, phone, stop, "Stop");
         expect(frames.frame(stop).y + frames.frame(stop).height).toBeLessThanOrEqual(
