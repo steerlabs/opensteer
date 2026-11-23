@@ -13,6 +13,7 @@ import {
   withDatabaseOperationSignal,
   browserPoolSlotIdentity,
   installBrowserPoolSlot,
+  listBrowserPoolClosingSessions,
   listBrowserPoolReadySessions,
   listBrowserPoolRuntimeSessions,
   listAppliedBrowserPoolStarts,
@@ -370,15 +371,18 @@ export class BrowserPoolCoordinator {
       instance,
       epoch,
     };
+    const allClosing = () => listBrowserPoolClosingSessions(this.#options.database, this.#own);
     const waiting = async () => [...((await this.#adopter?.ending?.(this.#own)) ?? [])];
-    const closing = await waiting();
-    if (!closing.length) {
+    if (!(await allClosing()).length) {
       await forgetBrowserPoolRetiredTarget(this.#options.database, this.#own);
       this.#drained.settled = true;
       this.#drained.resolve();
       this.close();
       return;
     }
+    const closing = await waiting();
+    if (!closing.length)
+      throw new BrowserPoolPending("A replaced target's Stop still has an active broker.");
     const target = { slotId: fence.slot, term: fence.term };
     const end = async (evidence: BrowserPoolCloseEvidence) => {
       for (const sessionId of closing) await this.#adopter?.ended?.(sessionId, target, evidence);
@@ -387,9 +391,10 @@ export class BrowserPoolCoordinator {
     try {
       status = await this.#status();
     } catch (error) {
-      // The host signed that the slot is gone: so is its guest.
-      if (targetOver(error) === "slot-deleted")
-        return end({ kind: "guest-gone", by: "slot-deleted" });
+      // The host signed that the slot is gone or fenced: so is its guest.
+      const over = targetOver(error);
+      if (over === "slot-deleted" || over === "fenced")
+        return end({ kind: "guest-gone", by: over });
       throw error;
     }
     // The host's signed word about this guest: stopped, or another instance in its place.
@@ -403,18 +408,40 @@ export class BrowserPoolCoordinator {
     // `stopped` is then their evidence. One that does not answer is asked again later.
     const state = await this.#runtimeState();
     if (state === null || state.phase !== "running" || !sameFence(state.fence, fence)) {
-      await this.#options.controller.apply({
-        id: randomUUID(),
-        slotId: this.#options.slotId,
-        term: this.#options.term,
-        kind: "stop",
-        expect: expectationOf(status),
-      });
+      signal.throwIfAborted();
+      let stopped: BrowserPoolControllerResult;
+      try {
+        stopped = await withTimeout(
+          this.#options.controller.apply({
+            id: randomUUID(),
+            slotId: this.#options.slotId,
+            term: this.#options.term,
+            kind: "stop",
+            expect: expectationOf(status),
+          }),
+          this.#options.callTimeoutMs ?? defaultCallTimeoutMs,
+          {
+            signal,
+            timeoutError: () =>
+              new BrowserPoolUnanswered("The pool controller did not answer in time."),
+          },
+        );
+      } catch (error) {
+        const over = targetOver(error);
+        if (over === "slot-deleted" || over === "fenced")
+          return end({ kind: "guest-gone", by: over });
+        throw error;
+      }
+      if (stopped.status.phase === "stopped") return end({ kind: "guest-gone", by: "stopped" });
+      if (stopped.status.instance !== instance) return end({ kind: "guest-gone", by: "replaced" });
+      if (stopped.status.phase === "paused") return end({ kind: "guest-paused" });
+      if (!stopped.applied && stopped.reason === "fenced")
+        return end({ kind: "guest-gone", by: "fenced" });
       throw new BrowserPoolPending("A replaced target's guest is being stopped.");
     }
     // Under this fence: its own runtime is asked, as the end step asks a target's own.
     await this.#endStep(fence, closing, signal);
-    if ((await waiting()).length)
+    if ((await allClosing()).length)
       throw new BrowserPoolPending("A replaced target's Stops are not all ended yet.");
   }
 

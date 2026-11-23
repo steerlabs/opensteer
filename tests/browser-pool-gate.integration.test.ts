@@ -10,6 +10,7 @@ import {
   installBrowserPoolSlot,
   lineageEndedMessage,
   listBrowserPoolDocumentLosses,
+  listBrowserPoolRetiredTargets,
   readBrowserPoolSlot,
   retireBrowserPoolTarget,
   settleBrowserPoolRelay,
@@ -46,8 +47,15 @@ import {
   type BrowserPoolEndAnswer,
   type BrowserPoolRuntimeState,
 } from "../packages/browser-runtime-core/src/index.js";
-import { FakeIsolatingLauncher } from "../packages/browser-runtime-core/src/test-support/fakes.js";
-import { loopbackPoolChannel } from "../apps/host/src/browser/browser-pool-coordinator.js";
+import {
+  FakeIsolatingLauncher,
+  FakePage,
+} from "../packages/browser-runtime-core/src/test-support/fakes.js";
+import {
+  BrowserPoolCoordinator,
+  loopbackPoolChannel,
+} from "../apps/host/src/browser/browser-pool-coordinator.js";
+import { BrowserPoolUnanswered } from "../apps/host/src/browser/browser-pool-controller.js";
 import { BrowserPoolAgentSlotDeleted } from "../packages/browser-runtime-core/src/browser-pool-agent-wire.js";
 import type { BrowserSessionId } from "../packages/core/src/index.js";
 import { removeDevice } from "../apps/host/src/administration/device-removal.js";
@@ -3477,6 +3485,188 @@ it("writes a loss note when failActiveBrowserSessions ends a pooled session with
     expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
       { sessionId },
     ]);
+  } finally {
+    await j.close();
+  }
+});
+
+it("bounds controller.apply(stop) in #drainStep with callTimeoutMs and signal, keeping the session closing (X7)", async () => {
+  const j = await journey("x7-drain-stop-bound", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(
+      j.task.userId,
+      j.command("x7-drain-stop-bound"),
+    );
+    const slot = (await readBrowserPoolSlot(j.database, j.task.runnerId))!;
+    home.coordinator.close();
+    await j.store.transitionBrowserSession({ sessionId, state: "closing" });
+    await home.service.close();
+    await retireBrowserPoolTarget(j.database, j.task.runnerId, {
+      target: { slotId: slot.slotId, term: slot.term },
+    });
+    expect(await listBrowserPoolRetiredTargets(j.database, j.task.runnerId)).toHaveLength(1);
+
+    // Start a fresh service with no broker and no competing coordinator on the retired slot,
+    // then attach a drain coordinator whose runtime restarted (poolState === null) and whose
+    // controller.apply("stop") hangs until released.
+    const drainService = new BrowserService({
+      deploymentId: j.task.deploymentId,
+      hostOrigin: new URL("http://127.0.0.1"),
+      personal: true,
+      pooledRunner: j.task.runnerId,
+      repository: personalBrowserRepository(j.store),
+    });
+    const stopCalled = Promise.withResolvers<void>();
+    const releaseStop = Promise.withResolvers<void>();
+    const errors: unknown[] = [];
+    const drain = new BrowserPoolCoordinator({
+      database: j.database,
+      runnerId: j.task.runnerId,
+      runtimeId: slot.runtimeId,
+      slotId: slot.slotId,
+      term: slot.term,
+      callTimeoutMs: 150,
+      retryMs: 50,
+      drain: { instanceId: slot.instanceId, epoch: slot.epoch },
+      onError: (error) => errors.push(error),
+      runtime: {
+        poolState: async () => null,
+        controlPool: async () => {
+          throw new Error("drain must not send controlPool");
+        },
+        endSession: async () => {
+          throw new Error("drain must not call endSession when poolState is null");
+        },
+      },
+      controller: {
+        status: async () => ({
+          slotId: slot.slotId,
+          term: slot.term,
+          instance: slot.instanceId,
+          epoch: slot.epoch,
+          phase: "running",
+          savedState: null,
+        }),
+        result: async () => null,
+        apply: async (call) => {
+          stopCalled.resolve();
+          await releaseStop.promise;
+          return {
+            id: call.id,
+            applied: false,
+            reason: "test-cleanup",
+            status: {
+              slotId: slot.slotId,
+              term: slot.term,
+              instance: slot.instanceId,
+              epoch: slot.epoch,
+              phase: "running",
+              savedState: null,
+            },
+          };
+        },
+      },
+    });
+    try {
+      void drainService.drainPool(j.task.runnerId, drain).catch(() => undefined);
+      await stopCalled.promise;
+      // Must time out at callTimeoutMs (150ms) with BrowserPoolUnanswered instead of hanging forever.
+      await vi.waitFor(
+        () => expect(errors.some((error) => error instanceof BrowserPoolUnanswered)).toBe(true),
+        { timeout: 2_000, interval: 25 },
+      );
+      // Clean teardown via close() must not hang, and Rule 4: session stays closing honestly.
+      drain.close();
+      expect((await j.row(sessionId))?.state).toBe("closing");
+      expect(await listBrowserPoolRetiredTargets(j.database, j.task.runnerId)).toHaveLength(1);
+    } finally {
+      releaseStop.resolve();
+      drain.close();
+      await drainService.close();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
+it("never forgets a retired target while a closing session still has an active broker in #brokers (X7)", async () => {
+  const j = await journey("x7-drain-active-broker", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(
+      j.task.userId,
+      j.command("x7-drain-active-broker"),
+    );
+    const slot = (await readBrowserPoolSlot(j.database, j.task.runnerId))!;
+
+    // Hold FakePage.prototype.close so stopWithReceipt keeps the broker in #brokers while the
+    // session row is already "closing".
+    const realClose = FakePage.prototype.close;
+    const releaseClose = Promise.withResolvers<void>();
+    const closeSpy = vi.spyOn(FakePage.prototype, "close").mockImplementation(async function (
+      this: FakePage,
+    ) {
+      await releaseClose.promise;
+      return realClose.call(this);
+    });
+    const stopEntered = Promise.withResolvers<void>();
+    const releaseReceipt = Promise.withResolvers<void>();
+    const receiptSpy = vi
+      .spyOn(HostedBrowserBroker.prototype, "stopWithReceipt")
+      .mockImplementation(async function (this: HostedBrowserBroker) {
+        stopEntered.resolve();
+        await releaseReceipt.promise;
+        // Finish "pooled" (no runtime closed frame heard) so the row stays closing for drain.
+        await this.letGoPooled("unanswered stop");
+        return false;
+      });
+    try {
+      const stopping = home.service.stop(j.task.userId, sessionId);
+      await stopEntered.promise;
+      home.coordinator.close();
+      expect((await j.row(sessionId))?.state).toBe("closing");
+
+      // Retire the target while the closing session still has its broker in #brokers.
+      await retireBrowserPoolTarget(j.database, j.task.runnerId, {
+        target: { slotId: slot.slotId, term: slot.term },
+      });
+      expect(await listBrowserPoolRetiredTargets(j.database, j.task.runnerId)).toHaveLength(1);
+
+      let drainedSettled = false;
+      const drain = new BrowserPoolCoordinator({
+        database: j.database,
+        runnerId: j.task.runnerId,
+        runtimeId: slot.runtimeId,
+        slotId: slot.slotId,
+        term: slot.term,
+        retryMs: 30,
+        drain: { instanceId: slot.instanceId, epoch: slot.epoch },
+        runtime: loopbackPoolChannel(j.guest),
+        controller: j.controller,
+      });
+      const drained = home.service.drainPool(j.task.runnerId, drain).then(() => {
+        drainedSettled = true;
+      });
+      // Give #drainStep several turns while the broker is still in #brokers.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      // Must NOT have forgotten the retired target or resolved drain while the row is closing!
+      expect(drainedSettled).toBe(false);
+      expect(await listBrowserPoolRetiredTargets(j.database, j.task.runnerId)).toHaveLength(1);
+
+      // Now let the broker finish "pooled" (leaving row closing) and let the page close answer.
+      releaseClose.resolve();
+      releaseReceipt.resolve();
+      await stopping;
+      await drained;
+      expect((await j.row(sessionId))?.state).toBe("closed");
+      expect(await listBrowserPoolRetiredTargets(j.database, j.task.runnerId)).toEqual([]);
+    } finally {
+      releaseClose.resolve();
+      releaseReceipt.resolve();
+      receiptSpy.mockRestore();
+      closeSpy.mockRestore();
+    }
   } finally {
     await j.close();
   }
