@@ -20,8 +20,25 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { HarnessProcessLaunchWrapper } from "@opensteer/harness";
 import type { AgentHomeWorkspace } from "../folders/agent-home.js";
-import type { ProgramEndpoints, ProgramLaunchPlanner } from "./program-executor.js";
+
+/** What an automation script reaches Opensteer through: the Runner's stand-ins, never Host tokens. */
+export interface ProgramEndpoints {
+  readonly browserCdp?: { readonly token: string; readonly url: string };
+  readonly mcp: { readonly token: string; readonly url: string };
+}
+
+/** Confines one automation launch, given its private directory and environment. */
+export type ProgramLaunchPlanner = (input: {
+  readonly environment: Readonly<Record<string, string>>;
+  readonly privateDirectory: string;
+  /** Read-only directories outside the Runner data directory (e.g. shipped CLI bin). */
+  readonly readOnlyDirectories?: readonly string[];
+  /** Optional result file path in `privateDirectory`. */
+  readonly resultFile?: string;
+  readonly workspacePath: string;
+}) => Promise<HarnessProcessLaunchWrapper>;
 
 const truncationMarker = "\n[Opensteer truncated earlier process output]\n";
 
@@ -310,7 +327,7 @@ export class AutomationScriptExecutor {
   }
 }
 
-function resolveInterpreterExecutable(
+export function resolveInterpreterExecutable(
   executable: string,
   pathEnv: string,
   pathextEnv: string | undefined,
@@ -322,12 +339,7 @@ function resolveInterpreterExecutable(
     .filter((entry) => entry.length > 0 && isAbsolute(entry));
   const extensions =
     process.platform === "win32"
-      ? [
-          "",
-          ...(pathextEnv ?? ".COM;.EXE;.BAT;.CMD")
-            .split(";")
-            .filter((ext) => ext.length > 0),
-        ]
+      ? ["", ...(pathextEnv ?? ".COM;.EXE;.BAT;.CMD").split(";").filter((ext) => ext.length > 0)]
       : [""];
   for (const directory of directories) {
     for (const extension of extensions) {

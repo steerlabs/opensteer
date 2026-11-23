@@ -10,12 +10,12 @@ import {
   TriggerWatchActivationSchema,
   type Trigger,
   type TriggerOccurrence,
-  type TriggerProgram,
   type TriggerRevision,
   type TriggerSource,
   type TriggerSummary,
   type TriggerWatchActivation,
 } from "@opensteer/triggers/models";
+import type { AutomationScript } from "@opensteer/triggers/script";
 import type { ThreadSummary } from "../host/client.js";
 
 /** One Trigger as the preview keeps it: everything `triggers.get` answers. */
@@ -72,34 +72,29 @@ function withoutPayload(
 /** The Trigger behind the preview's "Nightly typecheck" message, so its link opens it. */
 export const mockNightlyTriggerId = "trg_00000000-0000-4000-8000-000000000001";
 
-const reminderProgram: TriggerProgram = {
-  language: "typescript",
-  source: `export default async function ({ opensteer }) {
-  await opensteer.callTool("opensteer_task_send", {
-    delivery: "queue",
-    message: "Reminder: it's time.",
-    taskId: "TASK_ID",
-  });
-}`,
-  toolContractVersion: 5,
+const reminderScript: AutomationScript = {
+  interpreter: null,
+  text: `import { execFileSync } from "node:child_process";
+execFileSync("opensteer", ["call", "opensteer_task_send", JSON.stringify({
+  delivery: "queue",
+  message: "Reminder: it's time.",
+  taskId: "TASK_ID",
+})], { stdio: "inherit" });`,
 };
 
-const watchProgram: TriggerProgram = {
-  language: "typescript",
-  source: `import { watch } from "node:fs";
-
-export default async function ({ opensteer }) {
-  watch(process.env.HOME + "/Downloads", (_event, name) => {
-    void opensteer.callTool("opensteer_task_send", {
-      delivery: "queue",
-      message: \`New download: \${name}\`,
-      observationId: name,
-      taskId: "TASK_ID",
-    });
-  });
-  await new Promise(() => {});
-}`,
-  toolContractVersion: 5,
+const watchScript: AutomationScript = {
+  interpreter: null,
+  text: `import { watch } from "node:fs";
+import { execFile } from "node:child_process";
+watch(process.env.HOME + "/Downloads", (_event, name) => {
+  execFile("opensteer", ["call", "opensteer_task_send", JSON.stringify({
+    delivery: "queue",
+    message: \`New download: \${name}\`,
+    observationId: name,
+    taskId: "TASK_ID",
+  })]);
+});
+await new Promise(() => {});`,
 };
 
 /**
@@ -135,7 +130,7 @@ export function seedMockAutomations(input: {
     readonly name: string;
     readonly occurrences?: readonly OccurrenceSpec[];
     readonly pauseReason?: string;
-    readonly program?: TriggerProgram;
+    readonly script?: AutomationScript;
     readonly source: TriggerSource;
     readonly status?: "active" | "paused";
   }): MockTriggerRecord => {
@@ -147,7 +142,7 @@ export function seedMockAutomations(input: {
       createdByThreadId: spec.createdByThread?.id ?? null,
       id: createId("triggerRevision"),
       ordinal: 1,
-      program: spec.program ?? reminderProgram,
+      script: spec.script ?? reminderScript,
       source: spec.source,
       triggerId,
     });
@@ -294,7 +289,7 @@ export function seedMockAutomations(input: {
       anchor: anchorThread,
       createdDaysAgo: 5,
       name: "Downloads folder",
-      program: watchProgram,
+      script: watchScript,
       source: { kind: "watch" },
     }),
     record({
@@ -311,7 +306,7 @@ export function seedMockAutomations(input: {
       createdDaysAgo: 9,
       name: "Inbox watcher",
       pauseReason: WATCH_AUTO_PAUSE_REASON,
-      program: watchProgram,
+      script: watchScript,
       source: { kind: "watch" },
       status: "paused",
     }),

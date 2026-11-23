@@ -383,9 +383,7 @@ export class ProductToolHandlers {
 
   async #programMessageAuthor(
     caller: Extract<AgentCaller, { kind: "program" }>,
-  ): Promise<
-    Extract<import("@opensteer/core").MessageAuthor, { kind: "trigger" | "watch" }>
-  > {
+  ): Promise<Extract<import("@opensteer/core").MessageAuthor, { kind: "trigger" | "watch" }>> {
     if (caller.program.kind === "watch") {
       const trigger = await this.#store.database
         .selectFrom("triggers")
@@ -417,26 +415,26 @@ export class ProductToolHandlers {
   }
 
   async ask_person({ caller, input, operationKey }: ToolCall<"ask_person">) {
-    if (caller.kind === "connection") requireRun(caller);
-    if (caller.kind === "run") {
-      if (await this.#store.runAssignment(caller.claims.runId))
+    const activeCaller = caller.kind === "connection" ? requireRun(caller) : caller;
+    if (activeCaller.kind === "run") {
+      if (await this.#store.runAssignment(activeCaller.claims.runId))
         throw forbidden(assignedRunRefusal, "Ask the parent task with opensteer_task_send.");
     } else {
       const assigned = await this.#store.database
         .selectFrom("delegations")
         .select("id")
-        .where("childThreadId", "=", caller.anchor.id)
+        .where("childThreadId", "=", activeCaller.anchor.id)
         .where("status", "=", "open")
         .executeTakeFirst();
       if (assigned)
         throw forbidden(assignedRunRefusal, "Ask the parent task with opensteer_task_send.");
     }
     const origin: RequestOriginInput =
-      caller.kind === "run"
-        ? { originatingRunId: caller.claims.runId }
-        : caller.program.kind === "trigger"
-          ? { originatingOccurrenceId: caller.program.occurrenceId }
-          : { originatingWatchActivationId: caller.program.activationId };
+      activeCaller.kind === "run"
+        ? { originatingRunId: activeCaller.claims.runId }
+        : activeCaller.program.kind === "trigger"
+          ? { originatingOccurrenceId: activeCaller.program.occurrenceId }
+          : { originatingWatchActivationId: activeCaller.program.activationId };
     const created = await this.#store.requests.create({
       callId: operationId(caller, operationKey, "ask_person"),
       kind: "person.question",
@@ -1520,33 +1518,33 @@ export class ProductToolHandlers {
     input,
     operationKey,
   }: ToolCall<"computer_access_request">) {
-    if (caller.kind === "connection") requireRun(caller);
-    const callId = operationId(caller, operationKey, "computer_access_request");
+    const activeCaller = caller.kind === "connection" ? requireRun(caller) : caller;
+    const callId = operationId(activeCaller, operationKey, "computer_access_request");
     const origin =
-      caller.kind === "run"
-        ? ({ originatingRunId: caller.claims.runId } as const)
-        : caller.program.kind === "trigger"
-          ? ({ originatingOccurrenceId: caller.program.occurrenceId } as const)
-          : ({ originatingWatchActivationId: caller.program.activationId } as const);
-    const threadId = callerThread(caller).id;
+      activeCaller.kind === "run"
+        ? ({ originatingRunId: activeCaller.claims.runId } as const)
+        : activeCaller.program.kind === "trigger"
+          ? ({ originatingOccurrenceId: activeCaller.program.occurrenceId } as const)
+          : ({ originatingWatchActivationId: activeCaller.program.activationId } as const);
+    const threadId = callerThread(activeCaller).id;
     if (input.access === "full_disk_access") {
       const runnerId =
-        caller.kind === "run"
-          ? caller.claims.runnerId
-          : caller.program.kind === "trigger"
-            ? caller.program.runnerId
-            : (await this.#store.getEnvironment(caller.anchor.environmentId))?.runnerId;
+        activeCaller.kind === "run"
+          ? activeCaller.claims.runnerId
+          : activeCaller.program.kind === "trigger"
+            ? activeCaller.program.runnerId
+            : (await this.#store.getEnvironment(activeCaller.anchor.environmentId))?.runnerId;
       if (!runnerId) throw conflict("Selected computer is not available.");
       const result = await this.#machineFullDiskAccess.request({
         callId,
         computerId: RunnerIdSchema.parse(input.computerId),
         reason: input.reason,
         claims:
-          caller.kind === "run"
-            ? caller.claims
+          activeCaller.kind === "run"
+            ? activeCaller.claims
             : {
                 threadId,
-                requestedBy: caller.userId,
+                requestedBy: activeCaller.userId,
                 runnerId,
                 ...origin,
               },
@@ -1600,20 +1598,20 @@ export class ProductToolHandlers {
     input,
     operationKey,
   }: ToolCall<"browser_profile_request">) {
-    if (caller.kind === "connection") requireRun(caller);
-    const requestId = operationId(caller, operationKey, "browser_profile_request");
+    const activeCaller = caller.kind === "connection" ? requireRun(caller) : caller;
+    const requestId = operationId(activeCaller, operationKey, "browser_profile_request");
 
     const result = await this.#browser.requestAccess({
       callId: requestId,
-      ownerId: caller.userId,
+      ownerId: activeCaller.userId,
       reason: input.reason,
-      ...(caller.kind === "run"
-        ? { runId: caller.claims.runId }
-        : caller.program.kind === "trigger"
-          ? { originatingOccurrenceId: caller.program.occurrenceId }
-          : { originatingWatchActivationId: caller.program.activationId }),
+      ...(activeCaller.kind === "run"
+        ? { runId: activeCaller.claims.runId }
+        : activeCaller.program.kind === "trigger"
+          ? { originatingOccurrenceId: activeCaller.program.occurrenceId }
+          : { originatingWatchActivationId: activeCaller.program.activationId }),
       suggestion: input.suggestion,
-      threadId: callerThread(caller).id,
+      threadId: callerThread(activeCaller).id,
     });
     return {
       ...result,

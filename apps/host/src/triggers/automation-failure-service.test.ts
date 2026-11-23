@@ -83,11 +83,14 @@ it("describes outcome-unknown notices as lost contact rather than interrupted (Z
     triggerName: "Nightly backup",
   };
   let delivered = false;
-  const enqueueThreadInput = vi.fn<CommandService["enqueueThreadInput"]>(async () => ({
-    disposition: "queued" as const,
-    inputId: createId("threadInput"),
-    runId: null,
-  }));
+  const enqueueThreadInput = vi.fn<CommandService["enqueueThreadInput"]>(
+    async () =>
+      ({
+        disposition: "queued",
+        inputId: createId("message"),
+        runId: null,
+      }) as never,
+  );
   const service = new AutomationFailureService({
     commands: { enqueueThreadInput },
     onError: () => undefined,
@@ -133,11 +136,14 @@ it("describes started-failing, overran-schedule, watch-crash-loop, and wake-limi
   try {
     for (const item of cases) {
       let delivered = false;
-      const enqueueThreadInput = vi.fn<CommandService["enqueueThreadInput"]>(async () => ({
-        disposition: "queued" as const,
-        inputId: createId("threadInput"),
-        runId: null,
-      }));
+      const enqueueThreadInput = vi.fn<CommandService["enqueueThreadInput"]>(
+        async () =>
+          ({
+            disposition: "queued",
+            inputId: createId("message"),
+            runId: null,
+          }) as never,
+      );
       const service = new AutomationFailureService({
         commands: { enqueueThreadInput },
         onError: () => undefined,

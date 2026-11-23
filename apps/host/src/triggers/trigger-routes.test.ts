@@ -15,12 +15,10 @@ afterEach(async () => {
 describe("Trigger HTTP routes (T7 / Y3 / Y11)", () => {
   it("accepts key-in-path webhooks for any method with exact raw bytes, query params, and filtered headers", async () => {
     const occurrenceId = createId("triggerOccurrence");
-    const acceptWebhook = vi.fn(
-      async (_input: Parameters<TriggerService["acceptWebhook"]>[0]) => ({
-        occurrence: { id: occurrenceId },
-        wasDuplicate: false,
-      }),
-    );
+    const acceptWebhook = vi.fn(async (_input: Parameters<TriggerService["acceptWebhook"]>[0]) => ({
+      occurrence: { id: occurrenceId },
+      wasDuplicate: false,
+    }));
     const app = Fastify();
     applications.push(app);
     registerTriggerRoutes(

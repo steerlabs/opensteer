@@ -207,10 +207,10 @@ export async function createStoreFixture() {
         createdBy: fixture.userId,
         idempotencyKey: "trigger-" + suffix,
         name: "Trigger " + suffix,
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default async () => null",
+        script: {
+          interpreter: null,
+
+          text: "console.log('ok')",
         },
         source: {
           kind: "schedule",

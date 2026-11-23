@@ -13,6 +13,7 @@ import {
   utf8ByteLength,
 } from "@opensteer/core";
 import { z } from "zod";
+import { AutomationScriptSchema, AutomationScriptViewSchema } from "./script.js";
 
 export const TriggerStatusSchema = z.enum(["active", "paused", "archived"]);
 
@@ -48,8 +49,7 @@ export const triggerProgramContract = [
 export const TRIGGER_PROGRAM_VERSION_REFUSAL =
   "Programs require toolContractVersion 5. Use opensteer_task_send and opensteer_task_delegate; older tool names are unavailable.";
 
-export const TRIGGER_PROGRAM_UPDATE_REASON =
-  "Needs an update because this program uses an unsupported tool contract. Ask your agent to update it.";
+export const TRIGGER_PROGRAM_UPDATE_REASON = "Needs an update: ask your agent";
 
 /**
  * A revision's program as stored. Programs written for an older tool contract
@@ -64,7 +64,6 @@ export const StoredTriggerProgramSchema = z.strictObject({
   toolContractVersion: z.number().int().positive(),
 });
 export type StoredTriggerProgram = z.infer<typeof StoredTriggerProgramSchema>;
-const StoredTriggerProgramViewSchema = z.object(StoredTriggerProgramSchema.shape);
 
 /** A program Opensteer can write and run. */
 export const TriggerProgramSchema = StoredTriggerProgramSchema.extend({
@@ -146,14 +145,20 @@ export const TriggerRevisionSchema = z.strictObject({
   createdBy: UserIdSchema,
   createdByThreadId: ThreadIdSchema.nullable().default(null),
   id: TriggerRevisionIdSchema,
+  /** Legacy v5 source kept readable on paused pre-script revisions so an agent can rewrite them (T14). */
+  legacySource: z
+    .string()
+    .min(1)
+    .max(512 * 1_024)
+    .optional(),
   ordinal: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  program: StoredTriggerProgramSchema,
+  script: AutomationScriptSchema.nullable(),
   source: TriggerSourceSchema,
   triggerId: TriggerIdSchema,
 });
 export const TriggerRevisionViewSchema = z.object({
   ...TriggerRevisionSchema.shape,
-  program: StoredTriggerProgramViewSchema,
+  script: AutomationScriptViewSchema.nullable(),
   source: TriggerSourceViewSchema,
 });
 export type TriggerRevision = z.infer<typeof TriggerRevisionSchema>;
@@ -360,7 +365,7 @@ export const TriggerWriteInputSchema = z.strictObject({
   occurrenceId: TriggerOccurrenceIdSchema.optional(),
   ownTask: TriggerOwnTaskInputSchema.optional(),
   payload: z.unknown().optional(),
-  program: TriggerProgramSchema.optional(),
+  script: AutomationScriptSchema.optional(),
   source: TriggerSourceInputSchema.optional(),
   status: TriggerStatusSchema.optional(),
   triggerId: TriggerIdSchema.optional(),
@@ -374,7 +379,7 @@ export const TriggerControlInputSchema = z.discriminatedUnion("operation", [
     name: z.string().trim().min(1).max(160),
     operation: z.literal("create"),
     ownTask: TriggerOwnTaskInputSchema.optional(),
-    program: TriggerProgramSchema,
+    script: AutomationScriptSchema,
     source: TriggerSourceSchema,
   }),
   z.strictObject({
@@ -391,7 +396,7 @@ export const TriggerControlInputSchema = z.discriminatedUnion("operation", [
     expectedRevisionId: TriggerRevisionIdSchema,
     name: z.string().trim().min(1).max(160).optional(),
     operation: z.literal("update"),
-    program: TriggerProgramSchema.optional(),
+    script: AutomationScriptSchema.optional(),
     source: TriggerSourceSchema.optional(),
     triggerId: TriggerIdSchema,
   }),
@@ -421,14 +426,14 @@ export type TriggerControlInput = z.infer<typeof TriggerControlInputSchema>;
 export const CreateTriggerHttpBodySchema = z.strictObject({
   anchorThreadId: ThreadIdSchema,
   name: z.string().trim().min(1).max(160),
-  program: TriggerProgramSchema,
+  script: AutomationScriptSchema,
   source: TriggerSourceSchema,
 });
 
 export const UpdateTriggerHttpBodySchema = z.strictObject({
   expectedRevisionId: TriggerRevisionIdSchema,
   name: z.string().trim().min(1).max(160).optional(),
-  program: TriggerProgramSchema.optional(),
+  script: AutomationScriptSchema.optional(),
   source: TriggerSourceSchema.optional(),
 });
 

@@ -764,6 +764,7 @@ const runGlyph = {
   pending: { icon: "clock", tone: "warn" },
   running: { icon: "activity", tone: "accent" },
   succeeded: { icon: "check-circle", tone: "ok" },
+  unknown: { icon: "help-circle", tone: "warn" },
 } as const satisfies Record<TriggerOccurrence["status"], { icon: string; tone: Tone }>;
 
 function RunRow({
@@ -867,8 +868,12 @@ function Advanced({
       <div className="automation-advanced__body">
         <div className="automation-advanced__head">
           <span>
-            {revision.program.language === "typescript" ? "TypeScript" : "JavaScript"} program,
-            version {revision.ordinal}
+            {revision.script
+              ? revision.script.interpreter
+                ? `${revision.script.interpreter.join(" ")} script`
+                : "Node.js script"
+              : "Legacy program"}
+            , version {revision.ordinal}
           </span>
           {archived || detail.trigger.systemRole != null ? null : (
             <AreaLink
@@ -879,7 +884,9 @@ function Advanced({
             </AreaLink>
           )}
         </div>
-        <pre className="automation-advanced__code">{revision.program.source}</pre>
+        <pre className="automation-advanced__code">
+          {revision.script?.text ?? revision.legacySource ?? ""}
+        </pre>
         {shape === "watch" && activation ? (
           <>
             <p className="automation-advanced__head">

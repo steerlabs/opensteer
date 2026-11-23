@@ -16,8 +16,7 @@ export interface WebhookRateLimiterOptions {
 }
 
 export type WebhookRateLimitDecision =
-  | { readonly allowed: true }
-  | { readonly allowed: false; readonly retryAfterSeconds: number };
+  { readonly allowed: true } | { readonly allowed: false; readonly retryAfterSeconds: number };
 
 /**
  * Bounded in-memory sliding-window limiter checked BEFORE PostgreSQL (T7 / Y3).

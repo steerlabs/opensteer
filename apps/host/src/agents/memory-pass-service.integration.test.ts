@@ -36,7 +36,6 @@ import {
 } from "@opensteer/triggers";
 import { expect, vi } from "vitest";
 import { MemoryPassService, memoryPassWaitingReason } from "./memory-pass-service.js";
-import { memoryPassProgram } from "./memory-pass-program.js";
 import { memoryPassScript } from "./memory-pass-script.js";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import { lastService, serveMcp } from "../mcp/connection-caller.test-support.js";
@@ -60,7 +59,7 @@ async function fixture(
   await f.database
     .updateTable("runners")
     .set({
-      capabilities: sql`'["trigger-program-v5","automation-script-v1"]'::jsonb`,
+      capabilities: sql`'["automation-script-v1"]'::jsonb`,
     })
     .where("id", "=", base.runnerId)
     .execute();
@@ -463,21 +462,20 @@ describeStore("managed memory passes", (it) => {
     await instance.ensureForPersonal();
     const prior = await role(f, base.userId);
     await f.database
-      .updateTable("triggerRevisions")
+      .updateTable("triggerRevisionScripts")
       .set({
-        program: {
-          ...memoryPassProgram("memory-light"),
-          toolContractVersion: 3 as unknown as 5,
-          source: "export default () => {}",
+        script: {
+          interpreter: null,
+          text: "console.log('outdated')",
         },
       })
-      .where("id", "=", prior.revision.id)
+      .where("revisionId", "=", prior.revision.id)
       .execute();
     await instance.reconcileMissing();
     const current = await role(f, base.userId);
     expect(current.revision.id).not.toBe(prior.revision.id);
     expect(current.revision.ordinal).toBe(prior.revision.ordinal + 1);
-    expect(current.revision.program).toEqual(memoryPassProgram("memory-light"));
+    expect(current.revision.script).toEqual(memoryPassScript("memory-light"));
     const scriptRow = await f.database
       .selectFrom("triggerRevisionScripts")
       .select("script")
@@ -573,7 +571,7 @@ describeStore("managed memory passes", (it) => {
         modelSelection: base.thread.modelSelection,
       },
       systemRole: "memory-light" as const,
-      program: memoryPassProgram("memory-light"),
+      script: memoryPassScript("memory-light"),
       source: {
         kind: "schedule",
         schedule: {
@@ -588,9 +586,9 @@ describeStore("managed memory passes", (it) => {
     await expect(
       createMemoryPass(f.database, {
         ...input,
-        program: {
-          ...input.program,
-          source: "",
+        script: {
+          ...input.script,
+          text: "",
         },
       }),
     ).rejects.toThrow();
@@ -604,9 +602,9 @@ describeStore("managed memory passes", (it) => {
       createMemoryPass(f.database, {
         ...input,
         systemRole: "memory-nightly",
-        program: {
-          ...input.program,
-          source: "",
+        script: {
+          ...input.script,
+          text: "",
         },
       }),
     ).rejects.toThrow();
@@ -913,7 +911,7 @@ describeStore("managed memory passes", (it) => {
         name: "Other",
       },
       {
-        program: memoryPassProgram("memory-nightly"),
+        script: memoryPassScript("memory-nightly"),
       },
       {
         source: {
@@ -1003,7 +1001,7 @@ describeStore("managed memory passes", (it) => {
         createdBy: base.userId,
         idempotencyKey: `ordinary-${index}`,
         name: `Ordinary ${index}`,
-        program: memoryPassProgram("memory-light"),
+        script: memoryPassScript("memory-light"),
         source: light.revision.source,
       });
     expect(
@@ -1497,10 +1495,9 @@ describeStore("managed memory passes", (it) => {
       createdBy: base.userId,
       idempotencyKey: "tools-strangers-automation",
       name: "Briefing for #tools",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default () => {}",
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1515,10 +1512,9 @@ describeStore("managed memory passes", (it) => {
       createdBy: base.userId,
       idempotencyKey: "tools-own-automation",
       name: "My briefing",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default () => {}",
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -2206,9 +2202,9 @@ describeStore("managed memory passes", (it) => {
 
     // Scheduled tick right after completion is quiet and skipped.
     const scheduled = await tick(f, base, light.trigger);
-    await expect(wake(f, light.trigger, scheduled.occurrence.id, "quiet-scheduled")).rejects.toThrow(
-      MANAGED_MEMORY_WAKE_SKIPPED,
-    );
+    await expect(
+      wake(f, light.trigger, scheduled.occurrence.id, "quiet-scheduled"),
+    ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
     await completeRunningTicks(f, base, light.trigger);
 
     // Manual run_now right after completion bypasses the 2-hour quiet skip.
@@ -2226,6 +2222,8 @@ describeStore("managed memory passes", (it) => {
     });
     const manualWake = await wake(f, light.trigger, manualOcc.id, "manual-wake");
     expect(manualWake.run).not.toBeNull();
-    expect(wakeText(manualWake).join("\n")).toContain("No new tasks since your last completed pass");
+    expect(wakeText(manualWake).join("\n")).toContain(
+      "No new tasks since your last completed pass",
+    );
   });
 });

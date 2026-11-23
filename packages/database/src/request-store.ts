@@ -964,7 +964,8 @@ export class RequestStore {
     if (!origin) {
       throw new OpensteerError({
         code: "bad_request",
-        message: "A computer app access Request originates from exactly one Run, Occurrence, or Watch",
+        message:
+          "A computer app access Request originates from exactly one Run, Occurrence, or Watch",
       });
     }
     return commitPersonalMutation(this.#database, async (personalTransaction) => {

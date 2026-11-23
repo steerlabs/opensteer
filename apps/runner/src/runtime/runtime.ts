@@ -119,8 +119,11 @@ import {
 } from "./execution-containment.js";
 import { warmEngineKey, WarmEnginePool, type WarmEngine } from "./warm-engine-pool.js";
 import { startProgramEndpoints, type ProgramEndpointSet } from "../agent/program-endpoints.js";
-import { TriggerProgramExecutor, type ProgramLaunchPlanner } from "../agent/program-executor.js";
-import { AutomationScriptExecutor, type AutomationScriptEvent } from "../agent/script-executor.js";
+import {
+  AutomationScriptExecutor,
+  type AutomationScriptEvent,
+  type ProgramLaunchPlanner,
+} from "../agent/script-executor.js";
 import { WatchSupervisor } from "../triggers/watch-supervisor.js";
 import {
   isMachineAccessRoutes,
@@ -226,7 +229,7 @@ export interface RunnerRuntimeOptions {
   readonly nodeExecutable?: string;
   readonly privateStateDirectory: string;
   readonly projectContinuationIdentity: ProviderContinuationIdentityProjector;
-  readonly programExecutor?: Pick<TriggerProgramExecutor, "execute">;
+  readonly scriptExecutor?: Pick<AutomationScriptExecutor, "execute">;
   readonly agentHome: AgentHomeAccess;
   readonly watchSupervisor?: Pick<
     WatchSupervisor,
@@ -448,8 +451,7 @@ export class RunnerRuntime {
   readonly #voice: VoiceCalls;
   readonly #modelServerHome: string | undefined;
   readonly #projectContinuationIdentity: ProviderContinuationIdentityProjector;
-  readonly #programExecutor: Pick<TriggerProgramExecutor, "execute">;
-  readonly #scriptExecutor: Pick<AutomationScriptExecutor, "execute"> | undefined;
+  readonly #scriptExecutor: Pick<AutomationScriptExecutor, "execute">;
   readonly #runs = new Map<RunId, ActiveRun>();
   readonly #containment: ExecutionContainment;
   /** Engines kept running between a Thread's Runs. */
@@ -658,16 +660,8 @@ export class RunnerRuntime {
     this.#voice = new VoiceCalls(join(this.#privateStateDirectory, "voice"));
     this.#modelServerHome = options.modelServerHome;
     this.#projectContinuationIdentity = options.projectContinuationIdentity;
-    this.#programExecutor =
-      options.programExecutor ?? programExecutorFor(options, this.#privateStateDirectory);
     this.#scriptExecutor =
-      options.nodeExecutable && options.nativeFsHelperBinary
-        ? new AutomationScriptExecutor({
-            nativeFsHelperBinary: options.nativeFsHelperBinary,
-            nodeExecutable: options.nodeExecutable,
-            privateDirectory: resolve(this.#privateStateDirectory, "automation-scripts"),
-          })
-        : undefined;
+      options.scriptExecutor ?? scriptExecutorFor(options, this.#privateStateDirectory);
     this.#agentHome = options.agentHome;
     this.#watchSupervisor =
       options.watchSupervisor ??
@@ -2743,29 +2737,20 @@ export class RunnerRuntime {
         transport: { mode: this.#mode },
       });
       active.abort.signal.throwIfAborted();
-      output =
-        context.script && this.#scriptExecutor
-          ? await this.#scriptExecutor.execute({
-              automationId: context.triggerId,
-              endpoints: endpoints.endpoints,
-              event: scriptEventFromTriggerEvent(context),
-              firingId: context.occurrenceId,
-              planLaunch: (launch) => this.#planProgramLaunch(key, launch),
-              script: context.script,
-              ...(context.secrets ? { secrets: context.secrets } : {}),
-              signal: active.abort.signal,
-              ...(context.webhookBodyBase64 !== undefined
-                ? { webhookBody: Buffer.from(context.webhookBodyBase64, "base64") }
-                : {}),
-              workspace,
-            })
-          : await this.#programExecutor.execute({
-              context,
-              endpoints: endpoints.endpoints,
-              planLaunch: (launch) => this.#planProgramLaunch(key, launch),
-              signal: active.abort.signal,
-              workspace,
-            });
+      output = await this.#scriptExecutor.execute({
+        automationId: context.triggerId,
+        endpoints: endpoints.endpoints,
+        event: scriptEventFromTriggerEvent(context),
+        firingId: context.occurrenceId,
+        planLaunch: (launch) => this.#planProgramLaunch(key, launch),
+        script: context.script,
+        ...(context.secrets ? { secrets: context.secrets } : {}),
+        signal: active.abort.signal,
+        ...(context.webhookBodyBase64 !== undefined
+          ? { webhookBody: Buffer.from(context.webhookBodyBase64, "base64") }
+          : {}),
+        workspace,
+      });
     } catch (error) {
       output = {
         completedAt: new Date().toISOString(),
@@ -4217,19 +4202,19 @@ function scriptEventFromTriggerEvent(
   return base;
 }
 
-function programExecutorFor(
+function scriptExecutorFor(
   options: Pick<RunnerRuntimeOptions, "nativeFsHelperBinary" | "nodeExecutable">,
   privateStateDirectory: string,
-): TriggerProgramExecutor {
+): AutomationScriptExecutor {
   if (!options.nodeExecutable || !options.nativeFsHelperBinary) {
     throw new TypeError(
-      "RunnerRuntime requires a verified nodeExecutable and nativeFsHelperBinary for Trigger programs",
+      "RunnerRuntime requires a verified nodeExecutable and nativeFsHelperBinary for automation scripts",
     );
   }
-  return new TriggerProgramExecutor({
+  return new AutomationScriptExecutor({
     nativeFsHelperBinary: options.nativeFsHelperBinary,
     nodeExecutable: options.nodeExecutable,
-    privateDirectory: resolve(privateStateDirectory, "trigger-programs"),
+    privateDirectory: resolve(privateStateDirectory, "automation-scripts"),
   });
 }
 

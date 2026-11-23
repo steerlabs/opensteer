@@ -585,10 +585,9 @@ integration.sequential("Thread title lifecycle", () => {
         createdBy: f.userId,
         idempotencyKey: randomUUID(),
         name: "Title automation",
-        program: {
-          language: "javascript",
-          toolContractVersion: 5,
-          source: "export default async () => null",
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source:
           kind === "trigger"

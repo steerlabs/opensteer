@@ -3,10 +3,9 @@ import { describeStore } from "@opensteer/database/test-support/store";
 import { expect } from "vitest";
 import { connection, serveMcp } from "../mcp/connection-caller.test-support.js";
 
-const program = {
-  language: "javascript",
-  source: "export default async () => null",
-  toolContractVersion: 5,
+const script = {
+  interpreter: null,
+  text: "console.log('ok')",
 } as const;
 
 describeStore(
@@ -46,7 +45,7 @@ describeStore(
             createdBy: f.userId,
             idempotencyKey: key,
             name: `Automation ${key}`,
-            program,
+            script,
             source: {
               kind: "schedule",
               schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },

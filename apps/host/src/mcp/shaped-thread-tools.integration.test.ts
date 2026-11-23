@@ -2234,7 +2234,8 @@ describeStore("shaped agent task tools", (it) => {
         }),
       ),
     );
-    const link = formatReferenceLink(sent.messageId, `Message · ${target.thread.title}`);
+    expect(sent.messageId).not.toBeNull();
+    const link = formatReferenceLink(sent.messageId!, `Message · ${target.thread.title}`);
     expect(sent.link).toBe(link);
     expect(sent.disposition).toBe("pending");
     const queue = opensteer_task_queue.output.parse(

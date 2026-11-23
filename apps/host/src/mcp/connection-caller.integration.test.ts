@@ -1095,10 +1095,9 @@ describeStore("connection grants and lineage", (it) => {
   });
 
   const tasksOnly: AgentGrant = { scope: "selected", tasks: true, resources: [] };
-  const program = {
-    language: "javascript",
-    source: "export default async () => null",
-    toolContractVersion: 5,
+  const script = {
+    interpreter: null,
+    text: "console.log('ok')",
   } as const;
   function scheduled(anchor: import("@opensteer/core").ThreadId, userId: UserId, key: string) {
     return {
@@ -1107,7 +1106,7 @@ describeStore("connection grants and lineage", (it) => {
       createdBy: userId,
       idempotencyKey: key,
       name: `Automation ${key}`,
-      program,
+      script,
       source: {
         kind: "schedule" as const,
         schedule: { expression: "0 9 * * *", kind: "cron" as const, timezone: "UTC" },
@@ -1285,7 +1284,7 @@ describeStore("connection grants and lineage", (it) => {
         {
           automationId: owner.trigger.id,
           expectedRevisionId: owner.revision.id,
-          program: { ...program, source: "export default async () => 'replaced'" },
+          script: { ...script, text: "console.log('replaced')" },
         },
       ],
     ] as const)

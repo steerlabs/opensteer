@@ -1,5 +1,4 @@
 import { utf8ByteLength } from "@opensteer/core";
-import { basename } from "node:path";
 import { z } from "zod";
 import {
   MAX_AUTOMATION_SECRET_VALUE_BYTES,
@@ -69,6 +68,7 @@ export const AutomationScriptSchema = z.strictObject({
     ),
 });
 export type AutomationScript = z.infer<typeof AutomationScriptSchema>;
+export const AutomationScriptViewSchema = z.object(AutomationScriptSchema.shape);
 
 export const AutomationOutcomeSchema = z.enum([
   "pending",
@@ -93,20 +93,26 @@ export function scriptProgramStub(script: Pick<AutomationScript, "text">): Store
 }
 
 /** Normalizes phone/web CRLF/CR line endings on POSIX so shell/script interpreters never choke on `\r`. */
-export function normalizeScriptText(text: string, platform: NodeJS.Platform): string {
+export function normalizeScriptText(text: string, platform: string): string {
   if (platform === "win32") return text;
   return text.replace(/\r\n?/gu, "\n");
+}
+
+function executableBasename(value: string): string {
+  const normalized = value.replace(/[\\/]+$/u, "");
+  const index = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  return (index === -1 ? normalized : normalized.slice(index + 1)).toLowerCase();
 }
 
 /** Infers an appropriate file extension from an interpreter argv array (defaulting to Node ESM). */
 export function scriptFileExtension(interpreter: readonly string[] | null | undefined): string {
   if (!interpreter || interpreter.length === 0) return ".mjs";
-  const first = basename(interpreter[0]!).toLowerCase();
+  const first = executableBasename(interpreter[0]!);
   const executable =
     first === "env" && interpreter.length > 1
-      ? basename(
+      ? executableBasename(
           interpreter.slice(1).find((arg) => !arg.startsWith("-") && !arg.includes("=")) ?? "",
-        ).toLowerCase()
+        )
       : first;
   const stem = executable.replace(/\.exe$/u, "");
   if (stem === "node" || stem === "nodejs") return ".mjs";
@@ -152,7 +158,8 @@ export function automationSecretEnvName(name: string): string {
 export function automationSecretsTotalBytes(secrets: Readonly<Record<string, string>>): number {
   let total = 0;
   for (const [name, value] of Object.entries(secrets)) {
-    total += utf8ByteLength(AUTOMATION_SECRET_ENV_PREFIX) + utf8ByteLength(name) + utf8ByteLength(value);
+    total +=
+      utf8ByteLength(AUTOMATION_SECRET_ENV_PREFIX) + utf8ByteLength(name) + utf8ByteLength(value);
   }
   return total;
 }

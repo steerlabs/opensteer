@@ -23,7 +23,6 @@ import { resolveAutomaticModels, personalExecution } from "./automatic-models.js
 import { isDeepStrictEqual } from "node:util";
 import type { Clock } from "@opensteer/shared/clock";
 import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
-import { memoryPassProgram } from "./memory-pass-program.js";
 import { memoryPassScript } from "./memory-pass-script.js";
 
 export const memoryPassWaitingReason =
@@ -123,17 +122,12 @@ export class MemoryPassService {
       .execute();
     for (const current of systemPrograms) {
       if (!current.systemRole) continue;
-      const program = memoryPassProgram(current.systemRole);
       const script = memoryPassScript(current.systemRole);
-      if (
-        !isDeepStrictEqual(current.program, program) ||
-        !isDeepStrictEqual(current.currentScript, script)
-      ) {
+      if (!isDeepStrictEqual(current.currentScript, script)) {
         await new TriggerStore(store.database).regenerateSystemProgram({
           triggerId: current.id,
           ownerId: settings.ownerId,
           expectedRevisionId: current.currentRevisionId,
-          program,
           script,
         });
         this.options.onChanged();
@@ -203,7 +197,6 @@ export class MemoryPassService {
           modelSelection: seed.modelSelection,
         },
         systemRole,
-        program: memoryPassProgram(systemRole),
         script: memoryPassScript(systemRole),
         source: memoryPassSource(systemRole, zone.data),
         pauseReason: off ? "Memory is off at your request." : null,

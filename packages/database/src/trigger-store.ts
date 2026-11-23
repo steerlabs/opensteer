@@ -29,34 +29,35 @@ import {
   type UserId,
 } from "@opensteer/core";
 import {
+  AutomationScriptSchema,
   DEFAULT_MAX_WATCHES_PER_COMPUTER,
   DEFAULT_WAKES_PER_HOUR,
   MANAGED_MEMORY_REFUSAL,
   type TriggerSystemRole,
   MAX_PENDING_TRIGGER_OCCURRENCES,
   RETAINED_OUTPUT_OCCURRENCES,
+  StoredTriggerProgramSchema,
   TRIGGER_PROGRAM_UPDATE_REASON,
   WATCH_AUTO_PAUSE_FAILURE_THRESHOLD,
   WATCH_HEALTHY_WINDOW_MS,
   TriggerOccurrenceSchema,
   TriggerProgramEventSchema,
-  TriggerProgramSchema,
   TriggerRevisionSchema,
   TriggerSchema,
   TriggerSourceSchema,
   TriggerSummarySchema,
   TriggerWatchActivationSchema,
   firstTriggerFireAt,
-  isExecutableTriggerProgram,
   nextTriggerFireAfter,
+  scriptProgramStub,
   triggerOccurrenceErrorMessage,
   triggerAccess,
   validateTriggerSchedule,
   type AutomationPausedBy,
+  type AutomationScript,
   type Trigger,
   type TriggerExecutionOutput,
   type TriggerOccurrence,
-  type TriggerProgram,
   type TriggerProgramEvent,
   type TriggerRevision,
   type TriggerSource,
@@ -93,8 +94,8 @@ type TriggerRevisionRow = Selectable<DatabaseSchema["triggerRevisions"]>;
 type TriggerOccurrenceRow = Selectable<TriggerOccurrenceTable>;
 type TriggerWatchActivationRow = Selectable<TriggerWatchActivationTable>;
 const maxPostgresInteger = 2_147_483_647;
-const currentProgramVersion = TriggerProgramSchema.shape.toolContractVersion.value;
-const executableProgram = sql<boolean>`trigger_revisions.program->'toolContractVersion' = to_jsonb(${currentProgramVersion}::integer)`;
+const currentProgramVersion = 5 as const;
+const executableProgram = sql<boolean>`exists (select 1 from trigger_revision_scripts where trigger_revision_scripts.revision_id = trigger_revisions.id)`;
 const triggerAuthorityLossPauseReason =
   "Paused because its conversation could not run when it was due.";
 interface CreateTriggerInput {
@@ -111,8 +112,7 @@ interface CreateTriggerInput {
    * Assignment, off the task list, shown in the anchor's family.
    */
   readonly ownTask?: true;
-  readonly program: TriggerProgram;
-  readonly script?: import("@opensteer/triggers").AutomationScript;
+  readonly script: AutomationScript;
   readonly source: TriggerSource;
   readonly webhookRouteKey?: string;
   readonly webhookSecretHash?: string;
@@ -145,9 +145,10 @@ export interface TriggerDispatchContext {
     readonly environmentId: EnvironmentId;
     readonly id: ThreadId;
   };
+  readonly encryptedSecrets: Buffer | null;
   readonly occurrence: TriggerOccurrence;
   readonly revision: TriggerRevision;
-  readonly script?: import("@opensteer/triggers").AutomationScript | null;
+  readonly script: AutomationScript | null;
   readonly trigger: Trigger;
   readonly webhookBody?: Buffer | null;
   readonly agentHome: import("@opensteer/core").ComputerFolder;
@@ -341,13 +342,13 @@ export async function createTriggerInTransaction(
   },
 ) {
   const source = TriggerSourceSchema.parse(input.source);
-  const program = TriggerProgramSchema.parse(input.program);
+  const script = AutomationScriptSchema.parse(input.script);
   validateSource(source);
   // The caller's intent, so a replay of an own-task create matches its receipt.
   const requestFingerprint = fingerprint({
     anchorThreadId: input.anchorThreadId,
     name: input.name,
-    program,
+    script,
     source,
     ...(input.ownTask ? { ownTask: true } : {}),
   });
@@ -387,15 +388,22 @@ export async function createTriggerInTransaction(
     await assertAnchorScope(trigger.anchorThreadId);
     if (trigger.requestFingerprint !== requestFingerprint) throw idempotencyConflict();
     await requireTriggerExecutionAuthority(transaction, trigger);
-    const revision = await transaction
-      .selectFrom("triggerRevisions")
-      .selectAll()
-      .where("id", "=", trigger.currentRevisionId)
-      .executeTakeFirstOrThrow();
-    const parsed = revisionFromRow(revision);
+    const [revision, scriptRow] = await Promise.all([
+      transaction
+        .selectFrom("triggerRevisions")
+        .selectAll()
+        .where("id", "=", trigger.currentRevisionId)
+        .executeTakeFirstOrThrow(),
+      transaction
+        .selectFrom("triggerRevisionScripts")
+        .select("script")
+        .where("revisionId", "=", trigger.currentRevisionId)
+        .executeTakeFirst(),
+    ]);
+    const parsed = revisionFromRow(revision, scriptRow);
     return {
       revision: parsed,
-      trigger: triggerFromRow(trigger, !isExecutableTriggerProgram(parsed.program)),
+      trigger: triggerFromRow(trigger, parsed.script === null),
       wasDuplicate: true,
     };
   }
@@ -470,20 +478,18 @@ export async function createTriggerInTransaction(
       createdByThreadId: input.actorThreadId,
       id: revisionId,
       ordinal: 1,
-      program: jsonValue(program),
+      program: jsonValue(scriptProgramStub(script)),
       source: jsonValue(source),
       triggerId,
     })
     .execute();
-  if (input.script) {
-    await transaction
-      .insertInto("triggerRevisionScripts")
-      .values({
-        revisionId,
-        script: jsonValue(input.script),
-      })
-      .execute();
-  }
+  await transaction
+    .insertInto("triggerRevisionScripts")
+    .values({
+      revisionId,
+      script: jsonValue(script),
+    })
+    .execute();
   if (source.kind === "watch") {
     await createWatchActivation(transaction, {
       anchorThreadId: anchor.id,
@@ -506,7 +512,7 @@ export async function createTriggerInTransaction(
       .executeTakeFirstOrThrow(),
   ]);
   return {
-    revision: revisionFromRow(revision),
+    revision: revisionFromRow(revision, { script }),
     trigger: triggerFromRow(trigger),
     wasDuplicate: false,
   };
@@ -591,8 +597,7 @@ export class TriggerStore {
     triggerId: TriggerId;
     ownerId: UserId;
     expectedRevisionId: TriggerRevisionId;
-    program: TriggerProgram;
-    script?: import("@opensteer/triggers").AutomationScript;
+    script: AutomationScript;
   }) {
     return this.#update({ ...input, actorThreadId: null }, true);
   }
@@ -604,8 +609,7 @@ export class TriggerStore {
     readonly expectedRevisionId: TriggerRevisionId;
     readonly name?: string;
     readonly ownerId: UserId;
-    readonly program?: TriggerProgram;
-    readonly script?: import("@opensteer/triggers").AutomationScript;
+    readonly script?: AutomationScript;
     readonly source?: TriggerSource;
     readonly triggerId: TriggerId;
   }): Promise<{
@@ -621,25 +625,20 @@ export class TriggerStore {
     readonly revision: TriggerRevision;
     readonly trigger: Trigger;
   }> {
-    if (
-      input.name === undefined &&
-      input.program === undefined &&
-      input.script === undefined &&
-      input.source === undefined
-    ) {
+    if (input.name === undefined && input.script === undefined && input.source === undefined) {
       throw new OpensteerError({
         code: "bad_request",
-        message: "Automation update requires at least one of name, program, script, or source",
+        message: "Automation update requires at least one of name, script, or source",
       });
     }
     return commitPersonalMutation(this.#database, async (transaction) => {
       input = (await admitTriggerActor(transaction, input.ownerId, input)).input;
       await lockWatchCapacityForTrigger(transaction, input.triggerId);
       const trigger = await lockTriggerForMutation(transaction, input, "define");
-      // Another lineage's program, or the person's, would run with authority this actor lacks.
+      // Another lineage's script, or the person's, would run with authority this actor lacks.
       if (
         input.actorConnectionId &&
-        (input.program !== undefined || input.source !== undefined) &&
+        (input.script !== undefined || input.source !== undefined) &&
         trigger.originConnectionId !== input.actorConnectionId
       )
         throw new OpensteerError({
@@ -654,7 +653,7 @@ export class TriggerStore {
         trigger.systemRole &&
         !systemProgram &&
         (input.name !== undefined ||
-          input.program !== undefined ||
+          input.script !== undefined ||
           (input.source !== undefined &&
             (input.source.kind !== "schedule" ||
               input.source.schedule.kind !== "cron" ||
@@ -667,12 +666,19 @@ export class TriggerStore {
       if (trigger.currentRevisionId !== input.expectedRevisionId) {
         throw conflict("Automation revision changed; read it again before updating");
       }
-      const current = await transaction
-        .selectFrom("triggerRevisions")
-        .selectAll()
-        .select(executableProgram.as("executable"))
-        .where("id", "=", trigger.currentRevisionId)
-        .executeTakeFirstOrThrow();
+      const [current, currentScriptRow] = await Promise.all([
+        transaction
+          .selectFrom("triggerRevisions")
+          .selectAll()
+          .select(executableProgram.as("executable"))
+          .where("id", "=", trigger.currentRevisionId)
+          .executeTakeFirstOrThrow(),
+        transaction
+          .selectFrom("triggerRevisionScripts")
+          .select("script")
+          .where("revisionId", "=", trigger.currentRevisionId)
+          .executeTakeFirst(),
+      ]);
       const source = TriggerSourceSchema.parse(input.source ?? current.source);
       if (source.kind !== trigger.kind) {
         throw new OpensteerError({
@@ -681,7 +687,15 @@ export class TriggerStore {
         });
       }
       validateSource(source);
-      const program = TriggerProgramSchema.parse(input.program ?? current.program);
+      const nextScript =
+        input.script !== undefined
+          ? AutomationScriptSchema.parse(input.script)
+          : currentScriptRow
+            ? AutomationScriptSchema.parse(currentScriptRow.script)
+            : null;
+      if (!nextScript) {
+        throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
+      }
       const revisionId = createId("triggerRevision");
       const now = new Date();
       await transaction
@@ -692,35 +706,18 @@ export class TriggerStore {
           createdByThreadId: input.actorThreadId,
           id: revisionId,
           ordinal: current.ordinal + 1,
-          program: jsonValue(program),
+          program: jsonValue(scriptProgramStub(nextScript)),
           source: jsonValue(source),
           triggerId: trigger.id,
         })
         .execute();
-      if (input.script) {
-        await transaction
-          .insertInto("triggerRevisionScripts")
-          .values({
-            revisionId,
-            script: jsonValue(input.script),
-          })
-          .execute();
-      } else {
-        const currentScript = await transaction
-          .selectFrom("triggerRevisionScripts")
-          .select("script")
-          .where("revisionId", "=", current.id)
-          .executeTakeFirst();
-        if (currentScript) {
-          await transaction
-            .insertInto("triggerRevisionScripts")
-            .values({
-              revisionId,
-              script: jsonValue(currentScript.script),
-            })
-            .execute();
-        }
-      }
+      await transaction
+        .insertInto("triggerRevisionScripts")
+        .values({
+          revisionId,
+          script: jsonValue(nextScript),
+        })
+        .execute();
       // A new source re-arms the clock the way a resume does: an elapsed
       // one-shot stays elapsed. A repair also skips missed ticks, keeping
       // a future next run (including a manual reschedule).
@@ -737,11 +734,14 @@ export class TriggerStore {
       const updated = await transaction
         .updateTable("triggers")
         .set({
-          ...(input.program === undefined && input.source === undefined
+          ...(input.script === undefined && input.source === undefined
             ? {}
             : {
                 consecutiveFailures: 0,
               }),
+          ...(input.script !== undefined && trigger.pauseReason === TRIGGER_PROGRAM_UPDATE_REASON
+            ? { pauseReason: null }
+            : {}),
           currentRevisionId: revisionId,
           ...(input.name === undefined
             ? {}
@@ -754,7 +754,7 @@ export class TriggerStore {
         .where("id", "=", trigger.id)
         .returningAll()
         .executeTakeFirstOrThrow();
-      // A new program can make a waiting schedule runnable at its existing time,
+      // A new script can make a waiting schedule runnable at its existing time,
       // so any update that leaves one armed re-arms the scheduler.
       if (updated.kind === "schedule" && updated.status === "active" && updated.nextFireAt)
         await wakeTriggerSchedules(transaction);
@@ -781,7 +781,7 @@ export class TriggerStore {
         .where("id", "=", revisionId)
         .executeTakeFirstOrThrow();
       return {
-        revision: revisionFromRow(revision),
+        revision: revisionFromRow(revision, { script: nextScript }),
         trigger: triggerFromRow(updated),
       };
     });
@@ -973,10 +973,7 @@ export class TriggerStore {
               .forNoKeyUpdate()
               .execute();
             const cancellation = {
-              code:
-                input.status === "archived"
-                  ? "canceled_by_archive"
-                  : "canceled_by_pause",
+              code: input.status === "archived" ? "canceled_by_archive" : "canceled_by_pause",
               message:
                 input.status === "archived"
                   ? "Automation occurrence was canceled when the automation was archived"
@@ -1423,15 +1420,76 @@ export class TriggerStore {
   async assertActiveWatchBinding(input: ActiveWatchBindingInput): Promise<void> {
     await assertActiveWatchBinding(this.#database, input);
   }
-  async watchProgram(input: ActiveWatchBindingInput): Promise<TriggerProgram> {
+  async watchScript(input: ActiveWatchBindingInput): Promise<{
+    readonly encryptedSecrets: Buffer | null;
+    readonly script: AutomationScript;
+    readonly triggerId: TriggerId;
+  }> {
     await this.assertActiveWatchBinding(input);
-    const revision = await this.#database
-      .selectFrom("triggerRevisions")
-      .select("program")
-      .where("id", "=", input.revisionId)
-      .where("triggerId", "=", input.triggerId)
-      .executeTakeFirstOrThrow();
-    return TriggerProgramSchema.parse(revision.program);
+    const [scriptRow, triggerRow] = await Promise.all([
+      this.#database
+        .selectFrom("triggerRevisionScripts")
+        .innerJoin("triggerRevisions", "triggerRevisions.id", "triggerRevisionScripts.revisionId")
+        .select("triggerRevisionScripts.script")
+        .where("triggerRevisions.id", "=", input.revisionId)
+        .where("triggerRevisions.triggerId", "=", input.triggerId)
+        .executeTakeFirst(),
+      this.#database
+        .selectFrom("triggers")
+        .select("encryptedSecrets")
+        .where("id", "=", input.triggerId)
+        .executeTakeFirstOrThrow(),
+    ]);
+    if (!scriptRow) throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
+    return {
+      encryptedSecrets: triggerRow.encryptedSecrets ?? null,
+      script: AutomationScriptSchema.parse(scriptRow.script),
+      triggerId: input.triggerId,
+    };
+  }
+  async getEncryptedSecrets(ownerId: UserId, triggerId: TriggerId): Promise<Buffer | null> {
+    await requirePersonalOwner(this.#database, ownerId);
+    const row = await this.#database
+      .selectFrom("triggers")
+      .select("encryptedSecrets")
+      .where("id", "=", triggerId)
+      .where("createdBy", "=", ownerId)
+      .executeTakeFirst();
+    if (!row) throw notFound("Automation not found");
+    return row.encryptedSecrets ?? null;
+  }
+  async setEncryptedSecrets(input: {
+    readonly actorAccessMode?: ThreadAccessMode;
+    readonly actorConnectionId?: string;
+    readonly actorThreadId: ThreadId | null;
+    readonly ownerId: UserId;
+    readonly sealed: { readonly envelope: Buffer; readonly keyVersion: number } | null;
+    readonly triggerId: TriggerId;
+  }): Promise<Trigger> {
+    return commitPersonalMutation(this.#database, async (transaction) => {
+      const admitted = (await admitTriggerActor(transaction, input.ownerId, input)).input;
+      const trigger = await lockTriggerForMutation(transaction, admitted, "define");
+      if (admitted.actorConnectionId && trigger.originConnectionId !== admitted.actorConnectionId) {
+        throw new OpensteerError({
+          code: "forbidden",
+          message:
+            "A connected agent cannot change the secrets of an automation it did not create.",
+        });
+      }
+      if (trigger.systemRole) throw conflict(MANAGED_MEMORY_REFUSAL);
+      if (trigger.status === "archived") throw conflict("Archived automations cannot be changed");
+      const updated = await transaction
+        .updateTable("triggers")
+        .set({
+          encryptedSecrets: input.sealed?.envelope ?? null,
+          secretsKeyVersion: input.sealed?.keyVersion ?? null,
+          updatedAt: new Date(),
+        })
+        .where("id", "=", trigger.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      return triggerFromRow(updated);
+    });
   }
   async applyWatchStatus(input: {
     readonly verifiedContainment?: boolean;
@@ -1534,8 +1592,7 @@ export class TriggerStore {
           .where("id", "=", trigger.id)
           .execute();
         if (!trigger.watchCrashNotifiedAt) {
-          const exitPrefix =
-            input.lastExitCode !== null ? `exit ${input.lastExitCode}: ` : "";
+          const exitPrefix = input.lastExitCode !== null ? `exit ${input.lastExitCode}: ` : "";
           const rawDetail =
             input.lastError ??
             (input.stderrTail.trim() ? input.stderrTail.slice(-2_000) : "Watch exited repeatedly.");
@@ -1605,12 +1662,17 @@ export class TriggerStore {
     const row = await query.executeTakeFirst();
     if (!row) return null;
     const { anchorThreadTitle, createdByThreadTitle, ...trigger } = row;
-    const [revision, occurrences, activation] = await Promise.all([
+    const [revision, scriptRow, occurrences, activation] = await Promise.all([
       this.#database
         .selectFrom("triggerRevisions")
         .selectAll()
         .where("id", "=", trigger.currentRevisionId)
         .executeTakeFirstOrThrow(),
+      this.#database
+        .selectFrom("triggerRevisionScripts")
+        .select("script")
+        .where("revisionId", "=", trigger.currentRevisionId)
+        .executeTakeFirst(),
       this.#database
         .selectFrom("triggerOccurrences")
         .selectAll()
@@ -1695,7 +1757,7 @@ export class TriggerStore {
           .map((row) => [`${row.occurrenceId}:${row.id}`, row] as const),
       ).values(),
     ];
-    const parsed = revisionFromRow(revision);
+    const parsed = revisionFromRow(revision, scriptRow);
     return {
       activation: activation ? watchActivationFromRow(activation) : null,
       anchorThread: await readTask(this.#database, reader, trigger.anchorThreadId, ownerId),
@@ -1709,7 +1771,7 @@ export class TriggerStore {
       downstreamRunsTruncated: downstreamRunRows.length > 100,
       occurrences: occurrences.map(occurrenceFromRow),
       revision: parsed,
-      trigger: triggerFromRow(trigger, !isExecutableTriggerProgram(parsed.program)),
+      trigger: triggerFromRow(trigger, parsed.script === null),
     };
   }
   async webhookRoute(routeKey: string): Promise<{
@@ -2179,12 +2241,17 @@ export class TriggerStore {
       .where("id", "=", occurrence.triggerId)
       .executeTakeFirstOrThrow();
     await requireTriggerLaunchAuthority(this.#database, trigger);
-    const [revision, anchorThread] = await Promise.all([
+    const [revision, scriptRow, anchorThread] = await Promise.all([
       this.#database
         .selectFrom("triggerRevisions")
         .selectAll()
         .where("id", "=", occurrence.revisionId)
         .executeTakeFirstOrThrow(),
+      this.#database
+        .selectFrom("triggerRevisionScripts")
+        .select("script")
+        .where("revisionId", "=", occurrence.revisionId)
+        .executeTakeFirst(),
       this.#database
         .selectFrom("threads")
         .select(["environmentId", "id"])
@@ -2193,9 +2260,12 @@ export class TriggerStore {
     ]);
     return {
       anchorThread,
+      encryptedSecrets: trigger.encryptedSecrets ?? null,
       occurrence: occurrenceFromRow(occurrence),
-      revision: revisionFromRow(revision),
+      revision: revisionFromRow(revision, scriptRow),
+      script: scriptRow ? AutomationScriptSchema.parse(scriptRow.script) : null,
       trigger: triggerFromRow(trigger),
+      webhookBody: occurrence.webhookBody ?? null,
       agentHome: (await personalSettings(this.#database)).agentHome,
     };
   }
@@ -2529,8 +2599,14 @@ export class TriggerStore {
           .where("id", "=", trigger.id)
           .execute();
         if (final || notifyStartedFailing) {
+          const stderr = input.output.stderr.trim();
+          const base = input.output.error?.trim() ?? "";
+          const detail =
+            base && stderr && !base.includes(stderr)
+              ? `${base}\n${stderr}`
+              : base || stderr || "The script failed without an error message.";
           failureNotice = {
-            detail: input.output.error ?? "The program failed without an error message.",
+            detail,
             reason: final ? "final-occurrence-failed" : "started-failing",
           };
         }
@@ -3406,11 +3482,10 @@ async function loadDispatchContext(
   ]);
   return {
     anchorThread,
+    encryptedSecrets: trigger.encryptedSecrets ?? null,
     occurrence: occurrenceFromRow(occurrence),
-    revision: revisionFromRow(revision),
-    script: scriptRow
-      ? (scriptRow.script as import("@opensteer/triggers").AutomationScript)
-      : null,
+    revision: revisionFromRow(revision, scriptRow),
+    script: scriptRow ? AutomationScriptSchema.parse(scriptRow.script) : null,
     trigger: triggerFromRow(trigger),
     webhookBody: occurrence.webhookBody ?? null,
     agentHome: (await personalSettings(transaction)).agentHome,
@@ -3833,10 +3908,23 @@ function triggerFromRow(row: TriggerRow, needsProgramUpdate = false): Trigger {
     webhookRouteKey: row.webhookRouteKey,
   });
 }
-function revisionFromRow(row: TriggerRevisionRow): TriggerRevision {
+function revisionFromRow(
+  row: TriggerRevisionRow,
+  scriptRow: { readonly script: unknown } | null | undefined,
+): TriggerRevision {
+  const script = scriptRow ? AutomationScriptSchema.parse(scriptRow.script) : null;
+  const legacySource =
+    script === null ? StoredTriggerProgramSchema.safeParse(row.program).data?.source : undefined;
   return TriggerRevisionSchema.parse({
-    ...row,
     createdAt: row.createdAt.toISOString(),
+    createdBy: row.createdBy,
+    createdByThreadId: row.createdByThreadId,
+    id: row.id,
+    ...(legacySource !== undefined ? { legacySource } : {}),
+    ordinal: row.ordinal,
+    script,
+    source: row.source,
+    triggerId: row.triggerId,
   });
 }
 function occurrenceFromRow(row: TriggerOccurrenceRow): TriggerOccurrence {

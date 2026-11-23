@@ -1,7 +1,7 @@
 import type { RunnerConfig } from "@opensteer/config";
 import { BrowserCdpRelay } from "../browser/browser-cdp-relay.js";
 import { CredentialProxy } from "../credentials/credential-proxy.js";
-import type { ProgramEndpoints } from "./program-executor.js";
+import type { ProgramEndpoints } from "./script-executor.js";
 
 interface CapabilityPlan {
   readonly token: string;

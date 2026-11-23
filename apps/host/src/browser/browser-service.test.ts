@@ -6071,8 +6071,8 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
         id: createId("request"),
         kind: input.kind,
         mode: input.mode,
-        originatingOccurrenceId: null,
-        originatingRunId: input.originatingRunId,
+        originatingOccurrenceId: input.originatingOccurrenceId ?? null,
+        originatingRunId: input.originatingRunId ?? null,
         originatingThreadId: input.originatingThreadId,
 
         payload: input.payload,

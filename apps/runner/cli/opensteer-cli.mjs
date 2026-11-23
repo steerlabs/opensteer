@@ -123,9 +123,7 @@ async function mcpRequest(url, token, sessionId, payload, options = {}) {
       parsedError = null;
     }
     const unknown =
-      response.status >= 500 ||
-      isOutcomeUnknownPayload(parsedError) ||
-      isOutcomeUnknownText(text);
+      response.status >= 500 || isOutcomeUnknownPayload(parsedError) || isOutcomeUnknownText(text);
     throw new CliExitError(
       `Opensteer MCP HTTP ${response.status}: ${text || response.statusText}`,
       unknown ? EXIT_UNKNOWN : EXIT_REFUSED,

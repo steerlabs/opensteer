@@ -9,7 +9,7 @@ export * from "./main.js";
 export * from "./folders/agent-home.js";
 export * from "./folders/home-files.js";
 export * from "./runtime/native-fs-helper.js";
-export * from "./agent/program-executor.js";
+export * from "./agent/script-executor.js";
 export * from "./runtime/runtime.js";
 export * from "./attachments/attachment-cache.js";
 export { RunFiles } from "./attachments/run-files.js";

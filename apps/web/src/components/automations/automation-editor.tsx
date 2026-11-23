@@ -8,11 +8,7 @@ import {
   type ThreadSummary,
   type TriggerDetail,
 } from "@opensteer/client/host";
-import {
-  triggerProgramContract,
-  type TriggerProgram,
-  type TriggerSource,
-} from "@opensteer/triggers";
+import { type AutomationScript, type TriggerSource } from "@opensteer/triggers";
 import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
@@ -25,8 +21,8 @@ interface Draft {
   anchorThreadId: string;
   at: string;
   expression: string;
+  interpreter: string;
   kind: "schedule" | "webhook" | "watch";
-  language: "javascript" | "typescript";
   name: string;
   scheduleKind: "at" | "cron";
   source: string;
@@ -109,10 +105,10 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail }) {
     setPending(true);
     setError(null);
     try {
-      const program: TriggerProgram = {
-        language: draft.language,
-        source: draft.source,
-        toolContractVersion: 5,
+      const trimmedInterpreter = draft.interpreter.trim();
+      const script: AutomationScript = {
+        interpreter: trimmedInterpreter ? trimmedInterpreter.split(/\s+/u) : null,
+        text: draft.source,
       };
       await act(
         hostClient,
@@ -123,7 +119,7 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail }) {
             input: {
               expectedRevisionId: editing.revision.id,
               name: draft.name.trim(),
-              program,
+              script,
               source: sourceFrom(draft, editing),
             },
             triggerId: editing.trigger.id,
@@ -185,18 +181,16 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail }) {
             </p>
           )}
           <label className="field">
-            <span className="field__label">Language</span>
-            <select
-              className="select-input"
-              onChange={(event) => set("language", event.target.value as Draft["language"])}
-              value={draft.language}
-            >
-              <option value="typescript">TypeScript</option>
-              <option value="javascript">JavaScript</option>
-            </select>
+            <span className="field__label">Interpreter (optional, defaults to Node.js)</span>
+            <input
+              className="text-input"
+              onChange={(event) => set("interpreter", event.target.value)}
+              placeholder="python3 or /bin/bash"
+              value={draft.interpreter}
+            />
           </label>
           <label className="field">
-            <span className="field__label">Program</span>
+            <span className="field__label">Script</span>
             <textarea
               className="code-editor"
               onChange={(event) => set("source", event.target.value)}
@@ -205,10 +199,6 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail }) {
               value={draft.source}
             />
           </label>
-          <details className="automation-contract">
-            <summary>How programs run</summary>
-            <p>{triggerProgramContract}</p>
-          </details>
         </div>
       </div>
       {error ? (
@@ -333,11 +323,11 @@ function draftFrom(detail: TriggerDetail): Draft {
     anchorThreadId: detail.trigger.anchorThreadId,
     at: schedule?.kind === "at" ? toLocalDateTime(schedule.at) : defaultAt(),
     expression: schedule?.kind === "cron" ? schedule.expression : "0 9 * * *",
+    interpreter: detail.revision.script?.interpreter?.join(" ") ?? "",
     kind: detail.trigger.kind,
-    language: detail.revision.program.language,
     name: detail.trigger.name,
     scheduleKind: schedule?.kind ?? "cron",
-    source: detail.revision.program.source,
+    source: detail.revision.script?.text ?? detail.revision.legacySource ?? "",
     timezone: schedule?.kind === "cron" ? schedule.timezone : browserTimeZone(),
   };
 }

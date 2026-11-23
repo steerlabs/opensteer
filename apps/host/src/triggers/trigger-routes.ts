@@ -100,10 +100,10 @@ export async function handleTriggerCommand(
               : {
                   name: command.input.name,
                 }),
-            ...(command.input.program === undefined
+            ...(command.input.script === undefined
               ? {}
               : {
-                  program: command.input.program,
+                  script: command.input.script,
                 }),
             ...(command.input.source === undefined
               ? {}

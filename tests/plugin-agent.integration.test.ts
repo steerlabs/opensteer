@@ -440,13 +440,9 @@ async function program(
             kind: "schedule",
             schedule: { kind: "cron", expression: "0 0 * * *", timezone: "UTC" },
           },
-    program: {
-      language: "javascript",
-      source:
-        kind === "watch"
-          ? "export default async()=>new Promise(()=>{})"
-          : "export default ()=>null",
-      toolContractVersion: 5,
+    script: {
+      interpreter: null,
+      text: kind === "watch" ? "await new Promise(()=>{});" : "console.log('ok');",
     },
   });
   const common = {

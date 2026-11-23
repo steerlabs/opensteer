@@ -1,7 +1,7 @@
 import {
-  triggerProgramCompatibilityReason,
-  type TriggerProgramRunnerStore,
-} from "./trigger-program-compatibility.js";
+  automationScriptCompatibilityReason,
+  type AutomationScriptRunnerStore,
+} from "./automation-script-compatibility.js";
 import {
   OpensteerError,
   runnerAgentToolsFailure,
@@ -12,7 +12,7 @@ import type { TriggerStore } from "@opensteer/database";
 import type { RunnerIdentity, RunnerRegistry } from "@opensteer/orchestration";
 import type { WatchReconcileActivation } from "@opensteer/protocol";
 import { attemptStopStateCapability } from "@opensteer/protocol";
-import { TriggerProgramSchema, WATCH_START_RETRY_MS } from "@opensteer/triggers";
+import { WATCH_START_RETRY_MS } from "@opensteer/triggers";
 import type { BrowserService } from "../browser/browser-service.js";
 import type {
   WatchCapabilityScope,
@@ -39,7 +39,7 @@ export interface WatchServiceOptions {
   readonly onError: (error: unknown, environmentId: EnvironmentId) => void;
   readonly runners: Pick<RunnerRegistry, "identityForEnvironment" | "reconcileWatches">;
   readonly store: WatchStore;
-  readonly runnerStore: TriggerProgramRunnerStore;
+  readonly runnerStore: AutomationScriptRunnerStore;
   readonly watchBrowserTokens: Pick<WatchBrowserTokenService, "issue">;
 }
 export class WatchService {
@@ -51,7 +51,7 @@ export class WatchService {
   readonly #onError: WatchServiceOptions["onError"];
   readonly #runners: WatchServiceOptions["runners"];
   readonly #store: WatchStore;
-  readonly #runnerStore: TriggerProgramRunnerStore;
+  readonly #runnerStore: AutomationScriptRunnerStore;
   readonly #watchBrowserTokens: WatchServiceOptions["watchBrowserTokens"];
   readonly #lifetime = new AbortController();
   readonly #pending = new Map<EnvironmentId, Promise<void>>();
@@ -166,11 +166,7 @@ export class WatchService {
     const leaseExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1_000);
     const unavailableReason =
       runnerAgentToolsFailure(identity.capabilities) ??
-      (await triggerProgramCompatibilityReason(
-        this.#runnerStore,
-        environmentId,
-        TriggerProgramSchema.shape.toolContractVersion.value,
-      ));
+      (await automationScriptCompatibilityReason(this.#runnerStore, environmentId));
     const snapshot = await this.#store.reconcileWatchesForRunner({
       ...(unavailableReason !== null ? { unavailableReason } : {}),
       environmentId,

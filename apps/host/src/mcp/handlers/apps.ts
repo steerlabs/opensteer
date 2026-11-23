@@ -27,7 +27,9 @@ export function appToolHandlers(
     app_list: async (c) => ({
       apps: (
         await apps.list(
-          c.caller.kind === "connection" ? { kind: "connection", caller: c.caller } : actor(c.caller),
+          c.caller.kind === "connection"
+            ? { kind: "connection", caller: c.caller }
+            : actor(c.caller),
           c.input.query,
           c,
         )

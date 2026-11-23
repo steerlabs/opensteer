@@ -21,9 +21,10 @@ import {
   type TriggerSource,
 } from "@opensteer/triggers";
 import {
-  triggerProgramCompatibilityReason,
-  type TriggerProgramRunnerStore,
-} from "./trigger-program-compatibility.js";
+  automationScriptCompatibilityReason,
+  type AutomationScriptRunnerStore,
+} from "./automation-script-compatibility.js";
+import type { AutomationSecrets, AutomationSecretsPatch } from "./automation-secrets.js";
 import type { SignedTokenService } from "../identity/host-keys.js";
 import type { Clock } from "@opensteer/shared/clock";
 import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
@@ -35,8 +36,9 @@ interface TriggerServiceOptions {
   readonly publicUrl: URL;
   /** Live public tunnel/remote origin when Personal Remote Access is active (Y3). */
   readonly remoteOrigin?: () => Promise<string | null>;
+  readonly secrets?: AutomationSecrets;
   readonly store: TriggerStore;
-  readonly runnerStore: TriggerProgramRunnerStore;
+  readonly runnerStore: AutomationScriptRunnerStore;
   readonly threads: Pick<OpensteerStore, "readTask">;
   readonly tokens: Pick<SignedTokenService, "deriveSecret">;
 }
@@ -47,8 +49,9 @@ export class TriggerService {
   readonly #onWatchChanged: TriggerServiceOptions["onWatchChanged"];
   readonly #publicUrl: URL;
   readonly #remoteOrigin: (() => Promise<string | null>) | undefined;
+  readonly #secrets: AutomationSecrets | undefined;
   readonly #store: TriggerStore;
-  readonly #runnerStore: TriggerProgramRunnerStore;
+  readonly #runnerStore: AutomationScriptRunnerStore;
   readonly #threads: TriggerServiceOptions["threads"];
   readonly #tokens: Pick<SignedTokenService, "deriveSecret">;
   constructor(options: TriggerServiceOptions) {
@@ -58,6 +61,7 @@ export class TriggerService {
     this.#onWatchChanged = options.onWatchChanged;
     this.#publicUrl = options.publicUrl;
     this.#remoteOrigin = options.remoteOrigin;
+    this.#secrets = options.secrets;
     this.#store = options.store;
     this.#runnerStore = options.runnerStore;
     this.#threads = options.threads;
@@ -81,17 +85,16 @@ export class TriggerService {
       readonly name: string;
       readonly ownerId: UserId;
       readonly ownTask?: true | undefined;
-      readonly program: Parameters<TriggerStore["create"]>[0]["program"];
+      readonly script: Parameters<TriggerStore["create"]>[0]["script"];
       readonly source: TriggerSource;
     },
     actorThreadId: ThreadId | null,
     actorAccessMode?: ThreadAccessMode,
     actorConnectionId?: string,
   ) {
-    await this.#assertProgramCompatible(
+    await this.#assertScriptCompatible(
       input.ownerId,
       input.anchorThreadId,
-      input.program.toolContractVersion,
       actorReader(actorThreadId),
     );
     const webhookRouteKey =
@@ -106,7 +109,7 @@ export class TriggerService {
       idempotencyKey: input.idempotencyKey,
       name: input.name,
       ...(input.ownTask ? { ownTask: true } : {}),
-      program: input.program,
+      script: input.script,
       source: input.source,
       ...(webhookRouteKey
         ? {
@@ -209,10 +212,9 @@ export class TriggerService {
     actorConnectionId?: string,
   ) {
     const current = await this.get(ownerId, input.triggerId, 1, actorReader(actorThreadId));
-    await this.#assertProgramCompatible(
+    await this.#assertScriptCompatible(
       ownerId,
       current.trigger.anchorThreadId,
-      (input.program ?? current.revision.program).toolContractVersion,
       actorReader(actorThreadId),
     );
     const updated = await this.#store.update({
@@ -225,6 +227,42 @@ export class TriggerService {
     this.#onChanged?.();
     if (updated.trigger.kind === "watch") this.#onWatchChanged?.(updated.trigger.id);
     return updated;
+  }
+  async listSecretNames(ownerId: UserId, triggerId: TriggerId): Promise<readonly string[]> {
+    if (!this.#secrets) return [];
+    const sealed = await this.#store.getEncryptedSecrets(ownerId, triggerId);
+    return this.#secrets.names(triggerId, sealed);
+  }
+  async patchSecrets(
+    ownerId: UserId,
+    triggerId: TriggerId,
+    patch: AutomationSecretsPatch,
+    actorThreadId: ThreadId | null,
+    actorAccessMode?: ThreadAccessMode,
+    actorConnectionId?: string,
+  ) {
+    if (!this.#secrets) {
+      throw new OpensteerError({
+        code: "internal",
+        message: "Automation secrets vault is unavailable on this Host.",
+      });
+    }
+    const current = await this.#store.getEncryptedSecrets(ownerId, triggerId);
+    const sealed = await this.#secrets.apply(triggerId, current, patch);
+    const trigger = await this.#store.setEncryptedSecrets({
+      ...(actorAccessMode ? { actorAccessMode } : {}),
+      ...(actorConnectionId ? { actorConnectionId } : {}),
+      actorThreadId,
+      ownerId,
+      sealed,
+      triggerId,
+    });
+    this.#onChanged?.();
+    if (trigger.kind === "watch") this.#onWatchChanged?.(trigger.id);
+    return {
+      secretNames: await this.#secrets.names(triggerId, sealed?.envelope ?? null),
+      trigger,
+    };
   }
   async setStatus(
     ownerId: UserId,
@@ -381,10 +419,10 @@ export class TriggerService {
               : {
                   name: input.name,
                 }),
-            ...(input.program === undefined
+            ...(input.script === undefined
               ? {}
               : {
-                  program: input.program,
+                  script: input.script,
                 }),
             ...(input.source === undefined
               ? {}
@@ -445,10 +483,9 @@ export class TriggerService {
         );
     }
   }
-  async #assertProgramCompatible(
+  async #assertScriptCompatible(
     ownerId: UserId,
     anchorThreadId: ThreadId,
-    version: number,
     reader: TaskReader,
   ): Promise<void> {
     const anchor = await this.#threads.readTask(reader, anchorThreadId, ownerId);
@@ -457,10 +494,9 @@ export class TriggerService {
         code: "not_found",
         message: "Task not found",
       });
-    const reason = await triggerProgramCompatibilityReason(
+    const reason = await automationScriptCompatibilityReason(
       this.#runnerStore,
       anchor.environmentId,
-      version,
     );
     if (reason)
       throw new OpensteerError({

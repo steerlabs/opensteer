@@ -16,7 +16,7 @@ describe("WatchService", () => {
   it.each([
     {
       capabilities: ["agent-tools-plan-v1"] as const,
-      reason: "Update this computer to run automation programs with tool contract version 5.",
+      reason: "Update this computer to run script automations.",
     },
     {
       capabilities: [] as const,
@@ -281,7 +281,7 @@ function options(
   return {
     runnerStore: {
       getEnvironment: async () => ({ runnerId: fixture.identity.runnerId }) as never,
-      runnerCapabilities: async () => ["trigger-program-v5"],
+      runnerCapabilities: async () => ["automation-script-v1"],
     },
     browser: {
       hasBrowserProfiles: async () => false,

@@ -1497,10 +1497,9 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-lifecycle-create",
       name: "Daily work",
-      program: {
-        toolContractVersion: 5,
-        language: "typescript",
-        source: "export default async function ({ event }) { return event.payload; }",
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1519,10 +1518,9 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-lifecycle-create",
       name: "Daily work",
-      program: {
-        toolContractVersion: 5,
-        language: "typescript",
-        source: "export default async function ({ event }) { return event.payload; }",
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1628,10 +1626,10 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-webhook-create",
       name: "Git provider",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "webhook",
@@ -1706,10 +1704,10 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-backlog-create",
       name: "Busy webhook",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "webhook",
@@ -1761,10 +1759,10 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-collapse-create",
       name: "Every minute",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1826,10 +1824,10 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-cancel-create",
       name: "Cancelable webhook",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "webhook",
@@ -1940,10 +1938,10 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-rearm-create",
       name: "One shot",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1959,10 +1957,10 @@ describeStore("PostgreSQL store", (it) => {
       expectedRevisionId: created.revision.id,
       name: "One shot, renamed",
       ownerId: fixture.userId,
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => 1",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       triggerId: created.trigger.id,
     });
@@ -2012,10 +2010,10 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-authority-pause-create",
       name: "Hourly report",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -2076,10 +2074,10 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-admission-create",
       name: "Control caller",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "webhook",

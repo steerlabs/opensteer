@@ -70,8 +70,8 @@ import { ComputerAppPlatformSchema } from "@opensteer/integration-core/computer-
 import {
   TriggerExecutionOutputSchema,
   TriggerProgramEventSchema,
-  TriggerProgramSchema,
 } from "@opensteer/triggers/models";
+import { AutomationScriptSchema } from "@opensteer/triggers/script";
 import { z } from "zod";
 import { RunEgressPlanSchema } from "./access.js";
 import {
@@ -322,17 +322,8 @@ export const TriggerExecutionContextSchema = z.strictObject({
   executionGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   mcp: TriggerCapabilityPlanSchema,
   occurrenceId: TriggerOccurrenceIdSchema,
-  program: TriggerProgramSchema,
   revisionId: TriggerRevisionIdSchema,
-  script: z
-    .strictObject({
-      interpreter: z.array(z.string().min(1).max(1_024)).min(1).max(16).nullable(),
-      text: z
-        .string()
-        .min(1)
-        .max(256 * 1_024),
-    })
-    .optional(),
+  script: AutomationScriptSchema,
   secrets: z.record(z.string(), z.string()).optional(),
   triggerId: TriggerIdSchema,
   webhookBodyBase64: z

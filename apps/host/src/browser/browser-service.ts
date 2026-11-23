@@ -38,6 +38,7 @@ import {
   releaseBrowserStandardCdpLease,
   executionAccess,
   selectedGrantOf,
+  type RequestOriginInput,
   type TabRecord,
   type TabWrite,
 } from "@opensteer/database";
@@ -380,24 +381,26 @@ export interface BrowserSessionRepository {
     }[]
   >;
   readonly requests: {
-    create(input: {
-      readonly callId: string;
-      readonly kind: "browser.access";
-      readonly mode: "durable";
-      readonly originatingRunId: RunId;
-      readonly originatingThreadId: ThreadId;
-      readonly payload: Request["payload"];
-      readonly presentation: Request["presentation"];
-      readonly requestedBy: UserId;
-      readonly requiredActor: "requester";
-    }): Promise<{
+    create(
+      input: {
+        readonly callId: string;
+        readonly kind: "browser.access";
+        readonly mode: "durable";
+        readonly originatingThreadId: ThreadId;
+        readonly payload: Request["payload"];
+        readonly presentation: Request["presentation"];
+        readonly requestedBy: UserId;
+        readonly requiredActor: "requester";
+      } & RequestOriginInput,
+    ): Promise<{
       readonly replayed: boolean;
       readonly request: Request;
     }>;
-    findByCallIdentity(input: {
-      readonly callId: string;
-      readonly originatingRunId: RunId;
-    }): Promise<Request | null>;
+    findByCallIdentity(
+      input: {
+        readonly callId: string;
+      } & RequestOriginInput,
+    ): Promise<Request | null>;
     get(id: RequestId): Promise<Request | null>;
     resolveBrowserRequest(input: {
       readonly requestId: RequestId;

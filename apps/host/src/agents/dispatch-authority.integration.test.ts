@@ -227,7 +227,7 @@ describeStore("a connected agent's authority at the send", (it) => {
     const f = await storeFixture.startRunFixture("trigger-retry-ack");
     await database
       .updateTable("runners")
-      .set({ capabilities: sql`'["trigger-program-v5"]'::jsonb` })
+      .set({ capabilities: sql`'["automation-script-v1"]'::jsonb` })
       .where("id", "=", f.runnerId)
       .execute();
     const agent = await connection(store, await serveMcp(storeFixture), {
@@ -243,10 +243,9 @@ describeStore("a connected agent's authority at the send", (it) => {
       createdBy: f.userId,
       idempotencyKey: "trigger-retry-ack",
       name: "Retry ACK",
-      program: {
-        language: "javascript",
-        source: "export default async () => null",
-        toolContractVersion: 5,
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -321,7 +320,7 @@ describeStore("a connected agent's authority at the send", (it) => {
     const f = await storeFixture.startRunFixture("trigger-z4-unsent-refusal");
     await database
       .updateTable("runners")
-      .set({ capabilities: sql`'["trigger-program-v5"]'::jsonb` })
+      .set({ capabilities: sql`'["automation-script-v1"]'::jsonb` })
       .where("id", "=", f.runnerId)
       .execute();
     const { trigger } = await triggers.create({
@@ -330,10 +329,9 @@ describeStore("a connected agent's authority at the send", (it) => {
       createdBy: f.userId,
       idempotencyKey: "trigger-z4-unsent",
       name: "Z4 unsent firing",
-      program: {
-        language: "javascript",
-        source: "export default async () => ({ ok: true })",
-        toolContractVersion: 5,
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -757,7 +755,7 @@ describeStore("a connected agent's authority at the send", (it) => {
     // The Runner runs automation programs.
     await database
       .updateTable("runners")
-      .set({ capabilities: sql`capabilities || '["trigger-program-v5"]'::jsonb` })
+      .set({ capabilities: sql`capabilities || '["automation-script-v1"]'::jsonb` })
       .where("id", "=", f.fixture.runnerId as never)
       .execute();
     return { ...f, anyone, thread };
@@ -771,7 +769,7 @@ describeStore("a connected agent's authority at the send", (it) => {
         .executeTakeFirstOrThrow()
     ).originConnectionId;
   const everyMinute = {
-    program: { toolContractVersion: 5, language: "javascript", source: "export default () => {}" },
+    script: { interpreter: null, text: "console.log('tick')" },
     source: {
       kind: "schedule",
       schedule: { expression: "* * * * *", kind: "cron", timezone: "UTC" },

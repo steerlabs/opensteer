@@ -180,9 +180,9 @@ function runtimeFixture(input: {
     maxConcurrentTriggerPrograms: input.maxConcurrentTriggerPrograms,
     dataDirectory: dirname("/runner/private/harness-state"),
     privateStateDirectory: "/runner/private/harness-state",
-    programExecutor: {
+    scriptExecutor: {
       execute: async () => {
-        throw new Error("A blocked Workspace preparation must not execute a Trigger program");
+        throw new Error("A blocked Workspace preparation must not execute an automation script");
       },
     },
     projectContinuationIdentity: (identity) => identity as never,

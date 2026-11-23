@@ -940,10 +940,10 @@ describeStore("one admission for Home commands", (it) => {
       createdBy: f.userId,
       idempotencyKey: randomUUID(),
       name: "Provider",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: { kind: "webhook" },
       webhookRouteKey: routeKey,
@@ -990,10 +990,10 @@ describeStore("one admission for Home commands", (it) => {
         createdBy: f.userId,
         idempotencyKey: randomUUID(),
         name: "Daily",
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default async () => null",
+        script: {
+          interpreter: null,
+
+          text: "console.log('ok')",
         },
         source: {
           kind: "schedule",
@@ -1015,14 +1015,10 @@ describeStore("one admission for Home commands", (it) => {
           command: { idempotencyKey: randomUUID(), ...command } as Command,
         })
       ).answer;
-    const program = {
-      toolContractVersion: 5,
-      language: "javascript",
-      source: "export default async () => 1",
-    };
+    const script = { interpreter: null, text: "console.log('ok')" } as const;
     const commands = (triggerId: string) => ({
       run: { type: "trigger.run", triggerId },
-      program: { type: "trigger.update", triggerId, input: { program } },
+      program: { type: "trigger.update", triggerId, input: { script } },
       rename: { type: "trigger.update", triggerId, input: { name: "Renamed" } },
       pause: { type: "trigger.status.set", triggerId, status: "paused" },
     });

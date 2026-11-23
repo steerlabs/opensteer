@@ -283,8 +283,9 @@ export class DeviceToolHandlers {
       : undefined;
     const named = input.computerId
       ? macs.find(({ deviceId }) => deviceId === input.computerId)
-      : ((executingDeviceId ? macs.find(({ deviceId }) => deviceId === executingDeviceId) : undefined) ??
-        (macs.length === 1 ? macs[0] : undefined));
+      : ((executingDeviceId
+          ? macs.find(({ deviceId }) => deviceId === executingDeviceId)
+          : undefined) ?? (macs.length === 1 ? macs[0] : undefined));
     if (!named) {
       const phone = input.computerId
         ? phones.find(({ deviceId }) => deviceId === input.computerId)
@@ -313,7 +314,9 @@ export class DeviceToolHandlers {
         ? { originatingRunId: scope.origin.originatingRunId }
         : "originatingOccurrenceId" in scope.origin && scope.origin.originatingOccurrenceId
           ? { originatingOccurrenceId: scope.origin.originatingOccurrenceId }
-          : { originatingWatchActivationId: scope.origin.originatingWatchActivationId }),
+          : scope.origin.originatingWatchActivationId
+            ? { originatingWatchActivationId: scope.origin.originatingWatchActivationId }
+            : {}),
       ownerUserId: scope.requestedBy,
       deviceId: named.deviceId,
       threadId: scope.threadId,
@@ -359,7 +362,9 @@ export class DeviceToolHandlers {
         ? { originatingRunId: scope.origin.originatingRunId }
         : "originatingOccurrenceId" in scope.origin && scope.origin.originatingOccurrenceId
           ? { originatingOccurrenceId: scope.origin.originatingOccurrenceId }
-          : { originatingWatchActivationId: scope.origin.originatingWatchActivationId }),
+          : scope.origin.originatingWatchActivationId
+            ? { originatingWatchActivationId: scope.origin.originatingWatchActivationId }
+            : {}),
       ownerUserId: scope.requestedBy,
       deviceId: phone.deviceId,
       threadId: scope.threadId,
@@ -596,7 +601,8 @@ function computerAccessResult(
   created: Awaited<ReturnType<DeviceService["computerAppApprovals"]["requestComputerAppAccess"]>>,
   fromRun = true,
 ) {
-  if (created.status === "pending") return requestResult(created.request, created.replayed, fromRun);
+  if (created.status === "pending")
+    return requestResult(created.request, created.replayed, fromRun);
   return {
     ...immediateRequestResult(
       "computer.app.access",

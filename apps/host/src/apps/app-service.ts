@@ -123,13 +123,12 @@ export class AppService {
   ): Promise<{ appId: AppId; version: number }> {
     input = AppPublishInputSchema.parse(input);
     const actor: AppPublishActor =
-      "kind" in scopeOrActor && scopeOrActor.kind === "program"
-        ? scopeOrActor
-        : { kind: "run", claims: scopeOrActor };
+      "kind" in scopeOrActor ? scopeOrActor : { kind: "run", claims: scopeOrActor };
     const scope = actor.kind === "run" ? runScope(actor.claims) : programScope(actor.caller);
-    const publishKey =
-      actor.kind === "run" ? operationKey : `${actor.caller.key}:${operationKey}`;
-    const lockKey = input.appId ?? `${scope.runId ?? actor.caller.key}:${operationKey}`;
+    const publishKey = actor.kind === "run" ? operationKey : `${actor.caller.key}:${operationKey}`;
+    const lockKey =
+      input.appId ??
+      `${actor.kind === "run" ? actor.claims.runId : actor.caller.key}:${operationKey}`;
     return this.#locks.run(lockKey, async () => {
       await this.#admit(actor, lifetime, input.start !== undefined);
       const replay = await this.#options.apps.publication(scope.runId, publishKey);

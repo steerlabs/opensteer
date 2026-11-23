@@ -1208,10 +1208,9 @@ it("parks under a running Trigger and a live Watch with no browser, and is vetoe
       createdBy: j.task.userId,
       idempotencyKey: "pool-watch",
       name: "Pool Watch",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => new Promise(() => setInterval(() => {}, 1000))",
+      script: {
+        interpreter: null,
+        text: "await new Promise(() => setInterval(() => {}, 1000));",
       },
       source: { kind: "watch" },
     });

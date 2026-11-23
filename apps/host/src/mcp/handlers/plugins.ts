@@ -552,8 +552,7 @@ export class PluginToolHandlers {
     };
   }
   async #accountRequest(c: ToolCall<"plugin_account_request">) {
-    if (c.caller.kind === "connection") requireRun(c.caller);
-    const caller = c.caller;
+    const caller = c.caller.kind === "connection" ? requireRun(c.caller) : c.caller;
     const context = this.options.authority.admit(caller);
     await this.options.authority.assert(context, "account-request", c.input.pluginId);
     const target = {

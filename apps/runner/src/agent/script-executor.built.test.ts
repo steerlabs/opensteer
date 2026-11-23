@@ -20,25 +20,36 @@ describe("built Runner CLI path resolution (Z2)", () => {
     if (!existsSync(distMainPath)) {
       execFileSync("pnpm", ["build"], { cwd: runnerRoot, stdio: "inherit" });
     }
-    const built = (await import(pathToFileURL(distMainPath).href)) as {
-      readonly resolveAutomationCliPaths: (
-        moduleUrl?: string,
-        environment?: NodeJS.ProcessEnv,
-      ) => { readonly cliBinDirectory: string; readonly cliScriptPath: string };
+    // Load dist/main.js directly in native Node ESM (matching production and avoiding Vite
+    // transforming the multi-megabyte pre-built bundle inside the test).
+    const probeOutput = execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `const built = await import(${JSON.stringify(pathToFileURL(distMainPath).href)});
+         console.log(JSON.stringify({
+           resolved: built.resolveAutomationCliPaths(undefined, {}),
+           overridden: built.resolveAutomationCliPaths(undefined, {
+             OPENSTEER_CLI: "/app/cli/opensteer-cli.mjs",
+             OPENSTEER_CLI_BIN_DIR: "/app/bin",
+           }),
+         }));`,
+      ],
+      { encoding: "utf8" },
+    );
+    const { overridden, resolved } = JSON.parse(probeOutput.trim()) as {
+      readonly resolved: { readonly cliBinDirectory: string; readonly cliScriptPath: string };
+      readonly overridden: { readonly cliBinDirectory: string; readonly cliScriptPath: string };
     };
 
     // Call with empty env so it uses dist/main.js's OWN bundled import.meta.url.
-    const resolved = built.resolveAutomationCliPaths(undefined, {});
     expect(resolved.cliBinDirectory).toBe(join(runnerRoot, "bin"));
     expect(resolved.cliScriptPath).toBe(join(runnerRoot, "cli", "opensteer-cli.mjs"));
     await expect(access(resolved.cliBinDirectory)).resolves.toBeUndefined();
     await expect(access(resolved.cliScriptPath)).resolves.toBeUndefined();
 
     // Respects container OPENSTEER_CLI / OPENSTEER_CLI_BIN_DIR without overriding them.
-    const overridden = built.resolveAutomationCliPaths(undefined, {
-      OPENSTEER_CLI: "/app/cli/opensteer-cli.mjs",
-      OPENSTEER_CLI_BIN_DIR: "/app/bin",
-    });
     expect(overridden).toEqual({
       cliBinDirectory: "/app/bin",
       cliScriptPath: "/app/cli/opensteer-cli.mjs",

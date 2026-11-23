@@ -91,16 +91,15 @@ describe("TriggerService", () => {
           source: {
             kind: "watch",
           },
-          program: {
-            language: "javascript",
-            source: "export default () => null",
-            toolContractVersion: 5,
+          script: {
+            interpreter: null,
+            text: "console.log('watch')",
           },
         },
         null,
       ),
     ).rejects.toMatchObject({
-      message: "Update this computer to run automation programs with tool contract version 5.",
+      message: "Update this computer to run script automations.",
     });
     expect(create).not.toHaveBeenCalled();
   });
@@ -115,7 +114,7 @@ describe("TriggerService", () => {
         createdBy: ownerId,
         id: revisionId,
         ordinal: 1,
-        program: input.program,
+        script: input.script,
         source: input.source,
         triggerId,
       }),
@@ -142,7 +141,7 @@ describe("TriggerService", () => {
       },
       runnerStore: {
         getEnvironment: async () => ({ runnerId: createId("runner") }) as never,
-        runnerCapabilities: async () => ["trigger-program-v5"],
+        runnerCapabilities: async () => ["automation-script-v1"],
       },
       onOccurrenceQueued: vi.fn(),
       publicUrl: new URL("https://opensteer.example/base/"),
@@ -159,10 +158,9 @@ describe("TriggerService", () => {
         idempotencyKey: "create-webhook",
         name: "Build events",
         ownerId,
-        program: {
-          toolContractVersion: 5,
-          language: "typescript",
-          source: "export default async () => null",
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source: {
           kind: "webhook",
@@ -244,7 +242,7 @@ describe("TriggerService", () => {
       },
       runnerStore: {
         getEnvironment: async () => ({ runnerId: createId("runner") }) as never,
-        runnerCapabilities: async () => ["trigger-program-v5"],
+        runnerCapabilities: async () => ["automation-script-v1"],
       },
       onOccurrenceQueued,
       publicUrl: new URL("https://opensteer.example"),
@@ -309,11 +307,7 @@ describe("TriggerService", () => {
       threads: {} as never,
       tokens: { deriveSecret: () => "unused" },
     });
-    const paused = await service.setStatus(
-      ownerId,
-      { status: "paused", triggerId },
-      null,
-    );
+    const paused = await service.setStatus(ownerId, { status: "paused", triggerId }, null);
     expect(paused.status).toBe("paused");
     expect(onInterruptFiring).toHaveBeenCalledWith({
       environmentId,

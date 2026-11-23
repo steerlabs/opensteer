@@ -813,7 +813,16 @@ describe("fresh personal/team lineage", () => {
     const triggers = new TriggerStore(database);
     for (const saved of [savedSchedule, savedWatch]) {
       const detail = await triggers.getForOwner(saved.trigger.id, userId, 1, personTaskReader);
-      expect(detail?.revision.program).toEqual(saved.revision.program);
+      expect(detail?.revision.script).toBeNull();
+      expect(detail?.revision.legacySource).toBe(saved.revision.program.source);
+      expect(detail?.trigger.status).toBe("paused");
+      expect(
+        await database
+          .selectFrom("triggerRevisions")
+          .select("program")
+          .where("id", "=", saved.revision.id)
+          .executeTakeFirstOrThrow(),
+      ).toMatchObject({ program: saved.revision.program });
     }
     expect(
       await database
@@ -825,7 +834,7 @@ describe("fresh personal/team lineage", () => {
     expect(
       (await triggers.getForOwner(savedWatch.trigger.id, userId, 1, personTaskReader))?.activation,
     ).toMatchObject({
-      desired: "active",
+      desired: "stopped",
     });
     expect(
       (
@@ -1541,7 +1550,7 @@ it("applies 0055_automation_scripts expand-only without breaking legacy v5 rows"
       )`.execute(tx);
   });
 
-  await migrateToLatest(database);
+  await migrateToLatest(database, migrationsBefore("0056_pause_legacy_v5_automations"));
 
   // Legacy v5 automation stays untouched and active (Y16: pausing old programs lands when old runtime is removed).
   const legacyTrigger = (
@@ -1628,8 +1637,126 @@ it("applies 0055_automation_scripts expand-only without breaking legacy v5 rows"
   ).toHaveLength(1);
 
   // Fresh catalog matches upgraded catalog.
+  await migrateToLatest(database);
   const upgraded = await catalog();
   await sql`drop schema public cascade;create schema public`.execute(database);
   await migrateToLatest(database);
   expect(await catalog()).toEqual(upgraded);
+});
+
+it("applies 0056_pause_legacy_v5_automations to pause legacy v5 rows while preserving script, memory-pass, and archived rows", async () => {
+  await migrateToLatest(database, migrationsBefore("0056_pause_legacy_v5_automations"));
+  const fixture = await seedPersonalFixture(database, "/tmp/pause-legacy-v5-migration");
+  const task = await legacyTask(fixture, "Legacy pause anchor");
+
+  const legacyScheduleId = `trg_${crypto.randomUUID()}`;
+  const legacyScheduleRevId = `trv_${crypto.randomUUID()}`;
+  const legacyWebhookId = `trg_${crypto.randomUUID()}`;
+  const legacyWebhookRevId = `trv_${crypto.randomUUID()}`;
+  const legacyWatchId = `trg_${crypto.randomUUID()}`;
+  const legacyWatchRevId = `trv_${crypto.randomUUID()}`;
+  const legacyWatchActId = `twa_${crypto.randomUUID()}`;
+  const scriptScheduleId = `trg_${crypto.randomUUID()}`;
+  const scriptScheduleRevId = `trv_${crypto.randomUUID()}`;
+  const memoryPassId = `trg_${crypto.randomUUID()}`;
+  const memoryPassRevId = `trv_${crypto.randomUUID()}`;
+  const archivedLegacyId = `trg_${crypto.randomUUID()}`;
+  const archivedLegacyRevId = `trv_${crypto.randomUUID()}`;
+  const futureFireAt = new Date(Date.now() + 3_600_000);
+  const legacyProgram = {
+    language: "javascript",
+    source: "export default async function () { return { legacy: true }; }",
+    toolContractVersion: 5,
+  };
+  const scheduleSource = {
+    kind: "schedule",
+    schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+  };
+
+  await database.transaction().execute(async (tx) => {
+    await sql`insert into triggers(
+      id, anchor_thread_id, created_by, idempotency_key, request_fingerprint, name, kind, status,
+      current_revision_id, consecutive_failures, next_fire_at
+    ) values
+      (${legacyScheduleId}, ${task.id}, ${fixture.userId}, 'leg-sched', 'fp-1', 'Legacy schedule', 'schedule', 'active', ${legacyScheduleRevId}, 0, ${futureFireAt}),
+      (${legacyWebhookId}, ${task.id}, ${fixture.userId}, 'leg-hook', 'fp-2', 'Legacy webhook', 'webhook', 'active', ${legacyWebhookRevId}, 0, null),
+      (${legacyWatchId}, ${task.id}, ${fixture.userId}, 'leg-watch', 'fp-3', 'Legacy watch', 'watch', 'active', ${legacyWatchRevId}, 0, null),
+      (${scriptScheduleId}, ${task.id}, ${fixture.userId}, 'scr-sched', 'fp-4', 'Script schedule', 'schedule', 'active', ${scriptScheduleRevId}, 0, ${futureFireAt}),
+      (${archivedLegacyId}, ${task.id}, ${fixture.userId}, 'arch-leg', 'fp-6', 'Archived legacy', 'schedule', 'archived', ${archivedLegacyRevId}, 0, null)
+    `.execute(tx);
+    await sql`insert into triggers(
+      id, anchor_thread_id, created_by, idempotency_key, request_fingerprint, name, kind, status,
+      current_revision_id, consecutive_failures, next_fire_at, system_role
+    ) values (
+      ${memoryPassId}, ${task.id}, ${fixture.userId}, 'mem-pass', 'fp-5', 'Memory light pass',
+      'schedule', 'active', ${memoryPassRevId}, 0, ${futureFireAt}, 'memory-light'
+    )`.execute(tx);
+    await sql`insert into trigger_revisions(id, trigger_id, ordinal, source, program, created_by) values
+      (${legacyScheduleRevId}, ${legacyScheduleId}, 1, ${JSON.stringify(scheduleSource)}::jsonb, ${JSON.stringify(legacyProgram)}::jsonb, ${fixture.userId}),
+      (${legacyWebhookRevId}, ${legacyWebhookId}, 1, '{"kind":"webhook"}'::jsonb, ${JSON.stringify(legacyProgram)}::jsonb, ${fixture.userId}),
+      (${legacyWatchRevId}, ${legacyWatchId}, 1, '{"kind":"watch"}'::jsonb, ${JSON.stringify(legacyProgram)}::jsonb, ${fixture.userId}),
+      (${scriptScheduleRevId}, ${scriptScheduleId}, 1, ${JSON.stringify(scheduleSource)}::jsonb, ${JSON.stringify({ language: "javascript", source: "console.log('ok')", toolContractVersion: 6 })}::jsonb, ${fixture.userId}),
+      (${memoryPassRevId}, ${memoryPassId}, 1, ${JSON.stringify(scheduleSource)}::jsonb, ${JSON.stringify(legacyProgram)}::jsonb, ${fixture.userId}),
+      (${archivedLegacyRevId}, ${archivedLegacyId}, 1, ${JSON.stringify(scheduleSource)}::jsonb, ${JSON.stringify(legacyProgram)}::jsonb, ${fixture.userId})
+    `.execute(tx);
+    await sql`insert into trigger_revision_scripts(revision_id, script)
+      values (${scriptScheduleRevId}, ${JSON.stringify({ interpreter: null, text: "console.log('ok')" })}::jsonb)
+    `.execute(tx);
+    await sql`insert into trigger_watch_activations(
+      id, trigger_id, revision_id, anchor_thread_id, environment_id, created_by,
+      desired, observed, execution_generation, restart_count, consecutive_failures, stdout_tail, stderr_tail
+    ) values (
+      ${legacyWatchActId}, ${legacyWatchId}, ${legacyWatchRevId}, ${task.id}, ${fixture.environmentId}, ${fixture.userId},
+      'active', 'running', 1, 0, 0, '', ''
+    )`.execute(tx);
+  });
+
+  await migrateToLatest(database);
+
+  const triggers = new Map(
+    (
+      await sql<{
+        id: string;
+        status: string;
+        nextFireAt: Date | null;
+        pauseReason: string | null;
+        pausedBy: string | null;
+        pausedAt: Date | null;
+      }>`select id, status, next_fire_at, pause_reason, paused_by, paused_at from triggers`.execute(
+        database,
+      )
+    ).rows.map((row) => [row.id, row]),
+  );
+
+  for (const id of [legacyScheduleId, legacyWebhookId, legacyWatchId]) {
+    const row = triggers.get(id);
+    expect(row?.status).toBe("paused");
+    expect(row?.nextFireAt).toBeNull();
+    expect(row?.pauseReason).toBe("Needs an update: ask your agent");
+    expect(row?.pausedBy).toBe("system");
+    expect(row?.pausedAt).not.toBeNull();
+  }
+  const watchAct = (
+    await sql<{
+      desired: string;
+    }>`select desired from trigger_watch_activations where id = ${legacyWatchActId}`.execute(
+      database,
+    )
+  ).rows[0];
+  expect(watchAct?.desired).toBe("stopped");
+
+  // Legacy source stays readable in trigger_revisions.program for agent rewrite (T14).
+  const legacyRev = (
+    await sql<{
+      program: unknown;
+    }>`select program from trigger_revisions where id = ${legacyScheduleRevId}`.execute(database)
+  ).rows[0];
+  expect(legacyRev?.program).toEqual(legacyProgram);
+
+  // Script-based automation, memory pass, and archived legacy automation stay untouched.
+  expect(triggers.get(scriptScheduleId)?.status).toBe("active");
+  expect(triggers.get(scriptScheduleId)?.nextFireAt).not.toBeNull();
+  expect(triggers.get(memoryPassId)?.status).toBe("active");
+  expect(triggers.get(archivedLegacyId)?.status).toBe("archived");
+  expect(triggers.get(archivedLegacyId)?.pauseReason).toBeNull();
 });

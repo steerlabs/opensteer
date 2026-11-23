@@ -1333,7 +1333,7 @@ export const commandTable: CommandTable = {
       { class: "widen-self", fullAccess: true },
       { class: "widen-self", fullAccess: true, lineage: true },
     ],
-    face: (c) => (c.input.program !== undefined || c.input.source !== undefined ? 1 : 0),
+    face: (c) => (c.input.script !== undefined || c.input.source !== undefined ? 1 : 0),
     governs: (c) => resource("automation", c.triggerId),
     effect: "database",
   },

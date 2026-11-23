@@ -1423,7 +1423,9 @@ it("awaits async upstream token providers for browser-only renewals (Z6 / Findin
   const tokens: string[] = [];
   const http = createServer((request, response) => {
     tokens.push(request.headers.authorization ?? "");
-    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
+    response
+      .writeHead(200, { "content-type": "application/json" })
+      .end(JSON.stringify({ ok: true }));
   });
   http.listen(0, "127.0.0.1");
   await once(http, "listening");

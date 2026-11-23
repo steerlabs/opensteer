@@ -1,11 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  TriggerProgramSchema,
-  TriggerRevisionViewSchema,
-  triggerProgramContract,
-} from "./models.js";
+import { TriggerRevisionViewSchema, triggerProgramContract } from "./models.js";
+import { AutomationScriptSchema } from "./script.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 
@@ -22,8 +19,8 @@ describe("Trigger program contract", () => {
     // One MCP serves every tool; the integration aliases stay only for saved programs.
     expect(content).not.toContain("integrationMcp");
     expect(content).not.toContain("opensteer.integrations");
-    expect(TriggerProgramSchema.description).toBeUndefined();
-    expect(TriggerRevisionViewSchema.shape.program.description).toBeUndefined();
+    expect(AutomationScriptSchema.description).toBeUndefined();
+    expect(TriggerRevisionViewSchema.shape.script.description).toBeUndefined();
   });
 
   it("keeps the shipped watch example async-iterable and its proof rule watch-specific", () => {

@@ -1076,23 +1076,20 @@ integration.sequential("Run recovery acceptance", () => {
     const current = await start();
     const log = join(current.scratch, "occurrences");
     const releaseTick = join(current.scratch, "next-tick");
-    const program = `import {appendFileSync, existsSync} from 'node:fs';
-      export default async function () {
-        appendFileSync(${JSON.stringify(log)}, JSON.stringify({id: process.env.OPENSTEER_OCCURRENCE_ID}) + String.fromCharCode(10));
-        if (!existsSync(${JSON.stringify(releaseTick)})) await new Promise((resolve) => {
-          const poll = setInterval(() => { if (existsSync(${JSON.stringify(releaseTick)})) { clearInterval(poll); resolve(); } }, 50);
-        });
-      }`;
+    const scriptText = `import {appendFileSync, existsSync} from 'node:fs';
+      appendFileSync(${JSON.stringify(log)}, JSON.stringify({id: process.env.OPENSTEER_FIRING_ID}) + String.fromCharCode(10));
+      if (!existsSync(${JSON.stringify(releaseTick)})) await new Promise((resolve) => {
+        const poll = setInterval(() => { if (existsSync(${JSON.stringify(releaseTick)})) { clearInterval(poll); resolve(); } }, 50);
+      });`;
     const created = await current.active.api["commands.dispatch"]({
       type: "trigger.create",
       idempotencyKey: randomUUID(),
       input: {
         anchorThreadId: current.threadId,
         name: "Recovery recurring program",
-        program: {
-          language: "javascript",
-          source: program,
-          toolContractVersion: 5,
+        script: {
+          interpreter: null,
+          text: scriptText,
         },
         source: {
           kind: "schedule",
@@ -1200,13 +1197,11 @@ integration.sequential("Run recovery acceptance", () => {
       input: {
         anchorThreadId: current.threadId,
         name: "Recovery one-shot",
-        program: {
-          language: "javascript",
-          source: `import {writeFileSync} from 'node:fs'; export default async function () {
-            writeFileSync(${JSON.stringify(oneShotStarted)}, process.env.OPENSTEER_OCCURRENCE_ID);
-            await new Promise(() => { setInterval(() => {}, 1000); });
-          }`,
-          toolContractVersion: 5,
+        script: {
+          interpreter: null,
+          text: `import {writeFileSync} from 'node:fs';
+            writeFileSync(${JSON.stringify(oneShotStarted)}, process.env.OPENSTEER_FIRING_ID);
+            await new Promise(() => { setInterval(() => {}, 1000); });`,
         },
         source: {
           kind: "schedule",
@@ -1259,17 +1254,14 @@ integration.sequential("Run recovery acceptance", () => {
       input: {
         anchorThreadId: current.threadId,
         name: "Survives Host restart",
-        program: {
-          language: "javascript",
-          source: `import { existsSync, writeFileSync } from "node:fs";
-            export default async function () {
-              writeFileSync(${JSON.stringify(startedFlag)}, process.env.OPENSTEER_OCCURRENCE_ID);
-              while (!existsSync(${JSON.stringify(releaseFlag)})) {
-                await new Promise((resolve) => setTimeout(resolve, 25));
-              }
-              return { survivedHostRestart: true };
-            }`,
-          toolContractVersion: 5,
+        script: {
+          interpreter: null,
+          text: `import { existsSync, writeFileSync } from "node:fs";
+            writeFileSync(${JSON.stringify(startedFlag)}, process.env.OPENSTEER_FIRING_ID);
+            while (!existsSync(${JSON.stringify(releaseFlag)})) {
+              await new Promise((resolve) => setTimeout(resolve, 25));
+            }
+            console.log(JSON.stringify({ survivedHostRestart: true }));`,
         },
         source: {
           kind: "schedule",
@@ -1318,7 +1310,7 @@ integration.sequential("Run recovery acceptance", () => {
       .executeTakeFirstOrThrow();
     expect(settled.status).toBe("succeeded");
     expect(settled.outcome).toBe("succeeded");
-    expect(settled.result).toEqual({ survivedHostRestart: true });
+    expect(JSON.parse(settled.stdout.trim())).toEqual({ survivedHostRestart: true });
   }, 180_000);
   it("12. relaunches a watch on the next boot with generation +1 and restartCount zero", async () => {
     const current = await start();
@@ -1331,11 +1323,9 @@ integration.sequential("Run recovery acceptance", () => {
         source: {
           kind: "watch",
         },
-        program: {
-          language: "javascript",
-          source:
-            "export default async function () { await new Promise(() => { setInterval(() => {}, 1000); }); }",
-          toolContractVersion: 5,
+        script: {
+          interpreter: null,
+          text: "await new Promise(() => { setInterval(() => {}, 1000); });",
         },
       },
     });

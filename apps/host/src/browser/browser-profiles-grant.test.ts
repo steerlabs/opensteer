@@ -74,7 +74,7 @@ describe("BrowserService.hasBrowserProfiles lineage admission (Y5 / Z9)", () => 
         agentConnectionId: "acn_2",
         consentVersion: 2,
         grant: {
-          resources: [{ access: "read-write", kind: "browser-profile", profileId: otherProfile }],
+          resources: [{ kind: "browser-profile", profileId: otherProfile }],
           scope: "selected",
           tasks: true,
         },
@@ -95,7 +95,7 @@ describe("BrowserService.hasBrowserProfiles lineage admission (Y5 / Z9)", () => 
         agentConnectionId: "acn_3",
         consentVersion: 2,
         grant: {
-          resources: [{ access: "read-write", kind: "browser-profile", profileId: profileB }],
+          resources: [{ kind: "browser-profile", profileId: profileB }],
           scope: "selected",
           tasks: true,
         },

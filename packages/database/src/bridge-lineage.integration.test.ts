@@ -116,10 +116,9 @@ describeStore(
           createdBy: fixture.userId,
           idempotencyKey: key,
           name: key,
-          program: {
-            toolContractVersion: 5,
-            language: "javascript",
-            source: "export default () => {}",
+          script: {
+            interpreter: null,
+            text: "console.log('ok')",
           },
           source: {
             kind: "schedule",

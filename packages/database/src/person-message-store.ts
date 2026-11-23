@@ -171,7 +171,9 @@ export interface ProgramPersonMessageInput {
 
 /** Deterministic MessageId from (threadId, requestId) so retries are idempotent without new tables. */
 function programMessageId(threadId: ThreadId, requestId: string): MessageId {
-  const digest = createHash("sha256").update(`program-person-message|${threadId}|${requestId}`).digest();
+  const digest = createHash("sha256")
+    .update(`program-person-message|${threadId}|${requestId}`)
+    .digest();
   digest[6] = (digest[6]! & 0x0f) | 0x80;
   digest[8] = (digest[8]! & 0x3f) | 0x80;
   const hex = digest.subarray(0, 16).toString("hex");
@@ -198,8 +200,7 @@ export async function publishProgramPersonMessage(
       .where("threads.removedAt", "is", null)
       .forNoKeyUpdate("threads")
       .executeTakeFirst();
-    if (!thread)
-      throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
+    if (!thread) throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
     const existing = await transaction
       .selectFrom("messages")
       .selectAll()

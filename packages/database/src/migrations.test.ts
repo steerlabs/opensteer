@@ -18,6 +18,7 @@ import { agentGrantsMigrationName } from "./agent-grants-migration.js";
 import { agentSessionsMigrationName } from "./agent-sessions-migration.js";
 import { agentDirectoryMigrationName } from "./agent-directory-migration.js";
 import { automationScriptsMigrationName } from "./automation-scripts-migration.js";
+import { pauseLegacyV5AutomationsMigrationName } from "./pause-legacy-v5-automations-migration.js";
 it("exposes the fresh, uniquely named Host baseline and the migrations after it", async () => {
   const names = Object.keys(await migrationProvider().getMigrations());
   expect(names).toEqual([
@@ -75,6 +76,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0053_bridge_conversion",
     "0054_command_requests",
     automationScriptsMigrationName,
+    pauseLegacyV5AutomationsMigrationName,
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

@@ -1132,10 +1132,10 @@ describeStore("PostgreSQL store", (it) => {
         createdBy: fixture.userId,
         idempotencyKey: "watch-fk",
         name: "Watch FK race",
-        program: {
-          language: "javascript",
-          toolContractVersion: 5,
-          source: "export default async () => null",
+        script: {
+          interpreter: null,
+
+          text: "console.log('ok')",
         },
         source: {
           kind: "watch",

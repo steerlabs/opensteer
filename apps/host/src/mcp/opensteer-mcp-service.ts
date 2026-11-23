@@ -889,8 +889,11 @@ export class OpensteerMcpService {
               )?.triggerId;
         if (triggerId) {
           await new TriggerStore(database).recordAutomationWake({
+            ...(caller.program.kind === "watch"
+              ? { activationId: caller.program.activationId }
+              : { occurrenceId: caller.program.occurrenceId }),
+            toolName: name,
             triggerId,
-            ownerId: caller.userId,
           });
         }
       }

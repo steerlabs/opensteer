@@ -103,7 +103,9 @@ export class TriggerToolHandlers {
       if (!lineage) return true;
       return origins?.get(id) === lineage.agentConnectionId;
     };
-    const redactWebhook = <T extends { readonly id: TriggerId; readonly webhookRouteKey?: unknown }>(
+    const redactWebhook = <
+      T extends { readonly id: TriggerId; readonly webhookRouteKey?: unknown },
+    >(
       item: T,
     ): T =>
       "webhookRouteKey" in item && item.webhookRouteKey && !canSeeWebhook(item.id)
@@ -146,7 +148,7 @@ export class TriggerToolHandlers {
       await this.#assertLineage(
         caller,
         input.automationId,
-        !("action" in input) && (input.program !== undefined || input.source !== undefined),
+        !("action" in input) && (input.script !== undefined || input.source !== undefined),
       );
     else if (input.ownTask && callerLineage(caller)?.grant.scope === "selected")
       throw new OpensteerError({
@@ -162,7 +164,7 @@ export class TriggerToolHandlers {
         operation: "create",
         anchorThreadId: anchor,
         name: input.name,
-        program: input.program,
+        script: input.script,
         source: triggerSourceFromInput(input.source),
         ...(input.ownTask ? { ownTask: true } : {}),
         idempotencyKey: idempotencyKey(caller, requestId, "trigger.create"),
@@ -173,7 +175,7 @@ export class TriggerToolHandlers {
         triggerId: input.automationId,
         expectedRevisionId: input.expectedRevisionId,
         ...(input.name === undefined ? {} : { name: input.name }),
-        ...(input.program === undefined ? {} : { program: input.program }),
+        ...(input.script === undefined ? {} : { script: input.script }),
         ...(input.source === undefined ? {} : { source: triggerSourceFromInput(input.source) }),
       };
     } else {

@@ -149,10 +149,9 @@ integration.sequential("automation failure notices", () => {
         .where("id", "=", input.runnerId)
         .execute();
     }
-    const program = {
-      language: "javascript",
-      source: "export default async () => null",
-      toolContractVersion: 5,
+    const script = {
+      interpreter: null,
+      text: "console.log('ok')",
     } as const;
     function createOneShotTrigger(fixture: Fixture, suffix: string) {
       return triggers.create({
@@ -161,7 +160,7 @@ integration.sequential("automation failure notices", () => {
         createdBy: fixture.userId,
         idempotencyKey: `one-shot-${suffix}`,
         name: `Reminder ${suffix}`,
-        program,
+        script,
         source: {
           kind: "schedule",
           schedule: {
@@ -178,7 +177,7 @@ integration.sequential("automation failure notices", () => {
         createdBy: fixture.userId,
         idempotencyKey: `cron-${suffix}`,
         name: `Daily ${suffix}`,
-        program,
+        script,
         source: {
           kind: "schedule",
           schedule: {
@@ -344,7 +343,7 @@ integration.sequential("automation failure notices", () => {
       storedNotices,
       createFixture,
       enrollRunner,
-      program,
+      script,
       createOneShotTrigger,
       createCronTrigger,
       fireOneShot,
@@ -502,7 +501,7 @@ integration.sequential("automation failure notices", () => {
   it("lists each Trigger with when it runs, how it last went and where it talks", async ({
     storeFixture,
   }) => {
-    const { createFixture, triggers, program, createCronTrigger, complete, fireManual, detail } =
+    const { createFixture, triggers, script, createCronTrigger, complete, fireManual, detail } =
       storeFixture;
     const fixture = await createFixture("summary");
     const at = new Date(Date.now() + 60_000).toISOString();
@@ -512,7 +511,7 @@ integration.sequential("automation failure notices", () => {
       createdBy: fixture.userId,
       idempotencyKey: "summary-once",
       name: "Reminder summary",
-      program,
+      script,
       source: {
         kind: "schedule",
         schedule: {
@@ -955,10 +954,10 @@ integration.sequential("automation failure notices", () => {
       createdBy: fixture.userId,
       idempotencyKey: "z6-conn1",
       name: "Z6 Disconnected",
-      program: {
-        language: "javascript",
-        source: "export default async () => null",
-        toolContractVersion: 5,
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1018,10 +1017,10 @@ integration.sequential("automation failure notices", () => {
       createdBy: fixture.userId,
       idempotencyKey: "z6-conn2",
       name: "Z6 Narrowed",
-      program: {
-        language: "javascript",
-        source: "export default async () => null",
-        toolContractVersion: 5,
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1101,10 +1100,10 @@ integration.sequential("automation failure notices", () => {
       createdBy: fixture.userId,
       idempotencyKey: "z7-conn",
       name: "Z7 Connection",
-      program: {
-        language: "javascript",
-        source: "export default async () => null",
-        toolContractVersion: 5,
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1181,10 +1180,9 @@ integration.sequential("automation failure notices", () => {
         createdBy: fixture.userId,
         idempotencyKey: key,
         name,
-        program: {
-          language: "javascript",
-          source: "export default async () => ({ ok: true })",
-          toolContractVersion: 5,
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source: {
           kind: "schedule",
@@ -1344,10 +1342,9 @@ integration.sequential("automation failure notices", () => {
       createdBy: fixture.userId,
       idempotencyKey: "watch-crash-loop",
       name: "Inbox watch",
-      program: {
-        language: "javascript",
-        source: "export default async () => new Promise(() => setInterval(() => {}, 1000))",
-        toolContractVersion: 5,
+      script: {
+        interpreter: null,
+        text: "setInterval(() => {}, 1000);",
       },
       source: {
         kind: "watch",

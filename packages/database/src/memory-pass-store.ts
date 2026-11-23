@@ -19,7 +19,6 @@ import {
   memoryPassWakeText,
   TriggerSystemRoleSchema,
   type AutomationScript,
-  type TriggerProgram,
   type TriggerSource,
   type TriggerSystemRole,
 } from "@opensteer/triggers";
@@ -40,8 +39,7 @@ export async function createMemoryPass(
     readonly ownerId: UserId;
     readonly execution: import("@opensteer/core").ExecutionSelection;
     readonly systemRole: TriggerSystemRole;
-    readonly program: TriggerProgram;
-    readonly script?: AutomationScript;
+    readonly script: AutomationScript;
     readonly source: TriggerSource;
     readonly pauseReason: string | null;
   },
@@ -78,8 +76,7 @@ export async function createMemoryPass(
         createdBy: input.ownerId,
         idempotencyKey: key,
         name: created.thread.title,
-        program: input.program,
-        ...(input.script ? { script: input.script } : {}),
+        script: input.script,
         source: input.source,
       },
       {
@@ -300,13 +297,13 @@ export async function memoryPassWakeContext(
   );
   // T13: Manual run_now bypasses the 2-hour quiet skip so the person can run a memory pass on demand.
   const isManualOccurrence = occurrenceId
-    ? ((
+    ? (
         await transaction
           .selectFrom("triggerOccurrences")
           .select(sql<string | null>`event->'source'->>'kind'`.as("sourceKind"))
           .where("id", "=", occurrenceId)
           .executeTakeFirst()
-      )?.sourceKind === "manual")
+      )?.sourceKind === "manual"
     : false;
   if (
     role === "memory-light" &&

@@ -472,7 +472,7 @@ export async function readToolRecords(
   result: {
     readonly taskId?: import("@opensteer/core").ThreadId;
     readonly runId: import("@opensteer/core").RunId | null;
-    readonly messageId?: import("@opensteer/core").MessageId;
+    readonly messageId?: import("@opensteer/core").MessageId | null;
     readonly delegationId?: import("@opensteer/core").AssignmentId | null;
   },
 ) {

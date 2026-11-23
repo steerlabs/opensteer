@@ -3090,12 +3090,11 @@ function triggerCommand(environmentId: ReturnType<typeof createId<"environment">
         url: "https://host.example.test/internal/v1/mcp",
       },
       occurrenceId,
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
-      },
       revisionId,
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
+      },
       triggerId,
     },
     correlationId: CorrelationIdSchema.parse("trigger-dispatch-test"),

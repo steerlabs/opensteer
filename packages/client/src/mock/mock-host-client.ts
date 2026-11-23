@@ -7008,10 +7008,9 @@ class MockHostState {
         const created = this.createTrigger({
           anchorThreadId: ThreadIdSchema.parse(worker.id),
           name: worker.title,
-          program: {
-            language: "typescript",
-            toolContractVersion: 5,
-            source: "export default async () => null",
+          script: {
+            interpreter: null,
+            text: "console.log('memory-pass')",
           },
           source: {
             kind: "schedule",
@@ -9057,7 +9056,7 @@ class MockHostState {
       createdByThreadId: null,
       id: createId("triggerRevision"),
       ordinal: 1,
-      program: input.program,
+      script: input.script,
       source: input.source,
       triggerId,
     });
@@ -9110,7 +9109,7 @@ class MockHostState {
     if (
       record.trigger.systemRole &&
       (input.name !== undefined ||
-        input.program !== undefined ||
+        input.script !== undefined ||
         (input.source !== undefined &&
           (input.source.kind !== "schedule" ||
             input.source.schedule.kind !== "cron" ||
@@ -9134,7 +9133,7 @@ class MockHostState {
       createdByThreadId: null,
       id: createId("triggerRevision"),
       ordinal: record.revision.ordinal + 1,
-      program: input.program ?? record.revision.program,
+      script: input.script ?? record.revision.script,
       source,
       triggerId,
     });
@@ -9142,7 +9141,7 @@ class MockHostState {
     // one-time instant stays elapsed.
     const trigger = TriggerSchema.parse({
       ...record.trigger,
-      ...(input.program === undefined && input.source === undefined
+      ...(input.script === undefined && input.source === undefined
         ? {}
         : { consecutiveFailures: 0 }),
       currentRevisionId: revision.id,

@@ -29,13 +29,11 @@ describe("WatchSupervisor", () => {
     const root = await mkdtemp(join(tmpdir(), "opensteer-watch-test-"));
     roots.push(root);
     const workspace = join(root, "workspace");
-    const program = {
-      language: "javascript",
-      // The program prints the token it holds and keeps calling its tools with
-      // it; the Host side records what reached it.
-      source:
-        'export default async ({ opensteer }) => { console.log("holds:" + opensteer.capabilities().mcp.token); await new Promise(() => setInterval(() => { const { mcp } = opensteer.capabilities(); void fetch(mcp.url, { body: "{}", headers: { accept: "application/json, text/event-stream", authorization: "Bearer " + mcp.token, "content-type": "application/json" }, method: "POST" }).catch(() => undefined); }, 30)); }',
-      toolContractVersion: 5,
+    const script = {
+      interpreter: null,
+      // The script prints the proxy token it holds and keeps calling its MCP endpoint with it;
+      // the Host side records what reached it.
+      text: 'console.log("holds:" + process.env.OPENSTEER_MCP_TOKEN); setInterval(() => { void fetch(process.env.OPENSTEER_MCP_URL, { body: "{}", headers: { accept: "application/json, text/event-stream", authorization: "Bearer " + process.env.OPENSTEER_MCP_TOKEN, "content-type": "application/json" }, method: "POST" }).catch(() => undefined); }, 30);',
     } as const;
     let fetchCount = 0;
     const toolAuthorizations: string[] = [];
@@ -56,9 +54,9 @@ describe("WatchSupervisor", () => {
         return;
       }
       fetchCount += 1;
-      expect(request.url).toMatch(/^\/internal\/v1\/triggers\/revisions\/trv_/u);
+      expect(request.url).toMatch(/^\/internal\/v1\/triggers\/revisions\/trv_[^/]+\/script$/u);
       expect(request.headers.authorization).toBe("Bearer control-token");
-      response.end(JSON.stringify(program));
+      response.end(JSON.stringify({ script, secrets: {} }));
     });
     await new Promise<void>((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
     const address = server.address();
@@ -124,7 +122,6 @@ describe("WatchSupervisor", () => {
               anchorThreadId,
               capabilities: {
                 browserCdp: null,
-
                 mcp: { expiresAt, token: controlToken, url: baseUrl },
               },
               executionGeneration,
@@ -153,14 +150,14 @@ describe("WatchSupervisor", () => {
       expect(supervisor.activeActivationIds()).toEqual([activationId]);
       await expect(access(staleWorkspaceProgram)).resolves.toBeUndefined();
       await expect(access(staleExecutionRoot)).rejects.toMatchObject({ code: "ENOENT" });
-      const cachePath = join(root, "private", "watches", "program-cache-v2", `${revisionId}.json`);
+      const cachePath = join(root, "private", "watches", "script-cache-v1", `${revisionId}.json`);
       await expect(access(legacyCachePath)).rejects.toMatchObject({ code: "ENOENT" });
       await expect(access(cachePath)).resolves.toBeUndefined();
-      await expect(readFile(cachePath, "utf8")).resolves.toBe(JSON.stringify(program));
+      await expect(readFile(cachePath, "utf8")).resolves.toBe(
+        JSON.stringify({ hasSecrets: false, script }),
+      );
 
-      // Expiry is tested only after the watch has proved it is running. A
-      // short lease on the first reconcile can expire while a loaded machine
-      // is still preparing the workspace and spawning Node.
+      // Expiry is tested only after the watch has proved it is running.
       await supervisor.reconcile(command(2, true, new Date(Date.now() + 350).toISOString()), sink);
       await vi.waitFor(
         () => {
@@ -200,7 +197,7 @@ describe("WatchSupervisor", () => {
           ),
           sink,
         );
-        // The renewed Host token reaches the Host behind the program's back.
+        // The renewed Host token reaches the Host behind the script's back.
         expect(toolAuthorizations.at(-1)).toBe("Bearer control-token-2");
       });
       const status = messages.findLast(
@@ -232,17 +229,41 @@ describe("WatchSupervisor", () => {
     }
   });
 
+  it("injects watch secrets as OPENSTEER_SECRET_* without ever writing them to disk cache (Y1/Z10)", async () => {
+    const fixture = await watchHarness(
+      'console.log("secret:" + process.env.OPENSTEER_SECRET_IMAP_PASS); setInterval(() => {}, 1000);',
+      undefined,
+      undefined,
+      { IMAP_PASS: "s3cr3t-value" },
+    );
+    try {
+      await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
+      let gen = 2;
+      await vi.waitFor(async () => {
+        await fixture.supervisor.reconcile(fixture.command(gen++), fixture.sink);
+        expect(
+          fixture.messages.findLast(
+            (message) => message.type === "runner.watch-status" && message.observed === "running",
+          ),
+        ).toMatchObject({ stdoutTail: expect.stringContaining("secret:s3cr3t-value") });
+      });
+      const cached = await readFile(fixture.cachePath, "utf8");
+      expect(cached).not.toContain("s3cr3t-value");
+      expect(JSON.parse(cached)).toMatchObject({ hasSecrets: true });
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("renews an expiring watch token on demand via sink.renewProxyToken without expiring the watch", async () => {
     const root = await mkdtemp(join(tmpdir(), "opensteer-watch-renew-"));
     roots.push(root);
     const workspace = join(root, "workspace");
     await mkdir(workspace, { recursive: true });
     const toolAuthorizations: string[] = [];
-    const program = {
-      language: "javascript",
-      source:
-        'export default async ({ opensteer }) => { await new Promise(() => setInterval(() => { const { mcp } = opensteer.capabilities(); void fetch(mcp.url, { body: "{}", headers: { accept: "application/json, text/event-stream", authorization: "Bearer " + mcp.token, "content-type": "application/json" }, method: "POST" }).catch(() => undefined); }, 30)); }',
-      toolContractVersion: 5,
+    const script = {
+      interpreter: null,
+      text: 'setInterval(() => { void fetch(process.env.OPENSTEER_MCP_URL, { body: "{}", headers: { accept: "application/json, text/event-stream", authorization: "Bearer " + process.env.OPENSTEER_MCP_TOKEN, "content-type": "application/json" }, method: "POST" }).catch(() => undefined); }, 30);',
     } as const;
     const server = createServer((request, response) => {
       if (
@@ -260,7 +281,7 @@ describe("WatchSupervisor", () => {
         response.end("{}");
         return;
       }
-      response.end(JSON.stringify(program));
+      response.end(JSON.stringify({ script, secrets: {} }));
     });
     await new Promise<void>((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
     const address = server.address();
@@ -359,7 +380,7 @@ describe("WatchSupervisor", () => {
 
   it("withholds the stop receipt when containment cannot be verified", async () => {
     let proved = false;
-    const fixture = await watchHarness("export default async () => {};", undefined, async () =>
+    const fixture = await watchHarness("setInterval(() => {}, 1000);", undefined, async () =>
       proved ? "proven" : "unverifiable",
     );
     try {
@@ -379,9 +400,7 @@ describe("WatchSupervisor", () => {
   });
 
   it("stops and drains a running watch when its Host connection is lost, then reconnects", async () => {
-    const fixture = await watchHarness(
-      'export default async () => { await new Promise(() => setInterval(() => console.log("tick"), 20)); }',
-    );
+    const fixture = await watchHarness('setInterval(() => console.log("tick"), 20);');
     try {
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
       await vi.waitFor(() => expect(fixture.runningReports()).toHaveLength(1));
@@ -405,7 +424,7 @@ describe("WatchSupervisor", () => {
   });
 
   it("answers never seen for a stamped Watch whose reconcile did not arrive", async () => {
-    const fixture = await watchHarness("export default async () => {};");
+    const fixture = await watchHarness("setInterval(() => {}, 1000);");
     try {
       await expect(
         fixture.supervisor.stopAttempt(fixture.activationId, 1, fixture.sink),
@@ -421,9 +440,9 @@ describe("WatchSupervisor", () => {
   });
 
   it.each([
-    ["resolves", "export default async () => undefined"],
-    ["throws", 'export default async () => { throw new Error("watch failed"); }'],
-  ])("restarts a watch that %s until it reaches the pause threshold", async (_name, source) => {
+    ["exits cleanly", "process.exit(0);"],
+    ["throws", 'throw new Error("watch failed");'],
+  ])("restarts a watch that %s and counts restarts", async (_name, source) => {
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     const fixture = await watchHarness(source);
     try {
@@ -448,7 +467,7 @@ describe("WatchSupervisor", () => {
   });
 
   it("waits for a missing Agent home without counting it as a crash", async () => {
-    const fixture = await watchHarness("export default async () => {};", async () => {
+    const fixture = await watchHarness("setInterval(() => {}, 1000);", async () => {
       throw new Error("Agent home /missing is missing");
     });
     try {
@@ -469,29 +488,13 @@ describe("WatchSupervisor", () => {
     }
   });
 
-  it("resolves relative modules and packages from the Workspace", async () => {
+  it("runs with cwd set to Agent home and can read files there", async () => {
     const fixture = await watchHarness(`
-      import { helper } from "./helper.js";
-      import packageValue from "watch-fixture-package";
-      export default async () => {
-        console.log(helper + ":" + packageValue);
-        await new Promise(() => setInterval(() => {}, 1_000));
-      }
+      import { readFileSync } from "node:fs";
+      console.log(readFileSync("watch-marker.txt", "utf8").trim());
+      setInterval(() => {}, 1_000);
     `);
-    await mkdir(join(fixture.workspace, "node_modules", "watch-fixture-package"), {
-      recursive: true,
-    });
-    await Promise.all([
-      writeFile(join(fixture.workspace, "helper.js"), 'export const helper = "relative";\n'),
-      writeFile(
-        join(fixture.workspace, "node_modules", "watch-fixture-package", "package.json"),
-        JSON.stringify({ exports: "./index.js", name: "watch-fixture-package", type: "module" }),
-      ),
-      writeFile(
-        join(fixture.workspace, "node_modules", "watch-fixture-package", "index.js"),
-        'export default "package";\n',
-      ),
-    ]);
+    await writeFile(join(fixture.workspace, "watch-marker.txt"), "from-agent-home\n");
     try {
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
       let reconcileGeneration = 2;
@@ -501,7 +504,7 @@ describe("WatchSupervisor", () => {
           fixture.messages.findLast(
             (message) => message.type === "runner.watch-status" && message.observed === "running",
           ),
-        ).toMatchObject({ stdoutTail: expect.stringContaining("relative:package") });
+        ).toMatchObject({ stdoutTail: expect.stringContaining("from-agent-home") });
       });
     } finally {
       await fixture.close();
@@ -510,14 +513,10 @@ describe("WatchSupervisor", () => {
 
   it("terminates orphaned processes between restarts when a watch process exits (Y5)", async () => {
     const terminated: string[] = [];
-    const fixture = await watchHarness(
-      `export default async () => { process.exit(1); }`,
-      undefined,
-      async (activationId) => {
-        terminated.push(activationId);
-        return "proven";
-      },
-    );
+    const fixture = await watchHarness("process.exit(1);", undefined, async (activationId) => {
+      terminated.push(activationId);
+      return "proven";
+    });
     try {
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
       await vi.waitFor(() => {
@@ -539,12 +538,14 @@ describe("WatchSupervisor", () => {
 });
 
 async function watchHarness(
-  source: string,
+  text: string,
   prepare?: AgentHomeAccess["prepare"],
   terminate: import("./watch-supervisor.js").WatchSupervisorOptions["terminate"] = async () =>
     "proven",
+  secrets: Readonly<Record<string, string>> = {},
 ): Promise<{
   readonly activationId: ReturnType<typeof createId<"triggerWatchActivation">>;
+  readonly cachePath: string;
   readonly close: () => Promise<void>;
   readonly command: (
     reconcileGeneration: number,
@@ -559,10 +560,10 @@ async function watchHarness(
   const root = await mkdtemp(join(tmpdir(), "opensteer-watch-harness-"));
   const workspace = join(root, "workspace");
   await mkdir(workspace, { recursive: true });
-  const program = { language: "javascript", source, toolContractVersion: 5 } as const;
+  const script = { interpreter: null, text } as const;
   const server = createServer((_request, response) => {
     response.setHeader("content-type", "application/json");
-    response.end(JSON.stringify(program));
+    response.end(JSON.stringify({ script, secrets }));
   });
   await new Promise<void>((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
   const address = server.address();
@@ -606,7 +607,6 @@ async function watchHarness(
         anchorThreadId,
         capabilities: {
           browserCdp: null,
-
           mcp: { expiresAt, token: "control-token", url: baseUrl },
         },
         executionGeneration,
@@ -620,6 +620,7 @@ async function watchHarness(
   });
   return {
     activationId,
+    cachePath: join(root, "private", "watches", "script-cache-v1", `${revisionId}.json`),
     close: async () => {
       await supervisor.close();
       await new Promise<void>((resolvePromise, reject) =>

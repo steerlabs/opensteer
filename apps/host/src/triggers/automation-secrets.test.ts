@@ -57,9 +57,7 @@ describe("AutomationSecrets", () => {
 
     await expect(secrets.values(triggerB, sealed!.envelope)).rejects.toThrow();
 
-    await expect(
-      secrets.apply(triggerA, null, { set: { "BAD-NAME": "nope" } }),
-    ).rejects.toThrow();
+    await expect(secrets.apply(triggerA, null, { set: { "BAD-NAME": "nope" } })).rejects.toThrow();
     await expect(
       secrets.apply(triggerA, sealed!.envelope, { set: { my_key: "collision" } }),
     ).rejects.toThrow(/already exists/iu);

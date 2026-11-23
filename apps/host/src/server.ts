@@ -328,7 +328,7 @@ import type { TriggerControlTokenService } from "./triggers/trigger-control-serv
 import { createTriggerRpcHandlers, registerTriggerRoutes } from "./triggers/trigger-routes.js";
 import type { TriggerService } from "./triggers/trigger-service.js";
 import type { WatchCapabilityTokenService } from "./triggers/watch-capability.js";
-import type { WatchProgramService } from "./triggers/watch-program-service.js";
+import type { WatchScriptService } from "./triggers/watch-script-service.js";
 
 export { hostInternalRoutePatterns } from "./server/internal-routes.js";
 
@@ -501,7 +501,7 @@ export interface HostServerDependencies {
   readonly triggers: {
     readonly controlTokens: TriggerControlTokenService;
     readonly service: TriggerService;
-    readonly watchPrograms: WatchProgramService;
+    readonly watchScripts: WatchScriptService;
     readonly watchBrowserTokens: WatchCapabilityTokenService<"opensteer-watch-browser-cdp">;
   };
 }
@@ -2853,12 +2853,12 @@ export async function createHostServer(
       .send(file.stream);
   });
 
-  app.get(hostInternalRoutePaths.triggerRevisionProgram, async (request, reply) => {
+  app.get(hostInternalRoutePaths.triggerRevisionScript, async (request, reply) => {
     const token = requireBearerToken(request);
     const params = z.strictObject({ revisionId: TriggerRevisionIdSchema }).parse(request.params);
     return reply
-      .header("cache-control", "private, immutable")
-      .send(await dependencies.triggers.watchPrograms.get(token, params.revisionId));
+      .header("cache-control", "no-store")
+      .send(await dependencies.triggers.watchScripts.get(token, params.revisionId));
   });
 
   app.route({

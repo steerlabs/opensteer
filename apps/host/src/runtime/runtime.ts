@@ -22,7 +22,7 @@ import { shadowRunsTouched } from "../browser/shadow-host.js";
 import { createReturnHintRefresh } from "./personal-return-hints.js";
 import { withUpgradeHeartbeat } from "./upgrade-heartbeat.js";
 import { RequestDeadlines, settleEach } from "../agents/request-deadlines.js";
-import { harnessUsageLimitFailureCode, isLoopbackHostname } from "@opensteer/core";
+import { createId, harnessUsageLimitFailureCode, isLoopbackHostname } from "@opensteer/core";
 import { pluginCategoryResources, type PersonalResourceKind } from "@opensteer/protocol/resources";
 import type { PluginChange } from "@opensteer/protocol";
 import { resolvePublicAddress } from "@opensteer/access";
@@ -269,7 +269,8 @@ import {
   WatchCapabilityTokenService,
   WatchControlTokenService,
 } from "../triggers/watch-capability.js";
-import { WatchProgramService } from "../triggers/watch-program-service.js";
+import { AutomationSecrets } from "../triggers/automation-secrets.js";
+import { WatchScriptService } from "../triggers/watch-script-service.js";
 import { WatchService } from "../triggers/watch-service.js";
 import { withDevelopmentDatabaseReset } from "./development-database.js";
 import { LocalBootstrapService } from "./local-bootstrap.js";
@@ -2911,7 +2912,9 @@ export async function createHostRuntime(
 
       onError: reportThreadNamingError,
     });
+    const automationSecrets = new AutomationSecrets(integrationVault);
     const dispatcher = new HostCommandDispatcher({
+      automationSecrets,
       catalogs: harnessCatalogs,
       runnerRegistrationPending: (environmentId) => {
         const identity = runners.identityForEnvironment(environmentId);
@@ -3010,6 +3013,7 @@ export async function createHostRuntime(
     });
     const triggers = new TriggerService({
       runnerStore: store,
+      secrets: automationSecrets,
       onChanged: () => realtime.publishTriggersChanged(),
       onInterruptFiring: (firing) => {
         const identity = runners.identityForEnvironment(firing.environmentId);
@@ -3713,7 +3717,8 @@ export async function createHostRuntime(
           controlTokens: triggerControlTokens,
           service: triggers,
           watchBrowserTokens,
-          watchPrograms: new WatchProgramService({
+          watchScripts: new WatchScriptService({
+            secrets: automationSecrets,
             store: triggerStore,
             tokens: watchControlTokens,
           }),

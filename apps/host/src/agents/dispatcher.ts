@@ -68,8 +68,9 @@ import type { PluginPackagesTokenService } from "../local-servers/plugin-package
 import type { EgressService } from "../server/egress-service.js";
 import { computeMachineAccess } from "../shell/machine-access-run-context.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
-import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
-import { isExecutableTriggerProgram, TRIGGER_PROGRAM_VERSION_REFUSAL } from "@opensteer/triggers";
+import { automationScriptCompatibilityReason } from "../triggers/automation-script-compatibility.js";
+import type { AutomationSecrets } from "../triggers/automation-secrets.js";
+import { TRIGGER_PROGRAM_UPDATE_REASON } from "@opensteer/triggers";
 import type { RunToolTokenService } from "./run-tool-tokens.js";
 import {
   harnessInspectionDefinition,
@@ -162,6 +163,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #executionNow: () => number;
   readonly #store: OpensteerStore;
   readonly #catalogs: HarnessCatalogRecorder;
+  readonly #automationSecrets: Pick<AutomationSecrets, "values"> | undefined;
   readonly #triggerControlTokens: TriggerControlTokenService;
   readonly #triggers: TriggerStore;
   readonly #dispatchingTriggers = new Map<
@@ -205,9 +207,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly onRunAdmitted?: (threadId: ThreadId) => void;
     readonly store: OpensteerStore;
     readonly catalogs?: HarnessCatalogRecorder;
+    readonly automationSecrets?: Pick<AutomationSecrets, "values">;
     readonly triggerControlTokens: TriggerControlTokenService;
     readonly triggers: TriggerStore;
   }) {
+    this.#automationSecrets = options.automationSecrets;
     this.#attachmentRunTokens = options.attachmentRunTokens;
     this.#attachments = options.attachments;
     this.#requestResponseVault = options.requestResponseVault;
@@ -880,10 +884,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       }
     };
     const initial = await heldIfChatWaits(() => this.#triggers.loadDispatchContext(command.id));
-    const incompatibility = await triggerProgramCompatibilityReason(
+    if (!initial.script) {
+      throw new CommandDispatchError(TRIGGER_PROGRAM_UPDATE_REASON, "failed");
+    }
+    const incompatibility = await automationScriptCompatibilityReason(
       this.#store,
       initial.anchorThread.environmentId,
-      initial.revision.program.toolContractVersion,
     );
     if (incompatibility) throw new CommandDispatchError(incompatibility, "failed");
     const toolsFailure = runnerAgentToolsFailure(identity.capabilities);
@@ -911,12 +917,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             this.#triggers.recordOccurrenceNotAdmitted(context.occurrence.id, executionGeneration)
         : undefined;
       this.#onTriggerChanged();
-      const program = context.revision.program;
-      if (!isExecutableTriggerProgram(program)) {
+      const script = context.script;
+      if (!script) {
         await notAdmitted?.();
-        throw new CommandDispatchError(TRIGGER_PROGRAM_VERSION_REFUSAL, "failed");
+        throw new CommandDispatchError(TRIGGER_PROGRAM_UPDATE_REASON, "failed");
       }
-      const { capabilityToken, hasBrowser } = await (async () => {
+      const { capabilityToken, hasBrowser, secrets } = await (async () => {
         try {
           const capabilityToken = this.#triggerControlTokens.issue({
             environmentId: context.anchorThread.environmentId,
@@ -926,14 +932,19 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
             threadId: context.anchorThread.id,
-            toolContractVersion: program.toolContractVersion,
+            toolContractVersion: 5,
           });
-          const hasBrowser = await this.#browser.hasBrowserProfiles(
-            context.trigger.createdBy,
-            `trigger:${context.occurrence.id}`,
-          );
+          const [hasBrowser, secrets] = await Promise.all([
+            this.#browser.hasBrowserProfiles(
+              context.trigger.createdBy,
+              `trigger:${context.occurrence.id}`,
+            ),
+            context.encryptedSecrets && this.#automationSecrets
+              ? this.#automationSecrets.values(context.trigger.id, context.encryptedSecrets)
+              : Promise.resolve<Readonly<Record<string, string>>>({}),
+          ]);
           signal.throwIfAborted();
-          return { capabilityToken, hasBrowser };
+          return { capabilityToken, hasBrowser, secrets };
         } catch (error) {
           await notAdmitted?.();
           throw error;
@@ -962,9 +973,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             url: this.#agentToolsUrl,
           },
           occurrenceId: context.occurrence.id,
-          program,
           revisionId: context.revision.id,
-          ...(context.script ? { script: context.script } : {}),
+          script,
+          ...(Object.keys(secrets).length > 0 ? { secrets: { ...secrets } } : {}),
           triggerId: context.trigger.id,
           ...(context.webhookBody
             ? { webhookBodyBase64: context.webhookBody.toString("base64") }

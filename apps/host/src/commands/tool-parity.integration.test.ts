@@ -128,7 +128,7 @@ it("records what today's tools let each caller do, and the door answers the same
     await host.store.database
       .updateTable("runners")
       .set({
-        capabilities: sql`(select jsonb_agg(distinct value) from jsonb_array_elements_text(capabilities || '["trigger-program-v5"]'::jsonb))`,
+        capabilities: sql`(select jsonb_agg(distinct value) from jsonb_array_elements_text(capabilities || '["automation-script-v1"]'::jsonb))`,
       } as never)
       .where("id", "=", machine.runnerId)
       .execute();
@@ -406,10 +406,9 @@ it("records what today's tools let each caller do, and the door answers the same
         args: (c) => ({
           taskId: callers[c].task,
           name: "Parity reminder",
-          program: {
-            language: "javascript",
-            source: "export default async () => null",
-            toolContractVersion: 5,
+          script: {
+            interpreter: null,
+            text: "console.log('ok')",
           },
           source: { kind: "schedule", cron: "0 9 * * *", timezone: "UTC" },
         }),
@@ -434,10 +433,9 @@ it("records what today's tools let each caller do, and the door answers the same
           input: {
             anchorThreadId: threadId,
             name: "Person's reminder",
-            program: {
-              language: "javascript",
-              source: "export default async () => null",
-              toolContractVersion: 5,
+            script: {
+              interpreter: null,
+              text: "console.log('ok')",
             },
             source: {
               kind: "schedule",
@@ -485,24 +483,23 @@ it("records what today's tools let each caller do, and the door answers the same
         }),
       },
       {
-        name: "trigger.update (program)",
+        name: "trigger.update (script)",
         tool: "opensteer_automation_update",
         args: async (c) => {
-          const made = await automationFor("trigger.update (program)", c);
+          const made = await automationFor("trigger.update (script)", c);
           return {
             automationId: made.id,
             expectedRevisionId: made.revision,
-            program: {
-              language: "javascript",
-              source: "export default async () => 1",
-              toolContractVersion: 5,
+            script: {
+              interpreter: null,
+              text: "console.log(1)",
             },
           };
         },
         command: (c) => ({
           type: "trigger.update",
-          triggerId: automations["trigger.update (program)"]?.[c]?.id,
-          input: { program: {} },
+          triggerId: automations["trigger.update (script)"]?.[c]?.id,
+          input: { script: {} },
         }),
       },
       control("trigger.status.set (pause)", "pause", "trigger.status.set", { status: "paused" }),
