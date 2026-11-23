@@ -578,7 +578,7 @@ assert(JSON.stringify(await page.locator('#multi').selectOption([]))==='[]','mul
 
 acceptance(
   "sleep-audio",
-  "native frame media and Web Audio keep a server tab awake until playback stops",
+  "native frame media and Web Audio keep a server tab awake until playback stops, and audio a minute after it was last heard",
   async (kit) => {
     const page = kit.ledger.binding(kit.surfaceId)!.page;
     await kit.read(`(async () => {
@@ -637,6 +637,12 @@ acceptance(
     expect(await page.keepAwake?.()).toBe("media");
     expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(false);
     await kit.read(`document.querySelector('#audio-frame').contentWindow.testMedia.pause();true`);
+    // TS16: as desktop Chrome (kRecentlyAudible), a minute after it was last heard.
+    expect(await page.keepAwake?.()).toBe("recently-audible");
+    expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(false);
+    await kit.read(
+      `(() => { const frame = document.querySelector('#audio-frame').contentWindow; const now = frame.Date.now(); frame.Date.now = () => now + 61_000; return true; })()`,
+    );
     expect(await page.keepAwake?.()).toBeNull();
     expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(true);
     await kit.ledger.wake(kit.surfaceId);
