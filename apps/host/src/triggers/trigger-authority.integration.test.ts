@@ -805,6 +805,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     await triggerStore.completeExecution({
       executionGeneration: runningOwn.executionGeneration,
       output: {
+        completedAt: new Date().toISOString(),
         error: null,
         exitCode: 0,
         occurrenceId: runningOwn.occurrenceId,

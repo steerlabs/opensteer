@@ -831,7 +831,12 @@ describeStore("a connected agent's authority at the send", (it) => {
       },
     });
     // Held: nothing created, nothing moved, and nothing changed for the list to read again.
-    expect(claimed).toEqual({ occurrences: [], failures: [], changed: false });
+    expect(claimed).toEqual({
+      occurrences: [],
+      failures: [],
+      runningFirings: [],
+      changed: false,
+    });
     expect(
       await database
         .selectFrom("triggers")
@@ -898,7 +903,12 @@ describeStore("a connected agent's authority at the send", (it) => {
       trigger: { status: "active", pauseReason: null, nextFireAt: at },
       occurrences: 0,
     });
-    expect(claimed).toEqual({ occurrences: [], failures: [], changed: false });
+    expect(claimed).toEqual({
+      occurrences: [],
+      failures: [],
+      runningFirings: [],
+      changed: false,
+    });
   });
 
   it("holds, never reports a failure, when its chat starts waiting just before the occurrence is recorded", async ({
@@ -908,7 +918,12 @@ describeStore("a connected agent's authority at the send", (it) => {
     const claimed = await triggers.claimDueSchedules(new Date(), 64, {
       beforeEnqueue: () => health("needs-attention"),
     });
-    expect(claimed).toEqual({ occurrences: [], failures: [], changed: false });
+    expect(claimed).toEqual({
+      occurrences: [],
+      failures: [],
+      runningFirings: [],
+      changed: false,
+    });
     expect(await standing()).toEqual({
       trigger: { status: "active", pauseReason: null, nextFireAt: at },
       occurrences: 0,
@@ -1149,7 +1164,7 @@ describeStore("a connected agent's authority at the send", (it) => {
       );
     expect(failure).toMatchObject({
       disposition: "failed",
-      message: "Update this computer to run automation programs with tool contract version 5.",
+      message: "Update this computer to run script automations.",
     });
     // Disconnecting the chat changes nothing of it.
     await new AgentConnectionStore(database).revoke(fixture.userId, bridgeId!);
