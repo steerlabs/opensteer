@@ -18,14 +18,10 @@ export const cursorPluginDirectoryName = "opensteer";
 
 export const cursorAgentToolsServerName = "opensteer";
 
-/** What `beforeMCPExecution` calls our server. */
+/** What Cursor calls our server in a tool's id. */
 export function cursorMcpServerIdentifier(serverName: string): string {
   return `plugin-${cursorPluginDirectoryName}-${serverName}`;
 }
-
-export const cursorOpensteerMcpServerIdentifiers: readonly string[] = [
-  cursorMcpServerIdentifier(cursorAgentToolsServerName),
-];
 
 /**
  * Cursor's hook events, as the gate for one access mode.
@@ -42,16 +38,17 @@ export const cursorOpensteerMcpServerIdentifiers: readonly string[] = [
  * the one the driver was written against, so a mutating tool Cursor adds later
  * must reach a person rather than run unannounced — which is why both gated
  * modes install it and the driver answers by name (`cursorPreToolUseDecision`)
- * rather than by omission. `beforeMCPExecution` gates other people's MCP
- * servers; Opensteer's own server is always allowed, exactly as for Codex.
+ * rather than by omission. MCP tools are not gated: Opensteer's own are
+ * decided by the Home, and what the person's own servers may do is their
+ * Cursor configuration's to say, in their own task, as for Codex and Claude Code.
  */
-export type CursorHookEvent = "beforeShellExecution" | "beforeMCPExecution" | "preToolUse";
+export type CursorHookEvent = "beforeShellExecution" | "preToolUse";
 
 export function cursorAccessModeHooks(accessMode: ThreadAccessMode): readonly CursorHookEvent[] {
   switch (accessMode) {
     case "approval-required":
     case "auto-accept-edits":
-      return ["beforeShellExecution", "beforeMCPExecution", "preToolUse"];
+      return ["beforeShellExecution", "preToolUse"];
     case "full-access":
       return [];
     case "auto":
@@ -73,10 +70,10 @@ export type CursorPreToolUseDecision = "allow" | "file-change" | "unknown-tool";
 /**
  * What `preToolUse` should do with one tool, for one access mode.
  *
- * `Shell` and `MCP:` calls are allowed here because `beforeShellExecution` and
- * `beforeMCPExecution` gate the same call a moment later — answering both
- * would open two Requests for one action. Everything this build cannot name is
- * treated as mutating.
+ * `Shell` calls are allowed here because `beforeShellExecution` gates the same
+ * call a moment later — answering both would open two Requests for one action.
+ * `MCP:` calls are allowed: Opensteer gates no MCP tool (`cursorAccessModeHooks`).
+ * Everything this build cannot name is treated as mutating.
  */
 export function cursorPreToolUseDecision(
   accessMode: ThreadAccessMode,

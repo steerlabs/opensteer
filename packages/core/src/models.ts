@@ -373,6 +373,8 @@ export const ThreadSchema = z.object({
   purpose: TaskPurposeSchema,
   // Older durable Thread events did not record which native session was selected.
   providerSessionId: ProviderSessionIdSchema.nullable().default(null),
+  /** A connected agent or a chat started this task, so the person's own engine rules do not apply. */
+  startedByOther: z.boolean().optional(),
   status: ThreadStatusSchema,
   title: z.string().trim().min(1).max(240),
   icon: IconNameSchema.nullable().default(null),

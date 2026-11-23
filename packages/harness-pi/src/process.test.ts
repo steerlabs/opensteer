@@ -6,6 +6,7 @@ import { runPiCommand } from "./process.js";
 const fixture = vi.hoisted(() => ({
   errorCode: undefined as string | undefined,
   received: "",
+  stderr: "auth diagnostic",
   terminated: 0,
   stillRunning: false,
 }));
@@ -36,7 +37,7 @@ vi.mock("@opensteer/harness", async (importOriginal) => {
           yield Buffer.from('{"status":"ready"}');
         })(),
         stderr: (async function* () {
-          yield Buffer.from("auth diagnostic");
+          yield Buffer.from(fixture.stderr);
         })(),
         exited: fixture.stillRunning
           ? new Promise(() => undefined)
@@ -52,6 +53,7 @@ vi.mock("@opensteer/harness", async (importOriginal) => {
 beforeEach(() => {
   fixture.errorCode = undefined;
   fixture.received = "";
+  fixture.stderr = "auth diagnostic";
   fixture.terminated = 0;
   fixture.stillRunning = false;
 });
@@ -66,6 +68,16 @@ const options = {
 };
 
 describe("one-shot Pi stdin completion", () => {
+  it("scrubs configured proxy credentials from Pi stderr", async () => {
+    const proxy = "http://alice:p@ss-word@proxy.invalid:8080";
+    fixture.stderr = `Connection failed via ${proxy}; password p@ss-word`;
+    await expect(
+      runPiCommand({ ...options, environment: { HTTPS_PROXY: proxy } }),
+    ).resolves.toMatchObject({
+      stderr: "Connection failed via http://[REDACTED]@proxy.invalid:8080; password [REDACTED]",
+    });
+  });
+
   it("retains auth output and exit status when an empty stdin closes after early child exit", async () => {
     fixture.errorCode = "EPIPE";
     await expect(runPiCommand(options)).resolves.toEqual({

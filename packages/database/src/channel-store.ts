@@ -1851,6 +1851,7 @@ export class ChannelStore {
             thread = threadRow;
             await ensureSelectedProviderSession(transaction, threadRow, {
               personalContext,
+              personLineage: false,
             });
             await publishThreadSummary(transaction, thread.id);
           }
