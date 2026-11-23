@@ -230,6 +230,8 @@ const maxBrowserTextBytes = 1 * 1_024 * 1_024;
 const phoneEngines = new Set(["wkwebview", "android-webview"]);
 const maxPendingAgentRequests = 32;
 const agentRequestTimeoutMs = 15_000;
+/** V3: a tab's wake (up to 18 s) and its page's load (up to 15 s), for an agent's bind. */
+const bindWakeMs = 40_000;
 /** An open's work budget; it also bounds waiting for this computer's browser to arrive. */
 const browserOpenWorkMs = 18_000;
 const maxBrowserProfiles = 128;
@@ -4141,6 +4143,9 @@ export class BrowserService {
         throw new BrowserCdpConnectionEnded("This browser page is stale.");
       const { backend } = await this.#admitAgentBackend({ ...agent, sessionId: session.id });
       await this.#requireWorkspaceGeneration(agent.ownerId, row);
+      // V5: a pooled bind records the agent's tab like every other bind, so the tab is the
+      // agent's (slept last) from the bind, not from its first input.
+      await this.#recordAgentTabPlace(agent, session, row.id);
       return { tabId: row.id, sessionId: session.id, backend, reloaded: false };
     }
     const existing =
@@ -4169,18 +4174,31 @@ export class BrowserService {
       const session = await this.#restoreWorkspacePage(agent.ownerId, current, agent, signal);
       // TS11: a sleeping tab is woken before the agent is given it, and handed over once its page
       // has loaded; a wake that cannot finish is refused in its own sentence.
+      // V3: the wake and its load wait end with the operation (Stop, Disconnect): the broker
+      // cancels the runtime's wait, and this bind ends at once; a slow wake has its own bound.
       const broker = this.#brokers.get(session.id);
       if (broker?.surfaceState === 1)
-        await broker.requestCdp(
-          {
-            type: "cdp.command",
-            requestId: randomUUID(),
-            command: {
-              method: browserHostMethods.resumeTab,
-              parameters: { surfaceId: row.id, loaded: true },
+        await withTimeout(
+          broker.requestCdp(
+            {
+              type: "cdp.command",
+              requestId: randomUUID(),
+              ...(broker.supportsCdpReplyBudget
+                ? { replyBudget: { maxBytes: 4096, maxDepth: 8, maxEntries: 64 } }
+                : {}),
+              command: {
+                method: browserHostMethods.resumeTab,
+                parameters: { surfaceId: row.id, loaded: true },
+              },
             },
+            signal,
+          ),
+          bindWakeMs,
+          {
+            ...(signal ? { signal } : {}),
+            timeoutError: () =>
+              new BrowserCdpConnectionEnded("This tab did not wake in time. Try again shortly."),
           },
-          signal,
         );
       const { backend } = await this.#admitAgentBackend(
         { ...agent, sessionId: session.id },

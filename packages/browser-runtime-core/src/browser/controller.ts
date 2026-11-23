@@ -418,6 +418,8 @@ export class BrowserController {
       started: boolean;
       closing?: boolean;
       stopNavigation?: () => Promise<unknown>;
+      /** V3: ends a wait the command started (a woken page's load) when the operation ends. */
+      cancel?: () => void;
     }
   >();
   private readonly cancelledScriptCommands = new WeakSet<BrowserClientMessage>();
@@ -889,9 +891,12 @@ export class BrowserController {
     if (!isCdpRequest(message)) return this.enqueueCommand(message);
     if (message.command.method === browserHostMethods.cancelScriptCommand)
       return this.cancelScriptCommand(message);
+    // An open, and a wake that waits for its page (V3), are cancellable without an attachment.
     if (
       !message.replyBudget ||
-      (!message.scriptAttachmentId && message.command.method !== browserHostMethods.openTab)
+      (!message.scriptAttachmentId &&
+        message.command.method !== browserHostMethods.openTab &&
+        message.command.method !== browserHostMethods.resumeTab)
     )
       return this.enqueueCommand(message);
     if (
@@ -924,6 +929,7 @@ export class BrowserController {
     )
       return;
     if (command.started) {
+      command.cancel?.();
       const stopNavigation = command.stopNavigation;
       delete command.stopNavigation;
       // The page lane still holds this navigation. Its original result settles independently.
@@ -3842,15 +3848,36 @@ export class BrowserController {
       const reloaded = this.ledger.stateOf(parsed.data.surfaceId) === "suspended";
       let binding = await this.ledger.wake(parsed.data.surfaceId);
       if (reloaded) await this.drainTabs();
-      // TS11: an agent acts on the page it woke only once that page has loaded.
-      if (reloaded && parsed.data.loaded) {
-        if (!(await this.ledger.documentLoaded(parsed.data.surfaceId, resumeLoadedMs)))
-          throw new BrowserRuntimeError(
-            "conflict",
-            "This tab woke, but its page is still loading. Try again shortly.",
-            { retryable: true },
+      // TS11, V3: an agent acts on the page only once it has loaded, on every try (a retry waits
+      // for the same load the first try waited for); the wait ends with the operation.
+      if (parsed.data.loaded) {
+        const request = this.scriptCommands.get(message.requestId);
+        const cancelled = new AbortController();
+        if (request?.message === message) request.cancel = () => cancelled.abort();
+        try {
+          const loaded = await this.ledger.documentLoaded(
+            parsed.data.surfaceId,
+            resumeLoadedMs,
+            cancelled.signal,
           );
-        binding = this.ledger.binding(parsed.data.surfaceId) ?? binding;
+          if (loaded === "loading")
+            throw new BrowserRuntimeError(
+              "conflict",
+              "This tab is awake, but its page is still loading. Try again shortly.",
+              { retryable: true },
+            );
+          // Only a binding read now, after its load was confirmed, is handed over.
+          const confirmed = loaded === "loaded" ? this.ledger.binding(parsed.data.surfaceId) : null;
+          if (!confirmed)
+            throw new BrowserRuntimeError(
+              "conflict",
+              "This tab went back to sleep before its page loaded. Wake it again.",
+              { reason: "target-suspended", retryable: true },
+            );
+          binding = confirmed;
+        } finally {
+          if (request?.message === message) delete request.cancel;
+        }
       }
       const dialog = this.ledger.dialogOf(parsed.data.surfaceId);
       const result = {

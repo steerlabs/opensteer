@@ -310,6 +310,31 @@ describe("SurfaceLedger", () => {
     }
   });
 
+  it("waits for a woken page's load only as long as its operation, and says at once when the tab went back to sleep (V3)", async () => {
+    const page = new FakePage({ url: "https://load.test/" });
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    await flushMicrotasks();
+    const id = ledger.snapshot()[0]!.id;
+    try {
+      // The fake page never reports itself complete: only the operation's end stops the wait.
+      const cancelled = new AbortController();
+      const waiting = ledger.documentLoaded(id, 15_000, cancelled.signal);
+      const started = performance.now();
+      cancelled.abort();
+      await expect(waiting).rejects.toMatchObject({ reason: "browser-command-cancelled" });
+      expect(performance.now() - started).toBeLessThan(1_000);
+      // A tab asleep again is said at once, not waited for.
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      const asked = performance.now();
+      expect(await ledger.documentLoaded(id, 15_000)).toBe("asleep");
+      expect(performance.now() - asked).toBeLessThan(1_000);
+    } finally {
+      await ledger.closeOwnedPages().catch(() => undefined);
+      await ledger.close().catch(() => undefined);
+    }
+  });
+
   it("keeps no closed target in a sleeping lineage when the page's sleep cannot keep the tab as itself (finding 10)", async () => {
     const page = new FakePage({ url: "https://no-helper.test/" });
     Object.assign(page, {

@@ -714,13 +714,25 @@ export class SurfaceLedger {
    * navigation is pending, and the document is complete at an address other than the blank one a
    * new page starts at); false past `boundMs`. A tab that closes meanwhile throws.
    */
-  async documentLoaded(id: BrowserSurfaceId, boundMs: number): Promise<boolean> {
+  async documentLoaded(
+    id: BrowserSurfaceId,
+    boundMs: number,
+    signal?: AbortSignal,
+  ): Promise<"loaded" | "loading" | "asleep"> {
     const deadline = Date.now() + boundMs;
     while (Date.now() < deadline) {
+      // V3: the wait ends with the operation it was started for.
+      if (signal?.aborted)
+        throw new BrowserRuntimeError("conflict", "The browser command was cancelled.", {
+          reason: "browser-command-cancelled",
+        });
       const record = this.records.get(id);
       if (!record || record.lease.state === "closing")
         throw new BrowserRuntimeError("not_found", "The browser tab closed.");
       const live = record.live;
+      // V3: a tab that went back to sleep is not waited for: it is said at once.
+      if (!live && (record.lease.state === "suspended" || record.lease.state === "sleeping"))
+        return "asleep";
       if (live && !live.loading && live.pendingNavigations.size === 0) {
         const read = (await withTimeout(
           live.cdp.send("Runtime.evaluate", {
@@ -731,12 +743,26 @@ export class SurfaceLedger {
           { timeoutError: () => new Error("The page did not answer in time.") },
         ).catch(() => null)) as { result?: { value?: unknown } } | null;
         const [readyState, href] = Array.isArray(read?.result?.value) ? read.result.value : [];
-        if (readyState === "complete" && (href !== "about:blank" || record.url === "about:blank"))
-          return true;
+        if (
+          readyState === "complete" &&
+          (href !== "about:blank" || record.url === "about:blank") &&
+          record.live === live
+        )
+          return "loaded";
       }
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 100);
+        signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          { once: true },
+        );
+      });
     }
-    return false;
+    return "loading";
   }
 
   /**

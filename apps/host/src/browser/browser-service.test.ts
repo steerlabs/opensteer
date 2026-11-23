@@ -6475,6 +6475,8 @@ async function startFakeRuntime(
     readonly navigation?: boolean;
     readonly editing?: boolean | 1 | 2 | undefined;
     readonly clipboard?: boolean | undefined;
+    /** The snapshot offers reply budgets and command cancellation, as the shipped runtime does. */
+    readonly cdpReplyBudget?: boolean;
   } = {},
 ): Promise<{
   connectionCount(): number;
@@ -6681,6 +6683,7 @@ async function startFakeRuntime(
           ...(claims.personFillVersion ? { personFillVersion: claims.personFillVersion } : {}),
           ...(options.inputLanes ? { inputLanesVersion: 1 } : {}),
           ...(options.targetedStreaming !== false ? { targetedStreamingVersion: 1 } : {}),
+          ...(options.cdpReplyBudget ? { cdpReplyBudget: 1, scriptCancellation: 1 } : {}),
           ...(options.editing && claims.editingVersion
             ? {
                 editingVersion: claims.editingVersion,
@@ -8738,6 +8741,75 @@ it("person activation asks the runtime to wake the tab even while this Home stil
   });
   runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
   expect(await activated).toEqual({ kind: "page", sessionId, surfaceId: row.id });
+});
+
+it("ends an agent's bind at once when its operation ends while the tab wakes, and cancels the runtime's wait (V3)", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary", { cdpReplyBudget: true }),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      surfaceState: true,
+      tabRestoreVersion: true,
+    });
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "bind-wake",
+  );
+  await memory.add(descriptor);
+  const row = memory.rows.get(descriptor.id)!;
+  runtime.publishTabs({
+    surfaces: [{ id: row.id, state: "suspended", active: true, title: "Sleeping" }],
+  });
+  await vi.waitFor(() =>
+    expect(service.tabStateOf(row.pageBinding!.sessionId, row.id)).toBe("suspended"),
+  );
+  const stop = new AbortController();
+  const binding = service.pageTabs.bindBrowserScript!(
+    {
+      authority: { ownerId, agentBindingId: "run:bind-wake" },
+      threadId: createId("thread"),
+      signal: stop.signal,
+    } as never,
+    row,
+  );
+  void binding.catch(() => undefined);
+  const resume = await vi.waitFor(() => {
+    const sent = runtime
+      .receivedCommands()
+      .findLast(
+        (m) =>
+          m.type === "cdp.command" &&
+          (m.command as { method?: string }).method === "Opensteer.resumeTab",
+      );
+    expect(sent).toBeDefined();
+    return sent!;
+  });
+  // The runtime is still waking the tab and waiting for its page; the agent's task stops.
+  const stopped = performance.now();
+  stop.abort(new Error("The task was stopped."));
+  await expect(binding).rejects.toThrow();
+  expect(performance.now() - stopped).toBeLessThan(1_000);
+  await vi.waitFor(() =>
+    expect(
+      runtime
+        .receivedCommands()
+        .some(
+          (m) =>
+            m.type === "cdp.command" &&
+            (m.command as { method?: string; parameters?: { requestId?: string } }).method ===
+              "Opensteer.cancelScriptCommand" &&
+            (m.command as { parameters?: { requestId?: string } }).parameters?.requestId ===
+              resume.requestId,
+        ),
+    ).toBe(true),
+  );
 });
 
 function memoryTabs() {
