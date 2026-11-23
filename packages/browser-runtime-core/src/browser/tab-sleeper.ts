@@ -501,7 +501,7 @@ export class TabSleeper {
    * timer: same reading, same thresholds. Over the start threshold, the open waits (bounded) for
    * the pass that sheds other tabs, so a burst is paced by sleeping rather than by the kernel.
    */
-  async beforePageOpen(): Promise<() => void> {
+  async beforePageOpen(signal?: AbortSignal): Promise<() => void> {
     const nothing = () => undefined;
     if (!this.options.memoryPressure || !this.usesLinuxMemoryPressure() || this.closed)
       return nothing;
@@ -516,11 +516,29 @@ export class TabSleeper {
       const turn = Promise.withResolvers<void>();
       this.openTurn = turn.promise;
       this.turnWaiters.add(turn.resolve);
-      done = () => {
+      const release = () => {
         this.turnWaiters.delete(turn.resolve);
         turn.resolve();
       };
-      await previous;
+      done = release;
+      // An abandoned open stops waiting at once; its turn passes on only once the open before it
+      // has made its page, so no two opens run side by side.
+      const giveUp = () => {
+        done = nothing;
+        void previous.then(release);
+        return new Error("The open was abandoned.");
+      };
+      if (signal?.aborted) throw giveUp();
+      let abandon: (() => void) | undefined;
+      await Promise.race([
+        previous,
+        new Promise<never>((_resolve, reject) => {
+          abandon = () => reject(giveUp());
+          signal?.addEventListener("abort", abandon, { once: true });
+        }),
+      ]).finally(() => {
+        if (abandon) signal?.removeEventListener("abort", abandon);
+      });
     };
     if (this.releasing) await takeTurn();
     try {

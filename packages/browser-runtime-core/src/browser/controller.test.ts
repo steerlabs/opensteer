@@ -118,6 +118,80 @@ describe("BrowserController", () => {
     ]);
   });
 
+  it("ends at a Stop an attach that waited for its tab to settle, and an open's first load, which it stops", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    const replyBudget = { maxBytes: 4096, maxDepth: 8, maxEntries: 64 };
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    const cancel = (requestId: string, attachment?: string) =>
+      controller.handle({
+        type: "cdp.command",
+        requestId: randomUUID(),
+        ...(attachment ? { scriptAttachmentId: attachment } : {}),
+        command: { method: browserHostMethods.cancelScriptCommand, parameters: { requestId } },
+      });
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      // The attach waits for its tab to settle; Stop comes meanwhile; nothing attaches after.
+      const settled = Promise.withResolvers<void>();
+      const settling = vi
+        .spyOn(ledger, "settleTarget")
+        .mockImplementationOnce(() => settled.promise);
+      const attachId = randomUUID();
+      const attaching = controller.handle({
+        type: "cdp.command",
+        requestId: attachId,
+        scriptAttachmentId,
+        replyBudget,
+        command: { method: "Target.attachToTarget", parameters: { targetId } },
+      });
+      await vi.waitFor(() => expect(settling).toHaveBeenCalledOnce());
+      await cancel(attachId, scriptAttachmentId);
+      settled.resolve();
+      await attaching;
+      expect(reply(attachId)).toMatchObject({
+        type: "cdp.error",
+        error: { reason: "browser-command-cancelled" },
+      });
+      // An open at an address: its first load never ends; Stop ends the open and stops the load.
+      vi.spyOn(ledger, "navigate").mockImplementationOnce(() => new Promise(() => {}));
+      const openId = randomUUID();
+      const opening = controller.handle({
+        type: "cdp.command",
+        requestId: openId,
+        replyBudget,
+        command: {
+          method: browserHostMethods.openTab,
+          parameters: { idempotencyKey: randomUUID(), url: "https://example.test/slow" },
+        },
+      });
+      await vi.waitFor(() => expect(ledger.navigate).toHaveBeenCalled());
+      const opened = context.pages().at(-1) as unknown as FakePage;
+      await cancel(openId);
+      await opening;
+      expect(reply(openId)).toMatchObject({
+        type: "cdp.error",
+        error: { reason: "browser-command-cancelled" },
+      });
+      await vi.waitFor(() => expect(commandsNamed("Page.stopLoading", opened)).toHaveLength(1));
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
   it("acknowledges cancellation only for the matching queued script command", async () => {
     const controller = createController();
     const scriptAttachmentId = randomUUID();
