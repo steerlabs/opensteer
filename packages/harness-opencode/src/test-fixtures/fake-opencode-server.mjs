@@ -626,7 +626,18 @@ function runScenario(id, payload) {
       emit("message.updated", {
         info: { id: "msg_child_retry", role: "assistant", sessionID: childSessionId },
       });
-      // Child starts a tool before retrying.
+      // Child starts a tool and finishes a reasoning part before retrying.
+      emit("message.part.updated", {
+        sessionID: childSessionId,
+        part: {
+          id: "part_child_reasoning_before",
+          type: "reasoning",
+          text: "Initial child reasoning.",
+          messageID: "msg_child_retry",
+          sessionID: childSessionId,
+          time: { start: 1, end: 2 },
+        },
+      });
       emit("message.part.updated", {
         sessionID: childSessionId,
         part: {
@@ -643,7 +654,18 @@ function runScenario(id, payload) {
         sessionID: childSessionId,
         status: { type: "retry", attempt: 1, message: "Child upstream busy", next: 0 },
       });
-      // Replaying an already-seen running update must NOT clear the child's active retry.
+      // Replaying an already-seen finished reasoning part or running tool update must NOT clear the child's active retry.
+      emit("message.part.updated", {
+        sessionID: childSessionId,
+        part: {
+          id: "part_child_reasoning_before",
+          type: "reasoning",
+          text: "Initial child reasoning.",
+          messageID: "msg_child_retry",
+          sessionID: childSessionId,
+          time: { start: 1, end: 2 },
+        },
+      });
       emit("message.part.updated", {
         sessionID: childSessionId,
         part: {

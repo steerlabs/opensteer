@@ -1916,17 +1916,17 @@ class OpencodeHarnessSession implements HarnessSession {
       parentKey: active.parents.get(session) ?? null,
     });
     if (part.type === "text" && part.time?.end !== undefined && part.text) {
-      active.retry.recover(session);
       if (!active.completedParts.has(part.id)) {
         active.completedParts.add(part.id);
+        active.retry.recover(session);
         active.nodes.message(session, part.text);
       }
       return;
     }
     if (part.type === "reasoning" && part.time?.end !== undefined && part.text) {
-      active.retry.recover(session);
       if (!active.completedParts.has(part.id)) {
         active.completedParts.add(part.id);
+        active.retry.recover(session);
         active.nodes.reasoning(session, part.id, part.text);
       }
       return;
