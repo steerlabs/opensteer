@@ -83,7 +83,13 @@ void withTimeout(run(), 90_000, {
   async () => {
     smokeFinished = true;
     clearInterval(smokeLiveness);
-    process.stdout.write(`${JSON.stringify({ event: "electron-browser-smoke.passed" })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({
+        event: "electron-browser-smoke.passed",
+        castFirstFrameTimeouts: castFirstFrameTimeouts.length,
+        castFirstFrameTimeoutsAt: castFirstFrameTimeouts.slice(0, 20),
+      })}\n`,
+    );
     await rm(smokeProfile, { recursive: true, force: true });
     app.quit();
   },
@@ -102,6 +108,8 @@ void withTimeout(run(), 90_000, {
     process.stderr.write(
       `${JSON.stringify({
         event: "electron-browser-smoke.failed",
+        castFirstFrameTimeouts: castFirstFrameTimeouts.length,
+        castFirstFrameTimeoutsAt: castFirstFrameTimeouts.slice(0, 20),
         message: error instanceof Error ? error.stack : String(error),
       })}\n`,
     );
@@ -1604,6 +1612,12 @@ async function transportAgentSizePhase(origin: string): Promise<void> {
  */
 /** Set while the follow-view phase runs: what to report if the smoke fails inside it. */
 let followEvidence: (() => Record<string, unknown>) | null = null;
+/**
+ * Each time the follow view gave up waiting for a cast's first picture (R10), with when in the
+ * phase and the tab's address: counted on every run, passed or failed. None is expected on a
+ * quiet machine; any under load is evidence about the time it gives.
+ */
+const castFirstFrameTimeouts: string[] = [];
 
 async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string): Promise<void> {
   const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000009");
@@ -1908,10 +1922,12 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
           typeof entry.surfaceId === "string"
             ? ledger.binding(entry.surfaceId as typeof surfaceId)?.surface.url
             : undefined;
-        followTimed.push({
-          at: performance.now(),
-          entry: `${String(entry.stage)}${entry.reason === undefined ? "" : ` ${String(entry.reason)}`}${entry.castId === undefined ? "" : ` #${String(entry.castId)}`}${tab ? ` ${tab.replace(origin, "")}` : ""}`,
-        });
+        const line = `${String(entry.stage)}${entry.reason === undefined ? "" : ` ${String(entry.reason)}`}${entry.castId === undefined ? "" : ` #${String(entry.castId)}`}${tab ? ` ${tab.replace(origin, "")}` : ""}`;
+        followTimed.push({ at: performance.now(), entry: line });
+        if (entry.stage === "cast-first-frame-timeout")
+          castFirstFrameTimeouts.push(
+            `${Math.round(performance.now() - phaseStart)}ms after ${String(entry.durationMs)}ms ${line}`,
+          );
         if (followTimed.length > 4_000) followTimed.shift();
       }
       return push(...entries);
