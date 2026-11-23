@@ -364,3 +364,12 @@ describe("activity's words for a command (C5)", () => {
     );
   });
 });
+
+describe("the generated command table (table.md drift)", () => {
+  it("is exactly what the rows say: command-table.md is generated, never written by hand", async () => {
+    const { commandTableMarkdown } = await import("./command-table-markdown.test-support.js");
+    await expect(commandTableMarkdown(expected.rows as never)).toMatchFileSnapshot(
+      "./command-table.md",
+    );
+  });
+});

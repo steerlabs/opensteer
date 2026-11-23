@@ -3763,6 +3763,7 @@
     "trigger.update input.source.schedule.payload": "face 1: present, a connection outside the automation's lineage asks (X11); same class; omitted: unchanged (the store refuses a change of source kind, trigger-store.ts:595)",
     "trigger.status.set status": "face: paused narrow, archived narrow with Full access, active widen-self",
     "trigger.run payload": "same class; omitted: no payload",
-    "trigger.cancel occurrenceId": "same class; omitted: every pending occurrence (agent-tools triggers.ts:86)"
+    "trigger.cancel occurrenceId": "same class; omitted: every pending occurrence (agent-tools triggers.ts:86)",
+    "personal.accountLink.unlink step": "same class: identity whatever the step, the Mac app's two unlink steps (lead's AD10 ruling)"
   }
 }
