@@ -2166,6 +2166,74 @@ describe("Electron debugger teardown", () => {
       await hub.browser.close();
     });
 
+    // The re-check of e7080ea31..963f808d0, finding 3: a kept frame is acked or handed, never
+    // forgotten.
+    for (const [clearedBy, clear] of [
+      [
+        "a navigation",
+        (hub: Awaited<ReturnType<typeof hubPage>>) => {
+          for (const [name, listener] of hub.contents.on.mock.calls)
+            if (name === "did-navigate") (listener as (...a: unknown[]) => void)({});
+        },
+      ],
+      [
+        "a new size",
+        (
+          _hub: Awaited<ReturnType<typeof hubPage>>,
+          person: Awaited<ReturnType<Awaited<ReturnType<typeof hubPage>>["page"]["cdp"]>>,
+        ) =>
+          void person.send("Emulation.setDeviceMetricsOverride", {
+            deviceScaleFactor: 1,
+            height: 700,
+            mobile: false,
+            width: 1_000,
+          }),
+      ],
+    ] as const)
+      it(`acks a frame kept for an unanswered start that ${clearedBy} discards`, async () => {
+        const hub = await hubPage(clearedBy === "a navigation" ? "72" : "73");
+        const person = await hub.page.cdp();
+        const start = hub.hold("Page.startScreencast");
+        const starting = person.send("Page.startScreencast", view);
+        await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+        hub.deliver("Page.screencastFrame", frame("old document", 1));
+        clear(hub, person);
+        await vi.waitFor(() =>
+          expect(hub.sent("Page.screencastFrameAck")).toEqual([
+            ["Page.screencastFrameAck", { sessionId: 1 }],
+          ]),
+        );
+        start.release();
+        start.replies[0]!.resolve({});
+        await starting;
+        // Its next frame is the run's, and acked once, by its owner.
+        hub.deliver("Page.screencastFrame", frame("new document", 1));
+        await person.send("Page.screencastFrameAck", { sessionId: 1 });
+        expect(hub.sent("Page.screencastFrameAck")).toHaveLength(2);
+        await hub.browser.close();
+      });
+
+    it("joins a channel released while its start waited to nothing, and ends the cast it asked for", async () => {
+      const hub = await hubPage("74");
+      const own = ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const agentSaw = seen(agent);
+      await person.send("Page.startScreencast", view);
+      const start = hub.hold("Page.startScreencast");
+      const starting = agent.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      const releasing = agent.detach();
+      start.release();
+      hub.deliver("Page.screencastFrame", frame("small 1", 1), "cast-1");
+      start.replies[0]!.resolve({});
+      await expect(starting).rejects.toThrow(/closed/u);
+      await releasing;
+      expect(agentSaw).toEqual([]);
+      expect(own.detached()).toEqual(["cast-1"]);
+      await hub.browser.close();
+    });
+
     // Run on e7080ea31, follow-stale-dialog-answers: the second tab, answered, was pictured no
     // more. The smoke's order on that tab: opened and pictured, its cast started again in a new
     // size, then left before that start's first frame; a dialog opens there and is answered; its

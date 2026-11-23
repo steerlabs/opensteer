@@ -2624,7 +2624,7 @@ class ElectronDebuggerHub {
     // it draws nothing, takes no clicks and gives a screencast no frame.
     webContents.on("did-navigate", () => {
       // The latest frame was the last document's: no one is handed it now.
-      for (const cast of this.#casts) if (cast.run) cast.run.lastFrame = null;
+      this.#forgetLatestFrames();
       this.#crashed = false;
       this.#inputReady = null;
       this.#updateThrottling();
@@ -2739,7 +2739,7 @@ class ElectronDebuggerHub {
   ): Promise<unknown> {
     // A new size makes the latest frame the wrong shape for anyone who joins after it.
     if (method.startsWith("Emulation.set") || method === "Emulation.clearDeviceMetricsOverride")
-      for (const cast of this.#casts) if (cast.run) cast.run.lastFrame = null;
+      this.#forgetLatestFrames();
     const command = Promise.withResolvers<unknown>();
     this.#pending.add(command.reject);
     try {
@@ -3345,6 +3345,7 @@ class ElectronDebuggerHub {
       if (this.#castOf.get(channel) !== running()) {
         await this.#leaveCast(channel, generation);
         this.#assertCurrent(generation);
+        this.#assertOpen(channel);
       }
       const joined = running();
       if (joined?.run) {
@@ -3393,6 +3394,7 @@ class ElectronDebuggerHub {
     this.#castStarts += 1;
     this.#updateThrottling();
     let ending: Screencast | null = null;
+    let released = false;
     try {
       this.#assertCurrent(generation);
       if (run.lane === null) {
@@ -3402,6 +3404,7 @@ class ElectronDebuggerHub {
         // A crash or the debugger's detach while it attached ended this run.
         if (cast.run !== run)
           throw new Error("Electron CDP renderer changed before command dispatch.");
+        this.#assertOpen(channel);
       }
       const lane = run.lane;
       const laneKey = lane.id ?? "";
@@ -3418,10 +3421,17 @@ class ElectronDebuggerHub {
       if (cast.run !== run || run.lane !== lane)
         throw new Error("Electron CDP renderer changed before command dispatch.");
       run.started = true;
-      // The channel moves in one step, out of its old cast and into this one, so no frame of
-      // this run reaches no one; the old cast, if no one is left in it, ends after.
-      if (left && !handed) ending = this.#leaveMembership(channel);
-      this.#joinCast(channel, cast);
+      if (this.#closed || !this.#channels.has(channel)) {
+        // A channel released while it waited joins nothing (its release leaves its old cast);
+        // the cast Chromium now runs for it ends unless someone else is in it.
+        released = true;
+        if (cast.owners.size === 0) ending = cast;
+      } else {
+        // The channel moves in one step, out of its old cast and into this one, so no frame of
+        // this run reaches no one; the old cast, if no one is left in it, ends after.
+        if (left && !handed) ending = this.#leaveMembership(channel);
+        this.#joinCast(channel, cast);
+      }
       // A frame of this run that came before its start resolved is handed now, to each owner.
       for (const owner of cast.owners) this.#replay(owner, run);
     } catch (error) {
@@ -3449,6 +3459,7 @@ class ElectronDebuggerHub {
     }
     // The start is done whatever ending the old cast comes to.
     if (ending) await this.#endCast(ending, generation).catch(() => undefined);
+    if (released) throw new Error("CDP channel is closed.");
     return {};
   }
 
@@ -3626,6 +3637,26 @@ class ElectronDebuggerHub {
    */
   #debuggerSessionEnded(): void {
     this.#session = new DebuggerSessionState();
+  }
+
+  /**
+   * No one is handed a cast's latest frame any more. One kept for a start not yet answered was
+   * never handed to anyone, and Chromium waits for its ack: it is acked here, not forgotten.
+   */
+  #forgetLatestFrames(): void {
+    for (const cast of this.#casts) {
+      const run = cast.run;
+      if (!run || run.lastFrame === null) continue;
+      if (!run.started && run.lane && run.frameSession !== null && run.awaitingAck > 0) {
+        run.awaitingAck -= 1;
+        void this.#command(
+          "Page.screencastFrameAck",
+          { sessionId: run.frameSession },
+          run.lane.id,
+        ).catch(() => undefined);
+      }
+      run.lastFrame = null;
+    }
   }
 
   /**
@@ -3856,6 +3887,10 @@ class ElectronDebuggerHub {
     this.#gate = null;
     for (const reject of this.#pending) reject(error);
     this.#pending.clear();
+  }
+
+  #assertOpen(channel: ElectronCdpChannel): void {
+    if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
   }
 
   #assertCurrent(generation: number): void {
