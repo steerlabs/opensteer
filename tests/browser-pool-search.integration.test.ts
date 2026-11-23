@@ -1099,7 +1099,9 @@ async function schedule(
         if (released && !(cannotAnswer && slot?.phase === "releasing"))
           expect(slot).toBeUndefined();
         if (!released) expect(["running", "parked"]).toContain(slot?.phase);
-        if (!(released && cannotAnswer && slot)) expect(await w.unsettledCalls()).toBe(0);
+        // Its calls settle unless its host cannot answer: then an open call is unknown, and
+        // stays open (the search's seed 40485: a first install a fenced host never answered).
+        if (!(released && cannotAnswer)) expect(await w.unsettledCalls()).toBe(0);
       },
       { timeout: settleBoundMs, interval: 100 },
     )
@@ -2020,6 +2022,58 @@ const named: readonly {
       "proxy-heals",
       "open-two",
       "proxy-down&0",
+    ],
+  },
+  {
+    // The 40000 run: a release of a fenced target whose host never answered a first install:
+    // that call is unknown and stays open; the search's own check was too strict (W16).
+    name: "a release of a fenced target (seed 40458)",
+    seed: 40458,
+    trace: "seed-40458.json",
+    steps: [
+      "restart-runtime",
+      "fence",
+      "restart-home",
+      "park",
+      "restart-runtime",
+      "stop&3",
+      "fence&0",
+      "host-unsigned&2",
+      "proxy-down",
+      "host-back",
+      "stop",
+      "host-back",
+      "wake&3",
+      "fail-page-close",
+      "proxy-down",
+      "wake",
+      "release",
+    ],
+  },
+  {
+    // The 40000 run: a release of a fenced target whose host never answered a first install:
+    // that call is unknown and stays open; the search's own check was too strict (W16).
+    name: "a release of a fenced target (seed 40485)",
+    seed: 40485,
+    trace: "seed-40485.json",
+    steps: [
+      "fence",
+      "open",
+      "stop",
+      "fail-page-close",
+      "host-stops-guest&0",
+      "restart-home",
+      "host-unreachable",
+      "wake",
+      "wake&0",
+      "open&2",
+      "proxy-heals",
+      "stop&3",
+      "drop-channel&0",
+      "proxy-refuses",
+      "wake",
+      "park-stop",
+      "release",
     ],
   },
 ];
