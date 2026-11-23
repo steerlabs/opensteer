@@ -231,6 +231,7 @@ export type HarnessDurableEventType = Extract<
   | "run.status"
   | "run.context-measured"
   | "run.compaction"
+  | "run.retry"
   | "run.usage"
   | "tool.completed"
   | "tool.started"

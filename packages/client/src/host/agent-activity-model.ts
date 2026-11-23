@@ -719,6 +719,7 @@ export function conversationRows(
  */
 function conversationTurnShows(turn: Turn, { atComputer, live }: ConversationRowOptions): boolean {
   if (turn.run?.compaction) return true;
+  if (turn.run?.retry?.status === "retrying") return true;
   const { composing, reply, startHold, unprompted } = conversationTurn(turn);
   const ended =
     turn.run !== null &&

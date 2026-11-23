@@ -9,6 +9,7 @@ import {
   RequestIdSchema,
   RunAttemptIdSchema,
   RunIdSchema,
+  RunRetryViewSchema,
   TaskPurposeSchema,
   ThreadIdSchema,
   ThreadStatusSchema,
@@ -189,6 +190,8 @@ const task = z.object({
   harnessInstanceId: HarnessInstanceIdSchema,
   /** A Run waits to start and none is executing. */
   runQueued: z.boolean(),
+  /** Active provider retry on the earliest executing Run, when retrying. */
+  retry: RunRetryViewSchema.nullable().optional(),
 });
 /** A task row plus the full Thread detail view, return hint included. */
 export const PersonalDetailThreadSchema = task.extend({ thread: ThreadViewSchema });

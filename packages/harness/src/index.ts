@@ -36,6 +36,7 @@ export { resolveLightModel } from "./light-model.js";
 export * from "./generated-image.js";
 export * from "./output-images.js";
 export * from "./image-generation-events.js";
+export * from "./provider-retry.js";
 export {
   HarnessObservedUsageSchema,
   harnessObservedUsageLabelMaxLength,

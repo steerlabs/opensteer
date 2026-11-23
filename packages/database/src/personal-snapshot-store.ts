@@ -21,6 +21,7 @@ import {
   readInitialTaskWindows,
   taskPageThreadSelections,
   taskPageThreadsFromRows,
+  threadProviderRetry,
   threadRunQueued,
 } from "./personal-task-store.js";
 
@@ -55,6 +56,7 @@ export function taskView(task: Task) {
     environmentId: task.environmentId,
     harnessInstanceId: task.harnessInstanceId,
     runQueued: task.runQueued,
+    retry: task.retry ?? null,
   };
 }
 
@@ -113,6 +115,7 @@ export async function detailThreadValue(tx: Tx, viewerId: UserId, threadId: Thre
     .selectAll("threads")
     .select(taskPageThreadSelections())
     .select(threadRunQueued.as("runQueued"))
+    .select(threadProviderRetry.as("retry"))
     .where("threads.id", "=", threadId)
     .where("threads.createdBy", "=", viewerId)
     .where("threads.removedAt", "is", null)

@@ -435,6 +435,11 @@ export class RunnerRuntime {
   readonly #threads = new Map<ThreadId, RunId>();
   readonly #triggerPrograms = new Map<TriggerOccurrenceId, ActiveTriggerProgram>();
   readonly #agentHome: AgentHomeAccess;
+  #hostSupportsRunRetry = true;
+  /** Records whether the connected Host confirmed `run.retry` support on `host.welcome`. */
+  setHostRunRetryEvents(supported: boolean): void {
+    this.#hostSupportsRunRetry = supported;
+  }
   #skillObserver:
     ((bindingGeneration: number, scan: AgentHomeSkills | undefined) => Promise<void>) | undefined;
   /** Hears every scan of Agent home's skills, so the Host's inventory follows what agents add. */
@@ -2000,6 +2005,37 @@ export class RunnerRuntime {
         journal.events.delete(ordinal);
         journal.bytes -= entry.bytes;
       }
+      if (!this.#hostSupportsRunRetry) {
+        // After a Host rollback, drop unacknowledged `run.retry` frames the
+        // older Host cannot parse and shift subsequent unacknowledged ordinals
+        // so ordinal continuity stays intact.
+        let nextOrdinal = result.nextOrdinal;
+        const retained: { readonly bytes: number; readonly event: PendingAgentEvent }[] = [];
+        let changed = false;
+        for (const [, entry] of [...journal.events.entries()].sort((a, b) => a[0] - b[0])) {
+          if (entry.event.type === "run.retry") {
+            changed = true;
+            continue;
+          }
+          const event =
+            entry.event.ordinal === nextOrdinal
+              ? entry.event
+              : { ...entry.event, ordinal: nextOrdinal };
+          const bytes =
+            event === entry.event ? entry.bytes : Buffer.byteLength(JSON.stringify(event), "utf8");
+          retained.push({ bytes, event });
+          nextOrdinal += 1;
+        }
+        if (changed) {
+          journal.events.clear();
+          journal.bytes = 0;
+          for (const entry of retained) {
+            journal.events.set(entry.event.ordinal, entry);
+            journal.bytes += entry.bytes;
+          }
+          active.nextOrdinal = nextOrdinal;
+        }
+      }
       journal.sentThrough = result.nextOrdinal - 1;
       journal.sessionBoundSent = false;
       resumed.push(
@@ -3351,6 +3387,7 @@ export class RunnerRuntime {
     // The terminal event is a Run's last: an engine still reporting after the
     // Runner ended it for its stop is not heard.
     if (active.revoked || active.journal.terminal) return;
+    if (original.type === "run.retry" && !this.#hostSupportsRunRetry) return;
     if (active.shutdown && terminalEventTypes.has(original.type)) return;
     const outcome: HarnessDurableEvent =
       active.interruptionCause && terminalEventTypes.has(original.type)

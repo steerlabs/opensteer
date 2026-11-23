@@ -14,6 +14,7 @@ import {
   dropDeviceAccessCountMigrationName,
   browserSessionTabsIndexMigrationName,
   inlineTranscriptMessagesMigrationName,
+  runProviderRetryMigrationName,
   stoppedRunsNotNewsMigrationName,
   threadDoneByMigrationName,
   taskApprovalReceiptsMigrationName,
@@ -91,6 +92,7 @@ test.each(["empty", "personal", "team", "personal-0035"] as const)(
         inlineTranscriptMessagesMigrationName,
         stoppedRunsNotNewsMigrationName,
         threadDoneByMigrationName,
+        runProviderRetryMigrationName,
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`

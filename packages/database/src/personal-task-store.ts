@@ -43,11 +43,17 @@ const taskFields = [
 /** A Run of this thread waits to start and none is executing (the task row's `runQueued`). */
 export const threadRunQueued = sql<boolean>`(exists (select 1 from runs where runs.thread_id = threads.id and runs.status = 'queued') and not exists (select 1 from runs where runs.thread_id = threads.id and runs.status in ('starting','running','waiting')))`;
 
+/** Active provider retry on the earliest executing Run, or null (short-circuited for settled tasks). */
+export const threadProviderRetry = sql<
+  import("@opensteer/core").RunRetry | null
+>`(case when threads.status in ('running','waiting') then (select runs.provider_retry from runs where runs.thread_id = threads.id and runs.maintenance is null and runs.finish_intent is null and runs.status in ('starting','running','waiting') and runs.provider_retry is not null order by runs.run_ordinal asc limit 1) else null end)`;
+
 export function currentTasks(tx: PersonalMutationTransaction, viewerId: UserId) {
   return tx
     .selectFrom("threads")
     .select(taskFields)
     .select(threadRunQueued.as("runQueued"))
+    .select(threadProviderRetry.as("retry"))
     .where("createdBy", "=", viewerId)
     .where("removedAt", "is", null);
 }

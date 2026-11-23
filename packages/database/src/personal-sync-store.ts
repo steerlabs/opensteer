@@ -409,6 +409,7 @@ export function itemView(row: Item): TranscriptItem {
     endedAt,
     replyMessageId,
     failure,
+    retry,
     usage,
     runDelivery,
     messageKind,
@@ -478,6 +479,7 @@ export function itemView(row: Item): TranscriptItem {
         endedAt,
         replyMessageId,
         failure,
+        retry,
         usage,
         delivery: runDelivery,
       });

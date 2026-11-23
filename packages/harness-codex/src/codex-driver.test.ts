@@ -3824,6 +3824,7 @@ interface SetupOptions {
   readonly maxWriteBufferBytes?: number;
   readonly machineAccessNotice?: string;
   readonly requestTimeoutMs?: number;
+  readonly retryBudgetMs?: number;
   readonly providerStateKind?: "ambient" | "isolated";
   readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
   readonly shutdownGraceMs?: number;
@@ -3859,6 +3860,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
       arguments: options.executable ? [] : [fakeServer, ...(options.serverArguments ?? [])],
       executable: options.executable ?? process.execPath,
     },
+    ...(options.retryBudgetMs !== undefined ? { retryBudgetMs: options.retryBudgetMs } : {}),
   });
   const harnessInstanceId = createId("harnessInstance") as HarnessInstanceId;
   const compatible = compatibleContext(directory, "isolated");
@@ -4368,4 +4370,179 @@ it("retains tool-result image files without provider base64", async () => {
     await session.stop();
     await fixture.adapter.close();
   }
+});
+
+describe("Codex provider retry visibility and budget", () => {
+  it("surfaces retry notices, ignores userMessage items for recovery, and emits recovered on model output", async () => {
+    const fixture = await setup("retry-recover");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("Go"));
+      await observer.waitFor("run.completed");
+      const retries = observer.events.filter((event) => event.type === "run.retry");
+      expect(retries).toEqual([
+        {
+          type: "run.retry",
+          data: {
+            status: "retrying",
+            attempt: 1,
+            maxAttempts: 5,
+            code: "other",
+            message: "Selected model is at capacity. Please try a different model.",
+          },
+        },
+        {
+          type: "run.retry",
+          data: {
+            status: "retrying",
+            attempt: 2,
+            maxAttempts: 5,
+            code: "other",
+            message: "Selected model is at capacity. Please try a different model.",
+          },
+        },
+        {
+          type: "run.retry",
+          data: {
+            status: "recovered",
+            attempt: 2,
+            maxAttempts: 5,
+            code: "other",
+            message: "Selected model is at capacity. Please try a different model.",
+          },
+        },
+      ]);
+      expect(observer.events.some((event) => event.type === "run.completed")).toBe(true);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("fails the run and interrupts Codex once the wall-clock retry budget expires", async () => {
+    const fixture = await setup("retry-budget-exceeded", { retryBudgetMs: 120 });
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("Go"));
+      const failed = await observer.waitFor("run.failed");
+      expect(failed.data).toMatchObject({
+        code: "other",
+        retryable: false,
+      });
+      expect(failed.data.message).toContain("Selected model is at capacity.");
+      expect(observer.events.some((event) => event.type === "run.completed")).toBe(false);
+      const captured = await fixture.capture();
+      expect(captured.some((entry) => entry.method === "turn/interrupt")).toBe(true);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("preserves explicit usageLimitExceeded on expiry without misclassifying plain HTTP 429", async () => {
+    const rateLimited = await setup("retry-budget-429", { retryBudgetMs: 80 });
+    const rateLimitedSession = await rateLimited.adapter.startSession(rateLimited.context);
+    const rateLimitedObserver = observe(rateLimitedSession.events);
+    try {
+      await rateLimitedSession.execute(rateLimited.turn("Go"));
+      const failed = await rateLimitedObserver.waitFor("run.failed");
+      expect(failed.data.retryable).toBe(false);
+      expect(failed.data.code).not.toBe(harnessUsageLimitFailureCode);
+    } finally {
+      await rateLimitedSession.stop();
+      await rateLimited.adapter.close();
+    }
+
+    const quota = await setup("retry-budget-usage-limit", { retryBudgetMs: 80 });
+    const quotaSession = await quota.adapter.startSession(quota.context);
+    const quotaObserver = observe(quotaSession.events);
+    try {
+      await quotaSession.execute(quota.turn("Go"));
+      const failed = await quotaObserver.waitFor("run.failed");
+      expect(failed.data).toMatchObject({
+        code: harnessUsageLimitFailureCode,
+        retryable: false,
+      });
+    } finally {
+      await quotaSession.stop();
+      await quota.adapter.close();
+    }
+  });
+
+  it("clears the root retry timer when the root turn settles while waiting on a child", async () => {
+    const fixture = await setup("retry-root-settles-with-child", { retryBudgetMs: 90 });
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("Go"));
+      await observer.waitFor("run.completed");
+      expect(observer.events.some((event) => event.type === "run.failed")).toBe(false);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("tracks retry notices and delta recovery for collabAgentToolCall children before adoption", async () => {
+    const recovering = await setup("retry-child-collab-delta-recovers", { retryBudgetMs: 90 });
+    const recoveringSession = await recovering.adapter.startSession(recovering.context);
+    const recoveringObserver = observe(recoveringSession.events);
+    try {
+      await recoveringSession.execute(recovering.turn("Go"));
+      await recoveringObserver.waitFor("run.completed");
+      const retries = recoveringObserver.events.filter((event) => event.type === "run.retry");
+      expect(retries.map((event) => event.data.status)).toEqual(["retrying", "recovered"]);
+      expect(recoveringObserver.events.some((event) => event.type === "run.failed")).toBe(false);
+    } finally {
+      await recoveringSession.stop();
+      await recovering.adapter.close();
+    }
+
+    const expiring = await setup("retry-child-collab-expires", { retryBudgetMs: 90 });
+    const expiringSession = await expiring.adapter.startSession(expiring.context);
+    const expiringObserver = observe(expiringSession.events);
+    try {
+      await expiringSession.execute(expiring.turn("Go"));
+      const failed = await expiringObserver.waitFor("run.failed");
+      expect(failed.data.retryable).toBe(false);
+      expect(failed.data.message).toContain("Child stuck at capacity.");
+    } finally {
+      await expiringSession.stop();
+      await expiring.adapter.close();
+    }
+  });
+
+  it("does not let child adoption replay cancel a live retry deadline", async () => {
+    const fixture = await setup("retry-child-adopt-replay-preserves-retry", { retryBudgetMs: 90 });
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("Go"));
+      const failed = await observer.waitFor("run.failed");
+      expect(failed.data.retryable).toBe(false);
+      expect(failed.data.message).toContain("Child stalled after early reasoning.");
+      const retries = observer.events.filter((event) => event.type === "run.retry");
+      expect(retries.map((event) => event.data.status)).toEqual(["retrying"]);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("enriches a generic turn/completed failure with prior non-retryable error details", async () => {
+    const fixture = await setup("error-nonretryable-detail");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("Go"));
+      const failed = await observer.waitFor("run.failed");
+      expect(failed.data.message).toContain("Selected model is at capacity.");
+      expect(observer.events.some((event) => event.type === "run.retry")).toBe(false);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
 });

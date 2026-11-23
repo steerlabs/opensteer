@@ -29,6 +29,7 @@ import {
   type RunnerVoiceResult,
   computerAppMaxTimeoutMs,
   CorrelationIdSchema,
+  runRetryCapability,
   RunnerCommandSchema,
   sameRunnerConnectionFence,
   type HostToRunnerMessage,
@@ -709,6 +710,9 @@ export class RunnerRegistry {
         // never costs a Run its lease.
         heartbeatIntervalMs: Math.min(15_000, Math.floor(this.#executionLeaseMs / 4)),
         ...(agentHome ? { agentHome } : {}),
+        ...(identity.capabilities.includes(runRetryCapability)
+          ? { runRetryEvents: true as const }
+          : {}),
         serverTime: new Date(now).toISOString(),
         type: "host.welcome",
       });
