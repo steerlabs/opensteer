@@ -11,7 +11,7 @@ import {
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -94,6 +94,28 @@ async function startFixtureServer() {
           <script>window.__payload = new Uint8Array(1024 * 1024).fill(1);</script>
         </body></html>`,
       );
+      return;
+    }
+    if (url.pathname === "/big.bin") {
+      // 24 MiB in 48 slow chunks (about 3 s): a download that is still running when its tab
+      // sleeps. Byte i is i % 251, so the file can be checked whole.
+      const chunk = 512 * 1024;
+      response.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-length": String(48 * chunk),
+        "content-disposition": 'attachment; filename="big.bin"',
+        "cache-control": "no-store",
+      });
+      let sent = 0;
+      const next = () => {
+        if (sent === 48) return void response.end();
+        const bytes = Buffer.alloc(chunk);
+        for (let i = 0; i < chunk; i++) bytes[i] = (sent * chunk + i) % 251;
+        sent++;
+        response.write(bytes);
+        setTimeout(next, 60);
+      };
+      next();
       return;
     }
     if (url.pathname === "/draft") {
@@ -2344,3 +2366,109 @@ it.skipIf(!existsSync(brandedChrome))(
   },
   60_000,
 );
+
+it("never puts a tab to sleep while it captures the camera or microphone, and sleeps it once the capture ends (TS1)", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-capture-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  // Chromium's fake devices, granted without a prompt: a call without hardware.
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+    args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+  });
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  const ledger = new SurfaceLedger(launched.context);
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+  const tab = await ledger.openSurface();
+  const cdp = ledger.binding(tab.id)!.cdp;
+  await cdp.send("Page.navigate", { url: `${server.originForSite(1)}/article?id=call` });
+  await waitLoaded(cdp, "/article");
+  expect(
+    await evalValue<number>(
+      cdp,
+      `navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then((stream) => { window.__call = stream; return stream.getTracks().length; })`,
+    ),
+  ).toBe(2);
+  // On the call: refused, however often it is asked.
+  expect(await ledger.sleep(tab.id, () => null)).toBe(false);
+  expect(await ledger.sleep(tab.id, () => null)).toBe(false);
+  expect(ledger.stateOf(tab.id)).not.toBe("suspended");
+  // The call ends: the tab may sleep.
+  await evalValue(cdp, `window.__call.getTracks().forEach((track) => track.stop()); true`);
+  expect(await ledger.sleep(tab.id, () => null)).toBe(true);
+}, 60_000);
+
+it("finishes a download whole when the tab that started it is put to sleep while it runs (TS2)", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-download-"));
+  const downloads = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-download-files-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  cleanup.push(() => rm(downloads, { recursive: true, force: true }));
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  const browserCdp = (
+    launched as unknown as {
+      browserCdp: {
+        send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+        on(event: string, listener: (params: Record<string, unknown>) => void): void;
+      };
+    }
+  ).browserCdp;
+  // As the router lets a whole-context client set it: named files, with events.
+  await browserCdp.send("Browser.setDownloadBehavior", {
+    behavior: "allowAndName",
+    downloadPath: downloads,
+    eventsEnabled: true,
+  });
+  const progress: { guid: string; state: string; receivedBytes: number }[] = [];
+  browserCdp.on("Browser.downloadProgress", (event) =>
+    progress.push(event as unknown as (typeof progress)[number]),
+  );
+  const ledger = new SurfaceLedger(launched.context);
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+  const tab = await ledger.openSurface();
+  const cdp = ledger.binding(tab.id)!.cdp;
+  await cdp.send("Page.navigate", { url: `${server.originForSite(1)}/article?id=downloads` });
+  await waitLoaded(cdp, "/article");
+  await evalValue(
+    cdp,
+    `(() => { const a = document.createElement("a"); a.href = "/big.bin"; a.download = "big.bin"; document.body.append(a); a.click(); return true; })()`,
+  );
+  // Under way: some bytes in, far from all.
+  await vi.waitFor(
+    () =>
+      expect(
+        progress.some((event) => event.state === "inProgress" && event.receivedBytes > 0),
+      ).toBe(true),
+    { timeout: 10_000, interval: 25 },
+  );
+  const asleep = await ledger.sleep(tab.id, () => null);
+  const atSleep = progress.at(-1)!;
+  process.stdout.write(
+    `${JSON.stringify({ event: "ts2.slept-mid-download", asleep, receivedBytes: atSleep.receivedBytes })}\n`,
+  );
+  const end = await vi.waitFor(
+    () => {
+      const last = progress.findLast((event) => event.state !== "inProgress");
+      expect(last).toBeDefined();
+      return last!;
+    },
+    { timeout: 20_000, interval: 50 },
+  );
+  expect(end.state).toBe("completed");
+  const file = await readFile(path.join(downloads, end.guid));
+  expect(file.length).toBe(48 * 512 * 1024);
+  let whole = true;
+  for (let i = 0; i < file.length; i += 4093) if (file[i] !== i % 251) whole = false;
+  expect(whole).toBe(true);
+}, 60_000);

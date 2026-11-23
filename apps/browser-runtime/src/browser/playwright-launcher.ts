@@ -505,6 +505,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       await context.addInitScript({
         content: browserPagePolicyScriptFor(providerConfig),
       });
+      await context.addInitScript({ content: captureTrackerScript });
       // Subscribe before creating pages: an inline popup dialog can precede
       // the client's per-page listener, especially over Playwright's transport.
       // Without this context subscription Playwright dismisses it at once.
@@ -832,6 +833,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         : undefined;
       const providerConfig = authenticator ? createPasskeyProviderConfig() : undefined;
       await context.addInitScript({ content: browserPagePolicyScriptFor(providerConfig) });
+      await context.addInitScript({ content: captureTrackerScript });
       timing("page-policy");
       context.on("dialog", (dialog) => {
         const page = dialog.page();
@@ -2206,6 +2208,49 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 }
 
+/**
+ * TS1: counts the live camera, microphone and screen tracks a page's own getUserMedia and
+ * getDisplayMedia calls returned, so a tab on a call is never put to sleep. Installed before the
+ * page's scripts in every frame; a page that hides its own capture only loses its own call.
+ */
+const captureTrackerScript = `(() => {
+  const key = Symbol.for("opensteer.capturing");
+  if (globalThis[key]) return;
+  const live = new Set();
+  Object.defineProperty(globalThis, key, {
+    value: () => [...live].some((track) => track.readyState === "live"),
+  });
+  const devices = globalThis.navigator && navigator.mediaDevices;
+  if (!devices) return;
+  const watch = (stream) => {
+    for (const track of stream.getTracks()) {
+      live.add(track);
+      track.addEventListener("ended", () => live.delete(track));
+      const stop = track.stop.bind(track);
+      track.stop = () => {
+        live.delete(track);
+        stop();
+      };
+    }
+    return stream;
+  };
+  for (const name of ["getUserMedia", "getDisplayMedia"]) {
+    const original = devices[name];
+    if (typeof original !== "function") continue;
+    devices[name] = function (...args) {
+      return original.apply(this, args).then(watch);
+    };
+  }
+})();`;
+
+async function documentCapturing(frame: Frame): Promise<boolean> {
+  return frame
+    .evaluate<boolean>(
+      `(() => { const live = globalThis[Symbol.for("opensteer.capturing")]; return typeof live === "function" && live(); })()`,
+    )
+    .catch(() => false);
+}
+
 const documentMediaScript = `(() => {
   const roots = [document];
   for (const root of roots) {
@@ -2305,9 +2350,11 @@ class PlaywrightPageHandle implements BrowserPage {
     });
   }
 
-  async keepAwake(): Promise<"tab-helper" | "upload" | "post" | "media" | null> {
+  async keepAwake(): Promise<"tab-helper" | "capturing" | "upload" | "post" | "media" | null> {
     // Not before the look for the tab helper has ended (R1): asked again later, never closed early.
     if (this.contextHandle.lifecyclePending) return "tab-helper";
+    // TS1: a tab on a call or sharing a screen stays awake.
+    for (const frame of this.page.frames()) if (await documentCapturing(frame)) return "capturing";
     if (this.uploads.size) return "upload";
     if (!["GET", "HEAD"].includes(this.documentMethod)) return "post";
     for (const frame of this.page.frames()) {
