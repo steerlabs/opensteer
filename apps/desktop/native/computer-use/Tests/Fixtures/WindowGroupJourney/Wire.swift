@@ -149,7 +149,7 @@ import Darwin
   /// The first text context for `stream` published after `mark` that the
   /// helper then publishes again unchanged: its idle republication saw the
   /// same field and selection, so the app had finished applying earlier input.
-  func settledEditingContext(_ stream: String, after mark: Int, seconds: Double = 1.5) async throws -> String {
+  func settledEditingContext(_ stream: String, after mark: Int, excluding: String? = nil, seconds: Double = 1.5) async throws -> String {
     let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(seconds * 1_000_000_000)
     var next = mark
     var previous: String?
@@ -157,7 +157,8 @@ import Darwin
       while next < editingContexts.count {
         let row = editingContexts[next]; next += 1
         guard row.stream == stream else { continue }
-        guard let id = row.context["contextId"] as? String, let field = row.context["field"] as? [String: Any],
+        guard let id = row.context["contextId"] as? String, id != excluding,
+          let field = row.context["field"] as? [String: Any],
           field["sensitive"] as? Bool == false
         else { previous = nil; continue }
         if id == previous { return id }
@@ -778,9 +779,9 @@ extension WireJourney {
     // across "!abcd" to before "e"), confirm the context did not rotate, then perform an exact
     // edit (deleteForward) under that same context and verify "e" is deleted.
     let beforeMoveText = try await note()
+    let beforeMoveContext = try await settledEditingContext(streamA, after: editingMark)
     try await Contracts.command(out, "owner-middle")
-    let moveStartMark = editingMark
-    let moveContext = try await settledEditingContext(streamA, after: moveStartMark)
+    let moveContext = try await settledEditingContext(streamA, after: editingMark, excluding: beforeMoveContext)
     for step in 1...5 {
       let reply = try await input([["kind": "command", "command": "moveForward", "contextId": moveContext]])
       try require(reply["outcome"] as? String == "dispatched", "moveForward step \(step) was refused")
