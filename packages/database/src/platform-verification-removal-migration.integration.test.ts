@@ -59,7 +59,9 @@ describeStore("a connection verified through a platform reads as verified by its
         keyThumbprint: "a".repeat(43),
         directoryRevision: 3,
         recordedAt,
-      })}::jsonb where id = ${agent.id};
+      })}::jsonb where id = ${agent.id}
+    `.execute(database);
+    await sql`
       update agent_connections set identity_at_consent = ${JSON.stringify({
         kind: "platform",
         platformOrigin: "https://agentpay.example",
