@@ -5,6 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const navigation = vi.hoisted(() => ({ reset: vi.fn() }));
 
+vi.mock("@react-navigation/elements", async () => ({
+  // The bar's height a route's screens are given: none on a route without one.
+  HeaderHeightContext: (await import("react")).createContext<number | undefined>(undefined),
+}));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios", Version: "26", select: (options: { ios?: unknown }) => options.ios },
   ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,

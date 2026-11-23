@@ -1,8 +1,9 @@
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import type { HostClient } from "@opensteer/client/host";
 import type { DeploymentId } from "@opensteer/core";
+import { HeaderHeightContext } from "@react-navigation/elements";
 import { useNavigation } from "@react-navigation/native";
-import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useContext, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import {
   deploymentStatusDetail,
@@ -75,8 +76,8 @@ export function useAttachedHostOf(deploymentId: string | null): HostClient | nul
 export function DeploymentGate(props: {
   readonly deploymentId: string;
   /**
-   * Room for a transparent bar above the content. A route with no bar leaves it out, and the gate
-   * clears the status bar itself.
+   * Room for a transparent bar above the content. A route with an opaque bar leaves it out (the
+   * stack lays the screen out below it), and one with no bar too: the gate clears the status bar.
    */
   readonly paddingTop?: number;
 }): ReactNode {
@@ -106,7 +107,10 @@ export function DeploymentGate(props: {
       : null;
   const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
   const insets = useContentInsets();
-  const top = { paddingTop: props.paddingTop ?? insets.top };
+  // The safe-area provider stands outside the stack: under an opaque bar its top inset is still the
+  // status bar's, which that bar already clears. Only a route with no bar clears it here.
+  const bar = useContext(HeaderHeightContext);
+  const top = { paddingTop: props.paddingTop ?? (bar ? 0 : insets.top) };
   const iphone = useOptionalIphoneApps();
   const removedFrom = useRemovedFrom(iphone);
   // Every branch below explains this computer, so the pill would only repeat it.

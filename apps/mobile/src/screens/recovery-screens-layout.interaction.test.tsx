@@ -29,6 +29,10 @@ const geometry = vi.hoisted(() => ({
 }));
 const state = vi.hoisted(() => ({ rows: [] as unknown[], deploymentId: null as string | null }));
 
+vi.mock("@react-navigation/elements", async () => ({
+  // The bar's height a route's screens are given: none on a route without one.
+  HeaderHeightContext: (await import("react")).createContext<number | undefined>(undefined),
+}));
 vi.mock(
   "react-native",
   async () => (await import("../../test-support/yoga-frames.js")).layoutReactNative,
