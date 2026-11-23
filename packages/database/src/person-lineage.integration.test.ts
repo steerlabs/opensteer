@@ -323,4 +323,43 @@ describeStore("the person's own lineage", (it) => {
     });
     expect(personAfter.run.providerSessionId).toBe(sent.run.providerSessionId);
   });
+
+  it("treats a chat only the person speaks in as keeping personal context while still a chat, and an anyone chat as dropping both", async ({
+    storeFixture: f,
+  }) => {
+    const meBridge = await f.createBridgeFixture("lineage-me-chat", { senders: "owner" });
+    await f.database
+      .updateTable("threads")
+      .set({ originConnectionId: meBridge.bridge.id })
+      .where("id", "=", meBridge.fixture.thread.id)
+      .execute();
+    expect(
+      await threadContextLineage(f.database, meBridge.fixture.thread.id, meBridge.fixture.userId),
+    ).toEqual({
+      fromChat: true,
+      personLineage: false,
+      personalContext: true,
+    });
+
+    const anyoneBridge = await f.createBridgeFixture("lineage-anyone-chat", {
+      conversation: { id: "C-lineage-anyone", name: "#lineage-anyone" },
+      senders: "anyone",
+    });
+    await f.database
+      .updateTable("threads")
+      .set({ originConnectionId: anyoneBridge.bridge.id })
+      .where("id", "=", anyoneBridge.fixture.thread.id)
+      .execute();
+    expect(
+      await threadContextLineage(
+        f.database,
+        anyoneBridge.fixture.thread.id,
+        anyoneBridge.fixture.userId,
+      ),
+    ).toEqual({
+      fromChat: true,
+      personLineage: false,
+      personalContext: false,
+    });
+  });
 });

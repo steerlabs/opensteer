@@ -27,6 +27,7 @@ import {
   withPersonalReadTransaction,
 } from "./personal-transaction.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
+import { assertPersonMayContinue } from "./resource-access.js";
 import {
   lockThreadRow,
   lockCommandIdempotency,
@@ -213,6 +214,7 @@ export interface WaitingInputIdentity {
 async function editable(transaction: Transaction<DatabaseSchema>, input: WaitingInputIdentity) {
   await requirePersonalOwner(transaction, input.requestedBy);
   const thread = await lockInputQueueProjection(transaction, input.threadId);
+  await assertPersonMayContinue(transaction, input.requestedBy, thread.originConnectionId);
   const row = await transaction
     .selectFrom("threadInputs")
     .selectAll()

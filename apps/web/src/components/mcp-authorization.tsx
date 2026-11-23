@@ -411,8 +411,10 @@ function ConsentForm({
         <AgentWhoLine nameShown={false} who={identity.who} />
       ) : (
         <>
-          {heading.claim ? (
-            <p className="agent-who__claim agent-consent__claim">{heading.claim}</p>
+          {heading.claimParts ? (
+            <p className="agent-who__claim agent-consent__claim">
+              <SentenceText parts={heading.claimParts} />
+            </p>
           ) : null}
           <p className="agent-consent__where">
             <Icon name={identity.local ? "laptop" : "globe"} />

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, Route, Routes, useParams } from "react-router";
 import {
+  agentSentence,
+  agentText,
   agentWords,
   arrivedConnection,
   connectedAgentsView,
@@ -279,12 +281,17 @@ function ExternalAgentSetup({
               ) : null}
             </li>
             <li>{guide.step}</li>
-            <li>{agentWords("agents.add.step3", { name: guide.name })}</li>
+            <li>{agentText("agents.add.step3", { name: guide.name })}</li>
           </ol>
           <p className="external-agent-setup__status" role="status">
             {connected ? (
               <>
-                <Icon name="check-circle" /> {connected.label} is connected.
+                <Icon name="check-circle" />{" "}
+                <SentenceText
+                  parts={agentSentence("agents.add.connected", {
+                    agent: { name: connected.label },
+                  })}
+                />
               </>
             ) : (
               `Waiting for ${guide.name} to connect.`

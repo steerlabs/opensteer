@@ -104,6 +104,25 @@ export function plainSentence(parts: readonly SentencePart[]): string {
 }
 
 /**
+ * The sentence as plain text for a surface that has no `<bdi>` boxes (`aria-label`, `title`,
+ * push notifications): each name is cleaned, quoted and bidi-isolated (`\u2068...\u2069`), and
+ * each address is cleaned and bidi-isolated, so an RTL name with digits cannot reorder surrounding
+ * words.
+ */
+export function isolatedPlainSentence(parts: readonly SentencePart[]): string {
+  const isolate = (text: string) => `\u2068${text}\u2069`;
+  return parts
+    .map((part) =>
+      typeof part === "string"
+        ? part
+        : "address" in part
+          ? isolate(partText(part))
+          : `“${isolate(partText(part))}”`,
+    )
+    .join("");
+}
+
+/**
  * The sentence as the phone draws it, where text has no boxes: the one place every phone sentence
  * with a name or an address goes through. An address breaks only at its joints and is never
  * hyphenated (a word joiner between each two of a part's characters, a zero-width space at each

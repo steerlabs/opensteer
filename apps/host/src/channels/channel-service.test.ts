@@ -1,6 +1,12 @@
 import { createId } from "@opensteer/core";
+import { createIntegrationId } from "@opensteer/integration-core";
 import { describe, expect, it, vi } from "vitest";
 import { ChannelService } from "./channel-service.js";
+
+vi.mock("@opensteer/database", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@opensteer/database")>()),
+  wakeChatQueues: vi.fn(),
+}));
 
 const environmentId = createId("environment");
 const otherEnvironmentId = createId("environment");
@@ -53,6 +59,71 @@ function channelServiceFixture(
 }
 
 describe("ChannelService", () => {
+  it("cleans names when a chat account is checked (the wire caps length)", async () => {
+    const account = "T-FIXTURE";
+    const connectionId = createIntegrationId("connection");
+    const runnerId = createId("runner");
+    const userId = createId("user");
+    const handle = "Work\u200DOps";
+    const cases = [
+      ["Helper\u202E\nDisconnected", "Helper Disconnected"],
+      ["#ops\u202E\nOnly you can message this chat", "#ops Only you can message this chat"],
+      ["Work\u200DOps", "WorkOps"],
+      ["Tab\tName", "Tab Name"],
+    ] as const;
+    const request = vi.fn();
+    const service = new ChannelService({
+      channels: {
+        claimIngress: async () => null,
+        connectionForCheck: async () => ({
+          credentialId: null,
+          externalTenantId: account,
+          provider: "slack",
+          runnerId,
+          transportKind: "socket",
+        }),
+        assignedRuntimeConnections: async () => [],
+        nextIngressDeadline: async () => null,
+        pruneHistory: async () => {},
+        setConnectionStatus: async () => {},
+        setRuntimeConnectionHealth: async () => {},
+      } as never,
+      credentials: {} as never,
+      bridgeTools: () => ({ callTool: async () => ({}) }),
+      relay: { isConnected: () => true, request } as never,
+      store: {} as never,
+    });
+    const actual = [];
+    const expected = [];
+    try {
+      for (const [index, [name, cleanName]] of cases.entries()) {
+        const externalAccountId = index % 2 ? "T-OTHER" : account;
+        const identity = {
+          accountDisplayName: name,
+          connectionDisplayName: name,
+          externalAccountId,
+          externalIdentityId: null,
+          handle,
+          metadata: {},
+        };
+        request.mockResolvedValueOnce({ capabilities: [], identity, issues: [], ready: true });
+        const result = await service.checkConnection(connectionId, userId);
+        actual.push({ identity: result.identity, ready: result.ready });
+        expected.push({
+          identity: {
+            ...identity,
+            accountDisplayName: cleanName,
+            connectionDisplayName: cleanName,
+          },
+          ready: externalAccountId === account,
+        });
+      }
+      expect(actual).toEqual(expected);
+    } finally {
+      await service.close();
+    }
+  });
+
   it("judges an unclaimable exhausted event at the pass's own time and backs off", async () => {
     vi.useFakeTimers();
     try {

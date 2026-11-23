@@ -16,7 +16,7 @@ import { accessModeOptions } from "./access-modes.js";
 import { agentWho, agentWithdrawnLine, type AgentWho } from "./agent-identity.js";
 import type { ThreadSummary } from "./client.js";
 import {
-  agentText,
+  agentSentence,
   agentWords,
   anyoneChatModeDescriptions,
   type ConnectionModeDescription,
@@ -79,7 +79,9 @@ export interface ConnectedAgentsView {
 
 export interface ConnectedAgentStatus {
   readonly label: string;
+  readonly labelParts?: readonly SentencePart[];
   readonly detail: string;
+  readonly detailParts?: readonly SentencePart[];
   readonly tone: ConnectedAgentTone;
   readonly steps: readonly {
     readonly label: string;
@@ -155,7 +157,11 @@ export interface ConnectedAgentDetail {
   readonly row: ConnectedAgentRow;
   readonly status: ConnectedAgentStatus;
   /** The separate fact that contact was lost mid-action, with what to do about it. */
-  readonly uncertain: { readonly label: string; readonly detail: string } | null;
+  readonly uncertain: {
+    readonly label: string;
+    readonly detail: string;
+    readonly detailParts?: readonly SentencePart[];
+  } | null;
   /** The Home stores no grant for it: an older Home, where it can do everything. */
   readonly legacy: boolean;
   readonly editable: boolean;
@@ -380,21 +386,18 @@ function usedLine(lastUsedAt: string | null, now: Date): string {
  * replies wait; a message sent meanwhile arrives when it is back, or is not delivered, by what
  * its transport does; how it comes back.
  */
-export function pausedDetail(connection: Pick<AgentConnection, "bridge">): string {
+export function pausedDetailParts(
+  connection: Pick<AgentConnection, "bridge">,
+): readonly SentencePart[] {
   const bridge = connection.bridge;
   // Each sentence only from a value the Home sent: a missing or new one says nothing it can't.
   const by = bridge?.pausedBy;
-  const cause =
+  const cause: readonly SentencePart[] =
     by === "needs-attention"
-      ? plainSentence(
-          sentenceWith(
-            (slot) => agentWords("chat.paused.attention", { account: slot("account") }),
-            { account: chatAccountPart(bridge!) },
-          ),
-        )
-      : by === "you"
-        ? agentWords("chat.paused.you")
-        : agentWords("chat.paused.unknown");
+      ? sentenceWith((slot) => agentWords("chat.paused.attention", { account: slot("account") }), {
+          account: chatAccountPart(bridge!),
+        })
+      : [by === "you" ? agentWords("chat.paused.you") : agentWords("chat.paused.unknown")];
   const sent =
     bridge?.pausedMessages === "kept"
       ? agentWords("chat.paused.kept")
@@ -409,9 +412,14 @@ export function pausedDetail(connection: Pick<AgentConnection, "bridge">): strin
       : by === "you"
         ? agentWords("chat.paused.resume")
         : null;
-  return [cause, agentWords("chat.paused.replies"), sent, next]
+  const rest = [agentWords("chat.paused.replies"), sent, next]
     .filter((part): part is string => part !== null)
     .join(" ");
+  return rest ? [...cause, ` ${rest}`] : cause;
+}
+
+export function pausedDetail(connection: Pick<AgentConnection, "bridge">): string {
+  return plainSentence(pausedDetailParts(connection));
 }
 
 /** The status at the top of an agent's page. */
@@ -442,13 +450,16 @@ export function connectedAgentStatus(
             tone: "neutral",
             steps: [],
           };
-    case "paused":
+    case "paused": {
+      const detailParts = pausedDetailParts(connection);
       return {
         label: agentWords("agent.status.paused"),
-        detail: pausedDetail(connection),
+        detail: plainSentence(detailParts),
+        detailParts,
         tone: "attention",
         steps: [],
       };
+    }
     case "unknown":
       return {
         label: agentWords("agent.status.unknown"),
@@ -456,9 +467,11 @@ export function connectedAgentStatus(
         tone: "attention",
         steps: [],
       };
-    case "revoked":
+    case "revoked": {
+      const labelParts = agentSentence("disconnect.revoked.label", { agent: { name: agent } });
       return {
-        label: agentText("disconnect.revoked.label", { agent: { name: agent } }),
+        label: plainSentence(labelParts),
+        labelParts,
         detail: agentWords("disconnect.revoked.detail", {
           time: formatClock(ended ?? now.toISOString()),
         }),
@@ -469,10 +482,15 @@ export function connectedAgentStatus(
           { label: agentWords("disconnect.step.stopped"), state: "pending" },
         ],
       };
-    case "stopping":
+    }
+    case "stopping": {
+      const detailParts = agentSentence("disconnect.stopping.detailGeneric", {
+        agent: { name: agent },
+      });
       return {
         label: agentWords("disconnect.stopping.label"),
-        detail: agentText("disconnect.stopping.detailGeneric", { agent: { name: agent } }),
+        detail: plainSentence(detailParts),
+        detailParts,
         tone: "neutral",
         steps: [
           { label: agentWords("disconnect.step.removed"), state: "done" },
@@ -480,6 +498,7 @@ export function connectedAgentStatus(
           { label: agentWords("disconnect.step.stopped"), state: "pending" },
         ],
       };
+    }
     case "stopped":
       return {
         label: agentWords("disconnect.stopped.label"),
@@ -489,17 +508,20 @@ export function connectedAgentStatus(
         tone: "good",
         steps: [],
       };
-    case "expired":
+    case "expired": {
+      const detailParts = agentSentence(
+        "disconnect.expired.detail",
+        { agent: { name: agent } },
+        { time: connection.expiresAt ? `on ${formatDay(connection.expiresAt)}` : "" },
+      );
       return {
         label: agentWords("disconnect.expired.label"),
-        detail: agentText(
-          "disconnect.expired.detail",
-          { agent: { name: agent } },
-          { time: connection.expiresAt ? `on ${formatDay(connection.expiresAt)}` : "" },
-        ),
+        detail: plainSentence(detailParts),
+        detailParts,
         tone: "neutral",
         steps: [],
       };
+    }
   }
 }
 
@@ -521,15 +543,19 @@ export function connectedAgentDetail(
   const legacy = !options.grantsAvailable || connection.grant === undefined;
   const identity = row.identity;
   const live = row.phase === "active" ? (options.live ?? null) : null;
+  const uncertainDetailParts = row.uncertain
+    ? agentSentence("disconnect.uncertain.detailGeneric", {
+        agent: { name: identity.label },
+      })
+    : null;
   return {
     row,
     status: connectedAgentStatus(row, now, live),
-    uncertain: row.uncertain
+    uncertain: uncertainDetailParts
       ? {
           label: agentWords("disconnect.uncertain.label"),
-          detail: agentText("disconnect.uncertain.detailGeneric", {
-            agent: { name: identity.label },
-          }),
+          detail: plainSentence(uncertainDetailParts),
+          detailParts: uncertainDetailParts,
         }
       : null,
     legacy,

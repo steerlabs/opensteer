@@ -350,7 +350,9 @@ function AgentAuthorization(props: {
         title={heading.title}
         work={workHomeMark(workPolicy)?.badge ?? null}
         who={{
-          heading: heading.claim ?? workWords("who.verified"),
+          heading: heading.claimParts
+            ? phoneSentence(heading.claimParts)
+            : workWords("who.verified"),
           origins: who.verified
             ? who.origins.map((origin) => phoneSentence(agentWhoOriginParts(origin)))
             : [],

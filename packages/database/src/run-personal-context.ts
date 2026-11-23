@@ -40,22 +40,7 @@ export async function runContextLineage(
     .select(["threadId", "requestedBy", "connectionId"])
     .where("id", "=", runId)
     .executeTakeFirstOrThrow();
-  const lineage = await threadContextLineage(database, run.threadId, run.requestedBy);
-  if (run.connectionId === null) return lineage;
-  const runConnection = await database
-    .selectFrom("agentConnections")
-    .select("bridgeSenders")
-    .where("id", "=", run.connectionId)
-    .executeTakeFirst();
-  return {
-    fromChat:
-      lineage.fromChat || (runConnection !== undefined && runConnection.bridgeSenders !== null),
-    personLineage: false,
-    personalContext:
-      lineage.personalContext &&
-      runConnection !== undefined &&
-      runConnection.bridgeSenders !== "anyone",
-  };
+  return queryContextLineage(database, run.threadId, run.connectionId);
 }
 
 export async function threadAllowsPersonalContext(
@@ -71,15 +56,23 @@ export async function threadContextLineage(
   threadId: ThreadId,
   _ownerId: UserId,
 ): Promise<ThreadContextLineage> {
-  // Reused workers retain every assigning task's context restriction, a task linked under another
-  // (an automation's own task) retains its parent's, and work an automation's program sends
-  // anywhere retains its anchor's. Every chat and connected agent is an `agent_connections` row:
-  // a chat has `bridge_senders` ('owner' keeps personal context, 'anyone' drops it), while an
-  // MCP connected agent has `bridge_senders is null` (keeps personal context, not personLineage).
-  const { rows } = await sql<{
-    connectionCount: number;
-    fromChat: boolean;
-    personalContext: boolean;
+  return queryContextLineage(database, threadId, null);
+}
+
+async function queryContextLineage(
+  database: Kysely<DatabaseSchema>,
+  threadId: ThreadId,
+  runConnectionId: string | null,
+): Promise<ThreadContextLineage> {
+  // Reused workers retain every assigning conversation's context restriction, a task linked
+  // under another (an automation's own task) retains its parent's, and work an automation's
+  // program sends anywhere retains its anchor's. Chats are connections in `agent_connections`
+  // with `bridge_senders` set ('me' keeps personal context, 'anyone' drops it; both are chats
+  // and neither is the person's own lineage).
+  const result = await sql<{
+    total: number;
+    chatCount: number;
+    nonPersonalCount: number;
   }>`
     with recursive context_threads(id) as (
       select ${threadId}::text
@@ -112,7 +105,7 @@ export async function threadContextLineage(
         where id = current.id and parent_thread_id is not null
       ) parent
     ),
-    touched(connection_id) as (
+    touched_connections(connection_id) as (
       select thread.origin_connection_id
       from context_threads
       join threads thread on thread.id = context_threads.id
@@ -122,21 +115,25 @@ export async function threadContextLineage(
       from context_threads
       join thread_inputs written on written.thread_id = context_threads.id
       where written.state <> 'cancelled' and written.connection_id is not null
+      union
+      select ${runConnectionId}::text
+      where ${runConnectionId}::text is not null
     )
     select
-      count(touched.connection_id)::int as connection_count,
-      coalesce(bool_or(ac.bridge_senders is not null), false) as from_chat,
-      coalesce(
-        bool_and(ac.id is not null and ac.bridge_senders is distinct from 'anyone'),
-        true
-      ) as personal_context
-    from touched
-    left join agent_connections ac on ac.id = touched.connection_id
+      count(*)::int as total,
+      count(*) filter (where conn.bridge_senders is not null)::int as chat_count,
+      count(*) filter (where conn.id is null or conn.bridge_senders = 'anyone')::int
+        as non_personal_count
+    from touched_connections tc
+    left join agent_connections conn on conn.id = tc.connection_id
   `.execute(database);
-  const summary = rows[0];
+  const row = result.rows[0];
+  const total = row?.total ?? 0;
+  const chatCount = row?.chatCount ?? 0;
+  const nonPersonalCount = row?.nonPersonalCount ?? 0;
   return {
-    fromChat: summary?.fromChat === true,
-    personLineage: (summary?.connectionCount ?? 0) === 0,
-    personalContext: summary?.personalContext !== false,
+    fromChat: chatCount > 0,
+    personLineage: total === 0,
+    personalContext: nonPersonalCount === 0,
   };
 }

@@ -1547,7 +1547,11 @@ export class HttpHostClient {
           ? toThreadSummary(row.thread, this.#snapshot.environments, this.#snapshot.harnesses)
           : compactThread(row);
         const thread = this.#threadState.reconcile(
-          row.retry === undefined ? detailSummary : { ...detailSummary, retry: row.retry },
+          {
+            ...detailSummary,
+            ...(row.thread ? { endedOrigin: row.endedOrigin ?? null } : {}),
+            ...(row.retry === undefined ? {} : { retry: row.retry }),
+          },
           SequenceSchema.parse(row.revision),
           undefined,
           row.thread ? undefined : row,

@@ -1,4 +1,5 @@
 import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   commitPersonalMutation,
   wakeExecutionCommands,
@@ -395,7 +396,7 @@ export async function createTriggerInTransaction(
       id: triggerId,
       idempotencyKey: input.idempotencyKey,
       kind: source.kind,
-      name: input.name,
+      name: outsideName(input.name, 160) || "Automation",
       nextFireAt,
       pauseReason: managed?.pauseReason ?? null,
       requestFingerprint,
@@ -657,7 +658,7 @@ export class TriggerStore {
           ...(input.name === undefined
             ? {}
             : {
-                name: input.name,
+                name: outsideName(input.name, 160) || trigger.name,
               }),
           ...rearmed,
           updatedAt: now,

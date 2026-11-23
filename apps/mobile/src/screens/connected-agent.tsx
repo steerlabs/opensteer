@@ -6,6 +6,7 @@ import {
   agentSentence,
   agentText,
   agentWords,
+  workSentence,
   workWords,
   chatFacts,
   chatStopFoundRunEnded,
@@ -419,7 +420,9 @@ export function connectedAgentSections(props: {
                       label: who.verified
                         ? who.heading === agent
                           ? workWords("who.verified")
-                          : workWords("who.verifiedAs", { name: who.heading })
+                          : phoneSentence(
+                              workSentence("who.verifiedAs", { name: { name: who.heading } }),
+                            )
                         : who.heading,
                       ...(detail.row.identity.who.origins.length ? {} : { detail: who.detail }),
                     },
@@ -459,7 +462,9 @@ export function connectedAgentSections(props: {
           key: "status",
           kind: "status",
           tone: detail.status.tone,
-          label: detail.status.label,
+          label: detail.status.labelParts
+            ? phoneSentence(detail.status.labelParts)
+            : detail.status.label,
           ...(detail.status.steps.length ? { steps: detail.status.steps } : {}),
         },
         ...(watchThreadId
@@ -475,7 +480,11 @@ export function connectedAgentSections(props: {
             ]
           : []),
       ],
-      footer: { text: detail.status.detail },
+      footer: {
+        text: detail.status.detailParts
+          ? phoneSentence(detail.status.detailParts)
+          : detail.status.detail,
+      },
     },
     // An edit that met a newer one says so on its own: what the status says (a paused chat's
     // held replies) stays.
@@ -563,7 +572,11 @@ export function connectedAgentSections(props: {
       rows: [
         { key: "uncertain", kind: "status", tone: "attention", label: detail.uncertain.label },
       ],
-      footer: { text: detail.uncertain.detail },
+      footer: {
+        text: detail.uncertain.detailParts
+          ? phoneSentence(detail.uncertain.detailParts)
+          : detail.uncertain.detail,
+      },
     });
   if (detail.legacy && detail.row.phase === "active")
     sections.push({

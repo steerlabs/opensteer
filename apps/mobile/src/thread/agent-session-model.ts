@@ -3,16 +3,20 @@ import {
   operationDecisionField,
   operationRequestView,
   sessionAgent,
+  sessionAgentPart,
   sessionSlotFromHome,
   sessionTaskRow,
   sessionTaskView,
   tabAgentLine,
+  tabNeedsYouParts,
+  workSentence,
   workWords,
   type AgentSessionSlot,
   type AgentWho,
   type HostSnapshot,
   type OperationRequestView,
   type RequestView,
+  type SentencePart,
   type SessionAgent,
   type SessionTaskView,
   phoneSentence,
@@ -110,6 +114,9 @@ export function placeSessionLine(
   readonly agent: SessionAgent;
   readonly threadId: string;
   readonly line: string;
+  readonly lineParts: readonly SentencePart[];
+  readonly needsYouParts: readonly SentencePart[];
+  readonly stopLabelParts: readonly SentencePart[];
   readonly stop: { readonly sessionId: string } | null;
 } | null {
   if (input.tabId === null) return null;
@@ -122,18 +129,23 @@ export function placeSessionLine(
       sharedFromChrome: input.sharedFromChrome === true,
     });
     if (said === null) continue;
+    const agent = sessionAgent(slot.connection);
     return {
-      agent: sessionAgent(slot.connection),
+      agent,
       threadId: occupant.threadId,
+      needsYouParts: tabNeedsYouParts(slot.connection),
+      stopLabelParts: workSentence("work.stop", { agent: sessionAgentPart(agent) }),
       ...said,
     };
   }
   return null;
 }
 
-/** "Says it is Grok" for a self-given name; the Home's own heading otherwise. */
+/** "Says it is “Grok”" for a self-given name; the Home's own heading otherwise. */
 export function whoHeading(who: AgentWho): string {
-  return who.selfAsserted ? workWords("who.saysItIs", { name: who.heading }) : who.heading;
+  return who.selfAsserted
+    ? phoneSentence(workSentence("who.saysItIs", { name: { name: who.heading } }))
+    : who.heading;
 }
 
 /** The identity lines a consent screen or an agent's page shows, in order. */

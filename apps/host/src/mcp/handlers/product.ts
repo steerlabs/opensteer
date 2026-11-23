@@ -1129,11 +1129,10 @@ export class ProductToolHandlers {
     }
     const scope = callerListScope(caller);
     const connectionAuthority = connectionAuthorityForLineage(caller);
-    const reader = callerReader(caller);
     if (input.taskId) {
-      const target = await this.#store.readTask(reader, input.taskId, caller.userId, {
+      const target = await this.#store.readTask(callerReader(caller), input.taskId, caller.userId, {
         ...lineageOption(caller),
-        ...(caller.kind === "connection" ? { nativeOnly: true } : {}),
+        nativeOnly: caller.kind === "connection",
       });
       if (!target) throw forbidden("Task is unavailable");
     }

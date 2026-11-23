@@ -144,6 +144,7 @@ import {
   lockThreadInputIdempotency,
   steerThreadInputInTransaction,
   cancelThreadInputInTransaction,
+  cancelDisconnectedThreadInputInTransaction,
   moveThreadInputInTransaction,
   readThreadInputQueue,
 } from "./thread-inbox.js";
@@ -1087,7 +1088,7 @@ export async function agentThreadPageForOwner(
   );
 }
 /** A task as the person reads it. Work reading a task reads it through `readTask`. */
-export function getThreadForOwner(
+export async function getThreadForOwner(
   database: Kysely<DatabaseSchema>,
   threadId: ThreadId,
   ownerId: UserId,
@@ -1291,7 +1292,7 @@ export async function createThreadInTransaction(
   // Work in a lineage without the person's personal context never has a personal session.
   await ensureSelectedProviderSession(transaction, thread, {
     personalContext: await lineagePersonalContext(transaction, originConnectionId),
-    ...(originConnectionId !== null ? { personLineage: false } : {}),
+    personLineage: originConnectionId === null,
   });
   if (purpose === "voice")
     await transaction
@@ -1664,8 +1665,8 @@ export async function updateThreadExecutionSelection(
             id: providerSessionId,
             leaseExpiresAt: null,
             leaseTokenHash: null,
-            // Whether it may use the person's personal context or own lineage, from its first row:
-            // never widen from the prior session or from the task's lineage.
+            // Whether it may use the person's personal context and own lineage, from its first
+            // row: never widen past the previous session or the task's own origin.
             personalContext:
               (selected?.personalContext ?? true) &&
               (await lineagePersonalContext(transaction, thread.originConnectionId)),
@@ -2364,6 +2365,14 @@ export async function cancelThreadInput(
     });
     return result;
   });
+}
+export async function cancelDisconnectedThreadInput(
+  database: Kysely<DatabaseSchema>,
+  input: { readonly threadId: ThreadId; readonly messageId: MessageId },
+) {
+  return commitPersonalMutation(database, (transaction) =>
+    cancelDisconnectedThreadInputInTransaction(transaction, input),
+  );
 }
 export async function moveThreadInput(
   database: Kysely<DatabaseSchema>,
