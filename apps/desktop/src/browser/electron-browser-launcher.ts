@@ -1205,7 +1205,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   };
   #navigationFinished(): void {
     this.#navigationsFinished += 1;
-    for (const listener of [...this.#navigationListeners]) listener();
+    for (const listener of this.#navigationListeners) listener();
   }
   #frameSubscriptionRevision: number | null = null;
   #paintedSurfaceRevision = -1;
