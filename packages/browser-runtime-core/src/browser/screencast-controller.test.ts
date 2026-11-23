@@ -1952,15 +1952,11 @@ describe("the follow view, when a page loads forever and never paints (U6)", asy
         url: "https://example.com/",
       };
       let holdStop = false;
-      let finishStop: (() => void) | null = null;
+      const stopDone = Promise.withResolvers<void>();
       let failPaintOnce = true;
       const cdp = new FakeCdpSession();
       cdp.responses.set("Page.stopScreencast", async () => {
-        if (holdStop) {
-          await new Promise<void>((resolve) => {
-            finishStop = resolve;
-          });
-        }
+        if (holdStop) await stopDone.promise;
         return {};
       });
       const captureListeners = new Set<() => void>();
@@ -2070,7 +2066,7 @@ describe("the follow view, when a page loads forever and never paints (U6)", asy
       const pause = follow.setStreaming(false);
       await settle();
       expectTimers({ firstFrameMs: null, paint: false, stop: true });
-      finishStop?.();
+      stopDone.resolve();
       await pause;
       await settle();
       expectTimers({ firstFrameMs: null, paint: false, stop: false });
