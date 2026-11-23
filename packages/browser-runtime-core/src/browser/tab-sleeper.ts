@@ -6,6 +6,11 @@ import type { PageCounts, SleepBlocker } from "./page-ownership.js";
 import type { SurfaceLedger, TabRecord } from "./surface-ledger.js";
 
 const quietMs = 10_000;
+/**
+ * TS16: desktop Chrome protects a tab for ten minutes after it was last visible
+ * (kRecentlyVisible, kNonVisiblePagesUrgentProtectionTime in Chromium 151).
+ */
+const recentlyViewedMs = 10 * 60_000;
 const leftoverMs = 60_000;
 const readIdleMs = 120_000;
 const readKeep = 8;
@@ -93,6 +98,8 @@ interface SleepSession {
 interface HeldSession extends SleepSession {
   hostState: BrowserSessionState | null;
   releasedAt: number;
+  /** TS16: when each tab last stopped being viewed. */
+  readonly viewedUntil: Map<BrowserSurfaceId, number>;
   stop(): void;
 }
 
@@ -301,6 +308,7 @@ export class TabSleeper {
       ...session,
       hostState: null,
       releasedAt: Date.now(),
+      viewedUntil: new Map(),
       stop: () => {
         stopPolicy();
       },
@@ -330,6 +338,9 @@ export class TabSleeper {
         (session.hostState.keepAwake && !state.keepAwake))
     )
       session.releasedAt = Date.now();
+    const now = Date.now();
+    for (const surfaceId of session.hostState?.viewed ?? [])
+      if (!state.viewed.includes(surfaceId)) session.viewedUntil.set(surfaceId, now);
     session.hostState = state;
     for (const surfaceId of state.personUsed) session.ledger.markPersonUsed(surfaceId);
     this.poke();
@@ -378,6 +389,10 @@ export class TabSleeper {
     // else is left and memory is still over the threshold; an agent that comes back finds it as
     // it left it.
     if (!lastResort && state.runs > 0 && state.agentTabs?.includes(record.id)) return "agent-bound";
+    // TS16: what desktop Chrome protects (kRecentlyVisible), slept only as a last resort: a tab a
+    // person saw in the last ten minutes.
+    if (!lastResort && now - (session.viewedUntil.get(record.id) ?? -Infinity) < recentlyViewedMs)
+      return "recently-viewed";
     if (record.typed) return "typed";
     if (!young && now - record.usedAt < quietMs) return "quiet";
     const live = record.live;
@@ -432,6 +447,15 @@ export class TabSleeper {
             ? reason
             : null,
         );
+        // A protection that ends by time is looked at again when it ends.
+        if (reason === "recently-viewed")
+          earliest = Math.min(
+            earliest,
+            Math.max(
+              session.viewedUntil.get(record.id)! + recentlyViewedMs,
+              this.deadline(session, record, cutoff),
+            ),
+          );
         if (reason && reason !== "quiet") continue;
         // Under pressure a tab only quiet-blocked is a candidate now: the quiet period is a
         // preference there, not a protection.
@@ -923,12 +947,18 @@ export class TabSleeper {
                 this.blocked(id, record, now, undefined, true, bound) === null,
             )
             .sort((a, b) => a.record.usedAt - b.record.usedAt)[0];
-        // A young tab first; a tab a live agent is bound to only when no other is left (TS12).
+        // A young tab first; then one desktop Chrome protects (TS16); a tab a live agent is bound
+        // to only when no other is left (TS12).
         const young = lastResort("quiet", false);
-        // A bound tab only on a reading taken after the last sleep had settled: memory still over.
+        // A protected tab only on a reading taken after the last sleep had settled: memory still
+        // over.
         const freshReading =
           releasingAtStart && this.memorySampledAt > this.lastSleptAt + linuxPressureSettleMs;
-        const youngest = young ?? (freshReading ? lastResort("agent-bound", true) : undefined);
+        const youngest =
+          young ??
+          (freshReading
+            ? (lastResort("recently-viewed", true) ?? lastResort("agent-bound", true))
+            : undefined);
         if (youngest) {
           const { id, session, record } = youngest;
           const bound = !young;

@@ -505,7 +505,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       await context.addInitScript({
         content: browserPagePolicyScriptFor(providerConfig),
       });
-      await context.addInitScript({ content: captureTrackerScript });
+      await context.addInitScript({ content: pageStateScript });
       // Subscribe before creating pages: an inline popup dialog can precede
       // the client's per-page listener, especially over Playwright's transport.
       // Without this context subscription Playwright dismisses it at once.
@@ -833,7 +833,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         : undefined;
       const providerConfig = authenticator ? createPasskeyProviderConfig() : undefined;
       await context.addInitScript({ content: browserPagePolicyScriptFor(providerConfig) });
-      await context.addInitScript({ content: captureTrackerScript });
+      await context.addInitScript({ content: pageStateScript });
       timing("page-policy");
       context.on("dialog", (dialog) => {
         const page = dialog.page();
@@ -2220,46 +2220,164 @@ class PlaywrightContextHandle implements BrowserContext {
 }
 
 /**
- * TS1: counts the live camera, microphone and screen tracks a page's own getUserMedia and
- * getDisplayMedia calls returned, so a tab on a call is never put to sleep. Installed before the
- * page's scripts in every frame; a page that hides its own capture only loses its own call.
+ * TS1, TS16: what a document holds that a sleep would lose, for the reasons desktop Chrome's own
+ * discarding refuses (Chromium 151 discard_eligibility_policy.cc) plus a beforeunload handler.
+ * Installed before the page's scripts in every frame; a page that hides its own state only loses
+ * its own state, and one that fakes it only stays awake.
+ * - capturing: live camera, microphone or screen tracks from its own getUserMedia/getDisplayMedia
+ *   (kCapturingVideo, kCapturingAudio, kCapturingWindow, kCapturingDisplay);
+ * - media, recently-audible: an unmuted audio or video element plays, or played within the last
+ *   minute (kAudible, kRecentlyAudible; Web Audio and native players are the media check);
+ * - picture-in-picture (kPictureInPicture); pdf (kPdf);
+ * - notifications: the site may notify (kNotificationsEnabled);
+ * - device: an open USB device or a connected Bluetooth GATT server (kConnectedToUSB,
+ *   kConnectedToBluetooth);
+ * - form: the person changed a form control or edited the page (kFormInteractions, kUserEdits);
+ * - beforeunload: the page asks to be warned before it goes.
  */
-const captureTrackerScript = `(() => {
-  const key = Symbol.for("opensteer.capturing");
+const pageStateScript = `(() => {
+  const key = Symbol.for("opensteer.keepAwake");
   if (globalThis[key]) return;
-  const live = new Set();
+  const tracks = new Set();
+  const playing = new Set();
+  const devices = new Set();
+  let audibleAt = 0;
+  let edited = false;
+  let unloadHandlers = 0;
   Object.defineProperty(globalThis, key, {
-    value: () => [...live].some((track) => track.readyState === "live"),
+    value: () => {
+      if ([...tracks].some((track) => track.readyState === "live")) return "capturing";
+      if (devices.size) return "device";
+      const doc = globalThis.document;
+      if (doc && (doc.pictureInPictureElement || globalThis.documentPictureInPicture?.window))
+        return "picture-in-picture";
+      if (playing.size) return "media";
+      if (audibleAt && Date.now() - audibleAt < 60000) return "recently-audible";
+      if (doc && doc.contentType === "application/pdf") return "pdf";
+      if (globalThis.Notification && Notification.permission === "granted") return "notifications";
+      if (edited) return "form";
+      if (unloadHandlers > 0 || typeof globalThis.onbeforeunload === "function") return "beforeunload";
+      return null;
+    },
   });
-  const devices = globalThis.navigator && navigator.mediaDevices;
-  if (!devices) return;
-  const watch = (stream) => {
-    for (const track of stream.getTracks()) {
-      live.add(track);
-      track.addEventListener("ended", () => live.delete(track));
-      const stop = track.stop.bind(track);
-      track.stop = () => {
-        live.delete(track);
-        stop();
+  const media = globalThis.navigator && navigator.mediaDevices;
+  if (media) {
+    const watch = (stream) => {
+      for (const track of stream.getTracks()) {
+        tracks.add(track);
+        track.addEventListener("ended", () => tracks.delete(track));
+        const stop = track.stop.bind(track);
+        track.stop = () => {
+          tracks.delete(track);
+          stop();
+        };
+      }
+      return stream;
+    };
+    for (const name of ["getUserMedia", "getDisplayMedia"]) {
+      const original = media[name];
+      if (typeof original !== "function") continue;
+      media[name] = function (...args) {
+        return original.apply(this, args).then(watch);
       };
     }
-    return stream;
+  }
+  const audible = (element) => !element.paused && !element.ended && !element.muted && element.volume > 0;
+  const heard = (event) => {
+    const element = event.target;
+    if (!(element instanceof HTMLMediaElement)) return;
+    if (audible(element)) playing.add(element);
+    else if (playing.delete(element)) audibleAt = Date.now();
   };
-  for (const name of ["getUserMedia", "getDisplayMedia"]) {
-    const original = devices[name];
-    if (typeof original !== "function") continue;
-    devices[name] = function (...args) {
-      return original.apply(this, args).then(watch);
+  for (const type of ["playing", "pause", "ended", "volumechange", "emptied"])
+    globalThis.addEventListener(type, heard, true);
+  const editing = (event) => {
+    if (!event.isTrusted) return;
+    const target = event.target;
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      (target instanceof HTMLElement && target.isContentEditable)
+    )
+      edited = true;
+  };
+  globalThis.addEventListener("input", editing, true);
+  globalThis.addEventListener("change", editing, true);
+  const add = EventTarget.prototype.addEventListener;
+  const remove = EventTarget.prototype.removeEventListener;
+  const unloads = new WeakSet();
+  EventTarget.prototype.addEventListener = function (type, listener, options) {
+    if (this === globalThis && type === "beforeunload" && listener && !unloads.has(listener)) {
+      unloads.add(listener);
+      unloadHandlers++;
+    }
+    return add.call(this, type, listener, options);
+  };
+  EventTarget.prototype.removeEventListener = function (type, listener, options) {
+    if (this === globalThis && type === "beforeunload" && listener && unloads.has(listener)) {
+      unloads.delete(listener);
+      unloadHandlers--;
+    }
+    return remove.call(this, type, listener, options);
+  };
+  const usb = globalThis.USBDevice && USBDevice.prototype;
+  if (usb && usb.open && usb.close) {
+    const open = usb.open;
+    const close = usb.close;
+    usb.open = function (...args) {
+      return open.apply(this, args).then((value) => (devices.add(this), value));
+    };
+    usb.close = function (...args) {
+      return close.apply(this, args).finally(() => devices.delete(this));
+    };
+  }
+  const gatt = globalThis.BluetoothRemoteGATTServer && BluetoothRemoteGATTServer.prototype;
+  if (gatt && gatt.connect && gatt.disconnect) {
+    const connect = gatt.connect;
+    const disconnect = gatt.disconnect;
+    gatt.connect = function (...args) {
+      return connect.apply(this, args).then((value) => (devices.add(this), value));
+    };
+    gatt.disconnect = function (...args) {
+      devices.delete(this);
+      return disconnect.apply(this, args);
     };
   }
 })();`;
 
-async function documentCapturing(frame: Frame): Promise<boolean> {
-  return frame
-    .evaluate<boolean>(
-      `(() => { const live = globalThis[Symbol.for("opensteer.capturing")]; return typeof live === "function" && live(); })()`,
+type PageKeepAwake =
+  | "media"
+  | "capturing"
+  | "device"
+  | "picture-in-picture"
+  | "recently-audible"
+  | "pdf"
+  | "notifications"
+  | "form"
+  | "beforeunload";
+const pageKeepAwakeReasons: ReadonlySet<string> = new Set<PageKeepAwake>([
+  "media",
+  "capturing",
+  "device",
+  "picture-in-picture",
+  "recently-audible",
+  "pdf",
+  "notifications",
+  "form",
+  "beforeunload",
+]);
+
+/** The first thing this frame's document holds that a sleep would lose, or null. */
+async function documentKeepAwake(frame: Frame): Promise<PageKeepAwake | null> {
+  const reason = await frame
+    .evaluate<unknown>(
+      `(() => { const state = globalThis[Symbol.for("opensteer.keepAwake")]; return typeof state === "function" ? state() : null; })()`,
     )
-    .catch(() => false);
+    .catch(() => null);
+  return typeof reason === "string" && pageKeepAwakeReasons.has(reason)
+    ? (reason as PageKeepAwake)
+    : null;
 }
 
 const documentMediaScript = `(() => {
@@ -2361,11 +2479,14 @@ class PlaywrightPageHandle implements BrowserPage {
     });
   }
 
-  async keepAwake(): Promise<"tab-helper" | "capturing" | "upload" | "post" | "media" | null> {
+  async keepAwake(): Promise<"tab-helper" | PageKeepAwake | "upload" | "post" | "media" | null> {
     // Not before the look for the tab helper has ended (R1): asked again later, never closed early.
     if (this.contextHandle.lifecyclePending) return "tab-helper";
-    // TS1: a tab on a call or sharing a screen stays awake.
-    for (const frame of this.page.frames()) if (await documentCapturing(frame)) return "capturing";
+    // TS1, TS16: what desktop Chrome would not discard, and a page that asks before it goes.
+    for (const frame of this.page.frames()) {
+      const held = await documentKeepAwake(frame);
+      if (held) return held;
+    }
     if (this.uploads.size) return "upload";
     if (!["GET", "HEAD"].includes(this.documentMethod)) return "post";
     for (const frame of this.page.frames()) {

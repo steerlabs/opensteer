@@ -61,6 +61,14 @@ export type KeepAwakeReason =
   | "media"
   | "fullscreen"
   | "capturing"
+  /** TS16: what desktop Chrome's own discarding refuses, and a beforeunload handler. */
+  | "device"
+  | "picture-in-picture"
+  | "recently-audible"
+  | "pdf"
+  | "notifications"
+  | "form"
+  | "beforeunload"
   /** The tab-lifecycle helper is still being looked for after launch. */
   | "tab-helper";
 

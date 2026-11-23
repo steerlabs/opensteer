@@ -214,6 +214,13 @@ async function startFixtureServer() {
       });
       return;
     }
+    if (url.pathname === "/doc.pdf") {
+      response.writeHead(200, { "content-type": "application/pdf", "cache-control": "no-store" });
+      response.end(
+        "%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj 3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n",
+      );
+      return;
+    }
     if (url.pathname === "/media") {
       response.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
@@ -350,20 +357,17 @@ it("sleeps native Chromium tabs by discarding, restores scroll/forms/SPA/session
   const formLive = ledger.binding(formSurface.id)!;
   await formLive.cdp.send("Page.navigate", { url: `${server.originForSite(2)}/form` });
   await waitLoaded(formLive.cdp, "/form");
-  await evalValue(formLive.cdp, "document.getElementById('text-input').focus()");
-  await formLive.cdp.send("Input.insertText", { text: "Quarterly review" });
-  await evalValue(formLive.cdp, "document.getElementById('notes').focus()");
-  await formLive.cdp.send("Input.insertText", { text: "Line one" });
+  // A person's own typing keeps a tab awake (TS16); a script's values are what a discard keeps.
   await evalValue(
     formLive.cdp,
     `(() => {
+      document.getElementById('text-input').value = 'Quarterly review';
+      document.getElementById('notes').value = 'Line one';
       document.getElementById('priority').value = 'high';
       document.getElementById('agree').checked = true;
-      document.getElementById('secret').focus();
+      document.getElementById('secret').value = 's3cr3t-pass';
     })()`,
   );
-  await formLive.cdp.send("Input.insertText", { text: "s3cr3t-pass" });
-  await evalValue(formLive.cdp, "document.activeElement.blur()");
 
   // 3. SPA with 3 pushState entries
   const spaSurface = await ledger.openSurface();
@@ -1561,9 +1565,8 @@ it.each([
     await bgCdp.send("Page.navigate", { url: `${server.originForSite(2)}/draft?id=bg` });
     await waitLoaded(bgCdp, "/draft");
     await evalValue(bgCdp, `sessionStorage.setItem("mark", "kept")`);
-    await evalValue(bgCdp, "document.getElementById('draft').focus()");
-    await bgCdp.send("Input.insertText", { text: "typed draft" });
-    await evalValue(bgCdp, "document.activeElement.blur()");
+    // A person's own typing keeps a tab awake (TS16); a script's value is what a discard keeps.
+    await evalValue(bgCdp, "document.getElementById('draft').value = 'typed draft'");
     await evalValue(bgCdp, "window.scrollTo(0, 1750)");
     expect(await ledger.sleep(bg.id, () => null)).toBe(true);
     const bgRow = async () =>
@@ -2230,9 +2233,8 @@ it("sleeps a tab under memory pressure through the sleeper as soon as the helper
   await cdp.send("Page.navigate", { url: `${server.originForSite(1)}/draft?id=late` });
   await waitLoaded(cdp, "/draft");
   await evalValue(cdp, `sessionStorage.setItem("mark", "kept")`);
-  await evalValue(cdp, "document.getElementById('draft').focus()");
-  await cdp.send("Input.insertText", { text: "typed early" });
-  await evalValue(cdp, "document.activeElement.blur()");
+  // A person's own typing keeps a tab awake (TS16); a script's values are what a discard keeps.
+  await evalValue(cdp, "document.getElementById('draft').value = 'typed early'");
   await evalValue(cdp, "window.scrollTo(0, 1750)");
   // The runtime's sleeper, over the start threshold, with this browser's look still running.
   const limit = 2 * 1024 ** 3;
@@ -2480,3 +2482,74 @@ it("finishes a download whole when the tab that started it is put to sleep while
   for (let i = 0; i < file.length; i += 4093) if (file[i] !== i % 251) whole = false;
   expect(whole).toBe(true);
 }, 60_000);
+
+it("never puts a tab to sleep that desktop Chrome would not discard, nor one that asks before it goes (TS16)", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-chrome-rules-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  const ledger = new SurfaceLedger(launched.context);
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+  const open = async (site: number, address: string, loaded: string) => {
+    const tab = await ledger.openSurface();
+    const cdp = ledger.binding(tab.id)!.cdp;
+    await cdp.send("Page.navigate", { url: `${server.originForSite(site)}${address}` });
+    await waitLoaded(cdp, loaded);
+    return { tab, cdp, page: ledger.binding(tab.id)!.page };
+  };
+
+  // A beforeunload handler: something to lose. Removed, the tab may sleep.
+  const unload = await open(1, "/article?id=unload", "/article");
+  await evalValue(
+    unload.cdp,
+    "globalThis.warn = (event) => event.preventDefault(); addEventListener('beforeunload', warn); true",
+  );
+  expect(await unload.page.keepAwake?.()).toBe("beforeunload");
+  expect(await ledger.sleep(unload.tab.id, () => null)).toBe(false);
+  await evalValue(unload.cdp, "removeEventListener('beforeunload', warn); true");
+  expect(await unload.page.keepAwake?.()).toBeNull();
+  expect(await ledger.sleep(unload.tab.id, () => null)).toBe(true);
+
+  // The person typed into a form (kFormInteractions): trusted input, not a script's value.
+  const form = await open(2, "/draft?id=chrome-rules", "/draft");
+  await evalValue(form.cdp, "document.getElementById('draft').value = 'set by script'; true");
+  expect(await form.page.keepAwake?.()).toBeNull();
+  await evalValue(form.cdp, "document.getElementById('draft').focus()");
+  await form.cdp.send("Input.insertText", { text: "typed" });
+  expect(await form.page.keepAwake?.()).toBe("form");
+  expect(await ledger.sleep(form.tab.id, () => null)).toBe(false);
+
+  // Audio that played in the last minute (kRecentlyAudible).
+  const audio = await open(3, "/media", "/media");
+  await audio.cdp.send("Runtime.evaluate", {
+    expression: `(async () => { const player = document.getElementById('player'); player.loop = false; await player.play(); player.pause(); return true; })()`,
+    awaitPromise: true,
+    userGesture: true,
+  });
+  expect(await audio.page.keepAwake?.()).toBe("recently-audible");
+  expect(await ledger.sleep(audio.tab.id, () => null)).toBe(false);
+
+  // A site allowed to notify (kNotificationsEnabled).
+  const notify = await open(4, "/article?id=notify", "/article");
+  const internal = launched as unknown as {
+    browserCdp: { send(method: string, params?: Record<string, unknown>): Promise<unknown> };
+  };
+  await internal.browserCdp.send("Browser.grantPermissions", {
+    origin: server.originForSite(4),
+    permissions: ["notifications"],
+  });
+  expect(await notify.page.keepAwake?.()).toBe("notifications");
+  expect(await ledger.sleep(notify.tab.id, () => null)).toBe(false);
+
+  // A PDF (kPdf).
+  const pdf = await open(5, "/doc.pdf", "/doc.pdf");
+  expect(await pdf.page.keepAwake?.()).toBe("pdf");
+  expect(await ledger.sleep(pdf.tab.id, () => null)).toBe(false);
+}, 90_000);

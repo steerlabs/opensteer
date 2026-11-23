@@ -44,6 +44,25 @@ describe("TabSleeper", () => {
       await f.close();
     }
   });
+  it("keeps a tab a person saw in the last ten minutes awake, as desktop Chrome does, and sleeps it after (TS16)", async () => {
+    const f = await fixture({ memoryBudgetBytes: 2 * 1024 ** 3 });
+    try {
+      f.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [],
+        viewed: [f.record.id],
+        pinned: [],
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(9 * 60_000);
+      expect(f.ledger.stateOf(f.record.id)).toBe("live");
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(f.ledger.stateOf(f.record.id)).toBe("suspended");
+    } finally {
+      await f.close();
+    }
+  });
   it("waits for Host state and release, and a Watch pin never makes a tab a person's", async () => {
     const f = await fixture();
     try {
