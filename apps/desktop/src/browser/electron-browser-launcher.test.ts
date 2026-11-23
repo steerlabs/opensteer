@@ -11,7 +11,7 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 type Bounds = { x: number; y: number; width: number; height: number };
 
@@ -1019,14 +1019,6 @@ function ownSessions(
   };
 }
 
-/**
- * Past the moment a cast its last owner stopped runs on for that owner to ask again
- * (`parkedCastMs` in the launcher): as a person who turned away seconds ago.
- */
-async function pastParking(): Promise<void> {
-  await vi.advanceTimersByTimeAsync(1_000);
-}
-
 function world(id: number | string) {
   return {
     context: {
@@ -1485,14 +1477,6 @@ it("keeps a profile inventory its own channel's, whatever another channel does",
 });
 
 describe("Electron debugger teardown", () => {
-  // A cast its last owner stopped runs on a moment for that owner to ask again
-  // (`parkedCastMs`): time runs as it does, and a test moves it past that moment where it says.
-  beforeEach(() => {
-    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout"] });
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-  });
   it("waits for the native page to be destroyed even when no CDP input is pending", async () => {
     const hub = await hubPage("44");
     hub.contents.close.mockImplementation(() => {});
@@ -1781,10 +1765,8 @@ describe("Electron debugger teardown", () => {
     await late.send("Page.stopScreencast");
     expect(hub.sent("Page.stopScreencast")).toHaveLength(0);
     await picture.send("Page.stopScreencast");
-    await pastParking();
     expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
     await stream.send("Page.stopScreencast");
-    await pastParking();
     expect(hub.sent("Target.detachFromTarget").at(-1)).toEqual([
       "Target.detachFromTarget",
       { sessionId: "agent-native-session" },
@@ -1922,7 +1904,6 @@ describe("Electron debugger teardown", () => {
     // The person turns away: their cast stops and the agent's goes on. The agent asking again
     // for its own settings joins its own cast, and is handed its latest frame.
     await person.send("Page.stopScreencast");
-    await pastParking();
     expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
     png();
     await agent.send("Page.startScreencast", ask);
@@ -1937,7 +1918,6 @@ describe("Electron debugger teardown", () => {
     expect(new Set(frames.agent)).toEqual(new Set(["png 320x240"]));
     // The agent stops: its session ends with its cast, and the person's picture goes on.
     await agent.send("Page.stopScreencast");
-    await pastParking();
     expect(hub.sent("Target.detachFromTarget").at(-1)).toEqual([
       "Target.detachFromTarget",
       { sessionId: "cast-1" },
@@ -2365,7 +2345,6 @@ describe("Electron debugger teardown", () => {
       start.replies[0]!.resolve({});
       await expect(asking).rejects.toThrow(/closed/u);
       await releasing;
-      await pastParking();
       // No one asked for that cast: it ended, and the person was handed none of it.
       expect(personSaw).toEqual([]);
       expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
@@ -2387,9 +2366,7 @@ describe("Electron debugger teardown", () => {
       await person.send("Page.screencastFrameAck", { sessionId: 1 });
       await person.send("Page.stopScreencast");
       await person.send("Page.startScreencast", resized);
-      // The person turns to another tab, seconds before the dialog.
       await person.send("Page.stopScreencast");
-      await pastParking();
       hub.deliver("Page.javascriptDialogOpening", {
         defaultPrompt: "",
         frameId: "target-1",
@@ -2484,7 +2461,6 @@ describe("Electron debugger teardown", () => {
     it("lets go of a cast's session when it is stopped", async () => {
       const { agent, hub, own } = await casting("41");
       await agent.send("Page.stopScreencast");
-      await pastParking();
       expectOnce(hub, own);
       await hub.browser.close();
     });
@@ -2501,7 +2477,6 @@ describe("Electron debugger teardown", () => {
       fire(hub, "did-navigate");
       expect(own.detached()).toEqual([]);
       await agent.send("Page.stopScreencast");
-      await pastParking();
       expectOnce(hub, own);
       await hub.browser.close();
     });
@@ -2962,7 +2937,6 @@ describe("Electron debugger teardown", () => {
     // Chromium numbers each start's frames: the latest it answered.
     hub.deliver("Page.screencastFrame", frame(hub.sent("Page.startScreencast").length));
     await vi.waitFor(() => expect(delivered.length).toBeGreaterThan(0));
-    await pastParking();
     expect({
       starts: hub.sent("Page.startScreencast").length,
       stops: hub.sent("Page.stopScreencast").length,
@@ -3110,7 +3084,6 @@ describe("Electron debugger teardown", () => {
         hub.deliver("Page.screencastFrame", frameOf(hub.sent("Page.startScreencast").length));
         expect(delivered.length).toBeGreaterThan(0);
       });
-      await pastParking();
       const reached = {
         starts: hub.sent("Page.startScreencast").length,
         stops: hub.sent("Page.stopScreencast").length,
@@ -3209,14 +3182,13 @@ describe("Electron debugger teardown", () => {
         ledger: ledger as never,
         onDialogChanged: () => undefined,
       });
-      // The tab was pictured, then the person turned away, seconds before its dialog opened.
+      // The tab was pictured, then the person turned away, before its dialog opened.
       await follow.start();
       await follow.setStreaming(true);
       await vi.waitFor(() => expect(hub.sent("Page.startScreencast")).toHaveLength(1));
       hub.deliver("Page.screencastFrame", frameOf(1));
       await vi.waitFor(() => expect(delivered).toHaveLength(1));
       await follow.setStreaming(false);
-      await pastParking();
       dialogOpen = true;
       hub.deliver("Page.javascriptDialogOpening", {
         defaultPrompt: "",
@@ -3384,23 +3356,11 @@ describe("Electron debugger teardown", () => {
     expect(handed).toEqual([resting.width, shown.width]);
     expect({ discarded: discarded(), starts }).toEqual({ discarded: 0, starts: 1 });
     // The same frame once its cast runs is one it restarts for, once: what the test would see.
-    // The hub asks Chromium for nothing then (F32): the same picture, asked for again by the
-    // owner that stopped it, is the cast that runs.
     hub.deliver("Page.screencastFrame", frame(resting, starts));
-    await vi.waitFor(() => expect(discarded()).toBe(1));
-    await vi.waitFor(() =>
-      expect(asked).toEqual([
-        "Page.startScreencast",
-        "Page.stopScreencast",
-        "Page.startScreencast",
-      ]),
-    );
-    hub.deliver("Page.screencastFrame", frame(shown, starts));
     await vi.waitFor(() => expect(admitted()).toBe(2));
-    expect({ starts, stops: hub.sent("Page.stopScreencast").length }).toEqual({
-      starts: 1,
-      stops: 0,
-    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect({ discarded: discarded(), starts }).toEqual({ discarded: 1, starts: 2 });
+    expect(asked).toEqual(["Page.startScreencast", "Page.stopScreencast", "Page.startScreencast"]);
     await follow.close();
     await hub.browser.close();
   });
@@ -3878,8 +3838,7 @@ describe("Electron geometry lifecycle", () => {
       deliver("Page.javascriptDialogClosed", { frameId: "target-1", result: false, userInput: "" });
       for (const listener of ledgerListeners)
         listener({ dialog: null, surfaceId: "tab-b", type: "dialog" });
-      // The follow view asks again at once, and the frame Chromium sends next reaches it: its cast
-      // either started again or never stopped (asked again within parkedCastMs).
+      // The follow view asks again at once, and the frame Chromium sends next reaches it.
       const asked = asks.length;
       await vi.waitFor(() => expect(asks.length).toBeGreaterThan(asked));
       expect(asks.slice(asked).map(({ method }) => method)).toEqual(["Page.startScreencast"]);
