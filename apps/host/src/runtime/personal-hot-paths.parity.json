@@ -63,7 +63,7 @@
       "delete from \"bridge_deliveries\" where \"status\" in ($1, $2, $3) and \"updated_at\" < $4",
       "delete from \"browser_history_entries\" where \"last_visit_at\" <= $1 returning \"profile_id\"",
       "delete from \"browser_history_icons\" where not exists (select \"url\" from \"browser_history_entries\" where \"browser_history_entries\".\"profile_id\" = \"browser_history_icons\".\"profile_id\" and \"browser_history_entries\".\"origin\" = \"browser_history_icons\".\"origin\") returning \"profile_id\"",
-      "delete from \"channel_ingress_events\" where \"status\" in ($1, $2, $3) and \"processed_at\" < $4 and not exists (select \"channel_deliveries\".\"id\" from \"channel_deliveries\" where \"channel_deliveries\".\"ingress_id\" = \"channel_ingress_events\".\"id\")",
+      "delete from \"channel_ingress_events\" where \"status\" in ($1, $2, $3) and \"processed_at\" < $4",
       "delete from \"personal_account_link_keys\" where \"expires_at\" <= $1",
       "insert into \"auth_accounts\" (\"account_id\", \"created_at\", \"id\", \"password\", \"provider_id\", \"updated_at\", \"user_id\") values ($1, $2, $3, $4, $5, $6, $7)",
       "insert into \"auth_admissions\" (\"browser_nonce_hash\", \"consumed_at\", \"consumed_by\", \"created_at\", \"expires_at\", \"id\", \"purpose\", \"reserved_at\", \"reserved_email\", \"subject_selector\") values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
