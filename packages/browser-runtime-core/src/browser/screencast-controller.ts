@@ -136,7 +136,7 @@ export class ScreencastController {
     captureRevision?: number;
   }[] = [];
   private diagnose(record: (typeof this.diagnostics)[number]): void {
-    if (this.bound) record.surfaceId = this.bound.id;
+    if (!("surfaceId" in record) && this.bound) record.surfaceId = this.bound.id;
     if (this.diagnostics.length === 256) this.diagnostics.shift();
     this.diagnostics.push(record);
     if (process.env.OPENSTEER_BROWSER_DIAGNOSTICS === "1")
@@ -189,8 +189,11 @@ export class ScreencastController {
   private sessionCount = 0;
   /** Each page session's stops (`SessionCastState`): a session outlives the tab bound to it. */
   private readonly sessionStates = new WeakMap<CdpSession, SessionCastState>();
-  /** The time each session's oldest stop is given for its answer, while one is with Chromium. */
-  private readonly stopTimers = new WeakMap<
+  /**
+   * The time each session's oldest stop is given for its answer, while one is with Chromium:
+   * armed and cleared by `reconcile` (U4).
+   */
+  private readonly stopTimers = new Map<
     CdpSession,
     { readonly generation: number; readonly timer: ReturnType<typeof setTimeout> }
   >();
@@ -311,6 +314,7 @@ export class ScreencastController {
     this.unsubscribe = null;
     this.frames.close();
     this.lastPictures.clear();
+    this.reconcile(this.bound, this.bound?.state ?? null);
     // The pass unbinds the tab, stopping its cast.
     await this.quiet();
   }
@@ -328,6 +332,7 @@ export class ScreencastController {
     const bound = this.bound;
     this.bound = null;
     if (bound) this.release(bound);
+    this.reconcile(null, null);
     // No one waits on a pass that will not come.
     this.wake?.();
     const waiters = this.quietWaiters;
@@ -369,7 +374,7 @@ export class ScreencastController {
   private apply(bound: Bound, event: CastEvent): void {
     const before = bound.state;
     bound.state = after(before, event, this.readFacts());
-    this.reconcile(bound, before);
+    this.reconcile(bound, before, bound.cdp);
   }
 
   private session(cdp: CdpSession): SessionCastState {
@@ -377,20 +382,31 @@ export class ScreencastController {
   }
 
   /** Stores the session's state that follows from `event`: the one way it changes. */
-  private applySession(cdp: CdpSession, event: SessionEvent): void {
+  private applySession(
+    cdp: CdpSession,
+    event: SessionEvent,
+    surfaceId?: BrowserSurfaceId,
+  ): void {
     this.sessionStates.set(cdp, afterSession(this.session(cdp), event));
-    this.keepStopTimer(cdp);
-    if (this.bound?.cdp === cdp) this.reconcile(this.bound, this.bound.state);
+    this.reconcile(this.bound, this.bound?.state ?? null, cdp, surfaceId);
   }
 
   /**
-   * Makes every effect agree with the state, after each change of it (S1): work in flight the
-   * state no longer has is let go, the frame held for a start no longer sent is acked, the page
-   * is kept drawing while it is streamed, the timers are those the plan gives, the wait recorded
-   * is the plan's, and a cast newly given up says so.
+   * Makes every effect agree with the state, after each change of it (S1, U4): session stop
+   * timers, work in flight the state no longer has, the frame held for a start no longer sent,
+   * rendering demand, the timers the plan gives, the wait recorded, and a cast newly given up.
    */
-  private reconcile(bound: Bound, before: TabCastState): void {
-    if (this.bound !== bound) return;
+  private reconcile(
+    bound: Bound | null,
+    before: TabCastState | null,
+    sessionCdp?: CdpSession,
+    sessionSurfaceId?: BrowserSurfaceId,
+  ): void {
+    this.keepStopTimers(
+      sessionCdp ?? bound?.cdp,
+      sessionSurfaceId ?? (sessionCdp && sessionCdp !== bound?.cdp ? undefined : bound?.id),
+    );
+    if (!bound || this.bound !== bound) return;
     const state = bound.state;
     const told = state.told.state;
     const work = bound.inFlight;
@@ -402,7 +418,7 @@ export class ScreencastController {
       bound.inFlight = null;
     }
     if (told !== "sent") this.dropHeld(bound);
-    if (state.failed && state.failed !== before.failed) {
+    if (state.failed && state.failed !== before?.failed) {
       this.diagnose({ stage: "cast-failed", reason: state.failed.why });
       // The code is the one the clients know; the text says what is true of this cast.
       this.onError?.(
@@ -598,9 +614,15 @@ export class ScreencastController {
       this.stopCast(previous, "the tab left", false);
       this.release(previous);
     }
-    if (this.closed) return;
+    if (this.closed) {
+      this.reconcile(null, null);
+      return;
+    }
     const binding = this.surfaceId ? this.ledger.binding(this.surfaceId) : this.ledger.active();
-    if (!binding) return;
+    if (!binding) {
+      this.reconcile(null, null);
+      return;
+    }
     const session = this.sessions.get(binding.cdp);
     const onFrame = (parameters: unknown) => this.onFrame(bound, parameters);
     const onEnded = () => {
@@ -641,6 +663,15 @@ export class ScreencastController {
       waiting: null,
     };
     this.bound = bound;
+    this.claimStopTimeouts(bound);
+  }
+
+  /** Charges any stop timeouts recorded on `bound.cdp` while it was unbound to `bound` (U4). */
+  private claimStopTimeouts(bound: Bound): void {
+    const count = this.session(bound.cdp).timedOut;
+    if (count === 0) return;
+    this.applySession(bound.cdp, { kind: "timed-out-taken" });
+    if (this.bound === bound) this.apply(bound, { count, kind: "stop-timed-out" });
   }
 
   /** Lets go of a tab's listeners, its rendering and its timers, its start given up. */
@@ -681,8 +712,8 @@ export class ScreencastController {
   private sendStop(bound: Bound, why: string): void {
     const cdp = bound.cdp;
     const generation = this.session(cdp).generation;
-    this.applySession(cdp, { kind: "stop-sent" });
-    this.diagnose({ stage: "cast-stop", reason: why });
+    this.applySession(cdp, { kind: "stop-sent" }, bound.id);
+    this.diagnose({ stage: "cast-stop", reason: why, surfaceId: bound.id });
     void this.ledger
       .use(bound.id, () => cdp.send("Page.stopScreencast"))
       .catch(() => undefined)
@@ -749,29 +780,36 @@ export class ScreencastController {
   }
 
   /**
-   * The time a session's stop is given for its answer (S3), armed while one is with Chromium and
-   * cleared once none is, or once its generation is settled.
+   * The time each session's stop is given for its answer (S3, U4), armed while one is with
+   * Chromium and cleared by `reconcile` once none is, its generation is settled, or closed.
    */
-  private keepStopTimer(cdp: CdpSession): void {
-    const session = this.session(cdp);
-    const armed = this.stopTimers.get(cdp);
-    if (armed && (session.stops === 0 || armed.generation !== session.generation)) {
-      clearTimeout(armed.timer);
-      this.stopTimers.delete(cdp);
+  private keepStopTimers(focus?: CdpSession, surfaceId?: BrowserSurfaceId): void {
+    for (const [cdp, armed] of this.stopTimers) {
+      const session = this.session(cdp);
+      if (this.closed || session.stops === 0 || armed.generation !== session.generation) {
+        clearTimeout(armed.timer);
+        this.stopTimers.delete(cdp);
+      }
     }
-    if (session.stops === 0 || this.stopTimers.has(cdp) || this.closed) return;
+    if (!focus || this.closed) return;
+    const session = this.session(focus);
+    if (session.stops === 0 || this.stopTimers.has(focus)) return;
     const generation = session.generation;
+    const timedOutSurface = surfaceId ?? (this.bound?.cdp === focus ? this.bound.id : undefined);
     const timer = setTimeout(() => {
-      if (this.stopTimers.get(cdp)?.timer !== timer) return;
-      this.stopTimers.delete(cdp);
-      const bound = this.bound?.cdp === cdp ? this.bound : null;
-      this.diagnose({ stage: "cast-stop-timeout", durationMs: stopAnswerWaitMs });
-      this.applySession(cdp, { generation, kind: "stop-timed-out" });
-      if (bound && this.bound === bound) this.apply(bound, { kind: "stop-timed-out" });
+      if (this.stopTimers.get(focus)?.timer !== timer) return;
+      this.stopTimers.delete(focus);
+      this.diagnose({
+        stage: "cast-stop-timeout",
+        durationMs: stopAnswerWaitMs,
+        surfaceId: timedOutSurface,
+      });
+      this.applySession(focus, { generation, kind: "stop-timed-out" });
+      if (this.bound?.cdp === focus) this.claimStopTimeouts(this.bound);
       this.requestPass();
     }, stopAnswerWaitMs);
     timer.unref();
-    this.stopTimers.set(cdp, { generation, timer });
+    this.stopTimers.set(focus, { generation, timer });
   }
 
   /**

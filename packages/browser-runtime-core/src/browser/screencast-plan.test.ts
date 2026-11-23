@@ -358,7 +358,7 @@ describe("the next step", () => {
   });
 
   it("sends no start while one is prepared or with Chromium, or while the session's stop is", () => {
-    const stopping = { generation: 0, stops: 1 };
+    const stopping = { generation: 0, stops: 1, timedOut: 0 };
     for (const [, now] of wants)
       for (const state of states) {
         expect(nextStep(now, "tab#1", state, stopping).kind).not.toMatch(
@@ -437,7 +437,7 @@ describe("what a frame is", () => {
   // Re-check 10, S1 and S6: whether a frame is no one's is the plan's to say, from the session's
   // stops and whether anything is streamed.
   it("is dropped on a session whose stop is with Chromium, and while nothing is streamed", () => {
-    const stopping = { generation: 0, stops: 1 };
+    const stopping = { generation: 0, stops: 1, timedOut: 0 };
     for (const state of [sent, running])
       for (const now of [base, facts({ streaming: false })])
         expect(frameVerdict(state, stopping, measured(), now)).toBe("dropped");
@@ -642,7 +642,9 @@ describe("the state after each event", () => {
   });
 
   it("finds a session's stop still with Chromium when the tab is bound again", () => {
-    expect(nextStep(base, "tab#1", initialTabCastState(), { generation: 0, stops: 1 })).toEqual({
+    expect(
+      nextStep(base, "tab#1", initialTabCastState(), { generation: 0, stops: 1, timedOut: 0 }),
+    ).toEqual({
       kind: "wait",
       why: "a stop is with Chromium",
     });
@@ -720,18 +722,45 @@ describe("the state after each event", () => {
     let session = initialSessionCastState;
     session = afterSession(session, { kind: "stop-sent" });
     session = afterSession(session, { kind: "stop-sent" });
-    expect(session).toEqual({ generation: 0, stops: 2 });
+    expect(session).toEqual({ generation: 0, stops: 2, timedOut: 0 });
     expect(afterSession(session, { generation: 0, kind: "stop-answered" }).stops).toBe(1);
     const ended = afterSession(session, { kind: "casts-ended" });
-    expect(ended).toEqual({ generation: 1, stops: 0 });
+    expect(ended).toEqual({ generation: 1, stops: 0, timedOut: 0 });
     // The ended generation's answers change nothing, and never go below none.
     expect(afterSession(ended, { generation: 0, kind: "stop-answered" })).toBe(ended);
     const timedOut = afterSession(session, { generation: 0, kind: "stop-timed-out" });
-    expect(timedOut).toEqual({ generation: 1, stops: 0 });
+    expect(timedOut).toEqual({ generation: 1, stops: 0, timedOut: 1 });
+    expect(afterSession(timedOut, { kind: "timed-out-taken" })).toEqual({
+      generation: 1,
+      stops: 0,
+      timedOut: 0,
+    });
     expect(afterSession(timedOut, { generation: 0, kind: "stop-timed-out" })).toBe(timedOut);
     const again = afterSession(timedOut, { kind: "stop-sent" });
     expect(afterSession(again, { generation: 0, kind: "stop-answered" })).toBe(again);
-    // The tab's next start after a stop given up on counts as an attempt.
-    expect(after(initialTabCastState(), { kind: "stop-timed-out" }, base).unpictured).toBe(1);
+    // The tab's next start after a stop given up on counts as an attempt, even across a resize or
+    // rebind (re-check 11, finding 4 / U4).
+    const afterRebind = after(initialTabCastState(), { kind: "stop-timed-out" }, base);
+    expect(afterRebind.unpictured).toBe(1);
+    expect(
+      after(afterRebind, { at: startFacts(base.tab!), key, kind: "sent" }, base).unpictured,
+    ).toBe(1);
+    const resized = after(
+      { ...initialTabCastState(), lastKey: key, told: { key, state: "running" } },
+      { kind: "stopped", retry: false },
+      facts({}, { size: { height: 700, width: 900 } }),
+    );
+    const timedOutResize = after(
+      resized,
+      { kind: "stop-timed-out" },
+      facts({}, { size: { height: 700, width: 900 } }),
+    );
+    expect(
+      after(
+        timedOutResize,
+        { at: startFacts(base.tab!), key: otherKey, kind: "sent" },
+        facts({}, { size: { height: 700, width: 900 } }),
+      ).unpictured,
+    ).toBe(1);
   });
 });

@@ -849,6 +849,7 @@ function actions(
         if (world.engine === "desktop") {
           // The hub ends the session's casts and says so on it, then fails what it still holds;
           // the page's navigation ends.
+          tab.stopTimeouts = 0;
           chromium.casting = false;
           chromium.era += 1;
           chromium.emit(screencastEndedEvent, {});
@@ -896,7 +897,7 @@ async function turns(count: number) {
 
 interface Internals {
   readonly passing: boolean;
-  readonly stopTimers?: WeakMap<object, unknown>;
+  readonly stopTimers?: Map<object, unknown>;
   readonly bound: {
     readonly id: Id;
     readonly cdp: Chromium;

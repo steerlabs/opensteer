@@ -1481,6 +1481,197 @@ describe("the follow view, when a paint-timed-out tab moves to a new size (U3)",
 });
 
 /*
+ * Re-check 11, finding 4 (U4): a stop that timed out keeps its attempt count across a resize or
+ * rebind (including when the stop times out while the tab is unbound), and stop timers are cleared
+ * on `close()` and `abort()` by `reconcile`.
+ */
+describe("the follow view, when a stop times out or the controller shuts down (U4)", async () => {
+  const { ScreencastController } = await import("./screencast-controller.js");
+  const { LatestFrameStream } = await import("../stream/latest-frame-stream.js");
+  const { FakeCdpSession, jpeg } = await import("../test-support/fakes.js");
+  const settle = async () => {
+    for (let turn = 0; turn < 6; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  function makeTabs() {
+    let frameId = 0;
+    const makeTab = (id: "a" | "b") => {
+      const cdp = new FakeCdpSession();
+      let size = { height: 600, width: 800 };
+      let hangStop = false;
+      let emitMisfit = false;
+      cdp.responses.set("Page.startScreencast", () => {
+        const drawn = emitMisfit ? { height: size.height + 50, width: size.width + 100 } : size;
+        setImmediate(() =>
+          cdp.emit("Page.screencastFrame", {
+            data: jpeg(drawn.width, drawn.height).toString("base64"),
+            metadata: { deviceHeight: drawn.height, deviceWidth: drawn.width },
+            sessionId: ++frameId,
+          }),
+        );
+        return {};
+      });
+      cdp.responses.set("Page.stopScreencast", () =>
+        hangStop ? new Promise(() => undefined) : Promise.resolve({}),
+      );
+      const surface = {
+        active: id === "a",
+        documentId: `${id}1`,
+        geometryRevision: 1,
+        id,
+        loading: false,
+      };
+      const page = {
+        applyGeometry: async () => undefined,
+        capture: {
+          read: () => ({ ...size, rasterScale: 1, revision: surface.geometryRevision }),
+          subscribe: () => () => undefined,
+        },
+        invalidateSurface: async () => undefined,
+        settleRendering: async () => undefined,
+      };
+      return {
+        cdp,
+        page,
+        setEmitMisfit: (value: boolean) => {
+          emitMisfit = value;
+        },
+        setHangStop: (value: boolean) => {
+          hangStop = value;
+        },
+        setSize: (next: { height: number; width: number }) => {
+          size = next;
+          surface.geometryRevision += 1;
+        },
+        size: () => size,
+        surface,
+      };
+    };
+    const a = makeTab("a");
+    const b = makeTab("b");
+    let active: "a" | "b" = "a";
+    const listeners = new Set<(event: unknown) => void>();
+    const bindingOf = (id: "a" | "b") => {
+      const t = id === "a" ? a : b;
+      return { cdp: t.cdp, page: t.page, surface: { ...t.surface, active: active === id } };
+    };
+    const errors: string[] = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async () => undefined }),
+      ledger: {
+        active: () => bindingOf(active),
+        binding: (id: "a" | "b") => bindingOf(id),
+        dialogOf: () => null,
+        dialogOpen: () => false,
+        recordPageScale: () => undefined,
+        subscribe: (listener: (event: unknown) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+        viewportOf: (id: "a" | "b") => (id === "a" ? a : b).size(),
+        withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      } as never,
+      onDialogChanged: () => undefined,
+      onError: (error) => errors.push(error.reason ?? error.message),
+    });
+    const emit = (event: unknown) => {
+      for (const listener of listeners) listener(event);
+    };
+    return {
+      a,
+      b,
+      changed: (id: "a" | "b") =>
+        emit({ change: "updated", surface: bindingOf(id).surface, type: "changed" }),
+      errors,
+      follow,
+      turnTo: (id: "a" | "b") => {
+        active = id;
+        emit({ surfaces: [bindingOf("a").surface, bindingOf("b").surface], type: "snapshot" });
+      },
+    };
+  }
+
+  it("keeps a stop timeout's attempt count across a resize", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const view = makeTabs();
+      await view.follow.start();
+      await view.follow.setStreaming(true);
+      await settle();
+      // Resize while stop hangs for 5 s: the stop timeout counts as attempt 1 of the resized cast.
+      view.a.setHangStop(true);
+      view.a.setEmitMisfit(true);
+      view.a.setSize({ height: 700, width: 900 });
+      view.changed("a");
+      await settle();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await settle();
+      // Native limit is 1: with unpictured already 1 from the timed-out stop, one misfit gives up.
+      expect(view.errors).toEqual(["browser-capture-mismatch"]);
+      expect(
+        view.a.cdp.sent.filter(({ method }) => method === "Page.startScreencast"),
+      ).toHaveLength(2);
+      await view.follow.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a stop timeout's attempt count across a rebind when the stop timed out while unbound", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const view = makeTabs();
+      await view.follow.start();
+      await view.follow.setStreaming(true);
+      await settle();
+      // Turn to B while A's stop hangs; let A's stop time out while B is bound, then return to A.
+      view.a.setHangStop(true);
+      view.a.setEmitMisfit(true);
+      view.turnTo("b");
+      await settle();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await settle();
+      view.turnTo("a");
+      await settle();
+      expect(view.errors).toEqual(["browser-capture-mismatch"]);
+      expect(
+        view.a.cdp.sent.filter(({ method }) => method === "Page.startScreencast"),
+      ).toHaveLength(2);
+      await view.follow.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  for (const shutdown of ["close", "abort"] as const)
+    it(`clears armed stop timers on ${shutdown}()`, async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const view = makeTabs();
+        await view.follow.start();
+        await view.follow.setStreaming(true);
+        await settle();
+        view.a.setHangStop(true);
+        view.a.setSize({ height: 700, width: 900 });
+        view.changed("a");
+        await settle();
+        expect(vi.getTimerCount()).toBe(1);
+        if (shutdown === "close") await view.follow.close();
+        else view.follow.abort();
+        expect(vi.getTimerCount()).toBe(0);
+        await vi.advanceTimersByTimeAsync(10_000);
+        await settle();
+        expect(
+          view.follow.diagnostics.some((entry) => entry.stage === "cast-stop-timeout"),
+        ).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+});
+
+/*
  * Re-check 9, R1: the state of a bound tab has one writer, the pure `after` in screencast-plan.ts.
  * The controller turns what happened into an event and stores what `after` returns; it never sets
  * a field of that state itself.

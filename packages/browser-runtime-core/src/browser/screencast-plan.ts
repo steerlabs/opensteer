@@ -122,9 +122,11 @@ export interface SessionCastState {
   readonly generation: number;
   /** Stops sent in this generation and not answered. */
   readonly stops: number;
+  /** Stops whose answer was given up on while this session was not yet charged to a tab (U4). */
+  readonly timedOut: number;
 }
 
-export const initialSessionCastState: SessionCastState = { generation: 0, stops: 0 };
+export const initialSessionCastState: SessionCastState = { generation: 0, stops: 0, timedOut: 0 };
 
 /**
  * How long a stop's answer is waited for on a live session (S3) before it counts as answered. A
@@ -141,7 +143,9 @@ export type SessionEvent =
   /** The engine ended the session's casts: nothing of them is outstanding. */
   | { readonly kind: "casts-ended" }
   /** The time a stop's answer was given, in that generation, is up. */
-  | { readonly kind: "stop-timed-out"; readonly generation: number };
+  | { readonly kind: "stop-timed-out"; readonly generation: number }
+  /** A bound tab took the session's timed-out stop count into its own retries (U4). */
+  | { readonly kind: "timed-out-taken" };
 
 /** The session's state after `event`, the only way it changes. */
 export function afterSession(state: SessionCastState, event: SessionEvent): SessionCastState {
@@ -153,11 +157,13 @@ export function afterSession(state: SessionCastState, event: SessionEvent): Sess
         ? { ...state, stops: state.stops - 1 }
         : state;
     case "casts-ended":
-      return { generation: state.generation + 1, stops: 0 };
+      return { generation: state.generation + 1, stops: 0, timedOut: 0 };
     case "stop-timed-out":
       return event.generation === state.generation && state.stops > 0
-        ? { generation: state.generation + 1, stops: 0 }
+        ? { generation: state.generation + 1, stops: 0, timedOut: state.timedOut + 1 }
         : state;
+    case "timed-out-taken":
+      return state.timedOut > 0 ? { ...state, timedOut: 0 } : state;
   }
 }
 
@@ -329,8 +335,8 @@ export type CastEvent =
   | { readonly kind: "repair-drawn" }
   /** The engine ended the session's casts itself (a renderer gone, a debugger detached). */
   | { readonly kind: "casts-ended" }
-  /** The session's stop was not answered in its time: the next start is an attempt (S3). */
-  | { readonly kind: "stop-timed-out" }
+  /** The session's stop was not answered in its time: the next start is an attempt (S3, U4). */
+  | { readonly kind: "stop-timed-out"; readonly count?: number }
   | { readonly kind: "frame"; readonly verdict: FrameVerdict }
   /** The time the plan gave the running cast for a picture (`wait` with a timer) is up. */
   | { readonly kind: "first-frame-timeout" }
@@ -665,8 +671,10 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
     case "start-begun":
       return { ...state, told: { state: "preparing" } };
     case "sent": {
-      // A start for another cast is a change, not a retry: its count begins afresh (R6).
-      const another = !state.lastKey || fits(state.lastKey, event.key) !== "same";
+      // A start for another cast is a change, not a retry: its count begins afresh (R6). When
+      // `lastKey` is null (after a rebind, a non-retry stop, or a timed-out stop), any attempts
+      // already recorded belong to this cast and stay (U4).
+      const another = state.lastKey !== null && fits(state.lastKey, event.key) !== "same";
       return {
         ...state,
         lastKey: event.key,
@@ -719,20 +727,31 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
     }
     case "paint-backoff-ended":
       return { ...state, paint: null };
-    case "stopped":
+    case "stopped": {
+      const change = !event.retry && event.givenUp === undefined;
       return {
         ...state,
         failed:
           event.givenUp !== undefined && told.state === "running"
             ? { key: told.key, why: event.givenUp }
             : state.failed,
+        // A stop for a change (resize, pause, leaving) starts the next cast's key afresh so a
+        // timed-out stop's count is kept for the start that follows it (U4).
+        lastKey: change ? null : state.lastKey,
         shown: false,
         told: { state: "none" },
         trouble: null,
         // R2: a retry on the same facts with no picture counts against the cast. A restart for a
         // new fact (another key) is a change, not a retry, and does not; its start counts afresh.
-        unpictured: event.retry && !state.shown ? state.unpictured + 1 : state.unpictured,
+        unpictured: event.retry
+          ? state.shown
+            ? state.unpictured
+            : state.unpictured + 1
+          : change
+            ? 0
+            : state.unpictured,
       };
+    }
     case "repair-begun":
       return {
         ...state,
@@ -756,8 +775,9 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
         ? { ...state, shown: false, told: { state: "none" }, trouble: null }
         : state;
     case "stop-timed-out":
-      // S3: the stop counts as answered, and the start after it as an attempt with no picture.
-      return { ...state, unpictured: state.unpictured + 1 };
+      // S3 / U4: the stop counts as answered, and the start after it as an attempt with no picture,
+      // kept across a resize or rebind (`lastKey: null` so `sent` preserves the count).
+      return { ...state, lastKey: null, unpictured: state.unpictured + (event.count ?? 1) };
     case "frame":
       switch (event.verdict) {
         case "other-size-with-start":
