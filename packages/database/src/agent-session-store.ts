@@ -230,7 +230,7 @@ async function beginInTransaction(
   const now = new Date();
   const purpose = input.purpose ? outsideName(input.purpose, 200) : "";
   const title =
-    outsideName(purpose ? `${connection.label}: ${purpose}` : connection.label, 200) || "Task";
+    outsideName(purpose ? `${connection.label}: ${purpose}` : connection.label, 200) || "Agent";
   await tx
     .insertInto("threads")
     .values({

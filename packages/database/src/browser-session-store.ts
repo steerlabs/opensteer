@@ -169,7 +169,7 @@ export async function insertBrowserProfileOnLockedHome(
       .values({
         archivedAt: null,
         id: createId("browserProfile"),
-        name: outsideName(input.name, 120) || "Profile",
+        name: outsideName(input.name, 120) || "Browser profile",
         ownerId: input.ownerId,
         homeRunnerId: input.homeRunnerId,
         purpose: input.purpose ?? "person",
@@ -303,7 +303,7 @@ export async function renameBrowserProfile(
       await assertPersonalOwner(transaction, input.ownerId);
       const row = await transaction
         .updateTable("browserProfiles")
-        .set({ name: outsideName(input.name, 120) || "Profile", updatedAt: new Date() })
+        .set({ name: outsideName(input.name, 120) || "Browser profile", updatedAt: new Date() })
         .where("id", "=", input.profileId)
         .where("ownerId", "=", input.ownerId)
         .where("archivedAt", "is", null)
@@ -1262,7 +1262,7 @@ async function upsertBrowserSessionUseRow(
   id: string,
   input: BrowserSessionUseWrite,
 ): Promise<boolean> {
-  const pageTitle = input.page ? input.page.title.slice(0, 256) : null;
+  const pageTitle = input.page ? outsideName(input.page.title, 256) : null;
   const pageSite = input.page ? input.page.site.slice(0, 2048) : null;
   const row = await database
     .insertInto("browserSessionUses")
@@ -2038,7 +2038,7 @@ export function recordRunTabPlace(
 ): Promise<boolean> {
   const place = eventDataSchemas["place.entered"].parse({
     ...input.data,
-    title: utf8Prefix(storableText(input.data.title), 1024),
+    title: utf8Prefix(outsideName(storableText(input.data.title), 1024), 1024),
   });
   return commitPersonalMutation(database, async (tx, mutation) => {
     const owner = await tx
