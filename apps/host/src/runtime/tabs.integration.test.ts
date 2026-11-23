@@ -11,7 +11,7 @@ import {
 import { browserRuntimeWireVersion } from "@opensteer/protocol/browser";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { sql } from "kysely";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openAuxiliaryStream } from "./computer-apps.test-support.js";
 import {
   closed,
@@ -148,7 +148,21 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)("tab computer connecti
           try {
             const localDeviceId = await host.store.requireSelfDeviceId(browserComputer.runnerId);
             const remoteDeviceId = await host.store.requireSelfDeviceId(silentRunnerId);
-            expect(host.runtime.computerApps.attached(silentRunnerId)).toBe(true);
+            await vi.waitFor(() => {
+              expect(host.runtime.computerApps.attached(silentRunnerId)).toBe(true);
+            });
+            integrations.socket.send(
+              JSON.stringify({
+                ...integrations.fence,
+                apps: [],
+                module: "integrations",
+                ownerViewVersion: macOwnerViewVersion,
+                type: "runner.integrations.status",
+              }),
+            );
+            await vi.waitFor(() => {
+              expect(host.runtime.computerApps.ownerViewSupported(silentRunnerId)).toBe(true);
+            });
 
             const app = {
               bundleId: "net.whatsapp.WhatsApp",
