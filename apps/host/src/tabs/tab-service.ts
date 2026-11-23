@@ -43,6 +43,7 @@ import {
   TabStore,
   tabGroupOf,
   tabLayoutIds,
+  tabMutationMeta,
   type TabAuthorization,
   type TabDatabase,
   type TabRecord,
@@ -986,8 +987,8 @@ export class TabService implements TabServicePort {
       target,
       initialRevision,
     );
-    const responseLayout =
-      result.replayed && result.currentLayout ? result.currentLayout : result.layout;
+    const meta = tabMutationMeta(result);
+    const responseLayout = meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout;
     try {
       if (write.kind === "page") await this.options.pages.admitted?.(write);
       const openedId = result.tabIds[0];
@@ -995,7 +996,7 @@ export class TabService implements TabServicePort {
       const baseVersion = this.#catalogs.get(ownerId)?.version ?? 0;
       const row = await this.options.store.get(ownerId, openedId);
       if (!row) notFound();
-      if (!result.replayed && actor.kind === "person") {
+      if (!meta.replayed && actor.kind === "person") {
         this.#registerWindowBeforeProjection(ownerId, row);
       }
       const groupId = await this.#groupIdForTab(actor, openedId, responseLayout, database);
@@ -1008,7 +1009,7 @@ export class TabService implements TabServicePort {
       );
       const tab = projected.tabs[0];
       if (!tab) notFound();
-      if (!result.replayed) {
+      if (!meta.replayed) {
         if (actor.kind === "person") {
           this.#applyCatalogMutation(
             ownerId,
@@ -1023,7 +1024,7 @@ export class TabService implements TabServicePort {
       }
       return { tab, layout: responseLayout };
     } catch (error) {
-      if (!result.replayed) this.changed(ownerId);
+      if (!meta.replayed) this.changed(ownerId);
       throw error;
     }
   }
@@ -1110,7 +1111,8 @@ export class TabService implements TabServicePort {
       },
       (row) => permitted.has(row.id),
     );
-    if (!result.replayed) {
+    const meta = tabMutationMeta(result);
+    if (!meta.replayed) {
       this.#applyCatalogMutation(ownerId, result.layout);
       for (const row of cleanup)
         if (result.tabIds.includes(row.id)) {
@@ -1123,8 +1125,7 @@ export class TabService implements TabServicePort {
           }
         }
     }
-    const responseLayout =
-      result.replayed && result.currentLayout ? result.currentLayout : result.layout;
+    const responseLayout = meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout;
     return {
       closed: result.tabIds.filter((id) => permitted.has(id)),
       failed,
@@ -1157,8 +1158,8 @@ export class TabService implements TabServicePort {
         await this.options.authorize(actor, row, tx);
       },
     );
-    const responseLayout =
-      result.replayed && result.currentLayout ? result.currentLayout : result.layout;
+    const meta = tabMutationMeta(result);
+    const responseLayout = meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout;
     try {
       const reopenedId = result.tabIds[0];
       if (!reopenedId) notFound();
@@ -1166,7 +1167,7 @@ export class TabService implements TabServicePort {
       const visibleLayout = await this.#projectVisibleLayout(actor, responseLayout, database);
       const row = await this.options.store.get(ownerId, reopenedId);
       if (!row) notFound();
-      if (!result.replayed && actor.kind === "person") {
+      if (!meta.replayed && actor.kind === "person") {
         this.#registerWindowBeforeProjection(ownerId, row);
       }
       const groupId = tabGroupOf(visibleLayout, reopenedId);
@@ -1179,7 +1180,7 @@ export class TabService implements TabServicePort {
       );
       const tab = projected.tabs[0];
       if (!tab) notFound();
-      if (!result.replayed) {
+      if (!meta.replayed) {
         if (actor.kind === "person") {
           this.#applyCatalogMutation(
             ownerId,
@@ -1194,7 +1195,7 @@ export class TabService implements TabServicePort {
       }
       return { tab, layout: visibleLayout };
     } catch (error) {
-      if (!result.replayed) this.changed(ownerId);
+      if (!meta.replayed) this.changed(ownerId);
       throw error;
     }
   }
@@ -1298,8 +1299,8 @@ export class TabService implements TabServicePort {
       ),
       fingerprintInput,
     );
-    const responseLayout =
-      result.replayed && result.currentLayout ? result.currentLayout : result.layout;
+    const meta = tabMutationMeta(result);
+    const responseLayout = meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout;
     try {
       const baseVersion = this.#catalogs.get(ownerId)?.version ?? 0;
       const visibleLayout = await this.#projectVisibleLayout(actor, responseLayout, database);
@@ -1320,7 +1321,7 @@ export class TabService implements TabServicePort {
         database,
         groupCatalog,
       );
-      if (!result.replayed) {
+      if (!meta.replayed) {
         if (actor.kind === "person") {
           this.#applyCatalogMutation(
             ownerId,
@@ -1339,7 +1340,7 @@ export class TabService implements TabServicePort {
         layout: visibleLayout,
       };
     } catch (error) {
-      if (!result.replayed) this.changed(ownerId);
+      if (!meta.replayed) this.changed(ownerId);
       throw error;
     }
   }
@@ -1361,11 +1362,11 @@ export class TabService implements TabServicePort {
       operationKey(actor, key),
       this.#authorize(actor, [], [input.groupId]),
     );
-    if (!result.replayed) {
+    const meta = tabMutationMeta(result);
+    if (!meta.replayed) {
       this.#applyCatalogMutation(ownerId, result.layout);
     }
-    const responseLayout =
-      result.replayed && result.currentLayout ? result.currentLayout : result.layout;
+    const responseLayout = meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout;
     const visibleLayout = await this.#projectVisibleLayout(actor, responseLayout, database);
     const item = visibleLayout.items.find(
       (item) => item.kind === "group" && item.group.groupId === input.groupId,
@@ -1380,11 +1381,12 @@ export class TabService implements TabServicePort {
       operationKey({ kind: "person", ownerId }, key),
       this.#authorize({ kind: "person", ownerId }, [], [groupId]),
     );
-    if (!result.replayed) {
+    const meta = tabMutationMeta(result);
+    if (!meta.replayed) {
       this.#applyCatalogMutation(ownerId, result.layout);
     }
     return {
-      layout: result.replayed && result.currentLayout ? result.currentLayout : result.layout,
+      layout: meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout,
     };
   }
   async executeCommand(ownerId: UserId, command: TabCommand): Promise<TabCommandResult> {

@@ -66,6 +66,22 @@ export interface TabMutation {
   replayed?: boolean;
   currentLayout?: TabLayout;
 }
+const mutationMeta = new WeakMap<
+  TabMutation,
+  { readonly replayed: boolean; readonly currentLayout: TabLayout }
+>();
+/** Replay metadata kept out of enumerable receipt fields so concurrent replays remain deep-equal. */
+export function tabMutationMeta(mutation: TabMutation): {
+  readonly replayed: boolean;
+  readonly currentLayout?: TabLayout;
+} {
+  return (
+    mutationMeta.get(mutation) ?? {
+      replayed: mutation.replayed === true,
+      ...(mutation.currentLayout ? { currentLayout: mutation.currentLayout } : {}),
+    }
+  );
+}
 const resultSchema = z.object({ tabIds: z.array(TabIdSchema), layout: TabLayoutSchema });
 const replaySchema = z.object({ request: z.string(), result: resultSchema });
 const restoreUrl = z
@@ -441,7 +457,12 @@ export class TabStore {
       if (replay) {
         if (!matchingReplay)
           failure("conflict", "This operation key was already used for another command.");
-        return { ...matchingReplay, replayed: true, currentLayout: state.layout };
+        const receipt: TabMutation = {
+          tabIds: matchingReplay.tabIds,
+          layout: matchingReplay.layout,
+        };
+        mutationMeta.set(receipt, { replayed: true, currentLayout: state.layout });
+        return receipt;
       }
       const before = JSON.stringify(state.layout.items);
       const tabIds = await action(tx, state);
