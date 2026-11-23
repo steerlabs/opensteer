@@ -984,6 +984,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     requestId: z.uuid(),
     type: z.literal("integration.computer.setup.cancel"),
   }),
+  /** The person ends one computer-use session from its live view: it narrows, and runs now. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    sessionId: ComputerUseSessionIdSchema,
+    type: z.literal("integration.computer.session.stop"),
+  }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     setupRequestId: z.uuid(),
@@ -1425,6 +1431,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("integration.computer.setup.request"),
   }),
   z.object({ type: z.literal("integration.computer.setup.cancel") }),
+  z.object({ type: z.literal("integration.computer.session.stop") }),
   z.object({
     type: z.literal("integration.computer.setup.respond"),
   }),
@@ -1918,11 +1925,6 @@ const hostApiGroup3 = defineRpc({
    * Stop a live session from any client, which is the person saying so from
    * somewhere other than the Mac's own pill. Only that Mac's owner may.
    */
-  "integration.computer.session.stop": declaration(
-    "POST",
-    z.strictObject({ sessionId: ComputerUseSessionIdSchema }),
-    emptyOutputSchema,
-  ),
 } as const);
 
 const hostApiGroup4 = defineRpc({

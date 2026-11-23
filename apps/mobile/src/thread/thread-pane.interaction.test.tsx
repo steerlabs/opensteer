@@ -1303,10 +1303,15 @@ function fakeHost(initial: FixtureHostSnapshot) {
     () => 60_000,
   );
   const watchRelease = vi.fn();
-  const dispatch = vi.fn(async (command: { readonly type: string }) => ({
-    type: command.type,
-    message: { id: createId("message") },
+  const stopComputerSession = vi.fn(async (_input: { readonly sessionId: string }) => ({
+    data: {},
+    ok: true,
   }));
+  const dispatch = vi.fn(async (command: { readonly type: string; readonly sessionId?: string }) =>
+    command.type === "integration.computer.session.stop"
+      ? (await stopComputerSession({ sessionId: command.sessionId! }), { type: command.type })
+      : { type: command.type, message: { id: createId("message") } },
+  );
   const stopRun = vi.fn(async (_threadId: string) => undefined);
   const resumeThreadInputQueue = vi.fn(async (_threadId: string) => undefined);
   const loadTranscriptAround = vi.fn(async (_threadId: string, _messageId: string) => true);
@@ -1316,10 +1321,6 @@ function fakeHost(initial: FixtureHostSnapshot) {
     earlierPage = null;
     for (const listener of listeners) listener();
   });
-  const stopComputerSession = vi.fn(async (_input: { readonly sessionId: string }) => ({
-    data: {},
-    ok: true,
-  }));
   // The whole of a waiting message, read at the version the tray shows.
   const revisions = vi.fn(
     async (input: { threadId: string; messageId: string; expectedRevision?: number }) => {
@@ -1500,7 +1501,6 @@ function fakeHost(initial: FixtureHostSnapshot) {
     refresh: vi.fn(async () => undefined),
     resumeThreadInputQueue,
     rpc: {
-      "integration.computer.session.stop": stopComputerSession,
       "thread.message.revisions.list": revisions,
     },
     steerThreadInput: vi.fn(async () => undefined),
@@ -3153,10 +3153,7 @@ describe("a reply at work on a Mac", () => {
     expect(hasButton(container, "Notes")).toBe(false);
 
     await press(container, "Stop using Mac");
-    expect(host.stopComputerSession).toHaveBeenCalledWith(
-      { sessionId: session.sessionId },
-      { signal: expect.any(AbortSignal) },
-    );
+    expect(host.stopComputerSession).toHaveBeenCalledWith({ sessionId: session.sessionId });
     // The Host took the Mac back: the session leaves the list, and the line says so.
     host.move(working(macs(sessions([]))));
     await settle();

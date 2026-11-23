@@ -112,7 +112,6 @@ export const hostApiScopes = {
   "integration.computer.setup.review": "mutation",
   "integration.computer.setup.list": "session",
   "integration.server.secrets.list": "session",
-  "integration.computer.session.stop": "mutation",
   "computer.app.windows": "mutation",
   "integration.computer.apps.approved": "session",
   "integration.computer.apps.installed": "mutation",

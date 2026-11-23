@@ -156,6 +156,32 @@ describe("dispatchCommand", () => {
     }
   });
 
+  it("ends a computer-use session for the person at once, never as an ask, with nothing added (AD10 route 7)", async () => {
+    // The person's Stop of a computer-use session is the handler the route called, run once:
+    // the door's person path reads no admission, no scope and opens no Request, so it costs
+    // what the route cost and cannot become an ask.
+    const { registry, calls } = spyRegistry();
+    const admit = vi.fn(async () => ({ answer: "ask" as const, face: 0, execution: null }));
+    const scope = vi.fn(async () => null);
+    const propose = vi.fn();
+    const command = {
+      type: "integration.computer.session.stop",
+      idempotencyKey: "k",
+      sessionId: "cus_00000000-0000-4000-8000-000000000001",
+    } as unknown as HostApiCommand;
+    const output = await dispatchCommand(
+      personActor(context),
+      command,
+      { registry, admit, scope, propose } as never,
+      context,
+    );
+    expect(output).toEqual({ type: "integration.computer.session.stop" });
+    expect(calls).toEqual(["integration.computer.session.stop"]);
+    expect(admit).not.toHaveBeenCalled();
+    expect(scope).not.toHaveBeenCalled();
+    expect(propose).not.toHaveBeenCalled();
+  });
+
   describe.each(agents)("for %s", (_name, agent) => {
     /** The rule's own answer for this agent, as `admitCommand` would give it on live facts. */
     const byRule = async (caller: AgentCaller, command: HostApiCommand) => {

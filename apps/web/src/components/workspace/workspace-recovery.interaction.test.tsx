@@ -926,7 +926,11 @@ describe("the v7 web review's findings", () => {
     const shown = client.tabViewer(held.key);
 
     await act(async () => {
-      await client.rpc["integration.computer.session.stop"]({ sessionId: session.sessionId });
+      await client.dispatch({
+        idempotencyKey: "stop-held-session",
+        sessionId: session.sessionId,
+        type: "integration.computer.session.stop",
+      });
     });
     // The client has seen the agent's session end: that is when it could have moved the tab.
     await until("The agent's session never ended", () =>

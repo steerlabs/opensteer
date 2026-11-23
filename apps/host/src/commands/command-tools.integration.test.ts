@@ -609,6 +609,29 @@ const doorRoutes = new Map<string, DoorRoute>([
   ["POST /v1/personal-remote-access/pairing-codes", { kind: "door" }],
   ["PUT /v1/personal-remote-access", { kind: "executor", of: "personal.remoteAccess.request" }],
   [
+    "POST /v1/personal-remote-access/executor/connect-provision",
+    { kind: "executor", of: "personal.remoteAccess.request" },
+  ],
+  [
+    "POST /v1/personal-remote-access/executor/connect-rotate",
+    { kind: "executor", of: "personal.remoteAccess.request" },
+  ],
+  ["POST /internal/v1/browser-sources/pair", { kind: "executor", of: "browser.source.pair" }],
+  [
+    "POST /internal/v1/browser-sources/pair/challenge",
+    {
+      kind: "not a Home command",
+      why: "signs the extension’s challenge with the invitation’s key so it knows this Home; writes nothing",
+    },
+  ],
+  [
+    "POST /v1/runner/leave",
+    {
+      kind: "not a Home command",
+      why: "a device’s own sign-out with its own key, as signing out is; it removes only that device and records device.left",
+    },
+  ],
+  [
     "DELETE /v1/apps/:appId/:theme/:token/*",
     {
       kind: "not a Home command",
@@ -958,31 +981,10 @@ const doorRoutes = new Map<string, DoorRoute>([
 const outsideTheDoor = new Map<string, string>([
   [
     "DELETE /v1/personal-remote-access/connect-resource",
-    "the Mac app's step of an unlink or Off; not yet refused without its operation",
+    "the Mac app's step of an unlink or Off, and its startup cleanup; narrowing, put to the lead",
   ],
   [
     "PUT /v1/personal-remote-access/connect-projection",
-    "the Mac app's step of a Remote access change; not yet refused without its operation",
+    "publishing Connect as on is refused without its operation; as off, the Mac app's startup cleanup does it with none; put to the lead",
   ],
-  [
-    "POST /v1/personal-remote-access/executor/connect-provision",
-    "the Mac app's step of turning Connect on; not yet refused without its operation",
-  ],
-  [
-    "POST /v1/personal-remote-access/executor/connect-rotate",
-    "the Mac app's step of a rotate; not yet refused without its operation",
-  ],
-  [
-    "POST /internal/v1/browser-sources/pair",
-    "the Chrome extension's side of a pairing (browser.source.pair); not yet refused without the person's pairing",
-  ],
-  [
-    "POST /internal/v1/browser-sources/pair/challenge",
-    "the Chrome extension's side of a pairing (browser.source.pair); not yet refused without the person's pairing",
-  ],
-  [
-    "POST /v1/rpc/integration.computer.session.stop",
-    "ends a computer-use session: a narrowing change with no table row",
-  ],
-  ["POST /v1/runner/leave", "a device removing itself by its own signed proof: no table row"],
 ]);

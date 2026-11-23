@@ -50,7 +50,6 @@ export function createDeviceRpcHandlers(
   | "integration.platform.get"
   | "integration.grants.list"
   | "integration.computer.apps.installed"
-  | "integration.computer.session.stop"
   | "integration.computer.setup.review"
   | "integration.computer.setup.list"
   | "integration.computer.policy.get"
@@ -122,13 +121,6 @@ export function createDeviceRpcHandlers(
           await approvals.installedComputerApps({ ...input, actorUserId: await owner(context) }),
         ),
       ),
-    "integration.computer.session.stop": async (input, context) => {
-      await approvals.stopComputerUseSession({
-        actorUserId: await owner(context),
-        sessionId: input.sessionId,
-      });
-      return rpcSuccess({});
-    },
     "integration.computer.setup.review": async (input, context) => {
       const result = await approvals.reviewComputerAppSetup({
         ...input,
@@ -187,6 +179,7 @@ export type DeviceCommand = Extract<
       | "integration.computer.app.block"
       | "integration.computer.setup.request"
       | "integration.computer.setup.cancel"
+      | "integration.computer.session.stop"
       | "integration.grant.create"
       | "integration.grant.revoke"
       | "integration.server.secrets.set";
@@ -255,6 +248,13 @@ async function executeDeviceCommand(
         }),
       };
     }
+    case "integration.computer.session.stop":
+      // The same call the person's route made: what it ends and records is unchanged.
+      await approvals.stopComputerUseSession({
+        actorUserId: session.user.id,
+        sessionId: command.sessionId,
+      });
+      return { type: command.type };
     case "integration.computer.setup.cancel":
       await approvals.cancelComputerAppSetup({
         settlementSessionId: session.id,

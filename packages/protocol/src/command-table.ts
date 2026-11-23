@@ -718,6 +718,13 @@ export const commandTable: CommandTable = {
     faces: one("narrow"),
     governs: (c) => resource("device-setup", c.requestId),
   },
+  "integration.computer.session.stop": {
+    family: "device-apps",
+    scope: "nameable",
+    step: "none",
+    faces: one("narrow"),
+    governs: (c) => resource("device-session", c.sessionId),
+  },
   "integration.computer.policy.set": {
     family: "device-apps",
     scope: "home",

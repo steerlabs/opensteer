@@ -303,8 +303,16 @@ const visualSnapshot = {
   user: { id: "usr_00000000-0000-4000-8000-000000000001" },
 };
 const hostClient = {
-  dispatch: async (command: { type: string }) =>
-    settle({ type: command.type, request: { id: "00000000-0000-4000-8000-000000000009" } }),
+  dispatch: async (command: { type: string; sessionId?: string }) => {
+    if (command.type === "integration.computer.session.stop") {
+      const result = await settle({ type: command.type });
+      const index = sessions.findIndex((session) => session.sessionId === command.sessionId);
+      if (index >= 0) sessions.splice(index, 1);
+      rerenderScenario();
+      return result;
+    }
+    return settle({ type: command.type, request: { id: "00000000-0000-4000-8000-000000000009" } });
+  },
   getSnapshot: () => visualSnapshot,
   refresh: async () => undefined,
   subscribe: () => () => undefined,
@@ -327,13 +335,6 @@ const hostClient = {
           total: matches.length,
         },
       };
-    },
-    "integration.computer.session.stop": async ({ sessionId }: { sessionId: string }) => {
-      const result = await settle({ ok: true, data: {} });
-      const index = sessions.findIndex((session) => session.sessionId === sessionId);
-      if (index >= 0) sessions.splice(index, 1);
-      rerenderScenario();
-      return result;
     },
     "integration.grants.list": async () => ({ ok: true, data: { grants: [] } }),
   },

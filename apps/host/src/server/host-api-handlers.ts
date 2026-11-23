@@ -32,7 +32,6 @@ export function createHostApiHandlers(
     | "integration.platform.get"
     | "integration.grants.list"
     | "integration.computer.apps.installed"
-    | "integration.computer.session.stop"
     | "integration.computer.setup.review"
     | "integration.computer.setup.list"
     | "integration.computer.policy.get"

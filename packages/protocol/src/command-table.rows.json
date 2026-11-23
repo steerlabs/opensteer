@@ -1499,6 +1499,30 @@
       }
     },
     {
+      "type": "integration.computer.session.stop",
+      "family": "device-apps",
+      "governs": "a computer-use session ← `sessionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "the person's app ends a session from its live view (AD10: was the RPC `integration.computer.session.stop`); `computerUse.stop` unchanged",
+      "effect": {
+        "where": "outside",
+        "why": "device-routes.ts:253: computerUse.stop ends the session on its computer",
+        "ongoing": false
+      }
+    },
+    {
       "type": "integration.computer.policy.set",
       "family": "device-apps",
       "governs": "a device's computer-use approval policy (`appApproval:\"ask\"` only)",

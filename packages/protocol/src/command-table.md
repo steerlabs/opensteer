@@ -79,7 +79,7 @@ edit. Callers: (a) your own agent at Full access, (b) your own agent below Full 
 | `runner.enrollment.createPhone` | a new phone; returns token and pairing | widen-other + secret | ask | ask | ask | nf | — |  |
 | `runner.enrollment.retire` | a pending enrollment ← `enrollmentId` | narrow | now | ask | now | nf | B | `server.ts:2495` |
 
-## Device apps, approvals, local servers (12)
+## Device apps, approvals, local servers (13)
 
 | Command | Governs ← input | Class | (a) | (b) | (c) | (d) | Step | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -87,6 +87,7 @@ edit. Callers: (a) your own agent at Full access, (b) your own agent below Full 
 | `integration.computer.setup.respond` | a setup Request ← `setupRequestId`; allow approve (+secrets) / decline narrow | approve / narrow | now/ask | now/ask | now/ask | now/ask | B | allow face points at the same Request; re-authenticates the session (`dev-routes:274-283`) |
 | `integration.computer.setup.set` | an approval's settings ← `input.connectionId` | approve | ask | ask | ask | ask | — |  |
 | `integration.computer.setup.cancel` | a pending setup ← `requestId` | narrow | now | ask | now | now | B |  |
+| `integration.computer.session.stop` | a computer-use session ← `sessionId` | narrow | now | ask | now | now | — | the person's app ends a session from its live view (AD10: was the RPC `integration.computer.session.stop`); `computerUse.stop` unchanged |
 | `integration.computer.policy.set` | a device's computer-use approval policy (`appApproval:"ask"` only) | narrow | now | ask | now | nf | B |  |
 | `integration.computer.app.block` | a Mac app approval ← `connectionId` | narrow | now | ask | now | now | B | store takes an identity already |
 | `integration.grant.create` | which installation may use a device-data account ← `input.connectionId`,`installationId` | approve | ask | ask | ask | ask | — | today's `app_access_request {dataApp}` |

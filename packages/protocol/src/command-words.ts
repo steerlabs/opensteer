@@ -71,6 +71,7 @@ export const commandTitles: { readonly [K in CommandType]: string } = {
   "integration.computer.setup.respond": "Answer an app setup",
   "integration.computer.setup.set": "Approve an app on a device",
   "integration.computer.setup.cancel": "Cancel an app setup",
+  "integration.computer.session.stop": "Stop a computer-use session",
   "integration.computer.policy.set": "Ask before agents use new apps on a device",
   "integration.computer.app.block": "Block an app on a device",
   "integration.grant.create": "Let an app use a device's data",

@@ -2610,10 +2610,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         return mockRefusal(error);
       }
     },
-    "integration.computer.session.stop": async (input) => {
-      await client.stopComputerUseSession(input.sessionId);
-      return rpcSuccess({});
-    },
     "integration.computer.apps.installed": async (input) => {
       try {
         return rpcSuccess(client.listInstalledComputerApps(input));
@@ -3469,6 +3465,9 @@ async function executeMockCommand(
       });
     case "integration.computer.setup.cancel":
       client.cancelComputerAppSetup(command.requestId);
+      return rpcSuccess({ type: command.type });
+    case "integration.computer.session.stop":
+      await client.stopComputerUseSession(command.sessionId);
       return rpcSuccess({ type: command.type });
     case "integration.computer.setup.set":
       if ("deviceId" in command.input) return client.executeCommandOnce(command);
