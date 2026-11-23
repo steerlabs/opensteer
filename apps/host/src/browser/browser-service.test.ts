@@ -7746,7 +7746,7 @@ it("batches additive person-use marks once per runtime connection and replays on
       sharedControl: true,
       connectTimeoutMs: 1000,
       passkeys: false,
-      onState: async () => ({}),
+      onState: async (state: string) => ({ state }),
       onTerminal: () => undefined,
       onTabsChanged: () => undefined,
       onRecordsChanged: () => undefined,
@@ -10202,5 +10202,98 @@ describe("work under a connection's authority never uses the clipboard or change
         }),
       ),
     ).rejects.toThrow("BrowserService lock-order violation");
+  });
+
+  it("refuses to treat an undefined or stateless onState result as confirmed ready (PH5)", async () => {
+    const sent: Array<{ type: string }> = [];
+    const socket = Object.assign(new EventEmitter(), {
+      readyState: 1,
+      send: (data: string, _options: unknown, callback: (error?: Error) => void) => {
+        sent.push(JSON.parse(data));
+        callback();
+      },
+      close: () => socket.emit("close", 1000, Buffer.from("closed")),
+    });
+    const sessionId = createBrowserSessionId();
+    let onStateCalled = 0;
+    const broker = new HostedBrowserBroker({
+      socket,
+      sessionId,
+      groupId: sessionId,
+      readSessionState: async () => ({ runs: 0, pinned: [] }),
+      personUse: { tabs: new Set(), persist: async () => undefined },
+      savedTabIds: [],
+      profileId: null,
+      surfaceState: 1,
+      sharedControl: true,
+      connectTimeoutMs: 1000,
+      passkeys: false,
+      onState: async () => {
+        onStateCalled++;
+        return {};
+      },
+      onTerminal: () => undefined,
+      onTabsChanged: () => undefined,
+      onRecordsChanged: () => undefined,
+      onPageChanged: () => undefined,
+    } as unknown as ConstructorParameters<typeof HostedBrowserBroker>[0]);
+    cleanups.push(async () => {
+      socket.emit("close", 1000, Buffer.from("closed"));
+    });
+    const emit = (message: unknown) =>
+      socket.emit("message", Buffer.from(JSON.stringify(message)), false);
+    const tabId = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
+    emit({
+      type: "browser.snapshot",
+      sessionId,
+      access: "read-write",
+      state: "ready",
+      dialog: null,
+      surfaceState: 1,
+      targetedStreamingVersion: 1,
+    });
+    const rows = new Map([
+      [
+        tabId,
+        BrowserTabRecordSchema.parse({
+          id: tabId,
+          order: 0,
+          title: "Tab",
+          url: "about:blank",
+          state: "live",
+          icon: null,
+          openerId: null,
+          documentId: "doc",
+          geometryRevision: 1,
+          loading: false,
+          navigationFailed: false,
+          canGoBack: false,
+          canGoForward: false,
+          sizedByAgent: false,
+        }),
+      ],
+    ]);
+    const publisher = new KeyedStreamPublisher({
+      ids: () => rows.keys(),
+      read: (id) => rows.get(BrowserSurfaceIdSchema.parse(id)),
+      meta: () => ({ activeId: tabId, inventoryRevision: 1 }),
+      targetBytes: 64 * 1024,
+      envelopeBytes: 256,
+    });
+    for (let stream = publisher.next(); stream; stream = publisher.next()) {
+      emit({ type: "browser.tabs", stream });
+      publisher.settled(stream, true);
+    }
+    let resolved = false;
+    void broker.ready().then(
+      () => {
+        resolved = true;
+      },
+      () => undefined,
+    );
+    await vi.waitFor(() => expect(onStateCalled).toBe(1), { timeout: 1000 });
+    for (let i = 0; i < 5; i++) await new Promise<void>((r) => setImmediate(r));
+    expect(resolved).toBe(false);
+    expect(sent.filter((message) => message.type === "session.state")).toEqual([]);
   });
 });

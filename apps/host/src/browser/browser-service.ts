@@ -10229,7 +10229,7 @@ export class HostedBrowserBroker {
         if (!this.#reconnecting) {
           if (!this.#adoptedFromPool) await this.#sendSavedTabs();
           const updated = await this.#onState("ready");
-          readyConfirmed = updated?.state === undefined || updated.state === "ready";
+          readyConfirmed = updated?.state === "ready";
         }
         if (readyConfirmed && !this.#stopping && !this.#detaching) {
           becameReady = true;
