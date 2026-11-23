@@ -23,6 +23,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { describeStore, testModelSelection } from "@opensteer/database/test-support/store";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import { sql } from "kysely";
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type { TabActor } from "../tabs/ports.js";
@@ -854,7 +855,7 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     ).not.toContain(unavailableTask);
   });
 
-  it("applies connectionRequests inside SQL before pending caps and activity paging, matching absence byte-for-byte", async ({
+  it("applies connectionRequests inside SQL before pending caps and activity paging, matching absence byte-for-byte across Request-derived fields (excluding task.status, which stays truthful as the task's own state)", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("lineage-sql-paging-and-caps");
@@ -971,19 +972,33 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       idempotencyKey: "r5-second-visible-message",
     });
 
-    const pageSlice = (result: Awaited<ReturnType<typeof callA>>) => {
+    // Compared fields (all Request-derived and paged outputs): items, hasMore, nextBefore,
+    // pendingRequests, and task.pendingRequests. task.status is explicitly excluded because
+    // a task's status is the task's own state and stays truthful while the Request stays hidden.
+    const requestScopedAbsenceSlice = (result: Awaited<ReturnType<typeof callA>>) => {
       const body = result.structuredContent as {
         items: unknown[];
         hasMore: boolean;
         nextBefore: string | null;
+        pendingRequests?: unknown[];
+        task: { pendingRequests: number; status: string };
       };
-      return { items: body.items, hasMore: body.hasMore, nextBefore: body.nextBefore };
+      return {
+        items: body.items,
+        hasMore: body.hasMore,
+        nextBefore: body.nextBefore,
+        pendingRequests: body.pendingRequests ?? null,
+        taskPendingRequests: body.task.pendingRequests,
+      };
     };
+    const taskStatus = (result: Awaited<ReturnType<typeof callA>>) =>
+      (result.structuredContent as { task: { status: string } }).task.status;
 
     const baseDefault = await callA("opensteer_task_read", { taskId: taskBActivity, limit: 2 });
     expect(baseDefault.isError, JSON.stringify(baseDefault.content)).not.toBe(true);
-    expect(pageSlice(baseDefault).items).toHaveLength(2);
-    expect(pageSlice(baseDefault).hasMore).toBe(false);
+    expect(requestScopedAbsenceSlice(baseDefault).items).toHaveLength(2);
+    expect(requestScopedAbsenceSlice(baseDefault).hasMore).toBe(false);
+    expect(taskStatus(baseDefault)).toBe("running");
 
     const baseActivity = await callA("opensteer_task_read", {
       taskId: taskBActivity,
@@ -991,8 +1006,8 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       limit: 2,
     });
     expect(baseActivity.isError, JSON.stringify(baseActivity.content)).not.toBe(true);
-    expect(pageSlice(baseActivity).items).toHaveLength(2);
-    expect(pageSlice(baseActivity).hasMore).toBe(false);
+    expect(requestScopedAbsenceSlice(baseActivity).items).toHaveLength(2);
+    expect(requestScopedAbsenceSlice(baseActivity).hasMore).toBe(false);
 
     const hiddenActivityReq = await storeFixture.store.requests.create({
       callId: "r5-hidden-activity-question",
@@ -1005,6 +1020,17 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       payload: { kind: "person.question" },
       presentation: questionPresentation("Hidden newest question"),
     });
+    // Reflect the task's own waiting state while B's Run waits on that hidden Request.
+    await storeFixture.database
+      .updateTable("runs")
+      .set({ status: "waiting" })
+      .where("id", "=", runBActivity.runId)
+      .execute();
+    await storeFixture.database
+      .updateTable("threads")
+      .set({ status: "waiting" })
+      .where("id", "=", taskBActivity)
+      .execute();
 
     const afterDefault = await callA("opensteer_task_read", { taskId: taskBActivity, limit: 2 });
     expect(afterDefault.isError, JSON.stringify(afterDefault.content)).not.toBe(true);
@@ -1012,7 +1038,11 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     expect(JSON.stringify(afterDefault.structuredContent)).not.toContain(
       hiddenActivityReq.request.id,
     );
-    expect(JSON.stringify(pageSlice(afterDefault))).toBe(JSON.stringify(pageSlice(baseDefault)));
+    expect(JSON.stringify(requestScopedAbsenceSlice(afterDefault))).toBe(
+      JSON.stringify(requestScopedAbsenceSlice(baseDefault)),
+    );
+    // Excluded from the absence comparison above: task.status truthfully reports the task's own state.
+    expect(taskStatus(afterDefault)).toBe("waiting");
 
     const afterActivity = await callA("opensteer_task_read", {
       taskId: taskBActivity,
@@ -1023,7 +1053,16 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     expect(JSON.stringify(afterActivity.structuredContent)).not.toContain(
       hiddenActivityReq.request.id,
     );
-    expect(JSON.stringify(pageSlice(afterActivity))).toBe(JSON.stringify(pageSlice(baseActivity)));
+    expect(JSON.stringify(requestScopedAbsenceSlice(afterActivity))).toBe(
+      JSON.stringify(requestScopedAbsenceSlice(baseActivity)),
+    );
+    expect(taskStatus(afterActivity)).toBe("waiting");
+
+    const architectureDoc = readFileSync(
+      new URL("../../../../docs/architecture.md", import.meta.url),
+      "utf8",
+    );
+    expect(architectureDoc).toMatch(/status.*task's own state.*truthful/iu);
 
     expect(
       await callA("opensteer_task_read", {
@@ -1082,7 +1121,9 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       presentation: {
         kind: "form",
         title: "Foreign connection question",
-        fields: [{ id: "answer", prompt: "Ready?", secret: false, custom: true, multiSelect: false }],
+        fields: [
+          { id: "answer", prompt: "Ready?", secret: false, custom: true, multiSelect: false },
+        ],
       },
     });
 
@@ -1128,10 +1169,7 @@ describeStore("a selected connection reads only its own lineage", (it) => {
         agentHome: { computerId: settings.agentHomeComputerId, path: settings.agentHomePath },
       }),
       deploymentId: (
-        await storeFixture.database
-          .selectFrom("deployments")
-          .select("id")
-          .executeTakeFirstOrThrow()
+        await storeFixture.database.selectFrom("deployments").select("id").executeTakeFirstOrThrow()
       ).id,
       store: storeFixture.store,
       threads,
@@ -1251,7 +1289,9 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       presentation: {
         kind: "form",
         title: "Foreign question",
-        fields: [{ id: "answer", prompt: "Ready?", secret: false, custom: true, multiSelect: false }],
+        fields: [
+          { id: "answer", prompt: "Ready?", secret: false, custom: true, multiSelect: false },
+        ],
       },
     });
 
@@ -1267,9 +1307,9 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       delegationId: childA.assignment.id,
     });
     expect(warmDelegation.isError, JSON.stringify(warmDelegation.content)).not.toBe(true);
-    expect(
-      (warmDelegation.structuredContent as { pendingRequests: number }).pendingRequests,
-    ).toBe(0);
+    expect((warmDelegation.structuredContent as { pendingRequests: number }).pendingRequests).toBe(
+      0,
+    );
 
     const warmWait = await callA("opensteer_task_wait", {
       taskId: childA.thread.id,
@@ -1277,7 +1317,7 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     });
     expect(warmWait.isError, JSON.stringify(warmWait.content)).not.toBe(true);
     expect(
-      (warmWait.structuredContent as { status: string; task: { pendingRequests: number } }),
+      warmWait.structuredContent as { status: string; task: { pendingRequests: number } },
     ).toMatchObject({ status: "settled", task: { pendingRequests: 0 } });
 
     const counts = {

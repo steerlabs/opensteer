@@ -156,7 +156,9 @@ Listing sizes are pinned in `tests/agent-context-budget.json`.
 
 **Outside the grant reads exactly like non-existent.** A refusal about a target the connection
 may not know of is rewritten to `not_found` with a fixed message and no advice
-(`apps/host/src/mcp/agent-tool-failure.ts`, `packages/agent-tools/src/results.ts`). Pinned by
+(`apps/host/src/mcp/agent-tool-failure.ts`, `packages/agent-tools/src/results.ts`). For Requests,
+a task's `status` is the task's own state and stays truthful while any Request outside the caller's
+authority stays hidden (absent from lists, counts, text, and asker). Pinned by
 `packages/agent-tools/src/results.test.ts` and `apps/host/src/mcp/lineage-visibility.integration.test.ts`.
 
 ### Delegation never widens authority
