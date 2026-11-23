@@ -1,8 +1,18 @@
-import { createChannelId } from "@opensteer/channel-core";
-import { type RequestPresentation } from "@opensteer/core";
+import {
+  ChannelDashboardSchema,
+  channelProviderCatalog,
+  createChannelId,
+  type ChannelConversationId,
+} from "@opensteer/channel-core";
+import { MessageAuthorSchema, ThreadSchema, type RequestPresentation } from "@opensteer/core";
+import { AgentConnectionSchema, BrowserProfileSchema } from "@opensteer/protocol";
+import { outsideName } from "@opensteer/shared/outsideName";
+import { TriggerViewSchema } from "@opensteer/triggers/models";
 import { sql, type Kysely } from "kysely";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
+import { AppStore } from "./app-store.js";
+import { createBrowserProfile } from "./browser-session-store.js";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import { chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
 import type { LineageAttempt } from "./connection-disconnect.js";
@@ -14,6 +24,8 @@ import {
   testChannelAccessPolicy,
   testModelSelection,
 } from "./store.integration.test-support.js";
+import { personTaskReader } from "./task-reader.js";
+import { TriggerStore } from "./trigger-store.js";
 
 /** The route tables the release before chats had, exactly as its schema (the baseline) made them. */
 const routeTables = [
@@ -685,5 +697,354 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
         ({ id }) => id === ended,
       ),
     ).toBeUndefined();
+  });
+
+  it("cleans every stored name column and JSON place in 0053 with outsideName", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const running = await storeFixture.startRunFixture("routes-end-names-run");
+    const { channels, configured, fixture } = await storeFixture.createChannelDeliveryFixture(
+      "routes-end-names",
+      { bridge: false },
+    );
+    const connections = new AgentConnectionStore(database);
+    const { upsertChannelIdentity } = await import("./channel-store.js");
+    const { commitPersonalMutation } = await import("./personal-mutation.js");
+
+    const england = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
+    const zwjEmoji = "👩\u200D💻";
+    const persian = "می\u200Cخواهم";
+    const hundredEmoji = "😀".repeat(100); // 200 UTF-16 code units, over 100/120/160 caps
+    const dirtyExternalId = `U\u202E\nFake${"x".repeat(200)}`;
+    const rloWithWriting = `Helper\u202E\n${zwjEmoji} ${persian} ${england}`;
+
+    // 1. agent_connections (label, client_name, bridge_conversation_name, identity_at_consent)
+    const fallbackAgent = await connections.create({
+      userId: fixture.userId,
+      label: "Clean",
+      clientName: "Clean",
+      accessMode: "approval-required",
+      resource: "https://home.example/mcp",
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    const emojiAgent = await connections.create({
+      userId: fixture.userId,
+      label: "Emoji",
+      clientName: "Emoji",
+      accessMode: "approval-required",
+      resource: "https://home.example/mcp",
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    const bridgeAgent = await connections.createBridge({
+      userId: fixture.userId,
+      accountId: configured.account.id,
+      conversation: { id: "C-names", name: "#ops" },
+      senders: "anyone",
+      accessMode: "approval-required",
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const bridgeConvId = createChannelId("conversation") as ChannelConversationId;
+    await database
+      .insertInto("bridgeConversations")
+      .values({
+        id: bridgeConvId,
+        bridgeId: bridgeAgent.id,
+        accountId: configured.account.id,
+        externalScopeId: null,
+        externalConversationId: "C-names",
+        externalThreadId: null,
+        conversationType: "channel",
+        displayName: "Clean chat",
+        threadId: null,
+      })
+      .execute();
+
+    // 2. channel_identities & principals
+    const sender = await commitPersonalMutation(database, (tx) =>
+      upsertChannelIdentity(tx, {
+        accountId: configured.account.id,
+        displayName: "Sender",
+        externalUserId: dirtyExternalId,
+      } as never),
+    );
+
+    // 3. channel_ingress_events
+    const { ingressId: dirtyIngressId } = await channels.commitIngress(configured.connection.id, {
+      accountExternalId: configured.account.externalAccountId,
+      actor: { displayName: "Sender", externalUserId: dirtyExternalId },
+      content: [{ type: "text", text: "hi" }],
+      conversation: {
+        displayName: "Conv",
+        externalConversationId: "C-names",
+        externalScopeId: null,
+        externalThreadId: null,
+        type: "channel",
+      },
+      eventId: "E-names-1",
+      occurredAt: new Date().toISOString(),
+      provider: "slack",
+      providerMessageId: "M-names-1",
+      trigger: "mention",
+    });
+    const { ingressId: fallbackIngressId } = await channels.commitIngress(
+      configured.connection.id,
+      {
+        accountExternalId: configured.account.externalAccountId,
+        actor: { displayName: "Sender", externalUserId: dirtyExternalId },
+        content: [{ type: "text", text: "hi2" }],
+        conversation: {
+          displayName: "Conv2",
+          externalConversationId: "C-names-2",
+          externalScopeId: null,
+          externalThreadId: null,
+          type: "channel",
+        },
+        eventId: "E-names-2",
+        occurredAt: new Date().toISOString(),
+        provider: "slack",
+        providerMessageId: "M-names-2",
+        trigger: "mention",
+      },
+    );
+
+    // 4. apps + transcript_items (app card), triggers, browser_profiles, messages.author
+    const apps = new AppStore(database);
+    const app = await apps.commit({
+      html: { sha256: "0".repeat(64), sizeBytes: 12 },
+      name: "Clean app",
+      publishKey: "routes-end-names-app",
+      scope: {
+        environmentId: running.environmentId,
+        userId: running.userId,
+        runId: running.run.id,
+        threadId: running.threadId,
+      },
+    });
+    const triggers = new TriggerStore(database);
+    const { trigger } = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.thread.id,
+      createdBy: fixture.userId,
+      idempotencyKey: "routes-end-names-trigger",
+      name: "Clean trigger",
+      program: {
+        toolContractVersion: 5,
+        language: "javascript",
+        source: "export default async () => null",
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const profile = await createBrowserProfile(database, {
+      homeRunnerId: null,
+      idempotencyKey: "routes-end-names-profile",
+      name: "Clean profile",
+      ownerId: fixture.userId,
+    });
+    const msg = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: fixture.thread.id,
+      content: [{ type: "text", text: "msg" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "routes-end-names-msg",
+    });
+
+    // Plant dirty pre-update values directly in every column and JSON place.
+    const rawIdentity = {
+      kind: "platform-and-embedder",
+      platformOrigin: "https://platform.example",
+      platformDirectoryId: "plat",
+      platformName: rloWithWriting,
+      embedderOrigin: "https://embed.example",
+      embedderDirectoryId: "emb",
+      embedderName: "\u00A0\u3000",
+      keyThumbprint: "a".repeat(43),
+      directoryRevision: 3,
+      recordedAt: "2026-11-03T10:00:00.000Z",
+    };
+    await sql`update agent_connections set
+      label = ${"\u00A0\u202E\u3000"},
+      client_name = ${rloWithWriting},
+      identity_at_consent = ${JSON.stringify(rawIdentity)}::jsonb
+      where id = ${fallbackAgent.id}`.execute(database);
+    await sql`update agent_connections set
+      label = ${hundredEmoji},
+      client_name = ${hundredEmoji}
+      where id = ${emojiAgent.id}`.execute(database);
+    await sql`update agent_connections set bridge_conversation_name = ${rloWithWriting}
+      where id = ${bridgeAgent.id}`.execute(database);
+    await sql`update bridge_conversations set display_name = ${rloWithWriting}
+      where id = ${bridgeConvId}`.execute(database);
+    await sql`update channel_accounts set
+      display_name = ${"\u202E"},
+      external_account_id = ${dirtyExternalId},
+      handle = ${`  ${persian}\u202E\t${zwjEmoji}  `}
+      where id = ${configured.account.id}`.execute(database);
+    await sql`update integration_connections set display_name = ${hundredEmoji}
+      where id = ${configured.connection.id}`.execute(database);
+    await sql`update channel_identities set display_name = ${"\u00A0\u3000"}
+      where id = ${sender.id}`.execute(database);
+    await sql`update principals set display_name = ${rloWithWriting}
+      where id = ${sender.principalId}`.execute(database);
+    await sql`update threads set title = ${`${hundredEmoji} ${zwjEmoji} ${persian}`}
+      where id = ${fixture.thread.id}`.execute(database);
+    await sql`update threads set title = ${"\u00A0\u2003\u3000"}
+      where id = ${running.threadId}`.execute(database);
+    await sql`update apps set name = ${rloWithWriting} where id = ${app.appId}`.execute(database);
+    await sql`update transcript_items set view = jsonb_set(view, '{title}', to_jsonb(${rloWithWriting}::text))
+      where app_id = ${app.appId} and kind = 'app'`.execute(database);
+    await sql`update triggers set name = ${hundredEmoji} where id = ${trigger.id}`.execute(
+      database,
+    );
+    await sql`update browser_profiles set name = ${hundredEmoji} where id = ${profile.id}`.execute(
+      database,
+    );
+    await sql`update messages set author = jsonb_set(author, '{displayName}', to_jsonb(${rloWithWriting}::text))
+      where id = ${msg.message.id}`.execute(database);
+    await sql`update channel_ingress_events set event = jsonb_set(
+      jsonb_set(event, '{actor,displayName}', to_jsonb(${rloWithWriting}::text)),
+      '{conversation,displayName}', to_jsonb(${`${zwjEmoji}\u202E\n${persian}`}::text))
+      where id = ${dirtyIngressId}`.execute(database);
+    await sql`update channel_ingress_events set event = jsonb_set(
+      jsonb_set(event, '{actor,displayName}', to_jsonb(${"\u202E"}::text)),
+      '{conversation,displayName}', to_jsonb(${"\u202E"}::text))
+      where id = ${fallbackIngressId}`.execute(database);
+
+    await restoreRoutes(database);
+    await migrateToLatest(database);
+
+    // Every stored value equals outsideName(old, cap) || fallback, preserving real writing joiners & flags.
+    const listedAgents = AgentConnectionSchema.array().parse(
+      await connections.list(fixture.userId, { includeRevoked: true }),
+    );
+    const cleanedFallback = listedAgents.find(({ id }) => id === fallbackAgent.id)!;
+    expect(cleanedFallback.clientName).toBe(outsideName(rloWithWriting, 100));
+    expect(cleanedFallback.label).toBe(outsideName(rloWithWriting, 100));
+    expect(cleanedFallback.label).toContain(zwjEmoji);
+    expect(cleanedFallback.label).toContain(persian);
+    expect(cleanedFallback.label).toContain(england);
+    expect(cleanedFallback.identityAtConsent).toMatchObject({
+      platformName: outsideName(rloWithWriting, 100),
+      embedderName: "Agent",
+    });
+
+    const cleanedEmoji = listedAgents.find(({ id }) => id === emojiAgent.id)!;
+    expect(cleanedEmoji.label).toBe(outsideName(hundredEmoji, 120));
+    expect(cleanedEmoji.label.length).toBe(120);
+    expect(cleanedEmoji.clientName).toBe(outsideName(hundredEmoji, 100));
+    expect(cleanedEmoji.clientName.length).toBe(100);
+
+    const cleanedBridge = listedAgents.find(({ id }) => id === bridgeAgent.id)!;
+    expect(cleanedBridge.bridge?.conversationName).toBe(outsideName(rloWithWriting, 160));
+    expect(
+      (
+        await database
+          .selectFrom("bridgeConversations")
+          .select("displayName")
+          .where("id", "=", bridgeConvId)
+          .executeTakeFirstOrThrow()
+      ).displayName,
+    ).toBe(outsideName(rloWithWriting, 240));
+
+    const dashboard = ChannelDashboardSchema.parse(
+      await channels.dashboard(fixture.userId, channelProviderCatalog, [
+        configured.connection.runnerId!,
+      ]),
+    );
+    const account = dashboard.accounts.find(({ id }) => id === configured.account.id)!;
+    expect(account.displayName).toBe(outsideName(dirtyExternalId, 160));
+    expect(account.handle).toBe(`${persian} ${zwjEmoji}`);
+    const channelConn = dashboard.connections.find(({ id }) => id === configured.connection.id)!;
+    expect(channelConn.displayName).toBe(outsideName(hundredEmoji, 160));
+    expect(channelConn.displayName.length).toBe(160);
+
+    expect(
+      (
+        await database
+          .selectFrom("channelIdentities")
+          .select("displayName")
+          .where("id", "=", sender.id)
+          .executeTakeFirstOrThrow()
+      ).displayName,
+    ).toBe(outsideName(dirtyExternalId, 160));
+    expect(
+      (
+        await database
+          .selectFrom("principals")
+          .select("displayName")
+          .where("id", "=", sender.principalId)
+          .executeTakeFirstOrThrow()
+      ).displayName,
+    ).toBe(outsideName(rloWithWriting, 160));
+
+    const emojiThread = ThreadSchema.parse(
+      await store.getThreadForOwner(fixture.thread.id, fixture.userId),
+    );
+    expect(emojiThread.title).toBe(outsideName(`${hundredEmoji} ${zwjEmoji} ${persian}`, 240));
+    const blankThread = ThreadSchema.parse(
+      await store.getThreadForOwner(running.threadId, running.userId),
+    );
+    expect(blankThread.title).toBe("Task");
+
+    expect((await apps.get(running.userId, app.appId)).name).toBe(outsideName(rloWithWriting, 160));
+    const appCard = await database
+      .selectFrom("transcriptItems")
+      .select("view")
+      .where("appId", "=", app.appId)
+      .where("kind", "=", "app")
+      .executeTakeFirstOrThrow();
+    expect((appCard.view as { title?: string }).title).toBe(outsideName(rloWithWriting, 160));
+
+    const triggerDetail = await triggers.getForOwner(
+      trigger.id,
+      fixture.userId,
+      5,
+      personTaskReader,
+    );
+    const cleanedTrigger = TriggerViewSchema.parse(triggerDetail!.trigger);
+    expect(cleanedTrigger.name).toBe(outsideName(hundredEmoji, 160));
+    expect(cleanedTrigger.name.length).toBe(160);
+
+    const cleanedProfile = BrowserProfileSchema.parse(
+      await database
+        .selectFrom("browserProfiles")
+        .select(["id", "name", "homeRunnerId"])
+        .where("id", "=", profile.id)
+        .executeTakeFirstOrThrow(),
+    );
+    expect(cleanedProfile.name).toBe(outsideName(hundredEmoji, 120));
+    expect(cleanedProfile.name.length).toBe(120);
+
+    const cleanedMsg = await database
+      .selectFrom("messages")
+      .select("author")
+      .where("id", "=", msg.message.id)
+      .executeTakeFirstOrThrow();
+    expect(MessageAuthorSchema.parse(cleanedMsg.author)).toMatchObject({
+      displayName: outsideName(rloWithWriting, 160),
+    });
+
+    const cleanedIngress = await database
+      .selectFrom("channelIngressEvents")
+      .select("event")
+      .where("id", "=", dirtyIngressId)
+      .executeTakeFirstOrThrow();
+    expect(cleanedIngress.event).toMatchObject({
+      actor: { displayName: outsideName(rloWithWriting, 160) },
+      conversation: { displayName: `${zwjEmoji} ${persian}` },
+    });
+    const cleanedFallbackIngress = await database
+      .selectFrom("channelIngressEvents")
+      .select("event")
+      .where("id", "=", fallbackIngressId)
+      .executeTakeFirstOrThrow();
+    expect(cleanedFallbackIngress.event).toMatchObject({
+      actor: { displayName: outsideName(dirtyExternalId, 160) },
+      conversation: { displayName: null },
+    });
   });
 });
