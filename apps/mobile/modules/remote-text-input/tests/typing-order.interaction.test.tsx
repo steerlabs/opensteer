@@ -129,7 +129,7 @@ vi.mock("expo", async () => {
       ),
   };
 });
-const { NativeEditingProxy } = await import("../src/editing-proxy.js");
+const { NativeEditingProxy, lateTooLarge } = await import("../src/editing-proxy.js");
 // The proxy loads the native input lazily: load it once here, outside any test's act.
 await import("../src/remote-text-input.js");
 
@@ -1945,33 +1945,34 @@ describe("a person's caret moves and selections in the native field", () => {
     expect(remote.caret).toBe(3);
   });
 
-  // CY8: a paste that comes late (named under the context just left) arrives whole whatever its
-  // size: as insertions within the protocol's limit, in order, under that context.
-  it("delivers a late paste of 10,001 characters whole and in order", async () => {
-    const { remote, keyboard, answerAll, publish } = await open();
-    const text = Array.from({ length: 10_001 }, (_, index) =>
-      index === 5_000 ? "👩‍💻" : String(index % 10),
-    ).join("");
-    const before = remote.contextId;
-    await keyboard((field) => {
-      field.insertText("a");
-      field.paste(text);
-    });
-    const next = "00000000-0000-4000-8000-000000000780";
-    remote.earlier.add(remote.contextId!);
-    remote.contextId = next;
-    await publish(next);
-    await answerAll();
-    expect(remote.value).toBe(`a${text}`);
-    expect(remote.refused).toEqual([]);
-    const late = remote.sent.filter(
-      (operation) => operation.kind === "edit" && operation.edit.contextId === before,
-    );
-    expect(late.length).toBeGreaterThan(2);
-    for (const operation of late)
-      if (operation.kind === "edit")
-        expect(operation.edit.text.length).toBeLessThanOrEqual(editingTextMaxLength);
-  });
+  // CZ6: never a partial paste. A paste that comes late (named under the context just left) goes
+  // as one insertion under that context; one larger than one operation may carry is refused
+  // whole, nothing of it lands, and the person is told to paste again.
+  it.each([
+    [10_000, true],
+    [10_001, false],
+  ] as const)(
+    "delivers a late paste of %i characters whole, or refuses it whole",
+    async (length, lands) => {
+      const { remote, keyboard, answerAll, publish } = await open();
+      harness.texts = [];
+      const text = Array.from({ length }, (_, index) => String(index % 10)).join("");
+      await keyboard((field) => {
+        field.insertText("a");
+        field.paste(text);
+      });
+      const next = "00000000-0000-4000-8000-000000000780";
+      remote.earlier.add(remote.contextId!);
+      remote.contextId = next;
+      await publish(next);
+      await answerAll();
+      expect(remote.value).toBe(lands ? `a${text}` : "a");
+      for (const operation of remote.sent)
+        if (operation.kind === "edit")
+          expect(operation.edit.text.length).toBeLessThanOrEqual(editingTextMaxLength);
+      if (!lands) expect(harness.texts).toContain(lateTooLarge);
+    },
+  );
 
   // CY8: a send the transport refuses on the late path reaches that context's reducer, as on the
   // ordinary path (CU5): the composition it carried goes again as a fresh start.

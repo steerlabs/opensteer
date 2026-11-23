@@ -80,6 +80,15 @@ export interface BrowserEditingTarget {
   get(): BrowserEditingState;
   subscribe(listener: () => void): () => void;
   send(operation: EditingOperation): Promise<ViewerClipboardResult | undefined>;
+  /**
+   * CZ6: the same send, with the transport's own answer now: whether it took what was sent at
+   * once (an edit, a composition, a command or a key goes out before anything is awaited), so a
+   * caller that must answer at once (the phone's native field) answers with it.
+   */
+  submit(operation: EditingOperation): {
+    readonly accepted: boolean;
+    readonly done: Promise<ViewerClipboardResult | undefined>;
+  };
   /** A shown controller is the only recipient of page writes on this client. */
   activate(
     onWritten: (items: readonly EditingClipboardPayloadItem[]) => void,
@@ -131,6 +140,8 @@ interface Target {
     onWritten: (items: readonly EditingClipboardPayloadItem[]) => void;
     onError?: ((message: string) => void) | undefined;
   } | null;
+  /** The transport refused a command of the send now under way. */
+  refused?: boolean;
 }
 interface Pending {
   readonly target: Target;
@@ -197,6 +208,16 @@ export class BrowserEditingStore {
           this.#count(this.diagnostics.refusals, "operation-refused");
           throw reason;
         }),
+      submit: (operation) => {
+        target.refused = false;
+        const done = this.#send(target, operation).catch((reason) => {
+          this.#count(this.diagnostics.refusals, "operation-refused");
+          throw reason;
+        });
+        const accepted = !target.refused;
+        target.refused = false;
+        return { accepted, done };
+      },
       activate: (onWritten, onError) => {
         const active = { onWritten, onError };
         target.active = active;
@@ -319,7 +340,12 @@ export class BrowserEditingStore {
     const basicInput = target.state.input === "basic";
     const send = (command: BrowserCommand) => {
       if (!basicInput || browserBasicInputAllows(command))
-        this.sendCommand(target.sessionId, target.surfaceId, command);
+        try {
+          this.sendCommand(target.sessionId, target.surfaceId, command);
+        } catch (error) {
+          target.refused = true;
+          throw error;
+        }
     };
     this.#count(this.diagnostics.operations, operation.kind);
     if (

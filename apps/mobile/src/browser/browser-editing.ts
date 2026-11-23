@@ -13,15 +13,10 @@ export function createMobileBrowserEditing(
   let active = false;
   let epoch = 0;
   let error: (message: string) => void = () => undefined;
-  let admitted = true;
   const store =
     client.browserFrames?.editing ??
     new BrowserEditingStore((_session, _surface, command) => {
-      if (!sendBaseline(command)) {
-        admitted = false;
-        error("The page is reconnecting. Try again in a moment.");
-        throw new Error("Browser input was refused.");
-      }
+      if (!sendBaseline(command)) throw new Error("Browser input was refused.");
     });
   const target = store.target(session, surface);
   const write = async (items: Parameters<MobileClipboardPort["write"]>[0], current: number) => {
@@ -50,12 +45,16 @@ export function createMobileBrowserEditing(
         stop();
       };
     },
+    /**
+     * CZ6: the transport's own answer, now: a send it refused at once is false, so the proxy tells
+     * the reducer (CY8) and the person is told.
+     */
     send(operation: EditingOperation): boolean {
       if (!active) return false;
-      admitted = true;
       const current = epoch;
-      void target
-        .send(operation)
+      const { accepted, done } = target.submit(operation);
+      if (!accepted) error("The page is reconnecting. Try again in a moment.");
+      void done
         .then(async (result) => {
           if (!active || current !== epoch || !result) return;
           if (result.outcome === "copied" || result.outcome === "cut")
@@ -63,11 +62,11 @@ export function createMobileBrowserEditing(
           else if (!["empty", "pasted"].includes(result.outcome))
             error(`Clipboard ${result.outcome}.`);
         })
-        // A page that refused the edit already said it is reconnecting.
+        // A send refused at once already said the page is reconnecting.
         .catch(() => {
-          if (active && current === epoch && admitted) error("Editing unavailable.");
+          if (active && current === epoch && accepted) error("Editing unavailable.");
         });
-      return admitted;
+      return accepted;
     },
   };
 }

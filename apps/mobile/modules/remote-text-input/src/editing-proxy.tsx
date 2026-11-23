@@ -39,6 +39,9 @@ export interface NativeEditingProxyHandle {
 }
 
 /** Browser, phone and Mac viewers feed the same native event adapter. */
+/** CZ6: what the person is told of a late paste too large for one operation. */
+export const lateTooLarge =
+  "This paste is too large to send while the field changes. Paste it again.";
 export function NativeEditingProxy({
   context,
   focused = context?.field != null,
@@ -119,26 +122,24 @@ export function NativeEditingProxy({
     };
   }, [abilities]);
   /**
-   * CY8: what the late path sends of an operation, under the context it was made in: an edit or a
-   * composition as it is, a command with that context, a plain paste as the text it inserts (in
-   * insertions within the protocol's limit, in order: insertions compose, split between code
-   * points), a key not at all (it would land in whatever has focus now).
+   * CY8, CZ6: what the late path sends of an operation, under the context it was made in: an edit
+   * or a composition as it is, a command with its late reducer's context (stamped there, CZ3), a
+   * plain paste as one insertion of its text, a key not at all (it would land in whatever has
+   * focus now). Never part of a paste: one larger than one operation may carry is refused whole
+   * (null), and the person pastes again.
    */
-  const lateOperations = (operation: EditingOperation, contextId: string): EditingOperation[] => {
+  const lateOperations = (
+    operation: EditingOperation,
+    contextId: string,
+  ): EditingOperation[] | null => {
     if (operation.kind === "edit" || operation.kind === "compose") return [operation];
-    // A command carries its late reducer's context, stamped there (CZ3).
     if (operation.kind === "command") return [operation];
     if (operation.kind !== "paste") return [];
     const item = operation.items.find((candidate) => candidate.type === "text/plain");
     if (!item) return [];
-    const parts: string[] = [""];
-    for (const point of new TextDecoder().decode(item.bytes)) {
-      if (parts.at(-1)!.length + point.length > editingTextMaxLength) parts.push("");
-      parts[parts.length - 1] += point;
-    }
-    return parts
-      .filter((text) => text !== "")
-      .map((text) => ({ kind: "edit", edit: { contextId, text, before: "", after: "" } }));
+    const text = new TextDecoder().decode(item.bytes);
+    if (text.length > editingTextMaxLength) return null;
+    return [{ kind: "edit", edit: { contextId, text, before: "", after: "" } }];
   };
   /**
    * CY8: the one send of both paths. Each operation in order; at the first the transport refuses,
@@ -227,9 +228,14 @@ export function NativeEditingProxy({
             )
               nativeComposing.current = true;
             else if (event.type === "compositionend") nativeComposing.current = false;
-            const operations = result.operations.flatMap((operation) =>
+            const pieces = result.operations.map((operation) =>
               lateOperations(operation, contextId),
             );
+            if (pieces.includes(null)) {
+              setRefusal(lateTooLarge);
+              return { preventDefault: true };
+            }
+            const operations = pieces.flatMap((each) => each!);
             if (!send(operations, (operation) => late(contextId, { type: "refused", operation })))
               return { preventDefault: true };
             return result.instruction;
