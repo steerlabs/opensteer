@@ -41,7 +41,19 @@ import {
 /** The remote field: the page's own applier, as the port models it. */
 class RemoteField extends FarField {}
 
-type Sabotage = "lose" | "drop" | "refuse" | "double" | "misplace" | "shift" | "recommit" | null;
+type Sabotage =
+  | "lose"
+  | "drop"
+  | "refuse"
+  | "double"
+  | "misplace"
+  | "shift"
+  | "recommit"
+  // CZ8: faults of the product itself, in what it sends (the far field and the model agree on them).
+  | "extra-move"
+  | "double-backspace"
+  | "other-context"
+  | null;
 const harness = vi.hoisted(() => ({
   field: null as null | {
     deliver(packet: unknown): void;
@@ -1482,15 +1494,40 @@ describe("a person's caret moves and selections in the native field", () => {
         return true;
       }
       if (sabotage === "misplace") focused.caret = off(focused);
-      const result = focused.take(made);
+      // CZ8: the product stamps a command for another context: what reaches the page says so.
+      const sent0 =
+        sabotage === "other-context" && made.kind === "command"
+          ? { ...made, contextId: crypto.randomUUID() }
+          : made;
+      if (sent0 !== made) entry.operation = sent0;
+      const result = focused.take(sent0);
       if (sabotage === "double") focused.take(made);
       if (sabotage === "shift") focused.caret = off(focused);
       const took = (taken: typeof entry) => {
         if (which !== "C" || !applied(taken)) return;
         taken.at = log.length;
-        log.push({ operation: made, entry: taken });
+        log.push({ operation: taken.operation, entry: taken });
       };
       took(entry);
+      // CZ8: the product sends one more: a doubled Backspace, or a move computed after an edit.
+      if (sabotage === "double-backspace" || sabotage === "extra-move") {
+        const more: EditingOperation =
+          sabotage === "double-backspace"
+            ? made
+            : {
+                kind: "command",
+                command: "moveBackward",
+                follows: true,
+                contextId: (made as { edit: { contextId: string } }).edit.contextId,
+              };
+        const again = { ...entry, operation: more };
+        sent.push(again);
+        focused.take(more);
+        if (which === "C" && applied(again)) {
+          again.at = log.length;
+          log.push({ operation: more, entry: again });
+        }
+      }
       if (sabotage === "recommit") {
         const again = { ...entry };
         sent.push(again);
@@ -1873,6 +1910,18 @@ describe("a person's caret moves and selections in the native field", () => {
       else if (unapplied.length > 0)
         failure = `a Backspace the page never applied: action ${unapplied.map(({ index }) => index + 1).join(", ")}${process.env.OPENSTEER_TYPING_TRACE ? ` (sent ${JSON.stringify(sent.map((entry) => [entry.operation.kind, entry.owners, applied(entry)]))}, kinds ${JSON.stringify(kinds)})` : ""}`;
       else if (promise) failure = promise;
+      // CZ8: where the page never acted, what the page holds is the person's text and caret
+      // alone, as in regime A: a fault of the product's that the far field and the model agree
+      // on shows here.
+      else if (clock === 0 && last.field.value !== shown(last.person))
+        failure = `the page never acted and holds ${said(last.field.value)}; the person has ${said(shown(last.person))}`;
+      else if (
+        clock === 0 &&
+        last.person.marked === null &&
+        last.person.selection.start === last.person.selection.end &&
+        last.field.caret !== last.person.selection.start
+      )
+        failure = `the page never acted and has its caret at ${last.field.caret}; the person's is at ${last.person.selection.start}`;
       else if (model.value !== last.field.value || model.caret !== last.field.caret)
         failure = `the page holds ${said(last.field.value)} with its caret at ${last.field.caret}; what it did and applied makes ${said(model.value)} at ${model.caret}`;
     }
@@ -2282,6 +2331,50 @@ describe("a person's caret moves and selections in the native field", () => {
       }
     }
     expect(failure).not.toBeNull();
+  });
+
+  // CZ8: the regime fails for faults of the product itself, in what it sends, which the far field
+  // and the model agree on: wherever the page never acted, what it holds is the person's alone.
+  it.each([
+    [
+      "extra-move",
+      "a move computed after an insertion that the person did not make",
+      (operation: unknown) => insertion(operation),
+    ],
+    [
+      "double-backspace",
+      "a Backspace sent twice",
+      // Where the second has something of its own to delete.
+      (operation: unknown, field: unknown) =>
+        (operation as EditingOperation).kind === "command" &&
+        (operation as { command: string }).command === "deleteBackward" &&
+        characters((field as FarField).value.slice(0, (field as FarField).caret)).length >= 2,
+    ],
+    [
+      "other-context",
+      "a Backspace stamped for another context",
+      (operation: unknown) =>
+        (operation as EditingOperation).kind === "command" &&
+        (operation as { command: string }).command === "deleteBackward",
+    ],
+  ] as const)("regime C fails when the product sends %s (%s)", async (what, _name, matches) => {
+    let caught = 0;
+    for (let seed = 1; seed <= 200 && caught < 3; seed++) {
+      let triggered = false;
+      harness.sabotage = (operation, _arrived, field) => {
+        if (triggered || !matches(operation, field)) return null;
+        triggered = true;
+        return what;
+      };
+      const result = await regime(seed, "C");
+      harness.sabotage = null;
+      // Where the page never acted, the check from the person's acts holds.
+      if (triggered && result.changes === 0) {
+        expect(result.failure, `seed ${seed}`).not.toBeNull();
+        caught += 1;
+      }
+    }
+    expect(caught).toBeGreaterThan(0);
   });
 
   // CY9: regime B starts from what the person did. Every insertion to the first field never reaches
