@@ -94,6 +94,157 @@ export const caretRelativeEditingCommands: ReadonlySet<EditingCommand> = new Set
   ...caretMoveEditingCommands,
 ]);
 
+/**
+ * Identity of a focused field under the shared editing-admission rule (docs/editing-admission.md).
+ * A different element, a recreated element, a changed kind, a changed sensitive flag, or a changed
+ * editability flag is another field.
+ */
+export interface EditingFieldIdentity {
+  readonly id: string;
+  readonly kind: string;
+  readonly sensitive: boolean;
+  readonly editable?: boolean | undefined;
+}
+
+/**
+ * The three admission classes in docs/editing-admission.md:
+ * - `relative`: insertion, backward deletion, plain caret move, paste (Rule 2)
+ * - `named`: text-naming replacement or forward deletion of named text (Rule 3)
+ * - `exact`: commands with nothing to verify against live text (Rule 4)
+ */
+export type EditingAdmissionKind = "relative" | "named" | "exact";
+
+/**
+ * Bounded wait decision for a text-naming edit when a target renders input late (Rule 3).
+ */
+export type NamedTextWaitDecision = "apply" | "wait" | "refuse-mismatch" | "refuse-field";
+
+/** How long a late-rendering target waits for named text to appear before refusing (Rule 3). */
+export const editingNamedTextWaitSeconds = 0.5;
+
+export function namedTextWaitDecision(
+  sameField: boolean,
+  matches: boolean,
+  waitedSeconds: number,
+  limitSeconds: number = editingNamedTextWaitSeconds,
+): NamedTextWaitDecision {
+  if (!sameField) return "refuse-field";
+  if (matches) return "apply";
+  return waitedSeconds < limitSeconds ? "wait" : "refuse-mismatch";
+}
+
+export function sameEditingField(
+  a: EditingFieldIdentity | null,
+  b: EditingFieldIdentity | null,
+): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.id === b.id &&
+    a.kind === b.kind &&
+    a.sensitive === b.sensitive &&
+    (a.editable ?? true) === (b.editable ?? true)
+  );
+}
+
+/**
+ * Shared state machine for the five-part editing-admission rule (docs/editing-admission.md),
+ * verified against packages/protocol/fixtures/editing-admission.json in both TypeScript and Swift.
+ */
+export class EditingContexts {
+  static readonly kept = 64;
+  static readonly namedTextWaitSeconds = editingNamedTextWaitSeconds;
+
+  readonly #nextId: () => string;
+  #current: string;
+  #earlier: string[] = [];
+  #field: EditingFieldIdentity | null = null;
+
+  constructor(nextId: () => string = () => crypto.randomUUID()) {
+    this.#nextId = nextId;
+    this.#current = nextId();
+  }
+
+  get current(): string {
+    return this.#current;
+  }
+
+  get field(): EditingFieldIdentity | null {
+    return this.#field;
+  }
+
+  get earlier(): readonly string[] {
+    return this.#earlier;
+  }
+
+  hasEarlier(contextId: string): boolean {
+    return this.#earlier.includes(contextId);
+  }
+
+  /**
+   * Observes the currently focused field. Returns true only when the context changed (Rule 5):
+   * the field identity changed, or `changed` reports a content/selection change on the same field.
+   */
+  observe(field: EditingFieldIdentity | null, changed = false): boolean {
+    if (!sameEditingField(this.#field, field)) {
+      this.#field = field;
+      this.#earlier = [];
+      this.#current = this.#nextId();
+      return true;
+    }
+    if (!changed) return false;
+    this.rotate(field !== null);
+    return true;
+  }
+
+  /** Rotates to a fresh context. Keeps the previous context in `earlier` only for the same field. */
+  rotate(sameField: boolean): string {
+    if (sameField) {
+      if (!this.#earlier.includes(this.#current)) {
+        this.#earlier.push(this.#current);
+        if (this.#earlier.length > EditingContexts.kept) this.#earlier.shift();
+      }
+    } else {
+      this.#earlier = [];
+    }
+    this.#current = this.#nextId();
+    return this.#current;
+  }
+
+  /** A text-naming edit mismatched live text in the current field: rotate while keeping earlier contexts. */
+  mismatch(): string {
+    return this.rotate(this.#field !== null);
+  }
+
+  /** Clears focus and forgets all earlier contexts. */
+  reset(): string {
+    this.#field = null;
+    return this.rotate(false);
+  }
+
+  /**
+   * Decides whether an edit made under `contextId` is admitted now (Rules 1-4).
+   * A refusal never mutates state (Rule 5).
+   */
+  admits(
+    contextId: string,
+    kind: EditingAdmissionKind,
+    options?: { readonly namedMatches?: boolean; readonly exactNamed?: boolean },
+  ): boolean {
+    const isCurrent = contextId === this.#current;
+    const sameField = isCurrent || (this.#field !== null && this.#earlier.includes(contextId));
+    if (!sameField) return false;
+    switch (kind) {
+      case "relative":
+        return true;
+      case "named":
+        if (options?.exactNamed && !isCurrent) return false;
+        return options?.namedMatches ?? true;
+      case "exact":
+        return isCurrent;
+    }
+  }
+}
+
 /** One grapheme, which a single keystroke types; long enough for ZWJ sequences. */
 export const editingKeystrokeTextMaxLength = 64;
 /** The most text one composition or text edit carries. */

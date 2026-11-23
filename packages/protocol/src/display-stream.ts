@@ -233,13 +233,18 @@ export const DisplayInputEventSchema = z.union([
   // The kinds below exist only for a producer and viewer that negotiated
   // editing (`editingVersion` in `display.state`); see editing.ts.
   z.strictObject({ kind: z.literal("key"), ...EditingKeystrokeSchema.shape }),
-  z.strictObject({ kind: z.literal("command"), command: EditingCommandSchema }),
+  z.strictObject({
+    kind: z.literal("command"),
+    command: EditingCommandSchema,
+    contextId: EditingContextSchema.shape.contextId,
+  }),
   z.strictObject({ kind: z.literal("edit"), edit: EditingTextEditSchema }),
   z.strictObject({ kind: z.literal("copy") }),
   z.strictObject({ kind: z.literal("cut"), contextId: EditingContextSchema.shape.contextId }),
   z.strictObject({
     kind: z.literal("paste"),
     text: z.string().min(1).max(displayPasteTextMaxLength),
+    contextId: EditingContextSchema.shape.contextId,
   }),
   // Older viewers send rich clipboard metadata for the display to refuse; current ones paste text.
   z.strictObject({ kind: z.literal("paste"), items: EditingClipboardItemsSchema }),

@@ -1,0 +1,32 @@
+# Editing Admission
+
+One rule governs where a remote edit, command, or clipboard action may land across the browser runtime, the Mac helper, and the phone browsers. An operation is applied only when what it assumes is true of the **live** field at the moment it goes in.
+
+## The Five-Part Rule
+
+1. **Field identity.** Every operation assumes the same field is focused. A field's identity is the element itself plus its kind/role, whether it is sensitive (e.g., password), and whether it is editable (`fieldKey` on the browser; `AXUIElement` + role + `secure` on the Mac helper). A different element, a recreated element, a blur-and-refocus, or an element whose sensitivity or kind changed is a **different field** and clears all earlier contexts.
+2. **Caret-relative edits.** An insertion (`before === "" && after === "" && text !== ""`), the single backward deletion (`deleteBackward`), a plain caret move (`moveBackward`, `moveForward`), or a paste assumes nothing more than the same field. It is valid under any context of the same field (current or earlier, up to 64 kept), and lands at the live caret as it is now.
+   - Exceptions that depend on an earlier refused edit from the same producer under the same context: a client-computed compensating move (`follows: true`) and a paste whose preceding selection-deletion was refused (`follows: true`) are refused with that edit.
+   - A page-level paste, copy, or cut made while no editable field is focused carries the page's own no-field context and is valid only while no editable field has focus.
+3. **Text-naming edits.** A replacement (`before !== ""` or `after !== ""`, such as autocorrect or deleting named text) also assumes that named text is present around a collapsed caret.
+   - **Mac helper:** Valid when the same field is focused (current or earlier context of that field) AND the live text around the collapsed caret matches `before` and `after`. Because an app such as Electron can render a prior keystroke after its dispatch returns, edits run in order and a text-naming edit whose named text is not yet present waits up to **0.5 s** for it to appear (aborting immediately if focus leaves the field), then is refused.
+   - **Browser runtime (why exact context stays):** On the browser, replacements keep the exact-context + `selectionRevision` requirement in addition to live text matching. Chromium applies keystrokes synchronously in the renderer's input lane (so there is no post-dispatch lag), and the page script observes every selection change synchronously with `selectionRevision`. Accepting an earlier context on live text alone would allow a replacement computed for one occurrence of a repeated word to overwrite another occurrence after an external caret move (e.g., `"foo foo"` with caret moved from offset 7 to offset 3: `apps/browser-runtime/src/browser/editing.test.ts`, `"same-field caret move invalidates verified replacement"`).
+4. **Exact-context commands and live compositions.** A command with nothing to check against the live text (`selectAll`, `undo`, `redo`, `deleteForward`, moves by word/line/paragraph/document, selection-extending moves) and live composition updates (`input.compose`) require the exact current context (`contextId === current`).
+5. **Context changes.** A context changes only when what it identifies changes:
+   - Focus moves to another field, blurs, or changes kind/sensitivity/editability: new `contextId`, all earlier contexts cleared.
+   - Same field's content or selection changes: new `contextId`, previous `contextId` retained in `earlier` (FIFO bound 64).
+   - A text-naming replacement mismatches the live field: new `contextId` (so the viewer resets its stale mirror), previous `contextId` retained in `earlier`.
+   - A key going up, a mouse button, a scroll, or a refusal for wrong context, wrong field, sensitivity, or unsupported action changes **no** context and forgets **nothing**.
+
+## Shared Fixture and Implementations
+
+The shared state machine and bounded-wait decision are specified by the JSON fixture [`packages/protocol/fixtures/editing-admission.json`](../packages/protocol/fixtures/editing-admission.json) and verified identically on both sides:
+
+- **TypeScript:** `EditingContexts` and `namedTextWaitDecision` in [`packages/protocol/src/editing.ts`](../packages/protocol/src/editing.ts), tested by [`packages/protocol/src/editing-admission.test.ts`](../packages/protocol/src/editing-admission.test.ts), and used directly by `PageEditingObserver` (`packages/browser-runtime-core/src/browser/editing-observer.ts`), `FarField` (`apps/mobile/modules/remote-text-input/tests/remote-input-port.ts`), and the Mac app stand-in in `typing-order.interaction.test.tsx`.
+- **Swift:** `OwnerEditingContexts` in [`apps/desktop/native/computer-use/Sources/ComputerUseCore/Act/OwnerEditingContexts.swift`](../apps/desktop/native/computer-use/Sources/ComputerUseCore/Act/OwnerEditingContexts.swift), tested by [`apps/desktop/native/computer-use/Tests/ComputerUseCoreTests/OwnerEditingContextsTests.swift`](../apps/desktop/native/computer-use/Tests/ComputerUseCoreTests/OwnerEditingContextsTests.swift), and used by `MacOwnerInput.swift`.
+
+## What Carries a Context
+
+- **Browser runtime:** `input.text`, `input.compose`, `input.command`, `clipboard.paste-data`, `clipboard.paste`, `clipboard.cut`, `clipboard.copy`. (`input.key` carries none, by design.)
+- **Phone browsers (Android & iOS):** `input.text`, `input.compose`, `input.command`, `clipboard.paste-data`, `clipboard.paste`, `clipboard.copy` (`clipboard.cut` is unsupported). (`input.key` carries none, by design.)
+- **Mac helper (`display.input`):** `edit`, `command`, `paste` (with text), `copy`, `cut` (refused as unsupported on Mac). (`key`, `mouse`, `scroll` carry none, by design.)

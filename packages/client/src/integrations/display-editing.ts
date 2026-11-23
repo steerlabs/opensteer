@@ -204,7 +204,11 @@ export class DisplayEditingSession {
         events = [{ kind: "key", ...operation.keystroke }];
         break;
       case "command":
-        events = [{ kind: "command", command: operation.command }];
+        if (!operation.contextId) {
+          this.#count(this.diagnostics.operations, operation.kind);
+          throw this.#refuse("stale", refusalWords.stale);
+        }
+        events = [{ kind: "command", command: operation.command, contextId: operation.contextId }];
         break;
       case "edit":
         events = [{ kind: "edit", edit: operation.edit }];
@@ -238,16 +242,20 @@ export class DisplayEditingSession {
         const text = operation.items
           .map((item) => new TextDecoder("utf-8", { fatal: true }).decode(item.bytes))
           .join("");
+        if (!operation.contextId) {
+          this.#count(this.diagnostics.operations, operation.kind);
+          throw this.#refuse("stale", refusalWords.stale);
+        }
         events = [];
         let piece = "";
         for (const character of text) {
           if (piece.length + character.length > displayPasteTextMaxLength) {
-            events.push({ kind: "paste", text: piece });
+            events.push({ kind: "paste", text: piece, contextId: operation.contextId });
             piece = "";
           }
           piece += character;
         }
-        if (piece) events.push({ kind: "paste", text: piece });
+        if (piece) events.push({ kind: "paste", text: piece, contextId: operation.contextId });
         if (!events.length) return undefined;
         break;
       }

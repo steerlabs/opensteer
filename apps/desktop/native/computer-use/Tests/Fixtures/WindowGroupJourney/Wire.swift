@@ -382,7 +382,7 @@ extension WireJourney {
     var cases: [String: String] = [:]
     var active: String?
     let planned = ["negotiation", "helper-baseline-negotiation", "capture-ready", "person-waits-for-agent-mutation", "two-idle-attachments-share-app", "agent-refused-held-button", "another-app-agent-unaffected",
-      "native-text-key", "IME-commit-at-once", "IME-commit", "external-caret-stale", "verified-replacement", "stale-replacement", "rich-paste-refusal",
+      "native-text-key", "IME-commit-at-once", "IME-commit", "external-caret-stale", "other-field-insertion-refused", "verified-replacement", "replacement-text-gone", "stale-replacement", "rich-paste-refusal",
       "multiline-paste", "AX-copy", "save-chord", "undo-chord", "stable-generation", "native-fixture-pixel-latency", "secure-refusal", "guest-pasteboard-unchanged",
       "resize-stale-input", "sibling-joins-composition", "sibling-leaves-composition", "contained-child-joins-composition", "contained-child-leaves-composition", "reset-preserves-agent-observation", "lost-keyup-cleanup", "hide-cleanup", "Stop-without-session", "local-cover-invariants", "disconnect-cleanup"]
     for name in planned { cases[name] = "not-run" }
@@ -638,10 +638,12 @@ extension WireJourney {
       }
       return try (context["contextId"] as? String).unwrap("editing context id")
     }
-    func note() async throws -> String {
+    func noteState() async throws -> [String: Any] {
       try await Contracts.command(out, "owner-state")
-      let state = try JSONSerialization.jsonObject(with: Data(contentsOf: out.appendingPathComponent("owner-state.json"))) as! [String: Any]
-      return try (state["text"] as? String).unwrap("note text")
+      return try JSONSerialization.jsonObject(with: Data(contentsOf: out.appendingPathComponent("owner-state.json"))) as! [String: Any]
+    }
+    func note() async throws -> String {
+      return try (try await noteState()["text"] as? String).unwrap("note text")
     }
     // Reset releases the input lease. Focus the editor after the contact
     // test, then admit a new action before expecting its editing context.
@@ -676,19 +678,46 @@ extension WireJourney {
     try require(try await note() == "q漢字!", "IME commit did not insert once")
     passed()
     start("external-caret-stale")
-    // Sent without waiting for the move's publication: the edit itself must
-    // notice that the caret it names moved in the same field.
+    // Lead's ruling: an insertion is relative to the caret, so after an outside caret move in the
+    // same field it stays valid under an earlier context of that field and lands at the live caret.
     let beforeMiddle = try await context()
     try await Contracts.command(out, "owner-middle")
-    let moved = try await input([["kind": "edit", "edit": ["contextId": beforeMiddle, "text": "BAD", "before": "", "after": ""]]])
+    let moved = try await input([["kind": "edit", "edit": ["contextId": beforeMiddle, "text": "X", "before": "", "after": ""]]])
     let afterMoved = try await note()
-    try require(moved["outcome"] as? String == "stale" && afterMoved == "q漢字!",
-      "An external caret move admitted an old context's insertion")
+    try require(moved["outcome"] as? String == "dispatched" && afterMoved == "q漢X字!",
+      "An insertion under an earlier context of the same field did not land at the live caret")
+    let restored = try await input([["kind": "edit", "edit": ["contextId": try await context(), "text": "", "before": "X", "after": ""]]])
+    try require(restored["outcome"] as? String == "dispatched" && (try await note()) == "q漢字!",
+      "Restoring after external-caret insertion failed")
+    passed()
+    start("other-field-insertion-refused")
+    // Lead's ruling: after focus moves to another field, an insertion under the old field's
+    // context is refused, neither field changes, and the refusal does not rotate the new field's context.
+    let noteContext = try await context(sensitive: false)
+    try await Contracts.command(out, "owner-other")
+    let otherContext = try await context(sensitive: false, excluding: noteContext)
+    let otherRefused = try await input([["kind": "edit", "edit": ["contextId": noteContext, "text": "WRONG", "before": "", "after": ""]]])
+    let afterOther = try await noteState()
+    let afterRefusalContext = try await context(sensitive: false)
+    try require(otherRefused["outcome"] as? String == "stale"
+      && afterRefusalContext == otherContext
+      && afterOther["text"] as? String == "q漢字!"
+      && afterOther["other"] as? String == "",
+      "An insertion under another field's context was not refused, rotated context, or changed a field")
+    try await Contracts.command(out, "owner-resume")
+    try await Contracts.command(out, "owner-middle")
     passed()
     start("verified-replacement")
-    let replace = try await input([["kind": "edit", "edit": ["contextId": try await context(excluding: beforeMiddle), "text": "é", "before": "漢", "after": "字"]]])
+    let beforeReplace = try await context(sensitive: false, excluding: otherContext)
+    let replace = try await input([["kind": "edit", "edit": ["contextId": beforeReplace, "text": "é", "before": "漢", "after": "字"]]])
     try require(replace["outcome"] as? String == "dispatched", "Verified replacement was refused")
     try require(try await note() == "qé!", "Verified middle replacement changed the prefix or suffix")
+    passed()
+    start("replacement-text-gone")
+    // Lead's ruling: a replacement whose named text is no longer in the field is refused.
+    let gone = try await input([["kind": "edit", "edit": ["contextId": beforeReplace, "text": "BAD", "before": "漢", "after": "字"]]])
+    try require(gone["outcome"] as? String == "stale" && (try await note()) == "qé!",
+      "A replacement whose named text is gone was not refused or changed the field")
     passed()
     start("stale-replacement")
     let oldContext = try await context()
@@ -704,7 +733,7 @@ extension WireJourney {
     start("multiline-paste")
     try await Contracts.command(out, "owner-select-all")
     let literal = "line 1\n\tline 2"
-    let pasted = try await input([["kind": "paste", "text": literal]])
+    let pasted = try await input([["kind": "paste", "text": literal, "contextId": try await context()]])
     let afterPaste = try await note()
     try require(pasted["outcome"] as? String == "dispatched" && afterPaste == literal, "Literal multiline/tab paste changed content")
     passed()
@@ -732,24 +761,24 @@ extension WireJourney {
     try require(try String(contentsOf: out.appendingPathComponent("owner-saved.txt"), encoding: .utf8) == literal, "Save changed content")
     passed()
     start("undo-chord")
-    let selected = try await input([["kind": "command", "command": "selectAll"]])
+    let selected = try await input([["kind": "command", "command": "selectAll", "contextId": try await settledEditingContext(streamA, after: editingMark)]])
     try require(selected["outcome"] as? String == "dispatched", "Select-all chord was refused")
-    let undoValue = try await input([["kind": "paste", "text": "undo fixture"]])
+    let undoValue = try await input([["kind": "paste", "text": "undo fixture", "contextId": try await context(sensitive: false)]])
     let afterUndoValue = try await note()
     try require(undoValue["outcome"] as? String == "dispatched" && afterUndoValue == "undo fixture", "Undo setup changed content")
-    let undone = try await input([["kind": "command", "command": "undo"]])
+    let undone = try await input([["kind": "command", "command": "undo", "contextId": try await settledEditingContext(streamA, after: editingMark)]])
     let afterUndo = try await note()
     try require(undone["outcome"] as? String == "dispatched" && afterUndo == literal, "Undo did not restore the last insertion once")
     passed()
     // CX3: what a phone does next in a Mac app's field: redo, a Backspace, a caret move then a key.
     start("redo-backspace-move")
-    let redone = try await input([["kind": "command", "command": "redo"]])
+    let redone = try await input([["kind": "command", "command": "redo", "contextId": try await settledEditingContext(streamA, after: editingMark)]])
     let afterRedo = try await note()
     try require(redone["outcome"] as? String == "dispatched" && afterRedo == "undo fixture", "Redo did not reapply the undone insertion once")
-    let deleted = try await input([["kind": "command", "command": "deleteBackward"]])
+    let deleted = try await input([["kind": "command", "command": "deleteBackward", "contextId": try await context()]])
     let afterDelete = try await note()
     try require(deleted["outcome"] as? String == "dispatched" && afterDelete == "undo fixtur", "Backspace did not delete exactly one character")
-    let movedBack = try await input([["kind": "command", "command": "moveBackward"]])
+    let movedBack = try await input([["kind": "command", "command": "moveBackward", "contextId": try await context()]])
     try require(movedBack["outcome"] as? String == "dispatched", "Caret move was refused")
     let typedAfterMove = try await input([["kind": "key", "action": "down", "code": "KeyX", "key": "X", "modifiers": [], "text": "X"],
       ["kind": "key", "action": "up", "code": "KeyX", "key": "X", "modifiers": []]])
@@ -757,7 +786,7 @@ extension WireJourney {
     try require(typedAfterMove["outcome"] as? String == "dispatched" && afterMove == "undo fixtuXr", "A key after a caret move did not go where the caret went")
     // The sections after this one expect the literal text back.
     try await Contracts.command(out, "owner-select-all")
-    _ = try await input([["kind": "paste", "text": literal]])
+    _ = try await input([["kind": "paste", "text": literal, "contextId": try await context(sensitive: false)]])
     try require(try await note() == literal, "Restoring the fixture text changed it")
     passed()
     start("stable-generation")
@@ -781,23 +810,26 @@ extension WireJourney {
     start("native-fixture-pixel-latency")
     let latency = try await OwnerLatencyEvidence.run(wire: self, media: mediaA, stream: streamA,
       generation: geometry, window: a, person: person, out: out, send: { try await input($0) })
-    _ = try await input([["kind": "command", "command": "selectAll"]])
-    _ = try await input([["kind": "paste", "text": literal]])
+    _ = try await input([["kind": "command", "command": "selectAll", "contextId": try await context()]])
+    _ = try await input([["kind": "paste", "text": literal, "contextId": try await context()]])
     try require(try await note() == literal, "Latency cleanup changed the fixture text")
     passed()
     start("secure-refusal")
     try await Contracts.command(out, "owner-secure")
-    _ = try await context(sensitive: true)
+    let secureContext = try await context(sensitive: true)
     let secureCopy = try await input([["kind": "copy"]])
     try require(secureCopy["outcome"] as? String == "refused" && secureCopy["reason"] as? String == "sensitive", "Secure copy was not refused")
-    let securePaste = try await input([["kind": "paste", "text": "must not insert"]])
+    let securePaste = try await input([["kind": "paste", "text": "must not insert", "contextId": secureContext]])
     try require(securePaste["outcome"] as? String == "refused" && securePaste["reason"] as? String == "sensitive", "Secure paste was not refused")
+    let secureCommand = try await input([["kind": "command", "command": "selectAll", "contextId": secureContext]])
+    try require(secureCommand["outcome"] as? String == "refused" && secureCommand["reason"] as? String == "sensitive", "Secure command was not refused")
     passed()
     start("resize-stale-input")
     try await Contracts.command(out, "owner-resume")
+    let beforeResizeContext = try await context(sensitive: false)
     let oldGeometry = geometry
     try await Contracts.command(out, "resize")
-    let retired = try await input([["kind": "paste", "text": "retired sample"]], generation: oldGeometry)
+    let retired = try await input([["kind": "paste", "text": "retired sample", "contextId": beforeResizeContext]], generation: oldGeometry)
     let afterRetired = try await note()
     try require(retired["outcome"] as? String == "stale" && afterRetired == literal, "Retired capture input changed content")
     for _ in 0..<12 {
@@ -820,12 +852,15 @@ extension WireJourney {
         _ = try await request("display.refresh", ["streamId": streamA])
         let (nextGeometry, _) = try await mediaA.keyframe(streamA)
         try require(nextGeometry == retiredGeometry, "Contained content retired an unchanged input mapping")
-        let current = try await input([["kind": "command", "command": "moveBackward"]], generation: retiredGeometry)
+        // Reacquire the owner-input attachment if a previous geometry change retired it, so its
+        // live editing context is published before sending the caret move.
+        _ = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]], generation: retiredGeometry)
+        let current = try await input([["kind": "command", "command": "moveBackward", "contextId": try await context(sensitive: false)]], generation: retiredGeometry)
         let afterCurrent = try await note()
         try require(current["outcome"] as? String == "dispatched" && afterCurrent == literal,
           "Contained content made current-picture input stale or changed text")
       } else {
-        let queued = try await input([["kind": "paste", "text": "queued old member sample"]], generation: retiredGeometry)
+        let queued = try await input([["kind": "paste", "text": "queued old member sample", "contextId": beforeResizeContext]], generation: retiredGeometry)
         let afterQueued = try await note()
         try require(queued["outcome"] as? String == "stale" && afterQueued == literal,
           "Changed sibling composition admitted input from a queued old picture")
@@ -865,7 +900,9 @@ extension WireJourney {
     try require(resumed["error"] is NSNull && (resumed["performed"] as? [String])?.count == 1,
       "Person input invalidated the agent's observation")
     try await Contracts.command(out, "owner-select-all")
-    _ = try await input([["kind": "paste", "text": literal]])
+    // Reset released the input attachment; reacquire it so its editing context is published.
+    _ = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
+    _ = try await input([["kind": "paste", "text": literal, "contextId": try await context(sensitive: false)]])
     passed()
     start("lost-keyup-cleanup")
     let beforeLost = try modifierReleases()

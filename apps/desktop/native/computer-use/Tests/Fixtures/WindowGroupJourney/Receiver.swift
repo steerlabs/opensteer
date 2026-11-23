@@ -278,11 +278,15 @@ let timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
       child.close()
     }
     a.makeFirstResponder(ownerNote)
+  case "owner-other":
+    username.stringValue = ""
+    a.makeFirstResponder(username)
   case "owner-secure":
     password.stringValue = "owner-fixture-secret"
     a.makeFirstResponder(password)
   case "owner-state":
-    try? JSONSerialization.data(withJSONObject: ["text": ownerNote.string, "saves": ownerSaveCount,
+    try? JSONSerialization.data(withJSONObject: ["text": ownerNote.string,
+      "other": username.currentEditor()?.string ?? username.stringValue, "saves": ownerSaveCount,
       "latencyChanges": ownerLatencyCount])
       .write(to: output.appendingPathComponent("owner-state.json"))
   case "owner-latency":

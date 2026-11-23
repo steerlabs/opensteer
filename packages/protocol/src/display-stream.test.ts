@@ -230,6 +230,8 @@ describe("display input and socket messages", () => {
       { kind: "text", submit: false },
       { kind: "text", insert: "x", submit: true },
       { kind: "nav", to: "quickSettings" },
+      { kind: "command", command: "selectAll" },
+      { kind: "paste", text: "hello" },
     ])
       expect(DisplayInputEventsSchema.safeParse([event]).success).toBe(false);
     for (const events of [[], Array.from({ length: 65 }, () => pointer)])

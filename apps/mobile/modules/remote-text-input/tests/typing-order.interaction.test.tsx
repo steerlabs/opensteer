@@ -16,7 +16,9 @@ import { splitGraphemes } from "unicode-segmenter/grapheme";
 import {
   caretRelativeEditingCommands,
   committedRemainder,
+  EditingContexts,
   editingTextMaxLength,
+  namedTextWaitDecision,
 } from "@opensteer/protocol/editing";
 import { Oracle, Person, type Action } from "./typing-oracle.js";
 import { browserEditingAbilities } from "../../../../../packages/client/src/host/browser-editing.js";
@@ -1282,11 +1284,13 @@ describe("a person's caret moves and selections in the native field", () => {
   }
   type Kind = "typed" | "delete" | "move" | "other";
   /**
-   * CY13: a Mac app that applies input late (Electron), as the helper takes it. "before": the
-   * helper as it was, a new context after every edit published at once (the field as it was
-   * before the edit), then the true one a moment later, and only the current one admitted.
-   * "after": its fix, one context published once the field shows the edit, the field's earlier
-   * contexts kept for insertions (the page's rule, which the far field already has).
+   * PH1 (replacing CY13): a Mac app that renders input late (Electron), driven by the same shared
+   * `EditingContexts` and `namedTextWaitDecision` as `MacOwnerInput.swift` (docs/editing-admission.md).
+   * - "before": the old helper that rotated on every event with no earlier contexts and republished
+   *   a moment later (refuses fast typing).
+   * - "after": the five-part editing-admission rule (`exactNamed: false`, no rotation on ordinary
+   *   events or refusals, bounded 0.5 s wait for late-rendered named text, field change forgets
+   *   earlier contexts).
    */
   type MacApp = "before" | "after";
   async function regime(
@@ -1308,6 +1312,7 @@ describe("a person's caret moves and selections in the native field", () => {
     const fresh = () => `00000000-0000-4000-8000-${String(200000000000 + ++ids).slice(-12)}`;
     let focused: FarField = opened.remote;
     focused.nextContextId = fresh;
+    if (mac === "after") focused.exactNamed = false;
     const segment = (field: FarField, first: number): Segment => {
       const start = { text: field.value, caret: field.caret };
       const person = new Person();
@@ -1491,14 +1496,14 @@ describe("a person's caret moves and selections in the native field", () => {
           ? made.edit.contextId
           : made.kind === "compose"
             ? made.composition.contextId
-            : made.kind === "command"
+            : made.kind === "command" || made.kind === "paste"
               ? made.contextId
               : undefined;
       const entry: (typeof sent)[number] = {
         operation: made,
         owners,
         field: focused,
-        own: context === undefined || context === focused.contextId || focused.earlier.has(context),
+        own: context === undefined || focused.contexts.admits(context, "relative"),
       };
       sent.push(entry);
       const edit = made.kind === "edit";
@@ -1561,16 +1566,14 @@ describe("a person's caret moves and selections in the native field", () => {
         focused.take(made);
         took(again);
       }
-      // CY13: the Mac app's helper gives the field a new context after each edit it applies.
-      if (mac && applied(entry) && made.kind === "edit") {
-        // A change of context, as the page's acts are: an open composition is committed by it.
+      // PH1: the old Mac helper ("before") rotated on every edit with no earlier contexts and
+      // republished a moment later; the new helper ("after") follows Rule 5 and does NOT rotate
+      // on ordinary edits or refusals — only when the field changes or a named replacement misses.
+      if (mac === "before" && applied(entry) && made.kind === "edit") {
         clock += 1;
-        focused.rotate();
-        if (mac === "before") {
-          // Only the current context admitted, and the true one published a moment later.
-          focused.earlier.clear();
-          republish = true;
-        }
+        focused.contexts.rotate(false);
+        opened.renew(focused.contextId!);
+        republish = true;
       }
       rotated();
       return result;
@@ -1582,12 +1585,12 @@ describe("a person's caret moves and selections in the native field", () => {
     const length = 1 + Math.floor(next() * 28);
     let republish = false;
     for (let step = 0; step < length; step++) {
-      // CY13, "before": the helper's second publication once the app has shown the edit.
+      // Old Mac helper ("before"): second publication once the app has shown the edit.
       if (republish) {
         republish = false;
         clock += 1;
-        focused.rotate();
-        focused.earlier.clear();
+        focused.contexts.rotate(false);
+        opened.renew(focused.contextId!);
         rotated();
       }
       if (next() < 0.12) {
@@ -1612,6 +1615,7 @@ describe("a person's caret moves and selections in the native field", () => {
           field.contextId = id;
           field.nextContextId = fresh;
           field.onRotate = opened.renew;
+          if (mac === "after") field.exactNamed = false;
           segments.at(-1)!.end = { text: focused.value, caret: focused.caret };
           focused = field;
           segments.push(segment(field, kinds.length));
@@ -1651,8 +1655,7 @@ describe("a person's caret moves and selections in the native field", () => {
           clock += 1;
           // The page rewrote the field: a new context for it, the old one an earlier one.
           const id = fresh();
-          if (focused.contextId !== null) focused.earlier.add(focused.contextId);
-          focused.contextId = id;
+          focused.rotateSameField(id);
           log.push({ act: { kind: "context", contextId: id } });
           logged = id;
           const before = owners;
@@ -1998,8 +2001,7 @@ describe("a person's caret moves and selections in the native field", () => {
       await keyboard((field) => field.insertText("a"));
       await keyboard((field) => field.insertText("a"));
       const next = "00000000-0000-4000-8000-000000000782";
-      remote.earlier.add(remote.contextId!);
-      remote.contextId = next;
+      remote.rotateSameField(next);
       await publish(next);
       await answerAll();
       expect(remote.value).toBe("にaa");
@@ -2018,8 +2020,7 @@ describe("a person's caret moves and selections in the native field", () => {
     remote.value = `Z${remote.value}`;
     remote.caret += 1;
     const next = "00000000-0000-4000-8000-000000000779";
-    remote.earlier.add(remote.contextId!);
-    remote.contextId = next;
+    remote.rotateSameField(next);
     await publish(next);
     await answerAll();
     await keyboard((field) => field.unmarkText());
@@ -2047,8 +2048,7 @@ describe("a person's caret moves and selections in the native field", () => {
         field.paste(text);
       });
       const next = "00000000-0000-4000-8000-000000000780";
-      remote.earlier.add(remote.contextId!);
-      remote.contextId = next;
+      remote.rotateSameField(next);
       await publish(next);
       await answerAll();
       expect(remote.value).toBe(lands ? `a${text}` : "a");
@@ -2069,8 +2069,7 @@ describe("a person's caret moves and selections in the native field", () => {
       field.insertText("b");
     });
     const next = "00000000-0000-4000-8000-000000000781";
-    remote.earlier.add(remote.contextId!);
-    remote.contextId = next;
+    remote.rotateSameField(next);
     await publish(next);
     const seen: { id: number; preventDefault?: boolean }[] = [];
     const respond = harness.field!.respond;
@@ -2143,8 +2142,7 @@ describe("a person's caret moves and selections in the native field", () => {
     await answerAll();
     // The page's new context for the same field; React commits it with no act around it.
     const next = "00000000-0000-4000-8000-000000000786";
-    remote.earlier.add(remote.contextId!);
-    remote.contextId = next;
+    remote.rotateSameField(next);
     let delivered = false;
     harness.committed = (contextId) => {
       if (contextId !== next || delivered) return;
@@ -2180,8 +2178,7 @@ describe("a person's caret moves and selections in the native field", () => {
   });
 
   const rotate = async (opened: Awaited<ReturnType<typeof open>>, contextId: string) => {
-    opened.remote.earlier.add(opened.remote.contextId!);
-    opened.remote.contextId = contextId;
+    opened.remote.rotateSameField(contextId);
     await opened.publish(contextId);
   };
   // CZ12: under the context just left, a composition begun over a selection and cancelled leaves
@@ -2269,8 +2266,7 @@ describe("a person's caret moves and selections in the native field", () => {
       expect(remote.composition).not.toBeNull();
       await keyboard((field) => field.insertText(committed));
       const next = "00000000-0000-4000-8000-000000000778";
-      remote.earlier.add(remote.contextId!);
-      remote.contextId = next;
+      remote.rotateSameField(next);
       await publish(next);
       await answerAll();
       expect(remote.value).toBe(expected);
@@ -2292,8 +2288,7 @@ describe("a person's caret moves and selections in the native field", () => {
       expect(remote.value).toBe("a");
       // The page's new context for the same field, while the blur and the "b" wait.
       const next = "00000000-0000-4000-8000-000000000777";
-      remote.earlier.add(remote.contextId!);
-      remote.contextId = next;
+      remote.rotateSameField(next);
       await publish(next);
       await answerAll();
       expect(remote.value).toBe("ab");
@@ -2406,16 +2401,54 @@ describe("a person's caret moves and selections in the native field", () => {
     expect(failure).not.toBeNull();
   });
 
-  // CY13: on a Mac app that applies input late (Electron), what the person types keeps regime C's
-  // promise by the page's rule; the helper as it was refuses what was typed under the context it
-  // published at a key's receipt, and the regime fails on it.
-  it("keeps regime C's promise on a Mac app that applies input late, by the page's rule", async () => {
+  // PH1: on a Mac app that renders input late (Electron), the stand-in driven by the shared
+  // EditingContexts + namedTextWaitDecision keeps both regime C and regime B, and waits up to
+  // 0.5 s for late-rendered named text; the old helper ("before") refuses fast typing and fails.
+  it("keeps regime C's promise on a Mac app that applies input late, by the shared admission rule", async () => {
     const failures: string[] = [];
     for (let seed = 1; seed <= 200; seed++) {
       const result = await regime(seed, "C", "after");
       if (result.failure) failures.push(result.failure);
     }
     expect(failures).toEqual([]);
+  });
+  it("keeps regime B's promise on a Mac app by the shared admission rule", async () => {
+    const failures: string[] = [];
+    for (let seed = 1; seed <= 200; seed++) {
+      const result = await regime(seed, "B", "after");
+      if (result.failure) failures.push(result.failure);
+    }
+    expect(failures).toEqual([]);
+  });
+  it("waits up to 0.5 s for late-rendered named text on a Mac app, then refuses without forgetting earlier contexts", () => {
+    const mac = new FarField();
+    mac.exactNamed = false;
+    mac.contextId = context.contextId;
+    const first = mac.contextId!;
+    // Typing arrives in order; simulate late AX visibility where "teh" appears after 0.1 s.
+    mac.take({ kind: "edit", edit: { contextId: first, text: "teh", before: "", after: "" } });
+    // Even after a same-field rotation, Rule 3 admits a text-naming edit when live text matches.
+    mac.rotateSameField();
+    const second = mac.contextId!;
+    expect(second).not.toBe(first);
+    expect(namedTextWaitDecision(true, false, 0.05)).toBe("wait");
+    expect(namedTextWaitDecision(true, true, 0.1)).toBe("apply");
+    expect(
+      mac.contexts.admits(first, "named", { namedMatches: true, exactNamed: mac.exactNamed }),
+    ).toBe(true);
+    mac.take({ kind: "edit", edit: { contextId: first, text: "the", before: "teh", after: "" } });
+    expect(mac.value).toBe("the");
+    expect(mac.refused).toEqual([]);
+    // Missing named text waits until 0.5 s, then refuses and rotates while keeping earlier contexts.
+    expect(namedTextWaitDecision(true, false, EditingContexts.namedTextWaitSeconds)).toBe(
+      "refuse-mismatch",
+    );
+    mac.take({ kind: "edit", edit: { contextId: second, text: "x", before: "zzz", after: "" } });
+    expect(mac.refused).toHaveLength(1);
+    expect(mac.contextId).not.toBe(second);
+    expect(mac.contexts.admits(first, "relative")).toBe(true);
+    // Field change aborts a waiting named edit immediately.
+    expect(namedTextWaitDecision(false, false, 0.01)).toBe("refuse-field");
   });
   it("fails regime C on a Mac app that applies input late, with the helper as it was", async () => {
     let failed = 0;

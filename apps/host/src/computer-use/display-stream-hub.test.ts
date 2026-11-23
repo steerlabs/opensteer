@@ -840,7 +840,7 @@ describe("phone display Host sockets", () => {
 
         geometry: 1,
         sequence: 1,
-        events: [{ kind: "paste", text: "hello" }],
+        events: [{ kind: "paste", text: "hello", contextId: "00000000-0000-4000-8000-000000000001" }],
       });
       await opted.roundTrip();
       expect(f.sent.filter((m) => m.type === "host.integrations.display.input")).toHaveLength(
@@ -937,7 +937,7 @@ describe("phone display Host sockets", () => {
 
       geometry: 1,
       sequence: 0,
-      events: [{ kind: "paste", text: "hello" }],
+      events: [{ kind: "paste", text: "hello", contextId: "00000000-0000-4000-8000-000000000001" }],
     });
     await viewer.roundTrip();
     await f.state("live", 2);

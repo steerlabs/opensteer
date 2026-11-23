@@ -789,7 +789,14 @@ describe("shared input", () => {
     const results: unknown[] = [];
     lease.onEditingMessage((message) => results.push(message));
     expect(
-      lease.input(1, [{ kind: "paste", text: "\u0001".repeat(30000) }, { kind: "copy" }]),
+      lease.input(1, [
+        {
+          kind: "paste",
+          text: "\u0001".repeat(30000),
+          contextId: "00000000-0000-4000-8000-000000000001",
+        },
+        { kind: "copy" },
+      ]),
     ).toBe(true);
     socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
     socket.json({ type: "display.clipboard", sequence: 0, outcome: "copied", text: "selected" });
@@ -1218,14 +1225,19 @@ describe("display editing receipt adapter", () => {
   });
   it("chunks long plain paste without splitting a surrogate and waits for every receipt", async () => {
     const { socket, editing } = await editingFixture();
+    const contextId = "00000000-0000-4000-8000-000000000001";
     const text = "x".repeat(29999) + "🦊" + "\u0001".repeat(30001);
     const pending = editing.send({
       kind: "paste",
       items: [{ type: "text/plain", bytes: new TextEncoder().encode(text) }],
+      contextId,
     });
     const batches = socket.messages("display.input");
     const pieces = batches.flatMap((message) =>
-      (message.events as { text: string }[]).map((event) => event.text),
+      (message.events as { text: string; contextId: string }[]).map((event) => {
+        expect(event.contextId).toBe(contextId);
+        return event.text;
+      }),
     );
     expect(pieces.join("")).toBe(text);
     expect(pieces.every((piece) => piece.length <= 30000 && !/[\uD800-\uDBFF]$/u.test(piece))).toBe(
@@ -1242,6 +1254,20 @@ describe("display editing receipt adapter", () => {
       });
     }
     expect(await pending).toBeUndefined();
+    editing.dispose();
+  });
+  it("refuses command and paste without a context", async () => {
+    const { socket, editing } = await editingFixture();
+    await expect(editing.send({ kind: "command", command: "selectAll" })).rejects.toThrow(
+      "changed",
+    );
+    await expect(
+      editing.send({
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: new TextEncoder().encode("hi") }],
+      }),
+    ).rejects.toThrow("changed");
+    expect(socket.messages("display.input")).toEqual([]);
     editing.dispose();
   });
   it("refuses rich paste, cut and compose without inventing a native edit", async () => {

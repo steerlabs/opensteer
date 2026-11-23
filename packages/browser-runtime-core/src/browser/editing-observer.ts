@@ -11,6 +11,7 @@ import {
   caretMoveEditingCommands,
   committedRemainder,
   caretRelativeEditingCommands,
+  EditingContexts,
   EditingContextSchema,
   type EditingCommand,
   type EditingContext,
@@ -185,34 +186,18 @@ export class PageEditingObserver {
   readonly #inventory = new ExecutionContextInventory();
   #focused: { context: number; frame: string; fieldId: string; selectionRevision: number } | null =
     null;
-  #context: EditingContext = { contextId: randomUUID(), field: null, caret: null };
   /**
-   * CV1: the earlier contexts of the field that has focus now. The field got a new context when
-   * the page rewrote it (or refused an edit), not when focus moved: what the person typed under
-   * one of these is still an insertion at its caret. Focus moving to another field clears them.
+   * Shared editing-admission state (docs/editing-admission.md): tracks the focused field identity,
+   * its current context, and up to 64 earlier contexts of that same field.
    */
-  #earlier = new Set<string>();
-  /**
-   * CY5: an edit the page refused, by its context and producer. What that producer computed from
-   * it (its moves under the same context) is refused too, until its next insertion, which lands
-   * at the caret: a refusal takes with it what was computed from it.
-   */
+  readonly #admission = new EditingContexts(() => randomUUID());
+  #context: EditingContext = { contextId: this.#admission.current, field: null, caret: null };
   /**
    * CZ7: each producer's last refused edit, by its context, until that producer's next edit that
    * applies: the moves it computed from it go with it. One per producer: another viewer's
    * refusal neither takes this one's moves nor releases them.
    */
   readonly #refusedFrom = new Map<string | undefined, string>();
-  /** Remembers the context being replaced, for the same field. */
-  #supersede(sameField: boolean): void {
-    if (!sameField) {
-      this.#earlier.clear();
-      return;
-    }
-    this.#earlier.add(this.#context.contextId);
-    // A bound, not a policy: a person types far fewer operations in flight than this.
-    if (this.#earlier.size > 64) this.#earlier.delete(this.#earlier.values().next().value!);
-  }
   /**
    * The open composition's context: who composed it, so the context that ends with it open
    * closes it as its own act, attributed to it, before another context's operation is prepared.
@@ -371,14 +356,11 @@ export class PageEditingObserver {
     const insertion =
       !composition && edit.text.length > 0 && !edit.before?.length && !edit.after?.length;
     if (!focus) return this.#stale();
-    if (edit.contextId !== this.#context.contextId) {
-      // Typed under an earlier context of this same field: still the person's, at the caret. Any
-      // other operation of another context is refused alone: it changed nothing the current
-      // context's mirror holds, so the current context stays.
-      if (!(insertion && this.#earlier.has(edit.contextId))) {
-        this.#refusedFrom.set(producer, edit.contextId);
-        return false;
-      }
+    // Docs/editing-admission.md: insertions are relative (Rule 2, any context of the same field);
+    // browser replacements/compositions keep exact context + selectionRevision (exactNamed: true).
+    if (!this.#admission.admits(edit.contextId, insertion ? "relative" : "named", { exactNamed: true })) {
+      this.#refusedFrom.set(producer, edit.contextId);
+      return false;
     }
     // CW1: another context's (or viewer's) composition is closed only for an operation the page
     // admits whatever its text: an insertion at the caret. A replacement or a composition of
@@ -538,11 +520,11 @@ export class PageEditingObserver {
     // CY6: admitted under its own context, and admitted again after every await, against focus
     // and context as they are then: anything moved, and it is refused alone.
     const focus = this.#focused;
+    const kind = relative ? "relative" : "exact";
     const admitted = () =>
       this.#focused?.fieldId === focus?.fieldId &&
       this.#focused?.context === focus?.context &&
-      (contextId === this.#context.contextId ||
-        (relative && this.#focused !== null && this.#earlier.has(contextId)));
+      this.#admission.admits(contextId, kind);
     if (!admitted()) return false;
     // A move computed from an edit the page refused goes with it (CY5, CZ7): only one that says
     // it follows that edit. The person's own moves, and a Backspace, are theirs.
@@ -580,10 +562,7 @@ export class PageEditingObserver {
    */
   admitsInsertion(contextId: string): boolean {
     if (this.#activeChild) return this.#activeChild.admitsInsertion(contextId);
-    return (
-      contextId === this.#context.contextId ||
-      (this.#focused !== null && this.#earlier.has(contextId))
-    );
+    return this.#admission.admits(contextId, "relative");
   }
 
   async input<T>(action: () => Promise<T>, producer?: string): Promise<T> {
@@ -670,8 +649,8 @@ export class PageEditingObserver {
 
   #stale(): false {
     this.#generation++;
-    this.#supersede(this.#focused !== null);
-    this.#context = { ...this.#context, contextId: randomUUID() };
+    const contextId = this.#admission.mismatch();
+    this.#context = { ...this.#context, contextId };
     this.#publish(this.#context);
     this.refresh();
     return false;
@@ -679,11 +658,11 @@ export class PageEditingObserver {
 
   #clear = (): void => {
     this.#generation++;
-    this.#earlier.clear();
+    const contextId = this.#admission.reset();
     this.#focused = null;
     this.#composer = null;
     if (!this.#activeChild) {
-      this.#context = { contextId: randomUUID(), field: null, caret: null };
+      this.#context = { contextId, field: null, caret: null };
       this.#publish(this.#context);
     }
   };
@@ -756,22 +735,24 @@ export class PageEditingObserver {
     }
     const childWasActive = this.#activeChild !== null;
     this.#activeChild = null;
-    const changed =
-      childWasActive ||
-      this.#focused?.context !== parsed.data.executionContextId ||
-      this.#focused?.fieldId !== fieldId ||
+    if (childWasActive) this.#admission.reset();
+    const contentChanged =
+      this.#focused?.context === parsed.data.executionContextId &&
+      this.#focused?.fieldId === fieldId &&
       this.#focused?.selectionRevision !== selectionRevision;
-    if (changed) {
-      this.#generation++;
-      // The same field rewritten (only its revision moved) keeps its earlier contexts.
-      this.#supersede(
-        !childWasActive &&
-          this.#focused?.context === parsed.data.executionContextId &&
-          this.#focused?.fieldId === fieldId,
-      );
-    }
+    const changed =
+      this.#admission.observe(
+        {
+          id: `${parsed.data.executionContextId}:${fieldId}`,
+          kind: field.kind,
+          sensitive: field.sensitive,
+          editable: true,
+        },
+        contentChanged,
+      ) || childWasActive;
+    if (changed) this.#generation++;
     this.#focused = { context: parsed.data.executionContextId, frame, fieldId, selectionRevision };
-    const contextId = changed ? randomUUID() : this.#context.contextId;
+    const contextId = this.#admission.current;
     this.#context = { contextId, field, caret: this.#context.caret };
     // Resolve frame ownership through CDP, including cross-origin frames; the
     // private world's payload contains only geometry and field facts.

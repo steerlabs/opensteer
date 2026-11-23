@@ -104,7 +104,10 @@ class OwnerEditing(private val service: AccessibilityService, private val device
         val node = device.ownerFocusedNode() ?: return refused("no-field")
         if (expected != null && node != expected || device.ownerNode(field) != node) return stale()
         val id = identity(node)
-        if (event is DisplayInput.Edit && event.contextId != id || event is DisplayInput.Cut && event.contextId != id) return stale()
+        if (event is DisplayInput.Edit && event.contextId != id ||
+            event is DisplayInput.Cut && event.contextId != id ||
+            event is DisplayInput.Command && event.contextId != id ||
+            event is DisplayInput.Paste && event.contextId != id) return stale()
         if (Build.VERSION.SDK_INT < 33) {
             if (event is DisplayInput.Copy || event is DisplayInput.Cut || event is DisplayInput.Command || event is DisplayInput.Edit && (event.before.isNotEmpty() || event.after.isNotEmpty())) return refused("unsupported")
             // Android omits selection metadata for empty accessible text. Its only insertion position is zero.

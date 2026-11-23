@@ -79,15 +79,17 @@ class DisplayWireTest {
     @Test fun editingVariantsBeforeRuntime() {
         listOf(
             """{"kind":"key","action":"down","code":"KeyE","key":"é","modifiers":[],"text":"é"}""",
-            """{"kind":"command","command":"selectAll"}""",
+            """{"kind":"command","command":"selectAll","contextId":"11111111-1111-4111-8111-111111111111"}""",
             """{"kind":"edit","edit":{"contextId":"11111111-1111-4111-8111-111111111111","text":"é","before":"e","after":""}}""",
             """{"kind":"cut","contextId":"11111111-1111-4111-8111-111111111111"}""",
-            """{"kind":"copy"}""", """{"kind":"paste","text":"🧑‍💻"}""",
+            """{"kind":"copy"}""", """{"kind":"paste","text":"🧑‍💻","contextId":"11111111-1111-4111-8111-111111111111"}""",
         ).forEach { DisplayWire.event(JsonText.parse(it)) }
         listOf(
             """{"kind":"cut"}""", """{"kind":"cut","contextId":"bad"}""",
-            """{"kind":"command","command":"invented"}""",
+            """{"kind":"command","command":"selectAll"}""", """{"kind":"command","command":"selectAll","contextId":"bad"}""",
+            """{"kind":"command","command":"invented","contextId":"11111111-1111-4111-8111-111111111111"}""",
             """{"kind":"edit","edit":{"contextId":"bad","text":"e","before":"","after":""}}""",
+            """{"kind":"paste","text":"hi"}""", """{"kind":"paste","text":"hi","contextId":"bad"}""",
             """{"kind":"paste","text":"","files":[]}""",
         ).forEach { assertThrows(WireException::class.java) { DisplayWire.event(JsonText.parse(it)) } }
     }

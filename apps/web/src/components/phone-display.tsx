@@ -761,7 +761,11 @@ export function ComputerDisplayScreen({
             if (action === "copy" || action === "cut") proxy.current?.perform({ kind: action });
             else if (action === "paste") proxy.current?.pasteFromMenu();
             else if (action === "select-all")
-              proxy.current?.perform({ kind: "command", command: "selectAll" });
+              proxy.current?.perform({
+                kind: "command",
+                command: "selectAll",
+                contextId: menu.contextId,
+              });
             dismissMenu();
           }}
         />

@@ -3,6 +3,9 @@ import {
   caretMoveEditingCommands,
   caretRelativeEditingCommands,
   committedRemainder,
+  EditingContexts,
+  type EditingAdmissionKind,
+  type EditingFieldIdentity,
 } from "@opensteer/protocol/editing";
 import { splitGraphemes } from "unicode-segmenter/grapheme";
 
@@ -851,8 +854,6 @@ export class FarField {
   composition: Span | null = null;
   /** Who composed it: its context and producer. */
   private composer: { contextId: string | null; producer: string | undefined } | null = null;
-  /** The field's context; null takes any (a test that does not rotate). */
-  contextId: string | null = null;
   /** Told the new context after a refusal, as the page publishes it. */
   onRotate: ((contextId: string) => void) | null = null;
   refused: EditingOperation[] = [];
@@ -865,13 +866,55 @@ export class FarField {
   /** Compositions another context closed, as each closed them: the record of who composed what. */
   closed: { contextId: string | null; producer: string | undefined; text: string }[] = [];
   private rotations = 0;
-  /** The field's earlier contexts: an insertion under one is still the person's (CV1). */
-  readonly earlier = new Set<string>();
-  /** CY5: an edit refused, by context and producer: its moves after it go with it. */
-  private readonly refusedFrom = new Map<string | undefined, string | null>();
+  private pendingId: string | null = null;
+  private untracked = true;
+  /** Browser pages require exact context on named replacements; Mac helper uses Rule 3 (`false`). */
+  exactNamed = true;
+  /** Identity of this field for the shared EditingContexts admission state machine. */
+  fieldIdentity: EditingFieldIdentity = {
+    id: "field",
+    kind: "text",
+    sensitive: false,
+    editable: true,
+  };
   /** The context a refusal rotates to; several fields on one page give each a distinct one. */
   nextContextId = () =>
     `00000000-0000-4000-8000-${String(100000000000 + ++this.rotations).slice(-12)}`;
+  /** Shared editing-admission state machine (docs/editing-admission.md). */
+  readonly contexts: EditingContexts = new EditingContexts(() => {
+    const next = this.pendingId;
+    this.pendingId = null;
+    return next ?? this.nextContextId();
+  });
+  /** CY5: an edit refused, by context and producer: its moves after it go with it. */
+  private readonly refusedFrom = new Map<string | undefined, string | null>();
+  /** The field's context; null takes any (a test that does not rotate). */
+  get contextId(): string | null {
+    return this.untracked ? null : this.contexts.current;
+  }
+  set contextId(value: string | null) {
+    if (value === null) {
+      this.untracked = true;
+      return;
+    }
+    if (this.untracked) {
+      this.untracked = false;
+      this.pendingId = value;
+      this.contexts.observe(this.fieldIdentity, false);
+      return;
+    }
+    if (value !== this.contexts.current) {
+      this.pendingId = value;
+      this.contexts.observe(this.fieldIdentity, true);
+    }
+  }
+  /** Rotates this same field to a fresh or specified context, preserving earlier contexts. */
+  rotateSameField(nextId?: string): string {
+    this.untracked = false;
+    this.pendingId = nextId ?? null;
+    this.contexts.observe(this.fieldIdentity, true);
+    return this.contexts.current;
+  }
   private refuse(operation: EditingOperation) {
     this.refused.push(operation);
     this.rotate();
@@ -895,9 +938,13 @@ export class FarField {
     null;
   /** A new context for this same field: the page rewrote it, or refused an edit. */
   rotate() {
-    if (this.contextId !== null) this.earlier.add(this.contextId);
-    this.contextId = this.nextContextId();
-    this.onRotate?.(this.contextId);
+    const next = this.untracked ? this.nextContextId() : this.contexts.mismatch();
+    if (this.untracked) {
+      this.untracked = false;
+      this.pendingId = next;
+      this.contexts.observe(this.fieldIdentity, false);
+    }
+    this.onRotate?.(this.contexts.current);
   }
   private replace(start: number, end: number, text: string) {
     this.value = this.value.slice(0, start) + text + this.value.slice(end);
@@ -938,10 +985,18 @@ export class FarField {
         !operation.edit.before &&
         !operation.edit.after) ||
       (operation.kind === "command" && caretRelativeEditingCommands.has(operation.command));
-    if (context !== null && this.contextId !== null && context !== this.contextId) {
-      // An insertion typed under an earlier context of this field still goes in at the caret;
-      // anything else is refused alone, the field's context kept.
-      if (!(insertion && this.earlier.has(context))) {
+    const admissionKind: EditingAdmissionKind = insertion
+      ? "relative"
+      : operation.kind === "command"
+        ? "exact"
+        : "named";
+    if (context !== null && this.contextId !== null) {
+      if (
+        !this.contexts.admits(context, admissionKind, {
+          namedMatches: true,
+          exactNamed: this.exactNamed,
+        })
+      ) {
         this.refused.push(operation);
         if (operation.kind !== "command") this.refusedFrom.set(producer, context);
         return true;
