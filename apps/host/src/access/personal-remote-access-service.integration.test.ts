@@ -167,7 +167,7 @@ describe("PersonalRemoteAccessService", () => {
         const service = new PersonalRemoteAccessService({
           authority,
           database: ownerAuthority(
-            projectionDatabase(issuer, `osh_${"a".repeat(43)}`, undefined, operation),
+            projectionDatabase(issuer, `osc_${"h".repeat(43)}`, undefined, operation),
           ) as never,
           fetch,
           grantVerifier: { issuer } as never,
@@ -196,6 +196,47 @@ describe("PersonalRemoteAccessService", () => {
         expect(refused.fetch).not.toHaveBeenCalled();
       }
     }
+  });
+
+  it("takes Remote access away with no operation behind it, on record for the person (AD10)", async () => {
+    const issuer = "https://accounts.opensteer.test";
+    const keys = generateKeyPairSync("ed25519");
+    const database = projectionDatabase(issuer, `osc_${"h".repeat(43)}`);
+    const fetch = vi.fn(async () =>
+      Response.json({
+        accessRoute: null,
+        generation: 1,
+        lastSeenAt: null,
+        origin: null,
+        state: "disabled",
+      }),
+    );
+    const service = new PersonalRemoteAccessService({
+      authority,
+      database: ownerAuthority(database) as never,
+      fetch,
+      grantVerifier: { issuer } as never,
+      identity: fakeIdentity(),
+      keys,
+    });
+    // The Mac app's startup cleanup: no operation, never refused.
+    await expect(
+      service.publishConnectProjection(ownerSession(), {
+        expectedAccessRoute: null,
+        schemaVersion: 2,
+        state: "disabled",
+      }),
+    ).resolves.toBeUndefined();
+    await service
+      .revokeConnectResource(ownerSession(), {
+        hostInstanceId: authority.hostInstanceId,
+        operationId: `cop_${crypto.randomUUID()}`,
+      })
+      .catch(() => undefined);
+    expect(database.audits.map((row) => row.action)).toEqual([
+      "remote-access.connect-off",
+      "remote-access.connect-removed",
+    ]);
   });
 
   it("refuses non-owners before any administration effect", async () => {
@@ -885,6 +926,8 @@ function projectionDatabase(
   operation: { readonly intent: Record<string, unknown>; readonly state: string } | null = null,
 ) {
   const operationQuery = rowQuery(operation ?? undefined);
+  /** What the steps put on record for the person's activity. */
+  const audits: Record<string, unknown>[] = [];
   const link = {
     accountOperation: null as import("kysely").Selectable<
       import("@opensteer/database").DatabaseSchema["personalRemoteAccountLink"]
@@ -941,6 +984,7 @@ function projectionDatabase(
     },
   };
   return {
+    audits,
     selectFrom: vi.fn((table: string) =>
       table === "personalRemoteAccess"
         ? remoteAccessQuery
@@ -955,6 +999,13 @@ function projectionDatabase(
             compileQuery: () => ({}),
             executeQuery: vi.fn(async () => ({ rows: [] })),
             transformQuery: (node: unknown) => node,
+          }),
+          insertInto: (table: string) => ({
+            values(row: Record<string, unknown>) {
+              if (table === "securityAudit") audits.push(row);
+              return this;
+            },
+            execute: async () => [],
           }),
           updateTable: () => ({
             set(values: Partial<typeof link>) {
@@ -1068,6 +1119,12 @@ function accountMutationDatabase(
     },
   };
   const transaction = {
+    insertInto: () => ({
+      values() {
+        return this;
+      },
+      execute: async () => [],
+    }),
     deleteFrom: vi.fn((table: string) =>
       table === "personalRemoteAccountLink"
         ? deleteQuery

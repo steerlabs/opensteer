@@ -14,6 +14,7 @@ import { isDeepStrictEqual } from "node:util";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import {
+  createId,
   OpensteerError,
   type AuthenticatedSession,
   type AuthSessionId,
@@ -967,6 +968,10 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
           message: "The Personal Connect route changed before it could be published",
         });
       }
+      // Publishing Connect as off takes Remote access away only: it needs no operation (the Mac
+      // app's startup cleanup does it with none), and the person can see it happened (AD10).
+      if (request.state === "disabled")
+        await recordRemoteAccessNarrowing(transaction, caller.session, "remote-access.connect-off");
       return this.#admitAccountOperation(transaction, linked, {
         kind: "projection",
         projection: {
@@ -1079,6 +1084,13 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
           message: "Link an Opensteer Account before revoking Connect",
         });
       }
+      // Revoking the Connect resource takes Remote access away only: no operation is needed, and
+      // the person can see that it was cleaned up on this Mac, and when (AD10).
+      await recordRemoteAccessNarrowing(
+        transaction,
+        caller.session,
+        "remote-access.connect-removed",
+      );
       return this.#admitAccountOperation(transaction, linked, { kind: "revoke", request });
     });
     const result = await this.#executeAccountOperation(admitted);
@@ -1521,8 +1533,7 @@ export async function requireRemoteAccessOperation(
     // come before the sessions it ends, the reverse of every other path.
     .executeTakeFirst();
   const intent = operation?.intent as
-    | { readonly action: string; readonly mode?: string }
-    | undefined;
+    { readonly action: string; readonly mode?: string } | undefined;
   const unfinished = operation?.state === "pending" || operation?.state === "running";
   const carries =
     unfinished &&
@@ -1536,6 +1547,27 @@ export async function requireRemoteAccessOperation(
       code: "conflict",
       message: "Remote access changes only as part of a change you asked for in Opensteer.",
     });
+}
+
+/** A step that only takes Remote access away, on record for the person's activity. */
+async function recordRemoteAccessNarrowing(
+  transaction: Transaction<DatabaseSchema>,
+  session: AuthenticatedSession,
+  action: "remote-access.connect-off" | "remote-access.connect-removed",
+): Promise<void> {
+  await transaction
+    .insertInto("securityAudit")
+    .values({
+      id: createId("securityAudit"),
+      action,
+      actorUserId: session.user.id,
+      actorSessionId: session.id,
+      requestId: null,
+      targetType: "remote-access",
+      targetId: null,
+      metadata: sql`${JSON.stringify({ narrowing: true })}::jsonb` as never,
+    })
+    .execute();
 }
 
 async function lockRemoteAccess(transaction: Transaction<DatabaseSchema>): Promise<void> {
