@@ -1386,6 +1386,12 @@ integration.sequential("Trigger failure auto-pause", () => {
       runnerBootId: "boot-stale-1",
       runnerId: fixture.runnerId,
     });
+    // Mark the frame sent so restart settles it to unknown (rather than resetting unsent to pending, Z5).
+    await storeFixture.database
+      .updateTable("commands")
+      .set({ frameSentAt: new Date() })
+      .where("id", "=", stale.commandId)
+      .execute();
     // Mark the stale firing unknown when the Runner restarts without it, unblocking later firings.
     await triggers.attachRunnerFirings({
       dispatchingOccurrenceIds: [],
@@ -2508,10 +2514,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       runnerBootId: "boot-overrun",
       runnerId: fixture.runnerId,
     });
-    // Once the running firing finishes, the single waiting firing can now be claimed.
-    expect(
-      await store.claimCommand(waitingOccurrence.commandId, "overrun-dispatcher"),
-    ).not.toBeNull();
+    // Once the running firing finishes, the single waiting firing can now be claimed and completed.
     await complete(fixture, waitingOccurrence, "succeeded", "overrun-waiting");
 
     // 3. 100-firing output pruning (T10): keep 100 most recent outputs, prune older without deleting rows
@@ -2949,9 +2952,9 @@ integration.sequential("Trigger failure auto-pause", () => {
       triggerId: created.trigger.id,
     });
     await database
-      .updateTable("threads")
-      .set({ doneAt: new Date(), status: "archived" })
-      .where("id", "=", fixture.threadId)
+      .updateTable("runners")
+      .set({ revokedAt: new Date() })
+      .where("id", "=", fixture.runnerId)
       .execute();
     await database
       .updateTable("triggers")

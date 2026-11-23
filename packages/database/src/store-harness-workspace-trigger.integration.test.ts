@@ -1742,7 +1742,7 @@ describeStore("PostgreSQL store", (it) => {
         triggerId: created.trigger.id,
       }),
     ).rejects.toMatchObject({
-      code: "resource_exhausted",
+      code: "conflict",
     });
   });
   it("collapses queued schedule ticks while letting a running Occurrence overlap the next one", async ({

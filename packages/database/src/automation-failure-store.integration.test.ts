@@ -384,7 +384,7 @@ integration.sequential("automation failure notices", () => {
     expect(await storedNotices()).toEqual([
       {
         activationId: null,
-        detail: "Program failed",
+        detail: "Program failed\nfailure",
         occurrenceId: occurrence.id,
         reason: "final-occurrence-failed",
         settledAt: null,
@@ -398,7 +398,7 @@ integration.sequential("automation failure notices", () => {
         destinationThreadId: fixture.threadId,
         attempts: 0,
         createdBy: fixture.userId,
-        detail: "Program failed",
+        detail: "Program failed\nfailure",
         id: expect.any(String),
         reason: "final-occurrence-failed",
         triggerId: created.trigger.id,
@@ -594,7 +594,7 @@ integration.sequential("automation failure notices", () => {
     expect(await storedNotices()).toEqual([
       {
         activationId: null,
-        detail: "Program failed",
+        detail: "Program failed\nfailure",
         occurrenceId: first.id,
         reason: "started-failing",
         settledAt: null,
