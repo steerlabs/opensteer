@@ -3669,8 +3669,8 @@ class ElectronDebuggerHub {
   }
 
   /**
-   * Chromium casts no more: each owner's next start is sent anew, and no old frame is handed to
-   * anyone. A private session a cast ran in is let go (`crashed`, and on the last channel's
+   * Chromium casts no more: no cast is left, and no channel owns one until it asks again (its
+   * start is then sent anew); no old frame is handed to anyone. A private session a cast ran in is let go (`crashed`, and on the last channel's
    * release), or is already gone with the debugger (`detached`).
    */
   #castsEnded(how: "crashed" | "detached"): void {
@@ -3680,8 +3680,13 @@ class ElectronDebuggerHub {
       if (cast.run) cast.run.lane = null;
       cast.run = null;
       if (how === "crashed" && lane?.id !== undefined) void this.#detachOwn(lane.id);
+      // Ownership ends with the run: a channel owns a cast again only by asking after this.
+      cast.owners.clear();
     }
+    this.#casts.clear();
+    this.#castOf.clear();
     this.#handed.clear();
+    this.#updateThrottling();
   }
 
   /** The hub attaches the debugger, if it is not: a new session, counted afresh. */

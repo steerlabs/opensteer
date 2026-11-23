@@ -2328,6 +2328,37 @@ describe("Electron debugger teardown", () => {
       await hub.browser.close();
     });
 
+    // The re-check of 963f808d0..fb245664c, finding 3: when casts end, ownership ends with them.
+    it("makes no channel an owner after a crash but one that asks again", async () => {
+      const hub = await hubPage("80");
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const personSaw = seen(person);
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", view);
+      for (const [name, listener] of hub.contents.on.mock.calls) {
+        if (name === "render-process-gone")
+          (listener as (...a: unknown[]) => void)({}, { reason: "crashed" });
+        if (name === "did-navigate") (listener as (...a: unknown[]) => void)({});
+      }
+      // Only the agent asks again; the person never does.
+      const start = hub.hold("Page.startScreencast");
+      const asking = agent.send("Page.startScreencast", view);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      hub.deliver("Page.screencastFrame", frame("after the crash", 2));
+      // The agent closes while its start is unanswered.
+      const releasing = agent.detach();
+      start.release();
+      start.replies[0]!.resolve({});
+      await expect(asking).rejects.toThrow(/closed/u);
+      await releasing;
+      await pastParking();
+      // No one asked for that cast: it ended, and the person was handed none of it.
+      expect(personSaw).toEqual([]);
+      expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
+      await hub.browser.close();
+    });
+
     // Run on e7080ea31, follow-stale-dialog-answers: the second tab, answered, was pictured no
     // more. The smoke's order on that tab: opened and pictured, its cast started again in a new
     // size, then left before that start's first frame; a dialog opens there and is answered; its
