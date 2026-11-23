@@ -221,14 +221,19 @@ class OwnerEditing(private val service: AccessibilityService, private val device
             return refused("unsupported")
         }
         return when (event) {
-            is DisplayInput.Insert -> effect { connection.commitText(event.text, 1, null) }
-            is DisplayInput.Paste -> effect { connection.commitText(event.text, 1, null) }
-            is DisplayInput.Delete -> {
-                repeat(event.count) {
-                    val result = effect(backspace = true) { chord(connection, KeyEvent.KEYCODE_DEL) }
+            is DisplayInput.Insert, is DisplayInput.Paste, is DisplayInput.Delete, is DisplayInput.Command -> {
+                // What the focused app is sent (OwnerStrokes, held by its JVM test), each in turn.
+                val steps = OwnerStrokes.of(event) ?: return refused("unsupported")
+                var result = Result()
+                for (step in steps) {
+                    result = when (step) {
+                        is OwnerStrokes.Commit -> effect { connection.commitText(step.text, 1, null) }
+                        is OwnerStrokes.Menu -> effect { connection.performContextMenuAction(step.id) }
+                        is OwnerStrokes.Chord -> effect(backspace = step.code == KeyEvent.KEYCODE_DEL) { chord(connection, step.code, step.meta) }
+                    }
                     if (result.outcome != "dispatched") return result
                 }
-                Result()
+                result
             }
             DisplayInput.Submit -> effect { connection.performEditorAction((bound.ime.currentInputEditorInfo?.imeOptions ?: android.view.inputmethod.EditorInfo.IME_ACTION_UNSPECIFIED) and android.view.inputmethod.EditorInfo.IME_MASK_ACTION) }
             is DisplayInput.Key -> {
@@ -245,14 +250,6 @@ class OwnerEditing(private val service: AccessibilityService, private val device
                                 sendKey(connection, key("up", code))
                         }
                     }
-                }
-            }
-            is DisplayInput.Command -> {
-                val menu = if (event.command == "selectAll") android.R.id.selectAll else null
-                if (menu != null) effect { connection.performContextMenuAction(menu) }
-                else {
-                    val command = command(event.command) ?: return refused("unsupported")
-                    effect(backspace = command.first == KeyEvent.KEYCODE_DEL) { chord(connection, command.first, command.second) }
                 }
             }
             is DisplayInput.Edit -> {
@@ -356,29 +353,5 @@ class OwnerEditing(private val service: AccessibilityService, private val device
             }
         }
         return KeyEvent.keyCodeFromString("KEYCODE_$name").takeIf { it != KeyEvent.KEYCODE_UNKNOWN }
-    }
-    private fun command(name: String): Pair<Int, Int>? {
-        val shift = if (name.endsWith("AndModifySelection")) KeyEvent.META_SHIFT_ON else 0
-        val plain = name.removeSuffix("AndModifySelection")
-        val key = when (plain) {
-            "undo", "redo" -> KeyEvent.KEYCODE_Z
-            "moveBackward" -> KeyEvent.KEYCODE_DPAD_LEFT; "moveForward" -> KeyEvent.KEYCODE_DPAD_RIGHT
-            "moveUp" -> KeyEvent.KEYCODE_DPAD_UP; "moveDown" -> KeyEvent.KEYCODE_DPAD_DOWN
-            "moveWordLeft" -> KeyEvent.KEYCODE_DPAD_LEFT; "moveWordRight" -> KeyEvent.KEYCODE_DPAD_RIGHT
-            "moveToLeftEndOfLine", "moveToBeginningOfLine", "moveToBeginningOfDocument" -> KeyEvent.KEYCODE_MOVE_HOME
-            "moveToRightEndOfLine", "moveToEndOfLine", "moveToEndOfDocument" -> KeyEvent.KEYCODE_MOVE_END
-            "moveToBeginningOfParagraph" -> KeyEvent.KEYCODE_DPAD_UP; "moveToEndOfParagraph" -> KeyEvent.KEYCODE_DPAD_DOWN
-            "deleteBackward", "deleteWordBackward", "deleteToBeginningOfLine" -> KeyEvent.KEYCODE_DEL
-            "deleteForward", "deleteWordForward", "deleteToEndOfLine" -> KeyEvent.KEYCODE_FORWARD_DEL
-            else -> return null
-        }
-        val modifier = when (plain) {
-            "undo" -> KeyEvent.META_CTRL_ON
-            "redo" -> KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON
-            "moveWordLeft", "moveWordRight", "moveToBeginningOfDocument", "moveToEndOfDocument", "moveToBeginningOfParagraph", "moveToEndOfParagraph", "deleteWordBackward", "deleteWordForward" -> KeyEvent.META_CTRL_ON
-            "deleteToBeginningOfLine", "deleteToEndOfLine" -> KeyEvent.META_ALT_ON
-            else -> 0
-        }
-        return key to (modifier or shift)
     }
 }
