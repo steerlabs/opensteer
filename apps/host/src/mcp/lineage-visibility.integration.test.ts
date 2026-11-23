@@ -160,6 +160,23 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     expect(
       await runTool("opensteer_request_read", { requestId: hiddenRequest.request.id }),
     ).toEqual(await runTool("opensteer_request_read", { requestId: createId("request") }));
+    const listedRequests = await runTool("opensteer_request_list", { status: "pending" });
+    expect(listedRequests.isError, JSON.stringify(listedRequests.content)).not.toBe(true);
+    expect(
+      (listedRequests.structuredContent as { requests: { id: string }[] }).requests.map(
+        ({ id }) => id,
+      ),
+    ).toEqual([ownedRequest.request.id]);
+    expect(await runTool("opensteer_request_list", { taskId: f.threadId })).toEqual(
+      await runTool("opensteer_request_list", { taskId: createId("thread") }),
+    );
+    const listedPendingTasks = await runTool("opensteer_task_list", { hasPendingRequests: true });
+    expect(listedPendingTasks.isError, JSON.stringify(listedPendingTasks.content)).not.toBe(true);
+    expect(
+      (listedPendingTasks.structuredContent as { tasks: { id: string }[] }).tasks.map(
+        ({ id }) => id,
+      ),
+    ).toEqual([own]);
 
     for (const subagentId of [ownNode, ownerNode, createId("executionNode")])
       await expectUnknownTool(agent.client, "opensteer_subagent_read", { subagentId });
