@@ -411,6 +411,7 @@ export class WatchSupervisor {
       firingId: createId("triggerOccurrence"),
       kind: "watch" as const,
       payload: null,
+      taskId: active.desired.anchorThreadId,
     };
     try {
       const normalized = normalizeScriptText(script.text, process.platform);

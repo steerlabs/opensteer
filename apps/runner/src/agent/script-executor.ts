@@ -1,5 +1,5 @@
 import { programEnvironment, spawnSupervised } from "@opensteer/harness";
-import type { TriggerId, TriggerOccurrenceId } from "@opensteer/core";
+import type { ThreadId, TriggerId, TriggerOccurrenceId } from "@opensteer/core";
 import { NativeFsHelper, NativeFsHelperError } from "@opensteer/shared/files/native-fs-helper";
 import { setPrivateDirectoryMode, setPrivateFileMode } from "@opensteer/shared/privateFiles";
 import {
@@ -95,6 +95,7 @@ export interface AutomationScriptEvent {
     readonly query: Readonly<Record<string, string | readonly string[]>>;
   };
   readonly scheduledFor?: string;
+  readonly taskId?: ThreadId;
 }
 
 export interface AutomationScriptExecutorOptions {

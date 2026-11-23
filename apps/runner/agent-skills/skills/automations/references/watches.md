@@ -21,6 +21,7 @@ for await (const change of watch("./incoming")) {
   if (!change.filename) continue;
   const nextCursor = cursor + 1;
   execFileSync("opensteer", [
+    "tool",
     "opensteer_task_send",
     JSON.stringify({
       delivery: "queue",

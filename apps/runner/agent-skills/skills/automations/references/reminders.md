@@ -5,7 +5,7 @@ An automation queues a message to its real task. That task's agent replies in it
 For a one-shot reminder, use the task where the person asked as `taskId`; omission inside a Run selects it. A connected agent must name a task. Name the automation for the reminder. Set `source` to `{ kind: "schedule", at }`, computing `at` from the person's context time zone and the offset on that date. Ask for the zone if unknown. Write a plain script—for example with `interpreter: ["bash"]` or default Node:
 
 ```sh
-opensteer opensteer_task_send '{"delivery":"queue","message":"Reminder: buy groceries (set for 6:00 PM).","taskId":"<task-id>"}'
+opensteer tool opensteer_task_send '{"delivery":"queue","message":"Reminder: buy groceries (set for 6:00 PM).","taskId":"<task-id>"}'
 ```
 
 A late reminder remains useful. Do not run it to test it; that sends it now. Confirm `nextFireAt` with `opensteer_automation_read` before promising it. A successful one-shot archives after its instant; `opensteer_automation_read` still reads it by id. An archived automation cannot resume: create another reminder when asked.

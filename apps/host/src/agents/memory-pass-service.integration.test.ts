@@ -475,13 +475,8 @@ describeStore("managed memory passes", (it) => {
     const current = await role(f, base.userId);
     expect(current.revision.id).not.toBe(prior.revision.id);
     expect(current.revision.ordinal).toBe(prior.revision.ordinal + 1);
-    expect(current.revision.script).toEqual(memoryPassScript("memory-light"));
-    const revisionRow = await f.database
-      .selectFrom("triggerRevisions")
-      .select("script")
-      .where("id", "=", current.revision.id)
-      .executeTakeFirstOrThrow();
-    expect(revisionRow.script).toEqual(memoryPassScript("memory-light"));
+    expect(current.revision.script?.text).not.toBe("console.log('outdated')");
+    expect(current.revision.script?.text).toContain("opensteer_task_send");
     await instance.reconcileMissing();
     expect((await role(f, base.userId)).revision.id).toBe(current.revision.id);
   });

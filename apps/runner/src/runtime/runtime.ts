@@ -4182,6 +4182,7 @@ function scriptEventFromTriggerEvent(
     firedAt: event.receivedAt,
     firingId: context.occurrenceId,
     kind: event.source.kind,
+    taskId: event.trigger.anchorThreadId,
     ...(event.payload !== undefined ? { payload: event.payload } : {}),
   } as const;
   if (event.source.kind === "schedule") {

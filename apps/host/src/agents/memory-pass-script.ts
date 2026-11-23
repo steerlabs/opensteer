@@ -12,6 +12,6 @@ export function memoryPassScript(role: TriggerSystemRole): AutomationScript {
   const suffix = `). Load opensteer:memory and follow its ${reference} reference.`;
   return {
     interpreter: null,
-    text: `import { readFileSync } from "node:fs"; import { execFileSync } from "node:child_process"; const e = JSON.parse(readFileSync(process.env.OPENSTEER_EVENT_PATH, "utf8")); execFileSync("opensteer", ["tool", "opensteer_task_send", "--json", JSON.stringify({ delivery: "queue", taskId: e.trigger.anchorThreadId, message: ${JSON.stringify(prefix)} + (e.source.scheduledFor ?? e.receivedAt) + ${JSON.stringify(suffix)} })], { stdio: "inherit" });\n`,
+    text: `import { readFileSync } from "node:fs"; import { execFileSync } from "node:child_process"; const e = JSON.parse(readFileSync(process.env.OPENSTEER_EVENT, "utf8")); execFileSync("opensteer", ["tool", "opensteer_task_send", JSON.stringify({ delivery: "queue", taskId: e.taskId, message: ${JSON.stringify(prefix)} + (e.scheduledFor ?? e.firedAt) + ${JSON.stringify(suffix)} })], { stdio: "inherit" });\n`,
   };
 }

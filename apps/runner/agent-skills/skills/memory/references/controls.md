@@ -64,7 +64,7 @@ on this task, a few minutes later using the person's context time zone and an IS
 with its date's offset, using `interpreter: ["bash"]` and the script:
 
 ```sh
-opensteer opensteer_task_send '{"delivery":"queue","message":"Finish deleting memory","taskId":"<this-task-id>"}'
+opensteer tool opensteer_task_send '{"delivery":"queue","message":"Finish deleting memory","taskId":"<this-task-id>"}'
 ```
 
 Confirm `nextFireAt` with `opensteer_automation_read`, then tell the person deletion is pending and
