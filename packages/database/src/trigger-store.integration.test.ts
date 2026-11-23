@@ -1380,6 +1380,19 @@ integration.sequential("Trigger failure auto-pause", () => {
         routeKey: created.trigger.webhookRouteKey!,
       })
     ).occurrence;
+    await storeFixture.store.claimCommand(stale.commandId, "stale-success-dispatcher");
+    const staleStarted = await triggers.startExecution({
+      commandId: stale.commandId,
+      runnerBootId: "boot-stale-1",
+      runnerId: fixture.runnerId,
+    });
+    // Mark the stale firing unknown when the Runner restarts without it, unblocking later firings.
+    await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [],
+      firings: [],
+      runnerBootId: "boot-stale-2",
+      runnerId: fixture.runnerId,
+    });
     await triggers.update({
       actorThreadId: null,
       expectedRevisionId: created.revision.id,
@@ -1407,7 +1420,22 @@ integration.sequential("Trigger failure auto-pause", () => {
     ).occurrence;
     await complete(fixture, first, "failed", "first");
     await complete(fixture, second, "failed", "second");
-    await complete(fixture, stale, "succeeded", "stale-success");
+    // Late proof settles the stale-Revision occurrence to succeeded without clearing failingSince.
+    await triggers.completeExecution({
+      executionGeneration: staleStarted.executionGeneration,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        occurrenceId: stale.id,
+        result: null,
+        status: "succeeded",
+        stderr: "",
+        stdout: "",
+      },
+      runnerBootId: "boot-stale-1",
+      runnerId: fixture.runnerId,
+    });
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
       status: "active",
     });
@@ -2396,8 +2424,28 @@ integration.sequential("Trigger failure auto-pause", () => {
       runnerBootId: "boot-fifo",
       runnerId: fixture.runnerId,
     });
-    expect(await store.claimCommand(wh2.commandId, "fifo-dispatcher")).not.toBeNull();
-    await complete(fixture, wh2, "succeeded", "fifo-2");
+    const wh2Claimed = await store.claimCommand(wh2.commandId, "fifo-dispatcher");
+    expect(wh2Claimed).not.toBeNull();
+    const wh2Started = await triggers.startExecution({
+      commandId: wh2.commandId,
+      runnerBootId: "boot-fifo",
+      runnerId: fixture.runnerId,
+    });
+    await triggers.completeExecution({
+      executionGeneration: wh2Started.executionGeneration,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        occurrenceId: wh2.id,
+        result: { ok: 2 },
+        status: "succeeded",
+        stderr: "",
+        stdout: "two",
+      },
+      runnerBootId: "boot-fifo",
+      runnerId: fixture.runnerId,
+    });
 
     // 2. Schedule overrun while running enqueues ONE waiting firing, collapses further ticks,
     // blocks the waiting firing until the running one ends, and emits one 'overran-schedule' notice (T10 / AA8)
@@ -2698,7 +2746,6 @@ integration.sequential("Trigger failure auto-pause", () => {
   }) => {
     const { createFixture, triggers } = storeFixture;
     const fixture = await createFixture("secrets-atomic");
-    const other = await createFixture("secrets-other");
     const created = await triggers.create({
       actorThreadId: null,
       anchorThreadId: fixture.threadId,
@@ -2771,10 +2818,11 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
 
     // Rule 5: missing automation and another owner's automation produce identical not_found errors.
+    const foreignOwnerId = createId("user");
     const missingErr = await triggers
       .updateEncryptedSecrets({
         actorThreadId: null,
-        ownerId: other.userId,
+        ownerId: foreignOwnerId,
         transform: async (current) => mergeJson(current, "X", "1"),
         triggerId: createId("trigger"),
       })
@@ -2782,7 +2830,7 @@ integration.sequential("Trigger failure auto-pause", () => {
     const foreignErr = await triggers
       .updateEncryptedSecrets({
         actorThreadId: null,
-        ownerId: other.userId,
+        ownerId: foreignOwnerId,
         transform: async (current) => mergeJson(current, "X", "1"),
         triggerId: created.trigger.id,
       })
@@ -2868,7 +2916,7 @@ integration.sequential("Trigger failure auto-pause", () => {
         lastUsedAt: null,
         resource: "https://opensteer.test/mcp",
         revokedAt: null,
-        tokenHash: null,
+        tokenHash: "sha256-live-agent-token",
         userId: fixture.userId,
       })
       .execute();
@@ -2922,19 +2970,33 @@ integration.sequential("Trigger failure auto-pause", () => {
   it("lets a person settle a contact-lost personal firing to unknown so later firings can proceed (AA12)", async ({
     storeFixture,
   }) => {
-    const { createFixture, createScheduleTrigger, database, store, triggers } = storeFixture;
+    const { createFixture, database, store, triggers } = storeFixture;
     const fixture = await createFixture("contact-lost-personal");
-    const created = await createScheduleTrigger(fixture, "contact-lost-personal");
-    const first = await triggers.enqueueManual({
+    const routeKey = "whk_contact_lost_personal_123456789012345678";
+    const created = await triggers.create({
       actorThreadId: null,
-      ownerId: fixture.userId,
-      triggerId: created.trigger.id,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "contact-lost-personal",
+      name: "Contact-lost personal webhook",
+      script: { interpreter: null, text: "console.log('ok')" },
+      source: { kind: "webhook" },
+      webhookRouteKey: routeKey,
     });
-    const second = await triggers.enqueueManual({
-      actorThreadId: null,
-      ownerId: fixture.userId,
-      triggerId: created.trigger.id,
-    });
+    const first = (
+      await triggers.enqueueWebhook({
+        headers: {},
+        method: "POST",
+        routeKey,
+      })
+    ).occurrence;
+    const second = (
+      await triggers.enqueueWebhook({
+        headers: {},
+        method: "POST",
+        routeKey,
+      })
+    ).occurrence;
     await store.claimCommand(first.commandId, "lost-dispatcher");
     await triggers.startExecution({
       commandId: first.commandId,
@@ -2990,11 +3052,11 @@ integration.sequential("Trigger failure auto-pause", () => {
       source: { kind: "webhook" },
       webhookRouteKey: routeKey,
     });
-    // Lower the anchor task's access mode so execution authority no longer holds.
+    // Revoke the anchor task's hosting runner so execution authority no longer holds.
     await database
-      .updateTable("threads")
-      .set({ accessMode: "auto" })
-      .where("id", "=", fixture.threadId)
+      .updateTable("runners")
+      .set({ revokedAt: new Date() })
+      .where("id", "=", fixture.runnerId)
       .execute();
 
     await expect(
