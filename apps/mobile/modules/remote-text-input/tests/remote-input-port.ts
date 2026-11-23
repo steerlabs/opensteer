@@ -276,9 +276,22 @@ export class NativeField {
    */
   onTurn:
     | ((
-        turn: "action" | "report" | "reset" | "context" | "finish" | "dropped" | "dropped-report",
+        turn:
+          | "begin"
+          | "action"
+          | "report"
+          | "reset"
+          | "context"
+          | "finish"
+          | "dropped"
+          | "dropped-report",
+        /** A report's: the moveSelection calls it stands for, numbered from 1. */
+        calls?: readonly number[],
       ) => void)
     | null = null;
+  /** The moveSelection calls so far, and those the report now queued stands for. */
+  moveCalls = 0;
+  private covering: number[] = [];
 
   private readonly deliver: (packet: Packet) => void;
   constructor(deliver: (packet: Packet) => void) {
@@ -514,6 +527,8 @@ export class NativeField {
     action: () => void,
   ) {
     this.enqueue(() => {
+      // A call's job begins: what it sends from here on is its own (for the regimes' record).
+      this.onTurn?.("begin");
       const inputType = typeof named === "string" ? named : named();
       this.event(
         { type: "beforeinput", inputType, data },
@@ -669,6 +684,7 @@ export class NativeField {
     // once the composition ends, the caret goes back where the person put it.
     const named = this.place(this.selection);
     this.enqueue(() => {
+      if (person) this.onTurn?.("begin");
       if (person) this.onTurn?.("action");
       if (!this.marked) return;
       const data = this.text.slice(this.marked.start, this.marked.end);
@@ -714,6 +730,7 @@ export class NativeField {
   }
   paste(text: string) {
     this.enqueue(() => {
+      this.onTurn?.("begin");
       const data = Buffer.from(text, "utf8").toString("base64");
       // Its turn, for the oracle, is when its answer brings the pasted text.
       this.event({ type: "paste", items: [{ type: "text/plain", data }] }, () => undefined, true);
@@ -723,6 +740,7 @@ export class NativeField {
   moveSelection(start: number, end = start) {
     // UIKit tells the delegate only of a change.
     if (this.selection.start === start && this.selection.end === end) return;
+    const call = ++this.moveCalls;
     const previous = this.selection;
     this.selection = { start, end };
     const own = this.ownSelection;
@@ -739,7 +757,10 @@ export class NativeField {
     if (!this.coalesces()) {
       this.distance = [];
       this.from = null;
+      this.covering = [];
     }
+    this.covering = [...this.covering, call];
+    const covered = this.covering;
     // From the person's caret: an earlier move still waiting its turn is where they were.
     if (caret && this.distance !== undefined)
       this.from ??=
@@ -765,11 +786,11 @@ export class NativeField {
       if (this.pendingMove === move) this.pendingMove = null;
       if (move ? this.edits.stale(move.from) : this.edits.stale(moved)) {
         if (!move) {
-          this.onTurn?.("dropped-report");
+          this.onTurn?.("dropped-report", covered);
           return;
         }
         move.resolved = this.place(this.selection);
-        this.onTurn?.("report");
+        this.onTurn?.("report", covered);
         this.event({ type: "selection", proxy: this.snapshot(), moves: move.distances });
         return;
       }
@@ -782,7 +803,7 @@ export class NativeField {
           this.ownSelection = { ...at };
         }
       }
-      this.onTurn?.("report");
+      this.onTurn?.("report", covered);
       this.event({ type: "selection", proxy: this.snapshot(at) });
     });
   }

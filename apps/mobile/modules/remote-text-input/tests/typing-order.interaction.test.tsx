@@ -65,6 +65,12 @@ const harness = vi.hoisted(() => ({
   take: null as null | ((operation: unknown) => boolean),
   /** Told of every context the page publishes, as it publishes it (regime B's segments). */
   renewed: null as null | ((contextId: string) => void),
+  /**
+   * For the regimes' own tests: a far side that loses an operation without a word ("drop": as if
+   * taken, never applied) or refuses it ("refuse"), to show each check catches the loss.
+   * `arrived`: made in a field the person arrived in, with no composition open there.
+   */
+  sabotage: null as null | ((operation: unknown, arrived: boolean) => "drop" | "refuse" | null),
 }));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios" },
@@ -131,6 +137,7 @@ afterEach(async () => {
   harness.mounted = false;
   harness.take = null;
   harness.renewed = null;
+  harness.sabotage = null;
 });
 
 /**
@@ -593,7 +600,8 @@ describe("a person's caret moves and selections in the native field", () => {
       if (turn === "action") oracle.turn();
       else if (turn === "report") oracle.report();
       else if (turn === "reset") oracle.reset();
-      else unexpected.push(turn);
+      // A job's beginning is for the regimes' record of who sent what.
+      else if (turn !== "begin") unexpected.push(turn);
     };
     harness.texts = [];
     const steps: string[] = [];
@@ -982,22 +990,25 @@ describe("a person's caret moves and selections in the native field", () => {
 
   /*
    * Regimes B and C (CU1), drawn apart from A and reported apart, per target: the third
-   * generator's actions, with the page acting between them.
+   * generator's actions, with the page acting between them. Every operation is attributed to the
+   * action whose turn it came in (the native field's action and report turns), so each promise is
+   * checked as stated, never as "some prefix".
    *
-   * B, the field changes: the page rotates its context, or the person arrives in another field
-   * (a second far field; an operation under any other context is refused there as stale, as the
-   * real applier refuses it, and rotates its context). The promise: the field the person left
-   * holds a prefix of what they did there, in order; the field they arrived in holds exactly
-   * what they did after arriving; nothing crosses. Each context the page publishes begins a
-   * segment (the focused far field as it then stands, and the person's actions from there): a
-   * segment another change cut must be some prefix of its actions applied to its start, the
-   * last one all of them. No model of what was in flight.
+   * B, the field changes: the person arrives in another field (a second far field; what comes
+   * under another field's context is refused there alone, as the real applier refuses it). The
+   * promise (CW2): a field left holds exactly the operations the page applied before the person
+   * left it, in order: the person's actions up to the last one the page applied there, none of
+   * them refused (operations fall off the end, never out of the middle); the field arrived in
+   * holds exactly what the person did after arriving, text and caret, with nothing refused or
+   * mismatched there.
    *
-   * C, the page interferes: it rewrites its own value under the person (a mask that adds a
-   * character, one that deletes one, one that moves the caret), and the field gets a new context
-   * for it, as the real applier gives it (tests/editing-far-model.test.ts). The promise (CV1):
-   * everything the person typed or pasted is in the page, in order: the page took it. Only a
-   * replacement (an autocorrect, a composition's update) may be missing.
+   * C, the page interferes in the same field: it rewrites its value under the person (a mask
+   * that adds a character, one that deletes one, one that moves the caret) or rotates its context,
+   * and the field gets a new context for it, as the real applier gives it
+   * (tests/editing-far-model.test.ts). The promise (CV1, CW3): every character the person typed
+   * or pasted is in what the page took, in order; every Backspace at a caret was applied; no
+   * typed text, Backspace or move was refused. Only a replacement (an autocorrect, a selection's
+   * deletion, a composition's update) may be missing.
    *
    * What UIKit selects or replaces by itself is drawn only before the page first acts: after it
    * the native mirror is no longer the person's text from a known place.
@@ -1005,9 +1016,14 @@ describe("a person's caret moves and selections in the native field", () => {
   interface Segment {
     field: FarField;
     start: { text: string; caret: number };
+    /** The index of its first action among all of the person's. */
+    first: number;
     actions: Action[];
-    end?: string;
+    /** What the person holds in it, each action applied at once (the generator's composing). */
+    person: Person;
+    end?: { text: string; caret: number };
   }
+  type Kind = "typed" | "delete" | "move" | "other";
   async function regime(
     seed: number,
     which: "B" | "C",
@@ -1026,61 +1042,130 @@ describe("a person's caret moves and selections in the native field", () => {
     const fresh = () => `00000000-0000-4000-8000-${String(200000000000 + ++ids).slice(-12)}`;
     let focused: FarField = opened.remote;
     focused.nextContextId = fresh;
-    const segments: Segment[] = [{ field: focused, start: { text: "", caret: 0 }, actions: [] }];
-    harness.take = (operation) => focused.take(operation as EditingOperation);
-    harness.renewed = () => {
-      const current = segments.at(-1)!;
-      current.end = current.field.value;
-      segments.push({
-        field: focused,
-        start: { text: focused.value, caret: focused.caret },
-        actions: [],
-      });
+    const segment = (field: FarField, first: number): Segment => {
+      const start = { text: field.value, caret: field.caret };
+      const person = new Person();
+      person.text = start.text;
+      person.selection = { start: start.caret, end: start.caret };
+      return { field, start, first, actions: [], person };
     };
-    // Every action of the person, in the segment it was done in.
+    const segments: Segment[] = [segment(focused, 0)];
+    // Each action of the person, in order: its kind, and the segment it was done in.
+    const kinds: Kind[] = [];
+    /** What each typed action typed or pasted. */
+    const texts: string[] = [];
+    let kind: Kind = "other";
+    let text = "";
+    const acts: number[] = [];
+    /** Which action each moveSelection call of the native field was. */
+    const moves = new Map<number, number>();
+    const record = (action: Action) => {
+      const index = kinds.length;
+      kinds.push(kind);
+      texts.push(kind === "typed" ? text : "");
+      kind = "other";
+      const current = segments.at(-1)!;
+      current.actions.push(action);
+      action(current.person);
+      return index;
+    };
     const act0 = oracle.act.bind(oracle);
     const choose0 = oracle.choose.bind(oracle);
     oracle.act = (action) => {
-      segments.at(-1)!.actions.push(action);
+      acts.push(record(action));
       act0(action);
     };
+    // A move's own call to the native field is the next one.
     oracle.choose = (action) => {
-      segments.at(-1)!.actions.push(action);
+      moves.set(run.native.moveCalls + 1, record(action));
       choose0(action);
     };
+    // The action whose turn it is: what is sent now is its.
+    let owner = -1;
+    let owners: number[] = [];
+    const turned = run.native.onTurn;
+    run.native.onTurn = (turn, calls) => {
+      if (turn === "begin") owners = [acts.shift() ?? owner];
+      else if (turn === "report" || turn === "dropped-report")
+        owners = (calls ?? []).flatMap((call) => {
+          const index = moves.get(call);
+          return index === undefined ? [] : [index];
+        });
+      owner = owners.at(-1) ?? owner;
+      turned?.(turn);
+    };
+    const sent: {
+      operation: EditingOperation;
+      owners: number[];
+      field: FarField;
+      /** Whether it was made in the field it reached (its context that field's, now or earlier). */
+      own: boolean;
+    }[] = [];
+    harness.take = (operation) => {
+      const made = operation as EditingOperation;
+      const context =
+        made.kind === "edit"
+          ? made.edit.contextId
+          : made.kind === "compose"
+            ? made.composition.contextId
+            : made.kind === "command"
+              ? made.contextId
+              : undefined;
+      sent.push({
+        operation: made,
+        owners,
+        field: focused,
+        own: context === undefined || context === focused.contextId || focused.earlier.has(context),
+      });
+      const edit = (operation as EditingOperation).kind === "edit";
+      const sabotage = harness.sabotage?.(
+        operation,
+        segments.length > 1 &&
+          focused !== opened.remote &&
+          focused.composition === null &&
+          edit &&
+          (operation as { edit: { contextId: string } }).edit.contextId === focused.contextId,
+      );
+      if (sabotage === "drop") return true;
+      if (sabotage === "refuse") {
+        focused.refused.push(operation as EditingOperation);
+        return true;
+      }
+      return focused.take(operation as EditingOperation);
+    };
+    // What the page applied: it received the operation and did not refuse it (its own record).
+    const applied = (entry: (typeof sent)[number]) =>
+      entry.field.sent.includes(entry.operation) && !entry.field.refused.includes(entry.operation);
     let acted = false;
-    let composing = false;
-    /** What the person typed or pasted, in order (regime C's promise). */
-    const typed: string[] = [];
     const length = 1 + Math.floor(next() * 28);
     for (let step = 0; step < length; step++) {
       if (next() < 0.12) {
+        acted = true;
         if (which === "B") {
-          acted = true;
+          steps.push("the person arrives in another field");
           const id = fresh();
-          if (next() < 0.5) {
-            steps.push("the page rotates its context");
-            focused.contextId = id;
-          } else {
-            steps.push("the person arrives in another field");
-            const field = new FarField();
-            field.contextId = id;
-            field.nextContextId = fresh;
-            field.onRotate = opened.renew;
-            focused = field;
-          }
+          const field = new FarField();
+          field.contextId = id;
+          field.nextContextId = fresh;
+          field.onRotate = opened.renew;
+          segments.at(-1)!.end = { text: focused.value, caret: focused.caret };
+          focused = field;
+          segments.push(segment(field, kinds.length));
+          // What the change itself sends (the old context's composition committed) is no action's.
+          const before = owners;
+          owners = [];
           await opened.publish(id);
+          owners = before;
         } else if (!focused.composition) {
-          acted = true;
           const text = focused.value;
           const spots = [0, ...characters(text).map(({ end }) => end)];
           const at = pick(spots);
           const way = next();
-          if (way < 1 / 3) {
+          if (way < 0.25) {
             steps.push(`the page adds "Z" at ${at}`);
             focused.value = text.slice(0, at) + "Z" + text.slice(at);
             if (focused.caret >= at) focused.caret += 1;
-          } else if (way < 2 / 3 && at > 0) {
+          } else if (way < 0.5 && at > 0) {
             const from = spots[spots.indexOf(at) - 1]!;
             steps.push(`the page deletes ${from} to ${at}`);
             focused.value = text.slice(0, from) + text.slice(at);
@@ -1090,45 +1175,56 @@ describe("a person's caret moves and selections in the native field", () => {
                 : focused.caret > from
                   ? from
                   : focused.caret;
-          } else {
+          } else if (way < 0.75) {
             steps.push(`the page moves its caret to ${at}`);
             focused.caret = at;
-          }
+          } else steps.push("the page rotates its context");
           // The page rewrote the field: a new context for it, the old one an earlier one.
           const id = fresh();
           if (focused.contextId !== null) focused.earlier.add(focused.contextId);
           focused.contextId = id;
+          const before = owners;
+          owners = [];
           await opened.publish(id);
+          owners = before;
         }
       }
       const boundaries = [0, ...characters(run.native.text).map(({ end }) => end)];
+      const here = segments.at(-1)!.person;
       let choice = next();
-      composing = oracle.person.marked !== null;
+      const composing = here.marked !== null;
+      const caret = here.selection.start === here.selection.end;
       if (composing && !(choice < 0.22 || (choice >= 0.4 && choice < 0.45) || choice >= 0.65))
         choice = next() < 0.5 ? 0.1 : 0.67;
       if (composing && choice >= 0.73 && choice < 0.78) choice = 0.9;
       if (choice < 0.22) {
-        const letter = pick(letters);
-        if (!composing) typed.push(letter);
-        await run.insertText(letter);
+        text = pick(letters);
+        if (!composing) kind = "typed";
+        await run.insertText(text);
       } else if (choice < 0.32) {
         if (!display) {
-          const letter = pick(letters);
-          if (!composing) typed.push(letter);
-          await run.type(letter);
+          text = pick(letters);
+          if (!composing) kind = "typed";
+          await run.type(text);
         }
-      } else if (choice < 0.4) await run.backspace();
-      else if (choice < 0.45 && composing) {
-        const marked = oracle.person.marked;
-        const text = marked ? oracle.person.text.slice(marked.start, marked.end) : "";
+      } else if (choice < 0.4) {
+        if (!composing && caret) kind = "delete";
+        await run.backspace();
+      } else if (choice < 0.45 && composing) {
+        const marked = here.marked;
+        const text = marked ? here.text.slice(marked.start, marked.end) : "";
         const way = next();
         if (way < 1 / 3) await run.setMarkedText("");
         else if (way < 2 / 3 && characters(text).length > 1)
           await run.setMarkedText(text.slice(0, characters(text).at(-2)!.end));
         else await run.deleteBackward();
-      } else if (choice < 0.45) await run.deleteBackward();
-      else if (choice < 0.54) await run.moveSelection(pick(boundaries));
-      else if (choice < 0.58) {
+      } else if (choice < 0.45) {
+        if (caret) kind = "delete";
+        await run.deleteBackward();
+      } else if (choice < 0.54) {
+        kind = "move";
+        await run.moveSelection(pick(boundaries));
+      } else if (choice < 0.58) {
         const [start, end] = [pick(boundaries), pick(boundaries)].sort((x, y) => x - y);
         if (!display && !acted) await run.moveSelection(start!, end!);
       } else if (choice < 0.62) {
@@ -1136,17 +1232,19 @@ describe("a person's caret moves and selections in the native field", () => {
         const word = pick(["the", "ab", "é"]);
         if (!display && !acted) await run.replaceRange(start!, end!, word);
       } else if (choice < 0.65) {
-        const text = pick(["pasted", "א b"]);
-        typed.push(text);
+        text = pick(["pasted", "א b"]);
+        kind = "typed";
         await run.paste(text);
       } else if (choice < 0.7) await run.setMarkedText(pick(["に", "日本"]));
       else if (choice < 0.73) await run.unmarkText();
       else if (choice < 0.78) await run.answer(1);
       else await run.answer(1 + Math.floor(next() * 3));
+      // A kind drawn for an action the person did not take (nothing to delete) goes with it.
+      kind = "other";
     }
     while (harness.answers.length > 0) await opened.answerAll();
     const last = segments.at(-1)!;
-    last.end = last.field.value;
+    last.end = { text: last.field.value, caret: last.field.caret };
     /** What the page shows of a person's text: a composition a target cannot show is not there yet. */
     const shown = (p: Person) =>
       p.marked && !target.composition
@@ -1157,33 +1255,70 @@ describe("a person's caret moves and selections in the native field", () => {
       p.text = segment.start.text;
       p.selection = { start: segment.start.caret, end: segment.start.caret };
       for (const action of segment.actions.slice(0, count)) action(p);
-      return shown(p);
+      return p;
     };
+    const refusedOf = (index: number) =>
+      sent.filter((entry) => entry.owners.includes(index) && !applied(entry));
+    /** Relative to the caret: an insertion, a paste, a move or deletion command. */
+    const relativeOp = (operation: EditingOperation) =>
+      (operation.kind === "edit" &&
+        operation.edit.text !== "" &&
+        !operation.edit.before &&
+        !operation.edit.after) ||
+      operation.kind === "paste" ||
+      (operation.kind === "command" && /^(move|delete)/.test(operation.command));
     let failure: string | null = null;
     const said = (text: string) => JSON.stringify(escape(text));
+    const describe = (operation: EditingOperation) =>
+      JSON.stringify(operation, (key, value: unknown) => (key === "bytes" ? "…" : value));
     if (which === "B") {
-      for (const [index, segment] of segments.entries()) {
-        const all = replay(segment, segment.actions.length);
-        const ok =
-          index === segments.length - 1
-            ? segment.end === all
-            : Array.from({ length: segment.actions.length + 1 }, (_, count) =>
-                replay(segment, count),
-              ).includes(segment.end!);
-        if (!ok) {
-          failure = `segment ${index + 1} of ${segments.length} (${index === segments.length - 1 ? "the field arrived in: exactly" : "a field left: a prefix"}): the field holds ${said(segment.end!)}, the person did ${said(all)} from ${said(segment.start.text)} at ${segment.start.caret}`;
-          break;
-        }
+      for (const [index, part] of segments.entries()) {
+        const arrival = index === segments.length - 1;
+        const appliedHere = sent.filter(
+          (entry) => entry.field === part.field && applied(entry) && entry.owners.length > 0,
+        );
+        // Up to the last of its actions the page applied there (all of them, where it arrived).
+        const reached = Math.max(
+          ...appliedHere.flatMap((entry) => entry.owners).map((owner) => owner + 1),
+          part.first,
+        );
+        const count = arrival
+          ? part.actions.length
+          : Math.min(reached - part.first, part.actions.length);
+        const holds = replay(part, count);
+        const dropped = Array.from({ length: count }, (_, offset) => part.first + offset).flatMap(
+          refusedOf,
+        );
+        const end = part.end!;
+        // Made in this field and sent to it: the page applied it, unless it was a replacement.
+        const lost = sent.filter(
+          (entry) =>
+            entry.field === part.field &&
+            entry.own &&
+            !applied(entry) &&
+            relativeOp(entry.operation),
+        );
+        if (part.field.mismatched.length > 0)
+          failure = `field ${index + 1}: mismatched ${part.field.mismatched.map(describe).join(", ")}`;
+        else if (lost.length > 0)
+          failure = `field ${index + 1}: lost while it had focus: ${lost.map((entry) => describe(entry.operation)).join(", ")}`;
+        else if (dropped.length > 0)
+          failure = `field ${index + 1}: refused before the end: ${dropped.map((entry) => describe(entry.operation)).join(", ")}`;
+        else if (end.text !== shown(holds))
+          failure = `field ${index + 1} (${arrival ? "arrived in: exactly" : `left: the first ${count} actions`}): holds ${said(end.text)}, the person did ${said(shown(holds))}`;
+        else if (
+          arrival &&
+          holds.marked === null &&
+          holds.selection.start === holds.selection.end &&
+          end.caret !== holds.selection.start
+        )
+          failure = `field ${index + 1} (arrived in): caret ${end.caret}, the person's ${holds.selection.start}`;
+        if (failure) break;
       }
     } else {
-      // What the page took, in order: the insertions and pastes it did not refuse. Everything
-      // the person typed or pasted is among them, in the order they did it.
-      const fields = [opened.remote, ...segments.map((segment) => segment.field)].filter(
-        (field, index, all) => all.indexOf(field) === index,
-      );
-      const taken = fields
-        .flatMap((field) => field.sent.filter((operation) => !field.refused.includes(operation)))
-        .map((operation) =>
+      const taken = sent
+        .filter(applied)
+        .map(({ operation }) =>
           operation.kind === "edit" && !operation.edit.before && !operation.edit.after
             ? operation.edit.text
             : operation.kind === "paste"
@@ -1193,14 +1328,36 @@ describe("a person's caret moves and selections in the native field", () => {
               : "",
         )
         .join("");
+      // Relative to the caret: an insertion, a paste, a move or deletion command. A refused
+      // replacement (a selection's deletion, a composition's update) is allowed.
+      const relative = ({ operation }: (typeof sent)[number]) => relativeOp(operation);
+      const refused = kinds.flatMap((each, index) =>
+        each === "other"
+          ? []
+          : refusedOf(index)
+              .filter(relative)
+              .map((entry) => ({ each, entry })),
+      );
+      const unapplied = kinds
+        .map((each, index) => ({ each, index }))
+        .filter(
+          ({ each, index }) =>
+            each === "delete" &&
+            !sent.some((entry) => entry.owners.includes(index) && applied(entry)),
+        );
       let at = 0;
-      for (const unit of typed.join("")) {
+      const wanted = texts.join("");
+      for (const unit of wanted) {
         at = taken.indexOf(unit, at);
         if (at < 0) break;
         at += unit.length;
       }
-      if (at < 0)
-        failure = `typed text missing from what the page took: typed ${said(typed.join(""))}, the page took ${said(taken)} and holds ${said(last.field.value)}`;
+      if (refused.length > 0)
+        failure = `refused: ${refused.map(({ each, entry }) => `${each} ${describe(entry.operation)}`).join(", ")}`;
+      else if (unapplied.length > 0)
+        failure = `a Backspace the page never applied: action ${unapplied.map(({ index }) => index + 1).join(", ")}${process.env.OPENSTEER_TYPING_TRACE ? ` (sent ${JSON.stringify(sent.map((entry) => [entry.operation.kind, entry.owners, applied(entry)]))}, kinds ${JSON.stringify(kinds)})` : ""}`;
+      else if (at < 0)
+        failure = `typed text missing from what the page took: typed ${said(wanted)}, the page took ${said(taken)} and holds ${said(last.field.value)}`;
     }
     await act(async () => root.render(null));
     harness.answers = [];
@@ -1211,13 +1368,55 @@ describe("a person's caret moves and selections in the native field", () => {
       target: name,
       failure:
         failure && `regime ${which}, seed ${seed}, target ${name}: ${failure}; ${steps.join("; ")}`,
-      // How much the page did: contexts it published, and operations it refused.
-      changes: segments.length - 1,
-      refused: [opened.remote, ...segments.map((segment) => segment.field)]
-        .filter((field, index, all) => all.indexOf(field) === index)
-        .reduce((sum, field) => sum + field.refused.length, 0),
+      // How much the page did: fields it changed to or contexts it published, operations refused.
+      changes: segments.length - 1 + steps.filter((step) => step.startsWith("the page ")).length,
+      refused: sent.filter((entry) => !applied(entry)).length,
     };
   }
+  // CW2, CW3: each check catches a loss. A far side that drops or refuses one operation makes
+  // the regime fail on the first seed where that operation is sent.
+  const insertion = (operation: unknown) => {
+    const edit =
+      (operation as EditingOperation).kind === "edit"
+        ? (operation as { edit: { text: string; before?: string; after?: string } }).edit
+        : null;
+    return edit !== null && edit.text !== "" && !edit.before && !edit.after;
+  };
+  it.each([
+    [
+      "B",
+      "drop",
+      "the first insertion after arriving",
+      (operation: unknown, arrived: boolean) => arrived && insertion(operation),
+    ],
+    ["C", "drop", "a typed insertion", (operation: unknown) => insertion(operation)],
+    [
+      "C",
+      "refuse",
+      "a Backspace",
+      (operation: unknown) =>
+        (operation as EditingOperation).kind === "command" &&
+        (operation as { command: string }).command === "deleteBackward",
+    ],
+  ] as const)("regime %s fails when the page would %s %s", async (which, what, _name, matches) => {
+    let failure: string | null = null;
+    for (let seed = 1; seed <= 50 && failure === null; seed++) {
+      let triggered = false;
+      harness.sabotage = (operation, arrived) => {
+        if (triggered || !matches(operation, arrived)) return null;
+        triggered = true;
+        return what;
+      };
+      const result = await regime(seed, which);
+      harness.sabotage = null;
+      if (triggered) {
+        failure = result.failure;
+        expect(failure, `seed ${seed}`).not.toBeNull();
+      }
+    }
+    expect(failure).not.toBeNull();
+  });
+
   // Regimes B and C over OPENSTEER_TYPING_REGIME_RUNS sequences each (100 by default), 100 to a
   // test, counted per target. OPENSTEER_TYPING_FUZZ_REPORT appends each failure, and each
   // chunk's tally, to that file.
