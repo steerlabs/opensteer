@@ -105,6 +105,7 @@ import {
   threadVisitSelection,
   threadProviderSessionSelection,
   threadContinuationIdentitySelection,
+  threadStartedByOtherSelection,
   threadFromRow,
   threadsFromRows,
   assignmentFromRow,
@@ -1013,6 +1014,7 @@ export async function getThreadForOwner(
         threadVisitSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
+        threadStartedByOtherSelection,
       ])
       .where("threads.id", "=", threadId)
       .where("threads.createdBy", "=", ownerId)
@@ -1059,6 +1061,7 @@ export async function readThreadForOwner(
           threadVisitSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
+          threadStartedByOtherSelection,
         ])
         .where("threads.id", "=", threadId)
         .where("threads.removedAt", "is", null)
@@ -2070,6 +2073,7 @@ export async function updateThreadAccessMode(
         threadVisitSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
+        threadStartedByOtherSelection,
       ])
       .where("id", "=", input.threadId)
       .forNoKeyUpdate()

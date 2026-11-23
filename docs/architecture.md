@@ -326,8 +326,10 @@ policy and sandbox on every turn), and a default mode in the person's settings d
 What the person allowed in their engine is allowed, as in their terminal started in that mode: an
 allow rule, a hook, a command rule or an MCP tool's approval of theirs applies, and so do a
 project folder's own engine settings, as they would in a terminal opened there. Opensteer adds no
-prompt of its own on top. Opensteer's own tools are decided by the Home from the task's mode, not
-by the engine.
+prompt of its own on top. Opensteer's own tools are decided by the Home from the task's mode, not by the engine. A task
+started by a connected agent or a chat shows the connection mode descriptions in its mode picker;
+a person-started task later written into by another keeps the own-task sentence for now (safe side:
+the engine asks more than the sentence says).
 
 ## Stop and Disconnect
 

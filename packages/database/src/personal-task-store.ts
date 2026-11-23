@@ -17,6 +17,7 @@ import {
   threadPendingRequestsSelection,
   threadProviderSessionSelection,
   threadsFromRows,
+  threadStartedByOtherSelection,
   threadVisitSelection,
 } from "./thread-row-mappers.js";
 
@@ -85,6 +86,7 @@ export function currentTasks(tx: PersonalMutationTransaction, viewerId: UserId) 
     .selectFrom("threads")
     .select(taskFields)
     .select(threadRunQueued.as("runQueued"))
+    .select(threadStartedByOtherSelection)
     .select(taskExternalWorkSelection)
     .where("createdBy", "=", viewerId)
     .where("removedAt", "is", null);
@@ -217,6 +219,7 @@ export function taskPageThreadSelections() {
     threadContinuationIdentitySelection,
     threadPendingRequestsSelection,
     threadProviderSessionSelection,
+    threadStartedByOtherSelection,
     threadVisitSelection,
   ] as const;
 }

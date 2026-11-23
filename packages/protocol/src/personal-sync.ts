@@ -195,6 +195,8 @@ const task = z.object({
   harnessInstanceId: HarnessInstanceIdSchema,
   /** A Run waits to start and none is executing. */
   runQueued: z.boolean(),
+  /** A connected agent or a chat started this task, so the person's own engine rules do not apply. */
+  startedByOther: z.boolean().optional(),
   /** A connected agent is working this task itself; Stop it with `agent.session.stop`. */
   agentSessionId: AgentSessionIdSchema.nullable().optional(),
   /**

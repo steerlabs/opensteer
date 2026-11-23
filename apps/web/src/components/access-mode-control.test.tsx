@@ -1,3 +1,4 @@
+import { connectionModeDescriptions } from "@opensteer/client/host";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { AccessModePanel } from "./access-mode-control.js";
@@ -29,5 +30,23 @@ describe("AccessModeControl", () => {
 
     expect(html).not.toContain('aria-disabled="true"');
     expect(html).not.toContain("cannot enforce this mode");
+  });
+
+  it("uses connectionModeDescriptions when the task was started by a connected agent or a chat", () => {
+    const html = renderToStaticMarkup(
+      <AccessModePanel
+        engine={{
+          accessModes: ["approval-required", "auto-accept-edits", "auto", "full-access"],
+          engineName: "Claude Code",
+        }}
+        mode="approval-required"
+        onSelect={vi.fn()}
+        startedByOther
+      />,
+    );
+
+    expect(html).toContain(connectionModeDescriptions["approval-required"]);
+    expect(html).toContain(connectionModeDescriptions["auto-accept-edits"]);
+    expect(html).not.toContain("unless a rule you set in the engine already allows it");
   });
 });

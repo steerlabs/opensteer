@@ -8,6 +8,7 @@ export interface ExecutionAccess {
   readonly engine: AccessModeEngine | null;
   readonly mode: ThreadAccessMode;
   readonly onApply: (mode: ThreadAccessMode) => Promise<void> | void;
+  readonly startedByOther?: boolean | undefined;
 }
 
 /**

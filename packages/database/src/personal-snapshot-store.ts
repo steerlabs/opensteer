@@ -60,6 +60,7 @@ export function taskView(task: Task) {
     environmentId: task.environmentId,
     harnessInstanceId: task.harnessInstanceId,
     runQueued: task.runQueued,
+    ...(task.startedByOther ? { startedByOther: true } : {}),
     ...(task.externalWork?.status === "active"
       ? { agentSessionId: task.externalWork.sessionId }
       : {}),

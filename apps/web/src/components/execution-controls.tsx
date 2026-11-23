@@ -7,6 +7,7 @@ import {
 } from "@opensteer/core";
 import {
   accessModeOptions,
+  connectionModeDescriptions,
   findRoute,
   routeOnAccount,
   selectionForModel,
@@ -234,6 +235,7 @@ export function ExecutionControls({
           engine={access.engine}
           mode={access.mode}
           onApply={access.onApply}
+          startedByOther={access.startedByOther}
         />
       ) : null}
       {candidate && rowRef.current ? (
@@ -249,6 +251,7 @@ export function ExecutionControls({
             onConfirm={(accessMode) => void confirmReview(accessMode)}
             outcome={candidate.outcome}
             pending={pending}
+            startedByOther={access?.startedByOther}
           />
         </Popover>
       ) : null}
@@ -271,11 +274,13 @@ function ExecutionSwitchReviewPanel({
   onConfirm,
   outcome,
   pending,
+  startedByOther = false,
 }: {
   readonly onCancel: () => void;
   readonly onConfirm: (accessMode: ThreadAccessMode | null) => void;
   readonly outcome: ExecutionSwitchReview;
   readonly pending: boolean;
+  readonly startedByOther?: boolean | undefined;
 }) {
   // Nothing is chosen for the reader: confirming waits until they pick a mode.
   const [accessMode, setAccessMode] = useState<ThreadAccessMode | null>(null);
@@ -315,7 +320,12 @@ function ExecutionSwitchReviewPanel({
         <p className="switch-review__body">
           Choose how much {outcome.engineName} may do in this conversation.
         </p>
-        <AccessChoice change={outcome.access} onChange={setAccessMode} value={accessMode} />
+        <AccessChoice
+          change={outcome.access}
+          onChange={setAccessMode}
+          startedByOther={startedByOther}
+          value={accessMode}
+        />
         <div className="switch-review__actions">
           <button className="btn btn--ghost" data-autofocus onClick={onCancel} type="button">
             Cancel
@@ -348,7 +358,12 @@ function ExecutionSwitchReviewPanel({
             {outcome.engineName} can’t run in {accessLabel(outcome.access.current)}. Choose how much
             it may do:
           </p>
-          <AccessChoice change={outcome.access} onChange={setAccessMode} value={accessMode} />
+          <AccessChoice
+          change={outcome.access}
+          onChange={setAccessMode}
+          startedByOther={startedByOther}
+          value={accessMode}
+        />
         </>
       ) : null}
       <div className="switch-review__actions">
@@ -372,10 +387,12 @@ function ExecutionSwitchReviewPanel({
 function AccessChoice({
   change,
   onChange,
+  startedByOther = false,
   value,
 }: {
   readonly change: AccessChange;
   readonly onChange: (mode: ThreadAccessMode) => void;
+  readonly startedByOther?: boolean | undefined;
   readonly value: ThreadAccessMode | null;
 }) {
   return (
@@ -397,7 +414,11 @@ function AccessChoice({
             </span>
             <span className="picker__label-stack">
               <span className="picker__label">{option?.label ?? mode}</span>
-              {option ? <span className="picker__detail">{option.description}</span> : null}
+              {option ? (
+                <span className="picker__detail">
+                  {startedByOther ? connectionModeDescriptions[option.mode] : option.description}
+                </span>
+              ) : null}
             </span>
           </button>
         );
