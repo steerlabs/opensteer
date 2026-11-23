@@ -585,7 +585,6 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
 
 export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<void> {
   await sql`
-    -- Work that ran without the person's personal context, and everything under it.
     -- Work that ran without the person's personal context, and everything it reached: tasks
     -- ('thread') and automations ('trigger'), walked together.
     create temporary table chat_routes_reached on commit drop as
@@ -594,13 +593,15 @@ export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<voi
         where c.active_thread_id is not null and not c.personal_context
         union
         select 'thread', i.thread_id from thread_inputs i
-        join channel_conversations c on c.id = i.authority_source->>'conversationId'
+        left join channel_conversations c on c.id = i.authority_source->>'conversationId'
         left join channel_identities identity on identity.principal_id = i.actor_principal_id
         join threads t on t.id = i.thread_id
         where i.authority_source->>'kind' = 'channel-ingress' and i.state <> 'cancelled'
-          and (c.conversation_type <> 'dm' or not c.personal_context
+          and (c.id is null or c.conversation_type <> 'dm' or not c.personal_context
             or identity.status is distinct from 'linked'
-            or identity.linked_user_id is distinct from t.created_by)
+            or identity.account_id is distinct from c.account_id
+            or identity.linked_user_id is distinct from t.created_by
+            or i.requested_by is distinct from t.created_by)
         union
         select next.kind, next.id from tainted
         cross join lateral (
@@ -683,9 +684,18 @@ export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<voi
     from threads t
     where i.thread_id = t.id and t.origin_connection_id is not null
       and i.authority_source->>'kind' = 'channel-ingress';
-    update thread_inputs i set
-      authority_source = jsonb_build_object('kind', 'user-session', 'userId', i.requested_by)
-    where i.authority_source->>'kind' = 'channel-ingress';
+    with rewritten_inputs as (
+      update thread_inputs i set
+        authority_source = jsonb_build_object('kind', 'user-session', 'userId', i.requested_by),
+        reply_target = null
+      where i.authority_source->>'kind' = 'channel-ingress'
+      returning i.message_id
+    )
+    update runs r set reply_target = null
+    from rewritten_inputs ri
+    where r.seed_input_id = ri.message_id
+      and r.status in ('queued', 'starting', 'running', 'waiting')
+      and r.reply_target is not null;
     -- Every unfinished Run on a task tied to the ended row names that connection (whatever seeded
     -- it), and its open attempts do too, so ordinary Disconnect and command claim handle them.
     update runs r set connection_id = t.origin_connection_id
@@ -720,12 +730,12 @@ export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<voi
 
     -- The routes and everything only they used.
     drop index if exists thread_inputs_current_channel_binding;
-    drop table channel_deliveries;
-    drop table channel_access_grants;
-    drop table channel_link_codes;
-    alter table channel_ingress_events drop column conversation_id;
-    drop table channel_conversations;
-    drop table channel_bindings;
+    drop table if exists channel_deliveries;
+    drop table if exists channel_access_grants;
+    drop table if exists channel_link_codes;
+    alter table channel_ingress_events drop column if exists conversation_id;
+    drop table if exists channel_conversations;
+    drop table if exists channel_bindings;
   `.execute(database);
   await cleanStoredNames(database);
 }

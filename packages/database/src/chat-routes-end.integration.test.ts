@@ -1047,4 +1047,317 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       conversation: { displayName: null },
     });
   });
+
+  it("fails closed on orphaned channel-ingress inputs and clears reply_target on rewritten personal DM inputs and their unfinished Runs", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture(
+      "routes-end-orphan-dm",
+      { bridge: false },
+    );
+    const { upsertChannelIdentity } = await import("./channel-store.js");
+    const { commitPersonalMutation } = await import("./personal-mutation.js");
+    const me = await commitPersonalMutation(database, (tx) =>
+      upsertChannelIdentity(tx, {
+        accountId: configured.account.id,
+        displayName: "Owner",
+        externalUserId: "U-OWNER-ORPHAN",
+      } as never),
+    );
+    await database
+      .updateTable("channelIdentities")
+      .set({ status: "linked", linkedUserId: fixture.userId })
+      .where("id", "=", me.id as never)
+      .execute();
+
+    const { thread: orphanThread } = await store.createThread({
+      createdBy: fixture.userId,
+      environmentId: fixture.environmentId,
+      harnessInstanceId: fixture.harnessInstance.id,
+      idempotencyKey: "routes-end-orphan-thread",
+      modelSelection: testModelSelection,
+      title: "orphan-thread",
+    });
+    const orphanInput = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: orphanThread.id,
+      content: [{ type: "text", text: "Stranger message whose conversation row is missing" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "routes-end-orphan-input",
+    });
+    await sql`update thread_inputs set
+      authority_source = ${JSON.stringify({
+        kind: "channel-ingress",
+        conversationId: createChannelId("conversation"),
+      })}::jsonb
+      where message_id = ${orphanInput.message.id}`.execute(database);
+
+    // Personal DM with a live reply_target pointing at the route conversation being dropped.
+    const dmRunning = await storeFixture.startRunFixture("routes-end-dm-reply-target");
+    await restoreRoutes(database);
+    const route = `chb_${crypto.randomUUID()}`;
+    await sql`insert into channel_bindings (id, account_id, created_by, selector, execution_policy,
+        access_policy, revision, status)
+      values (${route}, ${configured.account.id}, ${dmRunning.userId}, '{}'::jsonb, '{}'::jsonb,
+        ${JSON.stringify(testChannelAccessPolicy("owner"))}::jsonb, 1, 'active')`.execute(database);
+    const dmConv = createChannelId("conversation");
+    await sql`insert into channel_conversations (id, account_id, provider, external_account_id,
+        binding_id, binding_revision, external_conversation_id, conversation_type,
+        active_thread_id, provider_state, personal_context)
+      values (${dmConv}, ${configured.account.id}, 'slack', 'T-dm-reply', ${route}, 1, ${dmConv},
+        'dm', ${dmRunning.thread.id}, '{}'::jsonb, true)`.execute(database);
+    const staleReplyTarget = { kind: "channel", conversationId: dmConv };
+    await sql`update thread_inputs set
+      authority_source = ${JSON.stringify({ kind: "channel-ingress", conversationId: dmConv })}::jsonb,
+      actor_principal_id = ${me.principalId},
+      reply_target = ${JSON.stringify(staleReplyTarget)}::jsonb
+      where message_id = ${dmRunning.run.seedInputId}`.execute(database);
+    await sql`update runs set reply_target = ${JSON.stringify(staleReplyTarget)}::jsonb
+      where id = ${dmRunning.run.id}`.execute(database);
+
+    await migrateToLatest(database);
+
+    // Orphaned channel-ingress MUST fail closed: tied to the ended row, never user-session.
+    const orphanAfter = await database
+      .selectFrom("threads")
+      .select("originConnectionId")
+      .where("id", "=", orphanThread.id)
+      .executeTakeFirstOrThrow();
+    expect(orphanAfter.originConnectionId).not.toBeNull();
+    const orphanInputAfter = await database
+      .selectFrom("threadInputs")
+      .select(["authoritySource", "connectionId"])
+      .where("messageId", "=", orphanInput.message.id)
+      .executeTakeFirstOrThrow();
+    expect(orphanInputAfter).toMatchObject({
+      authoritySource: { kind: "connection", connectionId: orphanAfter.originConnectionId },
+      connectionId: orphanAfter.originConnectionId,
+    });
+
+    // Personal DM stays the person's own, and stale reply_target is cleared on input and Run.
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("originConnectionId")
+          .where("id", "=", dmRunning.thread.id)
+          .executeTakeFirstOrThrow()
+      ).originConnectionId,
+    ).toBeNull();
+    expect(
+      await database
+        .selectFrom("threadInputs")
+        .select(["authoritySource", "replyTarget"])
+        .where("messageId", "=", dmRunning.run.seedInputId)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({
+      authoritySource: { kind: "user-session", userId: dmRunning.userId },
+      replyTarget: null,
+    });
+    expect(
+      (
+        await database
+          .selectFrom("runs")
+          .select("replyTarget")
+          .where("id", "=", dmRunning.run.id)
+          .executeTakeFirstOrThrow()
+      ).replyTarget,
+    ).toBeNull();
+    // A typed follow-up (replyTarget null) can now steer into the personal DM's running Run.
+    const followUp = await store.enqueueThreadInput({
+      requestedBy: dmRunning.userId,
+      threadId: dmRunning.thread.id,
+      content: [{ type: "text", text: "Typed follow-up" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "routes-end-dm-typed-followup",
+    });
+    await expect(
+      store.steerThreadInput({
+        expectedRunId: dmRunning.run.id,
+        idempotencyKey: "routes-end-dm-steer",
+        messageId: followUp.message.id,
+        requestedBy: dmRunning.userId,
+        threadId: dmRunning.thread.id,
+      }),
+    ).resolves.toMatchObject({ input: { state: "claimed", runId: dmRunning.run.id } });
+  });
+
+  it("sweeps paused, done, archived, awaiting-approval, and leased inputs through Disconnect, and defers invalid provider sessions during recovery", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture(
+      "routes-end-sweep",
+      { bridge: false },
+    );
+    const makeTask = (key: string, parentThreadId?: string) =>
+      store.createThread({
+        createdBy: fixture.userId,
+        environmentId: fixture.environmentId,
+        harnessInstanceId: fixture.harnessInstance.id,
+        idempotencyKey: key,
+        modelSelection: testModelSelection,
+        title: key,
+        ...(parentThreadId ? { parentThreadId: parentThreadId as never } : {}),
+      });
+    const root = fixture.thread.id;
+    const { thread: pausedTask } = await makeTask("sweep-paused", root);
+    const { thread: doneTask } = await makeTask("sweep-done", root);
+    const { thread: archivedTask } = await makeTask("sweep-archived", root);
+    const { thread: approvalTask } = await makeTask("sweep-approval", root);
+
+    const pausedInput = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: pausedTask.id,
+      content: [{ type: "text", text: "paused-waiting" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "sweep-paused-input",
+    });
+    const doneInput = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: doneTask.id,
+      content: [{ type: "text", text: "done-waiting" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "sweep-done-input",
+    });
+    const archivedInput = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: archivedTask.id,
+      content: [{ type: "text", text: "archived-waiting" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "sweep-archived-input",
+    });
+    const approvalInput = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: approvalTask.id,
+      content: [{ type: "text", text: "approval-waiting" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "sweep-approval-input",
+    });
+
+    // Clear queued runs so these inputs sit purely as queued/awaiting-approval inputs on non-normal tasks.
+    await database
+      .deleteFrom("runs")
+      .where("threadId", "in", [pausedTask.id, doneTask.id, archivedTask.id, approvalTask.id])
+      .execute();
+    await database
+      .updateTable("threads")
+      .set({ inputQueuePaused: true })
+      .where("id", "=", pausedTask.id)
+      .execute();
+    await database
+      .updateTable("threadInputs")
+      .set({
+        editLeaseId: "lease-1",
+        editLeaseSessionId: "aus_00000000-0000-4000-8000-000000000001" as never,
+        editLeaseDeviceLabel: "Mac",
+        editLeaseExpiresAt: new Date(Date.now() + 60_000),
+      })
+      .where("messageId", "=", pausedInput.message.id)
+      .execute();
+    await database
+      .updateTable("threads")
+      .set({ doneAt: new Date(), doneReason: "quiet" })
+      .where("id", "=", doneTask.id)
+      .execute();
+    await database
+      .updateTable("threads")
+      .set({ status: "archived" })
+      .where("id", "=", archivedTask.id)
+      .execute();
+    await database
+      .updateTable("threadInputs")
+      .set({ state: "awaiting-approval" })
+      .where("messageId", "=", approvalInput.message.id)
+      .execute();
+
+    // Deactivate the active provider_sessions row on a separate pending task so
+    // recoverThreadWorkQueues encounters an invalid selection before later pending tasks.
+    const { thread: brokenSessionTask } = await makeTask("sweep-broken-session");
+    await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: brokenSessionTask.id,
+      content: [{ type: "text", text: "broken-session-input" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "sweep-broken-session-input",
+    });
+    await database.deleteFrom("runs").where("threadId", "=", brokenSessionTask.id).execute();
+    await database
+      .updateTable("providerSessions")
+      .set({ active: false })
+      .where("threadId", "=", brokenSessionTask.id)
+      .where("active", "=", true)
+      .execute();
+
+    await restoreRoutes(database);
+    const route = `chb_${crypto.randomUUID()}`;
+    await sql`insert into channel_bindings (id, account_id, created_by, selector, execution_policy,
+        access_policy, revision, status)
+      values (${route}, ${configured.account.id}, ${fixture.userId}, '{}'::jsonb, '{}'::jsonb,
+        ${JSON.stringify(testChannelAccessPolicy("anyone"))}::jsonb, 1, 'active')`.execute(
+      database,
+    );
+    const channel = createChannelId("conversation");
+    await sql`insert into channel_conversations (id, account_id, provider, external_account_id,
+        binding_id, binding_revision, external_conversation_id, conversation_type,
+        active_thread_id, provider_state, personal_context)
+      values (${channel}, ${configured.account.id}, 'slack', 'T-sweep', ${route}, 1, ${channel},
+        'channel', ${root}, '{}'::jsonb, false)`.execute(database);
+
+    await migrateToLatest(database);
+
+    const ended = (
+      await database
+        .selectFrom("threads")
+        .select("originConnectionId")
+        .where("id", "=", root)
+        .executeTakeFirstOrThrow()
+    ).originConnectionId!;
+    expect(ended).not.toBeNull();
+
+    // Ordinary Disconnect cleanup sweeps all four waiting/awaiting-approval inputs with zero failures.
+    const driven = await store.driveConnectionCleanups({
+      stopper: { stop: async () => "ended" },
+    });
+    expect(driven.failures).toEqual([]);
+    for (const messageId of [
+      pausedInput.message.id,
+      doneInput.message.id,
+      archivedInput.message.id,
+      approvalInput.message.id,
+    ]) {
+      expect(
+        await database
+          .selectFrom("threadInputs")
+          .select(["state", "cancelReason", "editLeaseId"])
+          .where("messageId", "=", messageId)
+          .executeTakeFirstOrThrow(),
+        messageId,
+      ).toEqual({
+        state: "cancelled",
+        cancelReason: "authority-revoked",
+        editLeaseId: null,
+      });
+    }
+    expect(
+      (
+        await database
+          .selectFrom("agentConnections")
+          .select("cleanupCompletedAt")
+          .where("id", "=", ended)
+          .executeTakeFirstOrThrow()
+      ).cleanupCompletedAt,
+    ).toBeInstanceOf(Date);
+
+    // recoverThreadWorkQueues defers the invalid provider session rather than aborting.
+    await expect(store.recoverThreadWorkQueues()).resolves.toBeUndefined();
+  });
 });

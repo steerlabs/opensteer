@@ -140,6 +140,7 @@ import {
   lockThreadInputIdempotency,
   steerThreadInputInTransaction,
   cancelThreadInputInTransaction,
+  cancelDisconnectedThreadInputInTransaction,
   moveThreadInputInTransaction,
   readThreadInputQueue,
 } from "./thread-inbox.js";
@@ -2291,6 +2292,14 @@ export async function cancelThreadInput(
     });
     return result;
   });
+}
+export async function cancelDisconnectedThreadInput(
+  database: Kysely<DatabaseSchema>,
+  input: { readonly threadId: ThreadId; readonly messageId: MessageId },
+) {
+  return commitPersonalMutation(database, (transaction) =>
+    cancelDisconnectedThreadInputInTransaction(transaction, input),
+  );
 }
 export async function moveThreadInput(
   database: Kysely<DatabaseSchema>,

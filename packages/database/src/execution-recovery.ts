@@ -363,7 +363,7 @@ export async function recoverThreadWorkQueues(database: Kysely<DatabaseSchema>):
         .selectAll()
         .where("id", "=", run.threadId)
         .executeTakeFirstOrThrow();
-      await ensureQueuedRun(transaction, thread);
+      await ensureQueuedRun(transaction, thread, { onInvalidSelection: "defer" });
       await updateExecutionThread(transaction, thread.id, now);
     });
   }
@@ -383,7 +383,7 @@ export async function recoverThreadWorkQueues(database: Kysely<DatabaseSchema>):
         .selectAll()
         .where("id", "=", threadId)
         .executeTakeFirstOrThrow();
-      await ensureQueuedRun(transaction, thread);
+      await ensureQueuedRun(transaction, thread, { onInvalidSelection: "defer" });
     });
   }
 }
