@@ -1,4 +1,8 @@
-import type { ThreadAccessMode } from "@opensteer/core";
+import {
+  agentEndedForPersonMessage,
+  chatEndedMessage,
+  type ThreadAccessMode,
+} from "@opensteer/core";
 import { agentConnectionVerificationChangedMessage } from "@opensteer/protocol";
 import { plainSentence, sentenceWith, type SentencePart } from "./sentence-parts.js";
 
@@ -440,11 +444,9 @@ export function anyoneChatModeDescriptions(
 }
 
 /**
- * What a task says when the chat or connected agent that started it has ended, matching the Home's
- * own refusal (`chatEndedMessage` / `agentEndedForPersonMessage`).
+ * What a task says when the chat or connected agent that started it has ended: the Home's own
+ * refusal (`chatEndedMessage` / `agentEndedForPersonMessage` in `@opensteer/core`).
  */
 export function taskOriginEndedMessage(origin: "chat" | "agent"): string {
-  return origin === "chat"
-    ? "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging."
-    : "This connected agent's access ended, so this task takes no new messages. Start a new task, or reconnect it from Connected agents.";
+  return origin === "chat" ? chatEndedMessage : agentEndedForPersonMessage;
 }

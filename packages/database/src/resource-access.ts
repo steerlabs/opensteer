@@ -8,8 +8,10 @@ import {
   ThreadIdSchema,
   TriggerOccurrenceIdSchema,
   TriggerWatchActivationIdSchema,
+  agentEndedForPersonMessage,
   agentGrantAccess,
   agentGrantAllowsTasks,
+  chatEndedMessage,
   intersectResourceAccess,
   minThreadAccessMode,
   OpensteerError,
@@ -110,12 +112,7 @@ function forbidden(message: string): OpensteerError {
 }
 export const lineageEndedMessage =
   "This connected agent's access ended. The person can reconnect it from Connected agents.";
-/** What a person reads in a connected agent's task once its access has ended. */
-export const agentEndedForPersonMessage =
-  "This connected agent's access ended, so this task takes no new messages. Start a new task, or reconnect it from Connected agents.";
-/** What a chat's task says once its chat has ended: it takes no new work, and why. */
-export const chatEndedMessage =
-  "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging.";
+export { agentEndedForPersonMessage, chatEndedMessage };
 export const tasksWithdrawnMessage =
   "This connected agent may no longer ask your own agents to work.";
 /** The same refusal for a chat; it is recorded with the message the chat sent. */

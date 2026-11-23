@@ -14,6 +14,13 @@ it.each([
   ["Persian ZWNJ", "می\u200Cخواهم", "می\u200Cخواهم"],
   ["Sinhala ZWJ", "ශ්\u200Dරී", "ශ්\u200Dරී"],
   ["Bengali ZWJ", "র\u200D্য", "র\u200D্য"],
+  [
+    "an Adlam ZWJ (a joining script with no list entry)",
+    "\u{1E900}‍\u{1E901}",
+    "\u{1E900}‍\u{1E901}",
+  ],
+  ["U+FE0F after an emoji", "☺️", "☺️"],
+  ["a keycap", "1️⃣", "1️⃣"],
   ["the flag of England", england, england],
   ["the flag of Scotland", scotland, scotland],
   ["the flag of Wales", wales, wales],
@@ -39,13 +46,25 @@ it.each([
   ["an isolate", "\u2067Alice\u2069", "Alice"],
   ["runs of space and a line separator", "  Alice \u2028  Bob  ", "Alice Bob"],
   ["Unicode whitespace only", "\u00A0\u2003\u3000", ""],
+  // Removed: every other Default_Ignorable_Code_Point, and a lone surrogate.
+  ["a combining grapheme joiner", "Alice͏", "Alice"],
+  ["a variation selector after a letter", "Ali️ce", "Alice"],
+  ["U+FE0F after a digit that is no keycap", "Bob1️", "Bob1"],
+  ["an ideographic variation selector", "葛\u{E0100}", "葛"],
+  ["unassigned default-ignorables", "Bob\u{E0080}⁥￰", "Bob"],
+  ["a Mongolian variation selector", "Bob᠋", "Bob"],
+  ["Khmer inherent vowels", "Bob឴឵", "Bob"],
+  ["a name of only Hangul fillers", "ㅤᅟᅠﾠ", ""],
+  ["a joiner between Hangul fillers", "ᅟ‍ᅟ", ""],
+  ["a lone surrogate", "\uD800Alice\uDFFF", "Alice"],
+  ["the braille blank", "⠁⠀⠃", "⠁ ⠃"],
 ])("cleans %s idempotently", (_what, value, cleaned) => {
   const once = outsideName(value, 160);
   expect(once).toBe(cleaned);
   expect(outsideName(once, 160)).toBe(once);
 });
 
-it("cuts a long name at its UTF-16 maximum, never inside a surrogate pair, joiner, or flag", () => {
+it("cuts a long name at its UTF-16 maximum, never inside a surrogate pair, sequence, or flag", () => {
   expect(outsideName("x".repeat(5_000), 160)).toHaveLength(160);
   const emoji = outsideName("😀".repeat(200), 160);
   expect(emoji.length).toBe(160);
@@ -56,10 +75,20 @@ it("cuts a long name at its UTF-16 maximum, never inside a surrogate pair, joine
   expect(odd.isWellFormed()).toBe(true);
   expect(outsideName(`a${"😀".repeat(200)}`, 1)).toBe("a");
   expect(outsideName("😀".repeat(200), 1)).toBe("");
-  // Cutting right where a ZWJ or ZWNJ falls leaves no trailing joiner and stays idempotent.
-  const cutEmoji = outsideName("a👩\u200D💻", 4);
-  expect(cutEmoji).toBe("a👩");
+  // An emoji sequence, a flag, a skin tone or a keycap is kept whole or left out, never cut.
+  const cutEmoji = outsideName("a\u{1F469}‍\u{1F4BB}", 4);
+  expect(cutEmoji).toBe("a");
   expect(outsideName(cutEmoji, 4)).toBe(cutEmoji);
+  const family = "\u{1F468}‍\u{1F469}‍\u{1F467}";
+  expect(outsideName(`a${family}`, 6)).toBe("a");
+  expect(outsideName(`a${family}b`, 9)).toBe(`a${family}`);
+  const us = "\u{1F1FA}\u{1F1F8}";
+  expect(outsideName(`a${us}`, 3)).toBe("a");
+  expect(outsideName(`a${us}\u{1F1EB}\u{1F1F7}`, 5)).toBe(`a${us}`);
+  expect(outsideName("a\u{1F44D}\u{1F3FD}", 3)).toBe("a");
+  expect(outsideName("a1️⃣", 3)).toBe("a");
+  expect(outsideName("aक्ष", 3)).toBe("aक्");
+  // Cutting right where a ZWNJ falls leaves no trailing joiner and stays idempotent.
   const cutPersian = outsideName("می\u200Cخواهم", 3);
   expect(cutPersian).toBe("می");
   expect(outsideName(cutPersian, 3)).toBe(cutPersian);
