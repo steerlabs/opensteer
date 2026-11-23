@@ -449,14 +449,22 @@ export async function runTabRestoreTrial(input: {
     assert(state?.tabGroup);
     return `li[data-tab-group-id="${state.tabGroup.id}"]`;
   };
-  const rowPoint = async (selector: string) =>
-    z.object({ x: z.number(), y: z.number(), height: z.number(), right: z.number() }).parse(
-      await dom(`(() => {
-        const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
+  const rowPoint = async (selector: string) => {
+    const point = z
+      .object({ x: z.number(), y: z.number(), height: z.number(), right: z.number() })
+      .nullable()
+      .parse(
+        await dom(`(() => {
+        const node=document.querySelector(${JSON.stringify(selector)});
+        if (!node) return null;
+        const r=node.getBoundingClientRect();
         const side=document.querySelector('.sidebar').getBoundingClientRect();
         return {x:r.x+Math.min(60,r.width/3),y:r.y+r.height/2,height:r.height,right:side.right};
       })()`),
-    );
+      );
+    assert(point, `The sidebar shows no row ${selector}`);
+    return point;
+  };
   /** The web rows as the sidebar shows them: tab IDs, and `group:` for a header. */
   const sidebarOrder = async () =>
     z
@@ -490,7 +498,7 @@ export async function runTabRestoreTrial(input: {
    * Presses a row, lifts it, then glides to the y `target` gives once it has lifted
    * (a group folds first), optionally out over the native page and back, and drops.
    */
-  const dragRow = async (
+  const dragRowSteps = async (
     selector: string,
     target: () => Promise<number>,
     options: { readonly overPage?: boolean; readonly escape?: boolean } = {},
@@ -552,6 +560,36 @@ export async function runTabRestoreTrial(input: {
     pressed = false;
     await wait(async () => !(await has(".side-list[data-sorting]")), "drag finished");
     await wait(async () => !(await has(".side-list[data-moving]")), "dropped rows settled");
+  };
+  /** A drag that fails leaves the list as it was found and its log, for the report. */
+  const dragRow = async (
+    selector: string,
+    target: () => Promise<number>,
+    options: { readonly overPage?: boolean; readonly escape?: boolean } = {},
+  ) => {
+    try {
+      await dragRowSteps(selector, target, options);
+    } catch (error) {
+      if (pressed) {
+        pointer("mouseUp", 0, 0);
+        pressed = false;
+      }
+      writeFileSync(
+        path.join(root, `${trial}.drag-failed.json`),
+        JSON.stringify(
+          {
+            drag: selector,
+            options,
+            error: error instanceof Error ? error.message : String(error),
+            shown: await sidebarOrder().catch(() => null),
+            log: await dom("window.__dragLog ?? null").catch(() => null),
+          },
+          null,
+          2,
+        ),
+      );
+      throw error;
+    }
   };
   const expectOrder = async (phase: string, shown: string[], saved: string[]) => {
     assert(state);
