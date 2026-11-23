@@ -84,7 +84,12 @@ void withTimeout(run(), 90_000, {
     smokeFinished = true;
     clearInterval(smokeLiveness);
     process.stdout.write(`${JSON.stringify({ event: "electron-browser-smoke.passed" })}\n`);
-    await rm(smokeProfile, { recursive: true, force: true });
+    // Chromium may still be writing into the profile as it winds down: a removal that cannot
+    // finish is reported, and the passed smoke still quits instead of hanging the journey.
+    await rm(smokeProfile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(
+      (error: unknown) =>
+        process.stderr.write(`electron-browser-smoke: profile left behind: ${String(error)}\n`),
+    );
     app.quit();
   },
   (error: unknown) => {
