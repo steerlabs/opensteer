@@ -1,6 +1,7 @@
 import { chatAddRefusals } from "@opensteer/core";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { safeMessage } from "@opensteer/shared/safeMessage";
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   ChannelAccountIdSchema,
   ChannelDeliveryIdSchema,
@@ -369,13 +370,25 @@ export class ChannelService {
             { connectionId, purpose: "transport", runnerId: connection.runnerId },
             credentialFieldsForPurpose(manifest, "transport"),
           );
-    const inspection = InspectChannelConnectionResponseSchema.parse(
+    const inspected = InspectChannelConnectionResponseSchema.parse(
       await this.#relay.request(connection.runnerId, "connection.inspect", {
         credentials,
         provider,
         transportKind: connection.transportKind,
       }),
     );
+    const identity = inspected.identity;
+    const inspection = identity
+      ? {
+          ...inspected,
+          identity: {
+            ...identity,
+            accountDisplayName: outsideName(identity.accountDisplayName, 160) || manifest.label,
+            connectionDisplayName:
+              outsideName(identity.connectionDisplayName, 160) || manifest.label,
+          },
+        }
+      : inspected;
     const accountMismatch =
       inspection.identity !== null &&
       inspection.identity.externalAccountId !== connection.externalTenantId;
