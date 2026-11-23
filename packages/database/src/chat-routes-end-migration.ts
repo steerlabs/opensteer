@@ -1,5 +1,7 @@
+import { requestTextMaxLength, requestTitleMaxLength, utf8Prefix } from "@opensteer/core";
 import { outsideName } from "@opensteer/shared/outsideName";
 import { sql, type Kysely, type RawBuilder } from "kysely";
+import { storableText } from "./storable-json.js";
 
 /** A contract migration: it drops what a running previous Home still uses (`migrations.test.ts`). */
 export const chatRoutesEndMigrationName = "0053_chat_routes_end_contract";
@@ -9,6 +11,10 @@ const needsCleanPattern = "[^ -~]|^ | $|  ";
 
 function needsClean(column: RawBuilder<unknown>, max: number) {
   return sql<boolean>`(${column} is not null and (${column} ~ ${needsCleanPattern} or length(${column}) > ${max} or ${column} = ''))`;
+}
+
+function needsCleanAllowEmpty(column: RawBuilder<unknown>, max: number) {
+  return sql<boolean>`(${column} is not null and (${column} ~ ${needsCleanPattern} or length(${column}) > ${max}))`;
 }
 
 async function paginateById<Row extends { readonly id: string }>(
@@ -200,20 +206,28 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
     },
   );
 
-  // 3. integration_connections (channel connections: display_name)
+  // 3. integration_connections (channel and computer connections: display_name; never computer_app)
   await paginateById(
     async (afterId) =>
       (
         await sql<{
           readonly id: string;
+          readonly connectionKind: string;
           readonly displayName: string;
           readonly provider: string;
+          readonly hasComputerApp: boolean;
         }>`
-          select id, display_name as "displayName", provider
+          select id, connection_kind as "connectionKind", display_name as "displayName",
+            provider, (computer_app is not null) as "hasComputerApp"
           from integration_connections
-          where connection_kind = 'channel'
-            and ${after(afterId)}
-            and ${needsClean(sql`display_name`, 160)}
+          where ${after(afterId)}
+            and (
+              (connection_kind = 'channel' and ${needsClean(sql`display_name`, 160)})
+              or (connection_kind = 'computer' and (
+                (computer_app is not null and ${needsClean(sql`display_name`, 380)})
+                or (computer_app is null and ${needsClean(sql`display_name`, 120)})
+              ))
+            )
           order by id
           limit ${cleanBatchSize}
         `.execute(database)
@@ -223,7 +237,11 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
       const displayNames: string[] = [];
       for (const row of rows) {
         const displayName =
-          outsideName(row.displayName, 160) || outsideName(row.provider, 160) || "Channel";
+          row.connectionKind === "channel"
+            ? outsideName(row.displayName, 160) || outsideName(row.provider, 160) || "Channel"
+            : row.hasComputerApp
+              ? outsideName(row.displayName, 380) || "App"
+              : outsideName(row.displayName, 120) || "Computer";
         if (displayName === row.displayName) continue;
         ids.push(row.id);
         displayNames.push(displayName);
@@ -335,14 +353,16 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
     },
   );
 
-  // 7. threads (title)
+  // 7. threads (title; external direct-work threads cap at 200 with "Agent" fallback)
   await paginateById(
     async (afterId) =>
       (
-        await sql<{ readonly id: string; readonly title: string }>`
-          select id, title
+        await sql<{ readonly id: string; readonly title: string; readonly worker: string }>`
+          select id, title, worker
           from threads
-          where ${after(afterId)} and ${needsClean(sql`title`, 240)}
+          where ${after(afterId)}
+            and ((worker = 'external' and ${needsClean(sql`title`, 200)})
+              or (worker <> 'external' and ${needsClean(sql`title`, 240)}))
           order by id
           limit ${cleanBatchSize}
         `.execute(database)
@@ -351,7 +371,10 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
       const ids: string[] = [];
       const titles: string[] = [];
       for (const row of rows) {
-        const title = outsideName(row.title, 240) || "Task";
+        const title =
+          row.worker === "external"
+            ? outsideName(row.title, 200) || "Agent"
+            : outsideName(row.title, 240) || "Task";
         if (title === row.title) continue;
         ids.push(row.id);
         titles.push(title);
@@ -475,7 +498,7 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
       const ids: string[] = [];
       const names: string[] = [];
       for (const row of rows) {
-        const name = outsideName(row.name, 120) || "Profile";
+        const name = outsideName(row.name, 120) || "Browser profile";
         if (name === row.name) continue;
         ids.push(row.id);
         names.push(name);
@@ -549,6 +572,704 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
       await sql`
         update channel_ingress_events as t set event = u.event::jsonb
         from unnest(${ids}::text[], ${events}::text[]) as u(id, event)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 14. runner_enrollments (name)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly name: string }>`
+          select id, name
+          from runner_enrollments
+          where ${after(afterId)} and ${needsClean(sql`name`, 120)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const names: string[] = [];
+      for (const row of rows) {
+        const name = outsideName(row.name, 120) || "Computer";
+        if (name === row.name) continue;
+        ids.push(row.id);
+        names.push(name);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update runner_enrollments as t set name = u.name
+        from unnest(${ids}::text[], ${names}::text[]) as u(id, name)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 15. runners (name)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly name: string }>`
+          select id, name
+          from runners
+          where ${after(afterId)} and ${needsClean(sql`name`, 120)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const names: string[] = [];
+      for (const row of rows) {
+        const name = outsideName(row.name, 120) || "Computer";
+        if (name === row.name) continue;
+        ids.push(row.id);
+        names.push(name);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update runners as t set name = u.name
+        from unnest(${ids}::text[], ${names}::text[]) as u(id, name)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 16. devices (name)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly name: string }>`
+          select id, name
+          from devices
+          where ${after(afterId)} and ${needsClean(sql`name`, 120)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const names: string[] = [];
+      for (const row of rows) {
+        const name = outsideName(row.name, 120) || "Device";
+        if (name === row.name) continue;
+        ids.push(row.id);
+        names.push(name);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update devices as t set name = u.name
+        from unnest(${ids}::text[], ${names}::text[]) as u(id, name)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 17. execution_environments (name)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly name: string }>`
+          select id, name
+          from execution_environments
+          where ${after(afterId)} and ${needsClean(sql`name`, 120)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const names: string[] = [];
+      for (const row of rows) {
+        const name = outsideName(row.name, 120) || "Computer";
+        if (name === row.name) continue;
+        ids.push(row.id);
+        names.push(name);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update execution_environments as t set name = u.name
+        from unnest(${ids}::text[], ${names}::text[]) as u(id, name)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 18. integration_grants (alias)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly alias: string }>`
+          select id, alias
+          from integration_grants
+          where ${after(afterId)} and ${needsClean(sql`alias`, 80)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const aliases: string[] = [];
+      for (const row of rows) {
+        const alias = outsideName(row.alias, 80) || "App";
+        if (alias === row.alias) continue;
+        ids.push(row.id);
+        aliases.push(alias);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update integration_grants as t set alias = u.alias
+        from unnest(${ids}::text[], ${aliases}::text[]) as u(id, alias)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 19. requests (computer.app.access title & detail; harness.approval title)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{
+          readonly id: string;
+          readonly kind: string;
+          readonly title: string | null;
+          readonly detail: string | null;
+        }>`
+          select id, kind,
+            case when jsonb_typeof(presentation->'title') = 'string'
+              then presentation->>'title' else null end as title,
+            case when kind = 'computer.app.access' and jsonb_typeof(presentation->'detail') = 'string'
+              then presentation->>'detail' else null end as detail
+          from requests
+          where kind in ('computer.app.access', 'harness.approval')
+            and ${after(afterId)}
+            and (
+              (jsonb_typeof(presentation->'title') = 'string'
+                and ${needsClean(sql`presentation->>'title'`, requestTitleMaxLength)})
+              or (kind = 'computer.app.access'
+                and jsonb_typeof(presentation->'detail') = 'string'
+                and ${needsCleanAllowEmpty(sql`presentation->>'detail'`, requestTextMaxLength)})
+            )
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const titles: (string | null)[] = [];
+      const titleChanged: boolean[] = [];
+      const details: (string | null)[] = [];
+      const detailChanged: boolean[] = [];
+      for (const row of rows) {
+        const nextTitle =
+          row.title === null
+            ? null
+            : outsideName(row.title, requestTitleMaxLength) || "Approval required";
+        const nextDetail =
+          row.detail === null ? null : outsideName(row.detail, requestTextMaxLength);
+        const tChanged = nextTitle !== row.title;
+        const dChanged = nextDetail !== row.detail;
+        if (!tChanged && !dChanged) continue;
+        ids.push(row.id);
+        titles.push(nextTitle);
+        titleChanged.push(tChanged);
+        details.push(nextDetail);
+        detailChanged.push(dChanged);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update requests as t set
+          presentation = case
+            when u.detail_changed then jsonb_set(
+              case when u.title_changed then jsonb_set(t.presentation, '{title}', to_jsonb(u.title)) else t.presentation end,
+              '{detail}', to_jsonb(u.detail)
+            )
+            when u.title_changed then jsonb_set(t.presentation, '{title}', to_jsonb(u.title))
+            else t.presentation
+          end
+        from unnest(
+          ${ids}::text[],
+          ${titles}::text[],
+          ${titleChanged}::boolean[],
+          ${details}::text[],
+          ${detailChanged}::boolean[]
+        ) as u(id, title, title_changed, detail, detail_changed)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 20. tool_calls (integration->'computerApp'->>'app')
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly app: string }>`
+          select id, integration->'computerApp'->>'app' as app
+          from tool_calls
+          where jsonb_typeof(integration->'computerApp'->'app') = 'string'
+            and ${after(afterId)}
+            and ${needsClean(sql`integration->'computerApp'->>'app'`, 240)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const apps: string[] = [];
+      for (const row of rows) {
+        const app = outsideName(row.app, 240) || "App";
+        if (app === row.app) continue;
+        ids.push(row.id);
+        apps.push(app);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update tool_calls as t set
+          integration = jsonb_set(t.integration, '{computerApp,app}', to_jsonb(u.app))
+        from unnest(${ids}::text[], ${apps}::text[]) as u(id, app)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 21. personal_tabs (page title and non-null profile_name)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{
+          readonly id: string;
+          readonly kind: string;
+          readonly title: string;
+          readonly profileName: string | null;
+        }>`
+          select id, kind, title, profile_name as "profileName"
+          from personal_tabs
+          where ${after(afterId)}
+            and ((kind = 'page' and ${needsCleanAllowEmpty(sql`title`, 1024)})
+              or ${needsClean(sql`profile_name`, 120)})
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const titles: string[] = [];
+      const profileNames: (string | null)[] = [];
+      for (const row of rows) {
+        const title = row.kind === "page" ? outsideName(row.title, 1024) : row.title;
+        const profileName =
+          row.profileName === null ? null : outsideName(row.profileName, 120) || "Browser profile";
+        if (title === row.title && profileName === row.profileName) continue;
+        ids.push(row.id);
+        titles.push(title);
+        profileNames.push(profileName);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update personal_tabs as t set
+          title = u.title,
+          profile_name = u.profile_name
+        from unnest(${ids}::text[], ${titles}::text[], ${profileNames}::text[])
+          as u(id, title, profile_name)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 22. browser_history_entries (title; composite PK (profile_id, url))
+  let afterHistProfile: string | null = null;
+  let afterHistUrl: string | null = null;
+  for (;;) {
+    const rows = (
+      await sql<{ readonly profileId: string; readonly url: string; readonly title: string }>`
+        select profile_id as "profileId", url, title
+        from browser_history_entries
+        where ${
+          afterHistProfile === null
+            ? sql`true`
+            : sql`(profile_id, url) > (${afterHistProfile}, ${afterHistUrl})`
+        }
+          and ${needsCleanAllowEmpty(sql`title`, 200)}
+        order by profile_id, url
+        limit ${cleanBatchSize}
+      `.execute(database)
+    ).rows;
+    if (rows.length === 0) break;
+    const profileIds: string[] = [];
+    const urls: string[] = [];
+    const titles: string[] = [];
+    for (const row of rows) {
+      const title = outsideName(row.title, 200);
+      if (title === row.title) continue;
+      profileIds.push(row.profileId);
+      urls.push(row.url);
+      titles.push(title);
+    }
+    if (profileIds.length > 0) {
+      await sql`
+        update browser_history_entries as t set title = u.title
+        from unnest(${profileIds}::text[], ${urls}::text[], ${titles}::text[])
+          as u(profile_id, url, title)
+        where t.profile_id = u.profile_id and t.url = u.url
+      `.execute(database);
+    }
+    const last = rows[rows.length - 1]!;
+    afterHistProfile = last.profileId;
+    afterHistUrl = last.url;
+    if (rows.length < cleanBatchSize) break;
+  }
+
+  // 23. browser_session_uses (page_title)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly pageTitle: string }>`
+          select id, page_title as "pageTitle"
+          from browser_session_uses
+          where page_title is not null
+            and ${after(afterId)}
+            and ${needsCleanAllowEmpty(sql`page_title`, 256)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const titles: string[] = [];
+      for (const row of rows) {
+        const title = outsideName(row.pageTitle, 256);
+        if (title === row.pageTitle) continue;
+        ids.push(row.id);
+        titles.push(title);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update browser_session_uses as t set page_title = u.page_title
+        from unnest(${ids}::text[], ${titles}::text[]) as u(id, page_title)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 24. runs (latest_place->>'title')
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly title: string }>`
+          select id, latest_place->>'title' as title
+          from runs
+          where latest_place is not null
+            and ${after(afterId)}
+            and ${needsCleanAllowEmpty(sql`latest_place->>'title'`, 1024)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const titles: string[] = [];
+      for (const row of rows) {
+        const title = utf8Prefix(outsideName(storableText(row.title), 1024), 1024);
+        if (title === row.title) continue;
+        ids.push(row.id);
+        titles.push(title);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update runs as t set
+          latest_place = jsonb_set(t.latest_place, '{title}', to_jsonb(u.title))
+        from unnest(${ids}::text[], ${titles}::text[]) as u(id, title)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 25. threads (latest_place->>'title')
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly title: string }>`
+          select id, latest_place->>'title' as title
+          from threads
+          where latest_place is not null
+            and ${after(afterId)}
+            and ${needsCleanAllowEmpty(sql`latest_place->>'title'`, 1024)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const titles: string[] = [];
+      for (const row of rows) {
+        const title = utf8Prefix(outsideName(storableText(row.title), 1024), 1024);
+        if (title === row.title) continue;
+        ids.push(row.id);
+        titles.push(title);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update threads as t set
+          latest_place = jsonb_set(t.latest_place, '{title}', to_jsonb(u.title))
+        from unnest(${ids}::text[], ${titles}::text[]) as u(id, title)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 26. transcript_items (kind = 'place': body->>'title' and view->>'title')
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{
+          readonly id: string;
+          readonly bodyTitle: string;
+          readonly viewTitle: string | null;
+        }>`
+          select id,
+            body->>'title' as "bodyTitle",
+            case when jsonb_typeof(view->'title') = 'string'
+              then view->>'title' else null end as "viewTitle"
+          from transcript_items
+          where kind = 'place'
+            and ${after(afterId)}
+            and (
+              ${needsCleanAllowEmpty(sql`body->>'title'`, 1024)}
+              or (jsonb_typeof(view->'title') = 'string'
+                and ${needsCleanAllowEmpty(sql`view->>'title'`, 192)})
+            )
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const bodyTitles: string[] = [];
+      const bodyChanged: boolean[] = [];
+      const viewTitles: (string | null)[] = [];
+      const viewChanged: boolean[] = [];
+      for (const row of rows) {
+        const nextBody = utf8Prefix(outsideName(storableText(row.bodyTitle), 1024), 1024);
+        const nextView =
+          row.viewTitle === null
+            ? null
+            : utf8Prefix(outsideName(storableText(row.viewTitle), 192), 192);
+        const bChanged = nextBody !== row.bodyTitle;
+        const vChanged = nextView !== row.viewTitle;
+        if (!bChanged && !vChanged) continue;
+        ids.push(row.id);
+        bodyTitles.push(nextBody);
+        bodyChanged.push(bChanged);
+        viewTitles.push(nextView);
+        viewChanged.push(vChanged);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update transcript_items as t set
+          body = case when u.body_changed then jsonb_set(t.body, '{title}', to_jsonb(u.body_title)) else t.body end,
+          view = case when u.view_changed then jsonb_set(t.view, '{title}', to_jsonb(u.view_title)) else t.view end
+        from unnest(
+          ${ids}::text[],
+          ${bodyTitles}::text[],
+          ${bodyChanged}::boolean[],
+          ${viewTitles}::text[],
+          ${viewChanged}::boolean[]
+        ) as u(id, body_title, body_changed, view_title, view_changed)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 27. integration_installations (source_kind = 'plugin': title and manifest device name)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{
+          readonly id: string;
+          readonly title: string;
+          readonly deviceName: string | null;
+        }>`
+          select id, title,
+            case when jsonb_typeof(manifest->'extensions'->'com.opensteer'->'device'->'name') = 'string'
+              then manifest->'extensions'->'com.opensteer'->'device'->>'name' else null end as "deviceName"
+          from integration_installations
+          where source_kind = 'plugin'
+            and ${after(afterId)}
+            and (
+              ${needsClean(sql`title`, 160)}
+              or (jsonb_typeof(manifest->'extensions'->'com.opensteer'->'device'->'name') = 'string'
+                and ${needsClean(sql`manifest->'extensions'->'com.opensteer'->'device'->>'name'`, 80)})
+            )
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const titles: string[] = [];
+      const deviceNames: (string | null)[] = [];
+      const deviceChanged: boolean[] = [];
+      for (const row of rows) {
+        const title = outsideName(row.title, 160) || "Plugin";
+        const nextDevice =
+          row.deviceName === null ? null : outsideName(row.deviceName, 80) || "Device";
+        const dChanged = nextDevice !== row.deviceName;
+        if (title === row.title && !dChanged) continue;
+        ids.push(row.id);
+        titles.push(title);
+        deviceNames.push(nextDevice);
+        deviceChanged.push(dChanged);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update integration_installations as t set
+          title = u.title,
+          manifest = case
+            when u.device_changed then jsonb_set(
+              t.manifest,
+              array['extensions', 'com.opensteer', 'device', 'name'],
+              to_jsonb(u.device_name)
+            )
+            else t.manifest
+          end
+        from unnest(
+          ${ids}::text[],
+          ${titles}::text[],
+          ${deviceNames}::text[],
+          ${deviceChanged}::boolean[]
+        ) as u(id, title, device_name, device_changed)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 28. plugin_versions (manifest->'extensions'->'com.opensteer'->'device'->>'name')
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly deviceName: string }>`
+          select id,
+            manifest->'extensions'->'com.opensteer'->'device'->>'name' as "deviceName"
+          from plugin_versions
+          where jsonb_typeof(manifest->'extensions'->'com.opensteer'->'device'->'name') = 'string'
+            and ${after(afterId)}
+            and ${needsClean(sql`manifest->'extensions'->'com.opensteer'->'device'->>'name'`, 80)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const deviceNames: string[] = [];
+      for (const row of rows) {
+        const deviceName = outsideName(row.deviceName, 80) || "Device";
+        if (deviceName === row.deviceName) continue;
+        ids.push(row.id);
+        deviceNames.push(deviceName);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update plugin_versions as t set
+          manifest = jsonb_set(
+            t.manifest,
+            array['extensions', 'com.opensteer', 'device', 'name'],
+            to_jsonb(u.device_name)
+          )
+        from unnest(${ids}::text[], ${deviceNames}::text[]) as u(id, device_name)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 29. computer_app_setup_requests (server->>'installationTitle')
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{ readonly id: string; readonly title: string }>`
+          select id, server->>'installationTitle' as title
+          from computer_app_setup_requests
+          where jsonb_typeof(server->'installationTitle') = 'string'
+            and ${after(afterId)}
+            and ${needsClean(sql`server->>'installationTitle'`, 160)}
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const titles: string[] = [];
+      for (const row of rows) {
+        const title = outsideName(row.title, 160) || "Plugin";
+        if (title === row.title) continue;
+        ids.push(row.id);
+        titles.push(title);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update computer_app_setup_requests as t set
+          server = jsonb_set(t.server, '{installationTitle}', to_jsonb(u.title))
+        from unnest(${ids}::text[], ${titles}::text[]) as u(id, title)
+        where t.id = u.id
+      `.execute(database);
+    },
+  );
+
+  // 30. integration_tools (title and annotations->>'title'; never machine name)
+  await paginateById(
+    async (afterId) =>
+      (
+        await sql<{
+          readonly id: string;
+          readonly name: string;
+          readonly title: string;
+          readonly annotationTitle: string | null;
+        }>`
+          select id, name, title,
+            case when jsonb_typeof(annotations->'title') = 'string'
+              then annotations->>'title' else null end as "annotationTitle"
+          from integration_tools
+          where ${after(afterId)}
+            and (
+              ${needsClean(sql`title`, 160)}
+              or (jsonb_typeof(annotations->'title') = 'string'
+                and ${needsClean(sql`annotations->>'title'`, 160)})
+            )
+          order by id
+          limit ${cleanBatchSize}
+        `.execute(database)
+      ).rows,
+    async (rows) => {
+      const ids: string[] = [];
+      const titles: string[] = [];
+      const annotationTitles: (string | null)[] = [];
+      const annotationChanged: boolean[] = [];
+      for (const row of rows) {
+        const title = outsideName(row.title, 160) || outsideName(row.name, 160) || "Tool";
+        const nextAnnotation =
+          row.annotationTitle === null ? null : outsideName(row.annotationTitle, 160) || title;
+        const aChanged = nextAnnotation !== row.annotationTitle;
+        if (title === row.title && !aChanged) continue;
+        ids.push(row.id);
+        titles.push(title);
+        annotationTitles.push(nextAnnotation);
+        annotationChanged.push(aChanged);
+      }
+      if (ids.length === 0) return;
+      await sql`
+        update integration_tools as t set
+          title = u.title,
+          annotations = case
+            when u.ann_changed then jsonb_set(t.annotations, '{title}', to_jsonb(u.ann_title))
+            else t.annotations
+          end
+        from unnest(
+          ${ids}::text[],
+          ${titles}::text[],
+          ${annotationTitles}::text[],
+          ${annotationChanged}::boolean[]
+        ) as u(id, title, ann_title, ann_changed)
         where t.id = u.id
       `.execute(database);
     },
