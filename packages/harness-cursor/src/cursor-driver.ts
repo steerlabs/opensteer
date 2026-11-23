@@ -77,7 +77,6 @@ import {
   cursorAccessModeHooks,
   cursorAgentToolsServerName,
   cursorMcpServerIdentifier,
-  cursorOpensteerMcpServerIdentifiers,
   cursorHookShellEnvironment,
   cursorPreToolUseDecision,
   materializeCursorPlugin,
@@ -1102,25 +1101,6 @@ class CursorHarnessSession implements HarnessSession {
           title: "Run this command?",
         },
         subject: "command",
-      };
-    }
-    if (event === "beforeMCPExecution") {
-      const server = typeof payload.mcp_server_name === "string" ? payload.mcp_server_name : "";
-      // Opensteer's own tools are approved by the Host's Run plan, as
-      // they are for Codex; asking again would turn a durable decision into
-      // provider-specific approval noise.
-      if (cursorOpensteerMcpServerIdentifiers.includes(server)) return undefined;
-      const toolName = typeof payload.tool_name === "string" ? payload.tool_name : "a tool";
-      return {
-        callId: hookCallId(payload),
-        presentation: {
-          detail: `${server || "An MCP server"} · ${toolName}`.slice(0, 20_000),
-          kind: "choice",
-          options: [...options],
-          risk: "medium",
-          title: "Use this tool?",
-        },
-        subject: "MCP tool call",
       };
     }
     // `preToolUse` is the catch-all, so what it does with one tool depends on

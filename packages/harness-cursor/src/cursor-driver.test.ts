@@ -130,8 +130,8 @@ describe("Cursor access-mode hooks", () => {
 
 describe("Cursor plugin materialisation", () => {
   it.each([
-    ["approval-required", ["beforeShellExecution", "beforeMCPExecution", "preToolUse"]],
-    ["auto-accept-edits", ["beforeShellExecution", "beforeMCPExecution", "preToolUse"]],
+    ["approval-required", ["beforeShellExecution", "preToolUse"]],
+    ["auto-accept-edits", ["beforeShellExecution", "preToolUse"]],
     ["full-access", []],
   ] as const)("writes the %s hook table and the MCP servers", async (accessMode, events) => {
     const fixture = await setup({ accessMode });
@@ -934,20 +934,13 @@ describe("Cursor approvals", () => {
     await open.adapter.close();
   });
 
-  it("always allows Opensteer's own MCP servers and asks about everybody else's", async () => {
+  it("adds no prompt of Opensteer's to any MCP server, the person's own included", async () => {
     const fixture = await setup({ accessMode: "approval-required", scenario: "hook-mcp" });
     const session = await fixture.adapter.startSession(fixture.context);
     const observer = observe(session.events);
-    const turn = session.execute(fixture.turn("Call both servers"));
-    const request = await observer.waitFor("request.opened");
-    expect(request.data.request.presentation).toMatchObject({
-      detail: "plugin-probe-other · probe",
-      title: "Use this tool?",
-    });
-    await session.resolveRequest(request.data.request.id, { kind: "choice", optionId: "reject" });
-    await turn;
+    await session.execute(fixture.turn("Call both servers"));
     await session.stop();
-    expect(observer.events.filter((event) => event.type === "request.opened")).toHaveLength(1);
+    expect(observer.events.filter((event) => event.type === "request.opened")).toHaveLength(0);
     const started = observer.events.filter((event) => event.type === "tool.started");
     // An MCP call reports the tool's own arguments, not Cursor's wrapper
     // naming the server and tool.
