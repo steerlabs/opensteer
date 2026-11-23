@@ -366,7 +366,7 @@
     "apps/host/src/mcp/connections/connection-authenticator.ts",
     "apps/host/src/mcp/connections/connection-oauth.ts",
     "apps/host/src/mcp/connections/connection-routes.ts",
-    "apps/host/src/mcp/connections/embedder-assertion.ts",
+    "apps/host/src/mcp/connections/consent-identity.ts",
     "apps/host/src/mcp/connections/index.ts",
     "apps/host/src/mcp/handlers/administration.ts",
     "apps/host/src/mcp/handlers/apps.ts",

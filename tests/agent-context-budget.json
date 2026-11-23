@@ -40,7 +40,7 @@
   "runPlan.limited-codex.injectedTextBytes": 10047,
   "runPlan.limited-codex.advertisedSchemaBytes": 59827,
   "runPlan.no-personal-context.injectedTextBytes": 7106,
-  "runPlan.no-personal-context.advertisedSchemaBytes": 58472,
+  "runPlan.no-personal-context.advertisedSchemaBytes": 53427,
   "bundledSkills.catalogBytes": 2426,
   "bundledSkills.bodyBytes": 30030,
   "bundledSkills.referenceBytes": 114877,
