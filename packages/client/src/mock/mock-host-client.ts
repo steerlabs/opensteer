@@ -1,6 +1,7 @@
 import { outsideName } from "@opensteer/shared/outsideName";
 import { chatParityProvider } from "./chat-parity.js";
 import { ItemTextStore } from "../host/item-text-store.js";
+import { taskOriginEndedMessage } from "../host/connected-agents-copy.js";
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import {
   mockMessageContent,
@@ -3144,6 +3145,7 @@ async function executeMockCommand(
       });
     }
     case "thread.sendMessage": {
+      client.assertThreadOriginLive(command.threadId);
       if (command.freshContext && command.delivery !== "queue")
         throw mockConflict("freshContext requires queue delivery.");
       const body = command.content
@@ -3245,6 +3247,7 @@ async function executeMockCommand(
         type: command.type,
       });
     case "thread.input.steer":
+      client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({
         input: client.steerThreadInput(command.threadId, command.messageId, command.expectedRunId),
         type: command.type,
@@ -3258,13 +3261,16 @@ async function executeMockCommand(
       client.moveThreadInput(command.threadId, command.messageId, command.beforeMessageId);
       return rpcSuccess({ type: command.type });
     case "thread.input.lease.take":
+      client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({ ...client.takeEditLease(command), type: command.type });
     case "thread.input.lease.renew":
+      client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({ lease: client.renewEditLease(command), type: command.type });
     case "thread.input.lease.release":
       client.releaseEditLease(command);
       return rpcSuccess({ type: command.type });
     case "thread.input.edit":
+      client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({ ...client.editWaitingInput(command), type: command.type });
     case "execution.preferences.remember":
       return rpcSuccess(
@@ -6137,14 +6143,26 @@ class MockHostState {
     tasks.sort((left, right) => (left.at < right.at ? 1 : left.at > right.at ? -1 : 0));
     return { ...bridge, tasks: tasks.map(({ task }) => task) };
   }
+  readonly #threadOriginConnection = new Map<string, string>();
+  assertThreadOriginLive(threadId: string) {
+    const thread = this.snapshot.threads.find(({ id }) => id === threadId);
+    if (!thread?.endedOrigin) return;
+    throw new HostClientRequestError({
+      code: "forbidden",
+      message: taskOriginEndedMessage(thread.endedOrigin),
+      status: 403,
+    });
+  }
   /**
    * As on the Home: what it may do moves on (its revision), and a chat remembers that you ended
    * it; it is no longer paused, so nothing says why it was.
    */
   revokeConnection(id: string, endedBy: "you" | "account" = "you") {
     const revokedAt = this.now().toISOString();
+    let endedOrigin: "chat" | "agent" | null = null;
     this.connections = this.connections.map((row) => {
       if (row.id !== id || row.userId !== this.snapshot.user?.id || row.revokedAt) return row;
+      endedOrigin = row.bridge ? "chat" : "agent";
       const ended = {
         ...row,
         state: "stopped" as const,
@@ -6159,6 +6177,26 @@ class MockHostState {
         ...bridge
       } = row.bridge;
       return { ...ended, bridge: { ...bridge, endedBy } };
+    });
+    if (endedOrigin === null) return;
+    const affected = new Set(
+      [...this.#threadOriginConnection.entries()]
+        .filter(([, connId]) => connId === id)
+        .map(([threadId]) => threadId),
+    );
+    if (affected.size === 0) return;
+    this.update({
+      ...this.snapshot,
+      threads: this.snapshot.threads.map((thread) =>
+        affected.has(thread.id)
+          ? {
+              ...thread,
+              endedOrigin,
+              status: thread.status === "running" ? "idle" : thread.status,
+            }
+          : thread,
+      ),
+      runQueue: this.snapshot.runQueue.filter((run) => !affected.has(run.threadId)),
     });
   }
   updateConnection(command: Extract<HostApiCommand, { type: "connection.update" }>) {
@@ -7348,8 +7386,16 @@ class MockHostState {
     );
     if (!template) return;
     const at = new Date(this.now().getTime() - 60_000).toISOString();
-    for (const connection of this.connections)
+    for (const connection of this.connections) {
+      const originEnded =
+        connection.revokedAt !== null ||
+        connection.state === "stopped" ||
+        connection.state === "stopping" ||
+        connection.state === "revoked" ||
+        connection.state === "expired";
+      const endedOrigin = originEnded ? (connection.bridge ? "chat" : "agent") : null;
       for (const [index, task] of (connection.bridge?.tasks ?? []).entries()) {
+        this.#threadOriginConnection.set(task.id, connection.id);
         if (this.snapshot.threads.some(({ id }) => id === task.id)) continue;
         const updatedAt = new Date(Date.parse(at) - index * 60_000).toISOString();
         this.#provisionalIcons.add(task.id);
@@ -7360,6 +7406,7 @@ class MockHostState {
             {
               ...template,
               agentSessionId: null,
+              endedOrigin,
               externalWork: null,
               createdAt: updatedAt,
               icon: null,
@@ -7386,6 +7433,7 @@ class MockHostState {
             : this.snapshot.runQueue,
         };
       }
+    }
   }
   private readonly acceptedCommands = new Map<
     string,

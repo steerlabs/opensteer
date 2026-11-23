@@ -1,6 +1,7 @@
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { publishThreadSummary } from "./thread-status.js";
 import {
   AgentGrantSchema,
   agentGrantAllowsTasks,
@@ -626,6 +627,14 @@ export class AgentConnectionStore {
         })
         .where("id", "=", row.id)
         .execute();
+      const originated = await tx
+        .selectFrom("threads")
+        .select("id")
+        .where("originConnectionId", "=", row.id)
+        .where("removedAt", "is", null)
+        .orderBy("id")
+        .execute();
+      for (const { id: threadId } of originated) await publishThreadSummary(tx, threadId);
       return true;
     });
   }

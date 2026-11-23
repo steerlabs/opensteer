@@ -460,5 +460,22 @@ describeStore("locks are taken in their stable order when many rows move at once
         response: { kind: "form", answers: { q1: ["Yes"] } },
       }),
     ).rejects.toMatchObject({ code: "forbidden", message: chatEndedMessage });
+
+    // Task detail reports endedOrigin for ended chat & connected-agent tasks, and null for own tasks.
+    const { detailThreadValue } = await import("./personal-snapshot-store.js");
+    const { withPersonalReadTransaction } = await import("./personal-transaction.js");
+    const detailOf = (userId: typeof running.userId, threadId: typeof running.thread.id) =>
+      withPersonalReadTransaction(database, (tx) => detailThreadValue(tx, userId, threadId));
+    expect((await detailOf(running.userId, running.thread.id))?.endedOrigin).toBe("agent");
+    expect((await detailOf(chatRun.userId, chatRun.thread.id))?.endedOrigin).toBe("chat");
+    const { thread: ownTask } = await store.createThread({
+      createdBy: running.userId,
+      environmentId: running.environmentId,
+      harnessInstanceId: running.harnessInstance.id,
+      idempotencyKey: "ended-origin-own-task",
+      modelSelection: running.thread.modelSelection,
+      title: "Own task",
+    });
+    expect((await detailOf(running.userId, ownTask.id))?.endedOrigin).toBeNull();
   });
 });

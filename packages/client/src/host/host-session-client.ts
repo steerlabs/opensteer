@@ -1510,7 +1510,14 @@ export class HttpHostClient {
         previousThread = row;
         const thread = this.#threadState.reconcile(
           row.thread
-            ? toThreadSummary(row.thread, this.#snapshot.environments, this.#snapshot.harnesses)
+            ? {
+                ...toThreadSummary(
+                  row.thread,
+                  this.#snapshot.environments,
+                  this.#snapshot.harnesses,
+                ),
+                endedOrigin: row.endedOrigin ?? null,
+              }
             : compactThread(row),
           SequenceSchema.parse(row.revision),
           undefined,

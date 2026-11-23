@@ -197,4 +197,36 @@ describe("the chats preview", () => {
       client.dispose();
     }
   });
+
+  it("marks a disconnected chat's tasks as endedOrigin: 'chat' and refuses new messages with the Home's exact sentence", async () => {
+    const client = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
+    try {
+      const chatId = "mcn_00000000-0000-4000-8000-0000000000c1";
+      const taskId = "thr_00000000-0000-4000-8000-0000000000c1";
+      expect(client.getSnapshot().threads.find(({ id }) => id === taskId)?.endedOrigin).toBeNull();
+      await client.dispatch({
+        type: "connection.revoke",
+        connectionId: chatId,
+        idempotencyKey: mutationIdempotencyKey("revoke-chat"),
+      });
+      expect(client.getSnapshot().threads.find(({ id }) => id === taskId)?.endedOrigin).toBe(
+        "chat",
+      );
+      await expect(
+        client.dispatch({
+          type: "thread.sendMessage",
+          threadId: taskId as never,
+          content: [{ type: "text", text: "Should be refused" }],
+          delivery: "queue",
+          idempotencyKey: mutationIdempotencyKey("send-ended-chat"),
+        }),
+      ).rejects.toMatchObject({
+        code: "forbidden",
+        message:
+          "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging.",
+      });
+    } finally {
+      client.dispose();
+    }
+  });
 });

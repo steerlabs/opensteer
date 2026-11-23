@@ -27,6 +27,7 @@ import { sql, type Kysely } from "kysely";
 import { cancelPending } from "./request-cancellation.js";
 import { senderUnlinkedFailure } from "./bridge-admission.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { publishThreadSummary } from "./thread-status.js";
 import type { DatabaseSchema } from "./schema.js";
 import {
   chatEndReason,
@@ -374,6 +375,14 @@ export async function requestExpiredCleanups(
           })
           .where("id", "=", row.id)
           .execute();
+        const originated = await tx
+          .selectFrom("threads")
+          .select("id")
+          .where("originConnectionId", "=", row.id)
+          .where("removedAt", "is", null)
+          .orderBy("id")
+          .execute();
+        for (const { id: threadId } of originated) await publishThreadSummary(tx, threadId);
         return;
       }
       if (connectionActive(row, now)) return;
@@ -386,6 +395,14 @@ export async function requestExpiredCleanups(
         })
         .where("id", "=", row.id)
         .execute();
+      const originated = await tx
+        .selectFrom("threads")
+        .select("id")
+        .where("originConnectionId", "=", row.id)
+        .where("removedAt", "is", null)
+        .orderBy("id")
+        .execute();
+      for (const { id: threadId } of originated) await publishThreadSummary(tx, threadId);
     });
 }
 
