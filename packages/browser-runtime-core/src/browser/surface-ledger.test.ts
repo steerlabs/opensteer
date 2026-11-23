@@ -260,7 +260,9 @@ describe("SurfaceLedger", () => {
       expect(ledger.inventoryRevision).toBe(revision);
       expect(events.filter((e) => e.type === "changed" && e.change === "closed")).toEqual([]);
       const create = vi.spyOn(context, "createPage");
-      // Each caller returns only after the tab is announced live (finding 10).
+      // Each caller returns only after the tab is announced live (finding 10); only what the wake
+      // itself announces counts (V2).
+      events.length = 0;
       const announced = () =>
         events.some(
           (event) =>
@@ -279,6 +281,15 @@ describe("SurfaceLedger", () => {
         seen(ledger.wake(before.id)),
       ]);
       expect(first).toEqual(second);
+      // A wake never says the tab is suspended: the controller would tear the tab's input down.
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "changed" &&
+            event.surface.id === before.id &&
+            event.surface.state === "suspended",
+        ),
+      ).toEqual([]);
       expect(ledger.surfaceIdForTarget(oldTargetId)).toBeUndefined();
       expect(ledger.surfaceIdForTarget(first.targetId)).toBe(before.id);
       expect(await ledger.resolveTarget(first.targetId)).toBe(true);

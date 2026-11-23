@@ -621,84 +621,88 @@ export class SurfaceLedger {
   async wake(id: BrowserSurfaceId): Promise<SurfaceBinding> {
     const record = this.records.get(id);
     if (!record) throw new BrowserRuntimeError("not_found", "The browser tab closed.");
-    await record.lease.resume(async () => {
-      // No new page while an earlier one may live; asking again drives its cleanup.
-      if (!(await this.pages.tabSettled(this.session, id, "wake-failed", pageCloseWaitMs)))
-        throw stillClosing();
-      return this.creationLock.run(async () => {
-        if (this.records.get(id) !== record || record.lease.state === "closing")
-          throw new BrowserRuntimeError("not_found", "The browser tab closed.");
-        const restore = record.restore;
-        if (!restore || this.closing)
-          throw new BrowserRuntimeError("not_found", "The browser session closed.");
-        await withTimeout(Promise.resolve(this.creatingPage), 18_000, {
-          timeoutError: () =>
-            new BrowserRuntimeError("conflict", "Resuming this tab timed out.", {
-              retryable: true,
+    await record.lease.resume(
+      async () => {
+        // No new page while an earlier one may live; asking again drives its cleanup.
+        if (!(await this.pages.tabSettled(this.session, id, "wake-failed", pageCloseWaitMs)))
+          throw stillClosing();
+        return this.creationLock.run(async () => {
+          if (this.records.get(id) !== record || record.lease.state === "closing")
+            throw new BrowserRuntimeError("not_found", "The browser tab closed.");
+          const restore = record.restore;
+          if (!restore || this.closing)
+            throw new BrowserRuntimeError("not_found", "The browser session closed.");
+          await withTimeout(Promise.resolve(this.creatingPage), 18_000, {
+            timeoutError: () =>
+              new BrowserRuntimeError("conflict", "Resuming this tab timed out.", {
+                retryable: true,
+              }),
+          });
+          const created = Promise.withResolvers<void>();
+          this.creatingPage = created.promise;
+          let page: BrowserPage | undefined;
+          const creation = this.pages.create(this.session, id, "wake-failed", (own, signal) =>
+            this.context.createPage({
+              ...(restore.engine === null ? {} : { restore: restore.engine }),
+              own,
+              signal,
             }),
-        });
-        const created = Promise.withResolvers<void>();
-        this.creatingPage = created.promise;
-        let page: BrowserPage | undefined;
-        const creation = this.pages.create(this.session, id, "wake-failed", (own, signal) =>
-          this.context.createPage({
-            ...(restore.engine === null ? {} : { restore: restore.engine }),
-            own,
-            signal,
-          }),
-        );
-        try {
-          page = await withTimeout(creation.page, 18_000, {
-            timeoutError: () =>
-              new BrowserRuntimeError("conflict", "Resuming this tab timed out.", {
-                retryable: true,
-              }),
-          });
-          await withTimeout(this.registerOnce(page, false, undefined, id, record), 18_000, {
-            timeoutError: () =>
-              new BrowserRuntimeError("conflict", "Resuming this tab timed out.", {
-                retryable: true,
-              }),
-          });
-          if (this.records.get(id) !== record || this.closing)
-            throw new BrowserRuntimeError("not_found", "The browser tab closed.");
-          if ((restore.engine === null || page.openedFresh) && isLive(record)) {
-            await this.navigateLive(record, restore.url);
-            record.reopenedAt = Date.now();
-          }
-          if (this.records.get(id) !== record || !record.live)
-            throw new BrowserRuntimeError("not_found", "The browser tab closed.");
-          record.restore = null;
-          record.usedAt = Date.now();
-          // Announced inside the one resume every caller waits on, so each caller returns after
-          // the tab is announced live, however their continuations interleave (finding 10).
-          const woke = this.binding(id);
-          if (woke) this.emit({ type: "changed", change: "updated", surface: woke.surface });
-        } catch (error) {
-          // The tab lets go first, so the failed page's confirmation finds no binding.
-          if (isLive(record)) this.detachLive(record);
-          else this.releaseTarget?.(record.lastTargetId);
-          creation.abandon();
-          if (record.restore) {
-            const stale = record.restore.engine;
-            record.restore.engine = null;
-            record.restore.bytes = 0;
-            if (stale != null) {
-              void Promise.resolve(this.context.releaseRestore?.(stale)).catch(() => undefined);
-            }
-          }
-          if (error instanceof BrowserRuntimeError) throw error;
-          throw new BrowserRuntimeError(
-            "conflict",
-            "Resuming this tab failed. Retry to reopen its address.",
-            { cause: error, retryable: true },
           );
-        } finally {
-          this.creatingPage = null;
-          created.resolve();
-        }
-      });
-    });
+          try {
+            page = await withTimeout(creation.page, 18_000, {
+              timeoutError: () =>
+                new BrowserRuntimeError("conflict", "Resuming this tab timed out.", {
+                  retryable: true,
+                }),
+            });
+            await withTimeout(this.registerOnce(page, false, undefined, id, record), 18_000, {
+              timeoutError: () =>
+                new BrowserRuntimeError("conflict", "Resuming this tab timed out.", {
+                  retryable: true,
+                }),
+            });
+            if (this.records.get(id) !== record || this.closing)
+              throw new BrowserRuntimeError("not_found", "The browser tab closed.");
+            if ((restore.engine === null || page.openedFresh) && isLive(record)) {
+              await this.navigateLive(record, restore.url);
+              record.reopenedAt = Date.now();
+            }
+            if (this.records.get(id) !== record || !record.live)
+              throw new BrowserRuntimeError("not_found", "The browser tab closed.");
+            record.restore = null;
+            record.usedAt = Date.now();
+          } catch (error) {
+            // The tab lets go first, so the failed page's confirmation finds no binding.
+            if (isLive(record)) this.detachLive(record);
+            else this.releaseTarget?.(record.lastTargetId);
+            creation.abandon();
+            if (record.restore) {
+              const stale = record.restore.engine;
+              record.restore.engine = null;
+              record.restore.bytes = 0;
+              if (stale != null) {
+                void Promise.resolve(this.context.releaseRestore?.(stale)).catch(() => undefined);
+              }
+            }
+            if (error instanceof BrowserRuntimeError) throw error;
+            throw new BrowserRuntimeError(
+              "conflict",
+              "Resuming this tab failed. Retry to reopen its address.",
+              { cause: error, retryable: true },
+            );
+          } finally {
+            this.creatingPage = null;
+            created.resolve();
+          }
+        });
+      },
+      () => {
+        // V2: announced once the lease is live, inside the one resume every caller waits on: the
+        // announcement says live, and each caller returns after it.
+        const woke = this.binding(id);
+        if (woke) this.emit({ type: "changed", change: "updated", surface: woke.surface });
+      },
+    );
     const binding = this.binding(id);
     if (!binding || record.lease.state === "closing")
       throw new BrowserRuntimeError("not_found", "The browser tab closed.");
