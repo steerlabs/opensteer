@@ -1,12 +1,7 @@
+import { OpensteerError, type RequestId, type ThreadId } from "@opensteer/core";
 import {
-  AgentGrantTargetSchema,
-  OpensteerError,
-  type RequestId,
-  type ThreadId,
-} from "@opensteer/core";
-import {
+  beginAgentSession,
   commandGrantScope,
-  commandGrantTarget,
   commandHeld,
   commandNotFoundMessage,
   commandRule,
@@ -19,15 +14,12 @@ import {
   commandFamilies,
   commandRow,
   commandTable,
-  type CommandResource,
   type CommandRow,
   type CommandType,
 } from "@opensteer/protocol/command-table";
 import { commandTitles } from "@opensteer/protocol/command-words";
-import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import type { Kysely } from "kysely";
 import { z } from "zod";
-import type { AgentSessionService } from "../../agent-sessions/agent-session-service.js";
 import { agentCommandDoor } from "../../commands/agent-door.js";
 import {
   agentCommandScope,
@@ -43,7 +35,6 @@ import {
 import type { AgentCaller } from "../agent-caller.js";
 import { operationId } from "../operations.js";
 import type { AdministrationToolHandlers } from "./administration.js";
-import { requireDirectWork } from "./direct.js";
 import type { ToolCall } from "./types.js";
 
 type Answer = "now" | "ask" | "now or ask";
@@ -70,19 +61,17 @@ export class CommandTools {
   readonly #database: Kysely<DatabaseSchema>;
   readonly #registry: CommandRegistry;
   readonly #requests: () => CommandRequestService | undefined;
-  readonly #sessions: AgentSessionService | undefined;
   readonly #administration: AdministrationToolHandlers;
   constructor(options: {
     readonly database: Kysely<DatabaseSchema>;
     readonly registry: CommandRegistry;
     readonly requests: () => CommandRequestService | undefined;
-    readonly sessions?: AgentSessionService | undefined;
+    readonly sessions?: unknown;
     readonly administration: AdministrationToolHandlers;
   }) {
     this.#database = options.database;
     this.#registry = options.registry;
     this.#requests = options.requests;
-    this.#sessions = options.sessions;
     this.#administration = options.administration;
   }
 
@@ -213,49 +202,46 @@ export class CommandTools {
         await dispatchCommand(caller, command, this.#door(caller, origin, task.id, reason)),
       );
     }
-    // A connected agent's command is one recorded operation of its session, about the thing it
-    // governs: a grant admits the operation because it holds that thing. What governs the Home
-    // itself is a Home-scoped target, which only `everything` holds. An unknown type is nothing.
-    if (!Object.hasOwn(commandTable, command.type)) throw notFound();
-    const row = commandRow(command.type as CommandType) as CommandRow;
-    let governed: CommandResource | undefined;
-    try {
-      governed = (row.governs as (c: HostApiCommand) => CommandResource)(command);
-    } catch {
-      governed = undefined;
-    }
-    const named = governed ? commandGrantTarget(governed) : null;
-    const grantTarget = named ? AgentGrantTargetSchema.safeParse(named).data : undefined;
-    const result = await requireDirectWork(this.#sessions).run({
-      ownerUserId: caller.userId,
-      agentConnectionId: caller.connectionId,
-      taskId: input.taskId as ThreadId | undefined,
-      operationKey,
-      tool: "opensteer_command",
-      input,
-      target: {
-        grant: grantTarget ?? { kind: "device" },
-        name: commandTitles[command.type as CommandType] ?? "A Home command",
-        device: null,
-      },
-      effect: "write",
-      calls: `opensteer_command ${canonicalJson(input.command)}`,
-      ...(reason ? { reason } : {}),
-      execute: async (context) =>
-        tooled(
-          await dispatchCommand(
-            { ...caller, key: context.bindingId },
-            command,
-            this.#door(caller, { agentSessionId: context.sessionId }, context.taskId, reason),
-          ),
-        ),
-    });
-    if (result.status === "completed" && result.result) return result.result;
-    if (result.status === "pending" && result.requestId)
-      return { status: "pending" as const, requestId: result.requestId, next: result.next };
-    throw new OpensteerError({
-      code: "conflict",
-      message: "next" in result ? result.next : "The command did not run.",
+    // A connected agent's command goes through the door as the connection, like any agent's:
+    // admitted by the one rule in the statement that admits it and again at commit, asked by
+    // the door's own Request, recorded by the store as the connection's.
+    return tooled(
+      await dispatchCommand(caller, command, this.#connectionDoor(caller, input.taskId, reason)),
+    );
+  }
+
+  /** A connection's door: what asks opens in its direct-work session's task, begun if needed. */
+  #connectionDoor(
+    caller: Extract<AgentCaller, { readonly kind: "connection" }>,
+    taskId: string | undefined,
+    reason: string | undefined,
+  ) {
+    const requests = this.#requests();
+    return agentCommandDoor({
+      database: this.#database,
+      registry: this.#registry,
+      ...(requests
+        ? {
+            propose: async (agent, command, ask, face) => {
+              const { session } = await beginAgentSession(this.#database, {
+                userId: caller.userId,
+                agentConnectionId: caller.connectionId,
+                ...(taskId ? { taskId: taskId as ThreadId } : {}),
+              });
+              return requests.propose({
+                ownerUserId: agent.userId,
+                command,
+                ask,
+                face,
+                proposer: await this.#proposer(caller, session.threadId),
+                origin: { agentSessionId: session.id },
+                originatingThreadId: session.threadId,
+                callKey: (command as { idempotencyKey: string }).idempotencyKey,
+                ...(reason ? { reason } : {}),
+              });
+            },
+          }
+        : {}),
     });
   }
 

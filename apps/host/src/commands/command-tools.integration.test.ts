@@ -163,16 +163,64 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
       name: "Work",
     });
 
-    // A connected agent with everything: one recorded operation of its session, made now.
+    // A connected agent with everything: through the door as the connection, recorded by the
+    // store as the connection's, and no direct-work operation.
     const everything = await connect({ scope: "everything" });
     const done = await call(everything.client, "opensteer_command", rename("From a connection"));
     expect(done.structuredContent).toMatchObject({ status: "done" });
-    const recorded = await host.store.database
-      .selectFrom("agentOperations")
-      .select(["tool", "state"])
-      .where("connectionId", "=", everything.id)
+    const ledger = await host.store.database
+      .selectFrom("commands")
+      .select(["type", "authoritySource"])
+      .where("type", "=", "harness.rename")
       .execute();
-    expect(recorded).toEqual([{ tool: "opensteer_command", state: "completed" }]);
+    expect(ledger).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          authoritySource: expect.objectContaining({ callerKey: `connection:${everything.id}` }),
+        }),
+      ]),
+    );
+    expect(
+      await host.store.database
+        .selectFrom("agentOperations")
+        .select("id")
+        .where("connectionId", "=", everything.id)
+        .execute(),
+    ).toEqual([]);
+
+    // A Supervised connection: exactly one Request, the door's; Disconnect closes it, and
+    // nothing runs (X9).
+    const asking = await connect({ scope: "everything" });
+    await host.store.database
+      .updateTable("agentConnections")
+      .set({ accessMode: "approval-required" })
+      .where("id", "=", asking.id)
+      .execute();
+    const pending = await call(asking.client, "opensteer_command", rename("Asked by a connection"));
+    expect(pending.structuredContent).toMatchObject({ status: "pending" });
+    const askedBy = await host.store.database
+      .selectFrom("requests")
+      .innerJoin("agentSessions", "agentSessions.id", "requests.originatingAgentSessionId")
+      .select(["requests.id", "requests.command", "requests.status"])
+      .where("agentSessions.connectionId", "=", asking.id)
+      .execute();
+    expect(askedBy).toHaveLength(1);
+    expect(askedBy[0]!.command).toMatchObject({ type: "harness.rename" });
+    // The person's Disconnect, as the app sends it: it stops the lineage.
+    await testRpcData(
+      host.origin,
+      "commands.dispatch",
+      { type: "connection.revoke", idempotencyKey: randomUUID(), connectionId: asking.id } as never,
+      { headers: host.ownerHeaders },
+    );
+    await waitForValue(async () =>
+      (await host.store.requests.get(askedBy[0]!.id as never))?.status === "cancelled"
+        ? true
+        : undefined,
+    );
+    expect(await host.store.getHarnessInstance(machine.harnessInstanceId as never)).toMatchObject({
+      name: "From a connection",
+    });
 
     // A selected grant holds no engine: not listed, and not there, in the same bytes as nothing.
     const selected = await connect({ scope: "selected", tasks: true, resources: [] });
@@ -209,22 +257,12 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
     });
     const onA = await call(holdsA.client, "opensteer_command", renameProfile(a.id));
     expect(onA.isError, JSON.stringify(onA.content)).not.toBe(true);
-    const operations = () =>
-      host.store.database
-        .selectFrom("agentOperations")
-        .select(["target"])
-        .where("connectionId", "=", holdsA.id)
-        .execute();
-    expect((await operations()).map(({ target }) => (target as { grant: unknown }).grant)).toEqual([
-      { kind: "browser-profile", profileId: a.id },
-    ]);
     const onB = await call(holdsA.client, "opensteer_command", renameProfile(b.id));
     const nothing = await call(holdsA.client, "opensteer_command", {
       command: { type: "no.such.command" },
     });
     expect(onB.isError).toBe(true);
     expect(JSON.stringify(onB.content)).toBe(JSON.stringify(nothing.content));
-    expect(await operations()).toHaveLength(1);
   } finally {
     for (const step of close) await step().catch(() => undefined);
     await database.drop?.();

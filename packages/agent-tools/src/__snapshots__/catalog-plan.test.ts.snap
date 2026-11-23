@@ -135,11 +135,6 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
           ],
           "type": "object",
         },
-        "operationId": {
-          "maxLength": 255,
-          "minLength": 1,
-          "type": "string",
-        },
         "reason": {
           "maxLength": 500,
           "minLength": 1,

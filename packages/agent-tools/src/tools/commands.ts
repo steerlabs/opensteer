@@ -56,7 +56,6 @@ export const opensteer_command = defineAgentTool({
     withdraw: RequestIdSchema.optional(),
     /** A connected agent: its direct-work task, and the operation a pending call returned. */
     taskId: ThreadIdSchema.optional(),
-    operationId: z.string().min(1).max(255).optional(),
   }),
   output: z.union([
     z.object({ status: z.literal("done"), result: z.unknown().optional() }),
