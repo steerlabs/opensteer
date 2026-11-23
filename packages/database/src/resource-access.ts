@@ -1,3 +1,4 @@
+import { workPolicyAllowsGrant } from "@opensteer/control-plane-protocol";
 import { applyConnectionPolicy } from "./work-policy.js";
 import { isWorkHomeDatabase } from "./work-home-context.js";
 import { integrationAccessCeilingForRun } from "@opensteer/integration-core/effective-grants";
@@ -23,8 +24,9 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { sql, type Kysely } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import { sql, type Kysely, type RawBuilder } from "kysely";
+import type { BridgeSenders, DatabaseSchema } from "./schema.js";
+import { connectionState } from "./connection-liveness.js";
 
 /**
  * Who an effect is for. A binding names an execution the Home issued (`run:`, `trigger:`,
@@ -43,6 +45,45 @@ export interface AgentConnectionAuthority {
   readonly grantRevision: number;
   readonly consentVersion: number;
   readonly accessMode: ThreadAccessMode;
+  /**
+   * Who may speak to a messaging bridge; null for an MCP connection. Work descending from a
+   * bridge anyone in its conversation may speak to runs without the person's personal context.
+   */
+  readonly bridgeSenders?: BridgeSenders | null;
+}
+
+/** Whether work in this lineage may use the person's personal context (memory, tabs, apps). */
+export function lineageAllowsPersonalContext(
+  connection: Pick<AgentConnectionAuthority, "bridgeSenders"> | null,
+): boolean {
+  return connection?.bridgeSenders !== "anyone";
+}
+
+/**
+ * Whether work in this lineage may use the person's personal context, from its connection's own
+ * row. The person's own work reads nothing: it has no connection, and always has it.
+ */
+export async function lineagePersonalContext(
+  database: Kysely<DatabaseSchema>,
+  connectionId: string | null,
+): Promise<boolean> {
+  if (connectionId === null) return true;
+  const { rows } = await sql<{ personal: boolean }>`
+    select ${lineageHasPersonalContext(sql`${connectionId}::text`)} as personal
+  `.execute(database);
+  return rows[0]?.personal === true;
+}
+
+/**
+ * The one rule, as SQL over a lineage's connection id (null: the person's own work): personal
+ * context only where no bridge anyone may speak to is the lineage. Every reader of the rule (a
+ * Run, a session, the memory passes' sources) asks it here.
+ */
+export function lineageHasPersonalContext(connectionId: RawBuilder<unknown>): RawBuilder<boolean> {
+  return sql<boolean>`(${connectionId} is null or exists (
+    select 1 from agent_connections personal_lineage
+    where personal_lineage.id = ${connectionId}
+      and personal_lineage.bridge_senders is distinct from 'anyone'))`;
 }
 
 /** One execution as the Home resolved it: whom it works for and every mode in its lineage. */
@@ -72,19 +113,34 @@ function forbidden(message: string): OpensteerError {
 }
 export const lineageEndedMessage =
   "This connected agent's access ended. The person can reconnect it from Connected agents.";
-export const tasksWithdrawnMessage = "This connected agent may no longer ask your agents to work.";
+/** What a person reads in a connected agent's task once its access has ended. */
+export const agentEndedForPersonMessage =
+  "This connected agent's access ended, so this task takes no new messages. Start a new task, or reconnect it from Connected agents.";
+/** What a chat's task says once its chat has ended: it takes no new work, and why. */
+export const chatEndedMessage =
+  "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging.";
+export const tasksWithdrawnMessage =
+  "This connected agent may no longer ask your own agents to work.";
+/** The same refusal for a chat; it is recorded with the message the chat sent. */
+export const chatTasksWithdrawnMessage = "This chat may no longer ask your own agents to work.";
 
 interface ConnectionTargetCheck {
   readonly grantTarget?: AgentGrantTarget | undefined;
   readonly writeTargetName?: string | undefined;
 }
 
-export async function readLiveAgentConnectionRow(
+/**
+ * The one statement for where a connection stands: its row, its state (`connectionState`) and,
+ * on a work Home, the Work policy joined in the same statement. Every reader of a connection's
+ * standing is a view of this (`readConnectionRowStanding`, `liveAgentConnection`,
+ * `delegatingConnectionStanding`), so none can read the grant without the policy. On a personal
+ * Home it names no organization table.
+ */
+async function readConnectionStanding(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
   agentConnectionId: string,
-  lock = false,
-  { grantTarget, writeTargetName }: ConnectionTargetCheck = {},
+  lock: boolean,
 ) {
   const query = database
     .selectFrom("agentConnections")
@@ -97,31 +153,104 @@ export async function readLiveAgentConnectionRow(
       "accessMode",
       "cleanupMinimumGrantRevision",
       "cleanupMaximumMode",
+      "bridgeSenders",
+      "bridgeAccountId",
+      connectionState(database).as("connectionState"),
     ])
     .where("id", "=", agentConnectionId)
-    .where("userId", "=", ownerUserId)
-    .where("revokedAt", "is", null)
-    .where("tokenHash", "is not", null)
-    .where("expiresAt", ">", new Date());
+    .where("userId", "=", ownerUserId);
   const authority = lock ? query.forShare("agentConnections") : query;
-  const workHome = isWorkHomeDatabase(database);
-  const work = workHome
-    ? await authority
-        .innerJoin("workHomePolicy", (join) => join.on("workHomePolicy.singleton", "=", true))
-        .select(["workHomePolicy.policy", "workHomePolicy.state"])
-        .executeTakeFirst()
-    : undefined;
-  const row = workHome ? work : await authority.executeTakeFirst();
+  if (!isWorkHomeDatabase(database)) {
+    const row = await authority.executeTakeFirst();
+    if (!row) return undefined;
+    const { connectionState: state, ...connection } = row;
+    return { connection, state, work: null };
+  }
+  const row = await authority
+    .innerJoin("workHomePolicy", (join) => join.on("workHomePolicy.singleton", "=", true))
+    .select(["workHomePolicy.policy", "workHomePolicy.state"])
+    .executeTakeFirst();
   if (!row) return undefined;
+  const { connectionState: state, policy, state: workState, ...connection } = row;
+  return { connection, state, work: { policy, state: workState } };
+}
+
+/**
+ * A connection's standing from that statement: on a work Home a grant the policy does not allow,
+ * or a work Home that is not active, is `ended` before anything else, so a paused chat whose
+ * grant the organization took away is lost, not held.
+ */
+function standingOf(
+  read: Awaited<ReturnType<typeof readConnectionStanding>>,
+): "live" | "waiting" | "ended" {
+  if (!read) return "ended";
+  if (
+    read.work &&
+    (read.work.state !== "active" ||
+      !workPolicyAllowsGrant(read.work.policy, AgentGrantSchema.parse(read.connection.grant)))
+  )
+    return "ended";
+  return read.state;
+}
+
+/**
+ * The refusal for work whose connection is a chat that is only waiting (its account paused or
+ * needing attention), from the same read that found it not live: the caller holds the work
+ * rather than refuse it, and never asks a second time.
+ */
+export class ConnectionWaiting extends OpensteerError {
+  constructor() {
+    super({ code: "forbidden", message: lineageEndedMessage });
+  }
+}
+
+/** Whether a refusal says its connection is a chat that waits (`ConnectionWaiting`). */
+export function connectionIsWaiting(error: unknown): boolean {
+  return error instanceof ConnectionWaiting;
+}
+
+/**
+ * A live connection's row, or, from the same statement, whether one that is not live is a chat
+ * that waits: live, waiting or ended, answered once.
+ */
+export async function readConnectionRowStanding(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  agentConnectionId: string,
+  lock = false,
+  { grantTarget, writeTargetName }: ConnectionTargetCheck = {},
+) {
+  const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, lock);
+  if (!read || read.state !== "live")
+    return {
+      row: undefined,
+      waiting: read !== undefined && standingOf(read) === "waiting",
+      // A chat is a connection with a sender rule; what it says when it has ended is a chat's.
+      chat: read !== undefined && read.connection.bridgeSenders !== null,
+    };
+  const row = read.connection;
   const access = grantTarget && agentGrantAccess(row.grant, grantTarget);
   if (access === null)
     throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
-  const accessMode = applyConnectionPolicy(work ?? null, row.grant, row.accessMode);
+  const accessMode = applyConnectionPolicy(read.work, row.grant, row.accessMode);
   if (access === "read" && writeTargetName !== undefined)
     throw forbidden(`${writeTargetName} is shared for reading only.`);
-  if (!work) return row;
-  const { policy: _policy, state: _state, ...connection } = work;
-  return { ...connection, accessMode };
+  return {
+    row: read.work ? { ...row, accessMode } : row,
+    waiting: false,
+    chat: row.bridgeSenders !== null,
+  };
+}
+
+export async function readLiveAgentConnectionRow(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  agentConnectionId: string,
+  lock = false,
+  target: ConnectionTargetCheck = {},
+) {
+  return (await readConnectionRowStanding(database, ownerUserId, agentConnectionId, lock, target))
+    .row;
 }
 
 /** The live connection, or a refusal: a revoked or expired connection has no authority. */
@@ -136,14 +265,17 @@ export async function liveAgentConnection(
     readonly cleanupMaximumMode: ThreadAccessMode | null;
   }
 > {
-  const row = await readLiveAgentConnectionRow(
+  const { row, waiting, chat } = await readConnectionRowStanding(
     database,
     ownerUserId,
     agentConnectionId,
     false,
     target,
   );
-  if (!row) throw forbidden(lineageEndedMessage);
+  if (!row)
+    throw waiting
+      ? new ConnectionWaiting()
+      : forbidden(chat ? chatEndedMessage : lineageEndedMessage);
   const grant = AgentGrantSchema.parse(row.grant);
   return {
     agentConnectionId: row.id,
@@ -151,6 +283,7 @@ export async function liveAgentConnection(
     grantRevision: row.grantRevision,
     consentVersion: row.consentVersion,
     accessMode: row.accessMode,
+    bridgeSenders: row.bridgeSenders,
     cleanupMinimumGrantRevision: row.cleanupMinimumGrantRevision,
     cleanupMaximumMode: row.cleanupMaximumMode,
   };
@@ -185,6 +318,37 @@ export function connectionTaskRequestScope(
   input: Parameters<typeof connectionTaskReadScope>[1],
 ): Promise<"everything" | "selected"> {
   return connectionTaskReadScope(database, input, "Request is unavailable");
+}
+
+/**
+ * Where a connection stands for new delegated work, read as one fact in one statement: `live`
+ * (its state is live and its grant holds Tasks), `waiting` (a chat whose account is paused or
+ * needs attention: its work is held) or `ended`. The same state and grant rule as
+ * `liveDelegatingConnection`, for a caller that must tell held from lost.
+ */
+export async function delegatingConnectionStanding(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  agentConnectionId: string,
+): Promise<"live" | "waiting" | "ended"> {
+  const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, false);
+  const standing = standingOf(read);
+  if (standing !== "live") return standing;
+  return agentGrantAllowsTasks(AgentGrantSchema.parse(read!.connection.grant)) ? "live" : "ended";
+}
+
+/**
+ * A connection's grant as its standing allows it, from the one statement: the grant while the
+ * connection is live (on a work Home, only one the policy allows), and null otherwise. What a
+ * connection may see is decided from this, never from the grant row alone.
+ */
+export async function standingGrant(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  agentConnectionId: string,
+): Promise<AgentGrant | null> {
+  const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, false);
+  return standingOf(read) === "live" ? AgentGrantSchema.parse(read!.connection.grant) : null;
 }
 
 /** The connection delegated work may still run for: live, and still granted Tasks. */
@@ -228,6 +392,46 @@ export function sendEligible(
   if (!connection) return true;
   if (taskOriginConnectionId === connection.agentConnectionId) return true;
   return taskOriginConnectionId === null && connection.grant.scope === "everything";
+}
+
+/**
+ * The person's own message to a task a connection made. They may type in any task of theirs while
+ * its connection is live; one that waits (a paused chat) holds the message until it is back; one
+ * that has ended takes no new work, and says so at once in its kind's words (a chat's, or a
+ * connected agent's), as a resume or a change of its automation is refused. One read, and only
+ * for a task a connection made: the person's own tasks read nothing here.
+ */
+export async function assertPersonMayContinue(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  taskOriginConnectionId: string | null,
+): Promise<void> {
+  if (taskOriginConnectionId === null) return;
+  const standing = await readConnectionRowStanding(database, ownerUserId, taskOriginConnectionId);
+  if (standing.row || standing.waiting) return;
+  throw forbidden(standing.chat ? chatEndedMessage : agentEndedForPersonMessage);
+}
+
+/**
+ * The one standing check for answering a Request (live, durable, or direct-operation): neither the
+ * Request's own connection nor its task's origin connection may have ended. Called in the
+ * transaction that records a decision, never in a post-effect receipt write. For the person's own
+ * tasks both ids are null and this runs no query.
+ */
+export async function assertRequestOriginMayContinue(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  origin: {
+    readonly connectionId: string | null;
+    readonly threadOriginConnectionId: string | null;
+  },
+): Promise<void> {
+  await assertPersonMayContinue(database, ownerUserId, origin.connectionId);
+  if (
+    origin.threadOriginConnectionId !== null &&
+    origin.threadOriginConnectionId !== origin.connectionId
+  )
+    await assertPersonMayContinue(database, ownerUserId, origin.threadOriginConnectionId);
 }
 
 /** The send rule against the connection as it stands now; refuses as an unknown task would. */

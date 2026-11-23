@@ -5,7 +5,6 @@ import {
   type DeviceId,
   DeviceTabTargetSchema,
   ThreadIdSchema,
-  AgentGrantSchema,
   type ThreadId,
   type TabTarget,
   type UserId,
@@ -17,10 +16,11 @@ import {
   admitExecution,
   authoritySubject,
   bindingAgentConnectionId,
+  standingGrant,
   executionAccess,
   type AgentConnectionAuthority,
   requirePersonalOwner,
-  runAllowsPersonalContext,
+  lineageAllowsPersonalContext,
   type TabDatabase,
   type TabRecord,
   type TabWrite,
@@ -109,13 +109,15 @@ async function admitTabActor(
   }
   if (actor.kind === "run") {
     await new OpensteerStore(database).assertActiveGrant(actor.claims);
-    if (!(await runAllowsPersonalContext(database, actor.claims.runId))) deny();
   }
   const execution = await admitExecution(database, {
     ownerUserId: tabOwner(actor),
     subject: authoritySubject(scope(actor)),
     ...(actor.kind === "browser-binding" ? { threadId: actor.threadId } : {}),
   });
+  // Work from a bridge anyone may speak to never sees the person's tabs; it is read from the
+  // connection row this admission already read, and the person's own Run reads nothing more.
+  if (actor.kind === "run" && !lineageAllowsPersonalContext(execution.agentConnection)) deny();
   requireAccess(executionAccess(execution), required);
   return execution.agentConnection;
 }
@@ -356,20 +358,21 @@ export async function readableTabTasks(
       : actor.kind === "connection"
         ? actor.caller.connectionId
         : await bindingAgentConnectionId(database, scope(actor).agentBindingId!);
-  const selected =
-    agentConnectionId &&
-    (await database
-      .selectFrom("agentConnections")
-      .select("grant")
-      .where("id", "=", agentConnectionId)
-      .executeTakeFirst()
-      .then((row) => (row ? AgentGrantSchema.parse(row.grant).scope === "selected" : true)));
   const rows = await database
     .selectFrom("threads")
-    .select("id")
+    .select(["id", "originConnectionId"])
     .where("id", "in", [...ids])
     .where("createdBy", "=", tabOwner(actor))
-    .$if(Boolean(selected), (query) => query.where("originConnectionId", "=", agentConnectionId!))
     .execute();
-  return new Set(rows.map((row) => row.id));
+  if (!agentConnectionId) return new Set(rows.map((row) => row.id));
+  // What it may see is authority: read through the one standing statement, as the last read
+  // before it is used. A connection with no standing sees no task at all; a selected grant sees
+  // its own lineage's.
+  const grant = await standingGrant(database, tabOwner(actor), agentConnectionId);
+  if (grant === null) return new Set();
+  return new Set(
+    rows
+      .filter((row) => grant.scope !== "selected" || row.originConnectionId === agentConnectionId)
+      .map((row) => row.id),
+  );
 }

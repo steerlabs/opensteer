@@ -1,4 +1,5 @@
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { lineageHasPersonalContext } from "./resource-access.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
@@ -244,9 +245,11 @@ export async function memoryPassWakeContext(
     (wakes.completed?.getTime() ?? (wakes.first?.getTime() ?? now) - firstPassWindow[role]) -
       commitOverlap,
   );
+  // A task that could not read the person's memory is never a source of it.
   const conversations = await changedTasksSubquery(transaction, since, {
     excludeSystemWorkers: true,
   })
+    .where(lineageHasPersonalContext(sql.ref("threads.origin_connection_id")))
     .orderBy("newest", "desc")
     .limit(maxConversations + 1)
     .execute();

@@ -1,9 +1,4 @@
-import {
-  HarnessInstanceIdSchema,
-  MessageContentSchema,
-  MessageIdSchema,
-  UserIdSchema,
-} from "@opensteer/core";
+import { MessageContentSchema, MessageIdSchema, UserIdSchema } from "@opensteer/core";
 import { z } from "zod";
 import {
   IntegrationConnectionMethodSchema,
@@ -11,7 +6,6 @@ import {
 } from "@opensteer/integration-core/models";
 import {
   ChannelAccountIdSchema,
-  ChannelBindingIdSchema,
   ChannelConversationIdSchema,
   ChannelDeliveryIdSchema,
   IntegrationConnectionIdSchema,
@@ -86,6 +80,15 @@ export const ChannelProviderManifestSchema = z
      * becomes deliveries, so the adapter never has to.
      */
     maxMessageChars: z.number().int().min(200).max(100_000),
+    /**
+     * What happens to a message sent while a connection is paused or needs attention: `kept`
+     * when the transport reads it on resume (iMessage reads its Mac's Messages history from where
+     * it stopped), `lost` when the provider does not hold it for a closed connection (Slack's
+     * Socket Mode, with no history read on reconnect).
+     */
+    pausedMessages: z.enum(["kept", "lost"]).optional(),
+    /** A chat can listen in one named channel of this provider, not only in direct messages. */
+    channelChats: z.boolean().optional(),
     provider: ChannelProviderSchema,
     setupUrl: z.url().nullable(),
     setupArtifact: z
@@ -269,99 +272,6 @@ export type ChannelAccount = z.infer<typeof ChannelAccountSchema>;
 
 export const ChannelConversationTypeSchema = z.enum(["dm", "group", "channel"]);
 
-export const ChannelRouteSelectorSchema = z.strictObject({
-  conversationId: OptionalExternalIdSchema.default(null),
-  conversationType: ChannelConversationTypeSchema.nullable().default(null),
-  scopeId: OptionalExternalIdSchema.default(null),
-  threadId: OptionalExternalIdSchema.default(null),
-});
-const ChannelRouteSelectorViewSchema = z.object(ChannelRouteSelectorSchema.shape);
-export type ChannelRouteSelector = z.infer<typeof ChannelRouteSelectorSchema>;
-
-export const ChannelExecutionPolicySchema = z
-  .strictObject({
-    harness: z.enum(["default", "specific"]),
-    harnessInstanceId: HarnessInstanceIdSchema.nullable(),
-  })
-  .superRefine((value, context) => {
-    if ((value.harness === "specific") !== (value.harnessInstanceId !== null)) {
-      context.addIssue({
-        code: "custom",
-        message: "A specific harness policy requires exactly one harness instance",
-      });
-    }
-  });
-const ChannelExecutionPolicyViewSchema = z
-  .object(ChannelExecutionPolicySchema.shape)
-  .superRefine((value, context) => {
-    if ((value.harness === "specific") !== (value.harnessInstanceId !== null)) {
-      context.addIssue({
-        code: "custom",
-        message: "A specific harness policy requires exactly one harness instance",
-      });
-    }
-  });
-
-/** Admission is independent of the external identity's optional Opensteer link. */
-export const ChannelSenderPolicySchema = z.strictObject({
-  allowedExternalUserIds: z.array(ExternalIdSchema).max(500).default([]),
-  mode: z.enum(["off", "owner", "approved", "anyone"]),
-});
-const ChannelSenderPolicyViewSchema = z.object(ChannelSenderPolicySchema.shape);
-export type ChannelSenderPolicy = z.infer<typeof ChannelSenderPolicySchema>;
-
-const ChannelScopePolicySchema = z.strictObject({
-  conversationIds: z.array(ExternalIdSchema).max(500),
-  scope: z.enum(["off", "selected", "all"]),
-  sender: ChannelSenderPolicySchema,
-});
-export const ChannelAccessPolicySchema = z.strictObject({
-  channels: ChannelScopePolicySchema,
-  directMessages: ChannelSenderPolicySchema,
-});
-const ChannelAccessPolicyViewSchema = z.object({
-  channels: z.object({
-    ...ChannelScopePolicySchema.shape,
-    sender: ChannelSenderPolicyViewSchema,
-  }),
-  directMessages: ChannelSenderPolicyViewSchema,
-});
-export type ChannelAccessPolicy = z.infer<typeof ChannelAccessPolicySchema>;
-
-export const ChannelAccessGrantSchema = z.strictObject({
-  accountId: ChannelAccountIdSchema,
-  bindingId: ChannelBindingIdSchema,
-  externalUserId: ExternalIdSchema,
-  displayName: z.string().trim().min(1).max(160),
-  status: z.enum(["pending", "approved", "declined", "revoked"]),
-  revision: z.number().int().positive(),
-  requestedAt: IsoDateTimeSchema,
-  decidedAt: IsoDateTimeSchema.nullable(),
-  decidedBy: UserIdSchema.nullable(),
-});
-export const ChannelAccessGrantViewSchema = z.object(ChannelAccessGrantSchema.shape);
-export type ChannelAccessGrant = z.infer<typeof ChannelAccessGrantSchema>;
-
-export const ChannelBindingSchema = z.strictObject({
-  accessPolicy: ChannelAccessPolicySchema,
-  accountId: ChannelAccountIdSchema,
-  createdAt: IsoDateTimeSchema,
-  createdBy: UserIdSchema,
-  executionPolicy: ChannelExecutionPolicySchema,
-  id: ChannelBindingIdSchema,
-  revision: z.number().int().positive(),
-  selector: ChannelRouteSelectorSchema,
-  status: z.enum(["active", "paused", "revoked"]),
-  updatedAt: IsoDateTimeSchema,
-});
-export const ChannelBindingViewSchema = z.object({
-  ...ChannelBindingSchema.shape,
-  accessPolicy: ChannelAccessPolicyViewSchema,
-  executionPolicy: ChannelExecutionPolicyViewSchema,
-  selector: ChannelRouteSelectorViewSchema,
-});
-export type ChannelBinding = z.infer<typeof ChannelBindingSchema>;
-
 export const NormalizedChannelEventSchema = z.strictObject({
   accountExternalId: ExternalIdSchema,
   actor: z.strictObject({
@@ -423,28 +333,25 @@ export const ChannelDeliverySchema = z.strictObject({
 });
 export type ChannelDelivery = z.infer<typeof ChannelDeliverySchema>;
 
+/** Who "me" is on a chat account: the one identity linked to the person. */
+export const ChannelAccountMeSchema = z.strictObject({
+  accountId: ChannelAccountIdSchema,
+  displayName: z.string().trim().min(1).max(160),
+  externalUserId: ExternalIdSchema,
+});
 export const ChannelDashboardSchema = z.strictObject({
-  accessGrants: z.array(ChannelAccessGrantSchema).max(10_000),
   accounts: z.array(ChannelAccountSchema).max(500),
-  bindings: z.array(ChannelBindingSchema).max(2_000),
   connections: z.array(IntegrationConnectionSchema).max(500),
   deliveriesNeedingAttention: z.number().int().nonnegative(),
+  /** Who "me" is on each account that has one linked. */
+  me: z.array(ChannelAccountMeSchema).max(500).optional(),
   providers: z.array(ChannelProviderManifestSchema),
 });
 export const ChannelDashboardViewSchema = z.object({
   ...ChannelDashboardSchema.shape,
-  accessGrants: z.array(ChannelAccessGrantViewSchema).max(10_000),
   accounts: z.array(ChannelAccountViewSchema).max(500),
-  bindings: z.array(ChannelBindingViewSchema).max(2_000),
   connections: z.array(IntegrationConnectionViewSchema).max(500),
+  me: z.array(z.object(ChannelAccountMeSchema.shape)).max(500).optional(),
   providers: z.array(ChannelProviderManifestSchema),
 });
 export type ChannelDashboard = z.infer<typeof ChannelDashboardSchema>;
-
-const RouteCandidateSchema = z.strictObject({
-  conversationId: ExternalIdSchema,
-  conversationType: ChannelConversationTypeSchema,
-  scopeId: OptionalExternalIdSchema,
-  threadId: OptionalExternalIdSchema,
-});
-export type RouteCandidate = z.infer<typeof RouteCandidateSchema>;

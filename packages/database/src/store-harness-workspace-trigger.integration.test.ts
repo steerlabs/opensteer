@@ -1,3 +1,4 @@
+import { personTaskReader } from "./task-reader.js";
 import type { OpensteerStore } from "./store.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -1769,7 +1770,12 @@ describeStore("PostgreSQL store", (it) => {
     expect(firstTick).toHaveLength(1);
     const queued = firstTick[0];
     if (!queued) throw new Error("Expected a scheduled Trigger occurrence");
-    const afterFirst = await triggers.getForOwner(created.trigger.id, fixture.userId, 25);
+    const afterFirst = await triggers.getForOwner(
+      created.trigger.id,
+      fixture.userId,
+      25,
+      personTaskReader,
+    );
     const firstNextFireAt = afterFirst?.trigger.nextFireAt ?? null;
     expect(firstNextFireAt).not.toBeNull();
 
@@ -1778,7 +1784,12 @@ describeStore("PostgreSQL store", (it) => {
     expect((await triggers.claimDueSchedules(new Date(Date.now() + 240_000))).occurrences).toEqual(
       [],
     );
-    const afterCollapse = await triggers.getForOwner(created.trigger.id, fixture.userId, 25);
+    const afterCollapse = await triggers.getForOwner(
+      created.trigger.id,
+      fixture.userId,
+      25,
+      personTaskReader,
+    );
     expect(Date.parse(afterCollapse?.trigger.nextFireAt ?? "")).toBeGreaterThan(
       Date.parse(firstNextFireAt ?? ""),
     );
@@ -2016,7 +2027,12 @@ describeStore("PostgreSQL store", (it) => {
     expect((await triggers.claimDueSchedules(new Date(Date.now() + 120_000))).occurrences).toEqual(
       [],
     );
-    const paused = await triggers.getForOwner(created.trigger.id, fixture.userId, 25);
+    const paused = await triggers.getForOwner(
+      created.trigger.id,
+      fixture.userId,
+      25,
+      personTaskReader,
+    );
     expect(paused?.trigger).toMatchObject({
       nextFireAt: null,
       status: "paused",

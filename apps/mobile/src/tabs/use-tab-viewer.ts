@@ -1,4 +1,9 @@
-import type { HostClient } from "@opensteer/client/host";
+import {
+  tabAskStep,
+  tabAsleepAfterAnswer,
+  type HostClient,
+  type TabAsk,
+} from "@opensteer/client/host";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import {
   useHostSelector,
@@ -37,6 +42,8 @@ export function useTabViewer(
   enabled: boolean,
   intent: OpenIntent,
   available = true,
+  /** The tab's row: what follows an answer is decided by it and the answer (V8). */
+  row?: { readonly state: "open" | "asleep" | "unavailable" },
 ): {
   readonly state: TabViewerState;
   readonly retry: () => void;
@@ -50,6 +57,8 @@ export function useTabViewer(
   const [answer, setAnswer] = useState<{
     readonly tabId: TabId;
     readonly state: TabViewerState;
+    /** V8: the ask this answers, and what its answer said of the tab. */
+    readonly ask?: TabAsk;
   } | null>(null);
   const reconnect = useOwnerViewReconnect(
     hostClient,
@@ -67,31 +76,62 @@ export function useTabViewer(
     let current = true;
     const wake = intent.current === tabId;
     if (wake) intent.current = null;
-    void hostClient.activateTab(tabId, { wake }).then(
-      (viewer) => {
-        // An answer for a tab no longer here wakes nothing.
-        const source = phoneSource(viewer);
-        if (!current) {
-          if (source !== null && wake) sharedDisplayStreams(hostClient).cancelAutoWake(source);
-          return;
-        }
-        setAnswer({ state: { status: "ready", viewer }, tabId });
-      },
-      (error: unknown) => {
-        if (current)
+    let answeredState: TabAsk["answeredState"] = null;
+    void hostClient
+      .activateTab(tabId, {
+        wake,
+        answered: (tab) => {
+          answeredState = tab.state;
+        },
+      })
+      .then(
+        (viewer) => {
+          // An answer for a tab no longer here wakes nothing.
+          const source = phoneSource(viewer);
+          if (!current) {
+            if (source !== null && wake) sharedDisplayStreams(hostClient).cancelAutoWake(source);
+            return;
+          }
+          const rowAtAnswer = hostClient.getSnapshot().tabs.get(tabId);
           setAnswer({
-            state: {
-              error: failureWords(error, tabActionSpecs.open, "This tab could not open.") ?? "",
-              status: "failed",
-            },
+            ask: { answeredState, rowAtAnswer },
+            state: { status: "ready", viewer },
             tabId,
           });
-      },
-    );
+        },
+        (error: unknown) => {
+          if (current)
+            setAnswer({
+              state: {
+                error: failureWords(error, tabActionSpecs.open, "This tab could not open.") ?? "",
+                status: "failed",
+              },
+              tabId,
+            });
+        },
+      );
     return () => {
       current = false;
     };
   }, [attempt, available, hostClient, intent, live, reconnect.getSnapshot, tabId]);
+  // V8: what follows an answer is decided by the answer and the tab's row, not by timing. A tab
+  // that slept under the shown view is asked for once more (a new ask; it keeps what is shown and
+  // spends no Open); a tab the answer itself found asleep shows its status with Try again.
+  const ask = answer?.tabId === tabId ? answer.ask : undefined;
+  // An answer without an ask (a reconnect's) is judged from the row it came with.
+  const step =
+    state.status === "ready"
+      ? tabAskStep(state.viewer, ask ?? { answeredState: null, rowAtAnswer: row }, row)
+      : "show";
+  // Once for each answer: the new ask is in flight until its own answer replaces this one.
+  const reasked = useRef<unknown>(null);
+  useEffect(() => {
+    if (step !== "ask-again" || !available || reasked.current === answer) return;
+    reasked.current = answer;
+    setAttempt((value) => value + 1);
+  }, [answer, available, step]);
+  const shown: TabViewerState =
+    step === "asleep" ? { status: "failed", error: tabAsleepAfterAnswer } : state;
   // Try again and Reopen are the person's Open too.
   const retry = useCallback(() => {
     reconnect.reset();
@@ -103,7 +143,7 @@ export function useTabViewer(
   return {
     retry,
     reconnect,
-    state,
+    state: shown,
   };
 }
 

@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   ClosedPositionSchema,
   ComputerAppIdentitySchema,
@@ -563,7 +564,8 @@ export class TabStore {
           ownerId: input.ownerId,
           kind: input.kind,
           computerId: input.computerId,
-          title: input.title.slice(0, 1024),
+          title:
+            input.kind === "page" ? outsideName(input.title, 1024) : input.title.slice(0, 1024),
           openedBy: sql<TabOpenedBy>`${JSON.stringify(input.openedBy)}::jsonb`,
           url: input.url ?? null,
           profileId: input.profileId ?? null,
@@ -950,6 +952,7 @@ export class TabStore {
     PageBindingSchema.parse(binding);
     restoreUrl.parse(descriptor.url);
     if (descriptor.favicon) BrowserFaviconSchema.parse(descriptor.favicon);
+    const title = outsideName(descriptor.title, 1024);
     return commitPersonalMutation(this.database, async (tx, mutation) => {
       await this.#lock(tx, ownerId, [], [tabId]);
       if (!(await this.#session(tx, binding, ownerId))) return false;
@@ -962,16 +965,12 @@ export class TabStore {
         return false;
       if (restoring && descriptor.url === "about:blank" && row.url !== "about:blank") return false;
       const favicon = descriptor.favicon ?? (descriptor.url === row.url ? row.favicon : null);
-      if (
-        row.title === descriptor.title.slice(0, 1024) &&
-        row.url === descriptor.url &&
-        row.favicon === favicon
-      )
+      if (row.title === title && row.url === descriptor.url && row.favicon === favicon)
         return false;
       await tx
         .updateTable("personalTabs")
         .set({
-          title: descriptor.title.slice(0, 1024),
+          title,
           url: descriptor.url,
           favicon,
           iconRef: favicon ? tabIconRef(binding.lineageId, favicon) : null,

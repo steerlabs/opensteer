@@ -80,7 +80,8 @@ export function SettingsDeviceCapabilities({
     if (!machine.access) return;
     const parsed = MachineAccessPolicySchema.safeParse(policy);
     if (!parsed.success) {
-      setInvalid(parsed.error.issues[0]?.message ?? "Check the folder path.");
+      // A validator's issue is never drawn as it is: the screen says what to check.
+      setInvalid("Check the folder path.");
       return;
     }
     setInvalid(null);

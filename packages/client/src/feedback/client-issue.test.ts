@@ -97,6 +97,25 @@ describe("safe client issues", () => {
       `Not answered. ${detail}`,
     );
   });
+  it.each([
+    [
+      "bridge-anyone-grant",
+      "When anyone in the conversation can message it, it can use only tasks and the plugins you choose.",
+    ],
+    [
+      "bridge-needs-tasks",
+      "A chat can only ask your own agents to work, so it always needs tasks.",
+    ],
+  ])("says a chat's grant refusal in the Home's words (%s)", (reason, detail) => {
+    const error = new HostClientRequestError({
+      code: "bad_request",
+      message: "Unfiltered Host message",
+      reason,
+      status: 400,
+    });
+    const issue = clientIssue(error, { operation: "action", label: "save this change" });
+    expect(presentClientIssue({ ...issue!, done: "saved" }).title).toBe(`Not saved. ${detail}`);
+  });
   it("distinguishes slow connecting, recovering, same-computer unreachable, remote unreachable, and offline", () => {
     const base: ClientConnectionState = {
       epoch: 1,

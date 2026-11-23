@@ -23,7 +23,7 @@ Needs you:
 const routingGuide = `Routing:
 - Plugins: read opensteer:plugins; discover with \`plugin_search\`, then \`plugin_call\` or \`plugin_execute\`. Account links and input always need the person in Needs you.
 - Reminders, schedules, webhooks or watches: read opensteer:automations before writing code. Put them on a real task; omit taskId for this task.
-- Full-access callers manage AI accounts, defaults, computers, messaging bridges, plugins and browser profiles directly; new profiles, grants and credentials need the person.`;
+- Full-access callers manage AI accounts, defaults, computers, plugins and browser profiles directly; new profiles, grants and credentials need the person.`;
 
 const helpersGuide = `Helpers:
 - Your engine's native subagents work inside this Run, under its authority, and end with it.

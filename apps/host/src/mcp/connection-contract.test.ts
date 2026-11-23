@@ -71,9 +71,6 @@ const removedNames = [
   "local_server_add",
   "local_server_list",
   "local_server_remove",
-  "opensteer_messaging_bridge_list",
-  "opensteer_messaging_bridge_update",
-  "opensteer_messaging_bridge_remove",
   "opensteer_request_list",
   "opensteer_request_read",
   "opensteer_delegation_wait",
@@ -91,6 +88,10 @@ const removedNames = [
   "opensteer_automation_create",
   "tab_open",
   "tab_close",
+  // Messaging is a connection now: these tools are gone for good.
+  "opensteer_messaging_bridge_list",
+  "opensteer_messaging_bridge_update",
+  "opensteer_messaging_bridge_remove",
 ];
 function unavailableMentions(
   visible: string,

@@ -60,10 +60,6 @@ export const threadContinuationIdentitySelection = sql<Thread["continuationIdent
 /** A connected agent or a chat started this task, so the person's own engine rules do not apply. */
 export const threadStartedByOtherSelection = sql<boolean>`(
   threads.origin_connection_id is not null
-  or exists (
-    select 1 from channel_conversations
-    where channel_conversations.active_thread_id = threads.id
-  )
 )`.as("startedByOther");
 type ThreadReadRow = {
   readonly lastVisitedAt?: Date | null;

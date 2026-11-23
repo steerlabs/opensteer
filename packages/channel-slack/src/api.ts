@@ -38,17 +38,31 @@ const deadSlackErrorCodes = new Set([
   "user_not_in_channel",
 ]);
 
-const retryableSlackErrorCodes = new Set([
+const rateLimitedSlackErrorCodes = new Set(["ratelimited", "rate_limited"]);
+
+/** Slack's own trouble: it may have done what it was asked before it failed. */
+const troubledSlackErrorCodes = new Set([
   "fatal_error",
   "internal_error",
-  "ratelimited",
-  "rate_limited",
   "request_timeout",
   "service_unavailable",
 ]);
 
-export function slackFailureKind(status: number, code: string): ChannelDeliveryError["kind"] {
-  if (status === 429 || status >= 500 || retryableSlackErrorCodes.has(code)) return "retryable";
+/**
+ * How a failed call ended. Only a rate limit proves Slack did nothing. For a call that posts a
+ * message, Slack's own trouble (a 5xx, a timeout, `internal_error`, `fatal_error`) may come after
+ * the message was posted, so it is `unknown` and final: nothing is posted twice. A read may simply
+ * be asked again.
+ */
+export function slackFailureKind(
+  status: number,
+  code: string,
+  posts = false,
+): ChannelDeliveryError["kind"] {
+  if (status === 429 || rateLimitedSlackErrorCodes.has(code)) return "retryable";
+  // A timeout (408) is trouble on the way, like a 5xx: the message may have been posted.
+  if (status === 408 || status >= 500 || troubledSlackErrorCodes.has(code))
+    return posts ? "unknown" : "retryable";
   if (deadSlackErrorCodes.has(code)) return "dead";
   // An unrecognised `ok: false` is a refusal, not a lost answer: Slack replied.
   return status >= 200 && status < 500 ? "dead" : "unknown";
@@ -64,6 +78,8 @@ export interface SlackApiCall {
   readonly fetch: typeof globalThis.fetch;
   readonly json?: Readonly<Record<string, unknown>>;
   readonly method: string;
+  /** The call posts a message: only a rate limit may be retried. */
+  readonly posts?: boolean;
   readonly query?: Readonly<Record<string, string>>;
   readonly signal?: AbortSignal;
   readonly token: string;
@@ -72,7 +88,7 @@ export interface SlackApiCall {
 /**
  * One Slack Web API call, parsed. Every failure — a refusal, an unreadable
  * body, a network error — leaves as a `ChannelDeliveryError` so the caller
- * decides once whether to retry, give up, or reconcile.
+ * decides once whether to retry, give up, or leave the outcome unknown.
  */
 export async function callSlackApi<Schema extends z.ZodType>(
   call: SlackApiCall,
@@ -96,6 +112,11 @@ export async function callSlackApi<Schema extends z.ZodType>(
       cause: error,
     });
   }
+  // A rate limit is known from its status alone: Slack's proxy may answer it with no JSON.
+  if (response.status === 429)
+    throw new ChannelDeliveryError(`Slack rejected ${call.method} (ratelimited)`, "retryable", {
+      retryAfterSeconds: slackRetryAfterSeconds(response.headers.get("retry-after")),
+    });
   let payload: unknown;
   try {
     payload = await response.json();
@@ -116,7 +137,7 @@ export async function callSlackApi<Schema extends z.ZodType>(
     const code = envelope.data.error ?? `http_${response.status}`;
     throw new ChannelDeliveryError(
       `Slack rejected ${call.method} (${code})`,
-      slackFailureKind(response.status, code),
+      slackFailureKind(response.status, code, call.posts),
       { retryAfterSeconds: slackRetryAfterSeconds(response.headers.get("retry-after")) },
     );
   }
@@ -151,8 +172,6 @@ export const SlackPostMessageSchema = z.looseObject({
   ts: z.string().optional(),
 });
 
-export const SlackPostEphemeralSchema = z.looseObject({ message_ts: z.string().optional() });
-
 export const SlackUserInfoSchema = z.looseObject({
   user: z
     .looseObject({
@@ -167,26 +186,6 @@ export const SlackUserInfoSchema = z.looseObject({
       real_name: z.string().optional(),
     })
     .optional(),
-});
-
-export const SlackConversationHistorySchema = z.looseObject({
-  messages: z
-    .array(
-      z.looseObject({
-        app_id: z.string().optional(),
-        bot_id: z.string().optional(),
-        metadata: z
-          .looseObject({
-            event_payload: z.record(z.string(), z.unknown()).optional(),
-            event_type: z.string().optional(),
-          })
-          .optional(),
-        text: z.string().optional(),
-        ts: z.string().optional(),
-      }),
-    )
-    .default([]),
-  response_metadata: z.looseObject({ next_cursor: z.string().optional() }).optional(),
 });
 
 /**

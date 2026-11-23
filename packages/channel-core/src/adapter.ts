@@ -27,7 +27,7 @@ export class ChannelConnectionError extends Error {
  * provider refused and will accept later (rate limits, outages); `dead` means
  * it refused for good (a channel the bot is not in, bad credentials);
  * `unknown` means the answer never arrived, so the message may or may not
- * exist and only `reconcile` can say.
+ * exist: that is final, and it is never sent again.
  */
 export class ChannelDeliveryError extends Error {
   readonly kind: "dead" | "retryable" | "unknown";
@@ -68,20 +68,6 @@ export interface ChannelDeliveryDestination {
 }
 
 interface ChannelOutboundAdapter {
-  /**
-   * Decide whether a delivery whose outcome was lost actually reached the
-   * provider. `sent` carries the receipt the send would have returned;
-   * `unknown` means the adapter cannot tell and the delivery is sent again.
-   */
-  reconcile(input: {
-    readonly delivery: ChannelDelivery;
-    readonly destination: ChannelDeliveryDestination;
-    readonly lease: ChannelCredentialLease;
-    readonly signal: AbortSignal;
-  }): Promise<
-    | { readonly kind: "sent"; readonly receipt: Readonly<Record<string, unknown>> }
-    | { readonly kind: "unknown" }
-  >;
   /**
    * Post one delivery as exactly one provider message. The content is already
    * within `manifest.maxMessageChars`; the adapter renders it into the

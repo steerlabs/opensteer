@@ -56,3 +56,23 @@ it("renders every app with its origin chat without rereading the snapshot foreve
   expect(badge("Ferry tracker")).toBe("Running");
   expect(badge("Inventory sync")).toBe("Stopped");
 });
+
+it("says a failed read of the apps in its own words, never the failure's text", async () => {
+  client = new MockHostClient({ latencyMs: 0 });
+  await client.load();
+  harness.client = client;
+  vi.spyOn(client, "listApps").mockRejectedValueOnce(new Error("ECONNRESET /Users/tim/secret"));
+  const node = document.createElement("div");
+  document.body.append(node);
+  root = createRoot(node);
+  await act(async () =>
+    root!.render(
+      <MemoryRouter>
+        <AppsPage />
+      </MemoryRouter>,
+    ),
+  );
+  await vi.waitFor(() => expect(node.querySelector('[role="alert"]')).not.toBeNull());
+  expect(node.textContent).not.toContain("ECONNRESET");
+  expect(node.querySelector('[role="alert"]')?.textContent).toContain("Something went wrong.");
+});

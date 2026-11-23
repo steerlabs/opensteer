@@ -232,8 +232,11 @@ enum MessagesSender {
 
   /// The error number is the only part of the error safe to pass on: the
   /// rest quotes the script's own values, the recipient and the body.
+  /// It is the number that ends the text: the text before it quotes the script's values, the
+  /// message body included, and a number there is never the error.
   private static func errorNumber(_ stderr: String) -> Int? {
-    guard let match = stderr.prefix(8_192).firstMatch(of: #/\(\s*(-[0-9]{1,6})\s*\)/#) else {
+    let ending = String(stderr.suffix(8_192)).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let match = ending.firstMatch(of: #/\(\s*(-[0-9]{1,6})\s*\)$/#) else {
       return nil
     }
     return Int(match.1)

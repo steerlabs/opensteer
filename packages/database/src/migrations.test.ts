@@ -76,6 +76,8 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0105_work_home",
     "0106_browser_pool",
     "0107_needs_you_counts_requests",
+    "0108_bridge_connections",
+    "0109_chat_routes_end_contract",
     "0114_thread_inputs_written_by_connection",
     "0115_provider_session_person_lineage",
   ]);

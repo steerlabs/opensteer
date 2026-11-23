@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { AttachmentCache } from "../attachments/attachment-cache.js";
+import { RunFileError, RunFiles } from "../attachments/run-files.js";
 import { agentTools, appHostingGuide } from "@opensteer/agent-tools";
 import { hostCommandPlatform } from "@opensteer/shared/command";
 import { networkCredentialSecrets } from "@opensteer/shared/safeMessage";
@@ -702,6 +703,55 @@ describe("RunnerRuntime", () => {
       await runtime.close();
     }
   });
+
+  it.each([false, true])(
+    "hands a Run without personal context nothing of Agent home (personal context: %s)",
+    async (personalContext) => {
+      const driver = new FakeHarnessDriver("claude");
+      const registry = new HarnessRegistry();
+      registry.registerDriver(driver);
+      const environmentId = createId("environment");
+      const plans: HarnessSandboxRunPlan[] = [];
+      const runtime = configuredRuntime({
+        environmentId,
+        harnessSandbox: {
+          plan: async (plan) => {
+            plans.push(plan);
+            return (launch) => launch;
+          },
+          planProgram: async () => (launch) => launch,
+        },
+        registry,
+      });
+      const base = executeCommand(environmentId, "claude");
+      const execute = { ...base, context: { ...base.context, personalContext } };
+      const agentHome = base.agentHome!.path;
+      const underHome = (value: string | undefined) =>
+        value !== undefined && (value === agentHome || value.startsWith(`${agentHome}/`));
+      try {
+        await reconcile(registry, execute);
+        await runtime.handleCommand(execute, { send: async () => undefined });
+        await waitUntil(() => driver.contexts.length === 1);
+        const context = driver.context!;
+        const handed = [
+          ...context.writableRoots,
+          context.workspacePath,
+          ...Object.values(context.commandEnvironment),
+          ...plans.flatMap((plan) => [...plan.writableRoots, plan.workspacePath]),
+        ];
+        if (personalContext) {
+          // The person's own Run works in Agent home, as before.
+          expect(context.workspacePath).toBe(agentHome);
+          expect(context.writableRoots).toContain(agentHome);
+        } else {
+          expect(handed.filter(underHome)).toEqual([]);
+          expect(context.writableRoots).toEqual([context.workspacePath]);
+        }
+      } finally {
+        await runtime.close();
+      }
+    },
+  );
 
   it("gives its engine a Run-local proxy, never a Host token, and cuts it on interrupt", async () => {
     const seenAuthorization: (string | undefined)[] = [];
@@ -4162,6 +4212,68 @@ describe("RunnerRuntime", () => {
     }
   });
 
+  it("scans no Agent home skills for a Run without personal context, before it or after it ends", async () => {
+    const temporaryRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "opensteer-skill-scan-none-test-")),
+    );
+    const workspacePath = join(temporaryRoot, "workspace");
+    const stateRoot = join(temporaryRoot, "private", "harness-state");
+    await writeWorkspaceSkill(workspacePath, "release-notes");
+    const driver = new FakeHarnessDriver("claude", () => new FakeHarnessSession());
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const runtime = runtimeWithLeaseGrants({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
+      nodeExecutable: process.execPath,
+      agentSkills: testAgentSkills,
+      bootId: "boot-skill-scan-none-test",
+      browserHarnessExecutable: testBrowserHarnessExecutable,
+      deploymentShape: testDeploymentShape,
+      environmentId,
+      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
+      harnesses: registry,
+      plugins: async () => ({
+        cleanup: async () => undefined,
+        digest: "none",
+        directories: [],
+        skills: [],
+      }),
+      logger: { error: () => undefined, info: () => undefined },
+      maxConcurrentRuns: 1,
+      dataDirectory: dirname(stateRoot),
+      privateStateDirectory: stateRoot,
+      projectContinuationIdentity,
+      agentHome: {
+        folder: async ({ path }: { readonly path: string }) => path,
+        prepare: async () => ({ instructions: undefined, path: workspacePath }),
+      },
+    });
+    const scans: unknown[] = [];
+    runtime.observeAgentHomeSkills(async (_generation, scan) => {
+      scans.push(scan);
+    });
+    try {
+      const base = executeCommand(environmentId, "claude");
+      const command = {
+        ...base,
+        agentHome: { ...base.agentHome!, path: workspacePath },
+        context: { ...base.context, personalContext: false },
+      };
+      await reconcile(registry, command);
+      await expect(
+        runtime.handleCommand(command, { send: async () => undefined }),
+      ).resolves.toEqual({ status: "accepted" });
+      await waitUntil(() => runtime.activeRunIds().length === 0);
+      expect(driver.context).toBeDefined();
+      // The Run had no Agent home, so nothing of it was read for the Home's skill catalog.
+      expect(scans).toEqual([]);
+    } finally {
+      await runtime.close();
+      await rm(temporaryRoot, { force: true, recursive: true });
+    }
+  });
+
   it.each([false, true])("resolves skill layers with disabled=%s", async (disabled) => {
     const temporaryRoot = await realpath(
       await mkdtemp(join(tmpdir(), "opensteer-skill-layer-test-")),
@@ -5583,7 +5695,8 @@ describe("harness process environment", () => {
     )!;
     expect(failure.data).toMatchObject({
       code: "forbidden",
-      message: expect.stringContaining(
+      message: "This engine is not available for this task.",
+      ownerMessage: expect.stringContaining(
         "so it runs only tasks you started yourself that no connected agent or chat has written to.",
       ),
     });
@@ -5733,6 +5846,171 @@ describe("harness process environment", () => {
       });
     } finally {
       vi.unstubAllEnvs();
+      await runtime.close();
+    }
+  });
+
+  it("keeps a proxy password out of retry messages, failure messages, and start-up errors in events, catalogs, and logs (G7)", async () => {
+    const proxy = "http://alice:p@ss/word?q#g7@proxy.invalid:8080";
+    const tokenProxy = "http://proxy-token-g7@proxy.invalid:8080";
+    const password = "p@ss/word?q#g7";
+    const token = "proxy-token-g7";
+    const secrets = networkCredentialSecrets({ HTTP_PROXY: tokenProxy, HTTPS_PROXY: proxy });
+    const logs: Array<{
+      readonly level: "error" | "info";
+      readonly message: string;
+      readonly details: Readonly<Record<string, unknown>> | undefined;
+    }> = [];
+    const logger = {
+      error: (message: string, details?: Readonly<Record<string, unknown>>) => {
+        logs.push({ details, level: "error", message });
+      },
+      info: (message: string, details?: Readonly<Record<string, unknown>>) => {
+        logs.push({ details, level: "info", message });
+      },
+    };
+    const environmentId = createId("environment");
+    const driverKind = HarnessIdSchema.parse("g7-proxy-redaction-test");
+    const registry = new HarnessRegistry();
+    let mode: "retry-and-fail" | "startup-throw" = "retry-and-fail";
+    const driver = new FakeHarnessDriver(driverKind, () => {
+      if (mode === "startup-throw") {
+        throw new Error(`Engine start-up failed via ${proxy}`);
+      }
+      return new ScriptedHarnessSession([
+        {
+          data: {
+            attempt: 1,
+            code: "proxy_error",
+            maxAttempts: 5,
+            message: `Retrying request via ${proxy}`,
+            status: "retrying",
+          },
+          type: "run.retry",
+        },
+        {
+          data: {
+            code: "engine_error",
+            message: `Run failed via ${proxy}`,
+            ownerMessage: `Owner detail via ${proxy}`,
+            retryable: false,
+            status: "failed",
+          },
+          type: "run.failed",
+        },
+      ]);
+    });
+    registry.registerDriver(
+      Object.assign(driver, {
+        inspect: async () => ({
+          connections: [],
+          detail: `Engine start-up check unavailable via ${proxy} and ${tokenProxy}`,
+          status: "unavailable" as const,
+        }),
+      }),
+    );
+    const runtime = configuredRuntime({
+      environmentId,
+      logger,
+      maxConcurrentRuns: 2,
+      networkSecrets: secrets,
+      registry,
+    });
+    runtime.setHostRunRetryEvents(true);
+    try {
+      const inspected = await runtime.inspectHarnesses(
+        [harnessDefinition(driverKind, "G7 proxy redaction", 1)],
+        new AbortController().signal,
+        true,
+      );
+      expect(inspected).toMatchObject([
+        {
+          detail:
+            "Engine start-up check unavailable via http://[REDACTED]@proxy.invalid:8080 and http://[REDACTED]@proxy.invalid:8080",
+          status: "unavailable",
+        },
+      ]);
+
+      const retryAndFailCommand = executeCommand(environmentId, driverKind);
+      const startupCommand = executeCommand(environmentId, driverKind);
+      await reconcile(registry, retryAndFailCommand, startupCommand);
+      const events: RunnerOperationalReport[] = [];
+      const sink: RunnerMessageSink = {
+        send: async (message) => {
+          events.push(message);
+        },
+      };
+      await expect(runtime.handleCommand(retryAndFailCommand, sink)).resolves.toEqual({
+        status: "accepted",
+      });
+      await waitUntil(() =>
+        events.some(
+          (message) =>
+            message.type === "runner.event" &&
+            message.event.runId === retryAndFailCommand.context.runId &&
+            message.event.type === "run.failed",
+        ),
+      );
+      const retryEvent = events.find(
+        (message) =>
+          message.type === "runner.event" &&
+          message.event.runId === retryAndFailCommand.context.runId &&
+          message.event.type === "run.retry",
+      );
+      const failedEvent = events.find(
+        (message) =>
+          message.type === "runner.event" &&
+          message.event.runId === retryAndFailCommand.context.runId &&
+          message.event.type === "run.failed",
+      );
+      expect(retryEvent).toMatchObject({
+        event: {
+          data: { message: "Retrying request via http://[REDACTED]@proxy.invalid:8080" },
+          type: "run.retry",
+        },
+      });
+      expect(failedEvent).toMatchObject({
+        event: {
+          data: {
+            message: "Run failed via http://[REDACTED]@proxy.invalid:8080",
+            ownerMessage: "Owner detail via http://[REDACTED]@proxy.invalid:8080",
+          },
+          type: "run.failed",
+        },
+      });
+
+      mode = "startup-throw";
+      await expect(runtime.handleCommand(startupCommand, sink)).resolves.toEqual({
+        status: "accepted",
+      });
+      await waitUntil(() =>
+        events.some(
+          (message) =>
+            message.type === "runner.event" &&
+            message.event.runId === startupCommand.context.runId &&
+            message.event.type === "run.failed",
+        ),
+      );
+      const startupFailedEvent = events.find(
+        (message) =>
+          message.type === "runner.event" &&
+          message.event.runId === startupCommand.context.runId &&
+          message.event.type === "run.failed",
+      );
+      expect(startupFailedEvent).toMatchObject({
+        event: {
+          data: { message: "Engine start-up failed via http://[REDACTED]@proxy.invalid:8080" },
+          type: "run.failed",
+        },
+      });
+
+      for (const secret of [password, token]) {
+        expect(JSON.stringify(inspected)).not.toContain(secret);
+        expect(JSON.stringify(events)).not.toContain(secret);
+        expect(JSON.stringify(logs)).not.toContain(secret);
+      }
+      expect(logs.some((entry) => entry.message === "run.failed")).toBe(true);
+    } finally {
       await runtime.close();
     }
   });
@@ -6999,6 +7277,74 @@ it("creates the attachment directory before launch and drains file work before R
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it.each([false, true])(
+  "sends a file by a relative path from the Run's own folder, never from Agent home without personal context (personal context: %s)",
+  async (personalContext) => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "runtime-run-files-")));
+    const agentHome = join(root, "agent-home");
+    await mkdir(agentHome);
+    await writeFile(join(agentHome, "AGENTS.md"), "the person's own instructions");
+    const cache = new AttachmentCache({
+      root: join(root, "cache"),
+      transport: { mode: "development", hostOrigin: new URL("http://localhost") },
+    });
+    const registry = new HarnessRegistry();
+    const driver = new FakeHarnessDriver("claude", () => new HeldHarnessSession());
+    Object.defineProperty(driver, "capabilities", {
+      value: {
+        ...fakeHarnessCapabilities,
+        messageAttachments: { darwinIsolatedServiceSandbox: true },
+      },
+    });
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const base = executeCommand(environmentId, "claude");
+    const command = {
+      ...base,
+      agentHome: { ...base.agentHome!, path: agentHome },
+      context: { ...base.context, personalContext },
+    };
+    const runtime = configuredRuntime({
+      environmentId,
+      registry,
+      attachmentCache: cache,
+      workspacePrepare: async () => ({ instructions: undefined, path: agentHome }),
+    });
+    const files = new RunFiles({
+      dataDirectory: join(root, "private"),
+      helperBinary: testNativeFsHelperBinary,
+      transport: { mode: "development", hostOrigin: new URL("http://localhost") },
+    });
+    await reconcile(registry, command);
+    try {
+      await runtime.handleCommand(command, { send: async () => undefined });
+      await vi.waitFor(() => expect(driver.context).toBeDefined(), { timeout: 2_000 });
+      const execution = {
+        runId: command.context.runId,
+        bindingGeneration: command.context.bindingGeneration,
+      };
+      const send = (path: string) =>
+        runtime.withRunFiles(execution, new AbortController().signal, async (access) => {
+          const source = await files.source(path, access);
+          const chunks: Buffer[] = [];
+          for await (const chunk of source.body) chunks.push(Buffer.from(chunk as Uint8Array));
+          return Buffer.concat(chunks).toString("utf8");
+        });
+      if (personalContext) {
+        await expect(send("AGENTS.md")).resolves.toBe("the person's own instructions");
+      } else {
+        // A relative path is read from the Run's own folder, where there is no AGENTS.md.
+        await expect(send("AGENTS.md")).rejects.toThrow();
+        // And Agent home is not one of its roots at all.
+        await expect(send(join(agentHome, "AGENTS.md"))).rejects.toThrow(RunFileError);
+      }
+    } finally {
+      await runtime.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 describe("this computer's own view and Stop of its Runs", () => {
   function blockingRuntime() {

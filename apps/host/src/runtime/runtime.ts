@@ -2014,6 +2014,8 @@ export async function createHostRuntime(
       tabs?.changed();
       announceResources("machine", "tab");
       void channelService?.syncRuntimes();
+      // A bridge whose computer app lost its approval ends: the cleanup worker revokes it now.
+      connectionMaintenance?.wake();
     };
     const onSettingsChanged = async ({
       installationId,
@@ -2956,18 +2958,20 @@ export async function createHostRuntime(
       threads: store,
       tokens,
     });
+    let bridgeToolService: OpensteerMcpService | undefined;
     const channels = new ChannelService({
       onError: (error) => app.log.error({ err: error }, "Channel ingress failed"),
       onChanged: () => realtime.broadcast({ type: "host.connections-changed" }),
-      canonicalOrigin: config.canonicalOrigin.origin,
       channels: new ChannelStore(database),
       credentials,
       relay: messagingRelay,
-      onExecutionQueued: () => {
-        coordinator.wake();
+      // A bridge calls the same task tools a connected agent does; they exist once the MCP
+      // service is built below, before messaging starts.
+      bridgeTools: () => {
+        if (!bridgeToolService) throw new Error("The task tools are not ready yet");
+        return bridgeToolService;
       },
-
-      runners,
+      onAccountEnded: () => void driveConnectionCleanups(),
       store,
     });
     channelService = channels;
@@ -3260,7 +3264,7 @@ export async function createHostRuntime(
       onError: (error) => reportAgentSessionError(error),
     });
     onSessionRequestClosed = (requestId) => agentSessions.requestClosed(requestId);
-    const agentTools = new OpensteerMcpService({
+    const agentTools = (bridgeToolService = new OpensteerMcpService({
       connectionPasswords: () => {
         const hosting = initializedPersonal?.options.hostingComputerId;
         return (
@@ -3339,7 +3343,7 @@ export async function createHostRuntime(
         }),
         triggers: new TriggerToolHandlers(triggers, store),
       }),
-    });
+    }));
     const transcriptFileServices = createTranscriptFileServices({
       authSecret: config.authSecret,
       dataDirectory,

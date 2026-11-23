@@ -30,6 +30,10 @@ import { browserEffect, failedScriptOutput, requireDirectWork, scriptFailure } f
 import type { ToolCall } from "./types.js";
 
 /** How long one reviewed attachment may hold full control of a profile. */
+/** V4: what an agent is told of a tab that was opened again at its address after it slept. */
+const reopenedNote =
+  "This tab was asleep and was reopened at its address: its typed text, scroll position and page state are gone.";
+
 export const browserConnectIntervalMs = 10 * 60_000;
 export const browserConnectCompletedNext =
   "This connection was already handed out. Call browser_connect without the operationId for a new connection.";
@@ -405,6 +409,7 @@ export class BrowserToolHandlers {
       expiresAt,
     };
     let issued: { readonly path: string; readonly mode: StandardCdpMode };
+    let reopened = false;
     try {
       if (target.profileId === null) {
         if (!this.#ports.sharedChromeTabs) throw tabNotFound();
@@ -423,6 +428,7 @@ export class BrowserToolHandlers {
           savedProfileOnly: true,
           ...(target.generation !== null ? { expectedGeneration: target.generation } : {}),
         });
+        reopened = page.reopened === true;
         await context.recheck();
         issued = await this.#ports.issueTicket({
           authority,
@@ -462,6 +468,8 @@ export class BrowserToolHandlers {
           : "chromium.connectOverCDP(endpoint, { noDefaults: true })",
       tabId,
       expiresAt: new Date(expiresAt).toISOString(),
+      // V4: a tab that slept by closing comes back at its address, not as itself.
+      ...(reopened ? { reopened: true, note: reopenedNote } : {}),
     };
   }
 

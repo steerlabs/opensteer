@@ -139,7 +139,7 @@ describe("agent consent with grants", () => {
     );
     // Grok's name is only the one it gave itself: no verified mark, and it says so.
     expect(container.querySelector(".agent-who--verified")).toBeNull();
-    expect(container.textContent).toContain("It calls itself: Grok");
+    expect(container.textContent).toContain("It calls itself: “Grok”");
     expect(container.textContent).toContain("Only allow this if you started it yourself.");
     expect(container.textContent).not.toContain("Returns to");
     const checked = [
@@ -232,8 +232,16 @@ describe("agent consent with grants", () => {
     const tasks = container.querySelector<HTMLInputElement>(
       '[aria-labelledby="agent-grant-tasks"]',
     )!;
+    // Its safety modes say what its tasks can touch, and the safety check is the engine's own.
+    expect(container.textContent).toContain(
+      "Its tasks run under the engine’s own safety check. Its own direct actions ask you before anything that changes something.",
+    );
+    expect(container.textContent).toContain(
+      "Never asks. It can change anything in your Agent home, and anything else on that computer that your user account can.",
+    );
+    expect(container.textContent).not.toContain("Opensteer checks each action");
     expect(detail(container, "Tasks")).toBe(
-      "Lets it ask your own agents to work on Cloud Computer: read and change files and run commands there.",
+      "Lets it ask your own agents to work on Cloud Computer: read and change files and run commands there. The tasks it starts work in your Agent home. From Auto-accept edits up, they can change files there without asking you, your own agents’ instructions and skills among them.",
     );
     await act(async () => tasks.click());
     expect(container.textContent).toContain(
@@ -510,7 +518,7 @@ describe("agent consent with grants", () => {
     await act(async () => buttonNamed(container, "Allow").click());
     // The screen is the agent as the Home now presents it, with one line beside Allow.
     expect(container.querySelector("h1")?.textContent).toBe("An agent wants to connect");
-    expect(container.textContent).toContain("It calls itself: Claude");
+    expect(container.textContent).toContain("It calls itself: “Claude”");
     expect(container.querySelector(".form-actions")?.previousElementSibling?.textContent).toBe(
       "This agent’s verification changed. Review it again.",
     );

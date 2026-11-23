@@ -2,7 +2,7 @@ import { OpensteerError, threadAccessModeAtMost, type Thread } from "@opensteer/
 import type { AgentToolAccess } from "@opensteer/agent-tools";
 import type { AgentCaller } from "./agent-caller.js";
 
-/** Targets have already been resolved through getThreadForOwner at admission. */
+/** Targets have already been resolved at admission, read as their caller reads them (readTask). */
 export function read(_caller: AgentCaller, _targets: readonly Thread[]): void {}
 export function write(caller: AgentCaller, targets: readonly Thread[]): void {
   read(caller, targets);

@@ -6,7 +6,7 @@ import {
   runSlackSocketConnection,
   type SlackWebSocketFactory,
 } from "./connection.js";
-import { reconcileSlackDelivery, sendSlackDelivery } from "./outbound.js";
+import { sendSlackDelivery } from "./outbound.js";
 
 export interface SlackAdapterOptions {
   readonly fetch?: typeof globalThis.fetch;
@@ -35,7 +35,6 @@ export function createSlackAdapter(options: SlackAdapterOptions = {}): ChannelAd
     },
     manifest: slackChannelProviderManifest,
     outbound: {
-      reconcile: (input) => reconcileSlackDelivery(input, fetch_),
       send: (input) => sendSlackDelivery(input, fetch_),
     },
   };
@@ -67,8 +66,4 @@ export {
   type SlackSocketEnvelope,
 } from "./events.js";
 export { renderSlackDeliveryText, renderSlackMrkdwn } from "./mrkdwn.js";
-export {
-  reconcileSlackDelivery,
-  sendSlackDelivery,
-  slackDeliveryMetadataEventType,
-} from "./outbound.js";
+export { sendSlackDelivery } from "./outbound.js";

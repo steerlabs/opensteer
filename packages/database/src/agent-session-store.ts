@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   AgentOperationTargetSchema,
   agentSessionIdleMs,
@@ -41,7 +42,11 @@ import {
   requestFromRow,
 } from "./request-persistence.js";
 import { readRequestSettlementProvenance, requestSettlementActor } from "./request-settlement.js";
-import { lineageEndedMessage, readLiveAgentConnectionRow } from "./resource-access.js";
+import {
+  assertRequestOriginMayContinue,
+  lineageEndedMessage,
+  readLiveAgentConnectionRow,
+} from "./resource-access.js";
 import type { AgentOperationTable, AgentSessionTable, DatabaseSchema } from "./schema.js";
 import { jsonValue, principalIdForUser } from "./store-primitives.js";
 import { projectThreadState } from "./thread-status.js";
@@ -227,8 +232,9 @@ async function beginInTransaction(
     .execute();
   const threadId = createId("thread");
   const now = new Date();
-  const purpose = input.purpose?.trim();
-  const title = (purpose ? `${connection.label}: ${purpose}` : connection.label).slice(0, 200);
+  const purpose = input.purpose ? outsideName(input.purpose, 200) : "";
+  const title =
+    outsideName(purpose ? `${connection.label}: ${purpose}` : connection.label, 200) || "Agent";
   await tx
     .insertInto("threads")
     .values({
@@ -880,10 +886,14 @@ export async function respondToAgentOperation(
     }
     const thread = await tx
       .selectFrom("threads")
-      .select("accessMode")
+      .select(["accessMode", "originConnectionId"])
       .where("id", "=", session.threadId)
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
+    await assertRequestOriginMayContinue(tx, input.resolvedBy, {
+      connectionId: linked.connectionId,
+      threadOriginConnectionId: thread.originConnectionId,
+    });
     if (operation.mode !== minThreadAccessMode(thread.accessMode, connection.accessMode))
       throw refused(lineageEndedMessage);
     const row = await tx
