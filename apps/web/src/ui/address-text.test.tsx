@@ -32,7 +32,13 @@ it.each([
     <SentenceText parts={["Uses ", { name }, " to reach ", { address: "api.example.com" }, "."]} />,
   );
   expect(markup).toBe(
-    `Uses <bdi class="outside-name">${shown.replaceAll("&", "&amp;")}</bdi> to reach <bdi class="address">${box("api")}${box(".example")}${box(".com")}</bdi>.`,
+    `Uses “<bdi class="outside-name">${shown.replaceAll("&", "&amp;")}</bdi>” to reach <bdi class="address">${box("api")}${box(".example")}${box(".com")}</bdi>.`,
+  );
+});
+
+it("leaves a standalone outside name unquoted", () => {
+  expect(renderToStaticMarkup(<SentenceText parts={[{ name: "Slack · #team" }]} />)).toBe(
+    `<bdi class="outside-name">Slack · #team</bdi>`,
   );
 });
 

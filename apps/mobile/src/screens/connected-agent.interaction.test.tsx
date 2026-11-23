@@ -362,7 +362,9 @@ describe("one connected agent on the phone", () => {
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ type: "connection.revoke", connectionId: grok }),
     );
-    await vi.waitFor(() => expect(status().label).toBe("Grok can’t do anything now"));
+    await vi.waitFor(() =>
+      expect(readAsDrawn(status().label)).toBe("“Grok” can’t do anything now"),
+    );
     expect(status().steps?.map((step) => step.state)).toEqual(["done", "current", "pending"]);
     expect(section("scope")).toBeUndefined();
     Object.defineProperty(client.rpc, "connections.list", { value: list, configurable: true });
@@ -381,7 +383,9 @@ describe("one connected agent on the phone", () => {
   it("keeps Stopping and a lost last action apart, with nothing to disconnect or remove", async () => {
     await open(shopHelper);
     expect(status()).toMatchObject({ label: "Stopping its work" });
-    expect(section("status")?.footer?.text).toContain("Shop helper already can’t use anything");
+    expect(readAsDrawn(section("status")?.footer?.text ?? "")).toContain(
+      "“Shop helper” already can’t use anything",
+    );
     expect(section("uncertain")?.rows[0]).toMatchObject({
       tone: "attention",
       label: "Check its last action",
