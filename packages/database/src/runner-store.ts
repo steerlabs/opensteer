@@ -418,6 +418,7 @@ async function failRunsForRevokedRunner(
   transaction: Transaction<DatabaseSchema>,
   runnerId: RunnerId,
   links: ChannelLinks,
+  extraCommandIds: readonly DatabaseSchema["commands"]["id"][] = [],
 ): Promise<void> {
   const affected = await transaction
     .selectFrom("runs")
@@ -443,6 +444,7 @@ async function failRunsForRevokedRunner(
       .execute(databaseOperationOptions());
   }
   await lockRunProjectionRows(transaction, {
+    ...(extraCommandIds.length > 0 ? { commandIds: extraCommandIds } : {}),
     runIds: affected.map(({ id }) => id),
     threadIds: affected.map(({ threadId }) => threadId),
   });
@@ -1218,10 +1220,15 @@ export async function revokeRunner(
             )
             .execute(databaseOperationOptions());
         }
-        await failRunsForRevokedRunner(transaction, runnerId, links);
         const lockedOccurrences = await activeTriggerOccurrences(transaction)
           .orderBy("id", "asc")
           .execute(databaseOperationOptions());
+        await failRunsForRevokedRunner(
+          transaction,
+          runnerId,
+          links,
+          lockedOccurrences.map(({ commandId }) => commandId),
+        );
         const closed = await transaction
           .updateTable("browserSessions")
           .set({

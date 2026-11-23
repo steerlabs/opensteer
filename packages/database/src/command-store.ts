@@ -1829,7 +1829,7 @@ export async function retryCommand(
           admittedAccessMode: null,
           terminalEvidenceAt: null,
           contactLostAt: null,
-          ...(options?.provenNotStarted ? { provenNotStartedAt: now } : {}),
+          ...(options?.provenNotStarted ? { frameSentAt: null, provenNotStartedAt: now } : {}),
           runnerBootId: null,
           runnerId: null,
           startedAt: null,
@@ -1907,7 +1907,7 @@ export async function failCommand(
           .set({
             completedAt: now,
             error: jsonValue(failure),
-            ...(options?.provenNotStarted ? { provenNotStartedAt: now } : {}),
+            ...(options?.provenNotStarted ? { frameSentAt: null, provenNotStartedAt: now } : {}),
             status: "failed",
             updatedAt: now,
           })

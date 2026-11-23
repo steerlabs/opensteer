@@ -398,7 +398,7 @@ integration.sequential("automation failure notices", () => {
         destinationThreadId: fixture.threadId,
         attempts: 0,
         createdBy: fixture.userId,
-        detail: "Program failed\nfailure",
+        detail: "Exit code 1: Program failed\nfailure",
         id: expect.any(String),
         reason: "final-occurrence-failed",
         triggerId: created.trigger.id,
