@@ -30,6 +30,7 @@ import {
 } from "@opensteer/harness-acp";
 import {
   Deferred,
+  assertEngineMayRun,
   profileHarnessProviderStoreScope,
   providerSecretFile,
   reasoningEffortLabel,
@@ -1002,6 +1003,7 @@ class AntigravityAdapter implements HarnessAdapter {
 
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     assertNativeUser(context);
+    assertEngineMayRun("antigravity", context);
     const session = await this.#adapter.startSession(context);
     this.#assertSessionReference(session.providerSessionReference);
     return session;
@@ -1012,6 +1014,7 @@ class AntigravityAdapter implements HarnessAdapter {
     context: HarnessSessionContext,
   ): Promise<HarnessSession> {
     assertNativeUser(context);
+    assertEngineMayRun("antigravity", context);
     this.#assertSessionReference(providerSessionReference);
     const session = await this.#adapter.resumeSession(providerSessionReference, context);
     this.#assertSessionReference(session.providerSessionReference);

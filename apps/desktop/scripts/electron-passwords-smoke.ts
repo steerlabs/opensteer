@@ -848,7 +848,23 @@ async function releaseRace(
   await waitFor("release in flight", () => h.broker.received("signin.release").length > before);
   const held = z.object({ id: z.number() }).parse(h.broker.received("signin.release").at(-1));
   if (action) {
+    // A frame's executeJavaScript issued while its document is replaced can stay pending
+    // forever, so a reload is evaluated only once the reloaded document has finished loading.
+    const reloaded =
+      action === "reload"
+        ? new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(
+              () => reject(new Error("Timed out: the reloaded document finished loading")),
+              12_000,
+            );
+            h.contents.once("did-finish-load", () => {
+              clearTimeout(timer);
+              resolve();
+            });
+          })
+        : undefined;
     fixture.signal(id);
+    await reloaded;
     await waitFor("race happened before release answer", async () => {
       try {
         return (

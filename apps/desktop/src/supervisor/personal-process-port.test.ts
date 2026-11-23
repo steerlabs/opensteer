@@ -19,6 +19,7 @@ import {
   BoundedPersonalLog,
   NodePersonalProcessPort,
   PersonalProcessTimeoutError,
+  processSensitiveValues,
   readPersonalProcessSupervisorRelease,
   type PersonalChildProcess,
 } from "./personal-process-port.js";
@@ -46,6 +47,21 @@ afterEach(async () => {
 });
 
 describe("BoundedPersonalLog", () => {
+  it("scrubs proxy userinfo and a four-character password from child output", () => {
+    const sensitive = processSensitiveValues({
+      arguments: [],
+      component: "runner",
+      cwd: desktopDirectory,
+      environment: { HTTPS_PROXY: "http://alice:p@ss@proxy.invalid:8080" },
+      executable: process.execPath,
+    });
+    const log = new BoundedPersonalLog(undefined, sensitive);
+    log.append("connect failed via http://alice:p@ss@proxy.invalid:8080 (password p@ss)\n");
+    expect(log.text).toContain("proxy.invalid:8080");
+    expect(log.text).not.toContain("alice:");
+    expect(log.text).not.toContain("p@ss");
+  });
+
   it("redacts credentials and retains only a bounded UTF-8 tail", () => {
     const log = new BoundedPersonalLog(90, ["raw-capability-value"]);
     log.append("authorization=Bearer abc password=hunter2 token=runner-token secret=host-secret\n");

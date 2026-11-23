@@ -1,6 +1,7 @@
 import { toolOutputWithImages } from "@opensteer/harness";
 import { backgroundLightModels, imageGenerationToolName } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
+import { engineDiagnosticSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import { stat, mkdir, copyFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
@@ -63,6 +64,7 @@ import {
   type ResolvedAttachment,
   type HarnessSourceDescriptor,
   type SupervisedProcess,
+  assertEngineMayRun,
 } from "@opensteer/harness";
 import { CursorHarnessConfigSchema, type CursorHarnessConfig } from "./config.js";
 import {
@@ -76,7 +78,6 @@ import {
   cursorAccessModeHooks,
   cursorAgentToolsServerName,
   cursorMcpServerIdentifier,
-  cursorOpensteerMcpServerIdentifiers,
   cursorHookShellEnvironment,
   cursorPreToolUseDecision,
   materializeCursorPlugin,
@@ -507,6 +508,7 @@ interface ActiveTurn {
   readonly requestedBy: UserId;
   readonly runId: HarnessRunInput["runId"];
   interruptRequested: boolean;
+  diagnosticSecrets: readonly string[];
   started: boolean;
   terminal: boolean;
   usageReported: boolean;
@@ -614,6 +616,7 @@ class CursorHarnessSession implements HarnessSession {
       completedToolCalls: new Set(),
       startedToolArguments: new Map(),
       interruptRequested: run.signal.aborted,
+      diagnosticSecrets: [],
       requestedBy: run.requestedBy,
       runId: run.runId,
       started: false,
@@ -787,6 +790,7 @@ class CursorHarnessSession implements HarnessSession {
       environment: cursorHookShellEnvironment(run.environment),
       executable: this.#dependencies.executable,
     });
+    active.diagnosticSecrets = engineDiagnosticSecrets(launch.environment);
     const supervised = spawnSupervised({
       args: launch.args,
       cwd: launch.cwd,
@@ -851,7 +855,10 @@ class CursorHarnessSession implements HarnessSession {
     // Every failure the CLI reports before it can stream lands here: an
     // untrusted workspace, an invalid key and an unknown model all exit 1 with
     // an empty stdout and one sentence on stderr (verified).
-    this.#publishRunFailure(active, cursorExitFailure(exit.code, stderr.text()));
+    this.#publishRunFailure(
+      active,
+      cursorExitFailure(exit.code, stderr.text(), launch.environment),
+    );
   }
 
   #handleFrame(active: ActiveTurn, frame: CursorFrame): void {
@@ -1094,25 +1101,6 @@ class CursorHarnessSession implements HarnessSession {
         subject: "command",
       };
     }
-    if (event === "beforeMCPExecution") {
-      const server = typeof payload.mcp_server_name === "string" ? payload.mcp_server_name : "";
-      // Opensteer's own tools are approved by the Host's Run plan, as
-      // they are for Codex; asking again would turn a durable decision into
-      // provider-specific approval noise.
-      if (cursorOpensteerMcpServerIdentifiers.includes(server)) return undefined;
-      const toolName = typeof payload.tool_name === "string" ? payload.tool_name : "a tool";
-      return {
-        callId: hookCallId(payload),
-        presentation: {
-          detail: `${server || "An MCP server"} · ${toolName}`.slice(0, 20_000),
-          kind: "choice",
-          options: [...options],
-          risk: "medium",
-          title: "Use this tool?",
-        },
-        subject: "MCP tool call",
-      };
-    }
     // `preToolUse` is the catch-all, so what it does with one tool depends on
     // the tool and the mode; `cursorPreToolUseDecision` is that table.
     const tool = typeof payload.tool_name === "string" ? payload.tool_name : "";
@@ -1241,7 +1229,7 @@ class CursorHarnessSession implements HarnessSession {
   #publishFailure(active: ActiveTurn, error: OpensteerError): void {
     this.#publishRunFailure(active, {
       code: error.code === "harness_error" ? cursorFailureCode : error.code,
-      message: error.message,
+      message: redactNetworkCredentials(error.message, active.diagnosticSecrets),
       retryable: error.retryable,
     });
   }
@@ -1470,8 +1458,17 @@ export function cursorWorkspaceSlug(workspacePath: string): string {
  * `rate_limit_exceeded`) and is marked untested here rather than in a
  * changelog nobody reads (cursor-facts §A.8, open risk 8).
  */
-export function cursorExitFailure(code: number | null, stderr: string): CursorRunFailure {
-  const detail = stderr.split("\n").filter(Boolean).slice(-6).join("\n").slice(0, 2_000);
+export function cursorExitFailure(
+  code: number | null,
+  stderr: string,
+  environment: Readonly<Record<string, string>> = {},
+): CursorRunFailure {
+  const detail = redactNetworkCredentials(stderr, engineDiagnosticSecrets(environment))
+    .split("\n")
+    .filter(Boolean)
+    .slice(-6)
+    .join("\n")
+    .slice(0, 2_000);
   if (/usage[ _]limit|rate[ _]limit|quota exceeded/iu.test(stderr)) {
     return {
       code: harnessUsageLimitFailureCode,
@@ -1506,8 +1503,12 @@ export function cursorExitFailure(code: number | null, stderr: string): CursorRu
  * ways in and again inside `open`, which is the one path neither can skip.
  */
 function assertNativeUserBoundary(context: HarnessSessionContext): void {
-  if (context.runtimeBoundary.kind === "native-user") return;
-  throw new OpensteerError({ code: "forbidden", message: cursorIsolatedServiceDetail });
+  if (context.runtimeBoundary.kind !== "native-user")
+    throw new OpensteerError({ code: "forbidden", message: cursorIsolatedServiceDetail });
+  // Cursor reads the person's MCP servers from `$HOME/.cursor` whatever
+  // `CURSOR_CONFIG_DIR` says (cursor-agent 2026.09, `agent mcp list`), and a
+  // home of its own would also become the model's shell home.
+  assertEngineMayRun("cursor", context);
 }
 
 function validateProviderReference(reference: string): string {
@@ -1554,8 +1555,9 @@ async function runCursorCommand(
     environment: options.environment,
     executable,
   };
+  const wrapped = options.wrapProcessLaunch ? options.wrapProcessLaunch(launch) : launch;
   const supervised = spawnSupervised({
-    ...(options.wrapProcessLaunch ? options.wrapProcessLaunch(launch) : launch),
+    ...wrapped,
     maxOutputBytes: 4 * 1_024 * 1_024,
     signal: lifetime.signal,
   });
@@ -1566,13 +1568,17 @@ async function runCursorCommand(
       collectStreamText(supervised.stderr),
       supervised.exited,
     ]);
+    const diagnostic = redactNetworkCredentials(
+      stderr,
+      engineDiagnosticSecrets(wrapped.environment),
+    );
     if (exit.code !== 0) {
       throw new OpensteerError({
         code: "harness_error",
-        message: `Cursor \`agent ${options.args[0] ?? ""}\` failed (exit ${exit.code ?? "unknown"}): ${stderr.trim().slice(0, 500)}`,
+        message: `Cursor \`agent ${options.args[0] ?? ""}\` failed (exit ${exit.code ?? "unknown"}): ${diagnostic.trim().slice(0, 500)}`,
       });
     }
-    return { stderr, stdout };
+    return { stderr: diagnostic, stdout };
   } finally {
     clearTimeout(timer);
     options.signal.removeEventListener("abort", abort);

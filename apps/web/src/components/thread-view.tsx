@@ -1705,6 +1705,7 @@ function ThreadView({
                                 reportActionError(error);
                               }
                             },
+                            startedByOther: thread.startedByOther,
                           }}
                           disabled={!canRespond || thread.status === "archived"}
                           onAuthenticate={openHarnessAuthentication ?? undefined}

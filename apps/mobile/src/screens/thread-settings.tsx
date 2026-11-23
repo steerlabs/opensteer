@@ -9,6 +9,7 @@ import {
   type ModelSetting,
   lastExecutionSelection,
   accessModeOptions,
+  connectionModeDescriptions,
   accessModeUnavailableReason,
   placementForSelection,
   selectionForRoute,
@@ -611,6 +612,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
       accessMode={props.thread.accessMode}
       accessPlacement={currentPlacement}
       onChangeAccess={changeAccess}
+      startedByOther={props.thread.startedByOther}
       applyingKey={applyingKey}
       disabledReason={applyingKey === null ? disabledReason : "Updating thread settings…"}
       failure={failure}
@@ -765,6 +767,7 @@ interface CurrentSettingsProps {
   readonly accessMode: ThreadAccessMode;
   readonly accessPlacement: ThreadPlacementOption | null;
   readonly onChangeAccess: (mode: ThreadAccessMode) => void;
+  readonly startedByOther?: boolean | undefined;
 }
 
 function ModelPickerList(
@@ -923,7 +926,10 @@ function ModelPickerList(
                 <View style={styles.rowCopy}>
                   <AppText>{option.label}</AppText>
                   <AppText role="caption" tone="muted">
-                    {reason ?? option.description}
+                    {reason ??
+                      (props.startedByOther
+                        ? connectionModeDescriptions[option.mode]
+                        : option.description)}
                   </AppText>
                 </View>
                 {option.mode === props.accessMode ? <Symbol name="checkmark" /> : null}

@@ -1185,7 +1185,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
             ...row.pageBinding!,
             sessionId,
           }),
-        ).toBe(true);
+        ).toMatchObject({ pageBinding: { sessionId } });
       };
       const input = { ...ready.agent, callId: randomUUID(), site: "https://rebound.test" };
       if (credential === "login") {

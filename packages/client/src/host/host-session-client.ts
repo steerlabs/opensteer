@@ -596,6 +596,7 @@ export class HttpHostClient {
   readonly organizeTabs = this.#tabsClient.organizeTabs;
   readonly updateTabGroup = this.#tabsClient.updateTabGroup;
   readonly deleteTabGroup = this.#tabsClient.deleteTabGroup;
+  readonly closeTabGroup = this.#tabsClient.closeTabGroup;
   readonly listApps = this.#tabsClient.listApps;
   readonly getApp = this.#tabsClient.getApp;
   readonly renameApp = this.#tabsClient.renameApp;
@@ -5175,6 +5176,7 @@ function toThreadSummary(
     pendingRequests: thread.pendingRequests,
     purpose: thread.purpose,
     runnerLabel: environment?.name ?? "Unavailable work location",
+    ...(thread.startedByOther ? { startedByOther: true } : {}),
     status: thread.status,
     title: thread.title,
     icon: thread.icon ?? null,

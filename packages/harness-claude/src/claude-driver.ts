@@ -15,6 +15,11 @@ import { workflowSessionRoot } from "./workflow-transcript.js";
 import { type ClaudeExecutableInspection } from "./executable.js";
 import { claudeSdkProcess } from "./sdk-process.js";
 import { isRecord } from "@opensteer/shared/isRecord";
+import {
+  engineDiagnosticSecrets,
+  networkEnvironmentNames,
+  redactNetworkCredentials,
+} from "@opensteer/shared/safeMessage";
 import { ClaudeContextMeasurement } from "./context-measurement.js";
 import { mergeEnvironment } from "@opensteer/shared/userEnvironment";
 import { randomUUID } from "node:crypto";
@@ -116,6 +121,7 @@ import {
   type HarnessProviderState,
   type HarnessProviderStoreScope,
   profileHarnessProviderStoreScope,
+  engineConfiguration,
   spawnSupervised,
   type HarnessInput,
   type HarnessSession,
@@ -124,6 +130,7 @@ import {
   type HarnessSteerInput,
   type HarnessRunInput,
   type ResolvedAttachment,
+  type HarnessEngineConfiguration,
 } from "@opensteer/harness";
 import {
   ClaudeHarnessConfigSchema,
@@ -199,6 +206,15 @@ const claudeManagedBoundarySettings = Object.freeze({
   disableClaudeAiConnectors: true,
   disableRemoteControl: true,
 }) satisfies NonNullable<Options["managedSettings"]>;
+/**
+ * With the engine's own configuration the person's hooks, bundled skills and
+ * claude.ai connectors stay. Remote Control does not: it would let claude.ai
+ * drive the Run from outside the task, where Opensteer can neither show nor
+ * stop what it does.
+ */
+const claudeManagedOwnSettings = Object.freeze({
+  disableRemoteControl: true,
+}) satisfies NonNullable<Options["managedSettings"]>;
 
 export function managedClaudeSettings(
   context: Pick<
@@ -206,8 +222,10 @@ export function managedClaudeSettings(
     "machineAccessPlatform" | "machineAccessRelaySocket" | "runtimeBoundary" | "providerState"
   > &
     Pick<Partial<HarnessSessionContext>, "attachmentDirectory" | "attachmentRoot">,
+  configuration: HarnessEngineConfiguration = "stripped",
 ): NonNullable<Options["managedSettings"]> {
-  if (context.runtimeBoundary.kind === "native-user") return claudeManagedBoundarySettings;
+  const base = configuration === "own" ? claudeManagedOwnSettings : claudeManagedBoundarySettings;
+  if (context.runtimeBoundary.kind === "native-user") return base;
   // The denied root is the Runner's whole data directory — its identity keys
   // and every profile's provider state, not merely this harness's own files —
   // so nothing the model runs may read or write any part of it.
@@ -218,7 +236,7 @@ export function managedClaudeSettings(
     privateStateRoot: privateRoot,
   });
   return {
-    ...claudeManagedBoundarySettings,
+    ...base,
     permissions: {
       deny: [`Read(${privateRoot}/**)`, `Edit(${privateRoot}/**)`],
     },
@@ -263,23 +281,18 @@ const inheritedEnvironmentKeys = [
   "LANG",
   "LC_ALL",
   "LOGNAME",
-  "NODE_EXTRA_CA_CERTS",
-  "NO_PROXY",
   "PATH",
   "PATHEXT",
   "SHELL",
-  "SSL_CERT_DIR",
-  "SSL_CERT_FILE",
   "SYSTEMROOT",
   "TEMP",
   "TMP",
   "TMPDIR",
   "USER",
   "USERPROFILE",
+  // How the engine reaches the network: a proxy and the certificates it trusts.
+  ...networkEnvironmentNames,
 ] as const;
-
-const credentialNamePattern =
-  /(?:API_KEY|AUTH_TOKEN|ACCESS_KEY|SECRET|PASSWORD|PRIVATE_KEY|BEARER_TOKEN|CREDENTIAL)/iu;
 
 export function claudeAccessModeConfiguration(accessMode: ThreadAccessMode): {
   readonly allowDangerouslySkipPermissions: boolean;
@@ -2024,6 +2037,7 @@ class ClaudeHarnessSession implements HarnessSession {
         active.environment,
         this.#config.provider,
         this.#context.providerState,
+        engineConfiguration(this.#context),
       );
       const profile =
         environment.CLAUDE_CONFIG_DIR ??
@@ -2279,6 +2293,7 @@ class ClaudeHarnessSession implements HarnessSession {
 
   #queryOptions(environment: Record<string, string | undefined>, active: ActiveTurn): Options {
     const access = claudeAccessModeConfiguration(this.#context.accessMode);
+    const own = engineConfiguration(this.#context) === "own";
     const systemAppend = this.#systemPromptAppend();
     const opensteerTools = this.#context.agentTools.tools.map((name) => `mcp__opensteer__${name}`);
     const { options: selectedOptions } = this.#context.modelSelection;
@@ -2302,14 +2317,21 @@ class ClaudeHarnessSession implements HarnessSession {
       // Native safe-command rules can allow Bash before canUseTool is consulted.
       // SDK hooks remain active while our settings suppress ordinary ambient hooks.
       // Organization-managed policy and hooks can override these settings.
-      ...(this.#context.accessMode === "approval-required" ||
-      this.#context.accessMode === "auto-accept-edits"
+      // In the person's own task the mode is the task's and the rules are the
+      // person's: what they allowed in their engine is allowed, as in their
+      // terminal started in that mode, and Opensteer adds no hook of its own.
+      ...(!own &&
+      (this.#context.accessMode === "approval-required" ||
+        this.#context.accessMode === "auto-accept-edits")
         ? { hooks: { PreToolUse: [claudeShellApprovalHook()] } }
         : {}),
       cwd: this.#context.workspacePath,
       additionalDirectories: [
         ...this.#context.writableRoots.filter((root) => root !== this.#context.workspacePath),
         ...(this.#context.attachmentDirectory ? [this.#context.attachmentDirectory] : []),
+        // Agent home's own skills. Claude Code loads `.claude/skills` from an
+        // added directory; the project's own configuration stays the project's.
+        ...(own && this.#skillPlugin ? [this.#skillPlugin.projectRoot] : []),
       ],
       env: {
         ...environment,
@@ -2322,7 +2344,11 @@ class ClaudeHarnessSession implements HarnessSession {
       promptSuggestions: false,
       includePartialMessages: true,
       maxTurns: this.#config.maxTurns,
-      managedSettings: managedClaudeSettings(this.#context),
+      managedSettings: managedClaudeSettings(this.#context, own ? "own" : "stripped"),
+      // Beside the person's own servers when the engine has its own
+      // configuration. A server of theirs named `opensteer` (Opensteer's own
+      // connection instructions name it so) is replaced by this one, which
+      // Claude Code gives precedence as a command-line server.
       mcpServers: {
         opensteer: {
           alwaysLoad: false,
@@ -2346,26 +2372,30 @@ class ClaudeHarnessSession implements HarnessSession {
               skipMcpDiscovery: true,
               type: "local" as const,
             })),
-            skills: [...this.#skillPlugin.skills],
           }
-        : { skills: [] }),
+        : {}),
+      // A skill list hides every skill it does not name; the person's own
+      // skills stay visible when the engine has its own configuration.
+      ...(own ? {} : { skills: this.#skillPlugin ? [...this.#skillPlugin.skills] : [] }),
       persistSession: true,
-      ...(this.#skillPlugin ? { projectConfigRoot: this.#skillPlugin.projectRoot } : {}),
-      settingSources: this.#skillPlugin ? ["project"] : [],
-      strictMcpConfig: true,
+      ...(!own && this.#skillPlugin ? { projectConfigRoot: this.#skillPlugin.projectRoot } : {}),
+      settingSources: own ? ["user", "project", "local"] : this.#skillPlugin ? ["project"] : [],
+      strictMcpConfig: !own,
       systemPrompt: {
         append: systemAppend,
         excludeDynamicSections: true,
         preset: "claude_code",
         type: "preset",
       },
-      tools: [
-        ...claudeBuiltinTools,
-        ...claudeShellTools(),
-        claudeSubagentTool,
-        "Workflow",
-        claudeTaskStopTool,
-      ],
+      tools: own
+        ? { preset: "claude_code", type: "preset" }
+        : [
+            ...claudeBuiltinTools,
+            ...claudeShellTools(),
+            claudeSubagentTool,
+            "Workflow",
+            claudeTaskStopTool,
+          ],
       stderr: (chunk) => this.#activeTurn?.stderr.append(chunk),
       // The Runner's sandbox and the process supervisor have to enclose the
       // whole harness process tree, and a custom spawn is the SDK's only seam
@@ -3503,27 +3533,41 @@ class ClaudeHarnessSession implements HarnessSession {
         `Claude Code ${message.claude_code_version} is older than Opensteer supports; update it to ${MINIMUM_CLAUDE_CODE_VERSION} or newer`,
       );
     }
-    const unexpectedMcpServers = message.mcp_servers
-      .map(({ name }) => name)
-      .filter((name) => !opensteerMcpServerNames.has(name));
-    if (unexpectedMcpServers.length > 0) {
-      this.#markUnusable(
-        `Claude exposed MCP servers outside the Opensteer runtime boundary: ${unexpectedMcpServers.join(", ")}`,
+    if (engineConfiguration(this.#context) === "own") {
+      // The person's own servers and Claude Code's own tools belong here; only
+      // Opensteer's server has to be the one Opensteer started.
+      const opensteer = message.mcp_servers.find(({ name }) => name === "opensteer");
+      if (!opensteer) {
+        this.#markUnusable("Claude Code did not load Opensteer's own MCP server");
+      }
+      if (opensteer.source !== undefined && opensteer.source !== "dynamic") {
+        this.#markUnusable(
+          `Claude Code loaded an MCP server named opensteer from ${opensteer.source} settings in place of Opensteer's own`,
+        );
+      }
+    } else {
+      const unexpectedMcpServers = message.mcp_servers
+        .map(({ name }) => name)
+        .filter((name) => !opensteerMcpServerNames.has(name));
+      if (unexpectedMcpServers.length > 0) {
+        this.#markUnusable(
+          `Claude exposed MCP servers outside the Opensteer runtime boundary: ${unexpectedMcpServers.join(", ")}`,
+        );
+      }
+      const builtinTools = new Set<string>([
+        ...claudeBuiltinTools,
+        ...claudeShellTools(),
+        ...claudeDelegationTools,
+        claudeTaskStopTool,
+      ]);
+      const unexpectedTools = message.tools.filter(
+        (name) => !builtinTools.has(name) && !name.startsWith("mcp__opensteer__"),
       );
-    }
-    const builtinTools = new Set<string>([
-      ...claudeBuiltinTools,
-      ...claudeShellTools(),
-      ...claudeDelegationTools,
-      claudeTaskStopTool,
-    ]);
-    const unexpectedTools = message.tools.filter(
-      (name) => !builtinTools.has(name) && !name.startsWith("mcp__opensteer__"),
-    );
-    if (unexpectedTools.length > 0) {
-      this.#markUnusable(
-        `Claude exposed tools outside the Opensteer runtime boundary: ${unexpectedTools.join(", ")}`,
-      );
+      if (unexpectedTools.length > 0) {
+        this.#markUnusable(
+          `Claude exposed tools outside the Opensteer runtime boundary: ${unexpectedTools.join(", ")}`,
+        );
+      }
     }
     // Other plugins belong to the CLI, but none may impersonate the skills
     // supplied from this Thread's synthetic plugin directories.
@@ -3716,6 +3760,7 @@ async function claudeProviderEnvironment(
   supplied: Readonly<Record<string, string>>,
   provider: ClaudeHarnessConfig["provider"],
   providerState: HarnessProviderState,
+  configuration: HarnessEngineConfiguration = "stripped",
 ): Promise<Record<string, string | undefined>> {
   const providerHome = providerState.providerHomeDirectory;
   if (providerState.kind === "isolated" && !providerHome) {
@@ -3725,6 +3770,7 @@ async function claudeProviderEnvironment(
     const environment = buildClaudeEnvironment(
       { ...supplied, CLAUDE_CONFIG_DIR: providerHome! },
       provider,
+      configuration,
     );
     if (provider === "anthropic") {
       const apiKey = await claudeProfileApiKey(providerState).read();
@@ -3732,7 +3778,7 @@ async function claudeProviderEnvironment(
     }
     return environment;
   }
-  return buildClaudeEnvironment(supplied, provider);
+  return buildClaudeEnvironment(supplied, provider, configuration);
 }
 
 const claudeProfileApiKeyFileName = ".opensteer-anthropic-api-key";
@@ -3758,6 +3804,7 @@ async function removeClaudeProfileApiKey(providerState: HarnessProviderState): P
 function buildClaudeEnvironment(
   supplied: Readonly<Record<string, string>>,
   provider: ClaudeHarnessConfig["provider"],
+  configuration: HarnessEngineConfiguration,
 ): Record<string, string | undefined> {
   assertProviderConfiguration(supplied, provider);
   const inherited: Record<string, string> = {};
@@ -3778,17 +3825,21 @@ function buildClaudeEnvironment(
   if (provider === "vertex") environment.CLAUDE_CODE_USE_VERTEX = "1";
   if (provider === "foundry") environment.CLAUDE_CODE_USE_FOUNDRY = "1";
 
-  environment.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
-  environment.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS = "1";
+  if (configuration === "stripped") {
+    environment.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
+    environment.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS = "1";
+    environment.CLAUDE_CODE_DISABLE_WORKFLOWS = "1";
+    environment.ENABLE_CLAUDEAI_MCP_SERVERS = "false";
+  }
+  // An engine that updates or reports on its own while a Run uses it can end
+  // that Run; Opensteer updates the engines it runs itself.
   environment.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
-  environment.CLAUDE_CODE_DISABLE_WORKFLOWS = "1";
   environment.CLAUDE_AGENT_SDK_CLIENT_APP = "opensteer/0.0.0";
   // A model-executed session must never sign this profile — or the machine's
   // own ambient Claude configuration — in or out.
   environment.DISABLE_LOGIN_COMMAND = "1";
   environment.DISABLE_LOGOUT_COMMAND = "1";
   environment.DISABLE_UPGRADE_COMMAND = "1";
-  environment.ENABLE_CLAUDEAI_MCP_SERVERS = "false";
   return environment;
 }
 
@@ -4154,11 +4205,7 @@ function sanitizeErrorMessage(
   environment: Readonly<Record<string, string>>,
   maxBytes: number,
 ): string {
-  let sanitized = message;
-  for (const [name, value] of Object.entries(environment)) {
-    if (!credentialNamePattern.test(name) || value.length < 4) continue;
-    sanitized = sanitized.split(value).join("[REDACTED]");
-  }
+  let sanitized = redactNetworkCredentials(message, engineDiagnosticSecrets(environment, 4));
   sanitized = sanitized.replace(/os_secret_[A-Za-z0-9_-]+/gu, "[OPAQUE_CREDENTIAL]");
   return clipUtf8(sanitized, maxBytes);
 }
