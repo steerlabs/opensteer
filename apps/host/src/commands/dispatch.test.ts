@@ -271,7 +271,7 @@ describe("dispatchCommand", () => {
       admit: async () => ({ answer: "now" as const, face: 0, execution: null }),
       scope: signedIn,
       attempts: {
-        begin: async () => "cat_1",
+        begin: async () => ({ kind: "begun" as const, id: "cat_1" }),
         settle: async (_id: string, state: string) => {
           settled.push(state);
         },

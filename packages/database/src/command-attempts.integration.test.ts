@@ -25,14 +25,17 @@ describeStore("a connection's command acting outside the database (G4)", (test) 
       grant: { scope: "everything" },
     });
     await connections.activate(record.id, `hash-${randomBytes(8).toString("hex")}`);
-    const attempt = (key: string) =>
-      beginCommandAttempt(f.database, {
+    const attempt = async (key: string) => {
+      const begun = await beginCommandAttempt(f.database, {
         requestedBy: owner,
         callerKey: `connection:${record.id}`,
         connectionId: record.id,
         type: "machine.revoke",
         idempotencyKey: key,
       });
+      if (begun.kind !== "begun") throw new Error("expected a new attempt");
+      return begun.id;
+    };
     const acting = await attempt("revoke-1");
     const cut = await attempt("revoke-2");
     await connections.revoke(owner, record.id);
@@ -53,5 +56,59 @@ describeStore("a connection's command acting outside the database (G4)", (test) 
     );
     expect(ended).toMatchObject({ kind: "command", handedOff: false });
     expect(ended?.contactLostAt).not.toBeNull();
+  });
+});
+
+describeStore("one key, one attempt (K1)", (test) => {
+  test("an earlier attempt of the key that is running or unknown is answered, never begun again", async ({
+    storeFixture: f,
+  }) => {
+    const owner = (await f.createRunFixture("command-attempts-key")).userId;
+    const input = (key: string) => ({
+      requestedBy: owner,
+      callerKey: "run:run_one-key",
+      connectionId: null,
+      type: "machine.revoke",
+      idempotencyKey: key,
+    });
+    const first = await beginCommandAttempt(f.database, input("k-running"));
+    expect(first).toMatchObject({ kind: "begun" });
+    // While it is running, the same key sent again does not act.
+    expect(await beginCommandAttempt(f.database, input("k-running"))).toEqual({
+      kind: "prior",
+      state: "running",
+    });
+    // Once it may have happened, never again.
+    await settleCommandAttempt(f.database, (first as { id: string }).id, "unknown");
+    expect(await beginCommandAttempt(f.database, input("k-running"))).toEqual({
+      kind: "prior",
+      state: "unknown",
+    });
+    // Done: the handler's own lookup replays it; no second attempt is recorded.
+    const done = await beginCommandAttempt(f.database, input("k-done"));
+    await settleCommandAttempt(f.database, (done as { id: string }).id, "done");
+    expect(await beginCommandAttempt(f.database, input("k-done"))).toEqual({
+      kind: "prior",
+      state: "done",
+    });
+    // Failed: nothing happened, so it may be sent again.
+    const failed = await beginCommandAttempt(f.database, input("k-failed"));
+    await settleCommandAttempt(f.database, (failed as { id: string }).id, "failed");
+    expect(await beginCommandAttempt(f.database, input("k-failed"))).toMatchObject({
+      kind: "begun",
+    });
+    // Two at once: one begins, the other finds it.
+    const both = await Promise.all([
+      beginCommandAttempt(f.database, input("k-both")),
+      beginCommandAttempt(f.database, input("k-both")),
+    ]);
+    expect(both.map((entry) => entry.kind).sort()).toEqual(["begun", "prior"]);
+    expect(
+      await f.database
+        .selectFrom("commandAttempts")
+        .select("state")
+        .where("idempotencyKey", "=", "k-both")
+        .execute(),
+    ).toEqual([{ state: "running" }]);
   });
 });

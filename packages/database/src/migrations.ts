@@ -710,6 +710,9 @@ export function migrationProvider(options?: {
                       where connection_id is not null;
                     create index command_attempts_running on command_attempts (id)
                       where state = 'running';
+                    -- One key, one attempt (K1): an earlier one that did not fail answers instead.
+                    create unique index command_attempts_one_key on command_attempts
+                      (requested_by, caller_key, idempotency_key) where state <> 'failed';
                   `.execute(database);
                 },
               },

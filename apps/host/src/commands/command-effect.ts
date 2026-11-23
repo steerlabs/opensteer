@@ -2,6 +2,7 @@ import { isRaisedBeforeEffect, OpensteerError } from "@opensteer/core";
 import {
   beginCommandAttempt,
   settleCommandAttempt,
+  type CommandAttemptBegin,
   type CommandAttemptInput,
   type DatabaseSchema,
 } from "@opensteer/database";
@@ -13,7 +14,7 @@ export interface CommandAttempts {
   begin(
     input: CommandAttemptInput,
     readmit?: (transaction: Kysely<DatabaseSchema>) => Promise<void>,
-  ): Promise<string>;
+  ): Promise<CommandAttemptBegin>;
   settle(id: string, state: "done" | "failed" | "unknown"): Promise<void>;
 }
 
@@ -37,7 +38,9 @@ export type CommandEffectOutcome<T> =
  * its last admission (G3, `readmit`), and in the asking connection's Disconnect set; then it acts;
  * then it settles: done, failed only when the error was raised before the effect (or the Home's
  * own refusal inside a database-only command's one transaction), and otherwise unknown. A refusal
- * at the last admission records nothing and is thrown as it is.
+ * at the last admission records nothing and is thrown as it is. The same key again (K1) is
+ * unknown without acting while its attempt runs or once it may have happened; done, the handler's
+ * own lookup replays it.
  */
 export async function runCommandEffect<T>(input: {
   readonly row: CommandRow;
@@ -47,8 +50,13 @@ export async function runCommandEffect<T>(input: {
   readonly act: () => Promise<T>;
 }): Promise<CommandEffectOutcome<T>> {
   const outside = commandEffect(input.row) === "outside";
-  const id =
+  const begun =
     outside && input.attempts ? await input.attempts.begin(input.attempt, input.readmit) : null;
+  // One key, one attempt (K1): one that is running or may have happened is not sent again.
+  if (begun?.kind === "prior" && begun.state !== "done")
+    return { status: "unknown", error: new Error(`An attempt with this key is ${begun.state}`) };
+  // One that is done is replayed by the handler's own lookup, with no second attempt.
+  const id = begun?.kind === "begun" ? begun.id : null;
   const settle = async (state: "done" | "failed" | "unknown") => {
     if (id && input.attempts) await input.attempts.settle(id, state);
   };

@@ -21,7 +21,7 @@ function recorded() {
       await readmit?.({} as never);
       const id = `cat_${states.size + 1}`;
       states.set(id, "running");
-      return id;
+      return { kind: "begun", id };
     },
     settle: async (id, state) => {
       states.set(id, state);
@@ -100,5 +100,32 @@ describe("the one way a command acts (G4)", () => {
     });
     expect(lost.status).toBe("unknown");
     expect(states.size).toBe(0);
+  });
+
+  it("sends a key once: running or unknown before, it answers unknown and does not act (K1)", async () => {
+    for (const state of ["running", "unknown"] as const) {
+      const act = vi.fn(async () => "ok");
+      const attempts: CommandAttempts = {
+        begin: async () => ({ kind: "prior", state }),
+        settle: async () => {
+          throw new Error("nothing to settle");
+        },
+      };
+      expect((await runCommandEffect({ row: outside, attempts, attempt, act })).status).toBe(
+        "unknown",
+      );
+      expect(act).not.toHaveBeenCalled();
+    }
+    // Done: the handler's own lookup answers, and no attempt is settled.
+    const settle = vi.fn(async () => undefined);
+    expect(
+      await runCommandEffect({
+        row: outside,
+        attempts: { begin: async () => ({ kind: "prior", state: "done" }), settle },
+        attempt,
+        act: async () => "replayed",
+      }),
+    ).toEqual({ status: "done", output: "replayed" });
+    expect(settle).not.toHaveBeenCalled();
   });
 });
