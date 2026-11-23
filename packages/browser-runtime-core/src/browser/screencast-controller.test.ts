@@ -1468,9 +1468,18 @@ describe("the follow view, when a paint-timed-out tab moves to a new size (U3)",
       for (const listener of listeners)
         listener({ change: "updated", surface: { ...surface }, type: "changed" });
       await settle();
-      // Stale paint wait must be cleared: rendering demand is back on and old timer is gone.
+      // Stale paint wait must be cleared: rendering demand is back on and old paint timer is gone
+      // (only the new start's 5 s answer-bound timer is armed while Chromium holds the start).
+      const internals = follow as unknown as {
+        readonly bound: {
+          readonly paintTimer: unknown;
+          readonly firstFrameTimer: { readonly ms: number } | null;
+        } | null;
+      };
       expect(retained).toBe(1);
-      expect(vi.getTimerCount()).toBe(0);
+      expect(internals.bound?.paintTimer).toBeNull();
+      expect(internals.bound?.firstFrameTimer?.ms).toBe(5_000);
+      expect(vi.getTimerCount()).toBe(1);
       holdStart.resolve();
       await settle();
       await follow.close();
@@ -2150,22 +2159,36 @@ describe("the follow view, when a page loads forever and never paints (U6)", asy
       await settle();
       expect(starts).toBe(1);
 
+      // While cast 1's stop is still unanswered and cast 2's start has NOT answered yet, a stale
+      // frame of cast 1 arrives and is held; when cast 2 answers, that held frame is shown but
+      // stays unproven (shown false, unpictured kept, timer stays armed).
+      const start2 = Promise.withResolvers<void>();
+      let holdStart2 = true;
+      cdp.responses.set("Page.startScreencast", async () => {
+        starts += 1;
+        if (holdStart2) await start2.promise;
+        return {};
+      });
+
       // Cast 1 is silent: 3 s first-frame timer fires, repair begins, stop hangs in Chromium.
       vi.advanceTimersByTime(3_001);
       await settle();
       expect(stopAnswers).toHaveLength(1);
 
-      // After 5 s, stop times out and cast 2 starts (also silent!).
+      // After 5 s, stop times out and cast 2 starts (held in Chromium, also silent!).
       vi.advanceTimersByTime(5_001);
       await settle();
       expect(starts).toBe(2);
 
-      // While cast 1's stop is still unanswered, a stale frame of cast 1 arrives and is shown.
+      // Stale frame of cast 1 arrives BEFORE cast 2's start is answered (held with stale: true).
       cdp.emit("Page.screencastFrame", {
         data: jpeg(800, 600).toString("base64"),
         metadata: { deviceHeight: 600, deviceWidth: 800 },
         sessionId: 1,
       });
+      await settle();
+      holdStart2 = false;
+      start2.resolve();
       await settle();
       expect(delivered).toHaveLength(1);
       // It must NOT prove cast 2 works: shown stays false, unpictured is NOT wiped, timer stays armed!
@@ -2179,6 +2202,196 @@ describe("the follow view, when a page loads forever and never paints (U6)", asy
       expect(errors).toEqual(["browser-capture-mismatch"]);
 
       for (const resolve of stopAnswers.splice(0)) resolve();
+      await follow.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Opus re-check X1: once a new start is answered after a stop timed out, its frames prove the
+  // cast works even if the old stop's answer is lost forever (no false "no picture arrived").
+  it("proves the new cast once its start is answered even when a prior stop never answers (X1)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const surface = {
+        active: true,
+        documentId: "doc-1",
+        geometryRevision: 1,
+        id: "tab-1" as never,
+        loading: false,
+        url: "https://example.com/",
+      };
+      const delivered: Buffer[] = [];
+      const errors: string[] = [];
+      const cdp = new FakeCdpSession();
+      let starts = 0;
+      cdp.responses.set("Page.startScreencast", async () => {
+        starts += 1;
+        return {};
+      });
+      // Stop answer is lost forever (S3 premise).
+      cdp.responses.set("Page.stopScreencast", () => new Promise(() => undefined));
+      const binding = {
+        cdp,
+        page: {
+          applyGeometry: async () => undefined,
+          capture: {
+            read: () => ({ height: 600, rasterScale: 1, revision: 1, width: 800 }),
+            subscribe: () => () => undefined,
+          },
+          invalidateSurface: async () => undefined,
+          settleRendering: async () => undefined,
+        },
+        surface,
+      };
+      const ledger = {
+        active: () => binding,
+        binding: () => binding,
+        dialogOf: () => null,
+        dialogOpen: () => false,
+        recordPageScale: () => undefined,
+        subscribe: () => () => undefined,
+        use: async <T>(_surfaceId: unknown, operation: () => Promise<T>) => operation(),
+        viewportOf: () => ({ height: 600, width: 800 }),
+        withGeometry: async <T>(_surfaceId: unknown, operation: () => Promise<T>) => operation(),
+      };
+      const follow = new ScreencastController({
+        frames: new LatestFrameStream({
+          sendFrame: async (frame) => {
+            delivered.push(frame.data);
+          },
+        }),
+        ledger: ledger as never,
+        onDialogChanged: () => undefined,
+        onError: (error) => errors.push(error.reason ?? error.message),
+      });
+      const internals = follow as unknown as {
+        readonly bound: {
+          readonly firstFrameTimer: { readonly ms: number } | null;
+          readonly state: { readonly shown: boolean; readonly unpictured: number };
+        } | null;
+        readonly sessionStates: WeakMap<object, { readonly staleStops: number }>;
+      };
+
+      await follow.start();
+      await follow.setStreaming(true);
+      await settle();
+      expect(starts).toBe(1);
+
+      // Cast 1 silent -> 3 s repair -> stop hangs -> 5 s stop timeout -> cast 2 starts & answers.
+      vi.advanceTimersByTime(3_001);
+      await settle();
+      vi.advanceTimersByTime(5_001);
+      await settle();
+      expect(starts).toBe(2);
+      expect(internals.sessionStates.get(cdp)?.staleStops).toBe(0);
+
+      // Cast 2 delivers its live picture after its start was answered: proves cast 2 works!
+      cdp.emit("Page.screencastFrame", {
+        data: jpeg(800, 600).toString("base64"),
+        metadata: { deviceHeight: 600, deviceWidth: 800 },
+        sessionId: 1,
+      });
+      await settle();
+      expect(delivered).toHaveLength(1);
+      expect(internals.bound?.state.shown).toBe(true);
+      expect(internals.bound?.firstFrameTimer).toBeNull();
+
+      // Long after 30 s, no false "no picture arrived" error fires.
+      vi.advanceTimersByTime(30_000);
+      await settle();
+      expect(errors).toEqual([]);
+      expect(starts).toBe(2);
+
+      await follow.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Opus re-check X2: a start that Chromium never answers is bounded by stopAnswerWaitMs,
+  // abandoned so any late answer is stopped, retried, and given up at pictureLimit.
+  it("abandons a start that Chromium never answers after stopAnswerWaitMs, stops any late answer, and gives up at pictureLimit (X2)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const surface = {
+        active: true,
+        documentId: "doc-1",
+        geometryRevision: 1,
+        id: "tab-1" as never,
+        loading: false,
+        url: "https://example.com/",
+      };
+      const errors: string[] = [];
+      const cdp = new FakeCdpSession();
+      const startAnswers: Array<() => void> = [];
+      let stops = 0;
+      cdp.responses.set(
+        "Page.startScreencast",
+        () =>
+          new Promise((resolve) => {
+            startAnswers.push(() => resolve({}));
+          }),
+      );
+      cdp.responses.set("Page.stopScreencast", async () => {
+        stops += 1;
+        return {};
+      });
+      const binding = {
+        cdp,
+        page: {
+          applyGeometry: async () => undefined,
+          capture: {
+            read: () => ({ height: 600, rasterScale: 1, revision: 1, width: 800 }),
+            subscribe: () => () => undefined,
+          },
+          invalidateSurface: async () => undefined,
+          settleRendering: async () => undefined,
+        },
+        surface,
+      };
+      const ledger = {
+        active: () => binding,
+        binding: () => binding,
+        dialogOf: () => null,
+        dialogOpen: () => false,
+        recordPageScale: () => undefined,
+        subscribe: () => () => undefined,
+        use: async <T>(_surfaceId: unknown, operation: () => Promise<T>) => operation(),
+        viewportOf: () => ({ height: 600, width: 800 }),
+        withGeometry: async <T>(_surfaceId: unknown, operation: () => Promise<T>) => operation(),
+      };
+      const follow = new ScreencastController({
+        frames: new LatestFrameStream({ sendFrame: async () => undefined }),
+        ledger: ledger as never,
+        onDialogChanged: () => undefined,
+        onError: (error) => errors.push(`${error.reason}:${error.message}`),
+      });
+
+      await follow.start();
+      void follow.setStreaming(true).catch(() => undefined);
+      await settle();
+      expect(startAnswers).toHaveLength(1);
+      // 5 s start-answer timer must be armed.
+      expect(vi.getTimerCount()).toBe(1);
+
+      // 5 s -> start 1 abandoned, retry start 2 sent; 5 s -> start 2 abandoned -> desktop gives up (pictureLimit=1).
+      vi.advanceTimersByTime(5_001);
+      await settle();
+      expect(startAnswers).toHaveLength(2);
+      expect(errors).toEqual([]);
+
+      vi.advanceTimersByTime(5_001);
+      await settle();
+      expect(errors).toEqual([
+        "browser-capture-mismatch:The picture of the page was given up: the page did not answer the start.",
+      ]);
+
+      // When Chromium later answers the abandoned starts, the controller stops them.
+      for (const resolve of startAnswers.splice(0)) resolve();
+      await settle();
+      expect(stops).toBeGreaterThanOrEqual(1);
+
       await follow.close();
     } finally {
       vi.useRealTimers();
@@ -2254,8 +2467,11 @@ describe("the follow view, when a page loads forever and never paints (U6)", asy
       await settle();
       expect(sizeCalls).toBe(4);
       expect(errors).toEqual([
-        "browser-capture-mismatch:The picture of the page was given up: Emulation.setVisibleSize failed.",
+        "browser-capture-mismatch:The picture of the page was given up: the page could not start casting while loading.",
       ]);
+      expect(follow.diagnostics.find((entry) => entry.stage === "cast-failed")?.reason).toContain(
+        "Emulation.setVisibleSize failed",
+      );
       expect(vi.getTimerCount()).toBe(0);
 
       await follow.close();

@@ -3,6 +3,7 @@ import {
   after,
   afterSession,
   canTakeStart,
+  captureWaitMs,
   firstFrameWaitMs,
   fits,
   frameVerdict,
@@ -12,9 +13,12 @@ import {
   nextStep,
   otherSizeWaitMs,
   pictureLimit,
+  prepareWaitMs,
   refusalReleased,
+  repairWaitMs,
   sameCast,
   startFacts,
+  stopAnswerWaitMs,
   wanted,
   type CastEvent,
   type CastFacts,
@@ -295,7 +299,7 @@ describe("the next step", () => {
               true,
             );
             expect(canTakeStart(now.tab!, state.refusal).ok, at).toBe(true);
-            if (want.kind === "cast" && state.failed)
+            if (want.kind === "cast" && state.failed && state.failed.key !== null)
               expect(sameCast(state.failed.key, want.key), at).toBe(false);
             // A paint wait holds only the picture it timed out for.
             expect(
@@ -321,6 +325,16 @@ describe("the next step", () => {
             expect(fit, at).toBe("new-document");
             break;
           case "repair":
+            if (want.kind === "hold" && want.why === "its capture is let go") {
+              expect(
+                step.retry &&
+                  state.trouble === "no-picture" &&
+                  !state.captureRetried &&
+                  (state.shown || state.unpictured < limit),
+                at,
+              ).toBe(true);
+              break;
+            }
             expect(told.state === "running" && fit === "same", at).toBe(true);
             // A repair a closed tab asked for is a change; one for a frame that did not fit, or
             // for no picture in its time, a retry.
@@ -334,6 +348,15 @@ describe("the next step", () => {
             else expect(state.redraw, at).toBe(true);
             break;
           case "fail":
+            if (want.kind === "hold" && want.why === "its capture is let go") {
+              expect(
+                state.trouble === "no-picture" &&
+                  (state.captureRetried === true || (!state.shown && state.unpictured >= limit)),
+                at,
+              ).toBe(true);
+              expect(step.why, at).toBe("the page lost its capture");
+              break;
+            }
             expect(told.state === "running" && fit === "same" && !state.shown, at).toBe(true);
             expect(["misfit", "set-aside", "no-picture"], at).toContain(state.trouble);
             expect(state.unpictured >= limit, at).toBe(true);
@@ -342,7 +365,8 @@ describe("the next step", () => {
             break;
           case "wait":
             // A wait is for a named fact, or the plan gives it a time: a running cast waiting for
-            // its first frame, or its own after one of another size, always has one (R10).
+            // its first frame, or its own after one of another size, always has one (R10), as do
+            // starts with Chromium, starts being prepared, repairs, and lost captures (X2).
             expect(step.why.length, at).toBeGreaterThan(0);
             if (step.why === "its first frame") {
               expect(state.trouble === null && !state.redraw && !state.shown, at).toBe(true);
@@ -355,6 +379,18 @@ describe("the next step", () => {
             } else if (step.why === "its own frame, after one of another size") {
               expect(state.trouble, at).toBe("other-size");
               expect(step.timer, at).toBe(otherSizeWaitMs);
+            } else if (step.why === "a start is with Chromium") {
+              expect(state.told.state, at).toBe("sent");
+              expect(step.timer, at).toBe(stopAnswerWaitMs);
+            } else if (step.why === "a start is being prepared") {
+              expect(state.told.state, at).toBe("preparing");
+              expect(step.timer, at).toBe(prepareWaitMs);
+            } else if (step.why === "the page is drawn again") {
+              expect(state.repairing, at).not.toBeNull();
+              expect(step.timer, at).toBe(repairWaitMs);
+            } else if (step.why === "its capture is let go") {
+              expect(want.kind === "hold" && want.why === "its capture is let go", at).toBe(true);
+              expect(step.timer, at).toBe(captureWaitMs);
             } else expect(step.timer, at).toBeUndefined();
             if (want.kind === "none") throw new Error(`waits while nothing is wanted: ${at}`);
             break;
@@ -508,6 +544,7 @@ describe("the state after each event", () => {
           const allowed: Record<string, readonly string[]> = {
             answered: told === "sent" ? ["running"] : [],
             "casts-ended": ["none"],
+            "first-frame-timeout": told === "preparing" || told === "sent" ? ["none"] : [],
             "not-sent": told === "preparing" ? ["none"] : [],
             "paint-timed-out": told === "preparing" ? ["none"] : [],
             "repair-begun": ["none"],
@@ -1024,14 +1061,20 @@ describe("the state after each event", () => {
       timer: 40_000,
     });
 
-    // At pictureLimit (3 on command-sized), the bound gives up with whileLoading and the refusal's reason.
+    // At pictureLimit (3 on command-sized), the bound gives up with whileLoading and Opensteer's
+    // sentence (keeping the raw refusal text in detail for diagnostics).
     const givenUp = after(
       { ...refused, unpictured: 3 },
       { binding: "tab#1", kind: "first-frame-timeout" },
       loadingFacts,
     );
     expect(givenUp).toMatchObject({
-      failed: { key, whileLoading: true, why: "Emulation.setVisibleSize failed" },
+      failed: {
+        detail: "Emulation.setVisibleSize failed",
+        key,
+        whileLoading: true,
+        why: "the page could not start casting while loading",
+      },
       refusal: null,
       unpictured: 3,
     });
@@ -1046,6 +1089,70 @@ describe("the state after each event", () => {
     expect(nextStep(idleFacts, "tab#1", idleRefused)).toEqual({
       kind: "wait",
       why: "refused (Target closed) until its loading, its document change",
+    });
+  });
+
+  // Opus re-check X1: answering a start proves earlier-generation timed-out stops took effect.
+  it("settles earlier stale stops when a start is answered so subsequent frames prove the running cast (X1)", () => {
+    let session = afterSession(initialSessionCastState, { kind: "stop-sent" });
+    session = afterSession(session, { generation: 0, kind: "stop-timed-out" });
+    expect(session.staleStops).toBe(1);
+    const settled = afterSession(session, { kind: "start-answered" });
+    expect(settled).toMatchObject({ endedBefore: 1, generation: 1, staleStops: 0, stops: 0 });
+    // Even if another stop later times out in gen 1, a super-late gen 0 answer cannot lower gen 1's staleStops.
+    const nextTimedOut = afterSession(afterSession(settled, { kind: "stop-sent" }), {
+      generation: 1,
+      kind: "stop-timed-out",
+    });
+    expect(nextTimedOut.staleStops).toBe(1);
+    expect(afterSession(nextTimedOut, { generation: 0, kind: "stop-answered" }).staleStops).toBe(1);
+  });
+
+  // Opus re-check X2: a start with Chromium (plus preparing, repairing, and lost capture) has a bounded wait timer.
+  it("bounds a start with Chromium, a start being prepared, and a repair with timers and gives up at pictureLimit (X2)", () => {
+    const base = facts();
+    const key = keyOf(base);
+    const sentState: TabCastState = {
+      ...initialTabCastState(),
+      lastKey: key,
+      told: { at: startFacts(base.tab!), key, state: "sent" },
+    };
+    expect(nextStep(base, "tab#1", sentState)).toEqual({
+      kind: "wait",
+      timer: stopAnswerWaitMs,
+      why: "a start is with Chromium",
+    });
+    const retry1 = after(sentState, { binding: "tab#1", kind: "first-frame-timeout" }, base);
+    expect(retry1).toMatchObject({ failed: null, told: { state: "none" }, unpictured: 1 });
+    const givenUp = after(
+      { ...sentState, unpictured: 3 },
+      { binding: "tab#1", kind: "first-frame-timeout" },
+      base,
+    );
+    expect(givenUp).toMatchObject({
+      failed: { key, why: "the page did not answer the start" },
+      told: { state: "none" },
+      unpictured: 3,
+    });
+
+    // Preparing, repairing, and lost-capture waits are also bounded by timers.
+    const preparingState: TabCastState = { ...initialTabCastState(), told: { state: "preparing" } };
+    expect(nextStep(base, "tab#1", preparingState)).toEqual({
+      kind: "wait",
+      timer: prepareWaitMs,
+      why: "a start is being prepared",
+    });
+    const repairingState: TabCastState = { ...initialTabCastState(), repairing: "retry" };
+    expect(nextStep(base, "tab#1", repairingState)).toEqual({
+      kind: "wait",
+      timer: repairWaitMs,
+      why: "the page is drawn again",
+    });
+    const lostCaptureFacts = facts({}, { capture: null, native: true });
+    expect(nextStep(lostCaptureFacts, "tab#1", initialTabCastState())).toEqual({
+      kind: "wait",
+      timer: captureWaitMs,
+      why: "its capture is let go",
     });
   });
 });

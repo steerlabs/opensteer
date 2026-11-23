@@ -93,6 +93,8 @@ interface Bound {
     readonly kind: "start" | "repair";
     readonly abort: AbortController;
     stopSent?: boolean;
+    /** An earlier abandoned start on this session answered while this start was sent (X2). */
+    abandonedBefore?: boolean;
   } | null;
   /** Kept while the state wants the page drawn (streamed, no paint wait): by `reconcile`. */
   releaseRendering: (() => void) | null;
@@ -419,7 +421,10 @@ export class ScreencastController {
     }
     if (told !== "sent") this.dropHeld(bound);
     if (state.failed && state.failed !== before?.failed) {
-      this.diagnose({ stage: "cast-failed", reason: state.failed.why });
+      const reason = state.failed.detail
+        ? `${state.failed.why} (${state.failed.detail})`
+        : state.failed.why;
+      this.diagnose({ stage: "cast-failed", reason });
       // The code is the one the clients know; the text says what is true of this cast.
       this.onError?.(
         new BrowserRuntimeError(
@@ -774,10 +779,17 @@ export class ScreencastController {
             kind: "first-frame-timeout",
             session: this.session(bound.cdp),
           });
-          if (bound.state.trouble !== before.trouble)
-            this.diagnose({ stage: "cast-first-frame-timeout", durationMs: ms });
+          if (before.told.state === "sent" && bound.state.told.state === "none") {
+            this.diagnose({ stage: "cast-start-timeout", durationMs: ms });
+            if (!this.aborted) this.applySession(bound.cdp, { kind: "start-timed-out" }, bound.id);
+          } else if (before.told.state === "preparing" && bound.state.told.state === "none")
+            this.diagnose({ stage: "cast-prepare-timeout", durationMs: ms });
+          else if (before.repairing !== null && bound.state.repairing === null)
+            this.diagnose({ stage: "cast-repair-timeout", durationMs: ms });
           else if (before.refusal !== null && bound.state.refusal === null)
             this.diagnose({ stage: "cast-refusal-timeout", durationMs: ms });
+          else if (bound.state.trouble !== before.trouble)
+            this.diagnose({ stage: "cast-first-frame-timeout", durationMs: ms });
         }
         this.requestPass();
       }, ms);
@@ -883,31 +895,58 @@ export class ScreencastController {
       .then(
         (outcome) => {
           if (!current()) {
-            // U2: no cast runs that the state does not know. A start that still answers after the
-            // state abandoned it without sending a stop (e.g. casts-ended) is stopped through the
-            // session state so stops are counted once.
+            // U2 / X2: no cast runs that the state does not know. A start that still answers after
+            // the state abandoned it without sending a stop is stopped through the session state —
+            // unless a newer start is already sent on the same session (which runs after it in
+            // session order and stops the cast if it fails instead of answering).
             if (outcome === "answered" && !work.stopSent && !this.aborted) {
-              if (this.bound?.cdp === bound.cdp && stopReachesChromium(this.bound.state.told))
-                this.stopCast(this.bound, "abandoned start answered", false);
-              else this.sendStop(bound, "abandoned start answered");
+              const live = this.bound?.cdp === bound.cdp ? this.bound : null;
+              if (live && live.state.told.state === "sent" && live.inFlight?.kind === "start") {
+                live.inFlight.abandonedBefore = true;
+              } else if (live && stopReachesChromium(live.state.told)) {
+                this.stopCast(live, "abandoned start answered", false);
+              } else {
+                this.sendStop(bound, "abandoned start answered");
+              }
+            } else if (work.abandonedBefore && !work.stopSent && !this.aborted) {
+              this.sendStop(bound, "abandoned start answered");
             }
             return;
           }
           bound.inFlight = null;
           if (outcome === "answered") {
-            // The frame that came with the start is judged now that it runs, as of when it came.
+            // X1: Chromium answers a session's commands in order, so an answered start proves every
+            // earlier timed-out stop or start took effect. Extract any frame held before the answer
+            // first so its `held.stale` flag stays intact when replayed.
             const held = bound.held;
             bound.held = null;
+            this.applySession(bound.cdp, { kind: "start-answered" }, bound.id);
             this.apply(bound, { kind: "answered" });
             bound.paintDelay = paintRetryInitialMs;
             if (held !== null) this.onFrame(bound, held.parameters, held.document, held.stale);
-          } else this.apply(bound, { kind: "not-sent" });
+          } else {
+            if (work.abandonedBefore && !work.stopSent && !this.aborted)
+              this.sendStop(bound, "abandoned start answered");
+            this.apply(bound, { kind: "not-sent" });
+          }
         },
         (error: unknown) => {
-          if (!current()) return;
+          const stopAbandoned = () => {
+            if (!work.abandonedBefore || work.stopSent || this.aborted) return;
+            const live = this.bound?.cdp === bound.cdp ? this.bound : null;
+            if (live && live.state.told.state === "sent" && live.inFlight?.kind === "start")
+              live.inFlight.abandonedBefore = true;
+            else if (!live || !stopReachesChromium(live.state.told))
+              this.sendStop(bound, "abandoned start answered");
+          };
+          if (!current()) {
+            stopAbandoned();
+            return;
+          }
           bound.inFlight = null;
           if (signal.aborted) {
             this.apply(bound, { kind: "not-sent" });
+            stopAbandoned();
             return;
           }
           if (error instanceof BrowserPaintTimeoutError) {
@@ -915,9 +954,11 @@ export class ScreencastController {
             bound.startWhy = "paint-retry";
             this.diagnose({ stage: "cast-paint-timeout" });
             this.showRetainedPicture(bound);
+            stopAbandoned();
             return;
           }
           this.startFailed(bound, error, cdpSent);
+          stopAbandoned();
         },
       )
       .finally(() => {

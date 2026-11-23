@@ -143,12 +143,33 @@ export const initialSessionCastState: SessionCastState = {
 };
 
 /**
- * How long a stop's answer is waited for on a live session (S3) before a new start may go out.
- * While that stop is still unanswered (`staleStops > 0`), a frame of the stopped cast may still
- * arrive at the same size: it may be shown, but it never proves the running cast works, sets no
- * `shown`, resets no retry count, and leaves the first-frame wait running (W1).
+ * How long a stop's or start's answer is waited for on a live session (S3, X2) before the follow
+ * view moves on. While an earlier stop or start is still unanswered (`staleStops > 0`), a frame
+ * arriving on the session may still be an earlier cast's: it may be shown, but it never proves the
+ * running cast works, sets no `shown`, resets no retry count, and leaves the first-frame wait
+ * running (W1), until a subsequent start is answered on that session (X1).
  */
 export const stopAnswerWaitMs = 5_000;
+
+/**
+ * Upper bound on preparing a start (`settleRendering`, `Emulation.setVisibleSize`, or the page's
+ * geometry lock) so a wedged preparation cannot leave the tab waiting forever (X2). Strictly above
+ * desktop's paint (5 s) + placement (5 s) waits so normal paint timeouts still take their backoff.
+ */
+export const prepareWaitMs = 15_000;
+
+/**
+ * Upper bound on asking the page to redraw its surface (`invalidateSurface`) so a wedged repair
+ * cannot leave the tab waiting forever (X2). Strictly above desktop's placement wait (5 s).
+ */
+export const repairWaitMs = 10_000;
+
+/**
+ * Upper bound on waiting for a native capture surface to come back after it was let go (X2).
+ * Strictly above desktop's placement wait (5 s) so a normal resize/reparent finishes first, while
+ * a timed-out `#applyPlacement` still retries once and gives up rather than staying blank forever.
+ */
+export const captureWaitMs = 10_000;
 
 export type SessionEvent =
   | { readonly kind: "stop-sent" }
@@ -158,6 +179,13 @@ export type SessionEvent =
   | { readonly kind: "casts-ended" }
   /** The time a stop's answer was given, in that generation, is up. */
   | { readonly kind: "stop-timed-out"; readonly generation: number }
+  /** A start's answer was not received in its time: a late frame from it may still arrive (X2). */
+  | { readonly kind: "start-timed-out" }
+  /**
+   * Chromium answered a start on this session: because a session takes commands in order, every
+   * earlier timed-out stop or start has taken effect, settling all earlier `staleStops` (X1).
+   */
+  | { readonly kind: "start-answered" }
   /** A bound tab took the session's timed-out stop count into its own retries (U4). */
   | { readonly kind: "timed-out-taken" };
 
@@ -193,6 +221,15 @@ export function afterSession(state: SessionCastState, event: SessionEvent): Sess
             stops: 0,
             timedOut: state.timedOut + 1,
           }
+        : state;
+    case "start-timed-out":
+      return {
+        ...state,
+        staleStops: state.staleStops + 1,
+      };
+    case "start-answered":
+      return state.staleStops > 0 || state.endedBefore < state.generation
+        ? { ...state, endedBefore: state.generation, staleStops: 0 }
         : state;
     case "timed-out-taken":
       return state.timedOut > 0 ? { ...state, timedOut: 0 } : state;
@@ -258,17 +295,22 @@ export interface TabCastState {
   readonly redraw: boolean;
   /**
    * The page is asked to draw its surface again before the next start: a retry, which counts once
-   * it is drawn, or a change (a tab closed beside it), which does not.
+   * it is drawn, a change (a tab closed beside it), which does not, or a capture-lost retry.
    */
-  readonly repairing: "retry" | "change" | null;
+  readonly repairing: "retry" | "change" | "capture" | null;
+  /** Whether a capture-lost hold already ran its one surface repair without capture returning. */
+  readonly captureRetried: boolean;
   readonly refusal: Refusal | null;
   /** Retries of this cast, on the same facts, since a picture was last delivered. */
   readonly unpictured: number;
   readonly paint: PaintWait | null;
   /** The cast given up, and why: none is started for it again until it changes or loading ends. */
   readonly failed: {
-    readonly key: CastKey;
+    /** Null when given up because the page's capture was let go and did not come back. */
+    readonly key: CastKey | null;
     readonly why: string;
+    /** Raw underlying error (e.g. CDP refusal text), kept for diagnostics rather than user copy. */
+    readonly detail?: string;
     readonly whileLoading?: boolean;
   } | null;
   /** The cast the last start asked for: a start for another one counts afresh. */
@@ -278,6 +320,7 @@ export interface TabCastState {
 /** A tab bound anew; its session's stops are the session's own. */
 export function initialTabCastState(): TabCastState {
   return {
+    captureRetried: false,
     failed: null,
     lastKey: null,
     paint: null,
@@ -561,15 +604,30 @@ export function nextStep(
   // A start being prepared is given up as well: nothing of it has reached Chromium.
   if (want.kind === "none")
     return told.state === "none" ? { kind: "idle" } : { kind: "stop", why: want.why };
-  if (told.state === "preparing") return { kind: "wait", why: "a start is being prepared" };
+  if (told.state === "preparing")
+    return { kind: "wait", timer: prepareWaitMs, why: "a start is being prepared" };
   // No start goes out on a session whose stop is with Chromium: a frame of a new cast can then
   // never be taken for the old one's, or the old one's for it. The session's own timer bounds it.
   if (session.stops > 0) return { kind: "wait", why: "a stop is with Chromium" };
-  if (state.repairing) return { kind: "wait", why: "the page is drawn again" };
-  if (want.kind === "hold") return { kind: "wait", why: want.why };
-  const key = want.key;
-  if (told.state === "sent") return { kind: "wait", why: "a start is with Chromium" };
+  if (state.repairing) return { kind: "wait", timer: repairWaitMs, why: "the page is drawn again" };
   const limit = pictureLimit(tab.native);
+  if (want.kind === "hold") {
+    if (want.why === "its capture is let go") {
+      const loadingNow = tab.loading || tab.navigation?.pending === true;
+      if (state.failed !== null && !(state.failed.whileLoading === true && !loadingNow))
+        return { kind: "wait", why: `its cast was given up: ${state.failed.why}` };
+      if (state.trouble === "no-picture") {
+        if (state.captureRetried || (!state.shown && state.unpictured >= limit))
+          return { kind: "fail", why: "the page lost its capture" };
+        return { kind: "repair", retry: true, why: "its capture did not come back" };
+      }
+      return { kind: "wait", timer: captureWaitMs, why: want.why };
+    }
+    return { kind: "wait", why: want.why };
+  }
+  const key = want.key;
+  if (told.state === "sent")
+    return { kind: "wait", timer: stopAnswerWaitMs, why: "a start is with Chromium" };
   if (told.state === "running") {
     const fit = fits(told.key, key);
     if (fit === "new-document")
@@ -610,6 +668,7 @@ export function nextStep(
   const loadingNow = tab.loading || tab.navigation?.pending === true;
   if (
     state.failed !== null &&
+    state.failed.key !== null &&
     sameCast(state.failed.key, key) &&
     !(state.failed.whileLoading === true && !loadingNow)
   )
@@ -719,9 +778,13 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
       const loadingNow = facts.tab?.loading === true || facts.tab?.navigation?.pending === true;
       // A cast given up is tried again, with fresh counts, once what it would picture changed, or
       // once a load it failed during has finished (U5).
+      if (want.kind === "cast" && next.captureRetried) next = { ...next, captureRetried: false };
+      if (want.kind === "cast" && next.told.state === "none" && next.trouble === "no-picture")
+        next = { ...next, trouble: null };
       if (
         next.failed &&
-        ((want.kind === "cast" && !sameCast(next.failed.key, want.key)) ||
+        ((want.kind === "cast" &&
+          (next.failed.key === null || !sameCast(next.failed.key, want.key))) ||
           (next.failed.whileLoading === true && !loadingNow))
       )
         next = { ...next, failed: null, unpictured: 0 };
@@ -820,12 +883,23 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
     case "stopped": {
       const change = !event.retry && event.givenUp === undefined;
       const loadingNow = facts.tab?.loading === true || facts.tab?.navigation?.pending === true;
+      const want = wanted(facts);
       return {
         ...state,
+        captureRetried:
+          event.givenUp !== undefined && want.kind === "hold" ? false : state.captureRetried,
         failed:
-          event.givenUp !== undefined && told.state === "running"
+          event.givenUp !== undefined &&
+          (told.state === "running" || want.kind === "hold" || want.kind === "cast")
             ? {
-                key: told.key,
+                key:
+                  want.kind === "hold"
+                    ? null
+                    : told.state === "running"
+                      ? told.key
+                      : want.kind === "cast"
+                        ? want.key
+                        : null,
                 why: event.givenUp,
                 ...(loadingNow ? { whileLoading: true } : {}),
               }
@@ -852,14 +926,16 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
       return {
         ...state,
         redraw: false,
-        repairing: event.retry ? "retry" : "change",
+        repairing: wanted(facts).kind === "hold" ? "capture" : event.retry ? "retry" : "change",
         shown: false,
         told: { state: "none" },
         trouble: null,
       };
     case "repair-drawn":
       // R2 and R10: a repair counts only once the page is drawn again, and only as a retry; one
-      // a tab closed beside it asked for (`redraw`, armed once per such event) is a change.
+      // a tab closed beside it asked for (`redraw`, armed once per such event) is a change; one
+      // for a lost capture counts only against `captureRetried`, never against the next cast.
+      if (state.repairing === "capture") return { ...state, captureRetried: true, repairing: null };
       return {
         ...state,
         repairing: null,
@@ -915,20 +991,107 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
         event.session ?? initialSessionCastState,
       );
       if (step.kind !== "wait" || step.timer === undefined) return state;
-      if (told.state === "running") return { ...state, trouble: "no-picture" };
-      // W2: a refusal held while loading or navigating reached its bound; release it and count as
-      // a retry, or give up at `pictureLimit` with `whileLoading` and the refusal's reason.
       const want = wanted(facts);
-      if (told.state === "none" && state.refusal !== null && want.kind === "cast") {
-        const limit = pictureLimit(facts.tab?.native ?? false);
+      if (want.kind === "hold" && want.why === "its capture is let go")
+        return { ...state, trouble: "no-picture" };
+      if (told.state === "running") return { ...state, trouble: "no-picture" };
+      const loadingNow = facts.tab?.loading === true || facts.tab?.navigation?.pending === true;
+      const limit = pictureLimit(facts.tab?.native ?? false);
+      // X2: a start that Chromium never answers is abandoned at `stopAnswerWaitMs`, counted as a
+      // retry, and given up at `pictureLimit`.
+      if (told.state === "sent") {
         const atBound = state.unpictured >= limit;
         return {
           ...state,
           failed: atBound
             ? {
+                key: told.key,
+                ...(loadingNow ? { whileLoading: true } : {}),
+                why: "the page did not answer the start",
+              }
+            : state.failed,
+          lastKey: told.key,
+          told: { state: "none" },
+          trouble: null,
+          unpictured: atBound ? state.unpictured : state.unpictured + 1,
+        };
+      }
+      // X2: a start whose preparation hangs is abandoned at `prepareWaitMs`, counted as a retry,
+      // and given up at `pictureLimit`.
+      if (told.state === "preparing") {
+        const prior =
+          want.kind === "cast" && state.lastKey !== null && !sameCast(state.lastKey, want.key)
+            ? 0
+            : state.unpictured;
+        const atBound = want.kind === "cast" && prior >= limit;
+        return {
+          ...state,
+          failed: atBound
+            ? {
+                key: want.key,
+                ...(loadingNow ? { whileLoading: true } : {}),
+                why: "the page did not prepare the start",
+              }
+            : state.failed,
+          lastKey: want.kind === "cast" ? want.key : state.lastKey,
+          told: { state: "none" },
+          trouble: null,
+          unpictured: want.kind === "cast" ? (atBound ? prior : prior + 1) : state.unpictured,
+        };
+      }
+      // X2: a redraw (`invalidateSurface`) that hangs is abandoned at `repairWaitMs`, counted as a
+      // retry if it was a retry repair, and given up at `pictureLimit`.
+      if (state.repairing !== null) {
+        if (state.repairing === "capture") {
+          const atBound = state.captureRetried === true;
+          return {
+            ...state,
+            captureRetried: !atBound,
+            failed: atBound
+              ? {
+                  key: null,
+                  ...(loadingNow ? { whileLoading: true } : {}),
+                  why: "the page lost its capture",
+                }
+              : state.failed,
+            repairing: null,
+            trouble: null,
+          };
+        }
+        const isRetry = state.repairing === "retry";
+        const atBound = isRetry && want.kind === "cast" && state.unpictured >= limit;
+        return {
+          ...state,
+          failed: atBound
+            ? {
+                key: want.key,
+                ...(loadingNow ? { whileLoading: true } : {}),
+                why: "the page could not be redrawn",
+              }
+            : state.failed,
+          repairing: null,
+          trouble: null,
+          unpictured:
+            isRetry && want.kind === "cast"
+              ? atBound
+                ? state.unpictured
+                : state.unpictured + 1
+              : state.unpictured,
+        };
+      }
+      // W2: a refusal held while loading or navigating reached its bound; release it and count as
+      // a retry, or give up at `pictureLimit` with `whileLoading` and Opensteer's own sentence
+      // (keeping the raw CDP refusal in `detail` for diagnostics).
+      if (told.state === "none" && state.refusal !== null && want.kind === "cast") {
+        const atBound = state.unpictured >= limit;
+        return {
+          ...state,
+          failed: atBound
+            ? {
+                detail: state.refusal.why,
                 key: want.key,
                 whileLoading: true,
-                why: state.refusal.why,
+                why: "the page could not start casting while loading",
               }
             : state.failed,
           lastKey: want.key,
@@ -939,7 +1102,7 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
       return state;
     }
     case "resumed":
-      return { ...state, failed: null, refusal: null, unpictured: 0 };
+      return { ...state, captureRetried: false, failed: null, refusal: null, unpictured: 0 };
     case "tab-closed-beside":
       return told.state === "running" && facts.tab?.native === false
         ? { ...state, redraw: true, shown: false }
