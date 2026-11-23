@@ -1,5 +1,6 @@
 import { supervisedExitCode } from "@opensteer/shared/processControl";
 import {
+  credentialNamePattern,
   networkCredentialSecrets,
   redactNetworkCredentials,
   safeMessage,
@@ -479,9 +480,6 @@ export async function runPiCommand(options: {
     await supervised.terminate(0).catch(() => undefined);
   }
 }
-
-const credentialNamePattern =
-  /(?:API_KEY|ACCESS_KEY|AUTHORIZATION|COOKIE|CREDENTIAL|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)/iu;
 
 const stderrSafeMessageOptions = {
   fallback: "Pi stderr was unavailable",

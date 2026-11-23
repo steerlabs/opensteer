@@ -18,7 +18,9 @@ export function safeMessage(error: unknown, options: SafeMessageOptions): string
   }
   return (
     message.slice(0, maximumLength) ||
-    (options.secrets ? redactNetworkCredentials(options.fallback, options.secrets) : options.fallback)
+    (options.secrets
+      ? redactNetworkCredentials(options.fallback, options.secrets)
+      : options.fallback)
   );
 }
 
@@ -50,6 +52,10 @@ const proxyAddressNames = [
   "http_proxy",
 ] as const;
 
+/** Names of environment variables whose values may appear in engine diagnostics. */
+export const credentialNamePattern =
+  /(?:AUTHORIZATION|COOKIE|TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|CREDENTIAL|PRIVATE_KEY|PROXY)/iu;
+
 export function networkCredentialSecrets(
   environment: Readonly<Record<string, string | undefined>>,
 ): readonly string[] {
@@ -79,6 +85,17 @@ export function networkCredentialSecrets(
   }
 
   return [...secrets].sort((left, right) => right.length - left.length);
+}
+
+export function engineDiagnosticSecrets(
+  environment: Readonly<Record<string, string>>,
+): readonly string[] {
+  const namedValues = Object.entries(environment)
+    .filter(([name, value]) => value.length >= 8 && credentialNamePattern.test(name))
+    .map(([, value]) => value)
+    .sort((left, right) => right.length - left.length);
+  // Mask proxy userinfo first so diagnostics can still show the proxy endpoint.
+  return [...new Set([...networkCredentialSecrets(environment), ...namedValues])];
 }
 
 // Both parts are bounded, so a long run of letters cannot make it backtrack

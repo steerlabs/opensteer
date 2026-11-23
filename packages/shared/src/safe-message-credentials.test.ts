@@ -1,10 +1,36 @@
 import { expect, it } from "vitest";
 import {
+  credentialNamePattern,
   networkCredentialSecrets,
   redactNetworkCredentials,
   redactUrlCredentials,
   safeMessage,
 } from "./safeMessage.js";
+
+it.each([
+  ["AUTHORIZATION", true],
+  ["COOKIE", true],
+  ["TOKEN", true],
+  ["SECRET", true],
+  ["PASSWORD", true],
+  ["PASSWD", true],
+  ["API_KEY", true],
+  ["APIKEY", true],
+  ["ACCESS_KEY", true],
+  ["CREDENTIAL", true],
+  ["PRIVATE_KEY", true],
+  ["PROXY", true],
+  ["PATH", false],
+  ["HOME", false],
+  ["LANG", false],
+  ["KEYBOARD", false],
+] as const)(
+  "matches credential variable name %s in either case when expected",
+  (name, expected) => {
+    expect(credentialNamePattern.test(name)).toBe(expected);
+    expect(credentialNamePattern.test(name.toLowerCase())).toBe(expected);
+  },
+);
 
 it("removes a proxy address's user and password and keeps the rest", () => {
   const text =
@@ -49,9 +75,9 @@ it("removes userinfo containing a slash when the proxy comes from the environmen
 
 it("removes userinfo from a configured proxy address without a scheme", () => {
   const secrets = networkCredentialSecrets({ http_proxy: "alice:secretpw@proxy.corp:8080" });
-  expect(
-    redactNetworkCredentials("tunnel to alice:secretpw@proxy.corp:8080 failed", secrets),
-  ).toBe("tunnel to [REDACTED]@proxy.corp:8080 failed");
+  expect(redactNetworkCredentials("tunnel to alice:secretpw@proxy.corp:8080 failed", secrets)).toBe(
+    "tunnel to [REDACTED]@proxy.corp:8080 failed",
+  );
 });
 
 it("removes both encoded and decoded proxy passwords", () => {
@@ -111,15 +137,12 @@ it("keeps path mentions, mailto addresses and ordinary text", () => {
   expect(redactUrlCredentials(message)).toBe(message);
 });
 
-it.each(["a", "a:"])(
-  "stays linear on a long string of %s repetitions",
-  (part) => {
-    const message = part.repeat(200_000 / part.length);
-    const started = performance.now();
-    expect(redactUrlCredentials(message)).toBe(message);
-    expect(performance.now() - started).toBeLessThan(500);
-  },
-);
+it.each(["a", "a:"])("stays linear on a long string of %s repetitions", (part) => {
+  const message = part.repeat(200_000 / part.length);
+  const started = performance.now();
+  expect(redactUrlCredentials(message)).toBe(message);
+  expect(performance.now() - started).toBeLessThan(500);
+});
 
 it("ignores empty environments and bypass lists", () => {
   expect(networkCredentialSecrets({})).toEqual([]);

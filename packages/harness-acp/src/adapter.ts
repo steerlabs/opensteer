@@ -1,5 +1,9 @@
 import { toolOutputWithImages } from "@opensteer/harness";
-import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
+import {
+  credentialNamePattern,
+  networkCredentialSecrets,
+  redactNetworkCredentials,
+} from "@opensteer/shared/safeMessage";
 import {
   OpensteerError,
   createId,
@@ -1172,9 +1176,6 @@ function acpFailure(error: OpensteerError): {
     retryable: error.retryable,
   };
 }
-
-const credentialNamePattern =
-  /(?:API_KEY|ACCESS_KEY|AUTHORIZATION|COOKIE|CREDENTIAL|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)/iu;
 
 export function normalizeAcpUpdate(update: unknown): readonly AcpNormalizedUpdate[] {
   if (!isRecord(update) || typeof update.sessionUpdate !== "string") return [];

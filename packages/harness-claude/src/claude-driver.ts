@@ -12,6 +12,7 @@ import { type ClaudeExecutableInspection } from "./executable.js";
 import { claudeSdkProcess } from "./sdk-process.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import {
+  credentialNamePattern,
   networkCredentialSecrets,
   networkEnvironmentNames,
   redactNetworkCredentials,
@@ -417,10 +418,6 @@ const inheritedEnvironmentKeys = [
   // How the engine reaches the network: a proxy and the certificates it trusts.
   ...networkEnvironmentNames,
 ] as const;
-
-// A proxy address can carry a password.
-const credentialNamePattern =
-  /(?:API_KEY|AUTH_TOKEN|ACCESS_KEY|SECRET|PASSWORD|PRIVATE_KEY|BEARER_TOKEN|CREDENTIAL|PROXY)/iu;
 
 export function claudeAccessModeConfiguration(accessMode: ThreadAccessMode): {
   readonly allowDangerouslySkipPermissions: boolean;

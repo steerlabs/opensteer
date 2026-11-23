@@ -5264,6 +5264,27 @@ describe("whose configuration Claude Code starts with", () => {
 });
 
 describe("how Claude Code reaches the network", () => {
+  it("scrubs a configured refresh token from a Claude Code failure", async () => {
+    const token = "fake-refresh-value";
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        yield initMessage(providerSessionId(parameters.options));
+        throw new Error(`Connection failed with refresh token ${token}`);
+      }),
+    );
+    const fixture = await openSession(sdk, { environment: { REFRESH_TOKEN: token } });
+    try {
+      const observer = observe(fixture.session.events);
+      await send(fixture.session, "Hello").catch(() => undefined);
+      await fixture.session.stop();
+      await observer.done;
+      const failure = observer.events.find((event) => event.type === "run.failed");
+      expect(failure?.data.message).toContain("refresh token [REDACTED]");
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
   it("scrubs a configured proxy password printed separately in a Claude Code failure", async () => {
     const proxy = "http://alice:p@ss-word@proxy.invalid:8080";
     const sdk = new FakeSdk((parameters) =>

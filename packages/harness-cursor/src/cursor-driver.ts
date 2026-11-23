@@ -1,7 +1,7 @@
 import { toolOutputWithImages } from "@opensteer/harness";
 import { backgroundLightModels, imageGenerationToolName } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
-import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
+import { engineDiagnosticSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import { stat, mkdir, copyFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
@@ -518,7 +518,7 @@ interface ActiveTurn {
   readonly requestedBy: UserId;
   readonly runId: HarnessRunInput["runId"];
   interruptRequested: boolean;
-  networkSecrets: readonly string[];
+  diagnosticSecrets: readonly string[];
   started: boolean;
   terminal: boolean;
   usageReported: boolean;
@@ -626,7 +626,7 @@ class CursorHarnessSession implements HarnessSession {
       completedToolCalls: new Set(),
       startedToolArguments: new Map(),
       interruptRequested: run.signal.aborted,
-      networkSecrets: [],
+      diagnosticSecrets: [],
       requestedBy: run.requestedBy,
       runId: run.runId,
       started: false,
@@ -800,7 +800,7 @@ class CursorHarnessSession implements HarnessSession {
       environment: cursorHookShellEnvironment(run.environment),
       executable: this.#dependencies.executable,
     });
-    active.networkSecrets = networkCredentialSecrets(launch.environment);
+    active.diagnosticSecrets = engineDiagnosticSecrets(launch.environment);
     const supervised = spawnSupervised({
       args: launch.args,
       cwd: launch.cwd,
@@ -1258,7 +1258,7 @@ class CursorHarnessSession implements HarnessSession {
   #publishFailure(active: ActiveTurn, error: OpensteerError): void {
     this.#publishRunFailure(active, {
       code: error.code === "harness_error" ? cursorFailureCode : error.code,
-      message: redactNetworkCredentials(error.message, active.networkSecrets),
+      message: redactNetworkCredentials(error.message, active.diagnosticSecrets),
       retryable: error.retryable,
     });
   }
@@ -1492,7 +1492,7 @@ export function cursorExitFailure(
   stderr: string,
   environment: Readonly<Record<string, string>> = {},
 ): CursorRunFailure {
-  const detail = redactNetworkCredentials(stderr, networkCredentialSecrets(environment))
+  const detail = redactNetworkCredentials(stderr, engineDiagnosticSecrets(environment))
     .split("\n")
     .filter(Boolean)
     .slice(-6)
@@ -1597,7 +1597,7 @@ async function runCursorCommand(
     ]);
     const diagnostic = redactNetworkCredentials(
       stderr,
-      networkCredentialSecrets(wrapped.environment),
+      engineDiagnosticSecrets(wrapped.environment),
     );
     if (exit.code !== 0) {
       throw new OpensteerError({

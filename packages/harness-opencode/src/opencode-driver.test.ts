@@ -309,8 +309,31 @@ describe("OpenCode inspection", () => {
     expect(result?.detail).toContain("OpenCode exited before it started listening");
   });
 
-  it("scrubs configured proxy credentials from OpenCode stderr", async () => {
-    const proxy = "http://alice:p@ss-word@proxy.invalid:8080";
+  it.each<{
+    name: string;
+    environment: Readonly<Record<string, string>>;
+    prefix: string;
+    diagnostic: string;
+  }>([
+    {
+      name: "proxy credentials",
+      environment: {
+        HTTPS_PROXY: "http://alice:p@ss-word@proxy.invalid:8080",
+        FAKE_OPENCODE_PROXY_DIAGNOSTIC: "1",
+      },
+      prefix: "proxy",
+      diagnostic: "proxy http://[REDACTED]@proxy.invalid:8080; password [REDACTED]",
+    },
+    {
+      name: "a refresh token",
+      environment: {
+        REFRESH_TOKEN: "fake-refresh-value",
+        FAKE_OPENCODE_REFRESH_DIAGNOSTIC: "1",
+      },
+      prefix: "refresh token",
+      diagnostic: "refresh token [REDACTED]",
+    },
+  ])("scrubs $name from OpenCode stderr", async ({ environment, prefix, diagnostic }) => {
     const directory = await temporaryDirectory();
     const server = await OpencodeServer.start({
       args: [fakeServer],
@@ -318,16 +341,14 @@ describe("OpenCode inspection", () => {
       config: OpencodeHarnessConfigSchema.parse({}),
       configHome: directory,
       dataHome: directory,
-      environment: { HTTPS_PROXY: proxy, FAKE_OPENCODE_PROXY_DIAGNOSTIC: "1", HOME: directory },
+      environment: { ...environment, HOME: directory },
       executable: process.execPath,
       stateHome: directory,
       workingDirectory: directory,
     });
     try {
-      await vi.waitFor(() => expect(server.stderrTail).toContain("fake opencode: proxy"));
-      expect(server.stderrTail).toContain(
-        "proxy http://[REDACTED]@proxy.invalid:8080; password [REDACTED]",
-      );
+      await vi.waitFor(() => expect(server.stderrTail).toContain(`fake opencode: ${prefix}`));
+      expect(server.stderrTail).toContain(diagnostic);
     } finally {
       await server.stop();
     }

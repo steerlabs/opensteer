@@ -1,5 +1,6 @@
 import { supervisedExitCode } from "@opensteer/shared/processControl";
 import {
+  credentialNamePattern,
   networkCredentialSecrets,
   redactNetworkCredentials,
   safeMessage,
@@ -448,10 +449,6 @@ export class CodexStdioClient {
     return bounded.toBuffer().toString("utf8").trim();
   }
 }
-
-// A proxy address can carry a password.
-const credentialNamePattern =
-  /(?:API_KEY|ACCESS_KEY|AUTHORIZATION|COOKIE|CREDENTIAL|PASSWORD|PRIVATE_KEY|PROXY|SECRET|TOKEN)/iu;
 
 const stderrSafeMessageOptions = {
   fallback: "Codex app-server stderr was unavailable",

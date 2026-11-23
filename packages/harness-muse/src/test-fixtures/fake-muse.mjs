@@ -215,11 +215,14 @@ function serve() {
           });
           return;
         }
-        if (scenario === "proxy-failure") {
+        if (scenario === "proxy-failure" || scenario === "refresh-failure") {
           notification("turn/completed", {
             error: {
               kind: "provider",
-              message: `Connection failed via ${process.env.HTTPS_PROXY}; password p@ss-word`,
+              message:
+                scenario === "proxy-failure"
+                  ? `Connection failed via ${process.env.HTTPS_PROXY}; password p@ss-word`
+                  : `Connection failed with refresh token ${process.env.REFRESH_TOKEN}`,
               retryable: false,
             },
             sessionId,

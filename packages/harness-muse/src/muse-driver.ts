@@ -1,5 +1,5 @@
 import { createUuidV7Mint } from "@muse-code/sdk";
-import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
+import { engineDiagnosticSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import {
   attachmentImageMaxPixels,
   attachmentMaxBytes,
@@ -430,7 +430,7 @@ export class MuseHarnessDriver implements HarnessDriver {
     }
     return {
       exitCode: exit.code,
-      stderr: redactNetworkCredentials(stderr, networkCredentialSecrets(environment)),
+      stderr: redactNetworkCredentials(stderr, engineDiagnosticSecrets(environment)),
       stdout,
     };
   }
@@ -566,7 +566,7 @@ class MuseHarnessAdapter implements HarnessAdapter {
             signal.throwIfAborted();
             if (failure)
               throw new Error(
-                redactNetworkCredentials(failure, networkCredentialSecrets(environment)),
+                redactNetworkCredentials(failure, engineDiagnosticSecrets(environment)),
               );
             if (!text.trim()) throw new Error("Muse Code did not return a title");
             return text.trim();
@@ -662,7 +662,7 @@ class MuseHarnessSession implements HarnessSession {
   readonly #publisher: TurnPublisher;
   readonly #pending = new Map<RequestId, MusePending>();
   #host: MuseHost | undefined;
-  #networkSecrets: readonly string[] = [];
+  #diagnosticSecrets: readonly string[] = [];
   #active: ActiveTurn | undefined;
   #closed = false;
   #compacting = false;
@@ -791,7 +791,7 @@ class MuseHarnessSession implements HarnessSession {
             error,
             nativeModel(this.#context),
             this.#latestUsage,
-            this.#networkSecrets,
+            this.#diagnosticSecrets,
           ),
         );
     } finally {
@@ -988,7 +988,7 @@ class MuseHarnessSession implements HarnessSession {
       startupTimeoutMs: this.#config.startupTimeoutMs,
       wrapProcessLaunch: (launch) => {
         const wrapped = this.#context.wrapProcessLaunch(launch);
-        this.#networkSecrets = networkCredentialSecrets(wrapped.environment);
+        this.#diagnosticSecrets = engineDiagnosticSecrets(wrapped.environment);
         return wrapped;
       },
     });
@@ -1120,7 +1120,7 @@ class MuseHarnessSession implements HarnessSession {
             completed.error ?? completed.reason,
             nativeModel(this.#context),
             this.#latestUsage,
-            this.#networkSecrets,
+            this.#diagnosticSecrets,
           ),
         );
       }
@@ -1577,7 +1577,7 @@ class MuseHarnessSession implements HarnessSession {
     } else if (active && !active.terminal)
       this.#failure(active, {
         code: "muse_harness_error",
-        message: redactNetworkCredentials(error.message, this.#networkSecrets),
+        message: redactNetworkCredentials(error.message, this.#diagnosticSecrets),
         retryable: false,
       });
   }

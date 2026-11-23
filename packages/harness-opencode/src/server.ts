@@ -1,7 +1,7 @@
 import { OpensteerError } from "@opensteer/core";
 import { readBoundedJson, readBoundedText } from "@opensteer/shared/boundedJson";
 import { supervisedExitCode } from "@opensteer/shared/processControl";
-import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
+import { engineDiagnosticSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import {
   spawnSupervised,
   type HarnessProcessLaunchWrapper,
@@ -97,7 +97,7 @@ export class OpencodeServer {
   readonly #config: OpencodeHarnessConfig;
   readonly #process: SupervisedProcess;
   readonly #password: string;
-  readonly #networkSecrets: readonly string[];
+  readonly #diagnosticSecrets: readonly string[];
   readonly #stderr: string[] = [];
   readonly #listening: Promise<string>;
   #settleListening!: (outcome: { readonly address: string } | { readonly error: unknown }) => void;
@@ -111,12 +111,12 @@ export class OpencodeServer {
     process: SupervisedProcess,
     password: string,
     baseUrl: string,
-    networkSecrets: readonly string[],
+    diagnosticSecrets: readonly string[],
   ) {
     this.#config = config;
     this.#process = process;
     this.#password = password;
-    this.#networkSecrets = networkSecrets;
+    this.#diagnosticSecrets = diagnosticSecrets;
     this.#baseUrl = baseUrl;
     this.#listening = new Promise<string>((resolveAddress, rejectAddress) => {
       this.#settleListening = (outcome) => {
@@ -184,7 +184,7 @@ export class OpencodeServer {
       child,
       password,
       "",
-      networkCredentialSecrets(wrapped.environment),
+      engineDiagnosticSecrets(wrapped.environment),
     );
     server.#collectStderr();
     try {
@@ -206,7 +206,7 @@ export class OpencodeServer {
   }
 
   redactDiagnostic(message: string): string {
-    return redactNetworkCredentials(message, this.#networkSecrets);
+    return redactNetworkCredentials(message, this.#diagnosticSecrets);
   }
 
   get exited(): SupervisedProcess["exited"] {
