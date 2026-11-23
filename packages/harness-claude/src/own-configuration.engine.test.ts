@@ -135,7 +135,13 @@ async function startStubApi(script: readonly ToolCall[]): Promise<StubApi> {
     });
   });
   await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
-  cleanups.push(() => new Promise((resolveClose) => server.close(() => resolveClose())));
+  cleanups.push(
+    () =>
+      new Promise<void>((resolveClose) => {
+        server.close(() => resolveClose());
+        server.closeAllConnections();
+      }),
+  );
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("No stub address");
   return { requests, url: `http://127.0.0.1:${address.port}` };
@@ -143,10 +149,12 @@ async function startStubApi(script: readonly ToolCall[]): Promise<StubApi> {
 
 /**
  * A person's own Claude Code setup, one of each kind of thing Claude Code
- * loads: user settings with allow rules, a default mode and an environment
- * setting; a user hook; user memory (`~/.claude/CLAUDE.md`); a user agent,
- * command, output style and skill; user MCP servers beside one named like
- * Opensteer's; and a project with its own CLAUDE.md and `.mcp.json`.
+ * loads: user settings with allow rules, a default mode, an environment
+ * setting, auto-memory and an enabled user plugin; a user hook; user memory
+ * (`~/.claude/CLAUDE.md`); a user agent, command, output style and skill; user
+ * MCP servers beside one named like Opensteer's; and a project with its own
+ * `.claude/settings.json`, `.claude/settings.local.json`, `CLAUDE.md`,
+ * `CLAUDE.local.md`, `.claude/rules/`, and `.mcp.json`.
  */
 async function personalSetup(allow: readonly string[]) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "opensteer-claude-own-")));
@@ -155,18 +163,31 @@ async function personalSetup(allow: readonly string[]) {
   const home = join(root, "home");
   const config = join(home, ".claude");
   const project = join(root, "agent-home");
+  const autoMemory = join(root, "auto-memory");
+  const encodedProject = project.replace(/[^A-Za-z0-9]/gu, "-");
+  const defaultAutoMemory = join(config, "projects", encodedProject, "memory");
+  const marketplaceDir = join(config, "plugins", "marketplaces", "local");
+  const pluginDir = join(marketplaceDir, "plugins", "person-plugin");
   const hookMarker = join(root, "person-hook-ran");
+  const projectHookMarker = join(root, "project-hook-ran");
   for (const directory of [
     join(config, "skills", "person-skill"),
     join(config, "agents"),
     join(config, "commands"),
     join(config, "output-styles"),
-    project,
+    join(marketplaceDir, ".claude-plugin"),
+    join(pluginDir, ".claude-plugin"),
+    autoMemory,
+    defaultAutoMemory,
+    join(project, ".claude", "rules"),
   ])
     await mkdir(directory, { recursive: true });
   await writeFile(
     join(config, "settings.json"),
     JSON.stringify({
+      autoMemoryDirectory: autoMemory,
+      autoMemoryEnabled: true,
+      enabledPlugins: { "person-plugin@local": true },
       env: { OPENSTEER_PERSON_SETTING: "person-setting-applied" },
       hooks: {
         PreToolUse: [
@@ -177,6 +198,58 @@ async function personalSetup(allow: readonly string[]) {
         ],
       },
       permissions: { allow, defaultMode: "bypassPermissions" },
+    }),
+  );
+  await writeFile(join(autoMemory, "MEMORY.md"), "Person auto-memory marker 6a1e.\n");
+  await writeFile(join(defaultAutoMemory, "MEMORY.md"), "Person auto-memory marker 6a1e.\n");
+  await writeFile(
+    join(marketplaceDir, ".claude-plugin", "marketplace.json"),
+    JSON.stringify({
+      name: "local",
+      owner: { name: "Person" },
+      plugins: [
+        {
+          description: "A plugin of the person's own.",
+          name: "person-plugin",
+          source: "./plugins/person-plugin",
+          version: "1.0.0",
+        },
+      ],
+    }),
+  );
+  await writeFile(
+    join(config, "plugins", "known_marketplaces.json"),
+    JSON.stringify({
+      local: {
+        installLocation: marketplaceDir,
+        lastUpdated: "2026-01-01T00:00:00.000Z",
+        source: { path: marketplaceDir, source: "directory" },
+      },
+    }),
+  );
+  await writeFile(
+    join(pluginDir, ".claude-plugin", "plugin.json"),
+    JSON.stringify({
+      description: "A plugin of the person's own.",
+      name: "person-plugin",
+      version: "1.0.0",
+    }),
+  );
+  await writeFile(
+    join(config, "plugins", "installed_plugins.json"),
+    JSON.stringify({
+      plugins: {
+        "person-plugin@local": [
+          {
+            installedAt: "2026-01-01T00:00:00.000Z",
+            installPath: pluginDir,
+            lastUpdated: "2026-01-01T00:00:00.000Z",
+            scope: "user",
+            version: "1.0.0",
+          },
+        ],
+      },
+      version: 2,
     }),
   );
   await writeFile(join(config, "CLAUDE.md"), "Person user CLAUDE.md marker 41c8.");
@@ -205,20 +278,47 @@ async function personalSetup(allow: readonly string[]) {
   // Claude Code keeps user MCP servers in `.claude.json`, beside the config directory.
   await writeFile(join(config, ".claude.json"), JSON.stringify(servers));
   await writeFile(join(home, ".claude.json"), JSON.stringify(servers));
+  await writeFile(
+    join(project, ".claude", "settings.json"),
+    JSON.stringify({
+      env: { OPENSTEER_PROJECT_SETTING: "project-setting-applied" },
+      hooks: {
+        PreToolUse: [
+          {
+            hooks: [{ command: `touch "${projectHookMarker}"`, type: "command" }],
+            matcher: ".*",
+          },
+        ],
+      },
+      permissions: { allow },
+    }),
+  );
+  await writeFile(
+    join(project, ".claude", "settings.local.json"),
+    JSON.stringify({
+      env: { OPENSTEER_LOCAL_SETTING: "local-setting-applied" },
+    }),
+  );
   await writeFile(join(project, "CLAUDE.md"), "Project CLAUDE.md marker 7f3a.");
+  await writeFile(join(project, "CLAUDE.local.md"), "Project CLAUDE.local.md marker 8c4d.");
+  await writeFile(
+    join(project, ".claude", "rules", "project-rule.md"),
+    "Project rule marker 3e9b.\n",
+  );
   await writeFile(
     join(project, ".mcp.json"),
     JSON.stringify({
       mcpServers: { "project-server": { args: ["-e", ""], command: process.execPath } },
     }),
   );
-  return { config, home, hookMarker, project, root };
+  return { config, home, hookMarker, project, projectHookMarker, root };
 }
 
 async function runOnce(input: {
   readonly accessMode: ThreadAccessMode;
   readonly allow: readonly string[];
   readonly personalContext: boolean;
+  readonly personLineage?: boolean;
   readonly script: (setup: Awaited<ReturnType<typeof personalSetup>>) => readonly ToolCall[];
 }) {
   const setup = await personalSetup(input.allow);
@@ -293,7 +393,7 @@ async function runOnce(input: {
       providerId: "anthropic",
     }),
     personalContext: input.personalContext,
-    personLineage: input.personalContext,
+    personLineage: input.personLineage ?? input.personalContext,
     platformGuide: "",
     providerState: {
       continuationKey: setup.root,
@@ -372,7 +472,7 @@ it("runs a person's own Supervised task with their engine's own rules, adding no
       { input: { command: "git status", description: "First, by a rule" }, name: "Bash" },
       {
         input: {
-          command: `printf "%s" "$OPENSTEER_PERSON_SETTING" > "${join(s.project, "marker.txt")}"`,
+          command: `printf "%s|%s|%s" "$OPENSTEER_PERSON_SETTING" "$OPENSTEER_PROJECT_SETTING" "$OPENSTEER_LOCAL_SETTING" > "${join(s.project, "marker.txt")}"`,
           description: "Second, with no rule",
         },
         name: "Bash",
@@ -387,19 +487,27 @@ it("runs a person's own Supervised task with their engine's own rules, adding no
   expect(requests).toHaveLength(1);
   expect(requests[0]).toContain("Second, with no rule");
   expect(requests[0]).not.toContain("First, by a rule");
-  // Their user setting reached the command; their hook ran.
-  expect(await read(join(setup.project, "marker.txt"))).toBe("person-setting-applied");
+  // Their user, project and local settings reached the command; both hooks ran.
+  expect(await read(join(setup.project, "marker.txt"))).toBe(
+    "person-setting-applied|project-setting-applied|local-setting-applied",
+  );
   expect(await exists(setup.hookMarker)).toBe(true);
-  // Their memory, the project's CLAUDE.md and Agent home's AGENTS.md reached the model.
+  expect(await exists(setup.projectHookMarker)).toBe(true);
+  // Their memory, auto-memory, the project's CLAUDE.md/CLAUDE.local.md/rules,
+  // and Agent home's AGENTS.md reached the model.
   const sent = api.requests.join("\n");
   expect(sent).toContain("Person user CLAUDE.md marker 41c8.");
+  expect(sent).toContain("Person auto-memory marker 6a1e.");
   expect(sent).toContain("Project CLAUDE.md marker 7f3a.");
+  expect(sent).toContain("Project CLAUDE.local.md marker 8c4d.");
+  expect(sent).toContain("Project rule marker 3e9b.");
   expect(sent).toContain("Agent home AGENTS.md marker 2c9d.");
-  // Claude Code's own web tools, the person's skill, agent, command and MCP
-  // servers, and Opensteer's server replacing the one of theirs bearing its name.
+  // Claude Code's own web tools, the person's skill, agent, command, plugin and
+  // MCP servers, and Opensteer's server replacing the one of theirs bearing its name.
   expect(init?.tools).toEqual(expect.arrayContaining(["WebSearch", "WebFetch", "Bash"]));
   expect(init?.slash_commands).toEqual(expect.arrayContaining(["person-skill", "person-command"]));
   expect(init?.agents).toContain("person-agent");
+  expect(init?.plugins.some(({ name }) => name === "person-plugin")).toBe(true);
   expect(servers?.map(({ name, source }) => ({ name, source }))).toEqual(
     expect.arrayContaining([
       { name: "opensteer", source: "dynamic" },
@@ -433,25 +541,44 @@ it("edits in the task's folder without asking in Auto-accept edits and asks outs
 it("runs a task a connected agent or a chat started with none of the person's configuration", async () => {
   const { api, events, init, requests, servers, setup } = await runOnce({
     accessMode: "approval-required",
-    // Every change allowed in the person's settings, and a bypass default.
+    // Every change allowed in the person's and project's settings, and a bypass default.
     allow: ["Bash(*)", "Bash", "Edit", "Write"],
-    personalContext: false,
+    // Connected agent with `everything` or a person-only chat: personalContext is true,
+    // personLineage is false — engine configuration must still be stripped.
+    personalContext: true,
+    personLineage: false,
     script: (s) => [
       { input: { content: "x", file_path: join(s.project, "written.txt") }, name: "Write" },
+      {
+        input: {
+          command: `printf "%s|%s|%s" "$OPENSTEER_PERSON_SETTING" "$OPENSTEER_PROJECT_SETTING" "$OPENSTEER_LOCAL_SETTING" > "${join(s.project, "marker.txt")}"`,
+          description: "Run shell in stripped mode",
+        },
+        name: "Bash",
+      },
     ],
   });
   expect(events.find((event) => event.type === "run.failed")).toBeUndefined();
-  // (A) The mode holds: the person's allow rules and default mode do not apply.
+  // (A) The mode holds: neither user nor project allow rules nor defaultMode apply,
+  // and Bash is gated through claudeShellApprovalHook as well as Write.
   expect(init?.permissionMode).toBe("default");
-  expect(requests).toHaveLength(1);
+  expect(requests).toHaveLength(2);
   expect(requests[0]).toContain("written.txt");
-  // (B) Nothing of the person's runs: no hook, no MCP server of theirs or the project's.
+  expect(requests[1]).toContain("Run shell in stripped mode");
+  expect(await read(join(setup.project, "written.txt"))).toBe("x");
+  // (B) Nothing of the person's runs: no user/project hook, no MCP server of theirs or
+  // the project's, and the Bash command ran with none of their user/project/local env settings.
   expect(await exists(setup.hookMarker)).toBe(false);
+  expect(await exists(setup.projectHookMarker)).toBe(false);
   expect(servers?.map(({ name }) => name)).toEqual(["opensteer"]);
-  // (C) None of their instructions or memory, no agent, command, skill or style of theirs.
+  expect(await read(join(setup.project, "marker.txt"))).toBe("||");
+  // (C) None of their instructions, auto-memory, rules, agent, command, skill, style or plugin.
   const sent = api.requests.join("\n");
   expect(sent).not.toContain("Person user CLAUDE.md marker 41c8.");
+  expect(sent).not.toContain("Person auto-memory marker 6a1e.");
   expect(sent).not.toContain("Project CLAUDE.md marker 7f3a.");
+  expect(sent).not.toContain("Project CLAUDE.local.md marker 8c4d.");
+  expect(sent).not.toContain("Project rule marker 3e9b.");
   expect(sent).not.toContain("Agent body marker 9d02.");
   expect(sent).not.toContain("Style marker 5b7e.");
   expect(init?.agents ?? []).not.toContain("person-agent");
@@ -461,6 +588,5 @@ it("runs a task a connected agent or a chat started with none of the person's co
   // Only Claude Code's own built-in plugins, none of the person's.
   expect(init?.plugins.filter(({ path }) => path !== "builtin")).toEqual([]);
   expect(init?.tools).not.toContain("WebSearch");
-  // No environment setting of theirs.
-  expect(await read(join(setup.project, "marker.txt"))).toBeUndefined();
+  expect(init?.tools).not.toContain("WebFetch");
 }, 240_000);
