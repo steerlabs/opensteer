@@ -26,6 +26,7 @@ import type { AgentCaller } from "../mcp/agent-caller.js";
 import { ThreadService } from "../threads/thread-service.js";
 import { TriggerService } from "../triggers/trigger-service.js";
 import { TabService } from "../tabs/tab-service.js";
+import { AppService } from "../apps/app-service.js";
 import { startBrowserRuntime } from "../browser/browser-runtime.test-support.js";
 import { agentCommandAdmission, agentCommandScope, dispatchCommand } from "./dispatch.js";
 import type { CommandRegistry } from "./registry.js";
@@ -120,6 +121,12 @@ const decided: Readonly<Record<string, string>> = {
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "assignment.cancel / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "app.stop / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "app.delete / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "app.start / own-full":
+    "the test's apps computer is offline: the start was admitted and then refused there (computer_offline), as tab.open (profile) is by the test's browser",
   "tab.organize (into a new group) / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "tab.group.update (rename) / everything":
@@ -179,9 +186,6 @@ const owed: Readonly<Record<string, string>> = {
   "plugins.workflow.start": "opensteer_plugin_resource_update",
   "plugins.workflow.stop": "opensteer_plugin_resource_update",
   "plugins.webhook.remove": "opensteer_plugin_resource_update",
-  "app.start": "app_start",
-  "app.stop": "app_stop",
-  "app.delete": "app_delete",
 };
 
 /** The door's answer as the tool would have it: now runs, ask puts it to the person. */
@@ -493,6 +497,53 @@ it("records what today's tools let each caller do, and the door answers the same
         adopting = false;
       }
     };
+    /**
+     * An app the Full agent published on the apps computer, fresh for each caller, its server
+     * running or stopped as the scenario needs, or with no server: deleting an app that has one
+     * waits for its computer to stop it, and this computer is offline.
+     */
+    const apps = {} as Record<Caller, string>;
+    let appPort = 49_152;
+    const app = async (caller: Caller, desiredState: "running" | "stopped" | null) => {
+      const id = `app_${randomUUID()}` as never;
+      await host.store.database
+        .insertInto("apps")
+        .values({
+          id,
+          computerId: appsComputer.runnerId,
+          ownerId: owner,
+          threadId: null,
+          runId: null,
+          name: `Parity app ${caller}`,
+          creationKey: id,
+          latestVersion: 1,
+        })
+        .execute();
+      if (desiredState)
+        await host.store.database
+          .insertInto("appServers")
+          .values({
+            appId: id,
+            computerId: appsComputer.runnerId,
+            port: (appPort += 1),
+            desiredState,
+            lastError: null,
+          })
+          .execute();
+      await host.store.database
+        .insertInto("appVersions")
+        .values({
+          appId: id,
+          version: 1,
+          sha256: null,
+          sizeBytes: null,
+          server: { folder: "/parity/app", command: "node app.js" } as never,
+          createdByRun: full.runId as never,
+          publishKey: id,
+        })
+        .execute();
+      return (apps[caller] = id);
+    };
     /** The messages each caller's queue scenario acts on, made as its arguments are. */
     const queued = {} as Record<Caller, { first: string; second?: string }>;
     const callerNames = Object.keys(callers) as Caller[];
@@ -537,6 +588,18 @@ it("records what today's tools let each caller do, and the door answers the same
         sessionId,
       };
     });
+    // The computer the apps below were published on, now offline: stopping or deleting an app
+    // asks nothing of it, so what is recorded is who may, not a computer's answer.
+    const appsComputer = await connectTargetMachine(host, {
+      name: "Parity apps computer",
+      token: await enrollmentToken(host, {
+        allowedModules: ["shell"],
+        idempotencyKey: "parity-apps-computer",
+        name: "Parity apps computer",
+      }),
+    });
+    close.unshift(() => appsComputer.close());
+    await appsComputer.disconnect();
     const profiles = await each(async (caller) =>
       host.store.createBrowserProfile({
         name: `Parity profile ${caller}`,
@@ -749,6 +812,24 @@ it("records what today's tools let each caller do, and the door answers the same
         tool: "opensteer_delegation_cancel",
         args: async (c) => ({ delegationId: await delegation(c) }),
         command: (c) => ({ type: "assignment.cancel", assignmentId: delegations[c] }),
+      },
+      {
+        name: "app.start",
+        tool: "app_start",
+        args: async (c) => ({ appId: await app(c, "stopped") }),
+        command: (c) => ({ type: "app.start", appId: apps[c] }),
+      },
+      {
+        name: "app.stop",
+        tool: "app_stop",
+        args: async (c) => ({ appId: await app(c, "running") }),
+        command: (c) => ({ type: "app.stop", appId: apps[c] }),
+      },
+      {
+        name: "app.delete",
+        tool: "app_delete",
+        args: async (c) => ({ appId: await app(c, null) }),
+        command: (c) => ({ type: "app.delete", appId: apps[c] }),
       },
       {
         name: "thread.rename",
@@ -1270,6 +1351,11 @@ it("records what today's tools let each caller do, and the door answers the same
       const i = input as { threadId: string; done: boolean };
       return { type: "thread.done.set", threadId: i.threadId, done: i.done };
     });
+    for (const method of ["start", "stop", "delete"])
+      intercept(AppService.prototype, method, ([, appId]) => ({
+        type: `app.${method}`,
+        appId,
+      }));
     intercept(CommandService.prototype, "cancelAssignment", ([input]) => ({
       type: "assignment.cancel",
       assignmentId: (input as { assignmentId: string }).assignmentId,

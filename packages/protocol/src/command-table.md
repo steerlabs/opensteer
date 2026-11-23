@@ -190,8 +190,8 @@ edit. Callers: (a) your own agent at Full access, (b) your own agent below Full 
 | `tab.group.delete` | a tab group ← `groupId` | preference | now | now | now | now | B | `deleteGroup(ownerId, …)` (`tab-service.ts:913`) |
 | `app.rename` | a published app ← `appId` | preference | now | ask | now | nf | B | `rename(ownerId, …)` (`app-service.ts:401`) |
 | `app.start` | an app server ← `appId` | widen-self | now | ask | now | nf | A | `AppActor` (`app-service.ts:51-53`); X11: an app server runs on, in no connection's Disconnect set, so a connection asks unless that lineage is its own |
-| `app.stop` | same | narrow | now | ask | now | nf | A |  |
-| `app.delete` | an app ← `appId` | destroy | now | ask | now | nf | A |  |
+| `app.stop` | same | narrow | now | ask | now | nf | A | ; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
+| `app.delete` | an app ← `appId` | destroy | now | ask | now | nf | A | ; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
 
 ## Automations (5)
 

@@ -3419,7 +3419,7 @@
         }
       ],
       "step": "A",
-      "note": "",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "outside",
         "why": "app-routes.ts:63: the app's process",
@@ -3443,7 +3443,7 @@
         }
       ],
       "step": "A",
-      "note": "",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "outside",
         "why": "app-routes.ts:65: the app's process and files",
