@@ -71,6 +71,8 @@ export interface BrowserEditingState {
   readonly context: EditingContext | null;
   readonly geometryRevision?: number;
   readonly menu: BrowserContextMenu | null;
+  /** CZ3: the context the menu was opened in: what its commands were made for. */
+  readonly menuContext?: string;
   readonly autofill: BrowserAutofillState | null;
   readonly passwordSave: BrowserPasswordSaveState | null;
 }
@@ -346,10 +348,9 @@ export class BrowserEditingStore {
         });
         return;
       case "command": {
-        // CV1, CY7: every command says the field context it was made for, stamped here, the one
-        // place every client sends through: its own (a late one's) or the context now. With no
-        // field context yet there is nothing it was made for, and nothing is sent.
-        const contextId = operation.contextId ?? target.state.context?.contextId;
+        // CZ3: a command carries the context it was computed for; nothing is filled in here (the
+        // field's context now may already be another field's). Without one it is not sent.
+        const contextId = operation.contextId;
         if (!contextId) return;
         send({
           type: "input.command",
@@ -565,7 +566,15 @@ export class BrowserEditingStore {
             ? {}
             : { geometryRevision: message.geometryRevision }),
         });
-      } else if (target.active) this.#set(target, { ...target.state, menu: message });
+      } else if (target.active) {
+        const { menuContext: _previous, ...rest } = target.state;
+        const contextId = target.state.context?.contextId;
+        this.#set(target, {
+          ...rest,
+          menu: message,
+          ...(contextId === undefined ? {} : { menuContext: contextId }),
+        });
+      }
       return;
     }
     if (message.type === "clipboard.data") {

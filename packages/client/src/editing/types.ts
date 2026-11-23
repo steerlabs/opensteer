@@ -92,9 +92,11 @@ export type EditingOperation =
       readonly kind: "command";
       readonly command: EditingCommand;
       /**
-       * The context it was made in (CV1): a far side that negotiated it applies a move or a
-       * deletion at its caret under an earlier context of the same field, and refuses any
-       * command of another field's. Others receive the command without it.
+       * The context it was computed for (CV1, CZ3), stamped where it is computed: the reducer's
+       * (a late one's on the late path), or the context a menu was opened in. A page applies a
+       * move or the backward deletion at its caret under an earlier context of the same field
+       * and refuses any command of another field's; nothing fills one in later. A Mac app or a
+       * phone screen (display.input) takes commands without it.
        */
       readonly contextId?: string | undefined;
     }

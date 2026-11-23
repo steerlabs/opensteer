@@ -40,7 +40,7 @@ describe("basic browser input", () => {
           repeat: true,
         },
       },
-      { kind: "command", command: "deleteWordBackward" },
+      { kind: "command", command: "deleteWordBackward", contextId: context.contextId },
       {
         kind: "edit",
         edit: { contextId: context.contextId, before: "teh", after: "", text: "the" },
@@ -245,14 +245,18 @@ describe("basic browser input", () => {
       kind: "edit",
       edit: { contextId: context.contextId, before: "a", after: "", text: "b" },
     });
-    await target.send({ kind: "command", command: "deleteWordBackward" });
+    await target.send({
+      kind: "command",
+      command: "deleteWordBackward",
+      contextId: context.contextId,
+    });
     await target.send({ kind: "cut" });
     await target.send({
       kind: "paste",
       items: [{ type: "text/html", bytes: new TextEncoder().encode("<b>x</b>") }],
     });
     expect(commands).toEqual([]);
-    await target.send({ kind: "command", command: "selectAll" });
+    await target.send({ kind: "command", command: "selectAll", contextId: context.contextId });
     expect(commands).toEqual([
       { type: "input.command", surfaceId, command: "selectAll", contextId: context.contextId },
     ]);

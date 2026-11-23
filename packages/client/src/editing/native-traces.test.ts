@@ -198,7 +198,8 @@ function produced(operation: EditingOperation): z.infer<typeof producer> | null 
       before: operation.edit.before,
       after: operation.edit.after,
     };
-  if (operation.kind === "command") return operation;
+  // What the producer meant: the command, not the context this run stamped on it (CZ3).
+  if (operation.kind === "command") return { kind: "command", command: operation.command };
   return null;
 }
 describe("recorded native proxy traces and independent platform controls", () => {

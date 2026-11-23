@@ -638,8 +638,11 @@ export function BrowserPage(props: {
       )
         return;
       editing.send({ kind: action });
-    } else if (action === "select-all") editing.send({ kind: "command", command: "selectAll" });
-    else if (action === "paste") {
+    } else if (action === "select-all") {
+      // CZ3: made for the field the menu was opened in, and refused in any other.
+      const contextId = editingState.menuContext;
+      if (contextId) editing.send({ kind: "command", command: "selectAll", contextId });
+    } else if (action === "paste") {
       if (!pageMenu.editable) return;
       const context = editingState.context?.contextId;
       void Clipboard.getStringAsync()

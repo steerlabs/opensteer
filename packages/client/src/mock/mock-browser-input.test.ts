@@ -34,7 +34,7 @@ describe("mock basic browser input", () => {
         kind: "edit",
         edit: { contextId, before: "", after: "", text: "hello👨‍👩‍👧" },
       });
-      await target.send({ kind: "command", command: "deleteBackward" });
+      await target.send({ kind: "command", command: "deleteBackward", contextId });
       await target.send({
         kind: "compose",
         composition: { contextId, text: "に", selectionStart: 1, selectionEnd: 1 },
@@ -44,7 +44,7 @@ describe("mock basic browser input", () => {
         composition: { contextId, text: "日本", selectionStart: 2, selectionEnd: 2 },
       });
       await target.send({ kind: "edit", edit: { contextId, before: "", after: "", text: "日本" } });
-      await target.send({ kind: "command", command: "selectAll" });
+      await target.send({ kind: "command", command: "selectAll", contextId });
       const copied = await target.send({ kind: "copy" });
       expect(copied?.outcome).toBe("copied");
       expect(new TextDecoder().decode(copied!.items[0]!.bytes)).toBe("hello日本");
@@ -54,7 +54,7 @@ describe("mock basic browser input", () => {
           items: [{ type: "text/plain", bytes: new TextEncoder().encode("new text") }],
         }),
       ).toMatchObject({ outcome: "pasted" });
-      await target.send({ kind: "command", command: "selectAll" });
+      await target.send({ kind: "command", command: "selectAll", contextId });
       const pasted = await target.send({ kind: "copy" });
       expect(new TextDecoder().decode(pasted!.items[0]!.bytes)).toBe("new text");
       release();

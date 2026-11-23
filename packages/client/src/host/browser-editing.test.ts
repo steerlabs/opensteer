@@ -17,24 +17,40 @@ function setup(negotiated = true) {
   return { store, target, commands };
 }
 describe("browser editing transport", () => {
-  // CV1, CY7: every command says the field context it was made for, stamped in the store: its
-  // own (a late one's), else the field's context now; with no field context, nothing is sent.
-  it("stamps every command with its own context or the field's current one", async () => {
+  // CZ3: a command carries the context it was computed for; the store never substitutes the
+  // field's context now (it may already be another field's). Without one, it is not sent. A menu's
+  // command carries the context the menu was opened in.
+  it("sends a command only with its own context, and a menu's with the menu's", async () => {
     const { store, target, commands } = setup();
+    target.activate(
+      () => undefined,
+      () => undefined,
+    );
+    const before = crypto.randomUUID();
+    const after = crypto.randomUUID();
+    const receive = (contextId: string) =>
+      store.receive(sessionId, {
+        type: "browser.editing",
+        surfaceId,
+        context: { contextId, field: null, caret: null },
+      });
+    receive(before);
+    store.receive(sessionId, {
+      type: "browser.contextmenu",
+      surfaceId,
+      editable: true,
+      selection: false,
+      x: 0.5,
+      y: 0.5,
+      geometryRevision: 0,
+    });
+    receive(after);
     await target.send({ kind: "command", command: "deleteBackward" });
     expect(commands.filter((command) => command.type === "input.command")).toEqual([]);
-    const current = crypto.randomUUID();
-    store.receive(sessionId, {
-      type: "browser.editing",
-      surfaceId,
-      context: { contextId: current, field: null, caret: null },
-    });
-    const late = crypto.randomUUID();
-    await target.send({ kind: "command", command: "deleteBackward", contextId: late });
-    await target.send({ kind: "command", command: "moveBackward" });
+    expect(target.get().menuContext).toBe(before);
+    await target.send({ kind: "command", command: "deleteBackward", contextId: before });
     expect(commands.filter((command) => command.type === "input.command")).toEqual([
-      { type: "input.command", surfaceId, command: "deleteBackward", contextId: late },
-      { type: "input.command", surfaceId, command: "moveBackward", contextId: current },
+      { type: "input.command", surfaceId, command: "deleteBackward", contextId: before },
     ]);
     store.dispose();
   });
@@ -63,7 +79,7 @@ describe("browser editing transport", () => {
         composition: { contextId, text: "한", selectionStart: 1, selectionEnd: 1 },
       });
       await target.send({ kind: "edit", edit: { contextId, before: "e", after: "", text: "é" } });
-      await target.send({ kind: "command", command: "selectAll" });
+      await target.send({ kind: "command", command: "selectAll", contextId });
       expect(commands.map((command) => command.type)).toEqual([
         "input.compose",
         "input.text",

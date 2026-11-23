@@ -61,6 +61,26 @@ const input = (value: string, inputType = "insertText", composing = false): Edit
   composing,
   proxy: proxy(value),
 });
+// CZ3: a command carries the context it was computed for, as an edit does: the reducer's own.
+it.each([["00000000-0000-4000-8000-000000000001"], ["00000000-0000-4000-8000-000000000002"]])(
+  "stamps every command with the context it was computed for (%s)",
+  (contextId) => {
+    let state = createEditingState("ios", abilities);
+    for (const event of [
+      { type: "context", context: { ...context, contextId } },
+      { type: "beforeinput", inputType: "insertText", data: "x" },
+      input("x"),
+      { type: "selection", proxy: proxy("x", 0) },
+    ] satisfies EditingProxyEvent[])
+      state = reduceEditing(state, event).state;
+    const result = reduceEditing(state, {
+      type: "beforeinput",
+      inputType: "deleteContentBackward",
+      data: null,
+    });
+    expect(result.operations).toEqual([{ kind: "command", command: "deleteBackward", contextId }]);
+  },
+);
 describe("editing reducer: scripted ordering regressions (native fixtures are separate)", () => {
   // Found by the mobile typing test's random sequences (seed 32): a Backspace on an empty field
   // is prevented and sent as a command, and a native adapter that honours preventDefault sends
@@ -77,10 +97,10 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       "ios",
     );
     expect(result.operations).toEqual([
-      { kind: "command", command: "deleteBackward" },
+      { kind: "command", command: "deleteBackward", contextId: context.contextId },
       { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
       // CV1: the later deletion is the page's Backspace.
-      { kind: "command", command: "deleteBackward" },
+      { kind: "command", command: "deleteBackward", contextId: context.contextId },
     ]);
   });
   // Found by the same random sequences (seed 4363): a selection typed over through the delegate
@@ -110,7 +130,7 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
         kind: "edit",
         edit: { contextId: context.contextId, text: "b", before: "abb", after: "" },
       },
-      { kind: "command", command: "moveBackward" },
+      { kind: "command", command: "moveBackward", contextId: context.contextId },
       { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
     ]);
   });
@@ -150,7 +170,7 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     // The restated "x" back in the composition's place, then the far caret to the native one.
     expect(result.operations.slice(-2)).toEqual([
       { kind: "edit", edit: { contextId: context.contextId, text: "x", before: "", after: "" } },
-      { kind: "command", command: "moveBackward" },
+      { kind: "command", command: "moveBackward", contextId: context.contextId },
     ]);
   });
   // CR2: after a cancelled composition's restated text, the far caret is after it. A target
@@ -219,7 +239,7 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     ]);
     expect(result.operations.slice(-2)).toEqual([
       { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
-      { kind: "command", command: "moveBackward" },
+      { kind: "command", command: "moveBackward", contextId: context.contextId },
     ]);
   });
   // The suppression's purpose: on a target without range edits a Backspace is sent as a command
@@ -238,7 +258,7 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     );
     expect(result.operations).toEqual([
       { kind: "edit", edit: { contextId: context.contextId, text: "ab", before: "", after: "" } },
-      { kind: "command", command: "deleteBackward" },
+      { kind: "command", command: "deleteBackward", contextId: context.contextId },
     ]);
   });
   // An input that is not the suppressed one means the suppressed input is not coming (Android's
@@ -253,10 +273,10 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       "android",
     );
     expect(result.operations).toEqual([
-      { kind: "command", command: "deleteBackward" },
+      { kind: "command", command: "deleteBackward", contextId: context.contextId },
       { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
       // CV1: the deletion is the page's Backspace.
-      { kind: "command", command: "deleteBackward" },
+      { kind: "command", command: "deleteBackward", contextId: context.contextId },
     ]);
   });
   // Found by the person oracle (third generator, seed 697): a paste over a selection replaces it,
@@ -271,7 +291,7 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     ]);
     expect(result.operations.slice(1)).toEqual([
       { kind: "edit", edit: { contextId: context.contextId, text: "c", before: "abc", after: "" } },
-      { kind: "command", command: "moveBackward" },
+      { kind: "command", command: "moveBackward", contextId: context.contextId },
       { kind: "paste", items: [{ type: "text/plain", bytes }] },
     ]);
   });
@@ -303,8 +323,8 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
         return step;
       });
       expect(results.flatMap((step) => step.operations)).toEqual([
-        { kind: "command", command: "undo" },
-        { kind: "command", command: "redo" },
+        { kind: "command", command: "undo", contextId: context.contextId },
+        { kind: "command", command: "redo", contextId: context.contextId },
       ]);
       expect(results[0]!.instruction).toEqual({
         preventDefault: true,
@@ -622,10 +642,14 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       input("ab"),
       { type: "selection", proxy: proxy("ab", 0) },
     ]);
-    expect(operations[0]).toEqual({ kind: "command", command: "deleteWordBackward" });
+    expect(operations[0]).toEqual({
+      kind: "command",
+      command: "deleteWordBackward",
+      contextId: context.contextId,
+    });
     expect(operations.slice(-2)).toEqual([
-      { kind: "command", command: "moveBackward" },
-      { kind: "command", command: "moveBackward" },
+      { kind: "command", command: "moveBackward", contextId: context.contextId },
+      { kind: "command", command: "moveBackward", contextId: context.contextId },
     ]);
   });
   it.each([
@@ -645,12 +669,12 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     ["chromeos", "Backspace", { control: true }, "deleteWordBackward"],
   ] as const)("resolves %s %s by viewer meaning", (platform, letter, modifiers, command) => {
     expect(replay([key(letter, modifiers)], platform).operations).toEqual([
-      { kind: "command", command },
+      { kind: "command", command, contextId: context.contextId },
     ]);
   });
   it("uses logical keys for layout chords, keeps AltGraph text and distinguishes Mac Control", () => {
     expect(replay([key("a", { code: "KeyQ", control: true })], "windows").operations).toEqual([
-      { kind: "command", command: "selectAll" },
+      { kind: "command", command: "selectAll", contextId: context.contextId },
     ]);
     expect(
       replay([key("@", { control: true, alt: true, altGraph: true })], "windows").operations[0],
@@ -776,8 +800,8 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       edit: { contextId: context.contextId, text: "aXbc", before: "", after: "" },
     });
     expect(operations.slice(-2)).toEqual([
-      { kind: "command", command: "moveBackward" },
-      { kind: "command", command: "moveBackward" },
+      { kind: "command", command: "moveBackward", contextId: context.contextId },
+      { kind: "command", command: "moveBackward", contextId: context.contextId },
     ]);
     expect(operations.filter((operation) => operation.kind === "compose")).toHaveLength(1);
   });
@@ -954,7 +978,7 @@ describe("a composition the transport refused", () => {
     let { state } = replay(recomposition, "ios");
     state = reduceEditing(state, {
       type: "refused",
-      operation: { kind: "command", command: "moveBackward" },
+      operation: { kind: "command", command: "moveBackward", contextId: context.contextId },
     }).state;
     const step = reduceEditing(state, {
       type: "compositionupdate",
@@ -1040,6 +1064,8 @@ it("sends a Backspace at the mirror's start to the page", () => {
     inputType: "deleteContentBackward",
     data: null,
   });
-  expect(result.operations).toEqual([{ kind: "command", command: "deleteBackward" }]);
+  expect(result.operations).toEqual([
+    { kind: "command", command: "deleteBackward", contextId: context.contextId },
+  ]);
   expect(result.instruction.preventDefault).toBe(true);
 });

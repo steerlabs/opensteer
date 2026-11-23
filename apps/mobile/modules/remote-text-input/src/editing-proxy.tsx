@@ -119,12 +119,6 @@ export function NativeEditingProxy({
     };
   }, [abilities]);
   /**
-   * A command says the context of the field it was made for: the reducer's, the current one or
-   * a retired one on the late path. (The transport stamps any command that arrives without one.)
-   */
-  const scoped = (operation: EditingOperation, contextId = current()): EditingOperation =>
-    operation.kind === "command" && contextId ? { ...operation, contextId } : operation;
-  /**
    * CY8: what the late path sends of an operation, under the context it was made in: an edit or a
    * composition as it is, a command with that context, a plain paste as the text it inserts (in
    * insertions within the protocol's limit, in order: insertions compose, split between code
@@ -132,7 +126,8 @@ export function NativeEditingProxy({
    */
   const lateOperations = (operation: EditingOperation, contextId: string): EditingOperation[] => {
     if (operation.kind === "edit" || operation.kind === "compose") return [operation];
-    if (operation.kind === "command") return [scoped(operation, contextId)];
+    // A command carries its late reducer's context, stamped there (CZ3).
+    if (operation.kind === "command") return [operation];
     if (operation.kind !== "paste") return [];
     const item = operation.items.find((candidate) => candidate.type === "text/plain");
     if (!item) return [];
@@ -162,8 +157,8 @@ export function NativeEditingProxy({
       }
     return true;
   };
-  const latest = useRef({ sendOperation, onDone, scoped, send });
-  latest.current = { sendOperation, onDone, scoped, send };
+  const latest = useRef({ sendOperation, onDone, send });
+  latest.current = { sendOperation, onDone, send };
   const nativeComposing = useRef(false);
   const [finishCompositionRequest, requestFinish] = useState(0);
   const [instruction, setInstruction] = useState<EditingProxyInstruction>({});
@@ -180,10 +175,7 @@ export function NativeEditingProxy({
       },
       interrupt(type = "pointerdown") {
         const result = step({ type });
-        latest.current.send(
-          result.operations.map((operation) => latest.current.scoped(operation)),
-          (operation) => step({ type: "refused", operation }),
-        );
+        latest.current.send(result.operations, (operation) => step({ type: "refused", operation }));
         setInstruction(result.instruction);
         if (nativeComposing.current) requestFinish((previous) => previous + 1);
         setPreedit("");
@@ -196,15 +188,12 @@ export function NativeEditingProxy({
     // Native configure owns the old composition ending and the new context's reset.
     setInstruction({});
     setPreedit("");
-    latest.current.send(
-      result.operations.map((operation) => latest.current.scoped(operation)),
-      (operation) => step({ type: "refused", operation }),
-    );
+    latest.current.send(result.operations, (operation) => step({ type: "refused", operation }));
   }, [context, step]);
   useEffect(
     () => () => {
       for (const operation of step({ type: "blur" }).operations)
-        latest.current.sendOperation(latest.current.scoped(operation));
+        latest.current.sendOperation(operation);
     },
     [step],
   );
@@ -261,12 +250,7 @@ export function NativeEditingProxy({
                 setPreedit("");
             }
             // A refused one never left: a composition it carried goes again as a fresh start.
-            if (
-              !send(
-                result.operations.map((operation) => scoped(operation)),
-                (operation) => step({ type: "refused", operation }),
-              )
-            )
+            if (!send(result.operations, (operation) => step({ type: "refused", operation })))
               return { preventDefault: true };
             if (
               nativeComposing.current &&

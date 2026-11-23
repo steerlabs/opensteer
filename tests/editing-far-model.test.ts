@@ -192,10 +192,12 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
       }
       return true;
     }
-    // Stamped as the client's store stamps it: its own context (a late one's), else the field's now.
-    if (operation.kind === "command")
+    // CZ3: a command carries the context it was computed for, from the reducer; nothing fills one
+    // in (the client's store sends none without one).
+    if (operation.kind === "command") {
+      if (!operation.contextId) return false;
       return observer.command(
-        operation.contextId ?? observer.context.contextId,
+        operation.contextId,
         operation.command,
         () =>
           cdp.send(
@@ -204,6 +206,7 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
           ),
         producer,
       );
+    }
     return true;
   };
 
@@ -242,7 +245,10 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
         },
       },
       edit("日本"),
-      ...Array.from({ length: 6 }, () => ({ kind: "command", command: "moveBackward" }) as const),
+      ...Array.from(
+        { length: 6 },
+        () => ({ kind: "command", command: "moveBackward", contextId }) as const,
+      ),
     ];
     for (const [index, operation] of operations.entries()) {
       far.take(operation);
@@ -379,7 +385,12 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
         "A",
       ),
     ).toBe(true);
-    expect(await send({ kind: "command", command: "moveBackward" }, "B")).toBe(true);
+    expect(
+      await send(
+        { kind: "command", command: "moveBackward", contextId: observer.context.contextId },
+        "B",
+      ),
+    ).toBe(true);
     expect(await read(page, kind)).toEqual({ value: "aに", caret: 1, collapsed: true });
     expect(record).toEqual(["attributed A", "attributed A", "text に"]);
   });
@@ -440,6 +451,52 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     expect(await read(page, kind)).toEqual({ value: "Zabにx", caret: 5, collapsed: true });
     expect(await composeA("日")).toBe(true);
     expect(await read(page, kind)).toEqual({ value: "Zabにx日", caret: 6, collapsed: true });
+  });
+
+  // CZ3: a command carries the context it was computed for. A Backspace the reducer computed for
+  // the user-name field, sent after the page moved focus to a password field, changes nothing
+  // there: the password field is another field.
+  it("runs no command computed for one field in the password field focus moved to", async () => {
+    await seed(page, kind, "name", 4);
+    await settle();
+    let state = createEditingState("ios", {
+      composition: true,
+      rangeEdits: true,
+      commands: true,
+      clipboard: "text",
+    });
+    state = reduceEditing(state, { type: "context", context: observer.context }).state;
+    state = reduceEditing(state, {
+      type: "selection",
+      proxy: { value: "name", selectionStart: 4, selectionEnd: 4 },
+    }).state;
+    const backspace = reduceEditing(state, {
+      type: "beforeinput",
+      inputType: "deleteContentBackward",
+      data: null,
+    }).operations;
+    const name = observer.context.contextId;
+    expect(backspace).toEqual([{ kind: "command", command: "deleteBackward", contextId: name }]);
+    await page.evaluate(() => {
+      const password = document.createElement("input");
+      password.type = "password";
+      password.id = "p";
+      password.value = "secret";
+      document.body.append(password);
+      password.focus();
+      password.setSelectionRange(6, 6);
+    });
+    await settle();
+    expect(observer.context.field?.sensitive).toBe(true);
+    for (const operation of backspace) expect(await send(operation)).toBe(false);
+    expect(
+      await page.evaluate(() => (document.getElementById("p") as HTMLInputElement).value),
+    ).toBe("secret");
+    await page.evaluate(() => {
+      document.getElementById("p")?.remove();
+      document.getElementById("f")?.focus();
+    });
+    await settle();
   });
 
   // CY4, the lead's ruling 2: what the page holds from a composition it ended itself is applied.
@@ -586,11 +643,15 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
         true,
       );
     expect((await read(page, kind)).value).toBe("ab");
-    expect(await send({ kind: "command", command: "undo" })).toBe(true);
+    expect(
+      await send({ kind: "command", command: "undo", contextId: observer.context.contextId }),
+    ).toBe(true);
     const undone = (await read(page, kind)).value;
     expect(undone).not.toBe("ab");
     expect("ab".startsWith(undone)).toBe(true);
-    expect(await send({ kind: "command", command: "redo" })).toBe(true);
+    expect(
+      await send({ kind: "command", command: "redo", contextId: observer.context.contextId }),
+    ).toBe(true);
     expect((await read(page, kind)).value).toBe("ab");
   });
 
@@ -1183,7 +1244,7 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
                       edit: { contextId, text: pick(alphabet), before: "", after: "" },
                     }
                   : way < 0.8
-                    ? { kind: "command", command: pick(commands) }
+                    ? { kind: "command", command: pick(commands), contextId }
                     : // CW1: a replacement of the other viewer's, refused alone.
                       {
                         kind: "edit",
@@ -1212,7 +1273,7 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
             label = "edit";
             totals.edits += 1;
           } else if (choice < 0.6) {
-            operation = { kind: "command", command: pick(commands) };
+            operation = { kind: "command", command: pick(commands), contextId };
             label = "command";
             totals.commands += 1;
           } else if (choice < 0.8) {
