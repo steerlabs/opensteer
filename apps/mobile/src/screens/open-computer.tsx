@@ -1,12 +1,16 @@
 import { clientIssue } from "@opensteer/client/feedback";
 import { useState, type ReactNode } from "react";
-import { ActivityIndicator, Modal, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Modal, ScrollView, StyleSheet } from "react-native";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { ActionLine } from "../ui/action-line.js";
 import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
-import { color, space } from "../theme.js";
+import { color, displayFontScaleLimit, space } from "../theme.js";
 
-/** Visible above any selected computer: a link must never silently disappear. */
+/**
+ * Visible above any selected computer: a link must never silently disappear. At the largest text
+ * sizes it scrolls, so every answer can be reached, and its title grows only as far as
+ * `displayFontScaleLimit`, where its widest word fits the narrowest phone.
+ */
 export function OpenComputer(): ReactNode {
   const client = useMobileClient();
   const { pendingComputer: pending, account } = useMobileState();
@@ -26,8 +30,10 @@ export function OpenComputer(): ReactNode {
       onRequestClose={() => client.cancelOpenComputer()}
       presentationStyle="pageSheet"
     >
-      <View style={styles.sheet}>
-        <AppText role="displayLarge">Open your computer</AppText>
+      <ScrollView contentContainerStyle={styles.sheet} style={styles.scroll}>
+        <AppText maxFontSizeMultiplier={displayFontScaleLimit} role="displayLarge">
+          Open your computer
+        </AppText>
         {pending.status === "needs-sign-in" ? (
           <PrimaryButton
             label="Sign in"
@@ -81,14 +87,14 @@ export function OpenComputer(): ReactNode {
           />
         ) : null}
         <SecondaryButton label="Cancel" onPress={() => client.cancelOpenComputer()} />
-      </View>
+      </ScrollView>
     </Modal>
   );
 }
 const styles = StyleSheet.create({
+  scroll: { backgroundColor: color.background, flex: 1 },
   sheet: {
-    flex: 1,
-    backgroundColor: color.background,
+    flexGrow: 1,
     padding: space[24],
     gap: space[24],
     justifyContent: "center",

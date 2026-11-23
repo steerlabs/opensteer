@@ -1,8 +1,17 @@
 import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { useIsFocused, useNavigation } from "@react-navigation/native";
 import { useEffect, type ReactNode } from "react";
-import { Image, Platform, Pressable, StyleSheet, View } from "react-native";
-import { color, controlFontScaleLimit, radius, space } from "../theme.js";
+import {
+  Image,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { color, controlFontScaleLimit, displayFontScaleLimit, radius, space } from "../theme.js";
 import { useHostValue } from "../ui/mobile-client-context.js";
 import { useMobileNotifications, usePushRegistration } from "../ui/notifications-context.js";
 import { useContentInsets } from "../ui/pane.js";
@@ -40,12 +49,20 @@ export function useNotificationsIntro(hostClient: HostClient | null): void {
  * Why to allow notifications, before the system asks. iOS gets one button that
  * leads to its own prompt and leaves by the sheet's dismissal; Android offers
  * both answers, and asks only after Enable.
+ *
+ * The sheet sizes to what it holds, but never past the screen: at the largest
+ * text sizes its words scroll and its answers stay in view below them. Its title
+ * grows as far as `displayFontScaleLimit`, where its widest word still fits the
+ * narrowest phone, so it never breaks inside a word.
  */
 export function NotificationsIntroScreen(): ReactNode {
   const navigation = useNavigation();
   const { registration } = useMobileNotifications();
   const insets = useContentInsets();
   const gutter = useGutter();
+  const window = useWindowDimensions();
+  // The sheet stands below the status bar, with a margin above it, as iOS and Android draw one.
+  const tallest = window.height - useSafeAreaInsets().top - space[16];
   const ios = Platform.OS === "ios";
   const enable = (): void => {
     // The system's prompt is its own window, so the sheet can leave as it opens.
@@ -57,21 +74,28 @@ export function NotificationsIntroScreen(): ReactNode {
       style={[
         styles.sheet,
         {
+          maxHeight: tallest,
           paddingBottom: insets.bottom + space[16],
           paddingLeft: gutter + insets.left,
           paddingRight: gutter + insets.right,
         },
       ]}
     >
-      <View style={styles.copy}>
-        <AppText role="displayLarge" style={styles.centred}>
-          Know when you’re needed
-        </AppText>
-        <AppText role="body" style={styles.centred} tone="soft">
-          Get notified when an agent finishes or needs your answer.
-        </AppText>
-      </View>
-      <NotificationPreview />
+      <ScrollView contentContainerStyle={styles.words} style={styles.scroll}>
+        <View style={styles.copy}>
+          <AppText
+            maxFontSizeMultiplier={displayFontScaleLimit}
+            role="displayLarge"
+            style={styles.centred}
+          >
+            Know when you’re needed
+          </AppText>
+          <AppText role="body" style={styles.centred} tone="soft">
+            Get notified when an agent finishes or needs your answer.
+          </AppText>
+        </View>
+        <NotificationPreview />
+      </ScrollView>
       <View style={styles.actions}>
         <PrimaryButton
           label={ios ? "Continue" : "Enable notifications"}
@@ -98,7 +122,10 @@ export function NotificationsIntroScreen(): ReactNode {
   );
 }
 
-/** What one arriving looks like: the app's icon at banner size, a task and its ask. */
+/**
+ * What one arriving looks like: the app's icon at banner size, a task and its ask. A picture of a
+ * banner (read as one image), its words grow only as far as the title's.
+ */
 function NotificationPreview(): ReactNode {
   return (
     <View
@@ -109,14 +136,24 @@ function NotificationPreview(): ReactNode {
       <Image source={require("../../assets/icon.png") as number} style={styles.previewIcon} />
       <View style={styles.previewCopy}>
         <View style={styles.previewHead}>
-          <AppText numberOfLines={1} role="secondaryMedium" style={styles.previewTitle}>
+          <AppText
+            maxFontSizeMultiplier={displayFontScaleLimit}
+            numberOfLines={1}
+            role="secondaryMedium"
+            style={styles.previewTitle}
+          >
             Update the pricing page
           </AppText>
-          <AppText role="caption" tone="muted">
+          <AppText maxFontSizeMultiplier={displayFontScaleLimit} role="caption" tone="muted">
             now
           </AppText>
         </View>
-        <AppText numberOfLines={2} role="secondary" tone="soft">
+        <AppText
+          maxFontSizeMultiplier={displayFontScaleLimit}
+          numberOfLines={2}
+          role="secondary"
+          tone="soft"
+        >
           Needs your answer: publish the new prices today?
         </AppText>
       </View>
@@ -135,6 +172,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   pressed: { backgroundColor: color.surfacePressed },
+  scroll: { flexGrow: 0, flexShrink: 1 },
   preview: {
     alignItems: "center",
     backgroundColor: color.surfaceRaised,
@@ -152,4 +190,5 @@ const styles = StyleSheet.create({
     gap: space[24],
     paddingTop: space[32],
   },
+  words: { gap: space[24] },
 });
