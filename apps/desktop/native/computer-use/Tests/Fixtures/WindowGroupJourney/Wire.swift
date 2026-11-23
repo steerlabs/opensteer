@@ -444,7 +444,7 @@ extension WireJourney {
         targets.append(target)
       }
       let refused = try await baseline.request("display.input", ["streamId": streamA, "source": source,
-        "geometry": 1, "sequence": 0, "events": [["kind": "copy"]]])
+        "geometry": 1, "sequence": 0, "events": [["kind": "copy", "contextId": "00000000-0000-4000-8000-000000000001"]]])
       try require(refused["outcome"] as? String == "refused" && refused["reason"] as? String == "unavailable",
         "A baseline helper peer admitted owner input")
       _ = try await baseline.request("view.close", ["viewId": view, "generation": 1, "leaseDurationMs": 300_000])
@@ -531,6 +531,10 @@ extension WireJourney {
       try require(try modifierReleases() == count + 1, "Held Shift did not receive exactly one native cleanup release")
     }
     let shiftDown: [[String: Any]] = [["kind": "key", "action": "down", "code": "ShiftLeft", "key": "Shift", "modifiers": ["shift"]]]
+    let beforeAgentContext = try await editingContext(streamA, after: 0) { context in
+      (context["field"] as? [String: Any])?["sensitive"] as? Bool == false
+    }
+    let beforeAgentContextId = try (beforeAgentContext["contextId"] as? String).unwrap("before-agent context id")
     let beforeAgent = try dispatchedKeys()
     let agentTask = Task { @MainActor in
       try await agent.request("session.act", ["sessionId": session, "app": sessionApp, "window": ref,
@@ -543,7 +547,7 @@ extension WireJourney {
     }
     do {
       try require(try dispatchedKeys() > beforeAgent, "Agent mutation never reached the native fixture")
-      let personBatch = try await input([["kind": "copy"]])
+      let personBatch = try await input([["kind": "copy", "contextId": beforeAgentContextId]])
       let result = try await agentTask.value
       try require(personBatch["outcome"] as? String == "dispatched"
         && result["error"] is NSNull && (result["performed"] as? [String])?.count == 2,
