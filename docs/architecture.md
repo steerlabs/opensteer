@@ -148,7 +148,9 @@ Listing sizes are pinned in `tests/agent-context-budget.json`.
 
 **Outside the grant reads exactly like non-existent.** A refusal about a target the connection
 may not know of is rewritten to `not_found` with a fixed message and no advice
-(`apps/host/src/mcp/agent-tool-failure.ts`, `packages/agent-tools/src/results.ts`). Pinned by
+(`apps/host/src/mcp/agent-tool-failure.ts`, `packages/agent-tools/src/results.ts`). For Requests,
+a task's `status` is the task's own state and stays truthful while any Request outside the caller's
+authority stays hidden (absent from lists, counts, text, and asker). Pinned by
 `packages/agent-tools/src/results.test.ts` and `apps/host/src/mcp/lineage-visibility.integration.test.ts`.
 
 ### Delegation never widens authority
@@ -349,6 +351,8 @@ of attempts (`packages/database/src/connection-disconnect.ts`, driven by
 Runs and their handed-off generations, automation occurrences and their attempts, Watch
 activations, queued inputs, Requests, steering commands, active automations (paused), agent
 sessions and operations, plugin executions, standard CDP connections and shared Chrome tabs.
+Display streams are opened only by a person's own session (`computer-use-display-routes.ts` ->
+`DisplayStreamHub.attachViewer`), so they are not in any connection's Disconnect set.
 
 **Nothing leaves the Home before it is in the set.** A Run is recorded before its frame is built;
 a CDP attempt before the attach ticket goes to the browser runtime; a plugin execution before the

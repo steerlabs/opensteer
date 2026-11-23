@@ -9,7 +9,7 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { sql, type Kysely } from "kysely";
+import { expressionBuilder, sql, type Expression, type Kysely, type SqlBool } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
 import { delegatingConnectionStanding, liveDelegatingConnection } from "./resource-access.js";
@@ -304,12 +304,8 @@ export async function lineageExecutionStanding(
     ? { kind: "admitted", environmentId: admission.environmentId }
     : { kind: "lost" };
 }
-export async function executionEnvironmentIsAvailableToUser(
-  database: Database,
-  environmentId: EnvironmentId,
-  userId: UserId,
-): Promise<boolean> {
-  const row = await database
+function availableExecutionEnvironmentSubquery(userId: UserId) {
+  return expressionBuilder<DatabaseSchema, "threads">()
     .selectFrom("personalSettings")
     .innerJoin("users", "users.id", "personalSettings.ownerId")
     .innerJoin(
@@ -322,10 +318,45 @@ export async function executionEnvironmentIsAvailableToUser(
     .where("personalSettings.singletonKey", "=", "personal")
     .where("personalSettings.ownerId", "=", userId)
     .where("users.disabledAt", "is", null)
-    .where("executionEnvironments.id", "=", environmentId)
-    .where("runners.revokedAt", "is", null)
-    .executeTakeFirst();
-  return row !== undefined;
+    .where("runners.revokedAt", "is", null);
+}
+
+/**
+ * The single SQL predicate for whether a `threads` row's execution is admitted for `userId`.
+ * Both `admitThreadExecution` and `connectionRequests` call this builder so execution admission
+ * cannot drift between execution checks and request visibility.
+ */
+export function threadExecutionAdmitted(userId: UserId): Expression<SqlBool> {
+  const eb = expressionBuilder<DatabaseSchema, "threads">();
+  return eb.exists(
+    availableExecutionEnvironmentSubquery(userId).whereRef(
+      "executionEnvironments.id",
+      "=",
+      "threads.environmentId",
+    ),
+  );
+}
+
+export async function executionEnvironmentIsAvailableToUser(
+  database: Database,
+  environmentId: EnvironmentId,
+  userId: UserId,
+): Promise<boolean> {
+  const eb = expressionBuilder<DatabaseSchema, never>();
+  const row = await database
+    .selectNoFrom(
+      eb
+        .exists(
+          availableExecutionEnvironmentSubquery(userId).where(
+            "executionEnvironments.id",
+            "=",
+            environmentId,
+          ),
+        )
+        .as("available"),
+    )
+    .executeTakeFirstOrThrow();
+  return Boolean(row.available);
 }
 export async function admitThreadExecution(
   database: Database,
@@ -338,10 +369,9 @@ export async function admitThreadExecution(
     .selectFrom("threads")
     .select("threads.environmentId")
     .where("threads.id", "=", threadId)
+    .where(threadExecutionAdmitted(userId))
     .executeTakeFirst();
-  return row && (await executionEnvironmentIsAvailableToUser(database, row.environmentId, userId))
-    ? row
-    : null;
+  return row ?? null;
 }
 export async function deploymentOwnedExecutionIsAvailableToUser(
   database: Database,

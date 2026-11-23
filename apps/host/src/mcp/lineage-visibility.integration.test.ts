@@ -8,24 +8,32 @@ import {
   type TabId,
   type ThreadId,
 } from "@opensteer/core";
+import * as databaseModule from "@opensteer/database";
 import {
   AgentConnectionStore,
   TabStore,
   TriggerStore,
   beginAgentSession,
 } from "@opensteer/database";
+import pg from "pg";
+import { expect, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { describeStore, testModelSelection } from "@opensteer/database/test-support/store";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import { sql } from "kysely";
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { expect } from "vitest";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type { TabActor } from "../tabs/ports.js";
 import { readableTabTasks, tabComputer, tabReadAuthority } from "../tabs/tab-authority.js";
 import { TabService } from "../tabs/tab-service.js";
+import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
+import { ThreadService } from "../threads/thread-service.js";
+import type { AgentCaller } from "./agent-caller.js";
+import { ProductToolHandlers } from "./handlers/product.js";
+import { personalTestExecution } from "./personal-execution.test-support.js";
 import {
   clients,
   connection,
@@ -847,7 +855,7 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     ).not.toContain(unavailableTask);
   });
 
-  it("applies connectionRequests inside SQL before pending caps and activity paging, matching absence byte-for-byte", async ({
+  it("applies connectionRequests inside SQL before pending caps and activity paging, matching absence byte-for-byte across Request-derived fields (excluding task.status, which stays truthful as the task's own state)", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("lineage-sql-paging-and-caps");
@@ -964,19 +972,33 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       idempotencyKey: "r5-second-visible-message",
     });
 
-    const pageSlice = (result: Awaited<ReturnType<typeof callA>>) => {
+    // Compared fields (all Request-derived and paged outputs): items, hasMore, nextBefore,
+    // pendingRequests, and task.pendingRequests. task.status is explicitly excluded because
+    // a task's status is the task's own state and stays truthful while the Request stays hidden.
+    const requestScopedAbsenceSlice = (result: Awaited<ReturnType<typeof callA>>) => {
       const body = result.structuredContent as {
         items: unknown[];
         hasMore: boolean;
         nextBefore: string | null;
+        pendingRequests?: unknown[];
+        task: { pendingRequests: number; status: string };
       };
-      return { items: body.items, hasMore: body.hasMore, nextBefore: body.nextBefore };
+      return {
+        items: body.items,
+        hasMore: body.hasMore,
+        nextBefore: body.nextBefore,
+        pendingRequests: body.pendingRequests ?? null,
+        taskPendingRequests: body.task.pendingRequests,
+      };
     };
+    const taskStatus = (result: Awaited<ReturnType<typeof callA>>) =>
+      (result.structuredContent as { task: { status: string } }).task.status;
 
     const baseDefault = await callA("opensteer_task_read", { taskId: taskBActivity, limit: 2 });
     expect(baseDefault.isError, JSON.stringify(baseDefault.content)).not.toBe(true);
-    expect(pageSlice(baseDefault).items).toHaveLength(2);
-    expect(pageSlice(baseDefault).hasMore).toBe(false);
+    expect(requestScopedAbsenceSlice(baseDefault).items).toHaveLength(2);
+    expect(requestScopedAbsenceSlice(baseDefault).hasMore).toBe(false);
+    expect(taskStatus(baseDefault)).toBe("running");
 
     const baseActivity = await callA("opensteer_task_read", {
       taskId: taskBActivity,
@@ -984,8 +1006,8 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       limit: 2,
     });
     expect(baseActivity.isError, JSON.stringify(baseActivity.content)).not.toBe(true);
-    expect(pageSlice(baseActivity).items).toHaveLength(2);
-    expect(pageSlice(baseActivity).hasMore).toBe(false);
+    expect(requestScopedAbsenceSlice(baseActivity).items).toHaveLength(2);
+    expect(requestScopedAbsenceSlice(baseActivity).hasMore).toBe(false);
 
     const hiddenActivityReq = await storeFixture.store.requests.create({
       callId: "r5-hidden-activity-question",
@@ -998,6 +1020,17 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       payload: { kind: "person.question" },
       presentation: questionPresentation("Hidden newest question"),
     });
+    // Reflect the task's own waiting state while B's Run waits on that hidden Request.
+    await storeFixture.database
+      .updateTable("runs")
+      .set({ status: "waiting" })
+      .where("id", "=", runBActivity.runId)
+      .execute();
+    await storeFixture.database
+      .updateTable("threads")
+      .set({ status: "waiting" })
+      .where("id", "=", taskBActivity)
+      .execute();
 
     const afterDefault = await callA("opensteer_task_read", { taskId: taskBActivity, limit: 2 });
     expect(afterDefault.isError, JSON.stringify(afterDefault.content)).not.toBe(true);
@@ -1005,7 +1038,11 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     expect(JSON.stringify(afterDefault.structuredContent)).not.toContain(
       hiddenActivityReq.request.id,
     );
-    expect(JSON.stringify(pageSlice(afterDefault))).toBe(JSON.stringify(pageSlice(baseDefault)));
+    expect(JSON.stringify(requestScopedAbsenceSlice(afterDefault))).toBe(
+      JSON.stringify(requestScopedAbsenceSlice(baseDefault)),
+    );
+    // Excluded from the absence comparison above: task.status truthfully reports the task's own state.
+    expect(taskStatus(afterDefault)).toBe("waiting");
 
     const afterActivity = await callA("opensteer_task_read", {
       taskId: taskBActivity,
@@ -1016,7 +1053,16 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     expect(JSON.stringify(afterActivity.structuredContent)).not.toContain(
       hiddenActivityReq.request.id,
     );
-    expect(JSON.stringify(pageSlice(afterActivity))).toBe(JSON.stringify(pageSlice(baseActivity)));
+    expect(JSON.stringify(requestScopedAbsenceSlice(afterActivity))).toBe(
+      JSON.stringify(requestScopedAbsenceSlice(baseActivity)),
+    );
+    expect(taskStatus(afterActivity)).toBe("waiting");
+
+    const architectureDoc = readFileSync(
+      new URL("../../../../docs/architecture.md", import.meta.url),
+      "utf8",
+    );
+    expect(architectureDoc).toMatch(/status.*task's own state.*truthful/iu);
 
     expect(
       await callA("opensteer_task_read", {
@@ -1029,5 +1075,301 @@ describeStore("a selected connection reads only its own lineage", (it) => {
         itemId: createId("request"),
       }),
     );
+  });
+
+  it("scopes pendingRequests in the handler itself for connection callers, even on tools not named opensteer_task_*", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("connection-handler-pending-count");
+    const url = await serveMcp(storeFixture);
+    const agentA = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+    });
+    const agentB = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: tasksOnly,
+    });
+    const taskB = await createTask(agentB, f, "handler-foreign-parent");
+    const runB = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, taskB)).id,
+    );
+    const childB = await storeFixture.store.delegateThread({
+      accessMode: "full-access",
+      createdBy: f.userId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harnessInstance.id,
+      idempotencyKey: "handler-foreign-child",
+      modelSelection: testModelSelection,
+      origin: { kind: "run", parentRunId: runB.runId, parentThreadId: taskB },
+      task: [{ type: "text", text: "Foreign child work" }],
+      title: "Foreign child task",
+    });
+    const childRunB = await startPersonalQueuedRunFixture(storeFixture.store, childB.run.id);
+    await storeFixture.store.requests.create({
+      callId: "handler-foreign-child-question",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: childRunB.runId,
+      originatingThreadId: childB.thread.id,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Foreign connection question",
+        fields: [
+          { id: "answer", prompt: "Ready?", secret: false, custom: true, multiSelect: false },
+        ],
+      },
+    });
+
+    const unavailable = new Proxy(
+      {},
+      {
+        get: () => async () => {
+          throw new Error("Unexpected tool");
+        },
+      },
+    );
+    const realtime = new RealtimeHub();
+    const commands = new CommandService({
+      store: storeFixture.store,
+      admission: new KeyedAdmissionQueue({
+        maxInFlight: 8,
+        maxQueuedBytes: 1024 * 1024,
+        maxQueuedCommands: 100,
+      }),
+      onExecutionQueued: () => {},
+    });
+    const settings = await storeFixture.database
+      .selectFrom("personalSettings")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    const threads = new ThreadService({
+      store: storeFixture.store,
+      commands,
+      runners: {
+        canRunHarness: () => true,
+        isAvailable: () => true,
+        harnessAccessModes: () => undefined,
+        identityForEnvironment: () => undefined,
+        attachmentInputFailure: () => null,
+      },
+      placeContext: unavailable as never,
+      browser: unavailable as never,
+    });
+    const handlers = new ProductToolHandlers({
+      execution: personalTestExecution(storeFixture.store, {
+        userId: settings.ownerId,
+        environmentId: f.environmentId,
+        agentHome: { computerId: settings.agentHomeComputerId, path: settings.agentHomePath },
+      }),
+      deploymentId: (
+        await storeFixture.database.selectFrom("deployments").select("id").executeTakeFirstOrThrow()
+      ).id,
+      store: storeFixture.store,
+      threads,
+      realtime: {
+        observe: realtime.observe.bind(realtime),
+        observeScopes: realtime.observeScopes.bind(realtime),
+        sendToUsers: realtime.sendToUsers.bind(realtime),
+      },
+      commands,
+      browser: {
+        readablePlaces: async (_owner: unknown, references: readonly unknown[]) => [...references],
+      },
+      isEnvironmentConnected: () => true,
+      canRunHarness: () => true,
+    } as unknown as ConstructorParameters<typeof ProductToolHandlers>[0]);
+
+    const connectionACaller: AgentCaller = {
+      kind: "connection",
+      key: `connection:${agentA.id}`,
+      connectionId: agentA.id,
+      grant: { scope: "everything" },
+      grantRevision: 1,
+      userId: f.userId,
+      accessMode: "full-access",
+    };
+
+    // opensteer_delegation_status is NOT named opensteer_task_*, so withoutRequestCounts
+    // does not strip its output: the handler itself must not carry another connection's count.
+    const delegation = await handlers.opensteer_delegation_status({
+      caller: connectionACaller,
+      input: { delegationId: childB.assignment.id },
+      operationKey: "p2-delegation-status",
+    });
+    expect(delegation.pendingRequests).toBe(0);
+  });
+
+  it("computes scoped pendingRequests inside the read transaction without separate countPendingConnectionRequests queries", async ({
+    storeFixture,
+  }) => {
+    const countStatements = async (action: () => Promise<unknown>): Promise<number> => {
+      let count = 0;
+      const prototype: { query(...args: unknown[]): unknown } = pg.Client.prototype;
+      const query = prototype.query;
+      const spy = vi.spyOn(prototype, "query").mockImplementation(function (
+        this: pg.Client,
+        ...args: unknown[]
+      ) {
+        count += 1;
+        return Reflect.apply(query, this, args);
+      });
+      try {
+        await action();
+      } finally {
+        spy.mockRestore();
+      }
+      return count;
+    };
+
+    const f = await storeFixture.startRunFixture("p3-inline-scoped-counts");
+    const runScopes: Record<string, RunToolScope> = {};
+    const url = await serveMcp(storeFixture, { runScopes });
+    const agentA = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+    });
+    const agentB = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: tasksOnly,
+    });
+    const taskA = await createTask(agentA, f, "p3-lineage-parent");
+    const taskB = await createTask(agentB, f, "p3-foreign-parent");
+    const runA = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, taskA)).id,
+    );
+    const runB = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, taskB)).id,
+    );
+    runScopes["p3-run-a"] = fixtureRunScope({ ...f, ...runA, threadId: taskA });
+    const clientA = await runClient(url, "p3-run-a");
+    const callA = (name: string, arguments_: Record<string, unknown>) =>
+      clientA.callTool({ name, arguments: arguments_ });
+
+    // Child delegation of runA, settled so wait returns immediately.
+    const childA = await storeFixture.store.delegateThread({
+      accessMode: "full-access",
+      createdBy: f.userId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harnessInstance.id,
+      idempotencyKey: "p3-settled-child",
+      modelSelection: testModelSelection,
+      origin: { kind: "run", parentRunId: runA.runId, parentThreadId: taskA },
+      task: [{ type: "text", text: "Child work" }],
+      title: "Settled child",
+    });
+    await storeFixture.store.cancelAssignment({
+      assignmentId: childA.assignment.id,
+      requestedBy: f.userId,
+      idempotencyKey: "p3-settled-child-cancel",
+    });
+
+    // Foreign connection B's pending Request on taskB (readable by everything-grant runA,
+    // but B's Request must stay hidden so scoped pendingRequests is 0).
+    const nodeB = await subagent(storeFixture, runB.runId);
+    await storeFixture.store.requests.create({
+      callId: "p3-foreign-question",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: runB.runId,
+      originatingThreadId: taskB,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Foreign question",
+        fields: [
+          { id: "answer", prompt: "Ready?", secret: false, custom: true, multiSelect: false },
+        ],
+      },
+    });
+
+    // Warm each call once, check scoped pendingRequests === 0, then measure statements.
+    const warmSubagent = await callA("opensteer_subagent_read", { subagentId: nodeB });
+    expect(warmSubagent.isError, JSON.stringify(warmSubagent.content)).not.toBe(true);
+    expect(
+      (warmSubagent.structuredContent as { task: { pendingRequests: number } }).task
+        .pendingRequests,
+    ).toBe(0);
+
+    const warmDelegation = await callA("opensteer_delegation_status", {
+      delegationId: childA.assignment.id,
+    });
+    expect(warmDelegation.isError, JSON.stringify(warmDelegation.content)).not.toBe(true);
+    expect((warmDelegation.structuredContent as { pendingRequests: number }).pendingRequests).toBe(
+      0,
+    );
+
+    const warmWait = await callA("opensteer_task_wait", {
+      taskId: childA.thread.id,
+      timeoutMs: 5_000,
+    });
+    expect(warmWait.isError, JSON.stringify(warmWait.content)).not.toBe(true);
+    expect(
+      warmWait.structuredContent as { status: string; task: { pendingRequests: number } },
+    ).toMatchObject({ status: "settled", task: { pendingRequests: 0 } });
+
+    const counts = {
+      subagentRead: await countStatements(async () => {
+        const res = await callA("opensteer_subagent_read", { subagentId: nodeB });
+        expect(res.isError, JSON.stringify(res.content)).not.toBe(true);
+      }),
+      delegationStatus: await countStatements(async () => {
+        const res = await callA("opensteer_delegation_status", {
+          delegationId: childA.assignment.id,
+        });
+        expect(res.isError, JSON.stringify(res.content)).not.toBe(true);
+      }),
+      settledWait: await countStatements(async () => {
+        const res = await callA("opensteer_task_wait", {
+          taskId: childA.thread.id,
+          timeoutMs: 5_000,
+        });
+        expect(res.isError, JSON.stringify(res.content)).not.toBe(true);
+      }),
+    };
+    // Verify the inline scoped count inside getAssignmentForOwner (used by #task) and
+    // getThreadForOwner (used by #readSubagent and standalone create) directly too.
+    const authorityA = {
+      kind: "connection" as const,
+      userId: f.userId,
+      connectionId: agentA.id,
+      accessMode: "full-access" as const,
+    };
+    const scopedThreadB = await storeFixture.store.getThreadForOwner(
+      taskB,
+      f.userId,
+      undefined,
+      undefined,
+      authorityA,
+    );
+    expect(scopedThreadB?.pendingRequests).toBe(0);
+    const scopedAssignmentA = await storeFixture.store.getAssignmentForOwner({
+      assignmentId: childA.assignment.id,
+      ownerId: f.userId,
+      reader: { kind: "person" },
+      connectionAuthority: authorityA,
+    });
+    expect(scopedAssignmentA?.pendingRequests).toBe(0);
+    expect("countPendingConnectionRequests" in databaseModule).toBe(false);
+    // Before P3: subagentRead=28, delegationStatus=78, settledWait=239 (each had a separate
+    // 5-statement countPendingConnectionRequests transaction; folding dropped 4 statements each,
+    // and merging 808b6d4b1 trimmed 1 more from delegationStatus and 2 from settledWait).
+    expect(counts).toEqual({
+      subagentRead: 24,
+      delegationStatus: 73,
+      settledWait: 233,
+    });
   });
 });

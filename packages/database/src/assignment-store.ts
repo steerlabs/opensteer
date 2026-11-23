@@ -5,6 +5,8 @@ import { transcriptPreview } from "./transcript-store.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
+import { connectionRequests } from "./request-agent-response.js";
+import type { ThreadCallerAuthority } from "./thread-caller.js";
 
 import { revokeRunGrants, type RevokedRunGrant } from "./run-grants.js";
 import {
@@ -41,10 +43,41 @@ const truncatedReplyNote = "\n\n[Reply truncated. The full reply is in the task.
 export async function assignmentSummaryInTransaction(
   transaction: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   row: Selectable<DelegationTable>,
+  options?: {
+    readonly connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
+    readonly ownerVerified?: boolean;
+    readonly scope?: "everything" | "selected";
+  },
 ): Promise<AssignmentSummary> {
+  const visibleRequests = options?.connectionAuthority
+    ? await connectionRequests(
+        transaction as Transaction<DatabaseSchema>,
+        options.connectionAuthority,
+        {
+          ownerVerified: options.ownerVerified ?? true,
+          ...(options.scope ? { scope: options.scope } : {}),
+        },
+      )
+    : undefined;
   const worker = await transaction
     .selectFrom("threads")
-    .select(["environmentId", "id", "title", "icon", "color", "status", "pendingRequestCount"])
+    .select([
+      "environmentId",
+      "id",
+      "title",
+      "icon",
+      "color",
+      "status",
+      ...(visibleRequests
+        ? [
+            sql<number>`(
+              select count(*)::int from (${visibleRequests}) as visible_requests
+              where visible_requests.originating_thread_id = threads.id
+                and visible_requests.status = 'pending'
+            )`.as("pendingRequestCount"),
+          ]
+        : (["pendingRequestCount"] as const)),
+    ])
     .where("id", "=", row.childThreadId)
     .executeTakeFirstOrThrow();
   const [currentRun, parentRun] = await Promise.all([
