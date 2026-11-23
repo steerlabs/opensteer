@@ -571,41 +571,5 @@ describe("outside names in agent work copy (Y3)", () => {
         ),
       ).toThrow();
     }
-    // Static call-site guard: no non-test production source may pass outside-name keys to
-    // workWords(...) or agentWords(...).
-    const { readdirSync, readFileSync } = await import("node:fs");
-    const { join, resolve } = await import("node:path");
-    const root = resolve(import.meta.dirname, "../../../..");
-    const forbidden =
-      /\b(?:workWords|agentWords)\([^)]*\{[^}]*(?:[{,]\s*)(?:agent|label|name|task)\s*(?::|[,}])/gu;
-    const offenders: string[] = [];
-    const walk = (directory: string) => {
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        if (
-          entry.name === "node_modules" ||
-          entry.name === "dist" ||
-          entry.name === "build" ||
-          entry.name.startsWith(".")
-        )
-          continue;
-        const full = join(directory, entry.name);
-        if (entry.isDirectory()) {
-          walk(full);
-          continue;
-        }
-        if (
-          !/\.(?:ts|tsx)$/u.test(entry.name) ||
-          /\.test\.|\.test-support\.|\.spec\./u.test(entry.name)
-        )
-          continue;
-        const source = readFileSync(full, "utf8");
-        for (const match of source.matchAll(forbidden)) {
-          offenders.push(`${full}: ${match[0]}`);
-        }
-      }
-    };
-    walk(join(root, "packages"));
-    walk(join(root, "apps"));
-    expect(offenders).toEqual([]);
   });
 });

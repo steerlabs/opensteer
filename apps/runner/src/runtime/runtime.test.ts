@@ -707,7 +707,7 @@ describe("RunnerRuntime", () => {
   it.each([false, true])(
     "hands a Run without personal context nothing of Agent home (personal context: %s)",
     async (personalContext) => {
-      const driver = new FakeHarnessDriver();
+      const driver = new FakeHarnessDriver("claude");
       const registry = new HarnessRegistry();
       registry.registerDriver(driver);
       const environmentId = createId("environment");
@@ -723,7 +723,7 @@ describe("RunnerRuntime", () => {
         },
         registry,
       });
-      const base = executeCommand(environmentId);
+      const base = executeCommand(environmentId, "claude");
       const execute = { ...base, context: { ...base.context, personalContext } };
       const agentHome = base.agentHome!.path;
       const underHome = (value: string | undefined) =>
@@ -4219,7 +4219,7 @@ describe("RunnerRuntime", () => {
     const workspacePath = join(temporaryRoot, "workspace");
     const stateRoot = join(temporaryRoot, "private", "harness-state");
     await writeWorkspaceSkill(workspacePath, "release-notes");
-    const driver = new FakeHarnessDriver("test-driver", () => new FakeHarnessSession());
+    const driver = new FakeHarnessDriver("claude", () => new FakeHarnessSession());
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
     const environmentId = createId("environment");
@@ -4254,7 +4254,7 @@ describe("RunnerRuntime", () => {
       scans.push(scan);
     });
     try {
-      const base = executeCommand(environmentId);
+      const base = executeCommand(environmentId, "claude");
       const command = {
         ...base,
         agentHome: { ...base.agentHome!, path: workspacePath },
@@ -7124,7 +7124,7 @@ it.each([false, true])(
       transport: { mode: "development", hostOrigin: new URL("http://localhost") },
     });
     const registry = new HarnessRegistry();
-    const driver = new FakeHarnessDriver("test-driver", () => new HeldHarnessSession());
+    const driver = new FakeHarnessDriver("claude", () => new HeldHarnessSession());
     Object.defineProperty(driver, "capabilities", {
       value: {
         ...fakeHarnessCapabilities,
@@ -7133,7 +7133,7 @@ it.each([false, true])(
     });
     registry.registerDriver(driver);
     const environmentId = createId("environment");
-    const base = executeCommand(environmentId);
+    const base = executeCommand(environmentId, "claude");
     const command = {
       ...base,
       agentHome: { ...base.agentHome!, path: agentHome },

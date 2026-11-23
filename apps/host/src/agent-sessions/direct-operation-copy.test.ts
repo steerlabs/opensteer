@@ -37,6 +37,7 @@ describe("directOperationCopy", () => {
       {
         grant: { kind: "plugin", target: { kind: "installed", pluginId: "plg_test" } },
         name: "Calendar",
+        device: null,
       },
       "Opensteer” approved “all",
     );

@@ -16,6 +16,7 @@ import { z } from "zod";
 import { sql, type Kysely, type SelectQueryBuilder, type Transaction } from "kysely";
 import "./connection.js";
 import { assertRequestRevision, requestFromRow } from "./request-persistence.js";
+import { connectionState } from "./connection-liveness.js";
 import { connectionTaskRequestScope } from "./resource-access.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { callerTaskReader, threadCallerLineageId } from "./thread-caller.js";
@@ -153,6 +154,13 @@ async function connectionRequestsQuery(
         eb.or([
           eb("threads.originConnectionId", "is", null),
           eb("threads.originConnectionId", "=", authority.connectionId),
+          eb.exists(
+            eb
+              .selectFrom("agentConnections")
+              .select("agentConnections.id")
+              .whereRef("agentConnections.id", "=", "threads.originConnectionId")
+              .where(connectionState(tx), "!=", "ended"),
+          ),
         ]),
       ),
     )
