@@ -54,10 +54,12 @@ export function networkCredentialSecrets(
   environment: Readonly<Record<string, string | undefined>>,
 ): readonly string[] {
   const secrets = new Set<string>();
-  function addSecret(secret: string): void {
+  function addSecret(secret: string, minimumLength = 1): void {
+    if (secret.length < minimumLength) return;
     secrets.add(secret);
     try {
-      secrets.add(decodeURIComponent(secret));
+      const decoded = decodeURIComponent(secret);
+      if (decoded.length >= minimumLength) secrets.add(decoded);
     } catch {
       // Invalid percent escapes can still appear literally in diagnostics.
     }
@@ -70,12 +72,10 @@ export function networkCredentialSecrets(
     const separator = address.lastIndexOf("@");
     if (separator <= 0) continue;
     const userinfo = address.slice(0, separator);
-    addSecret(userinfo);
     const colon = userinfo.indexOf(":");
-    if (colon >= 0) {
-      const password = userinfo.slice(colon + 1);
-      if (password.length >= 4) addSecret(password);
-    }
+    if (colon < 0) continue;
+    addSecret(userinfo);
+    addSecret(userinfo.slice(colon + 1), 4);
   }
 
   return [...secrets].sort((left, right) => right.length - left.length);

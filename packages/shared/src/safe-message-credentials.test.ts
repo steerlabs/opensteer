@@ -82,6 +82,22 @@ it("keeps a short password in plain text and removes it from a URL", () => {
   );
 });
 
+it("keeps a proxy username on its own and masks it inside an address", () => {
+  const proxy = "http://alice@proxy.corp:8080";
+  const secrets = networkCredentialSecrets({ HTTPS_PROXY: proxy });
+  expect(redactNetworkCredentials("user alice signed in", secrets)).toBe("user alice signed in");
+  expect(redactNetworkCredentials(proxy, secrets)).toBe("http://[REDACTED]@proxy.corp:8080");
+});
+
+it("applies the password length floor to the percent-decoded form", () => {
+  const secrets = networkCredentialSecrets({
+    HTTPS_PROXY: "http://u:ab%40@proxy",
+    HTTP_PROXY: "http://u:%40%40%40%40@proxy",
+  });
+  expect(redactNetworkCredentials("ab@ ab%40 @@@@", secrets)).toBe("ab@ [REDACTED] [REDACTED]");
+  expect(redactNetworkCredentials("u:ab@ u:ab%40", secrets)).toBe("[REDACTED] [REDACTED]");
+});
+
 it("redacts multiple addresses with an uppercase scheme and an IPv6 host", () => {
   expect(
     redactUrlCredentials(
