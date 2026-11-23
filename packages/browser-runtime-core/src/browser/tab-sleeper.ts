@@ -121,6 +121,11 @@ export class TabSleeper {
   private pendingAsyncPressurePass = false;
   /** An open over the threshold asked for a pass: it runs past a backoff, never past a settle. */
   private openAsked = false;
+  /**
+   * TS8: sessions whose look for the tab helper ended over the threshold. The next pass sleeps
+   * their tabs through any backoff, once; only a reclaim still settling holds it.
+   */
+  private readonly readyUnderPressure = new Set<SleepSession>();
   /** Looks already watched, so each one's end asks for one pass. */
   private readonly watchedLooks = new WeakSet<Promise<void>>();
   /** Sleeps a pass has started and not finished: their memory is on its way back (M4). */
@@ -405,7 +410,9 @@ export class TabSleeper {
     const pressureDriven = this.usesLinuxMemoryPressure();
     const budget =
       (!this.options.rendererUsage && !pressureDriven && this.overBudget()) ||
-      (this.pendingAsyncPressurePass && this.releasing && now >= this.pressureHoldUntil());
+      (this.pendingAsyncPressurePass &&
+        this.releasing &&
+        now >= this.pressureHoldUntil(this.readyUnderPressure));
     let earliest = Infinity;
     for (const [id, session] of this.sessions) {
       const links = this.openerLinks(session);
@@ -569,9 +576,12 @@ export class TabSleeper {
    * Until when a pressure pass sleeps nothing: a reclaim still settling always holds it; a backoff
    * after ineffective reclaims holds only the sleeper's own background passes (K9 corrected).
    */
-  private pressureHoldUntil(): number {
+  private pressureHoldUntil(ready: ReadonlySet<SleepSession> = new Set()): number {
     const settling = this.reclaimFrom?.settledAt ?? 0;
-    return this.openAsked ? settling : Math.max(this.pressureBackoffUntil, settling);
+    // An open waiting, or a context that became ready under pressure (TS8), goes through a backoff.
+    return this.openAsked || ready.size > 0
+      ? settling
+      : Math.max(this.pressureBackoffUntil, settling);
   }
 
   /**
@@ -586,7 +596,10 @@ export class TabSleeper {
         .catch(() => undefined)
         .then(() => {
           if (this.closed) return;
-          if (this.releasing) this.pendingAsyncPressurePass = true;
+          if (this.releasing) {
+            this.pendingAsyncPressurePass = true;
+            this.readyUnderPressure.add(session);
+          }
           this.poke();
         });
     }
@@ -812,6 +825,11 @@ export class TabSleeper {
     let slept = 0;
     let livePages = 0;
     const pending = new Set<Promise<void>>();
+    // TS8: the sessions that became ready under pressure, let through any backoff by this pass.
+    const ready = new Set(this.readyUnderPressure);
+    this.readyUnderPressure.clear();
+    const holdUntil = (session: SleepSession) =>
+      this.pressureHoldUntil(ready.has(session) ? ready : undefined);
     try {
       this.pendingAsyncPressurePass = false;
       this.sampleRenderers();
@@ -839,7 +857,7 @@ export class TabSleeper {
           ? this.memoryPressureState.known
           : this.rendererUsage !== null;
         if (measuredPressure && deadline > Date.now()) {
-          if (!this.releasing || Date.now() < this.pressureHoldUntil()) continue;
+          if (!this.releasing || Date.now() < holdUntil(session)) continue;
           // In single-step Electron renderer mode, finish pending sleeps before deciding the next one.
           if (!pressureDriven && pending.size) await Promise.all(pending);
           if (this.closed) break;
@@ -891,7 +909,7 @@ export class TabSleeper {
         this.usesLinuxMemoryPressure() &&
         this.memoryPressureState.known &&
         this.releasing &&
-        Date.now() >= this.pressureHoldUntil()
+        Date.now() >= this.pressureHoldUntil(ready)
       ) {
         const now = Date.now();
         const lastResort = (reason: SleepBlocker, bound: boolean) =>
@@ -899,6 +917,7 @@ export class TabSleeper {
             .filter(
               ({ id, session, record }) =>
                 this.sessions.get(id) === session &&
+                now >= holdUntil(session) &&
                 (this.nextProbe.get(record) ?? 0) <= now &&
                 this.blocked(id, record, now) === reason &&
                 this.blocked(id, record, now, undefined, true, bound) === null,

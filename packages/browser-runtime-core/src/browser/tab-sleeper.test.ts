@@ -679,6 +679,43 @@ describe("TabSleeper", () => {
     }
   });
 
+  it("sleeps a context that becomes ready under pressure at once, through a backoff after ineffective reclaims, and only that once (TS8)", async () => {
+    const limit = 2 * 1024 ** 3;
+    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ memoryPressure: () => Promise.resolve(pressure) });
+    try {
+      const look = Promise.withResolvers<void>();
+      let pending = true;
+      void look.promise.then(() => {
+        pending = false;
+      });
+      f.page.keepAwake = () => (pending ? "tab-helper" : null);
+      f.sleeper.add("session", {
+        ledger: f.ledger,
+        restoreVersion: 1,
+        blocked: () => null,
+        sleepReady: () => (pending ? look.promise : null),
+      });
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(3_000);
+      // Earlier reclaims freed nothing: the sleeper's own passes back off for 30 s.
+      (f.sleeper as unknown as { pressureBackoffUntil: number }).pressureBackoffUntil =
+        Date.now() + 30_000;
+      look.resolve();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(f.ledger.stateOf(f.record.id)).toBe("suspended");
+      // The pass took the context's look's end; the backoff holds every later pass again.
+      expect(
+        (f.sleeper as unknown as { readyUnderPressure: Set<unknown> }).readyUnderPressure.size,
+      ).toBe(0);
+      const other = await f.ledger.openSurface();
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(f.ledger.stateOf(other.id)).not.toBe("suspended");
+    } finally {
+      await f.close();
+    }
+  });
+
   it("sleeps a tab bound to a live Run or connected agent's session last: under pressure the unbound idle tab sleeps first, the bound one only when nothing else is left (TS12)", async () => {
     const limit = 2 * 1024 ** 3;
     let over = false;
