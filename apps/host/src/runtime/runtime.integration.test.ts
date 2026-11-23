@@ -655,6 +655,20 @@ integration("Host vertical slice", () => {
     );
     expect(receipt).toMatchObject({ type: "connection.revoke" });
     const liveDatabase = runtime.store.database;
+    // The receipt does not wait for the settle: when another pass of this Home (the maintenance
+    // pass the new boot's attach woke) holds the connection's cleanup claim, the command's own pass
+    // skips and the holder records the contact loss. Completing the cleanup is the settle's last
+    // write, and it is written only once no attempt is outstanding.
+    await waitForCondition(
+      async () =>
+        (
+          await liveDatabase
+            .selectFrom("agentConnections")
+            .select("cleanupCompletedAt")
+            .where("id", "=", witness.connectionId)
+            .executeTakeFirstOrThrow()
+        ).cleanupCompletedAt !== null,
+    );
     const evidence = {
       runnerBootId: witness.bootId,
       terminalEvidenceAt: expect.any(Date),
