@@ -1662,9 +1662,9 @@ describe("the follow view, when a stop times out or the controller shuts down (U
         expect(vi.getTimerCount()).toBe(0);
         await vi.advanceTimersByTimeAsync(10_000);
         await settle();
-        expect(
-          view.follow.diagnostics.some((entry) => entry.stage === "cast-stop-timeout"),
-        ).toBe(false);
+        expect(view.follow.diagnostics.some((entry) => entry.stage === "cast-stop-timeout")).toBe(
+          false,
+        );
       } finally {
         vi.useRealTimers();
       }

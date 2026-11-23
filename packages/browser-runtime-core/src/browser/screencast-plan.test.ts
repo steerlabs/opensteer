@@ -679,7 +679,11 @@ describe("the state after each event", () => {
       let state: TabCastState = { ...initialTabCastState(), told: { state: "preparing" } };
       // First attempt plus `limit` retries: the first `limit` failures retry; failure `limit + 1` gives up.
       for (let failure = 1; failure <= limit + 1; failure += 1) {
-        state = after(state, { kind: "start-failed", why: "Electron browser page is closed." }, now);
+        state = after(
+          state,
+          { kind: "start-failed", why: "Electron browser page is closed." },
+          now,
+        );
         expect(state, `${label} failure ${failure}`).toMatchObject({
           refusal: null,
           told: { state: "none" },
@@ -765,9 +769,7 @@ describe("the state after each event", () => {
       lastKey: key,
       told: { key, state: "running" },
     };
-    expect(
-      after(running, { binding: "other#2", kind: "first-frame-timeout" }, base),
-    ).toBe(running);
+    expect(after(running, { binding: "other#2", kind: "first-frame-timeout" }, base)).toBe(running);
     expect(
       after(
         running,

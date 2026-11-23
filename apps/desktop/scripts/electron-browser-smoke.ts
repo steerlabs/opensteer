@@ -1945,7 +1945,9 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
    */
   const followSince = (since: number, tabId?: string) =>
     followTimed
-      .filter(({ at, surfaceId: entrySurfaceId }) => at >= since && (!tabId || entrySurfaceId === tabId))
+      .filter(
+        ({ at, surfaceId: entrySurfaceId }) => at >= since && (!tabId || entrySurfaceId === tabId),
+      )
       .map(({ at, entry }) => `${Math.round(at - since)}ms ${entry}`);
   /**
    * A tab that must be cast counted its start, and exported that start's record with its reason:

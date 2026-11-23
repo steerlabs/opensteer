@@ -1028,8 +1028,9 @@ async function run(seed: number, engine: "desktop" | "linux", length: number) {
   const pushDiagnostic = follow.diagnostics.push.bind(follow.diagnostics);
   follow.diagnostics.push = (...entries) => {
     for (const entry of entries) {
-      if (entry.stage === "cast-stop-timeout" && (entry.surfaceId === "A" || entry.surfaceId === "B"))
-        world.tabs[entry.surfaceId].stopTimeouts += 1;
+      const id = entry.surfaceId as string | undefined;
+      if (entry.stage === "cast-stop-timeout" && (id === "A" || id === "B"))
+        world.tabs[id].stopTimeouts += 1;
     }
     return pushDiagnostic(...entries);
   };

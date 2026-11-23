@@ -131,7 +131,7 @@ export class ScreencastController {
     bytes?: number;
     durationMs?: number;
     geometryRevision?: number;
-    surfaceId?: BrowserSurfaceId;
+    surfaceId?: BrowserSurfaceId | undefined;
     castId?: number;
     captureRevision?: number;
   }[] = [];
@@ -382,11 +382,7 @@ export class ScreencastController {
   }
 
   /** Stores the session's state that follows from `event`: the one way it changes. */
-  private applySession(
-    cdp: CdpSession,
-    event: SessionEvent,
-    surfaceId?: BrowserSurfaceId,
-  ): void {
+  private applySession(cdp: CdpSession, event: SessionEvent, surfaceId?: BrowserSurfaceId): void {
     this.sessionStates.set(cdp, afterSession(this.session(cdp), event));
     this.reconcile(this.bound, this.bound?.state ?? null, cdp, surfaceId);
   }
