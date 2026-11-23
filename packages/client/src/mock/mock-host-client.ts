@@ -6216,11 +6216,15 @@ class MockHostState {
       return { ...ended, bridge: { ...bridge, endedBy } };
     });
     if (endedOrigin === null) return;
-    const affected = new Set(
-      [...this.#threadOriginConnection.entries()]
+    // A chat's tasks, and a connected agent's own tasks (those it works itself).
+    const affected = new Set([
+      ...[...this.#threadOriginConnection.entries()]
         .filter(([, connId]) => connId === id)
         .map(([threadId]) => threadId),
-    );
+      ...this.snapshot.threads
+        .filter((thread) => thread.externalWork?.connection.id === id)
+        .map((thread) => thread.id),
+    ]);
     if (affected.size === 0) return;
     this.update({
       ...this.snapshot,
