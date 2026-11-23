@@ -1,6 +1,5 @@
 import { sql, type RawBuilder } from "kysely";
 import type { BridgeEndedBy } from "./schema.js";
-import { isWorkHomeDatabase } from "./work-home-context.js";
 
 /**
  * Where a connection stands, from one statement, for every query that reads an
@@ -10,25 +9,17 @@ import { isWorkHomeDatabase } from "./work-home-context.js";
  *   revoked, missing or expired. A chat is revoked; its grant holds no tasks; its chat account or
  *   channel is disconnected or gone, or belongs to someone else; a chat that runs on a computer
  *   lost that computer's Messages app at read and send, or the computer itself (its device or
- *   Runner removed, or its own driver detached); or the organization's work Home is no longer
- *   active.
+ *   Runner removed, or its own driver detached).
  * - `waiting`: a chat that has not ended, whose account is paused (or needs attention) or whose
  *   channel is paused. It holds what it receives and makes, and acts on none of it, until it is
  *   back.
  * - `live`: otherwise.
- *
- * The organization's state is read only on a work Home: a personal Home runs no organization
- * query.
  */
 export type ConnectionState = "live" | "waiting" | "ended";
 
 /** The chat's grant still holds tasks: without them it can ask for nothing. */
 const chatHoldsTasks = sql<boolean>`(agent_connections."grant"->>'scope' = 'everything'
   or coalesce((agent_connections."grant"->>'tasks')::boolean, false))`;
-
-/** The organization's work Home is active (read only on a work Home). */
-const workHomeActive = sql<boolean>`exists (select 1 from work_home_policy bridge_work
-  where bridge_work.singleton and bridge_work.state = 'active')`;
 
 /** The chat account and its channel are not gone. */
 function accountHeld(account: RawBuilder<unknown>) {
@@ -101,11 +92,7 @@ export function chatAccountState(account: RawBuilder<unknown>): RawBuilder<Conne
 
 const chatAccount = sql.ref("agent_connections.bridge_account_id");
 
-export function connectionState(
-  database: object,
-  now: Date = new Date(),
-): RawBuilder<ConnectionState> {
-  const work = isWorkHomeDatabase(database);
+export function connectionState(now: Date = new Date()): RawBuilder<ConnectionState> {
   return sql<ConnectionState>`(case
     when agent_connections.revoked_at is not null then 'ended'
     when agent_connections.bridge_account_id is null then (case
@@ -113,41 +100,38 @@ export function connectionState(
         and agent_connections.expires_at > ${now}::timestamptz then 'live'
       else 'ended' end)
     when not ${chatHoldsTasks} then 'ended'
-    ${work ? sql`when not ${workHomeActive} then 'ended'` : sql``}
     when not ${chatOwnerHolds} then 'ended'
     else ${chatAccountState(chatAccount)} end)`;
 }
 
 /**
  * Why a chat that is not live has ended, in the person's terms, from the same facts as its
- * state: the organization's work Home is closing; the organization took tasks away; its chat
- * account was disconnected; the computer it ran on lost Messages or was removed; otherwise the
- * person disconnected it.
+ * state: its chat account was disconnected; the computer it ran on lost Messages or was removed;
+ * otherwise the person disconnected it. A chat whose grant holds no tasks (none can be made
+ * since the person cannot take them away) has no reason to give: null, read as ended.
  */
-export function chatEndReason(database: object): RawBuilder<BridgeEndedBy> {
-  const work = isWorkHomeDatabase(database);
-  return sql<BridgeEndedBy>`(case
-    ${work ? sql`when not ${workHomeActive} then 'work-home'` : sql``}
-    when not ${chatHoldsTasks} then 'organization'
+export function chatEndReason(): RawBuilder<BridgeEndedBy | null> {
+  return sql<BridgeEndedBy | null>`(case
+    when not ${chatHoldsTasks} then null
     when not ${accountHeld(chatAccount)} or not ${chatOwnerHolds} then 'account'
     when not ${computerHeld(chatAccount)} then 'computer'
     else 'you' end)`;
 }
 
 /** The connection carries authority now. */
-export function liveConnection(database: object, now: Date = new Date()): RawBuilder<boolean> {
-  return sql<boolean>`(${connectionState(database, now)} = 'live')`;
+export function liveConnection(now: Date = new Date()): RawBuilder<boolean> {
+  return sql<boolean>`(${connectionState(now)} = 'live')`;
 }
 
 /** A chat that has not ended: it may take what it is sent, and hold it while it waits. */
-export function chatNotEnded(database: object, now: Date = new Date()): RawBuilder<boolean> {
-  return sql<boolean>`(${connectionState(database, now)} <> 'ended')`;
+export function chatNotEnded(now: Date = new Date()): RawBuilder<boolean> {
+  return sql<boolean>`(${connectionState(now)} <> 'ended')`;
 }
 
 /** A chat that has ended and is not yet revoked: the Disconnect worker revokes it. */
-export function chatEndedUnrevoked(database: object, now: Date = new Date()): RawBuilder<boolean> {
+export function chatEndedUnrevoked(now: Date = new Date()): RawBuilder<boolean> {
   return sql<boolean>`(agent_connections.bridge_account_id is not null
-    and agent_connections.revoked_at is null and ${connectionState(database, now)} = 'ended')`;
+    and agent_connections.revoked_at is null and ${connectionState(now)} = 'ended')`;
 }
 
 /** An unexpired MCP connection, or any bridge: what expiry maintenance may look at. */

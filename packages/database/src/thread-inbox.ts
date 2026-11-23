@@ -3218,8 +3218,8 @@ async function resolveThreadInputFacts(
     const chat = source.chat;
     // A chat's message reads through the one sender admission: the bridge is live, it covers
     // this conversation, and this sender may speak under the revision the message was admitted
-    // under. Any other connection's message reads its live row with its organization's policy in
-    // the same statement. The task is already locked here, so the row is read, not locked.
+    // under. Any other connection's message reads its live row in one statement. The task is
+    // already locked here, so the row is read, not locked.
     const admitted = chat
       ? await admitBridgeSender(transaction, {
           ownerUserId: input.requestedBy,

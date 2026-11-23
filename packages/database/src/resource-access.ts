@@ -1,6 +1,3 @@
-import { workPolicyAllowsGrant } from "@opensteer/control-plane-protocol";
-import { applyConnectionPolicy } from "./work-policy.js";
-import { isWorkHomeDatabase } from "./work-home-context.js";
 import { integrationAccessCeilingForRun } from "@opensteer/integration-core/effective-grants";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import {
@@ -124,11 +121,9 @@ interface ConnectionTargetCheck {
 }
 
 /**
- * The one statement for where a connection stands: its row, its state (`connectionState`) and,
- * on a work Home, the Work policy joined in the same statement. Every reader of a connection's
- * standing is a view of this (`readLiveAgentConnectionRow`, `connectionWaiting`,
- * `delegatingConnectionStanding`), so none can read the grant without the policy. On a personal
- * Home it names no organization table.
+ * The one statement for where a connection stands: its row and its state (`connectionState`).
+ * Every reader of a connection's standing is a view of this (`readLiveAgentConnectionRow`,
+ * `connectionWaiting`, `delegatingConnectionStanding`).
  */
 async function readConnectionStanding(
   database: Kysely<DatabaseSchema>,
@@ -149,42 +144,14 @@ async function readConnectionStanding(
       "cleanupMaximumMode",
       "bridgeSenders",
       "bridgeAccountId",
-      connectionState(database).as("connectionState"),
+      connectionState().as("connectionState"),
     ])
     .where("id", "=", agentConnectionId)
     .where("userId", "=", ownerUserId);
-  const authority = lock ? query.forShare("agentConnections") : query;
-  if (!isWorkHomeDatabase(database)) {
-    const row = await authority.executeTakeFirst();
-    if (!row) return undefined;
-    const { connectionState: state, ...connection } = row;
-    return { connection, state, work: null };
-  }
-  const row = await authority
-    .innerJoin("workHomePolicy", (join) => join.on("workHomePolicy.singleton", "=", true))
-    .select(["workHomePolicy.policy", "workHomePolicy.state"])
-    .executeTakeFirst();
+  const row = await (lock ? query.forShare("agentConnections") : query).executeTakeFirst();
   if (!row) return undefined;
-  const { connectionState: state, policy, state: workState, ...connection } = row;
-  return { connection, state, work: { policy, state: workState } };
-}
-
-/**
- * A connection's standing from that statement: on a work Home a grant the policy does not allow,
- * or a work Home that is not active, is `ended` before anything else, so a paused chat whose
- * grant the organization took away is lost, not held.
- */
-function standingOf(
-  read: Awaited<ReturnType<typeof readConnectionStanding>>,
-): "live" | "waiting" | "ended" {
-  if (!read) return "ended";
-  if (
-    read.work &&
-    (read.work.state !== "active" ||
-      !workPolicyAllowsGrant(read.work.policy, AgentGrantSchema.parse(read.connection.grant)))
-  )
-    return "ended";
-  return read.state;
+  const { connectionState: state, ...connection } = row;
+  return { connection, state };
 }
 
 export async function readLiveAgentConnectionRow(
@@ -200,10 +167,9 @@ export async function readLiveAgentConnectionRow(
   const access = grantTarget && agentGrantAccess(row.grant, grantTarget);
   if (access === null)
     throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
-  const accessMode = applyConnectionPolicy(read.work, row.grant, row.accessMode);
   if (access === "read" && writeTargetName !== undefined)
     throw forbidden(`${writeTargetName} is shared for reading only.`);
-  return read.work ? { ...row, accessMode } : row;
+  return row;
 }
 
 /** The live connection, or a refusal: a revoked or expired connection has no authority. */
@@ -279,10 +245,8 @@ export async function connectionWaiting(
   ownerUserId: UserId,
   agentConnectionId: string,
 ): Promise<boolean> {
-  return (
-    standingOf(await readConnectionStanding(database, ownerUserId, agentConnectionId, false)) ===
-    "waiting"
-  );
+  const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, false);
+  return read?.state === "waiting";
 }
 
 /**
@@ -297,15 +261,14 @@ export async function delegatingConnectionStanding(
   agentConnectionId: string,
 ): Promise<"live" | "waiting" | "ended"> {
   const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, false);
-  const standing = standingOf(read);
-  if (standing !== "live") return standing;
-  return agentGrantAllowsTasks(AgentGrantSchema.parse(read!.connection.grant)) ? "live" : "ended";
+  if (!read || read.state !== "live") return read?.state ?? "ended";
+  return agentGrantAllowsTasks(AgentGrantSchema.parse(read.connection.grant)) ? "live" : "ended";
 }
 
 /**
  * A connection's grant as its standing allows it, from the one statement: the grant while the
- * connection is live (on a work Home, only one the policy allows), and null otherwise. What a
- * connection may see is decided from this, never from the grant row alone.
+ * connection is live, and null otherwise. What a connection may see is decided from this, never
+ * from the grant row alone.
  */
 export async function standingGrant(
   database: Kysely<DatabaseSchema>,
@@ -313,7 +276,7 @@ export async function standingGrant(
   agentConnectionId: string,
 ): Promise<AgentGrant | null> {
   const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, false);
-  return standingOf(read) === "live" ? AgentGrantSchema.parse(read!.connection.grant) : null;
+  return read?.state === "live" ? AgentGrantSchema.parse(read.connection.grant) : null;
 }
 
 /** The connection delegated work may still run for: live, and still granted Tasks. */
@@ -541,8 +504,7 @@ async function bindingFacts(
 /**
  * Is this execution still allowed at all? Resolves the subject server-side and intersects every
  * live mode in its lineage; when nothing resolves the answer is a refusal, never `full-access`.
- * A supplied thread must be the binding's own. A supplied target must be in the live grant
- * before organization policy can refuse it.
+ * A supplied thread must be the binding's own. A supplied target must be in the live grant.
  */
 export async function admitExecution(
   database: Kysely<DatabaseSchema>,

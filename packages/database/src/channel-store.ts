@@ -128,12 +128,12 @@ const atIngressLaneHead = sql<boolean>`not exists (
  * account). When every chat on the account has ended and no code waits, it is decided now, and
  * ignored with the rest.
  */
-function ingressWaiting(database: object) {
+function ingressWaiting() {
   return sql<boolean>`(exists (
       select 1 from agent_connections
       where agent_connections.bridge_account_id = claimable.account_id
         and agent_connections.revoked_at is null
-        and ${connectionState(database)} = 'waiting')
+        and ${connectionState()} = 'waiting')
     or (${chatAccountState(sql.ref("claimable.account_id"))} = 'waiting' and exists (
       select 1 from bridge_link_codes held_code
       where held_code.account_id = claimable.account_id
@@ -792,7 +792,7 @@ export class ChannelStore {
             eb("status", "=", "pending"),
             eb.or([
               eb("attempts", ">=", ingressAttemptCeiling),
-              eb.and([atIngressLaneHead, eb.not(ingressWaiting(this.#database))]),
+              eb.and([atIngressLaneHead, eb.not(ingressWaiting())]),
             ]),
           ]),
         ]),
@@ -817,11 +817,7 @@ export class ChannelStore {
           eb.and([
             eb("status", "=", "pending"),
             eb.or([
-              eb.and([
-                eb("nextAttemptAt", "<=", now),
-                atIngressLaneHead,
-                eb.not(ingressWaiting(this.#database)),
-              ]),
+              eb.and([eb("nextAttemptAt", "<=", now), atIngressLaneHead, eb.not(ingressWaiting())]),
               eb("attempts", ">=", ingressAttemptCeiling),
             ]),
           ]),
@@ -905,7 +901,7 @@ export class ChannelStore {
         .where("claimable.status", "=", "pending")
         .where("claimable.nextAttemptAt", "<=", now)
         .where(atIngressLaneHead)
-        .where((eb) => eb.not(ingressWaiting(transaction)))
+        .where((eb) => eb.not(ingressWaiting()))
         .orderBy("claimable.receivedAt", "asc")
         .orderBy("claimable.id", "asc")
         .limit(1)
@@ -1115,7 +1111,7 @@ export class ChannelStore {
               )
           )`,
         )
-        .where(liveConnection(transaction))
+        .where(liveConnection())
         .where("channelAccounts.status", "=", "connected")
         .where("integrationConnections.status", "=", "connected")
         .where("integrationConnections.runnerId", "=", workerId as RunnerId)
@@ -1190,7 +1186,7 @@ export class ChannelStore {
       // Disconnect holds this row for update: once it commits, nothing more starts.
       const bridge = await transaction
         .selectFrom("agentConnections")
-        .select(connectionState(transaction).as("state"))
+        .select(connectionState().as("state"))
         .where("id", "=", delivery.bridgeId)
         .forShare("agentConnections")
         .executeTakeFirst();

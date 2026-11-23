@@ -12,7 +12,6 @@ import {
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { delegatingConnectionStanding, liveDelegatingConnection } from "./resource-access.js";
-import { isWorkHomeDatabase } from "./work-home-context.js";
 type Database = Kysely<DatabaseSchema>;
 export interface ActiveExecutionBindingInput {
   readonly lostExecution?: boolean;
@@ -292,13 +291,6 @@ export async function admitThreadExecution(
     .selectFrom("threads")
     .select("threads.environmentId")
     .where("threads.id", "=", threadId)
-    .$if(isWorkHomeDatabase(database), (query) =>
-      query.where((eb) =>
-        eb.exists(
-          eb.selectFrom("workHomePolicy").select("singleton").where("state", "=", "active"),
-        ),
-      ),
-    )
     .executeTakeFirst();
   return row && (await executionEnvironmentIsAvailableToUser(database, row.environmentId, userId))
     ? row

@@ -99,9 +99,6 @@ it.skipIf(Boolean(reportPath))(
       expect(projected.tabs).toEqual([]);
       expect(tabSql).toHaveLength(1);
       expect([...shellSql, ...tabSql].filter((sql) => /browser_pool_slots/u.test(sql))).toEqual([]);
-      expect(
-        [...shellSql, ...tabSql].some((sql) => /work_home_policy|organization/u.test(sql)),
-      ).toBe(false);
     } finally {
       trace.mockRestore();
       try {
@@ -524,9 +521,6 @@ it.skipIf(!reportPath)(
           tracing = undefined;
         }
         const ms = performance.now() - started;
-        expect(sql.some((statement) => /work_home_policy|organization/u.test(statement))).toBe(
-          false,
-        );
         if (index >= 0) entries.push({ ms, sql });
         await afterward?.(value);
       }

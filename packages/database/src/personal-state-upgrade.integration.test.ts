@@ -19,7 +19,10 @@ import {
 import { agentGrantsMigrationName } from "./agent-grants-migration.js";
 import { agentSessionsMigrationName } from "./agent-sessions-migration.js";
 import { agentDirectoryMigrationName } from "./agent-directory-migration.js";
-import { workHomeMigrationName } from "./work-home-migration.js";
+import {
+  removeOrganizationsMigrationName,
+  workHomeMigrationName,
+} from "./one-person-home-migration.js";
 import { browserPoolMigrationName } from "./browser-pool-migration.js";
 import { bridgeConnectionsMigrationName } from "./bridge-connections-migration.js";
 import { bridgeConversionMigrationName } from "./bridge-conversion-migration.js";
@@ -104,6 +107,7 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         "0051_needs_you_counts_requests",
         bridgeConnectionsMigrationName,
         bridgeConversionMigrationName,
+        removeOrganizationsMigrationName,
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`

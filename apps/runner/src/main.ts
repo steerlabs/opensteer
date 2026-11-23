@@ -25,7 +25,6 @@ import {
 import { loadAgentSkillBundle } from "./skills/agent-skills.js";
 import { createHarnessRegistry } from "./harness/harness-registry.js";
 import { ReconnectingHostConnection, type RunnerAgentsConnection } from "./host/host-connection.js";
-import { WorkHomeEnrollmentRefused } from "./host/enrollment-preview.js";
 import { AttachmentCache } from "./attachments/attachment-cache.js";
 import {
   FileRunnerIdentityStore,
@@ -128,7 +127,6 @@ export async function runRunnerDaemon(
       readonly runnerId: RunnerId;
     }) => void;
     readonly onDisconnected?: () => void;
-    readonly enrollmentNotice?: (message: string) => void;
     /**
      * This computer was removed from its Deployment. The daemon stops rather
      * than reconnecting, so a supervisor hears this once and forgets the slot.
@@ -218,7 +216,6 @@ export async function runRunnerDaemon(
       identityStore,
       ...(started.integrationsModule ? { integrationsModule: started.integrationsModule } : {}),
       logger,
-      ...(options.enrollmentNotice ? { enrollmentNotice: options.enrollmentNotice } : {}),
       ...(started.messagingModule ? { messagingModule: started.messagingModule } : {}),
       onConnected: async (connected) => {
         await readiness?.connected(bootId);
@@ -544,15 +541,16 @@ async function main(): Promise<void> {
   const handlers = shutdownSignals.map((name) => [name, () => stop(name)] as const);
   for (const [name, handler] of handlers) process.on(name, handler);
   try {
-    await runRunnerDaemon(process.env, shutdown.signal, {
-      enrollmentNotice: (message) => process.stderr.write(`${message}\n`),
-      ...(receipt
+    await runRunnerDaemon(
+      process.env,
+      shutdown.signal,
+      receipt
         ? {
             onStarted: (ready) => replacePrivateFileAtomically(receipt, JSON.stringify(ready)),
             onShutdown: (proof) => replacePrivateFileAtomically(receipt, JSON.stringify(proof)),
           }
-        : {}),
-    });
+        : {},
+    );
   } finally {
     for (const [name, handler] of handlers) process.off(name, handler);
   }
@@ -562,10 +560,6 @@ const entryPath = process.argv[1];
 if (entryPath && import.meta.url === pathToFileURL(entryPath).href) {
   main().catch((error: unknown) => {
     process.exitCode = 1;
-    if (error instanceof WorkHomeEnrollmentRefused) {
-      process.stderr.write(`${error.message}\n`);
-      return;
-    }
     const message = error instanceof Error ? error.message : "Runner failed";
     process.stderr.write(
       `${JSON.stringify({

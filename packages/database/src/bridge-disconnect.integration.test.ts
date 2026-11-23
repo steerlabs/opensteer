@@ -274,66 +274,6 @@ describeStore("locks are taken in their stable order when many rows move at once
     ).toEqual([bridge.bridge.id, second.id].sort().map((bridgeId) => ({ bridgeId })));
   });
 
-  it("revokes two converted chats in one policy change, with their old routes", async ({
-    storeFixture,
-  }) => {
-    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("policy-two", {
-      bridge: false,
-    });
-    const { database } = storeFixture;
-    const connections = new AgentConnectionStore(database);
-    const made = [];
-    for (const conversation of ["C-a", "C-b"]) {
-      const bridge = await connections.createBridge({
-        userId: fixture.userId,
-        accountId: configured.account.id,
-        conversation: { id: conversation, name: conversation },
-        senders: "owner",
-        accessMode: "approval-required",
-        grant: { scope: "selected", tasks: true, resources: [] },
-      });
-      const bindingId = createChannelId("binding");
-      await database
-        .insertInto("channelBindings")
-        .values({
-          accessPolicy: {} as never,
-          accountId: configured.account.id,
-          createdBy: fixture.userId,
-          executionPolicy: {} as never,
-          id: bindingId,
-          revision: 1,
-          selector: {} as never,
-          status: "active",
-          updatedAt: new Date(),
-        })
-        .execute();
-      await database
-        .updateTable("agentConnections")
-        .set({ bridgeFromBindingId: bindingId })
-        .where("id", "=", bridge.id)
-        .execute();
-      made.push({ bridge, bindingId });
-    }
-    await connections.applyWorkPolicyChanges(
-      made.map(({ bridge }) => ({
-        kind: "revoke" as const,
-        userId: fixture.userId,
-        connectionId: bridge.id,
-      })),
-    );
-    expect(
-      await database
-        .selectFrom("channelBindings")
-        .select("status")
-        .where(
-          "id",
-          "in",
-          made.map(({ bindingId }) => bindingId),
-        )
-        .execute(),
-    ).toEqual([{ status: "revoked" }, { status: "revoked" }]);
-  });
-
   it("gives back every reply a removed computer held, in order", async ({ storeFixture }) => {
     const { configured, conversationId, fixture } =
       await storeFixture.createChannelDeliveryFixture("revoke-two");

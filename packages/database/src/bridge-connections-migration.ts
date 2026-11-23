@@ -17,8 +17,7 @@ export async function applyBridgeConnections(database: Kysely<unknown>): Promise
       add column bridge_from_binding_id text,
       add column bridge_notice text check (bridge_notice in ('converted', 'converted-without-channels')),
       add column bridge_conversation_name text,
-      add column bridge_ended_by text check (bridge_ended_by in ('you', 'organization', 'account',
-        'computer', 'work-home')),
+      add column bridge_ended_by text check (bridge_ended_by in ('you', 'account', 'computer')),
       add constraint agent_connections_bridge check (
         -- A bridge says who may speak. A sender rule without an account is only the ended row
         -- that ties the messages from before the update to "anyone".
@@ -28,8 +27,7 @@ export async function applyBridgeConnections(database: Kysely<unknown>): Promise
           and bridge_from_binding_id is null and bridge_notice is null))
         and (bridge_account_id is null or token_hash is null)
         -- Anyone in one named conversation, never in direct messages, and only tasks and
-        -- plugins. A grant without tasks is allowed (a policy must always be writable, by this
-        -- image and the previous one); such a bridge is simply not live.
+        -- plugins. A grant without tasks is not refused here; such a bridge is simply not live.
         and (bridge_account_id is null or bridge_senders is distinct from 'anyone'
           or (bridge_conversation_id is not null and "grant"->>'scope' = 'selected'
             and not jsonb_path_exists("grant", '$.resources[*] ? (@.kind != "plugin")'))));

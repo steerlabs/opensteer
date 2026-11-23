@@ -197,7 +197,7 @@ describe("AgentDirectoryCache", () => {
   it("refuses tokens with the wrong purpose or wrong typ header", async () => {
     const key = await makeAccountKey("key-1");
     const wrongPurpose = await signDirectory(sampleDocument(1), key, {
-      tokenUse: "opensteer-work-policy",
+      tokenUse: "opensteer-managed-home-claim",
     });
     const wrongTyp = await signDirectory(sampleDocument(1), key, { typ: "JWT" });
 

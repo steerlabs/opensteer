@@ -40,7 +40,6 @@ import {
   outstandingAttempts,
 } from "./connection-disconnect.js";
 import { jsonValue } from "./store-primitives.js";
-import { connectionPolicyMode } from "./work-policy.js";
 import { closeObsoleteAgentOperationRequests } from "./agent-session-store.js";
 import {
   chatEndReason,
@@ -72,16 +71,6 @@ export interface BridgeConsent {
   readonly grant: AgentGrant;
   readonly label?: string | undefined;
 }
-
-export type WorkPolicyConnectionChange = { readonly userId: UserId } & (
-  | {
-      readonly kind: "revoke";
-      readonly connectionId: string;
-      /** Why, for a chat: the organization's policy, or its work Home closing. */
-      readonly endedBy?: BridgeEndedBy;
-    }
-  | ({ readonly kind: "update" } & AgentConnectionEdit)
-);
 
 export class AgentConnectionStore {
   readonly database: Kysely<DatabaseSchema>;
@@ -121,7 +110,7 @@ export class AgentConnectionStore {
         }
       }
       const grant = input.grant ? AgentGrantSchema.parse(input.grant) : everythingAgentGrant;
-      const accessMode = await connectionPolicyMode(tx, grant, input.accessMode);
+      const { accessMode } = input;
       if (input.grant) await assertGrantable(tx, input.userId, grant);
       const row = await tx
         .insertInto("agentConnections")
@@ -152,8 +141,7 @@ export class AgentConnectionStore {
   }
   /**
    * A messaging bridge: the same row a connected agent has, reached through a chat. It has no
-   * credential and no expiry, holds `tasks` always, and on a work Home sits under the
-   * organization's ceiling exactly as a connected agent does.
+   * credential and no expiry, and holds `tasks` always.
    */
   async createBridge(input: BridgeConsent): Promise<AgentConnection> {
     const grant = AgentGrantSchema.parse(input.grant);
@@ -177,7 +165,7 @@ export class AgentConnectionStore {
           code: "not_found",
           message: chatAddRefusals.accountGone,
         });
-      const accessMode = await connectionPolicyMode(tx, grant, input.accessMode);
+      const { accessMode } = input;
       await assertGrantable(tx, input.userId, grant);
       const provider = bridgeProviderLabel(account.provider);
       const row = await tx
@@ -318,7 +306,7 @@ export class AgentConnectionStore {
         (select ${retryAt}::timestamptz where exists (
           select 1 from agent_connections
           where removed_at is null and ((cleanup_requested_at is not null
-            and cleanup_completed_at is null) or ${chatEndedUnrevoked(this.database, this.now())})
+            and cleanup_completed_at is null) or ${chatEndedUnrevoked(this.now())})
         )),
         (select ${this.now()}::timestamptz + (min(expires_at) - clock_timestamp())
           from agent_embedder_assertion_claims)
@@ -385,7 +373,7 @@ export class AgentConnectionStore {
     const rows = await this.database
       .selectFrom("agentConnections")
       .selectAll()
-      .select(connectionState(this.database, now).as("connectionState"))
+      .select(connectionState(now).as("connectionState"))
       .where("userId", "=", userId)
       .$if(!options.includeRevoked, (query) =>
         query
@@ -459,52 +447,21 @@ export class AgentConnectionStore {
     });
   }
 
-  async applyWorkPolicyChanges(changes: readonly WorkPolicyConnectionChange[]): Promise<void> {
-    await commitPersonalMutation(this.database, async (tx) => {
-      const store = new AgentConnectionStore(tx, this.now);
-      const changedIds: string[] = [];
-      const revokedIds: string[] = [];
-      for (const change of changes.toSorted((a, b) =>
-        a.connectionId.localeCompare(b.connectionId),
-      )) {
-        const changed =
-          change.kind === "revoke"
-            ? await store.revoke(change.userId, change.connectionId, {
-                routes: "later",
-                endedBy: change.endedBy ?? "organization",
-              })
-            : (await this.#writeUpdate(tx, change.userId, change, "organization")).changed;
-        if (changed) changedIds.push(change.connectionId);
-        if (changed && change.kind === "revoke") revokedIds.push(change.connectionId);
-      }
-      // Every connection first, in id order; then the old routes of the converted chats among
-      // them, in one ordered statement.
-      await endConvertedRoutes(tx, revokedIds, this.now());
-      await closeObsoleteAgentOperationRequests(tx, changedIds, this.now());
-    });
-  }
-
-  async #writeUpdate(
-    tx: Transaction<DatabaseSchema>,
-    userId: UserId,
-    input: AgentConnectionEdit,
-    by: "person" | "organization" = "person",
-  ) {
+  async #writeUpdate(tx: Transaction<DatabaseSchema>, userId: UserId, input: AgentConnectionEdit) {
     await requirePersonalOwner(tx, userId);
     const found = await tx
       .selectFrom("agentConnections")
       .selectAll()
-      .select(connectionState(tx, this.now()).as("connectionState"))
+      .select(connectionState(this.now()).as("connectionState"))
       .where("id", "=", input.connectionId)
       .where("userId", "=", userId)
       .forNoKeyUpdate()
       .executeTakeFirst();
-    // A chat that ended is edited no more (the organization may still narrow it); a paused
-    // one may be.
+    // A chat that ended is edited no more; a paused one may be.
     if (
       !found ||
       (found.bridgeAccountId !== null
-        ? found.revokedAt !== null || (by === "person" && found.connectionState === "ended")
+        ? found.revokedAt !== null || found.connectionState === "ended"
         : !connectionActive(found, this.now()))
     )
       throw new OpensteerError({
@@ -528,15 +485,10 @@ export class AgentConnectionStore {
       });
     const grant = input.grant ? AgentGrantSchema.parse(input.grant) : current.grant;
     if (input.grant) await assertGrantable(tx, userId, grant);
-    // The person chooses only what a bridge may hold. An organization's policy only ever
-    // narrows, and is always written: a bridge it leaves without tasks is not live and ends.
-    if (by === "person" && current.bridgeAccountId !== null && current.bridgeSenders !== null)
+    // The person chooses only what a bridge may hold.
+    if (current.bridgeAccountId !== null && current.bridgeSenders !== null)
       assertBridgeGrant(current.bridgeSenders, current.bridgeConversationId !== null, grant);
-    const accessMode = await connectionPolicyMode(
-      tx,
-      grant,
-      input.accessMode ?? current.accessMode,
-    );
+    const accessMode = input.accessMode ?? current.accessMode;
     const narrowed =
       agentGrantNarrowed(current.grant, grant) ||
       !threadAccessModeAtMost(current.accessMode, accessMode);
@@ -683,7 +635,8 @@ interface ChatFacts {
   readonly pauseDetail: string | null;
   /** What becomes of a message sent while it is paused, from its transport; never promised. */
   readonly pausedMessages: "kept" | "lost";
-  readonly endedBy: BridgeEndedBy;
+  /** Null for a chat whose grant holds no tasks: it reads as ended. */
+  readonly endedBy: BridgeEndedBy | null;
   readonly unknownReplies: number;
   readonly tasks: readonly {
     readonly id: string;
@@ -715,7 +668,7 @@ async function chatFacts(
       "channelAccounts.status as accountStatus",
       "channelAccounts.connectionId",
       "integrationConnections.statusDetail",
-      chatEndReason(database).as("endReason"),
+      chatEndReason().as("endReason"),
       sql<string | null>`(select me.display_name from channel_identities me
         where me.account_id = channel_accounts.id and me.status = 'linked'
           and me.linked_user_id = agent_connections.user_id limit 1)`.as("meName"),
@@ -839,7 +792,9 @@ function connectionView(
                         pausedMessages: chat.pausedMessages,
                       }
                     : {}),
-                  ...(state === "stopping" || state === "stopped" ? { endedBy: chat.endedBy } : {}),
+                  ...((state === "stopping" || state === "stopped") && chat.endedBy
+                    ? { endedBy: chat.endedBy }
+                    : {}),
                 }
               : {}),
           },

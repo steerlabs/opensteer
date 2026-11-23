@@ -167,7 +167,7 @@ async function liveBridgeConversation(
       ])
       .where("bridgeConversations.id", "=", parsed.data)
       // A paused chat keeps what it makes and sends it when it is back; an ended one makes nothing.
-      .where(chatNotEnded(transaction))
+      .where(chatNotEnded())
       .executeTakeFirst()
   );
 }

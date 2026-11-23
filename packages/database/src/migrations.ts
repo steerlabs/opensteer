@@ -35,7 +35,10 @@ import {
   agentDirectoryMigrationName,
   applyAgentDirectoryVerification,
 } from "./agent-directory-migration.js";
-import { workHomeMigrationName, applyWorkHome } from "./work-home-migration.js";
+import {
+  onePersonHomeContractMigration,
+  onePersonHomeFirstMigration,
+} from "./one-person-home-migration.js";
 import { browserPoolMigrationName, applyBrowserPool } from "./browser-pool-migration.js";
 import {
   applyBridgeConnections,
@@ -641,7 +644,7 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
-              [workHomeMigrationName]: { up: applyWorkHome },
+              ...onePersonHomeFirstMigration,
               [browserPoolMigrationName]: { up: applyBrowserPool },
               "0051_needs_you_counts_requests": {
                 /**
@@ -659,6 +662,8 @@ export function migrationProvider(options?: {
               },
               [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
               [bridgeConversionMigrationName]: { up: applyBridgeConversion },
+              // A Home is one person's, and a connected agent holds only what they granted.
+              ...onePersonHomeContractMigration,
             }
           : {}),
       };

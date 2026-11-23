@@ -345,9 +345,8 @@ export async function readableTabTasks(
       : actor.kind === "connection"
         ? actor.caller.connectionId
         : await bindingAgentConnectionId(database, scope(actor).agentBindingId!);
-  // What it may see is authority: read through the one standing statement, with the policy on
-  // a work Home. A connection that is not live, or a grant the policy no longer allows, sees only
-  // its own lineage's tasks.
+  // What it may see is authority: read through the one standing statement. A connection that is
+  // not live sees only its own lineage's tasks.
   const selected =
     agentConnectionId &&
     (await standingGrant(database, tabOwner(actor), agentConnectionId).then(

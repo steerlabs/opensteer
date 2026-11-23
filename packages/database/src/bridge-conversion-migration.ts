@@ -14,15 +14,6 @@ export const bridgeConversionMigrationName = "0053_bridge_conversion";
  */
 export async function applyBridgeConversion(database: Kysely<unknown>): Promise<void> {
   await sql`
-    -- A work Home's ceiling applies as to any connection: a bridge it refuses is made revoked.
-    create temporary table bridge_conversion_policy on commit drop as
-      select coalesce((
-        select p.state <> 'active' or not coalesce((p.policy->>'allowTasks')::boolean, false)
-        from work_home_policy p where p.singleton
-      ), false) as refused,
-      coalesce((select p.state <> 'active' from work_home_policy p where p.singleton), false)
-        as closing;
-
     -- "Me" is one identity on an account. The image before this one let a person link several
     -- (a phone number and an email address): the most recently used stays linked, the others
     -- are unlinked, and the database keeps it to one from here on.
@@ -134,16 +125,13 @@ export async function applyBridgeConversion(database: Kysely<unknown>): Promise<
         else provider_label || ' · ' || plan.conversation_name end, 120),
       provider_label, 'approval-required', 'opensteer:bridge', null, now(),
       '9999-12-31T00:00:00Z'::timestamptz,
-      case when policy.refused or plan.ended then now() end,
+      case when plan.ended then now() end,
       '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 1, 2,
-      case when policy.refused or plan.ended then 'revoked' end,
-      case when policy.refused or plan.ended then now() end,
+      case when plan.ended then 'revoked' end,
+      case when plan.ended then now() end,
       plan.account_id, plan.conversation_id, 'owner', plan.binding_id, plan.notice,
-      plan.conversation_name,
-      case when policy.refused then
-        case when policy.closing then 'work-home' else 'organization' end end
+      plan.conversation_name, null
     from bridge_conversion_plan plan
-    cross join bridge_conversion_policy policy
     cross join lateral (select case plan.provider when 'slack' then 'Slack'
       when 'imessage' then 'iMessage' else plan.provider end as provider_label) label
     where not exists (

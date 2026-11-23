@@ -32,15 +32,6 @@ export function agentToolFailure(
   mayKnowDevice?: (deviceId: string) => boolean,
   connection = false,
 ): AgentToolFailure {
-  if (
-    connection &&
-    error instanceof Error &&
-    "code" in error &&
-    error.code === "42501" &&
-    (error.message === "Your organization doesn't allow this" ||
-      error.message === "Sign-in and new work on this Home have ended")
-  )
-    return { code: "forbidden", reason: "work-policy", message: error.message, retryable: false };
   if (error instanceof OperationOutcomeUnknown)
     return {
       code: "outcome_unknown",

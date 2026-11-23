@@ -404,29 +404,4 @@ describeStore("an existing Messaging route becomes bridges that can only do less
         .executeTakeFirstOrThrow(),
     ).toEqual({ status: "revoked" });
   });
-
-  it("creates on a work Home that does not allow tasks only bridges that are already ended", async ({
-    storeFixture,
-  }) => {
-    const { fixture, configured } = await storeFixture.createChannelDeliveryFixture(
-      "convert-work",
-      { bridge: false },
-    );
-    const { WorkHomeStore } = await import("./work-home.js");
-    await new WorkHomeStore(storeFixture.database).initialize(
-      {
-        organizationId: `org_${crypto.randomUUID()}` as never,
-        organizationName: "Workshop",
-        assignmentId: `was_${crypto.randomUUID()}` as never,
-      },
-      fixture.deploymentId,
-    );
-    await applyBridgeConversion(storeFixture.database as never);
-    const bridges = await storeFixture.database
-      .selectFrom("agentConnections")
-      .select(["revokedAt", "cleanupReason"])
-      .where("bridgeAccountId", "=", configured.account.id)
-      .execute();
-    expect(bridges).toEqual([{ revokedAt: expect.any(Date), cleanupReason: "revoked" }]);
-  });
 });

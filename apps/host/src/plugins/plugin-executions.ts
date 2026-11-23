@@ -238,7 +238,7 @@ export class PluginExecutions {
         .select(["grantRevision", "accessMode"])
         .where("id", "=", lineage.agentConnectionId)
         .where("userId", "=", caller.userId)
-        .where(liveConnection(database))
+        .where(liveConnection())
         .$if(lock, (query) => query.forShare())
         .executeTakeFirst();
       if (

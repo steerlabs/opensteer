@@ -66,10 +66,6 @@ jq -e --arg hostname "$(jq -r .hostname "$spec")" --arg origin "${origin%/}" --a
     (.generation | type == "number" and . >= 1 and . == floor) and
     (.oidc.clientId | type == "string" and test("^occ_[0-9a-f-]{36}$")) and
     (.oidc.clientSecret | type == "string" and test("^ocs_[A-Za-z0-9_-]{43}$")))) and
-  (.work == null or (.work |
-    (.organizationId | type == "string" and test("^org_[0-9a-f-]{36}$")) and
-    (.assignmentId | type == "string" and test("^was_[0-9a-f-]{36}$")) and
-    (.organizationName | type == "string" and length > 0 and length <= 120))) and
   (.accountOrigin | type == "string" and test("^https://[a-zA-Z0-9.-]+(:[0-9]+)?$")) and
   (.backup |
     (.endpoint | type == "string" and test("^https://[a-zA-Z0-9.-]+(:[0-9]+)?$")) and

@@ -58,13 +58,7 @@ export type AgentConnectionIdentityPresentation = z.infer<
 export const BridgeSendersSchema = z.enum(["owner", "anyone"]);
 export type BridgeSenders = z.infer<typeof BridgeSendersSchema>;
 /** Why a chat ended, in the person's terms. */
-export const ChatEndedBySchema = z.enum([
-  "you",
-  "organization",
-  "account",
-  "computer",
-  "work-home",
-]);
+export const ChatEndedBySchema = z.enum(["you", "account", "computer"]);
 export type ChatEndedBy = z.infer<typeof ChatEndedBySchema>;
 export const AgentConnectionBridgeSchema = z.object({
   accountId: z.string().min(1).max(255),

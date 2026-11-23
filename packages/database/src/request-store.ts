@@ -1781,7 +1781,7 @@ export class RequestStore {
         .innerJoin("agentConnections", "agentConnections.id", "agentSessions.connectionId")
         .select("agentConnections.id")
         .where("agentSessions.id", "=", input.originatingAgentSessionId)
-        .where(liveConnection(tx))
+        .where(liveConnection())
         .where("agentConnections.grantRevision", "=", input.grantRevision)
         .forShare("agentConnections")
         .executeTakeFirst();
@@ -3469,7 +3469,7 @@ export async function lockActiveDurableRequestAuthority(
       .where("agentSessions.id", "=", request.originatingAgentSessionId)
       .where("agentSessions.status", "=", "active")
       .whereRef("agentConnections.grantRevision", "=", "agentOperations.grantRevision")
-      .where(liveConnection(transaction))
+      .where(liveConnection())
       .forShare("agentConnections")
       .executeTakeFirst();
     if (!live)
