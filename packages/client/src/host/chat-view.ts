@@ -2,7 +2,7 @@ import type { ChannelProviderManifest } from "@opensteer/channel-core";
 import type { AgentConnection, MachineSummary } from "@opensteer/protocol";
 import type { ConnectedAgentPhase } from "./connected-agent-view.js";
 import { agentWords } from "./connected-agents-copy.js";
-import { plainSentence as plain, sentenceAroundName, type SentencePart } from "./sentence-parts.js";
+import { plainSentence as plain, sentenceWith, type SentencePart } from "./sentence-parts.js";
 
 /**
  * What only a chat has beside any connected agent's page, in the person's words: where it
@@ -37,18 +37,19 @@ export function chatFacts(
 ): ChatFacts | null {
   const bridge = connection.bridge;
   if (!bridge) return null;
-  const account = bridge.accountName ?? bridge.provider;
-  const conversation = bridge.conversationName ?? bridge.conversationId ?? "";
-  const whereParts = sentenceAroundName(
+  // The account by what its field is: its handle an address, its display name a name.
+  const account = chatAccountPart(bridge);
+  const conversation = { name: bridge.conversationName ?? bridge.conversationId ?? "" };
+  const whereParts = sentenceWith(
     (slot) =>
       bridge.conversationId === null
-        ? agentWords("chat.where.dm", { account: slot, provider: bridge.provider })
+        ? agentWords("chat.where.dm", { account: slot("account"), provider: bridge.provider })
         : agentWords("chat.where.channel", {
-            conversation,
-            account: slot,
+            conversation: slot("conversation"),
+            account: slot("account"),
             provider: bridge.provider,
           }),
-    account,
+    { account, conversation },
   );
   const where = plain(whereParts);
   const words = (title: readonly SentencePart[], detail: readonly SentencePart[]) => ({
@@ -61,18 +62,20 @@ export function chatFacts(
   const speakers =
     bridge.senders === "anyone"
       ? words(
-          [agentWords("chat.speakers.anyone", { conversation })],
+          sentenceWith(
+            (slot) => agentWords("chat.speakers.anyone", { conversation: slot("conversation") }),
+            { conversation },
+          ),
           [agentWords("chat.speakers.anyoneDetail")],
         )
       : identity !== undefined
         ? words(
-            sentenceAroundName(
-              (slot) => agentWords("chat.speakers.me", { identity: slot }),
-              identity,
-            ),
-            sentenceAroundName(
-              (slot) => agentWords("chat.speakers.meDetail", { identity: slot }),
-              identity,
+            sentenceWith((slot) => agentWords("chat.speakers.me", { identity: slot("identity") }), {
+              identity: { name: identity },
+            }),
+            sentenceWith(
+              (slot) => agentWords("chat.speakers.meDetail", { identity: slot("identity") }),
+              { identity: { name: identity } },
             ),
           )
         : words(
@@ -193,4 +196,38 @@ export function messagingComputers<M extends MachineSummary>(
       machine.modules.messaging !== undefined &&
       (machine.apps ?? []).some(({ definitionId }) => definitionId === provider.computerApp),
   );
+}
+
+/** A chat's account as a part, by what its field is: its handle an address, its name a name. */
+export function chatAccountPart(
+  bridge: Pick<
+    NonNullable<AgentConnection["bridge"]>,
+    "accountHandle" | "accountName" | "provider"
+  >,
+): { readonly address: string } | { readonly name: string } {
+  return bridge.accountHandle
+    ? { address: bridge.accountHandle }
+    : { name: bridge.accountName ?? bridge.provider };
+}
+
+/** A Messaging account as a part: its handle, where it has one, an address; else its name. */
+export function messagingAccountPart(account: {
+  readonly handle: string | null;
+  readonly displayName: string;
+}): { readonly address: string } | { readonly name: string } {
+  return account.handle ? { address: account.handle } : { name: account.displayName };
+}
+
+/**
+ * A Messaging account's title: the handle of its one account (an iMessage address), or the
+ * connection's own name (a Slack workspace's). The same on the web and the phone.
+ */
+export function messagingAccountTitle(
+  connection: { readonly displayName: string },
+  accounts: readonly { readonly handle: string | null; readonly displayName: string }[],
+): { readonly address: string } | { readonly name: string } {
+  const [only, ...more] = accounts;
+  return only?.handle && more.length === 0
+    ? { address: only.handle }
+    : { name: connection.displayName };
 }

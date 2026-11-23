@@ -2,6 +2,7 @@ import { NativeBrowserOverlay } from "./native-browser-overlays.js";
 import { useEffect, useRef, type ReactNode } from "react";
 import { Icon } from "./icon.js";
 import { fromLivePage } from "../ui-utils.js";
+import { useReadFailed } from "./read-gate.js";
 
 const focusableSelector =
   'iframe, a[href], button:not(:disabled), textarea:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])';
@@ -29,6 +30,14 @@ interface DialogProps {
  * behavior is consistent.
  */
 export function Dialog(props: DialogProps) {
+  // Inside a page whose last read failed nothing acts: a dialog closes without acting.
+  const failed = useReadFailed();
+  const close = useRef(props.onClose);
+  close.current = props.onClose;
+  useEffect(() => {
+    if (failed) close.current();
+  }, [failed]);
+  if (failed) return null;
   return (
     <NativeBrowserOverlay>
       <DialogContent {...props} />

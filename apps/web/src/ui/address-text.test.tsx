@@ -2,11 +2,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
 import { Address, SentenceText } from "./address-text.js";
 
-it("draws an address as one box per part, joined back to the address exactly", () => {
+const box = (part: string) => `<span class="address__part">${part}</span>`;
+
+it("draws an address as one box per part, isolated, joined back to the address exactly", () => {
   const markup = renderToStaticMarkup(<Address value="tim@münchen.de" />);
-  expect(markup).toBe(
-    '<span class="address"><span class="address__part">tim@</span><span class="address__part">münchen</span><span class="address__part">.de</span></span>',
-  );
+  expect(markup).toBe(`<bdi class="address">${box("tim@")}${box("münchen")}${box(".de")}</bdi>`);
 });
 
 it("draws a sentence's address part as an address and its words as words", () => {
@@ -14,23 +14,44 @@ it("draws a sentence's address part as an address and its words as words", () =>
     <SentenceText parts={["Send it to ", { address: "foo.xn--p1ai" }, " now."]} />,
   );
   expect(markup).toBe(
-    'Send it to <span class="address"><span class="address__part">foo</span><span class="address__part">.xn--p1ai</span></span> now.',
+    `Send it to <bdi class="address">${box("foo")}${box(".xn--p1ai")}</bdi> now.`,
   );
 });
 
-it("draws a name from outside Opensteer as words, never as an address", () => {
-  const markup = renderToStaticMarkup(
-    <SentenceText
-      parts={[
-        "Uses ",
-        { name: "evil-google.com" },
-        " to reach ",
-        { address: "api.example.com" },
-        ".",
-      ]}
-    />,
-  );
-  expect(markup).toBe(
-    'Uses evil-google.com to reach <span class="address"><span class="address__part">api</span><span class="address__part">.example</span><span class="address__part">.com</span></span>.',
+it.each([
+  ["a name that looks like a host", "evil-google.com", "evil-google.com"],
+  ["a name that looks like an email address", "alice@evil.example", "alice@evil.example"],
+  [
+    "a name that imitates Opensteer's words",
+    "Work, who may use everything",
+    "Work, who may use everything",
+  ],
+  ["a name with a right-to-left override", "Alice\u202E evol", "Alice evol"],
+  ["a name with a zero-width space", "Work\u200BOps", "WorkOps"],
+])(
+  "draws %s as a name, cleaned and in its own weight, never as an address",
+  (_what, name, shown) => {
+    const markup = renderToStaticMarkup(
+      <SentenceText
+        parts={["Uses ", { name }, " to reach ", { address: "api.example.com" }, "."]}
+      />,
+    );
+    expect(markup).toBe(
+      `Uses <bdi class="outside-name">${shown.replaceAll("&", "&amp;")}</bdi> to reach <bdi class="address">${box("api")}${box(".example")}${box(".com")}</bdi>.`,
+    );
+  },
+);
+
+it.each([
+  ["a soft hyphen inside a host", "evil\u00ADgoogle.com", [box("evilgoogle"), box(".com")]],
+  ["a zero-width space inside a host", "evil\u200Bgoogle.com", [box("evilgoogle"), box(".com")]],
+  [
+    "a right-to-left override",
+    "evil.example/\u202Emoc.elgoog",
+    [box("evil"), box(".example"), box("/moc"), box(".elgoog")],
+  ],
+])("draws an address with %s cleaned, breaking only at its own joints", (_what, address, boxes) => {
+  expect(renderToStaticMarkup(<Address value={address} />)).toBe(
+    `<bdi class="address">${boxes.join("")}</bdi>`,
   );
 });

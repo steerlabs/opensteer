@@ -1,6 +1,10 @@
 import { createChannelId } from "@opensteer/channel-core";
 import { createId, ThreadIdSchema, type AgentGrant } from "@opensteer/core";
-import { AgentConnectionStore, upsertChannelIdentity } from "@opensteer/database";
+import {
+  AgentConnectionStore,
+  ConnectionWaiting,
+  upsertChannelIdentity,
+} from "@opensteer/database";
 import { createStoreFixture } from "@opensteer/database/test-support/store";
 import { describe, expect, it } from "vitest";
 import type { ConnectionCaller } from "../mcp/agent-caller.js";
@@ -229,7 +233,7 @@ describe("a bridge asks your own agents to work through the task tools' own entr
           .where("originConnectionId", "=", f.bridge.id)
           .execute(),
       ).toEqual([]);
-      // A paused account hands nothing off: the hand-off reads the same liveness.
+      // A paused account hands nothing off, and says from that same read that its chat waits.
       await f.storeFixture.database
         .updateTable("channelAccounts")
         .set({ status: "paused" })
@@ -243,7 +247,7 @@ describe("a bridge asks your own agents to work through the task tools' own entr
           grantRevision: f.bridge.grantRevision! + 1,
           mode: "approval-required",
         }),
-      ).rejects.toThrow("The agent connection changed before this Run could be sent");
+      ).rejects.toBeInstanceOf(ConnectionWaiting);
     } finally {
       await f.storeFixture.close();
     }

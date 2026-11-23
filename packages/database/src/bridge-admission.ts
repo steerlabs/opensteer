@@ -1,8 +1,7 @@
 import { AgentGrantSchema, OpensteerError, type UserId } from "@opensteer/core";
 import type { ChannelAccountId } from "@opensteer/channel-core";
 import type { Kysely } from "kysely";
-import { connectionState } from "./connection-liveness.js";
-import { readLiveAgentConnectionRow, type AgentConnectionAuthority } from "./resource-access.js";
+import { readConnectionRowStanding, type AgentConnectionAuthority } from "./resource-access.js";
 import type { BridgeSenders, DatabaseSchema } from "./schema.js";
 
 export type BridgeSenderAdmission =
@@ -58,9 +57,9 @@ export async function admitBridgeSender(
     readonly lock?: boolean;
   },
 ): Promise<BridgeSenderAdmission> {
-  let row: Awaited<ReturnType<typeof readLiveAgentConnectionRow>>;
+  let read: Awaited<ReturnType<typeof readConnectionRowStanding>>;
   try {
-    row = await readLiveAgentConnectionRow(
+    read = await readConnectionRowStanding(
       database,
       input.ownerUserId,
       input.bridgeId,
@@ -71,19 +70,13 @@ export async function admitBridgeSender(
       return { kind: "refused", reason: error.message };
     throw error;
   }
-  if (!row) {
-    // Not live: only a chat that is paused, rather than ended, keeps what it was sent.
-    const held = await database
-      .selectFrom("agentConnections")
-      .select(connectionState().as("state"))
-      .where("id", "=", input.bridgeId)
-      .where("userId", "=", input.ownerUserId)
-      .where("bridgeAccountId", "is not", null)
-      .executeTakeFirst();
-    return held?.state === "waiting"
+  const row = read.row;
+  // Not live: only a chat that is paused, rather than ended, keeps what it was sent; the same
+  // read says which.
+  if (!row)
+    return read.waiting
       ? { kind: "waiting" }
       : { kind: "refused", reason: "No bridge covers this conversation" };
-  }
   if (row.bridgeAccountId === null || row.bridgeSenders === null)
     return { kind: "refused", reason: "No bridge covers this conversation" };
   if (input.expectedRevision !== undefined && row.grantRevision !== input.expectedRevision)

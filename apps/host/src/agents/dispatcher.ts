@@ -1,6 +1,7 @@
 import { runHasBrowserPages } from "./browser-capability.js";
 import { promptCacheExpiresAt } from "@opensteer/core";
 import {
+  connectionIsWaiting,
   dispatchNodeStop,
   grantedContent,
   NodeStopAuthoritySchema,
@@ -453,13 +454,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             ownerUserId: command.requestedBy,
             subject: { kind: "binding", bindingId: `run:${context.run.id}` },
           })
-    ).catch(async (error: unknown) => {
-      // A chat that is only paused holds its Run until it is back; only an end fails it.
-      if (
-        runConnectionId !== null &&
-        (await this.#store.connectionWaiting(command.requestedBy, runConnectionId))
-      )
-        throw chatRunHeld();
+    ).catch((error: unknown) => {
+      // A chat that is only paused holds its Run until it is back; only an end fails it. The
+      // read that refused it said which.
+      if (runConnectionId !== null && connectionIsWaiting(error)) throw chatRunHeld();
       throw new CommandDispatchError(
         error instanceof OpensteerError ? error.message : "This task's access ended.",
         "failed",
@@ -785,8 +783,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             });
           } catch (error) {
             // Paused while the Run was being prepared: held for the chat, as at the first check.
-            if (await this.#store.connectionWaiting(command.requestedBy, connectionId))
-              throw chatRunHeld();
+            if (connectionIsWaiting(error)) throw chatRunHeld();
             // Its message's sender stopped being "me" since the claim: it ends, and the chat
             // hears nothing (run-finalization reads this failure).
             if (error instanceof OpensteerError && error.message === senderUnlinkedFailure)

@@ -19,8 +19,8 @@ import {
   anyoneChatModeDescriptions,
   connectionModeDescriptions,
 } from "./connected-agents-copy.js";
-import { chatFacts } from "./chat-view.js";
-import { plainSentence, sentenceAround, type SentencePart } from "./sentence-parts.js";
+import { chatAccountPart, chatFacts } from "./chat-view.js";
+import { plainSentence, sentenceWith, siteOrigin, type SentencePart } from "./sentence-parts.js";
 import { formatRelativeTime } from "./thread-list-model.js";
 
 /**
@@ -180,21 +180,13 @@ export function connectedAgentIdentity(
   return {
     label,
     clientName: source.clientName,
-    origin: hostOf(redirect),
+    // Where it signed in from is a site a person decides about: its origin, parsed.
+    origin: redirect === null ? null : siteOrigin(redirect),
     local: who.local,
     providerId: who.providerId,
     initial,
     who,
   };
-}
-
-function hostOf(value: string | null): string | null {
-  if (!value) return null;
-  try {
-    return new URL(value).hostname || null;
-  } catch {
-    return null;
-  }
 }
 
 export function connectedAgentPhase(
@@ -374,9 +366,12 @@ export function pausedDetail(connection: Pick<AgentConnection, "bridge">): strin
   const by = bridge?.pausedBy;
   const cause =
     by === "needs-attention"
-      ? agentWords("chat.paused.attention", {
-          account: bridge?.accountName ?? bridge?.provider ?? "",
-        })
+      ? plainSentence(
+          sentenceWith(
+            (slot) => agentWords("chat.paused.attention", { account: slot("account") }),
+            { account: chatAccountPart(bridge!) },
+          ),
+        )
       : by === "you"
         ? agentWords("chat.paused.you")
         : agentWords("chat.paused.unknown");
@@ -532,26 +527,25 @@ export function connectedAgentDetail(
     activity: options.activity ?? { kind: "unavailable" },
     // What it calls itself and the address it signed in from are facts of an agent that signed
     // in; a chat did neither, so it shows neither.
+    // Each value by what it is: the name it gave itself, the origin it signed in from, a date.
     about: [
       ...(connection.bridge
         ? []
         : [
             ...(identity.clientName !== identity.label
-              ? [{ label: agentWords("agent.about.says"), value: identity.clientName }]
+              ? [aboutRow(agentWords("agent.about.says"), [{ name: identity.clientName }])]
               : []),
-            {
-              label: agentWords("agent.about.origin"),
-              value: identity.origin ?? agentWords("agent.about.originUnknown"),
-            },
+            aboutRow(agentWords("agent.about.origin"), [
+              identity.origin === null
+                ? agentWords("agent.about.originUnknown")
+                : { address: identity.origin },
+            ]),
           ]),
-      { label: agentWords("agent.about.connected"), value: formatDay(connection.createdAt) },
+      aboutRow(agentWords("agent.about.connected"), [formatDay(connection.createdAt)]),
       ...(row.phase === "active" && connection.expiresAt
-        ? [{ label: agentWords("agent.about.expires"), value: formatDay(connection.expiresAt) }]
+        ? [aboutRow(agentWords("agent.about.expires"), [formatDay(connection.expiresAt)])]
         : []),
-    ].map((row) => ({
-      ...row,
-      valueParts: sentenceAround((slot) => slot, row.value),
-    })),
+    ],
   };
 }
 
@@ -705,4 +699,8 @@ export function sameGrant(left: AgentGrant, right: AgentGrant): boolean {
       )
       .join("|");
   return keyed(left) === keyed(right);
+}
+
+function aboutRow(label: string, valueParts: readonly SentencePart[]) {
+  return { label, value: plainSentence(valueParts), valueParts };
 }

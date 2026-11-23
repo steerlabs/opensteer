@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act } from "react";
+import { readAsDrawn } from "./read-as-drawn.test-support.js";
 import { createRoot, type Root } from "react-dom/client";
 import { externalAgentGuides } from "@opensteer/client/host";
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
@@ -41,7 +42,7 @@ vi.mock("./use-settings-host.js", () => ({
 }));
 vi.mock("./native-settings-page.js", () => ({
   NativeSettingsPage: (props: NativeSettingsPageProps) => {
-    state.page = props;
+    state.page = readAsDrawn(props);
     return null;
   },
 }));
@@ -111,8 +112,8 @@ describe("Connected agents on the phone", () => {
     await vi.waitFor(() => expect(section("disconnected")).toBeDefined());
     expect(lines("connected")).toEqual([
       ["Claude", "Everything · Full access"],
-      ["Slack", "Direct messages to Workshop on Slack · Tasks · Supervised"],
-      ["Slack · #team", "#team on Slack, through Workshop · Tasks · Supervised"],
+      ["Slack", "Direct messages to “Workshop” on Slack · Tasks · Supervised"],
+      ["Slack · #team", "“#team” on Slack, through “Workshop” · Tasks · Supervised"],
       ["iMessage", "Paused · its replies are held until it’s back"],
       ["Slack · On-call", "Paused · its replies are held until it’s back"],
     ]);

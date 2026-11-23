@@ -1,18 +1,40 @@
 /**
- * Addresses inside sentences, as parts. The code that knows a value is an address says so by
- * putting it in a part of its own; nothing guesses what an address is inside a sentence. Screens
- * draw an address part with their address rule (the web's `Address`), and everything that is not
- * drawn (a screen reader, an alert, a copy, the phone for now) takes `plainSentence`: the sentence
- * exactly as written. Taken from the first-run branch's phone files (`sentence-parts.ts`,
- * `address-words.ts`), with one change: a dot's joint is before the dot, so a line never ends in
- * a dot that reads as a full stop.
+ * Sentences with values from outside Opensteer in them, as parts. The code that knows what a
+ * field is says so by the part it puts it in; nothing guesses from what a string looks like:
  *
- * Three kinds of part: plain words; `{ address }`, drawn by the address rule; and `{ name }`, a
- * name supplied from outside Opensteer (an account's or a conversation's display name, a
- * plugin's or its provider's name), drawn as words, never passed to the address drawing and never
- * searched for an address.
+ * - plain words (`string`): Opensteer's own;
+ * - `{ address }`: an address (an origin, a provider's handle), drawn by the address rule;
+ * - `{ name }`: a name someone else chose (an account's or a person's display name, a channel's
+ *   name), drawn as a name and never as an address, whatever it looks like.
+ *
+ * Before anything is drawn, every name and address goes through `outsideText`: direction
+ * controls, zero-width characters and soft hyphens are removed. Screens isolate each from the
+ * direction of the text around it and draw a name in its own weight (the web's `SentenceText`);
+ * in plain text (`plainSentence`: a label read aloud, an alert, a copy, the phone) a name stands
+ * in quotation marks, so a person can tell where a name ends and Opensteer's words begin.
  */
 export type SentencePart = string | { readonly address: string } | { readonly name: string };
+
+/** A value from outside: removed are direction controls, zero-width characters, soft hyphens. */
+export function outsideText(value: string): string {
+  return value
+    .replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "")
+    .replace(/[\u00AD\u180E\u200B-\u200D\u2060\uFEFF]/gu, "");
+}
+
+/**
+ * The origin a person decides about, from URL parsing: scheme, host and port, the host in its
+ * ASCII form. Userinfo and path are no part of it (`https://google.com@evil.example/` is
+ * `https://evil.example`). Null for anything that is not a URL with an origin.
+ */
+export function siteOrigin(value: string): string | null {
+  try {
+    const origin = new URL(outsideText(value).trim()).origin;
+    return origin === "null" ? null : origin;
+  } catch {
+    return null;
+  }
+}
 
 /** `Send ${code} to ${address}.`, as parts: each interpolated value is an address. */
 export function sentence(
@@ -28,53 +50,61 @@ export function sentence(
 }
 
 /**
- * A sentence from words with one slot for a value that may be an address, such as a copy
- * table's template: `sentenceAround((slot) => agentWords("chat.where.dm", { account: slot }),
- * account)`. The value is an address part only when it is one (`isAddress`); otherwise the
- * sentence is plain words.
+ * A sentence from words with slots for values whose kind the caller knows, such as a copy table's
+ * template: `sentenceWith((slot) => agentWords("chat.where.dm", { account: slot("account") }),
+ * { account: { name: bridge.accountName } })`.
  */
-export function sentenceAround(
-  words: (slot: string) => string,
-  value: string,
+export function sentenceWith(
+  words: (slot: (key: string) => string) => string,
+  values: Readonly<Record<string, { readonly address: string } | { readonly name: string }>>,
 ): readonly SentencePart[] {
-  if (!isAddress(value)) return [words(value)];
-  const slot = String.fromCharCode(0);
-  const [before = "", after = ""] = words(slot).split(slot);
-  return [...(before === "" ? [] : [before]), { address: value }, ...(after === "" ? [] : [after])];
+  const mark = String.fromCharCode(0);
+  const text = words((key) => `${mark}${key}${mark}`);
+  return text.split(mark).flatMap((piece, index): SentencePart[] => {
+    if (index % 2 === 0) return piece === "" ? [] : [piece];
+    const value = values[piece];
+    return value ? [value] : [];
+  });
+}
+
+/** A name part's or an address part's text, cleaned. */
+export function partText(part: { readonly address: string } | { readonly name: string }): string {
+  return outsideText("address" in part ? part.address : part.name);
 }
 
 /**
- * The same, for a value supplied from outside Opensteer: an address part when it is one,
- * otherwise a name part, never plain words a screen might search.
+ * The sentence as plain text: Opensteer's words as written, each address cleaned, each name
+ * cleaned and in quotation marks.
  */
-export function sentenceAroundName(
-  words: (slot: string) => string,
-  value: string,
-): readonly SentencePart[] {
-  const slot = String.fromCharCode(0);
-  const [before = "", after = ""] = words(slot).split(slot);
-  const part = isAddress(value) ? { address: value } : { name: value };
-  return [...(before === "" ? [] : [before]), part, ...(after === "" ? [] : [after])];
-}
-
-/** The sentence as a person reads it aloud, copies it or sees it in an alert: all three kinds as written. */
 export function plainSentence(parts: readonly SentencePart[]): string {
   return parts
-    .map((part) => (typeof part === "string" ? part : "address" in part ? part.address : part.name))
+    .map((part) =>
+      typeof part === "string" ? part : "address" in part ? partText(part) : `“${partText(part)}”`,
+    )
     .join("");
 }
 
 /**
- * Whether a value is an address: an origin or a URL (`scheme:`), an email address, or a host (an
- * IP address, `localhost`, or a name with a dot). A sentence or a name is not: nothing with a
- * space in it is. The one place the apps decide this, for a value already known to stand alone.
+ * The sentence as the phone draws it, where text has no boxes: the one place every phone sentence
+ * with a name or an address goes through. An address breaks only at its joints and is never
+ * hyphenated (a word joiner between each two of a part's characters, a zero-width space at each
+ * joint); each name and address is isolated from the direction of the text around it; a name
+ * stands in quotation marks. Its words are the same as `plainSentence`'s; what it adds is
+ * invisible, so it is for drawing, never for a copy.
  */
-export function isAddress(value: string): boolean {
-  if (value === "" || /\s/u.test(value)) return false;
-  if (/^[a-z][a-z0-9+.-]*:/iu.test(value)) return true;
-  if (/^[^@]+@[^@]+$/u.test(value)) return true;
-  if (/^\[?[0-9a-f:.]+\]?(?::\d+)?$/iu.test(value) && /[.:]/u.test(value)) return true;
-  return value === "localhost" || /^[^.]+(\.[^.]+)+\.?(?::\d+)?$/u.test(value);
+export function phoneSentence(parts: readonly SentencePart[]): string {
+  const isolate = (text: string) => `\u2068${text}\u2069`;
+  return parts
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if ("name" in part) return `“${isolate(partText(part))}”`;
+      return isolate(
+        addressParts(partText(part))
+          .map((piece) => Array.from(piece).join("\u2060"))
+          .join("\u200B"),
+      );
+    })
+    .join("");
 }
 
 /**

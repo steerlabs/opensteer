@@ -27,6 +27,11 @@ export interface ConnectedAgentsSnapshot {
   readonly connections: readonly AgentConnection[] | null;
   readonly error: string | null;
   readonly issue: ClientIssue | null;
+  /**
+   * The last read of the list failed, whether or not an earlier one gave the list shown: a page
+   * drawn from it then changes nothing until it is read again (`ReadGate`, `readGateSections`).
+   */
+  readonly readFailed: boolean;
   /** The connection an action is running for. */
   readonly pending: string | null;
   readonly pendingAction: ConnectedAgentAction | null;
@@ -102,6 +107,7 @@ export class ConnectedAgentsClient {
     this.#state = {
       connections: null,
       error: null,
+      readFailed: false,
       issue: null,
       pending: null,
       pendingAction: null,
@@ -199,6 +205,7 @@ export class ConnectedAgentsClient {
       connections,
       issue,
       error: issue ? presentClientIssue(issue).title : null,
+      readFailed: read.issue !== null,
       pending: action?.running ? this.#state.pending : null,
       pendingAction: action?.running ? this.#state.pendingAction : null,
       revoked: this.#revoked.size ? new Set(this.#revoked) : noRevokes,

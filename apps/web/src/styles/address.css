@@ -14,3 +14,16 @@
   text-overflow: clip;
   white-space: normal;
 }
+/*
+ * A name someone else chose (`OutsideName`): its own weight, the same everywhere, so where it
+ * ends and Opensteer's words begin can be seen. Isolated, like an address, from the direction of
+ * the text around it. Never hyphenated.
+ */
+.address,
+.outside-name {
+  unicode-bidi: isolate;
+}
+.outside-name {
+  font-weight: 600;
+  hyphens: none;
+}

@@ -6,6 +6,7 @@ import { OpensteerError, type AgentGrant, type ThreadAccessMode } from "@openste
 import {
   AgentConnectionStore,
   ChannelStore,
+  OpensteerStore,
   TriggerStore,
   wakeChatQueues,
 } from "@opensteer/database";
@@ -301,6 +302,63 @@ describeStore("a connected agent's authority at the send", (it) => {
         .where("id", "=", occurrence.id)
         .executeTakeFirstOrThrow(),
     ).toEqual({ status: "running" });
+  });
+
+  it("reads a chat's standing once when its Run is claimed: resumed between two reads, it is never failed", async ({
+    storeFixture,
+  }) => {
+    const { bridgeId, channels, configured, fixture } =
+      await storeFixture.createChannelDeliveryFixture("claim-once");
+    const { database, store } = storeFixture;
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridgeId })
+      .where("id", "=", fixture.thread.id)
+      .execute();
+    const queued = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: fixture.thread.id,
+      content: [{ type: "text", text: "From the chat" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "claim-once",
+    });
+    if (!queued.command) throw new Error("Expected a queued Run");
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+    // Right after the claim's first read of the chat's standing, the chat is resumed (by its
+    // person, on another device). A second read would now see it live, and its "not live, not
+    // waiting" would fail the Run; one read answers "waiting" and the Run is held.
+    const standingReads = new Set<unknown>();
+    let resumed = false;
+    const resume = async () => {
+      await sql`update channel_accounts set status = 'connected' where id = ${configured.account.id}`.execute(
+        database,
+      );
+      await sql`update integration_connections set status = 'connected' where id = ${configured.connection.id}`.execute(
+        database,
+      );
+    };
+    const observed = database.withPlugin({
+      transformQuery: (args) => {
+        const text = JSON.stringify(args.node);
+        if (text.includes('"agent_connections"') && text.includes('"connection_state"'))
+          standingReads.add(args.queryId);
+        return args.node;
+      },
+      transformResult: async (args) => {
+        if (!resumed && standingReads.has(args.queryId)) {
+          resumed = true;
+          await resume();
+        }
+        return args.result;
+      },
+    });
+    const claimed = await new OpensteerStore(observed).claimCommand(
+      queued.command.id,
+      "claim-once",
+    );
+    expect(resumed).toBe(true);
+    expect(claimed?.terminalFailure ?? null).toBeNull();
   });
 
   it("holds a chat's queued Run while the chat is paused, and never fails it for that", async ({

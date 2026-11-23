@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act } from "react";
+import { readAsDrawn } from "./read-as-drawn.test-support.js";
 import { createRoot, type Root } from "react-dom/client";
 import { createId } from "@opensteer/core";
 import type { AgentConnectionConsent } from "@opensteer/protocol";
@@ -39,7 +40,7 @@ vi.mock("./deployment-gate.js", () => ({
 }));
 vi.mock("./agent-authorization-form.js", () => ({
   AgentAuthorizationForm: (props: AgentAuthorizationFormProps) => {
-    state.form = props;
+    state.form = readAsDrawn(props);
     return props.kind === "ready" ? <span>{props.title}</span> : null;
   },
 }));
@@ -258,7 +259,7 @@ describe("agent consent on the phone", () => {
       expect(ready()).toMatchObject({
         title: "AgentPay",
         who: {
-          origins: ["Holds the access: AgentPay · https://agentpay.example"],
+          origins: ["Holds the access: “AgentPay” · https://agentpay.example"],
         },
       });
       expect(section("chrome-pairing").footer?.text).toBe(

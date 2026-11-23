@@ -12,7 +12,9 @@ import type {
 import {
   agentWords,
   homeFailureText,
-  sentenceAroundName,
+  messagingAccountPart,
+  messagingAccountTitle,
+  sentenceWith,
   chatsOfAccount,
   connectedAgentRow,
   connectionsRead,
@@ -29,6 +31,7 @@ import type { AgentConnection } from "@opensteer/protocol";
 import { useShell } from "./app-shell.js";
 import { ComputerChannelSetup } from "./computer-channel-setup.js";
 import { Dialog } from "./dialog.js";
+import { ReadGate } from "./read-gate.js";
 import { ExternalLink } from "./external-link.js";
 import { Icon } from "./icon.js";
 import { PageHeader, PageTopbar } from "./page-header.js";
@@ -497,24 +500,24 @@ export function ChannelOverview({
   const providerReady = dashboard.providers.some(
     ({ availability }) => availability === "available",
   );
+  // While the last read failed, nothing here changes anything: one gate for the page and its
+  // dialogs, whose Try again reads the accounts and the chats again.
   return (
-    <>
-      {readFailed ? (
-        <p className="notice notice--error" role="alert">
-          {agentWords("messaging.readFailed")}{" "}
-          <button className="btn btn--small" onClick={onRetry} type="button">
-            {agentWords("common.tryAgain")}
-          </button>
-        </p>
-      ) : null}
+    <ReadGate
+      failed={readFailed}
+      message={agentWords("messaging.readFailed")}
+      onRetry={() => {
+        onRetry();
+        onRetryChats();
+      }}
+    >
       {error ? (
         <p aria-live="assertive" className="notice notice--error" role="alert">
           <Icon name="alert-circle" />
           <span>{error}</span>
         </p>
       ) : null}
-      {/* While the last read failed, nothing here changes anything: one rule for every control. */}
-      <fieldset className="messaging-overview" disabled={readFailed}>
+      <div className="messaging-overview">
         {dashboard.connections.length === 0 ? (
           <div className="card">
             <div className="card__empty">
@@ -548,9 +551,7 @@ export function ChannelOverview({
                   <div className="card__row-body">
                     <span className="card__row-title">
                       <Link to={`/settings/messaging/${encodeURIComponent(connection.id)}`}>
-                        <SentenceText
-                          parts={sentenceAroundName((name) => name, connection.displayName)}
-                        />
+                        <SentenceText parts={[messagingAccountTitle(connection, accounts)]} />
                       </Link>
                       {/* A read that failed leaves the last answer on screen, never as current. */}
                       <span className={`chip ${readFailed ? "" : statusChip(connection.status)}`}>
@@ -627,7 +628,7 @@ export function ChannelOverview({
             </section>
           );
         })}
-      </fieldset>
+      </div>
       {removing ? (
         <Dialog
           title={agentWords("messaging.remove.title", { account: removing.name })}
@@ -653,7 +654,7 @@ export function ChannelOverview({
           <p>{agentWords("messaging.remove.body")}</p>
         </Dialog>
       ) : null}
-    </>
+    </ReadGate>
   );
 }
 
@@ -693,7 +694,7 @@ export function AccountChats({
   readonly providerLabel: string;
 }) {
   const [adding, setAdding] = useState(false);
-  const accountName = account.handle ?? account.displayName;
+  const accountPart = messagingAccountPart(account);
   return (
     <>
       <div className="card__row messaging-me">
@@ -705,9 +706,9 @@ export function AccountChats({
             <SentenceText
               parts={
                 me
-                  ? sentenceAroundName(
-                      (identity) => agentWords("messaging.me.linked", { identity }),
-                      me.displayName,
+                  ? sentenceWith(
+                      (slot) => agentWords("messaging.me.linked", { identity: slot("me") }),
+                      { me: { name: me.displayName } },
                     )
                   : [agentWords("messaging.me.none", { provider: providerLabel })]
               }
@@ -716,18 +717,18 @@ export function AccountChats({
           {code ? (
             <span className="card__row-detail" role="status">
               <SentenceText
-                parts={sentenceAroundName(
-                  (account) =>
+                parts={sentenceWith(
+                  (slot) =>
                     agentWords("messaging.me.code", {
                       code: code.code,
-                      account,
+                      account: slot("account"),
                       provider: providerLabel,
                       time: new Date(code.expiresAt).toLocaleTimeString(undefined, {
                         hour: "numeric",
                         minute: "2-digit",
                       }),
                     }),
-                  accountName,
+                  { account: accountPart },
                 )}
               />
               {paused ? ` ${agentWords("messaging.me.whenResumed")}` : null}
@@ -737,9 +738,9 @@ export function AccountChats({
           {me ? (
             <span className="card__row-detail">
               <SentenceText
-                parts={sentenceAroundName(
-                  (identity) => agentWords("messaging.me.replaces", { identity }),
-                  me.displayName,
+                parts={sentenceWith(
+                  (slot) => agentWords("messaging.me.replaces", { identity: slot("me") }),
+                  { me: { name: me.displayName } },
                 )}
               />
             </span>

@@ -835,12 +835,12 @@ export class OpensteerMcpService {
         await this.#assertConnectionTaskKind(caller, name, input);
       }
       const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
-      const targets = await this.#targets(caller, tool, input);
       const queue =
         caller.kind === "connection" &&
         tool.name === "opensteer_task_send" &&
         "delivery" in input &&
         input.delivery === "queue";
+      const targets = await this.#targets(caller, tool, input, access !== "read" || queue);
       toolAccess[queue ? "read" : access](caller, targets);
       if (
         caller.kind !== "connection" &&
@@ -928,12 +928,12 @@ export class OpensteerMcpService {
     const input = parseToolInput(tool, caller, value);
     if (caller.kind === "connection") await this.#assertConnectionTaskKind(caller, name, input);
     const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
-    const targets = await this.#targets(caller, tool, input);
     const queue =
       caller.kind === "connection" &&
       tool.name === "opensteer_task_send" &&
       "delivery" in input &&
       input.delivery === "queue";
+    const targets = await this.#targets(caller, tool, input, access !== "read" || queue);
     toolAccess[queue ? "read" : access](caller, targets);
     if (caller.kind !== "connection") await this.assertToolOffered(caller, name);
     const authorize = this.options.handlers[tool.name]?.authorize as
@@ -1003,7 +1003,18 @@ export class OpensteerMcpService {
       });
     }
   }
-  async #targets(caller: AgentCaller, tool: AgentTool, input: object): Promise<Thread[]> {
+  /**
+   * The tasks a call names, read as its caller reads them. For a change (`write`), a task the
+   * caller's lineage may not change (with Everything, another connected agent's) reads as one that
+   * does not exist, before its state or its mode is looked at: every write tool refuses it the
+   * same way, in the words a missing task gets.
+   */
+  async #targets(
+    caller: AgentCaller,
+    tool: AgentTool,
+    input: object,
+    write: boolean,
+  ): Promise<Thread[]> {
     const ids: Thread["id"][] = [];
     const record = input as Record<string, unknown>;
     const add = async (value: unknown) => {
@@ -1018,16 +1029,16 @@ export class OpensteerMcpService {
         await add(value);
     const lineage = callerLineage(caller);
     const selected = lineage?.grant.scope === "selected" ? lineage.agentConnectionId : undefined;
+    const writableBy =
+      write && lineage && selected === undefined ? lineage.agentConnectionId : undefined;
     return Promise.all(
       [...new Set(ids)].map(async (id) => {
         // A task its caller may not read (a memory pass's lineage, one without personal context)
         // is refused here as a task that does not exist is, in the same words.
-        const thread = await this.options.store.readTask(
-          callerReader(caller),
-          id,
-          caller.userId,
-          selected === undefined ? {} : { lineageConnectionId: selected },
-        );
+        const thread = await this.options.store.readTask(callerReader(caller), id, caller.userId, {
+          ...(selected === undefined ? {} : { lineageConnectionId: selected }),
+          ...(writableBy === undefined ? {} : { writableBy }),
+        });
         if (!thread)
           throw new OpensteerError({
             code: caller.kind === "connection" ? "not_found" : "forbidden",

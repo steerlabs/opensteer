@@ -1471,7 +1471,8 @@ a.connected-agents__row:focus-visible {
 }
 
 .agent-who__detail {
-  overflow-wrap: anywhere;
+  /* Its origin wraps at its own joints (`Address`), never anywhere inside a host. */
+  overflow-wrap: break-word;
   color: var(--muted);
   font-size: var(--text-sm);
 }
@@ -1524,4 +1525,12 @@ a.connected-agents__row:focus-visible {
 }
 .messaging-me > .card__row-body {
   flex: 1 1 18rem;
+}
+
+/* A page's body while its last read failed (`ReadGate`): a plain group, disabled. */
+.read-gate {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
 }

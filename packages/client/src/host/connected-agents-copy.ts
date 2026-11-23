@@ -263,6 +263,7 @@ export const connectedAgentsCopy = {
   "messaging.chat.create": "Add chat",
   "messaging.chat.creating": "Adding…",
   "messaging.chat.cancel": "Cancel",
+  "messaging.phone.computer": "Add {provider} from Opensteer on the Mac it will use.",
   "messaging.phone":
     "Add a chat from Opensteer on your computer: there you choose where it listens and who can give it work. Here you can see each chat, pause or resume its account, stop its work and disconnect it.",
   "agent.watch": "Watch",

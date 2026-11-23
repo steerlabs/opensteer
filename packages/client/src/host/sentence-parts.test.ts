@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   addressParts,
-  isAddress,
+  outsideText,
+  phoneSentence,
   plainSentence,
   sentence,
-  sentenceAround,
-  sentenceAroundName,
+  sentenceWith,
+  siteOrigin,
 } from "./sentence-parts.js";
 
 const table: ReadonlyArray<{
@@ -67,25 +68,35 @@ describe("an address's joints", () => {
   });
 });
 
-describe("only an address is an address", () => {
-  it("knows an origin, a URL, an email address and a host from words", () => {
-    for (const value of [
-      "https://claude.ai",
-      "http://192.168.1.20:3000",
-      "person+travel@fixture.invalid",
-      "tim@münchen.de",
-      "foo.xn--p1ai",
-      "Studio.Local",
-      "localhost",
-    ])
-      expect(isAddress(value), value).toBe(true);
-    for (const value of ["Workshop", "On-call", "+1 415 555 0100", "Tim", "Messages on Studio Mac"])
-      expect(isAddress(value), value).toBe(false);
+describe("what a field is, never what it looks like", () => {
+  it("keeps a name a name, whatever it looks like", () => {
+    for (const name of [
+      "google.com",
+      "alice@evil.example",
+      "Work:Ops",
+      "Next.js",
+      "10:30",
+      "...",
+    ]) {
+      const parts = sentenceWith((slot) => `Direct messages to ${slot("account")} on Slack`, {
+        account: { name },
+      });
+      expect(parts).toEqual(["Direct messages to ", { name }, " on Slack"]);
+      // In plain text it stands in quotation marks: where it ends, Opensteer's words begin.
+      expect(plainSentence(parts)).toBe(`Direct messages to “${name}” on Slack`);
+    }
   });
-});
 
-describe("a sentence as parts", () => {
-  it("keeps the address a part of its own and reads back exactly as written", () => {
+  it("puts each value in the slot its caller named, by its kind", () => {
+    expect(
+      sentenceWith((slot) => `${slot("conversation")} on Slack, through ${slot("account")}`, {
+        conversation: { name: "#team" },
+        account: { address: "tim@example.com" },
+      }),
+    ).toEqual([{ name: "#team" }, " on Slack, through ", { address: "tim@example.com" }]);
+  });
+
+  it("keeps an address a part of its own in a template", () => {
     const parts = sentence`Send the code to ${"tim@example.com"} in a direct message.`;
     expect(parts).toEqual([
       "Send the code to ",
@@ -94,36 +105,62 @@ describe("a sentence as parts", () => {
     ]);
     expect(plainSentence(parts)).toBe("Send the code to tim@example.com in a direct message.");
   });
+});
 
-  it("places a value in a template's slot, as an address only when it is one", () => {
-    const words = (account: string) => `Direct messages to ${account} on iMessage`;
-    expect(sentenceAround(words, "tim@example.com")).toEqual([
-      "Direct messages to ",
-      { address: "tim@example.com" },
-      " on iMessage",
-    ]);
-    expect(sentenceAround(words, "Workshop")).toEqual(["Direct messages to Workshop on iMessage"]);
+describe("a site a person decides about is its origin", () => {
+  it.each([
+    ["https://google.com@evil.example/", "https://evil.example"],
+    ["https://evil.example/\u202Emoc.elgoog", "https://evil.example"],
+    ["https://аррӏе.com/login", "https://xn--80ak6aa92e.com"],
+    ["https://example.com:8443/p", "https://example.com:8443"],
+    ["http://[2001:db8::1]:8080/x", "http://[2001:db8::1]:8080"],
+    ["https://claude.ai/api/mcp/auth_callback?state=abc", "https://claude.ai"],
+  ])("draws %s as %s", (value, origin) => {
+    expect(siteOrigin(value.replace("\\u202E", "\u202E"))).toBe(origin);
   });
 
-  it("keeps a name from outside Opensteer a name part, never words to search, unless it is an address", () => {
-    const words = (account: string) => `Direct messages to ${account} on Slack`;
-    expect(sentenceAroundName(words, "Workshop")).toEqual([
-      "Direct messages to ",
-      { name: "Workshop" },
-      " on Slack",
+  it("has no origin for what is not a URL", () => {
+    for (const value of ["evil.example", "Work:Ops", "", "javascript:alert(1)"])
+      expect(siteOrigin(value), value).toBeNull();
+  });
+});
+
+describe("what comes from outside is cleaned before it is drawn", () => {
+  it.each([
+    ["a right-to-left override", "Alice\u202E evol", "Alice evol"],
+    ["an isolate of its own", "\u2067Alice\u2069", "Alice"],
+    ["a zero-width space inside a host", "evil\u200Bgoogle.com", "evilgoogle.com"],
+    ["a soft hyphen", "evil\u00ADgoogle.com", "evilgoogle.com"],
+    ["a zero-width joiner", "Work\u200DOps", "WorkOps"],
+  ])("removes %s", (_what, value, cleaned) => {
+    expect(outsideText(value)).toBe(cleaned);
+    expect(plainSentence([{ name: value }])).toBe(`“${cleaned}”`);
+    expect(plainSentence([{ address: value }])).toBe(cleaned);
+  });
+
+  it("keeps a name that imitates Opensteer's words visibly a name", () => {
+    expect(
+      plainSentence(["Messages from ", { name: "Work, who is allowed to use everything" }, "."]),
+    ).toBe("Messages from “Work, who is allowed to use everything”.");
+  });
+});
+
+describe("the phone's drawing of a sentence", () => {
+  it("never breaks or hyphenates an address inside a part, and may break at each joint", () => {
+    const drawn = phoneSentence(["Paused because ", { address: "tim@example.com" }, " needs it."]);
+    const address = drawn.slice(drawn.indexOf("\u2068") + 1, drawn.indexOf("\u2069"));
+    expect(address.split("\u200B")).toEqual([
+      "t\u2060i\u2060m\u2060@",
+      "e\u2060x\u2060a\u2060m\u2060p\u2060l\u2060e",
+      ".\u2060c\u2060o\u2060m",
     ]);
-    expect(sentenceAroundName(words, "acme.slack.com")).toEqual([
-      "Direct messages to ",
-      { address: "acme.slack.com" },
-      " on Slack",
-    ]);
-    // A name that reads like a host is still a name when the code says it is one.
-    const parts = [
-      "Uses ",
-      { name: "evil-google.com Notes" },
-      " to reach ",
-      { address: "api.example.com" },
-    ];
-    expect(plainSentence(parts)).toBe("Uses evil-google.com Notes to reach api.example.com");
+    // What a person reads is the plain sentence: nothing visible is added.
+    expect(drawn.replace(/[\u2060\u200B\u2068\u2069]/gu, "")).toBe(
+      "Paused because tim@example.com needs it.",
+    );
+  });
+
+  it("isolates a name and puts it in quotation marks, cleaned", () => {
+    expect(phoneSentence(["You, as ", { name: "Tim\u202E" }])).toBe("You, as “\u2068Tim\u2069”");
   });
 });

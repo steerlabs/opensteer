@@ -80,8 +80,10 @@ export const AgentConnectionBridgeSchema = z.object({
   /** A one-time notice about how the update changed this bridge, until the person dismisses it. */
   // A notice from a newer Home reads as none: there is nothing this app could show for it.
   notice: z.enum(["converted", "converted-without-channels"]).optional().catch(undefined),
-  /** The chat account it speaks through: the Slack workspace, or the Mac's iMessage address. */
+  /** The chat account it speaks through, by its display name: the Slack workspace's name. */
   accountName: z.string().min(1).max(160).optional(),
+  /** The account's handle, where it has one (the Mac's iMessage address): an address, not a name. */
+  accountHandle: z.string().min(1).max(160).optional(),
   /** The channel's name, for a chat in one channel; null for direct messages. */
   conversationName: z.string().min(1).max(160).nullable().optional(),
   /** The chat account's channel connection, which pausing and resuming act on. */

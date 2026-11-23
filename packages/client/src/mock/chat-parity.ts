@@ -44,10 +44,11 @@ export type ChatParityCommand =
   | { readonly kind: "me.link"; readonly account: string }
   | { readonly kind: "account.check"; readonly account: string }
   /** Adds an account with its tokens (bring your own app), as the Messaging page's form does. */
-  | { readonly kind: "account.create"; readonly provider: string }
+  | { readonly kind: "account.create"; readonly provider: string; readonly token: string }
   /** Adds an account reached through the person's computer (Messages on a Mac). */
   | { readonly kind: "account.computer.create"; readonly provider: string }
-  | { readonly kind: "credentials.replace"; readonly account: string };
+  /** `token` names the workspace the bot token belongs to (`chatParityProvider`). */
+  | { readonly kind: "credentials.replace"; readonly account: string; readonly token: string };
 
 export interface ChatParityStep {
   readonly name: string;
@@ -88,6 +89,64 @@ export const chatParityRefusesNothing = {
     "Disconnect is never refused: a second one, from another device or a retry, is answered done and finishes stopping what the first began.",
 } as const satisfies Partial<Record<keyof typeof chatScreenSends, string>>;
 
+/**
+ * The messaging provider both sides of the script reach: the Home's messaging runtime in
+ * `chat-parity.integration.test.ts`, and the preview Home's (`MockHostClient`'s
+ * `messagingProvider`) in `chat-parity.test.ts`. It says yes, as a provider does to tokens it
+ * knows: a Slack workspace named after its bot token (`xoxb-<name>` is the workspace "<name>",
+ * account `T-<name>`). So adding an account, checking one and replacing its tokens are compared
+ * like any other step.
+ */
+export const chatParityProvider = {
+  inspect(input: {
+    readonly credentials: Readonly<Record<string, string>>;
+    readonly provider: string;
+    readonly account?: { readonly externalAccountId: string; readonly displayName: string };
+  }): import("@opensteer/channel-core").ChannelConnectionInspection {
+    // An account the preview holds no tokens for is the one its own tokens name.
+    const name =
+      input.credentials.botToken === undefined && input.account
+        ? input.account.externalAccountId.replace(/^T-/u, "")
+        : (input.credentials.botToken ?? "").replace(/^xoxb-/u, "");
+    if (input.provider !== "slack" || name === "")
+      return {
+        capabilities: [],
+        identity: null,
+        issues: [
+          {
+            code: "credentials",
+            kind: "credentials",
+            message: "The provider did not accept these tokens.",
+            missing: [],
+          },
+        ],
+        ready: false,
+      };
+    return {
+      capabilities: [],
+      identity: {
+        accountDisplayName: name,
+        connectionDisplayName: name,
+        externalAccountId: `T-${name}`,
+        externalIdentityId: `U-${name}`,
+        handle: null,
+        metadata: {},
+      },
+      issues: [],
+      ready: true,
+    };
+  },
+};
+
+/**
+ * Commands whose accepted side no step can compare, by why: the coverage test takes these in
+ * place of an accepted step, and nothing else.
+ */
+export const chatParityAcceptedOutside = {
+  "channel.connection.computer.create":
+    "Adding iMessage is accepted only by a Mac whose Messages app is on and allowed to read and send; the script has no Mac. Both of its refusals are compared.",
+} as const;
+
 /** What those screens send that this script does not cover, by why; listed so it is seen. */
 export const chatParityOutside = {
   "browser.profile.create":
@@ -97,7 +156,12 @@ export const chatParityOutside = {
 /** What a command came to: done, with the chat it made, or refused in the Home's words. */
 export type ChatParityAnswer =
   | { readonly ok: true; readonly chat?: ChatParityChat }
-  | { readonly ok: false; readonly code: string | null; readonly message: string };
+  | {
+      readonly ok: false;
+      readonly code: string | null;
+      readonly reason: string | null;
+      readonly message: string;
+    };
 
 export interface ChatParityChat {
   readonly label: string;
@@ -203,7 +267,19 @@ export function chatParityRefusal(error: unknown): ChatParityAnswer {
     typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
       ? error.code
       : null;
-  return { ok: false, code, message: error instanceof Error ? error.message : String(error) };
+  const reason =
+    typeof error === "object" &&
+    error !== null &&
+    "reason" in error &&
+    typeof error.reason === "string"
+      ? error.reason
+      : null;
+  return {
+    ok: false,
+    code,
+    reason,
+    message: error instanceof Error ? error.message : String(error),
+  };
 }
 
 const idPattern = /^([a-z]+)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;

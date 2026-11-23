@@ -122,8 +122,8 @@ interface ConnectionTargetCheck {
 
 /**
  * The one statement for where a connection stands: its row and its state (`connectionState`).
- * Every reader of a connection's standing is a view of this (`readLiveAgentConnectionRow`,
- * `connectionWaiting`, `delegatingConnectionStanding`).
+ * Every reader of a connection's standing is a view of this (`readConnectionRowStanding`,
+ * `liveAgentConnection`, `delegatingConnectionStanding`).
  */
 async function readConnectionStanding(
   database: Kysely<DatabaseSchema>,
@@ -154,7 +154,27 @@ async function readConnectionStanding(
   return { connection, state };
 }
 
-export async function readLiveAgentConnectionRow(
+/**
+ * The refusal for work whose connection is a chat that is only waiting (its account paused or
+ * needing attention), from the same read that found it not live: the caller holds the work
+ * rather than refuse it, and never asks a second time.
+ */
+export class ConnectionWaiting extends OpensteerError {
+  constructor() {
+    super({ code: "forbidden", message: lineageEndedMessage });
+  }
+}
+
+/** Whether a refusal says its connection is a chat that waits (`ConnectionWaiting`). */
+export function connectionIsWaiting(error: unknown): boolean {
+  return error instanceof ConnectionWaiting;
+}
+
+/**
+ * A live connection's row, or, from the same statement, whether one that is not live is a chat
+ * that waits: live, waiting or ended, answered once.
+ */
+export async function readConnectionRowStanding(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
   agentConnectionId: string,
@@ -162,14 +182,26 @@ export async function readLiveAgentConnectionRow(
   { grantTarget, writeTargetName }: ConnectionTargetCheck = {},
 ) {
   const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, lock);
-  if (!read || read.state !== "live") return undefined;
+  if (!read || read.state !== "live")
+    return { row: undefined, waiting: read?.state === "waiting" };
   const row = read.connection;
   const access = grantTarget && agentGrantAccess(row.grant, grantTarget);
   if (access === null)
     throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
   if (access === "read" && writeTargetName !== undefined)
     throw forbidden(`${writeTargetName} is shared for reading only.`);
-  return row;
+  return { row, waiting: false };
+}
+
+export async function readLiveAgentConnectionRow(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  agentConnectionId: string,
+  lock = false,
+  target: ConnectionTargetCheck = {},
+) {
+  return (await readConnectionRowStanding(database, ownerUserId, agentConnectionId, lock, target))
+    .row;
 }
 
 /** The live connection, or a refusal: a revoked or expired connection has no authority. */
@@ -184,14 +216,14 @@ export async function liveAgentConnection(
     readonly cleanupMaximumMode: ThreadAccessMode | null;
   }
 > {
-  const row = await readLiveAgentConnectionRow(
+  const { row, waiting } = await readConnectionRowStanding(
     database,
     ownerUserId,
     agentConnectionId,
     false,
     target,
   );
-  if (!row) throw forbidden(lineageEndedMessage);
+  if (!row) throw waiting ? new ConnectionWaiting() : forbidden(lineageEndedMessage);
   const grant = AgentGrantSchema.parse(row.grant);
   return {
     agentConnectionId: row.id,
@@ -234,19 +266,6 @@ export function connectionTaskRequestScope(
   input: Parameters<typeof connectionTaskReadScope>[1],
 ): Promise<"everything" | "selected"> {
   return connectionTaskReadScope(database, input, "Request is unavailable");
-}
-
-/**
- * Whether a connection's work waits rather than ends: a chat whose account is paused. What it
- * would run stays queued until the chat is back; nothing of it is cancelled.
- */
-export async function connectionWaiting(
-  database: Kysely<DatabaseSchema>,
-  ownerUserId: UserId,
-  agentConnectionId: string,
-): Promise<boolean> {
-  const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, false);
-  return read?.state === "waiting";
 }
 
 /**

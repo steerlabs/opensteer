@@ -474,6 +474,7 @@
       "answer": {
         "ok": false,
         "code": "conflict",
+        "reason": null,
         "message": "Another chat already answers in this conversation."
       },
       "views": {
@@ -591,6 +592,7 @@
       "answer": {
         "ok": false,
         "code": "bad_request",
+        "reason": null,
         "message": "Direct messages answer only you."
       },
       "views": {
@@ -709,6 +711,7 @@
       "answer": {
         "ok": false,
         "code": "bad_request",
+        "reason": "bridge-anyone-grant",
         "message": "When anyone in the conversation can message it, it can use only tasks and the plugins you choose."
       },
       "views": {
@@ -829,6 +832,7 @@
       "answer": {
         "ok": false,
         "code": "bad_request",
+        "reason": "bridge-needs-tasks",
         "message": "A chat can only ask your own agents to work, so it always needs tasks."
       },
       "views": {
@@ -2060,6 +2064,7 @@
       "answer": {
         "ok": false,
         "code": "not_found",
+        "reason": null,
         "message": "That messaging account is no longer connected."
       },
       "views": {
@@ -2238,6 +2243,7 @@
       "answer": {
         "ok": false,
         "code": null,
+        "reason": null,
         "message": "This Thread has nothing to stop."
       },
       "views": {
@@ -2829,6 +2835,7 @@
       "answer": {
         "ok": false,
         "code": "bad_request",
+        "reason": "bridge-anyone-grant",
         "message": "When anyone in the conversation can message it, it can use only tasks and the plugins you choose."
       },
       "views": {
@@ -3017,6 +3024,7 @@
       "answer": {
         "ok": false,
         "code": "conflict",
+        "reason": "revision-changed",
         "message": "This connected agent changed since you opened it. Review it and try again."
       },
       "views": {
@@ -3425,6 +3433,7 @@
       "answer": {
         "ok": false,
         "code": "not_found",
+        "reason": null,
         "message": "This connected agent is no longer connected."
       },
       "views": {
@@ -3611,6 +3620,7 @@
       "answer": {
         "ok": false,
         "code": "conflict",
+        "reason": null,
         "message": "Disconnect this agent before removing it."
       },
       "views": {
@@ -4323,6 +4333,7 @@
       "answer": {
         "ok": false,
         "code": "not_found",
+        "reason": null,
         "message": "That messaging account is no longer connected."
       },
       "views": {
@@ -4483,6 +4494,7 @@
       "answer": {
         "ok": false,
         "code": "not_found",
+        "reason": null,
         "message": "That messaging account is no longer connected."
       },
       "views": {
@@ -4643,6 +4655,7 @@
       "answer": {
         "ok": false,
         "code": "not_found",
+        "reason": null,
         "message": "That messaging account is no longer connected."
       },
       "views": {
@@ -4800,11 +4813,8 @@
         "kind": "account.check",
         "account": "Workshop"
       },
-      "notComparable": "Checking an account asks its provider; the test has no Slack. The Home's answer with the test's stand-ins is recorded.",
       "answer": {
-        "ok": false,
-        "code": "internal",
-        "message": "Credential envelope is invalid"
+        "ok": true
       },
       "views": {
         "accounts": [
@@ -5123,6 +5133,7 @@
       "answer": {
         "ok": false,
         "code": "not_found",
+        "reason": null,
         "message": "That messaging account is no longer connected."
       },
       "views": {
@@ -5278,11 +5289,13 @@
       "name": "add iMessage with tokens",
       "command": {
         "kind": "account.create",
-        "provider": "imessage"
+        "provider": "imessage",
+        "token": "Parity"
       },
       "answer": {
         "ok": false,
         "code": "conflict",
+        "reason": null,
         "message": "iMessage is not available for bring-your-own setup"
       },
       "views": {
@@ -5438,18 +5451,194 @@
       "name": "add a Slack account with its tokens",
       "command": {
         "kind": "account.create",
-        "provider": "slack"
+        "provider": "slack",
+        "token": "Parity"
       },
-      "notComparable": "Adding an account asks the provider to check its tokens; the test has no Slack. The Home's answer with the test's stand-ins is recorded.",
       "answer": {
-        "ok": false,
-        "code": null,
-        "message": "[\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"capabilities\"\n    ],\n    \"message\": \"Invalid input: expected array, received undefined\"\n  },\n  {\n    \"expected\": \"object\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"identity\"\n    ],\n    \"message\": \"Invalid input: expected object, received undefined\"\n  },\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"issues\"\n    ],\n    \"message\": \"Invalid input: expected array, received undefined\"\n  },\n  {\n    \"expected\": \"boolean\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"ready\"\n    ],\n    \"message\": \"Invalid input: expected boolean, received undefined\"\n  }\n]"
+        "ok": true
       },
       "views": {
         "accounts": [
           {
             "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Parity",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "add a Slack account with tokens its provider refuses",
+      "command": {
+        "kind": "account.create",
+        "provider": "slack",
+        "token": ""
+      },
+      "answer": {
+        "ok": false,
+        "code": "bad_request",
+        "reason": null,
+        "message": "Bot user OAuth token is invalid"
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Parity",
             "provider": "slack",
             "status": "connected",
             "connection": "pending",
@@ -5604,12 +5793,21 @@
       "answer": {
         "ok": false,
         "code": "conflict",
+        "reason": null,
         "message": "Slack is not reached through a computer"
       },
       "views": {
         "accounts": [
           {
             "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Parity",
             "provider": "slack",
             "status": "connected",
             "connection": "pending",
@@ -5761,16 +5959,24 @@
         "kind": "account.computer.create",
         "provider": "imessage"
       },
-      "notComparable": "Adding iMessage needs the Mac's Messages app; the test has no Mac. The Home's answer with the test's stand-ins is recorded.",
       "answer": {
         "ok": false,
         "code": "conflict",
+        "reason": null,
         "message": "That computer is not connected with iMessage yet. Try again once it is online."
       },
       "views": {
         "accounts": [
           {
             "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Parity",
             "provider": "slack",
             "status": "connected",
             "connection": "pending",
@@ -5920,17 +6126,27 @@
       "name": "replace the removed account's tokens",
       "command": {
         "kind": "credentials.replace",
-        "account": "On-call"
+        "account": "On-call",
+        "token": "On-call"
       },
       "answer": {
         "ok": false,
         "code": "not_found",
+        "reason": null,
         "message": "This channel connection has no credentials to replace."
       },
       "views": {
         "accounts": [
           {
             "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Parity",
             "provider": "slack",
             "status": "connected",
             "connection": "pending",
@@ -6080,18 +6296,24 @@
       "name": "replace Workshop's tokens",
       "command": {
         "kind": "credentials.replace",
-        "account": "Workshop"
+        "account": "Workshop",
+        "token": "Workshop"
       },
-      "notComparable": "Replacing tokens asks the provider to check them; the test has no Slack. The Home's answer with the test's stand-ins is recorded.",
       "answer": {
-        "ok": false,
-        "code": null,
-        "message": "[\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"capabilities\"\n    ],\n    \"message\": \"Invalid input: expected array, received undefined\"\n  },\n  {\n    \"expected\": \"object\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"identity\"\n    ],\n    \"message\": \"Invalid input: expected object, received undefined\"\n  },\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"issues\"\n    ],\n    \"message\": \"Invalid input: expected array, received undefined\"\n  },\n  {\n    \"expected\": \"boolean\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"ready\"\n    ],\n    \"message\": \"Invalid input: expected boolean, received undefined\"\n  }\n]"
+        "ok": true
       },
       "views": {
         "accounts": [
           {
             "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Parity",
             "provider": "slack",
             "status": "connected",
             "connection": "pending",
@@ -6111,7 +6333,177 @@
             "provider": "slack",
             "status": "connected",
             "connection": "pending",
-            "detail": "Reconnecting to messaging provider",
+            "detail": "Checking updated messaging credentials",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "replace Workshop's tokens with another workspace's",
+      "command": {
+        "kind": "credentials.replace",
+        "account": "Workshop",
+        "token": "Elsewhere"
+      },
+      "answer": {
+        "ok": false,
+        "code": "conflict",
+        "reason": null,
+        "message": "These credentials belong to a different Slack account"
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Parity",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking updated messaging credentials",
             "me": null
           }
         ],

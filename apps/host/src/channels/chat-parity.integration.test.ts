@@ -16,6 +16,7 @@ import { createStoreFixture, testMessagingRunnerId } from "@opensteer/database/t
 import {
   chatParityChat,
   chatParityNormalized,
+  chatParityProvider,
   chatParityRefusal,
   chatParityViews,
   type ChatParityAnswer,
@@ -249,8 +250,6 @@ const script: readonly ChatParityStep[] = [
   {
     name: "check Workshop",
     command: { kind: "account.check", account: "Workshop" },
-    notComparable:
-      "Checking an account asks its provider; the test has no Slack. The Home's answer with the test's stand-ins is recorded.",
   },
   {
     name: "link me on Workshop",
@@ -262,13 +261,15 @@ const script: readonly ChatParityStep[] = [
   },
   {
     name: "add iMessage with tokens",
-    command: { kind: "account.create", provider: "imessage" },
+    command: { kind: "account.create", provider: "imessage", token: "Parity" },
   },
   {
     name: "add a Slack account with its tokens",
-    command: { kind: "account.create", provider: "slack" },
-    notComparable:
-      "Adding an account asks the provider to check its tokens; the test has no Slack. The Home's answer with the test's stand-ins is recorded.",
+    command: { kind: "account.create", provider: "slack", token: "Parity" },
+  },
+  {
+    name: "add a Slack account with tokens its provider refuses",
+    command: { kind: "account.create", provider: "slack", token: "" },
   },
   {
     name: "add Slack through a computer",
@@ -277,18 +278,18 @@ const script: readonly ChatParityStep[] = [
   {
     name: "add iMessage through this Mac",
     command: { kind: "account.computer.create", provider: "imessage" },
-    notComparable:
-      "Adding iMessage needs the Mac's Messages app; the test has no Mac. The Home's answer with the test's stand-ins is recorded.",
   },
   {
     name: "replace the removed account's tokens",
-    command: { kind: "credentials.replace", account: "On-call" },
+    command: { kind: "credentials.replace", account: "On-call", token: "On-call" },
   },
   {
     name: "replace Workshop's tokens",
-    command: { kind: "credentials.replace", account: "Workshop" },
-    notComparable:
-      "Replacing tokens asks the provider to check them; the test has no Slack. The Home's answer with the test's stand-ins is recorded.",
+    command: { kind: "credentials.replace", account: "Workshop", token: "Workshop" },
+  },
+  {
+    name: "replace Workshop's tokens with another workspace's",
+    command: { kind: "credentials.replace", account: "Workshop", token: "Elsewhere" },
   },
 ];
 
@@ -326,7 +327,11 @@ describe("the preview Home answers as the Home does", () => {
         capabilities: () => [],
         isConnected: () => true,
         supports: () => true,
-        request: async () => ({}),
+        // The provider it reaches is the script's own (`chatParityProvider`), as the preview's is.
+        request: async (_runnerId: string, method: string, params: unknown) =>
+          method === "connection.inspect"
+            ? chatParityProvider.inspect(params as Parameters<typeof chatParityProvider.inspect>[0])
+            : {},
       } as never,
       store,
       bridgeTools: () => ({ callTool: async () => ({}) }) as never,
@@ -348,14 +353,13 @@ describe("the preview Home answers as the Home does", () => {
           transportKind: "socket",
         },
         createdBy: userId,
-        credential: {
-          encryptedPayload: Buffer.from(name),
-          encryptionKeyVersion: 1,
-          id: createId("credential"),
+        // Sealed as the Home seals them: its tokens name its workspace to the provider.
+        credential: await credentials.prepare({
           name,
           ownerId: userId,
           provider: "channel:slack",
-        },
+          secrets: { botToken: `xoxb-${name}`, appToken: `xapp-${name}` },
+        }),
       });
       return created;
     };
@@ -549,7 +553,12 @@ describe("the preview Home answers as the Home does", () => {
           );
           answer = checked.ok
             ? { ok: true }
-            : { ok: false, code: checked.error.code, message: checked.error.message };
+            : {
+                ok: false,
+                code: checked.error.code,
+                reason: checked.error.reason ?? null,
+                message: checked.error.message,
+              };
         } else if (command.kind === "account.create") {
           await handleChannelCommand(
             service,
@@ -557,7 +566,7 @@ describe("the preview Home answers as the Home does", () => {
               type: "channel.connection.create",
               provider: command.provider,
               routingMode: "dedicated",
-              credentials: { botToken: "xoxb-parity", appToken: "xapp-parity" },
+              credentials: { botToken: `xoxb-${command.token}`, appToken: "xapp-parity" },
               idempotencyKey: createId("command"),
             } as never,
             context,
@@ -581,7 +590,7 @@ describe("the preview Home answers as the Home does", () => {
             {
               type: "channel.connection.credentials.replace",
               connectionId: connectionOf(current.channels, command.account) as never,
-              credentials: { botToken: "xoxb-parity", appToken: "xapp-parity" },
+              credentials: { botToken: `xoxb-${command.token}`, appToken: "xapp-parity" },
               idempotencyKey: createId("command"),
             } as never,
             context,

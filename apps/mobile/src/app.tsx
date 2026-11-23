@@ -66,14 +66,9 @@ import { resolveRefreshedApplicationLink, routeComputerLink } from "./links.js";
 import { PendingDestination } from "./pending-destination.js";
 import { Navigation, navigationTheme } from "./navigation.js";
 import { sideMemory } from "./side-memory.js";
-import { enterSide, navigationRef } from "./navigation-ref.js";
+import { enterSide, navigationRef, reconcileRootSelection, resetRoot } from "./navigation-ref.js";
 import { sidebarRef } from "./sidebar/sidebar-context.js";
-import {
-  applicationLinkState,
-  deploymentRoot,
-  deploymentsRoot,
-  selectionRootTransition,
-} from "./navigation-state.js";
+import { applicationLinkState, deploymentRoot, deploymentsRoot } from "./navigation-state.js";
 import { MobileNotifications } from "./notifications/mobile-notifications.js";
 import {
   createNotificationsIntroFile,
@@ -509,7 +504,7 @@ export function App(): ReactNode {
             base.params.deploymentId === shown.params.deploymentId
           )
             enterSide({ name: target.name, params: target.params ?? {} });
-          else navigationRef.resetRoot(state);
+          else resetRoot(state);
         },
         failed: (error) =>
           setLinkFailure(
@@ -540,26 +535,7 @@ export function App(): ReactNode {
   );
 
   const observeRootSelection = useCallback((): void => {
-    const { selection } = client.getSnapshot();
-    if (
-      selection.status !== "ready" ||
-      !navigationRef.isReady() ||
-      !destinations.selectionToReconcile(selection.deploymentId)
-    )
-      return;
-    const state = navigationRef.getRootState();
-    if (state === undefined) return;
-    const base = state.routes[0];
-    const baseId = base?.params && "deploymentId" in base.params ? base.params.deploymentId : null;
-    const transition = selectionRootTransition({
-      activeRouteName: state.routes[state.index]?.name ?? null,
-      baseDeploymentId: typeof baseId === "string" ? baseId : null,
-      baseRouteName: base?.name ?? null,
-      deploymentId: selection.deploymentId,
-    });
-    if (transition === "defer") return;
-    destinations.reconciled(selection.deploymentId);
-    if (transition !== null) navigationRef.resetRoot(transition);
+    reconcileRootSelection({ destinations, selection: client.getSnapshot().selection });
   }, [client, destinations]);
 
   const recordNavigation = (): void => {
@@ -649,7 +625,7 @@ export function App(): ReactNode {
         destinations.mayReconcileSelection(snapshot.selection.deploymentId)
       ) {
         const id = snapshot.selection.deploymentId;
-        navigationRef.resetRoot(id === null ? deploymentsRoot() : deploymentRoot(id));
+        resetRoot(id === null ? deploymentsRoot() : deploymentRoot(id));
       }
       observeRootSelection();
     };

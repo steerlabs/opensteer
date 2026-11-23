@@ -33,8 +33,10 @@ import {
   chatEndReason,
   chatEndedUnrevoked,
   connectionActive,
+  connectionState,
   liveConnection,
 } from "./connection-liveness.js";
+import { ConnectionWaiting } from "./resource-access.js";
 
 export interface ConnectionCleanup {
   readonly connectionId: string;
@@ -795,11 +797,17 @@ export async function recordConnectionRunHandoff(
                 and speak_me.status = 'linked'
                 and speak_me.linked_user_id = agent_connections.user_id)))`.as("senderMaySpeak"),
       ])
+      .select(connectionState().as("state"))
       .where("id", "=", input.connectionId)
-      .where(liveConnection())
       .forShare()
       .executeTakeFirst();
-    if (!connection || connection.grantRevision !== input.grantRevision)
+    // A chat paused while its Run was prepared is held, from this same read.
+    if (connection?.state === "waiting") throw new ConnectionWaiting();
+    if (
+      !connection ||
+      connection.state !== "live" ||
+      connection.grantRevision !== input.grantRevision
+    )
       throw new Error("The agent connection changed before this Run could be sent");
     if (!connection.senderMaySpeak)
       throw new OpensteerError({ code: "forbidden", message: senderUnlinkedFailure });

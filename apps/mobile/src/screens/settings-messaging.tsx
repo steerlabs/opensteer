@@ -11,10 +11,17 @@ import {
   unwrapRpcResult,
   type HostClient,
 } from "@opensteer/client/host";
-import { chatScreenHost, type ChatScreenCommand } from "@opensteer/client/host";
+import {
+  chatScreenHost,
+  messagingAccountPart,
+  phoneSentence,
+  sentenceWith,
+  type ChatScreenCommand,
+} from "@opensteer/client/host";
 import { Alert } from "react-native";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { Sheet } from "../ui/sheet.js";
+import { readGateSections } from "./read-gate-sections.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 import { useClientRead, useConnectedAgents } from "@opensteer/client/react";
@@ -222,14 +229,23 @@ function Messaging({
     sections.push({
       key: "providers",
       title: agentWords("messaging.add"),
+      // One rule for every provider: the phone opens a setup only it can finish here (an app's
+      // tokens). One added through a computer (iMessage, on a Mac) says where to add it instead.
       rows: data.providers
         .filter((p) => p.availability === "available")
-        .map((p) =>
-          button(p.provider, p.label, () => {
-            setCredentials({});
-            setRepair(null);
-            setProvider(p.provider);
-          }),
+        .map((p): NativeSettingsRow =>
+          p.connectionMethods.includes("bring-your-own")
+            ? button(p.provider, p.label, () => {
+                setCredentials({});
+                setRepair(null);
+                setProvider(p.provider);
+              })
+            : {
+                key: p.provider,
+                kind: "text",
+                label: p.label,
+                detail: agentWords("messaging.phone.computer", { provider: p.label }),
+              },
         ),
     });
     if (provider) {
@@ -364,22 +380,38 @@ function Messaging({
           kind: "text",
           label: agentWords("messaging.me.title", { provider: providerLabel }),
           detail: me
-            ? `${agentWords("messaging.me.linked", { identity: me.displayName })} ${agentWords("messaging.me.replaces", { identity: me.displayName })}`
+            ? phoneSentence([
+                ...sentenceWith(
+                  (slot) => agentWords("messaging.me.linked", { identity: slot("me") }),
+                  { me: { name: me.displayName } },
+                ),
+                " ",
+                ...sentenceWith(
+                  (slot) => agentWords("messaging.me.replaces", { identity: slot("me") }),
+                  { me: { name: me.displayName } },
+                ),
+              ])
             : agentWords("messaging.me.none", { provider: providerLabel }),
         },
         ...(code
           ? [
               text(
                 "code",
-                agentWords("messaging.me.code", {
-                  code: code.code,
-                  account: account.handle ?? account.displayName,
-                  provider: providerLabel,
-                  time: new Date(code.expiresAt).toLocaleTimeString(undefined, {
-                    hour: "numeric",
-                    minute: "2-digit",
-                  }),
-                }),
+                phoneSentence(
+                  sentenceWith(
+                    (slot) =>
+                      agentWords("messaging.me.code", {
+                        code: code.code,
+                        account: slot("account"),
+                        provider: providerLabel,
+                        time: new Date(code.expiresAt).toLocaleTimeString(undefined, {
+                          hour: "numeric",
+                          minute: "2-digit",
+                        }),
+                      }),
+                    { account: messagingAccountPart(account) },
+                  ),
+                ),
               ),
               ...(view?.canResume
                 ? [text("whenResumed", agentWords("messaging.me.whenResumed"))]
@@ -433,7 +465,8 @@ function Messaging({
       const footer = footerFor(account.id);
       sections.push({
         key: account.id,
-        title: account.displayName,
+        // Its handle an address (never cut or hyphenated inside a part), else its name.
+        title: phoneSentence([messagingAccountPart(account)]),
         rows,
         ...(footer ? { footer } : {}),
       });
@@ -478,36 +511,19 @@ function Messaging({
     }
   }
   // The last read failed: what is shown is the answer before it, never as current, and nothing
-  // on it changes anything; only Refresh, Try again and moving around stay. One rule for every
-  // section, as the web holds it for every control.
-  if (loaded !== null && dashboard.data !== null)
-    for (const [index, section] of sections.entries())
-      if (section.key !== "refresh")
-        sections[index] = {
-          ...section,
-          rows: section.rows.flatMap((row): NativeSettingsRow[] =>
-            row.kind === "status"
-              ? [{ ...row, tone: "neutral", label: agentWords("messaging.status.stale") }]
-              : (row.kind === "button" &&
-                    !row.opens &&
-                    row.label !== agentWords("common.tryAgain")) ||
-                  row.kind === "toggle" ||
-                  row.kind === "input" ||
-                  row.kind === "chips"
-                ? []
-                : [row],
-          ),
-        };
-  // A section the rule emptied says nothing, so it is not drawn.
-  const drawn = sections.filter(
-    (section) => section.key === "refresh" || section.rows.length > 0 || section.footer,
-  );
+  // on it changes anything; only Refresh, Try again and moving around stay (`readGateSections`,
+  // the one rule for every phone page drawn from a read).
+  const readFailed = loaded !== null && dashboard.data !== null;
+  const drawn = readGateSections(sections, {
+    failed: readFailed,
+    keep: (section) => section.key === "refresh",
+  }).filter((section) => section.key === "refresh" || section.rows.length > 0 || section.footer);
   const setup = drawn.filter((section) => section.key.startsWith("setup:"));
   return (
     <>
       <NativeSettingsPage sections={drawn.filter((section) => !section.key.startsWith("setup:"))} />
       <Sheet
-        open={providerId !== null}
+        open={providerId !== null && !readFailed}
         title={
           dashboard.data?.providers.find((provider) => provider.provider === providerId)?.label ??
           "Messaging"

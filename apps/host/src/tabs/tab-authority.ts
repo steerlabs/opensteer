@@ -345,19 +345,21 @@ export async function readableTabTasks(
       : actor.kind === "connection"
         ? actor.caller.connectionId
         : await bindingAgentConnectionId(database, scope(actor).agentBindingId!);
-  // What it may see is authority: read through the one standing statement. A connection that is
-  // not live sees only its own lineage's tasks.
-  const selected =
-    agentConnectionId &&
-    (await standingGrant(database, tabOwner(actor), agentConnectionId).then(
-      (grant) => grant === null || grant.scope === "selected",
-    ));
   const rows = await database
     .selectFrom("threads")
-    .select("id")
+    .select(["id", "originConnectionId"])
     .where("id", "in", [...ids])
     .where("createdBy", "=", tabOwner(actor))
-    .$if(Boolean(selected), (query) => query.where("originConnectionId", "=", agentConnectionId!))
     .execute();
-  return new Set(rows.map((row) => row.id));
+  if (!agentConnectionId) return new Set(rows.map((row) => row.id));
+  // What it may see is authority: read through the one standing statement, as the last read
+  // before it is used. A connection with no standing sees no task at all; a selected grant sees
+  // its own lineage's.
+  const grant = await standingGrant(database, tabOwner(actor), agentConnectionId);
+  if (grant === null) return new Set();
+  return new Set(
+    rows
+      .filter((row) => grant.scope !== "selected" || row.originConnectionId === agentConnectionId)
+      .map((row) => row.id),
+  );
 }

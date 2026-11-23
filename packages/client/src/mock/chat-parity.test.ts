@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { mutationIdempotencyKey } from "../host/index.js";
 import {
   chatParityChat,
+  chatParityProvider,
   chatParityRefusal,
   chatParityViews,
   type ChatParityAnswer,
@@ -27,6 +28,8 @@ describe("the preview Home answers as the Home does", () => {
       latencyMs: 0,
       channels: record.seed.channels,
       connections: record.seed.connections.map((row) => ({ ...row, userId: person })),
+      // The provider the Home's messaging runtime reached when the script was recorded.
+      messagingProvider: chatParityProvider,
     });
     try {
       const read = async () => {
@@ -121,13 +124,18 @@ describe("the preview Home answers as the Home does", () => {
             });
             answer = checked.ok
               ? { ok: true }
-              : { ok: false, code: checked.error.code, message: checked.error.message };
+              : {
+                  ok: false,
+                  code: checked.error.code,
+                  reason: checked.error.reason ?? null,
+                  message: checked.error.message,
+                };
           } else if (command.kind === "account.create") {
             await client.dispatch({
               type: "channel.connection.create",
               provider: command.provider,
               routingMode: "dedicated",
-              credentials: { botToken: "xoxb-parity", appToken: "xapp-parity" },
+              credentials: { botToken: `xoxb-${command.token}`, appToken: "xapp-parity" },
               idempotencyKey: key(),
             });
             answer = { ok: true };
@@ -143,7 +151,7 @@ describe("the preview Home answers as the Home does", () => {
             await client.dispatch({
               type: "channel.connection.credentials.replace",
               connectionId: connectionOf(command.account) as never,
-              credentials: { botToken: "xoxb-parity", appToken: "xapp-parity" },
+              credentials: { botToken: `xoxb-${command.token}`, appToken: "xapp-parity" },
               idempotencyKey: key(),
             });
             answer = { ok: true };
@@ -154,10 +162,12 @@ describe("the preview Home answers as the Home does", () => {
         current = await read();
         const views = chatParityViews(current.channels, current.connections);
         if (step.notComparable) {
-          // The Home could not answer here as it would with its provider: the views must agree,
-          // and the preview's answer must be one a Home can give.
-          expect({ step: step.name, views }).toEqual({ step: step.name, views: step.views });
-          expect(answer.ok || answer.code !== null, step.name).toBe(true);
+          // What can be compared is: the answer's shape (done or refused) and the views after.
+          expect({ step: step.name, ok: answer.ok, views }).toEqual({
+            step: step.name,
+            ok: step.answer.ok,
+            views: step.views,
+          });
           continue;
         }
         expect({ step: step.name, answer, views }).toEqual({

@@ -172,7 +172,7 @@ import { BrowserPasskeys } from "../host/browser-passkeys.js";
 import { BrowserPreferences } from "../host/browser-preferences.js";
 
 import { sha256 } from "@noble/hashes/sha2.js";
-import { channelProviderCatalog } from "@opensteer/channel-core";
+import { ChannelDashboardSchema, channelProviderCatalog } from "@opensteer/channel-core";
 import {
   PlaceEnteredEventViewSchema,
   AssignmentIdSchema,
@@ -1532,6 +1532,47 @@ function sameMockApp(
   return (left?.bundleId.toLowerCase() ?? null) === (right?.bundleId.toLowerCase() ?? null);
 }
 
+/** A messaging provider as the preview reaches it (`MockHostClientOptions.messagingProvider`). */
+export interface MockMessagingProvider {
+  inspect(input: {
+    readonly credentials: Readonly<Record<string, string>>;
+    readonly provider: string;
+    /** The account being checked, where the preview holds no tokens it was added with. */
+    readonly account?: { readonly externalAccountId: string; readonly displayName: string };
+  }): import("@opensteer/channel-core").ChannelConnectionInspection;
+}
+
+/**
+ * The tokens a provider takes, checked as the Home checks them (`providerCredentials` in apps/host's
+ * channel service): only its own fields, each one 8 to 65,536 characters on one line.
+ */
+function mockProviderCredentials(
+  manifest: import("@opensteer/channel-core").ChannelProviderManifest,
+  input: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> {
+  const fields = new Map(manifest.credentialFields.map((field) => [field.key, field] as const));
+  const unknown = Object.keys(input).find((key) => !fields.has(key));
+  if (unknown)
+    throw mockBadRequest(`${manifest.label} does not accept credential field ${unknown}`);
+  return Object.fromEntries(
+    [...fields.values()].map((field) => {
+      const value = input[field.key] ?? "";
+      if (value.length < 8 || value.length > 65_536 || /[\r\n\0]/u.test(value))
+        throw mockBadRequest(`${field.label} is invalid`);
+      return [field.key, value];
+    }),
+  );
+}
+
+/** A provider's no, in the Home's words (`inspectionError` in apps/host's channel service). */
+function mockInspectionRefusal(
+  inspection: import("@opensteer/channel-core").ChannelConnectionInspection,
+): HostClientRequestError {
+  const issue = inspection.issues[0];
+  const missing = issue?.missing.length ? ` Missing: ${issue.missing.join(", ")}.` : "";
+  return mockBadRequest(`${issue?.message ?? "Messaging provider setup is incomplete."}${missing}`);
+}
+
 function mockConflict(message: string): HostClientRequestError {
   return new HostClientRequestError({ code: "conflict", message, status: 409 });
 }
@@ -1867,6 +1908,12 @@ export interface MockHostClientOptions {
   connections?: readonly import("@opensteer/protocol").AgentConnection[];
   /** The Messaging accounts `channels.get` lists; none by default. */
   channels?: import("@opensteer/channel-core").ChannelDashboard;
+  /**
+   * The messaging provider this preview reaches, as a Home's messaging runtime reaches one: it
+   * checks tokens and says whose they are. Without one (the preview app), adding an account
+   * answers as a Home whose messaging service has not started.
+   */
+  messagingProvider?: MockMessagingProvider;
   connectionConsent?: import("@opensteer/protocol").AgentConnectionConsent;
   /**
    * The consent as the Home presents it once its verification changes: the first approval is
@@ -3501,7 +3548,7 @@ async function executeMockCommand(
           routingMode: command.routingMode,
           deploymentId: client.getSnapshot().deploymentId!,
         })
-        .then(unsupportedMockRpc, mockRefusal);
+        .then((created) => rpcSuccess({ ...created, type: command.type }), mockRefusal);
     case "channel.chat.create":
       try {
         const connection = client.createChat(command);
@@ -5957,6 +6004,9 @@ class MockHostState {
   readonly unreadable: boolean;
   private connections: import("@opensteer/protocol").AgentConnection[];
   private channels: import("@opensteer/channel-core").ChannelDashboard | null;
+  readonly #messagingProvider: MockMessagingProvider | null;
+  /** The tokens each account was added or last replaced with, as its provider checks them. */
+  readonly #channelTokens = new Map<string, Readonly<Record<string, string>>>();
   private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
   readonly chromeTabs: import("../host/connected-agent-options.js").ChromeTabGrantCatalog;
   private connectionDecision: { requestId: string; fingerprint: string } | null = null;
@@ -6919,6 +6969,7 @@ class MockHostState {
       };
     this.connections = [...(options.connections ?? [])];
     this.channels = options.channels ?? null;
+    this.#messagingProvider = options.messagingProvider ?? null;
     this.pendingConnectionConsent = options.connectionConsent ?? null;
     this.chromeTabs = options.chromeTabs ?? {};
     this.#consentChange = options.connectionConsentChange ?? null;
@@ -11092,7 +11143,8 @@ class MockHostState {
           ...chatGrantShape(input.senders),
           resources: [...chatGrantShape(input.senders).resources],
         },
-        accountName: account.handle ?? account.displayName,
+        accountName: account.displayName,
+        ...(account.handle ? { accountHandle: account.handle } : {}),
         conversationName: input.conversation?.name ?? null,
         channelConnectionId: account.connectionId,
         me: me ? { displayName: me.displayName, externalUserId: me.externalUserId } : null,
@@ -11187,9 +11239,59 @@ class MockHostState {
       throw mockConflict(`${input.provider} is not a messaging provider this Deployment knows`);
     if (!manifest.connectionMethods.includes("bring-your-own"))
       throw mockConflict(`${manifest.label} is not available for bring-your-own setup`);
-    throw mockConflict(
-      `${manifest.label} connection service is still starting. Try again in a moment.`,
-    );
+    const provider = this.#messagingProvider;
+    if (!provider)
+      throw mockConflict(
+        `${manifest.label} connection service is still starting. Try again in a moment.`,
+      );
+    const credentials = mockProviderCredentials(manifest, input.credentials);
+    const inspection = provider.inspect({ credentials, provider: manifest.provider });
+    if (!inspection.ready || !inspection.identity) throw mockInspectionRefusal(inspection);
+    const identity = inspection.identity;
+    const now = this.now().toISOString();
+    const connectionId = `con_${crypto.randomUUID()}`;
+    const ownerUserId = this.snapshot.user!.id;
+    const connection = {
+      capabilities: [...inspection.capabilities],
+      connectionMethod: "bring-your-own",
+      createdAt: now,
+      displayName: identity.connectionDisplayName,
+      externalIdentityId: identity.externalIdentityId,
+      externalTenantId: identity.externalAccountId,
+      id: connectionId,
+      ownerUserId,
+      provider: manifest.provider,
+      status: "pending",
+      statusDetail: "Checking messaging provider setup",
+      statusReason: null,
+      transportKind: manifest.defaultTransportKind,
+      updatedAt: now,
+    };
+    const account = {
+      connectionId,
+      createdAt: now,
+      displayName: identity.accountDisplayName,
+      externalAccountId: identity.externalAccountId,
+      handle: identity.handle,
+      id: `cha_${crypto.randomUUID()}`,
+      metadata: identity.metadata,
+      provider: manifest.provider,
+      routingMode: input.routingMode,
+      status: "connected",
+      updatedAt: now,
+    };
+    const channels = await this.loadChannels();
+    const parsed = ChannelDashboardSchema.parse({
+      ...channels,
+      accounts: [...(this.channels?.accounts ?? []), account],
+      connections: [...(this.channels?.connections ?? []), connection],
+    });
+    this.channels = parsed;
+    this.#channelTokens.set(connectionId, credentials);
+    return {
+      account: parsed.accounts.find(({ id }) => id === account.id)!,
+      connection: parsed.connections.find(({ id }) => id === connectionId)!,
+    } as never;
   }
 
   /** The preview has no computer carrying a messaging app: answered as the Home answers that. */
@@ -11208,11 +11310,41 @@ class MockHostState {
   /** An account that is gone, or one reached through a computer, has no tokens to replace. */
   async replaceChannelConnectionCredentials(
     connectionId: string,
-    _credentials: Readonly<Record<string, string>>,
+    credentials: Readonly<Record<string, string>>,
   ): Promise<void> {
     const connection = this.channels?.connections.find(({ id }) => id === connectionId);
     if (!connection || connection.status === "revoked" || connection.transportKind === "computer")
       throw mockNotFound("This channel connection has no credentials to replace.");
+    const provider = this.#messagingProvider;
+    if (!provider) return;
+    // As on the Home: the provider checks them, and they must be this same account's.
+    const manifest = channelProviderCatalog.find(
+      (entry) => entry.provider === connection.provider,
+    ) as import("@opensteer/channel-core").ChannelProviderManifest | undefined;
+    if (!manifest)
+      throw mockConflict(
+        `${connection.provider} is not a messaging provider this Deployment knows`,
+      );
+    const checked = mockProviderCredentials(manifest, credentials);
+    const inspection = provider.inspect({ credentials: checked, provider: connection.provider });
+    if (!inspection.ready || !inspection.identity) throw mockInspectionRefusal(inspection);
+    if (inspection.identity.externalAccountId !== connection.externalTenantId)
+      throw mockConflict(`These credentials belong to a different ${manifest.label} account`);
+    this.#channelTokens.set(connectionId, checked);
+    // As on the Home: the account reconnects with them, and says so until its provider answers.
+    this.channels = {
+      ...this.channels!,
+      connections: this.channels!.connections.map((row) =>
+        row.id === connectionId
+          ? {
+              ...row,
+              status: "pending",
+              statusDetail: "Checking updated messaging credentials",
+              statusReason: null,
+            }
+          : row,
+      ),
+    };
   }
 
   /** Whether a person may link who they are on this account: it is theirs and not removed. */
@@ -11229,6 +11361,52 @@ class MockHostState {
     const account = this.channels?.accounts.find((row) => row.connectionId === connectionId);
     if (!connection || !account || account.status === "revoked")
       throw mockNotFound(chatAddRefusals.accountGone);
+    const provider = this.#messagingProvider;
+    if (provider) {
+      // As on the Home: the provider checks the tokens the account holds; whose they are must be
+      // this account's; a ready one is connected, any other needs attention.
+      const inspection = provider.inspect({
+        credentials: this.#channelTokens.get(connectionId) ?? {},
+        provider: connection.provider,
+        account: { externalAccountId: account.externalAccountId, displayName: account.displayName },
+      });
+      const label =
+        channelProviderCatalog.find((entry) => entry.provider === connection.provider)?.label ??
+        connection.provider;
+      const mismatch =
+        inspection.identity !== null &&
+        inspection.identity.externalAccountId !== connection.externalTenantId;
+      const issue = mismatch
+        ? {
+            code: `${connection.provider}.account_mismatch`,
+            kind: "credentials" as const,
+            message: `These credentials belong to a different ${label} account.`,
+            missing: [],
+          }
+        : inspection.issues[0];
+      const ready = inspection.ready && !mismatch;
+      this.channels = {
+        ...this.channels!,
+        connections: this.channels!.connections.map((row) =>
+          row.id !== connectionId
+            ? row
+            : ready
+              ? {
+                  ...row,
+                  status: "pending",
+                  statusDetail: "Reconnecting to messaging provider",
+                  statusReason: null,
+                }
+              : {
+                  ...row,
+                  status: "needs-attention",
+                  statusDetail: issue?.message ?? "Provider setup is incomplete",
+                  statusReason: issue?.kind ?? "configuration",
+                },
+        ),
+      };
+      return mismatch ? { ...inspection, issues: [issue!], ready: false } : inspection;
+    }
     if (connection.status === "needs-attention")
       return {
         capabilities: [...connection.capabilities],

@@ -20,17 +20,18 @@ export function ChatFactsSection({
   /** Still connected: its running tasks can be stopped from here. */
   readonly live: boolean;
 }) {
-  const [stopping, setStopping] = useState<string | null>(null);
+  // A task whose Stop was asked reads Stopping… until the Home says it no longer runs (its
+  // device answers), never Stop again beside Running; a Stop the Home refused says why.
+  const [asked, setAsked] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const stop = async (threadId: string) => {
-    setStopping(threadId);
+    setAsked((current) => new Set([...current, threadId]));
     setError(null);
     try {
       await client.stopRun(threadId);
     } catch (reason) {
       setError(presentFailure(reason, "stop this task", "stopped"));
-    } finally {
-      setStopping(null);
+      setAsked((current) => new Set([...current].filter((id) => id !== threadId)));
     }
   };
   return (
@@ -70,11 +71,11 @@ export function ChatFactsSection({
                 {live && task.running ? (
                   <button
                     className="btn btn--small btn--danger"
-                    disabled={stopping !== null}
+                    disabled={asked.has(task.id)}
                     onClick={() => void stop(task.id)}
                     type="button"
                   >
-                    {stopping === task.id
+                    {asked.has(task.id)
                       ? agentWords("chat.tasks.stopping")
                       : agentWords("chat.tasks.stop")}
                   </button>

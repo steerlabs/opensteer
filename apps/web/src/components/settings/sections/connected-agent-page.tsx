@@ -27,6 +27,7 @@ import {
 import { type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
 import { useShell } from "../../app-shell.js";
 import { Dialog } from "../../dialog.js";
+import { ReadGate } from "../../read-gate.js";
 import { Icon } from "../../icon.js";
 import { AgentGrantEditor, ConnectionModeChoices } from "../agent-grant-editor.js";
 import { AgentMark } from "../agent-mark.js";
@@ -180,188 +181,203 @@ export function ConnectedAgentPage({
   return (
     <>
       {back}
-      <div className="connected-agent__header">
-        <AgentMark identity={detail.row.identity} large />
-        <h1 className="settings-section__title">{agent}</h1>
-        {detail.live?.threadId ? (
-          <Link className="btn" to={`/tasks/${detail.live.threadId}`}>
-            <Icon name="eye" />
-            {agentWords("agent.watch")}
-          </Link>
-        ) : null}
-      </div>
-      {chat ? null : <AgentWhoLine nameShown={agent !== who.heading} who={who} />}
-      <AgentWithdrawnNotice
-        onDisconnect={withdrawn && !busy ? () => setConfirming("disconnect") : null}
-        who={who}
-      />
-      <StatusNotice status={detail.status} />
-      {detail.uncertain ? (
-        <p className="notice connected-agent__uncertain" role="alert">
-          <Icon name="alert-circle" />
-          <span>
-            <strong>{detail.uncertain.label}</strong>
-            <br />
-            {detail.uncertain.detail}
-          </span>
-        </p>
-      ) : null}
-      {agents.conflict === connection.id ? (
-        <p className="notice" role="status">
-          {agentWords("agent.conflict")}
-        </p>
-      ) : null}
-      {detail.legacy && detail.row.phase === "active" ? (
-        <p className="notice" role="note">
-          {agentWords("agent.legacy")}
-        </p>
-      ) : null}
-      {chat ? <ChatFactsSection client={client} facts={chat} live={connected} /> : null}
-      {detail.editable ? (
-        <>
-          <AgentGrantEditor
-            chat={chatShape}
-            agent={agent}
-            browser={browser}
-            chromeTabs={chromeTabs}
-            client={client}
-            disabled={busy}
-            draft={draft}
-            home={agentHomeName(snapshot)}
-            onChange={(next) => change({ draft: next })}
-          />
-          <ConnectionModeChoices
-            descriptions={detail.modeDescriptions}
-            disabled={busy}
-            mode={mode}
-            onChange={(next) => change({ mode: next })}
-            showSettingsNote={draft.scope === "everything"}
-          />
-          {dirty ? (
-            <div className="form-actions">
-              <button className="btn" disabled={busy} onClick={() => setEdit(null)} type="button">
-                {agentWords("common.cancel")}
-              </button>
-              <button
-                className="btn btn--primary"
-                disabled={busy}
-                onClick={requestSave}
-                type="button"
-              >
-                {pending === "update" || creating
-                  ? agentWords("common.saving")
-                  : agentWords("common.save")}
-              </button>
-            </div>
-          ) : saved ? (
-            <p className="settings-footnote" role="status">
-              {agentWords("agent.saved", { agent })}
-            </p>
-          ) : null}
-          <SettingsError message={profileError} />
-        </>
-      ) : null}
-      <SettingsGroup
-        heading={agentWords("agent.activity.title")}
-        headingId="connected-agent-activity"
+      {/* A refresh that failed after the page was read: only Try again works until it is read. */}
+      <ReadGate
+        failed={agents.readFailed}
+        message={agentWords("agent.readFailed")}
+        onRetry={() => void agents.refresh?.()}
       >
-        <ActivityRows activity={detail.activity} />
-      </SettingsGroup>
-      <SettingsGroup heading={agentWords("agent.about.title")} headingId="connected-agent-about">
-        {detail.about.map((row) => (
-          <SettingsRow
-            key={row.label}
-            title={row.label}
-            action={
-              <span className="card__row-value">
-                <SentenceText parts={row.valueParts} />
-              </span>
-            }
-          />
-        ))}
-      </SettingsGroup>
-      <SettingsError message={agents.error} />
-      <div className="connected-agent__end">
-        {connected && withdrawn ? null : connected ? (
-          <button
-            className="btn btn--danger"
-            disabled={busy}
-            onClick={() => setConfirming("disconnect")}
-            type="button"
-          >
-            {pending === "revoke"
-              ? agentWords("agent.disconnecting")
-              : agentWords("agent.disconnect", { agent })}
-          </button>
-        ) : detail.row.removable ? (
-          <button
-            className="btn"
-            disabled={busy}
-            onClick={() =>
-              // Leaves the page only once it is gone; otherwise the page says why it is not.
-              void agents.remove?.(connection.id).then((removed) => {
-                if (removed) void navigate("..");
-              })
-            }
-            type="button"
-          >
-            {pending === "remove"
-              ? agentWords("disconnect.stopped.removing")
-              : agentWords("disconnect.stopped.remove")}
-          </button>
+        <div className="connected-agent__header">
+          <AgentMark identity={detail.row.identity} large />
+          <h1 className="settings-section__title">{agent}</h1>
+          {detail.live?.threadId ? (
+            <Link className="btn" to={`/tasks/${detail.live.threadId}`}>
+              <Icon name="eye" />
+              {agentWords("agent.watch")}
+            </Link>
+          ) : null}
+        </div>
+        {chat ? null : <AgentWhoLine nameShown={agent !== who.heading} who={who} />}
+        <AgentWithdrawnNotice
+          onDisconnect={withdrawn && !busy ? () => setConfirming("disconnect") : null}
+          who={who}
+        />
+        <StatusNotice status={detail.status} />
+        {detail.uncertain ? (
+          <p className="notice connected-agent__uncertain" role="alert">
+            <Icon name="alert-circle" />
+            <span>
+              <strong>{detail.uncertain.label}</strong>
+              <br />
+              {detail.uncertain.detail}
+            </span>
+          </p>
         ) : null}
-      </div>
-      {confirming === "disconnect" ? (
-        <Dialog
-          title={agentWords("agent.disconnect.title", { agent })}
-          onClose={() => setConfirming(null)}
-          footer={
-            <>
-              <button className="btn btn--ghost" onClick={() => setConfirming(null)} type="button">
-                {agentWords("common.cancel")}
-              </button>
-              <button
-                className="btn btn--danger"
-                onClick={() => {
-                  setConfirming(null);
-                  setEdit(null);
-                  void agents.revoke?.(connection.id);
-                }}
-                type="button"
-              >
-                {agentWords("agent.disconnect.confirm")}
-              </button>
-            </>
-          }
+        {agents.conflict === connection.id ? (
+          <p className="notice" role="status">
+            {agentWords("agent.conflict")}
+          </p>
+        ) : null}
+        {detail.legacy && detail.row.phase === "active" ? (
+          <p className="notice" role="note">
+            {agentWords("agent.legacy")}
+          </p>
+        ) : null}
+        {chat ? <ChatFactsSection client={client} facts={chat} live={connected} /> : null}
+        {detail.editable ? (
+          <>
+            <AgentGrantEditor
+              chat={chatShape}
+              agent={agent}
+              browser={browser}
+              chromeTabs={chromeTabs}
+              client={client}
+              disabled={busy}
+              draft={draft}
+              home={agentHomeName(snapshot)}
+              onChange={(next) => change({ draft: next })}
+            />
+            <ConnectionModeChoices
+              descriptions={detail.modeDescriptions}
+              disabled={busy}
+              mode={mode}
+              onChange={(next) => change({ mode: next })}
+              showSettingsNote={draft.scope === "everything"}
+            />
+            {dirty ? (
+              <div className="form-actions">
+                <button className="btn" disabled={busy} onClick={() => setEdit(null)} type="button">
+                  {agentWords("common.cancel")}
+                </button>
+                <button
+                  className="btn btn--primary"
+                  disabled={busy}
+                  onClick={requestSave}
+                  type="button"
+                >
+                  {pending === "update" || creating
+                    ? agentWords("common.saving")
+                    : agentWords("common.save")}
+                </button>
+              </div>
+            ) : saved ? (
+              <p className="settings-footnote" role="status">
+                {agentWords("agent.saved", { agent })}
+              </p>
+            ) : null}
+            <SettingsError message={profileError} />
+          </>
+        ) : null}
+        <SettingsGroup
+          heading={agentWords("agent.activity.title")}
+          headingId="connected-agent-activity"
         >
-          <p>{agentWords("agent.disconnect.body")}</p>
-        </Dialog>
-      ) : null}
-      {confirming === "narrow" ? (
-        <Dialog
-          title={agentWords("agent.narrow.title", { agent })}
-          onClose={() => setConfirming(null)}
-          footer={
-            <>
-              <button className="btn btn--ghost" onClick={() => setConfirming(null)} type="button">
-                {agentWords("common.cancel")}
-              </button>
-              <button
-                className="btn btn--primary"
-                onClick={() => {
-                  setConfirming(null);
-                  void save();
-                }}
-                type="button"
-              >
-                {agentWords("agent.narrow.confirm")}
-              </button>
-            </>
-          }
-        >
-          <p>{agentWords("agent.narrow.body")}</p>
-        </Dialog>
-      ) : null}
+          <ActivityRows activity={detail.activity} />
+        </SettingsGroup>
+        <SettingsGroup heading={agentWords("agent.about.title")} headingId="connected-agent-about">
+          {detail.about.map((row) => (
+            <SettingsRow
+              key={row.label}
+              title={row.label}
+              action={
+                <span className="card__row-value">
+                  <SentenceText parts={row.valueParts} />
+                </span>
+              }
+            />
+          ))}
+        </SettingsGroup>
+        <SettingsError message={agents.error} />
+        <div className="connected-agent__end">
+          {connected && withdrawn ? null : connected ? (
+            <button
+              className="btn btn--danger"
+              disabled={busy}
+              onClick={() => setConfirming("disconnect")}
+              type="button"
+            >
+              {pending === "revoke"
+                ? agentWords("agent.disconnecting")
+                : agentWords("agent.disconnect", { agent })}
+            </button>
+          ) : detail.row.removable ? (
+            <button
+              className="btn"
+              disabled={busy}
+              onClick={() =>
+                // Leaves the page only once it is gone; otherwise the page says why it is not.
+                void agents.remove?.(connection.id).then((removed) => {
+                  if (removed) void navigate("..");
+                })
+              }
+              type="button"
+            >
+              {pending === "remove"
+                ? agentWords("disconnect.stopped.removing")
+                : agentWords("disconnect.stopped.remove")}
+            </button>
+          ) : null}
+        </div>
+        {confirming === "disconnect" ? (
+          <Dialog
+            title={agentWords("agent.disconnect.title", { agent })}
+            onClose={() => setConfirming(null)}
+            footer={
+              <>
+                <button
+                  className="btn btn--ghost"
+                  onClick={() => setConfirming(null)}
+                  type="button"
+                >
+                  {agentWords("common.cancel")}
+                </button>
+                <button
+                  className="btn btn--danger"
+                  onClick={() => {
+                    setConfirming(null);
+                    setEdit(null);
+                    void agents.revoke?.(connection.id);
+                  }}
+                  type="button"
+                >
+                  {agentWords("agent.disconnect.confirm")}
+                </button>
+              </>
+            }
+          >
+            <p>{agentWords("agent.disconnect.body")}</p>
+          </Dialog>
+        ) : null}
+        {confirming === "narrow" ? (
+          <Dialog
+            title={agentWords("agent.narrow.title", { agent })}
+            onClose={() => setConfirming(null)}
+            footer={
+              <>
+                <button
+                  className="btn btn--ghost"
+                  onClick={() => setConfirming(null)}
+                  type="button"
+                >
+                  {agentWords("common.cancel")}
+                </button>
+                <button
+                  className="btn btn--primary"
+                  onClick={() => {
+                    setConfirming(null);
+                    void save();
+                  }}
+                  type="button"
+                >
+                  {agentWords("agent.narrow.confirm")}
+                </button>
+              </>
+            }
+          >
+            <p>{agentWords("agent.narrow.body")}</p>
+          </Dialog>
+        ) : null}
+      </ReadGate>
     </>
   );
 }

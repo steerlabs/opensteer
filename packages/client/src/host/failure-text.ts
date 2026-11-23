@@ -31,7 +31,25 @@ const refusalCodes: ReadonlySet<string> = new Set([
  */
 export function homeFailureText(error: unknown, fallback: string): string {
   if (!(error instanceof HostClientRequestError) || !isHostRefusal(error)) return fallback;
-  if (error.reason === "invalid-request" || !refusalCodes.has(error.code)) return fallback;
-  const text = error.message.trim();
+  return homeRefusalText(error, fallback);
+}
+
+/**
+ * The same rule for a refusal read straight from a Home's answer, by a client that holds no
+ * `HostClientRequestError` (the desktop's supervisor reading its Personal Home): its sentence
+ * only under a refusal code, never for `invalid-request`, and never for an answer of 500 or more.
+ */
+export function homeRefusalText(
+  refusal: {
+    readonly code: string;
+    readonly message: string;
+    readonly reason?: string | undefined;
+    readonly status?: number | undefined;
+  },
+  fallback: string,
+): string {
+  if (refusal.status !== undefined && refusal.status >= 500) return fallback;
+  if (refusal.reason === "invalid-request" || !refusalCodes.has(refusal.code)) return fallback;
+  const text = refusal.message.trim();
   return text === "" ? fallback : text;
 }
