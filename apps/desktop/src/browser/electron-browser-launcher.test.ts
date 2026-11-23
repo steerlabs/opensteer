@@ -2351,6 +2351,25 @@ describe("Electron debugger teardown", () => {
       await hub.browser.close();
     });
 
+    // The re-check of fb245664c..e67033f5f, finding 6 (F42): when Chromium detaches a private
+    // cast session, ownership of its cast ends with it, as when a crash ends the casts (F34).
+    it("makes no channel an owner of a cast whose private session Chromium detached", async () => {
+      const hub = await hubPage("83");
+      ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const agentSaw = seen(agent);
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", small);
+      hub.deliver("Target.detachedFromTarget", { sessionId: "cast-1", targetId: "target-1" });
+      // The person moves to the agent's old settings: a cast of their own, which the agent, who
+      // never asked again, is handed nothing of.
+      await person.send("Page.startScreencast", small);
+      hub.deliver("Page.screencastFrame", frame("small, the person's", 2));
+      expect(agentSaw).toEqual([]);
+      await hub.browser.close();
+    });
+
     // Run on e7080ea31, follow-stale-dialog-answers: the second tab, answered, was pictured no
     // more. The smoke's order on that tab: opened and pictured, its cast started again in a new
     // size, then left before that start's first frame; a dialog opens there and is answered; its
