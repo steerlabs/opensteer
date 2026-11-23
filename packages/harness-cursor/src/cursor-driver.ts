@@ -63,7 +63,7 @@ import {
   type ResolvedAttachment,
   type HarnessSourceDescriptor,
   type SupervisedProcess,
-  engineConfiguration,
+  assertEngineMayRun,
 } from "@opensteer/harness";
 import { CursorHarnessConfigSchema, type CursorHarnessConfig } from "./config.js";
 import {
@@ -165,15 +165,6 @@ const cursorDenialNoteMaxBytes = 20_000;
 const cursorIsolatedServiceDetail =
   "Cursor keeps its sign-in in the computer's own account, so it runs only on a computer where Opensteer runs as you.";
 const cursorSignInDetail = "Sign in to use Cursor. Run `agent login` on this computer.";
-/**
- * Cursor reads your own user settings, MCP servers, hooks and rules from your
- * home and the task's folder, and no flag turns that off: `CURSOR_CONFIG_DIR`
- * leaves the MCP servers in `~/.cursor` loaded (cursor-agent 2026.09, checked
- * with `agent mcp list`), and a home of its own would also become the model's
- * shell home. A task a connected agent or a chat started must not get them.
- */
-const cursorOwnConfigurationDetail =
-  "Cursor always starts with your own Cursor settings and MCP servers, so it runs only tasks you started yourself, not ones a connected agent or a chat started.";
 
 export interface CursorHarnessDependencies {
   /** The installed `agent` CLI. */
@@ -1498,8 +1489,10 @@ export function cursorExitFailure(code: number | null, stderr: string): CursorRu
 function assertNativeUserBoundary(context: HarnessSessionContext): void {
   if (context.runtimeBoundary.kind !== "native-user")
     throw new OpensteerError({ code: "forbidden", message: cursorIsolatedServiceDetail });
-  if (engineConfiguration(context) === "stripped")
-    throw new OpensteerError({ code: "forbidden", message: cursorOwnConfigurationDetail });
+  // Cursor reads the person's MCP servers from `$HOME/.cursor` whatever
+  // `CURSOR_CONFIG_DIR` says (cursor-agent 2026.09, `agent mcp list`), and a
+  // home of its own would also become the model's shell home.
+  assertEngineMayRun("cursor", context);
 }
 
 function validateProviderReference(reference: string): string {

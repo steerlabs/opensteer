@@ -92,7 +92,7 @@ describe("Cursor and whose task it is", () => {
           ? fixture.adapter.startSession(fixture.context)
           : fixture.adapter.resumeSession(fixture.reference, fixture.context);
       await expect(open).rejects.toThrow(
-        "Cursor always starts with your own Cursor settings and MCP servers, so it runs only tasks you started yourself, not ones a connected agent or a chat started.",
+        "Cursor starts with your own Cursor settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
       );
       await expect(open).rejects.toMatchObject({ code: "forbidden" });
       // Nothing was launched: Cursor never read the person's configuration.

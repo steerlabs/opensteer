@@ -60,6 +60,7 @@ import {
   type TriggerWatchActivationId,
 } from "@opensteer/core";
 import {
+  assertEngineMayRun,
   assertFreshProviderSessionContext,
   discoverModelServers,
   HarnessSteerDeliveryUnknownError,
@@ -2747,6 +2748,9 @@ export class RunnerRuntime {
         active.abort.abort(new Error("The Run's execution lease ran out without the Host"));
       }
       signal.throwIfAborted();
+      // Before anything of the Run starts: an engine not shown to start
+      // without the person's own configuration runs only their own tasks.
+      assertEngineMayRun(context.harness.driverKind, context);
       workspace = await this.#agentHome.prepare({
         agentHome: command.agentHome,
         personalContext: context.personalContext,
@@ -3274,7 +3278,13 @@ export class RunnerRuntime {
           )
         : active.abort.signal.aborted
           ? { data: { status: "interrupted" }, type: "run.interrupted" }
-          : failureEvent(safeMessage(error, safeMessageOptions), "runner_execution_error");
+          : failureEvent(
+              safeMessage(error, safeMessageOptions),
+              // A refusal reaches the Home as one, not as an execution error.
+              error instanceof OpensteerError && error.code === "forbidden"
+                ? "forbidden"
+                : "runner_execution_error",
+            );
     } finally {
       if (workspace && this.#skillObserver) {
         await this.#scanAgentHomeSkills(workspace.path, context.bindingGeneration).catch(

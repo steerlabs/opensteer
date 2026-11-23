@@ -5458,6 +5458,21 @@ describe("harness process environment", () => {
     ).toEqual(network);
   });
 
+  it("refuses an engine not shown to run others' tasks before it starts, as forbidden", async () => {
+    const session = new ScriptedHarnessSession([]);
+    const execute = vi.spyOn(session, "execute");
+    const failure = (await eventsOfScriptedRun(session, { personLineage: false })).find(
+      (event) => event.type === "run.failed",
+    )!;
+    expect(failure.data).toMatchObject({
+      code: "forbidden",
+      message: expect.stringContaining(
+        "so it runs only tasks you started yourself that no connected agent or chat has written to.",
+      ),
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("keeps a proxy password out of a Run's recorded failure", async () => {
     const session = new ScriptedHarnessSession([
       {
@@ -6399,10 +6414,12 @@ async function eventsOfScriptedRun(
   session: HarnessSession,
   options: {
     readonly interrupt?: true;
+    readonly personLineage?: false;
     readonly resolveRequests?: readonly { requestId: RequestId; response: RequestResponse }[];
   } = {},
 ) {
-  const driver = new FakeHarnessDriver("scripted-driver", () => session);
+  const started = vi.fn(() => session);
+  const driver = new FakeHarnessDriver("scripted-driver", started);
   const registry = new HarnessRegistry();
   registry.registerDriver(driver);
   const environmentId = createId("environment");
@@ -6410,7 +6427,11 @@ async function eventsOfScriptedRun(
   const messages: RunnerOperationalReport[] = [];
   const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
   try {
-    const execute = executeCommand(environmentId, "scripted-driver");
+    const built = executeCommand(environmentId, "scripted-driver");
+    const execute =
+      options.personLineage === false
+        ? { ...built, context: { ...built.context, personLineage: false } }
+        : built;
     await reconcile(registry, execute);
     await runtime.handleCommand(execute, sink);
     for (const { requestId, response } of options.resolveRequests ?? []) {

@@ -68,6 +68,7 @@ import {
   type SupervisedProcess,
   GuidanceDelivery,
   type GuidanceTicket,
+  assertEngineMayRun,
 } from "@opensteer/harness";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { copyFile, mkdir, realpath, rm } from "node:fs/promises";
@@ -575,6 +576,9 @@ class MuseHarnessAdapter implements HarnessAdapter {
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
     assertNativeSession(context);
+    // Muse Code starts no session without a sign-in, so what of the person's
+    // it loads cannot be shown here.
+    assertEngineMayRun("muse", context);
     assertFreshProviderSessionContext(context);
     const reference = mintUuid();
     return this.#sessions.open(reference, () => this.#open(reference, context, false));
@@ -583,6 +587,7 @@ class MuseHarnessAdapter implements HarnessAdapter {
   async resumeSession(reference: string, context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
     assertNativeSession(context);
+    assertEngineMayRun("muse", context);
     if (!/^[0-9a-f-]{36}$/iu.test(reference)) {
       throw new OpensteerError({
         code: "bad_request",

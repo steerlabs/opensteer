@@ -184,6 +184,26 @@ describe("Muse Code sessions", () => {
     },
   );
 
+  it("refuses a task a connected agent or a chat started, before Muse Code starts", async () => {
+    const fixture = await setup("guidance-cancelled");
+    const adapter = await fixture.driver.create({
+      config: {},
+      instanceId: fixture.context.harnessInstanceId,
+      sourceId: "meta",
+    });
+    try {
+      await expect(
+        adapter.startSession({ ...fixture.context, personLineage: false }),
+      ).rejects.toMatchObject({
+        code: "forbidden",
+        message:
+          "Muse Code starts with your own Muse Code settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+      });
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it("resends guidance when the previous turn did not complete successfully", async () => {
     const fixture = await setup("guidance-cancelled");
     const adapter = await fixture.driver.create({
@@ -709,8 +729,9 @@ async function setup(scenario: string) {
     history: [],
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: "Workspace instructions.",
-    personalContext: false,
-    personLineage: false,
+    // The person's own task: the only kind this engine runs.
+    personalContext: true,
+    personLineage: true,
     machineAccessNotice: "No other computers are reachable.",
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,
