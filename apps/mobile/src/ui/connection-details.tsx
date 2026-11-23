@@ -1,6 +1,8 @@
 import { memo, type ReactNode } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { color, space } from "../theme.js";
+import { useFitSheetHeight } from "./fit-sheet.js";
+import { useStackedLayout } from "./stacked-layout.js";
 import { AppText, PrimaryButton } from "./primitives.js";
 import { Symbol } from "./symbol.js";
 
@@ -16,6 +18,7 @@ export interface ConnectionDetailsSession {
  * What the pill opens: which connection, what is going on, whether messages
  * are safe, and the one thing to do. Other sessions with trouble are rows, not
  * second pills. Its words change in place; it never shows a "Connected" screen.
+ * The sheet is as tall as what it says, up to `useFitSheetHeight`; past that it scrolls.
  */
 export const ConnectionDetails = memo(function ConnectionDetails(props: {
   /** The Deployment's mark, drawn beside its name. */
@@ -32,11 +35,14 @@ export const ConnectionDetails = memo(function ConnectionDetails(props: {
   readonly meta: string | null;
   readonly others: readonly ConnectionDetailsSession[];
 }): ReactNode {
+  const tallest = useFitSheetHeight();
+  // At the largest sizes each row's words take the width under its name (`stacked-layout.ts`).
+  const stacked = useStackedLayout();
   return (
-    <View style={styles.details}>
+    <ScrollView contentContainerStyle={styles.details} style={{ maxHeight: tallest }}>
       <View accessibilityRole="header" accessible style={styles.head}>
         {props.mark}
-        <AppText numberOfLines={1} role="title" style={styles.name}>
+        <AppText role="title" style={styles.name}>
           {props.name}
         </AppText>
       </View>
@@ -70,20 +76,30 @@ export const ConnectionDetails = memo(function ConnectionDetails(props: {
               accessibilityRole="button"
               key={session.key}
               onPress={session.onPress}
-              style={({ pressed }) => [styles.other, pressed && styles.otherPressed]}
+              style={({ pressed }) => [
+                styles.other,
+                stacked && styles.otherStacked,
+                pressed && styles.otherPressed,
+              ]}
             >
-              <AppText numberOfLines={1} role="body" style={styles.otherName}>
+              <AppText
+                numberOfLines={stacked ? undefined : 1}
+                role="body"
+                style={!stacked && styles.otherName}
+              >
                 {session.name}
               </AppText>
-              <AppText numberOfLines={1} role="secondary" tone="muted">
+              <AppText numberOfLines={stacked ? undefined : 1} role="secondary" tone="muted">
                 {session.state}
               </AppText>
-              <Symbol name="chevron.right" size={13} tint={color.muted} weight="semibold" />
+              {stacked ? null : (
+                <Symbol name="chevron.right" size={13} tint={color.muted} weight="semibold" />
+              )}
             </Pressable>
           ))}
         </View>
       )}
-    </View>
+    </ScrollView>
   );
 });
 
@@ -103,6 +119,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   otherName: { flex: 1 },
+  otherStacked: { alignItems: "stretch", flexDirection: "column", gap: space[2] },
   otherPressed: { opacity: 0.6 },
   others: {
     borderTopColor: color.line,

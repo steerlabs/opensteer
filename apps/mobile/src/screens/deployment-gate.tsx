@@ -170,7 +170,11 @@ export function DeploymentGate(props: {
   if (row.status === "unverified" || row.verification === "host-too-old") {
     return (
       <Screen>
-        <View style={[styles.content, column, top]}>
+        {/* Scrolls at a large text size, as the gate above does: the ways on stay in reach. */}
+        <ScrollView
+          contentContainerStyle={[styles.scrolling, column, top]}
+          contentInsetAdjustmentBehavior="never"
+        >
           <DisplayTitle size="small">{row.name}</DisplayTitle>
           <AppText role="secondary" tone="muted">
             {refused ?? deploymentStatusDetail(row)}
@@ -184,7 +188,7 @@ export function DeploymentGate(props: {
             onPress={() => act(() => client.retrySelection())}
           />
           {away === null ? null : <SecondaryButton label={away.label} onPress={away.onPress} />}
-        </View>
+        </ScrollView>
       </Screen>
     );
   }
@@ -242,7 +246,6 @@ function useRemovedFrom(controller: IphoneAppsController | null) {
 const noSubscription = () => () => undefined;
 
 const styles = StyleSheet.create({
-  content: { flex: 1, gap: space[8], justifyContent: "center" },
   scrolling: { flexGrow: 1, gap: space[8], justifyContent: "center", paddingVertical: space[16] },
   gate: { backgroundColor: color.background, flex: 1 },
   removed: { backgroundColor: color.background, flex: 1 },

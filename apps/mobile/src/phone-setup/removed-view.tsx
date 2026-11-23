@@ -1,14 +1,18 @@
 import type { ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { ScrollView, StyleSheet, View } from "react-native";
 import { space } from "../theme.js";
 import { AppText, DisplayTitle, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { useReadingColumn } from "../ui/screen.js";
 import type { RemovedViewProps } from "./removed-copy.js";
 
+/**
+ * Centred while it fits; at a large text size it scrolls, so its title is never cut and the way
+ * back in is never off the screen.
+ */
 export function RemovedView(props: RemovedViewProps): ReactNode {
   const column = useReadingColumn();
   return (
-    <View style={[styles.content, column]}>
+    <ScrollView contentContainerStyle={[styles.content, column]}>
       <DisplayTitle size="small" style={styles.centred}>
         {props.title}
       </DisplayTitle>
@@ -19,12 +23,12 @@ export function RemovedView(props: RemovedViewProps): ReactNode {
         <PrimaryButton label="Set up again" onPress={props.onSetUpAgain} prominent />
         <SecondaryButton label="Not now" onPress={props.onNotNow} />
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   actions: { gap: space[8], paddingTop: space[16] },
   centred: { textAlign: "center" },
-  content: { flex: 1, gap: space[8], justifyContent: "center" },
+  content: { flexGrow: 1, gap: space[8], justifyContent: "center", paddingVertical: space[16] },
 });

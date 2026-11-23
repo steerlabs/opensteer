@@ -112,7 +112,8 @@ import { iphoneApps } from "./platform/iphone-apps.js";
 import { AppLinksProvider, type AppLinks } from "./ui/app-links-context.js";
 import { MobileClientProvider, useMobileState } from "./ui/mobile-client-context.js";
 import { MobileNotificationsProvider } from "./ui/notifications-context.js";
-import { DisplayTitle, Notice } from "./ui/primitives.js";
+import { Notice } from "./ui/primitives.js";
+import { StartupFailureView } from "./startup-failure.js";
 import { failureWords } from "./ui/client-feedback.js";
 import {
   subscribeToDraftPastes,
@@ -687,10 +688,7 @@ export function App(): ReactNode {
     return (
       <SafeAreaProvider>
         <StatusBar style="light" />
-        <View style={styles.failure}>
-          <DisplayTitle size="small">Opensteer could not start</DisplayTitle>
-          <Notice detail={startupFailure.detail} title={startupFailure.title} tone="neutral" />
-        </View>
+        <StartupFailureView detail={startupFailure.detail} title={startupFailure.title} />
       </SafeAreaProvider>
     );
   }
@@ -864,11 +862,4 @@ function LinkFailure(props: {
 const styles = StyleSheet.create({
   root: { backgroundColor: color.background, flex: 1 },
   linkFailure: { backgroundColor: color.background, paddingBottom: space[8] },
-  failure: {
-    backgroundColor: color.background,
-    flex: 1,
-    gap: space[16],
-    justifyContent: "center",
-    padding: space[24],
-  },
 });
