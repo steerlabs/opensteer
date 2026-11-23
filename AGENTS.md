@@ -41,9 +41,13 @@ Stop or Disconnect.
 5. **Outside a grant reads exactly like non-existent** (`not_found`, same message, no advice;
    `apps/host/src/mcp/agent-tool-failure.ts`). A connection's tool list, descriptions and server
    instructions name only what it holds (`apps/host/src/mcp/connection-contract.test.ts`).
-6. **No new Host capability names.** Released apps cap the saved list at 32
-   (`packages/protocol/src/desktop.ts`). Wire changes that released apps read are additive and
-   optional (`packages/protocol/src/personal-wire.test.ts`). Migrations are expand-only.
+6. **Nothing before this release has to keep working.** No earlier app, Home, Runner or database
+   schema is supported: until this branch's first release, wire shapes may change, migrations may
+   alter and drop, and nothing is negotiated or kept for an older side. A person's existing data
+   still moves forward by a migration, never a wipe. When a shape that
+   `packages/protocol/src/personal-wire.test.ts` pins changes, update its baseline in the same
+   commit and say why. From the first release on, wire changes that released apps read are
+   additive and optional and migrations are expand-only.
 7. **Your own agents' hot paths stay as cheap as before**, and a personal Home runs no
    organization query (`apps/host/src/runtime/personal-hot-paths.integration.test.ts`).
 8. **Words.** "connected agent", "your own agents", "Opensteer account", "device" in sentences.
