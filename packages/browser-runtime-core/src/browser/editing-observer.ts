@@ -663,7 +663,7 @@ export class PageEditingObserver {
     const began = await this.#cdp
       .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
         contextId: focus.context,
-        expression: `globalThis.editingOwner?.beginInput(${JSON.stringify({ fieldId: focus.fieldId, requireCollapsed })})`,
+        expression: `globalThis.editingOwner?.beginInput(${JSON.stringify({ fieldId: focus.fieldId, requireCollapsed, ...(relative ? {} : { revision: focus.selectionRevision }) })})`,
         returnByValue: true,
         silent: true,
       })
@@ -1365,10 +1365,14 @@ function editingObserverSource(
       }
       if (!kind || !document.hasFocus() || element.disabled || element.readOnly || fieldKey(element) !== request.fieldId)
         return { ok: false, reason: "focus-changed" };
+      syncSelection();
+      if (request.revision !== undefined && selectionRevision !== request.revision)
+        return { ok: false, reason: "selection-changed" };
       if (request.requireCollapsed && !isCollapsedSelection(element, kind))
         return { ok: false, reason: "selection-not-collapsed" };
+    } else {
+      syncSelection();
     }
-    syncSelection();
     ownInput++;
     return { ok: true };
   };
