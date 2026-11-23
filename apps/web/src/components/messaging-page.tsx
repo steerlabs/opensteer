@@ -12,7 +12,9 @@ import type {
 import {
   agentWords,
   homeFailureText,
-  sentenceAroundName,
+  messagingAccountPart,
+  messagingAccountTitle,
+  sentenceWith,
   chatsOfAccount,
   connectedAgentRow,
   connectionsRead,
@@ -548,9 +550,7 @@ export function ChannelOverview({
                   <div className="card__row-body">
                     <span className="card__row-title">
                       <Link to={`/settings/messaging/${encodeURIComponent(connection.id)}`}>
-                        <SentenceText
-                          parts={sentenceAroundName((name) => name, connection.displayName)}
-                        />
+                        <SentenceText parts={[messagingAccountTitle(connection, accounts)]} />
                       </Link>
                       {/* A read that failed leaves the last answer on screen, never as current. */}
                       <span className={`chip ${readFailed ? "" : statusChip(connection.status)}`}>
@@ -693,7 +693,7 @@ export function AccountChats({
   readonly providerLabel: string;
 }) {
   const [adding, setAdding] = useState(false);
-  const accountName = account.handle ?? account.displayName;
+  const accountPart = messagingAccountPart(account);
   return (
     <>
       <div className="card__row messaging-me">
@@ -705,9 +705,9 @@ export function AccountChats({
             <SentenceText
               parts={
                 me
-                  ? sentenceAroundName(
-                      (identity) => agentWords("messaging.me.linked", { identity }),
-                      me.displayName,
+                  ? sentenceWith(
+                      (slot) => agentWords("messaging.me.linked", { identity: slot("me") }),
+                      { me: { name: me.displayName } },
                     )
                   : [agentWords("messaging.me.none", { provider: providerLabel })]
               }
@@ -716,18 +716,18 @@ export function AccountChats({
           {code ? (
             <span className="card__row-detail" role="status">
               <SentenceText
-                parts={sentenceAroundName(
-                  (account) =>
+                parts={sentenceWith(
+                  (slot) =>
                     agentWords("messaging.me.code", {
                       code: code.code,
-                      account,
+                      account: slot("account"),
                       provider: providerLabel,
                       time: new Date(code.expiresAt).toLocaleTimeString(undefined, {
                         hour: "numeric",
                         minute: "2-digit",
                       }),
                     }),
-                  accountName,
+                  { account: accountPart },
                 )}
               />
               {paused ? ` ${agentWords("messaging.me.whenResumed")}` : null}
@@ -737,9 +737,9 @@ export function AccountChats({
           {me ? (
             <span className="card__row-detail">
               <SentenceText
-                parts={sentenceAroundName(
-                  (identity) => agentWords("messaging.me.replaces", { identity }),
-                  me.displayName,
+                parts={sentenceWith(
+                  (slot) => agentWords("messaging.me.replaces", { identity: slot("me") }),
+                  { me: { name: me.displayName } },
                 )}
               />
             </span>

@@ -677,6 +677,7 @@ export class AgentConnectionStore {
 /** What a person reads about a chat beside its row: where, who "me" is, why it is paused or ended. */
 interface ChatFacts {
   readonly accountName: string;
+  readonly accountHandle: string | null;
   readonly channelConnectionId: string;
   readonly me: { readonly displayName: string; readonly externalUserId: string } | null;
   readonly pausedBy: "you" | "needs-attention";
@@ -748,7 +749,8 @@ async function chatFacts(
     rows.map((row) => [
       row.id,
       {
-        accountName: (row.handle ?? row.displayName).slice(0, 160),
+        accountName: row.displayName.slice(0, 160),
+        accountHandle: row.handle?.slice(0, 160) ?? null,
         channelConnectionId: row.connectionId,
         me:
           row.meName !== null && row.meId !== null
@@ -828,6 +830,7 @@ function connectionView(
             ...(chat
               ? {
                   accountName: chat.accountName,
+                  ...(chat.accountHandle ? { accountHandle: chat.accountHandle } : {}),
                   channelConnectionId: chat.channelConnectionId,
                   me: chat.me,
                   unknownReplies: chat.unknownReplies,

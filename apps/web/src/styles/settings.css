@@ -1502,7 +1502,8 @@ a.connected-agents__row:focus-visible {
 }
 
 .agent-who__detail {
-  overflow-wrap: anywhere;
+  /* Its origin wraps at its own joints (`Address`), never anywhere inside a host. */
+  overflow-wrap: break-word;
   color: var(--muted);
   font-size: var(--text-sm);
 }

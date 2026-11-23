@@ -468,7 +468,7 @@ describe("a chat, as a connected agent", () => {
     ],
     [
       4,
-      "Paused because On-call needs attention. Its replies are held to be sent in order when it’s back. Messages sent while this is paused are not delivered. It says: Slack says the token was revoked. Fix that on its messaging account, then check it again.",
+      "Paused because “On-call” needs attention. Its replies are held to be sent in order when it’s back. Messages sent while this is paused are not delivered. It says: Slack says the token was revoked. Fix that on its messaging account, then check it again.",
     ],
   ])(
     "says what a paused chat holds and what becomes of what is sent to it (chat %i)",

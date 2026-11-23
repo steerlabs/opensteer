@@ -96,6 +96,7 @@ describe("connected agents list", () => {
       chat({
         provider: "iMessage",
         accountName: "tim@example.com",
+        accountHandle: "tim@example.com",
         pausedBy: "needs-attention",
         pauseDetail: "Messages isn’t signed in.",
         pausedMessages: "kept",
@@ -393,7 +394,9 @@ describe("connected agent detail", () => {
     expect(detail).toMatchObject({ editable: true, revision: 3, uncertain: null, live: null });
     expect(detail.activity).toEqual({ kind: "unavailable" });
     expect(detail.about.map((row) => row.label)).toEqual(["Address it uses", "Added", "Expires"]);
-    expect(detail.about[0]!.value).toBe("grok.com");
+    // Where it signed in from, as the origin a person decides about.
+    expect(detail.about[0]!.value).toBe("https://grok.com");
+    expect(detail.about[0]!.valueParts).toEqual([{ address: "https://grok.com" }]);
   });
 
   it("names the self-asserted name apart from the label the person chose", () => {
@@ -402,7 +405,12 @@ describe("connected agent detail", () => {
       names,
       { grantsAvailable: true, now },
     );
-    expect(detail.about[0]).toMatchObject({ label: "Calls itself", value: "TravelBot Agent" });
+    // A name it chose: drawn as a name, and in quotation marks where it is plain text.
+    expect(detail.about[0]).toMatchObject({
+      label: "Calls itself",
+      value: "“TravelBot Agent”",
+      valueParts: [{ name: "TravelBot Agent" }],
+    });
   });
 
   it("walks Revoked, Stopping and Stopped, and keeps last action uncertain a separate fact", () => {

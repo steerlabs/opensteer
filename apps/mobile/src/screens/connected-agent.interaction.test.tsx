@@ -174,7 +174,7 @@ describe("one connected agent on the phone", () => {
       expect(row("withdrawn", "withdrawn").label).toMatch(/^No longer verified since /u);
       // Its name is the title; the who rows add only where its access goes.
       expect(section("who")?.rows.map(({ label }) => label)).toEqual([
-        "Holds the access: ChatGPT · https://chatgpt.com",
+        "Holds the access: “ChatGPT” · https://chatgpt.com",
       ]);
       expect(section("withdrawn")?.footer?.text).toBe("Check its last action or disconnect it.");
       expect(row("withdrawn", "disconnect").label).toBe("Disconnect ChatGPT");
@@ -225,8 +225,8 @@ describe("one connected agent on the phone", () => {
         "detail" in candidate ? candidate.detail : null,
       ]),
     ).toEqual([
-      ["Calls itself", "TravelBot Agent"],
-      ["Address it uses", "trips.example"],
+      ["Calls itself", "“TravelBot Agent”"],
+      ["Address it uses", "https://trips.example"],
       // The day it was added, never read as where it stands now.
       ["Added", expect.any(String)],
       ["Expires", expect.any(String)],
@@ -455,11 +455,11 @@ describe("a chat on the phone", () => {
 
   it("shows where a live chat listens, who can give it work, its work with Stop, and Disconnect", async () => {
     const client = await open(chat(1), chats());
-    expect(row("chat-where", "where").label).toBe("Direct messages to Workshop on Slack");
+    expect(row("chat-where", "where").label).toBe("Direct messages to “Workshop” on Slack");
     expect(row("chat-speakers", "speakers")).toMatchObject({
-      label: "You, as Tim",
+      label: "You, as “Tim”",
       detail:
-        "Only messages you send as Tim give this agent work. To use another account, link it on Messaging: the new one replaces this one.",
+        "Only messages you send as “Tim” give this agent work. To use another account, link it on Messaging: the new one replaces this one.",
     });
     expect(section("chat-speakers")?.footer?.text).toBe(
       "This is chosen when the chat is added and can’t be changed. To change it, disconnect this chat and add it again.",

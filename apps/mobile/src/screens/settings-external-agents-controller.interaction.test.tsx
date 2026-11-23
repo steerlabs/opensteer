@@ -111,8 +111,8 @@ describe("Connected agents on the phone", () => {
     await vi.waitFor(() => expect(section("disconnected")).toBeDefined());
     expect(lines("connected")).toEqual([
       ["Claude", "Everything · Full access"],
-      ["Slack", "Direct messages to Workshop on Slack · Tasks · Supervised"],
-      ["Slack · #team", "#team on Slack, through Workshop · Tasks · Supervised"],
+      ["Slack", "Direct messages to “Workshop” on Slack · Tasks · Supervised"],
+      ["Slack · #team", "“#team” on Slack, through “Workshop” · Tasks · Supervised"],
       ["iMessage", "Paused · its replies are held until it’s back"],
       ["Slack · On-call", "Paused · its replies are held until it’s back"],
     ]);
