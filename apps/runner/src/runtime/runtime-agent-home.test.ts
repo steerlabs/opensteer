@@ -73,7 +73,7 @@ function* sources(directory: string): Generator<string> {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const full = path.join(directory, entry.name);
     if (entry.isDirectory()) yield* sources(full);
-    else if (/\.ts$/u.test(entry.name) && !/\.test\.|test-support|\.d\.ts$/u.test(entry.name))
+    else if (entry.name.endsWith(".ts") && !/\.test\.|test-support|\.d\.ts$/u.test(entry.name))
       yield full;
   }
 }
