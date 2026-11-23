@@ -1,5 +1,7 @@
 import { channelProviderCatalog } from "@opensteer/channel-core";
 import { createId, type RequestId } from "@opensteer/core";
+import { createBrowserSessionId } from "@opensteer/protocol";
+import { sql } from "kysely";
 import {
   createIntegrationId,
   IntegrationDefinitionSchema,
@@ -17,6 +19,7 @@ import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import { needsYouPage } from "./needs-you-store.js";
 import { testRunnerDescriptor } from "./runner-fixture.test-support.js";
 import { personalReachableGrant } from "./runner-store.js";
+import { TabStore } from "./tab-store.js";
 import {
   describeStore,
   testMessagingRunnerId,
@@ -429,5 +432,100 @@ describeStore("a name from outside enters the Home clean", (it) => {
     }
     expect(labels).toEqual(cleaned.map((name) => `${name} on Mac`));
     expect(activityLabels).toEqual(cleaned);
+  });
+
+  it("keeps browser page titles clean on tab creation, updates, visits and Run places", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const f = await storeFixture.startRunFixture("outside-pages");
+    await database
+      .updateTable("runners")
+      .set({ allowedModules: sql`'["agents","browser"]'::jsonb` })
+      .where("id", "=", f.runnerId)
+      .execute();
+    const profile = await store.createBrowserProfile({
+      ownerId: f.userId,
+      name: "History",
+      idempotencyKey: "outside-history",
+    });
+    const sessionId = createBrowserSessionId();
+    await store.createBrowserSession({
+      id: sessionId,
+      runnerId: f.runnerId,
+      ownerId: f.userId,
+      origin: "agent",
+      opener: { kind: "person", userId: f.userId },
+      placementKey: "outside-pages",
+      profileId: null,
+      runtimeId: "test",
+    });
+    const deviceId = await store.requireSelfDeviceId(f.runnerId);
+    const tabs = new TabStore(database);
+    const actual: unknown[] = [];
+    const expected: unknown[] = [];
+    for (const [index, title] of forged.entries()) {
+      const tabId = createId("tab");
+      const binding = { lineageId: sessionId, sessionId, surfaceId: tabId };
+      const url = `https://example.com/${index}?raw=%E2%80%AE%09`;
+      const cleanTitle = cleaned[index] ?? "x".repeat(1_024);
+      await tabs.open(
+        {
+          id: tabId,
+          ownerId: f.userId,
+          computerId: deviceId,
+          kind: "page",
+          title,
+          url: "about:blank",
+          pageBinding: binding,
+          openedBy: "person",
+        },
+        `outside-page-${index}`,
+      );
+      actual.push((await tabs.get(f.userId, tabId))?.title);
+      expected.push(cleanTitle);
+      await tabs.updatePage(f.userId, tabId, 1, binding, { title, url });
+      const tab = await tabs.get(f.userId, tabId);
+      actual.push(tab?.title, tab?.url);
+      expected.push(cleanTitle, url);
+      await store.browserHistory.recordVisit({
+        profileId: profile.id,
+        ownerId: f.userId,
+        url,
+        title,
+        typed: false,
+      });
+      const history = await store.browserHistory.list(profile.id, f.userId);
+      actual.push(history.entries.find((visit) => visit.url === url)?.title);
+      expected.push(cleanTitle.slice(0, 200));
+      const nextIndex = (index + 1) % forged.length;
+      await store.browserHistory.retitle({ profileId: profile.id, url, title: forged[nextIndex]! });
+      const retitled = await store.browserHistory.list(profile.id, f.userId);
+      actual.push(retitled.entries.find((visit) => visit.url === url)?.title);
+      expected.push(cleaned[nextIndex] ?? "x".repeat(200));
+      await store.recordBrowserSessionUse({
+        sessionId,
+        threadId: f.threadId,
+        ownerId: f.userId,
+        tabId,
+        page: { title, site: "https://example.com" },
+      });
+      const usage = await database
+        .selectFrom("browserSessionUses")
+        .select("pageTitle")
+        .where("sessionId", "=", sessionId)
+        .where("tabId", "=", tabId)
+        .executeTakeFirstOrThrow();
+      actual.push(usage.pageTitle);
+      expected.push(cleanTitle.slice(0, 256));
+      await store.recordRunTabPlace({
+        runId: f.run.id,
+        bindingGeneration: f.bindingGeneration,
+        data: { tabId, title, site: "https://example.com" },
+      });
+      actual.push((await store.latestRunPlace(f.run.id))?.title);
+      expected.push(cleanTitle);
+    }
+    expect(actual).toEqual(expected);
   });
 });

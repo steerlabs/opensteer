@@ -1,4 +1,5 @@
 import { requireNoBrowserStandardCdpLease } from "./browser-standard-cdp-lease.js";
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   BrowserPoolAdmissionClosed,
   requireBrowserPoolAdmission,
@@ -1261,7 +1262,7 @@ async function upsertBrowserSessionUseRow(
   id: string,
   input: BrowserSessionUseWrite,
 ): Promise<boolean> {
-  const pageTitle = input.page ? input.page.title.slice(0, 256) : null;
+  const pageTitle = input.page ? outsideName(input.page.title, 256) : null;
   const pageSite = input.page ? input.page.site.slice(0, 2048) : null;
   const row = await database
     .insertInto("browserSessionUses")
@@ -2037,7 +2038,7 @@ export function recordRunTabPlace(
 ): Promise<boolean> {
   const place = eventDataSchemas["place.entered"].parse({
     ...input.data,
-    title: utf8Prefix(storableText(input.data.title), 1024),
+    title: utf8Prefix(outsideName(storableText(input.data.title), 1024), 1024),
   });
   return commitPersonalMutation(database, async (tx, mutation) => {
     const owner = await tx
