@@ -15,6 +15,7 @@ import {
   type TabOpenedBy,
   type TabTarget,
   type UserId,
+  type WindowId,
 } from "@opensteer/core";
 import {
   TabCloseInputSchema,
@@ -154,8 +155,11 @@ export class TabService implements TabServicePort {
     {
       rows: Map<TabId, Tab>;
       layout: TabLayout;
+      windowIds: Map<TabId, WindowId>;
       dirty: Set<TabId> | null;
-      pending?: Promise<{ rows: ReadonlyMap<TabId, Tab>; layout: TabLayout }>;
+      version: number;
+      projectedVersion: number;
+      pending?: Promise<void>;
     }
   >();
   async acquired(target: DeviceNativeTargetAcquired): Promise<TabId> {
@@ -194,8 +198,13 @@ export class TabService implements TabServicePort {
   changed(ownerId?: UserId, tabIds?: readonly TabId[]): void {
     for (const [id, catalog] of this.#catalogs) {
       if (ownerId && id !== ownerId) continue;
-      if (!tabIds) catalog.dirty = null;
-      else if (catalog.dirty) for (const tabId of tabIds) catalog.dirty.add(tabId);
+      if (!tabIds) {
+        catalog.dirty = null;
+        catalog.version += 1;
+      } else if (tabIds.length) {
+        if (catalog.dirty) for (const tabId of tabIds) catalog.dirty.add(tabId);
+        catalog.version += 1;
+      }
     }
   }
   appsChanged(appIds: AppId[]): void {
@@ -206,6 +215,15 @@ export class TabService implements TabServicePort {
       if (ids.length) this.changed(ownerId, ids);
     }
   }
+  windowChanged(ownerId: UserId, windowId: WindowId): void {
+    const catalog = this.#catalogs.get(ownerId);
+    if (!catalog) return;
+    const ids = [...catalog.windowIds.entries()].flatMap(([tabId, id]) =>
+      id === windowId ? [tabId] : [],
+    );
+    if (ids.length) this.changed(ownerId, ids);
+    else if (catalog.pending) this.changed(ownerId);
+  }
   dispose(): void {
     this.#stopAcquired();
     this.#catalogs.clear();
@@ -213,49 +231,82 @@ export class TabService implements TabServicePort {
   async #catalog(ownerId: UserId) {
     let catalog = this.#catalogs.get(ownerId);
     if (!catalog) {
-      catalog = { rows: new Map(), layout: { revision: 0, items: [] }, dirty: null };
+      catalog = {
+        rows: new Map(),
+        layout: { revision: 0, items: [] },
+        windowIds: new Map(),
+        dirty: null,
+        version: 1,
+        projectedVersion: 0,
+      };
       this.#catalogs.set(ownerId, catalog);
     }
     const current = catalog;
-    current.pending ??= (async () => {
-      do {
-        const ids = current.dirty;
-        current.dirty = new Set();
-        try {
-          if (ids === null) {
-            const projected = await this.#snapshotProject(
-              { kind: "person", ownerId },
-              this.options.store.database,
-            );
-            current.rows = new Map(projected.tabs.map((tab) => [tab.tabId, tab]));
-            current.layout = projected.layout;
-          } else if (ids.size) {
-            const rows = await this.options.store.rows(ownerId, [...ids]);
-            if (rows.length !== ids.size || rows.some((row) => !current.rows.has(row.id))) {
-              current.dirty = null;
-              continue;
+    const targetVersion = current.version;
+    while (current.projectedVersion < targetVersion) {
+      current.pending ??= this.#refreshCatalog(ownerId, current).finally(() => {
+        delete current.pending;
+      });
+      await current.pending;
+    }
+    return { rows: current.rows, layout: current.layout };
+  }
+  async #refreshCatalog(
+    ownerId: UserId,
+    current: {
+      rows: Map<TabId, Tab>;
+      layout: TabLayout;
+      windowIds: Map<TabId, WindowId>;
+      dirty: Set<TabId> | null;
+      version: number;
+      projectedVersion: number;
+    },
+  ): Promise<void> {
+    const passVersion = current.version;
+    const ids = current.dirty;
+    current.dirty = new Set();
+    try {
+      if (ids === null) {
+        const projected = await this.#snapshotProject(
+          { kind: "person", ownerId },
+          this.options.store.database,
+        );
+        current.rows = new Map(projected.tabs.map((tab) => [tab.tabId, tab]));
+        current.layout = projected.layout;
+        current.windowIds = projected.windowIds;
+      } else if (ids.size) {
+        const rows = await this.options.store.rows(ownerId, [...ids]);
+        if (rows.length !== ids.size || rows.some((row) => !current.rows.has(row.id))) {
+          const projected = await this.#snapshotProject(
+            { kind: "person", ownerId },
+            this.options.store.database,
+          );
+          current.rows = new Map(projected.tabs.map((tab) => [tab.tabId, tab]));
+          current.layout = projected.layout;
+          current.windowIds = projected.windowIds;
+        } else {
+          const projected = await this.#projectRows(
+            { kind: "person", ownerId },
+            rows,
+            current.layout,
+            this.options.store.database,
+            current.rows,
+          );
+          for (const id of ids) {
+            if (!projected.tabs.some((tab) => tab.tabId === id)) {
+              current.rows.delete(id);
+              current.windowIds.delete(id);
             }
-            const projected = await this.#projectRows(
-              { kind: "person", ownerId },
-              rows,
-              current.layout,
-              this.options.store.database,
-              current.rows,
-            );
-            for (const id of ids)
-              if (!projected.tabs.some((tab) => tab.tabId === id)) current.rows.delete(id);
-            for (const tab of projected.tabs) current.rows.set(tab.tabId, tab);
           }
-        } catch (error) {
-          current.dirty = null;
-          throw error;
+          for (const tab of projected.tabs) current.rows.set(tab.tabId, tab);
+          for (const [id, windowId] of projected.windowIds) current.windowIds.set(id, windowId);
         }
-      } while (current.dirty === null || current.dirty.size);
-      return { rows: current.rows, layout: current.layout };
-    })().finally(() => {
-      delete current.pending;
-    });
-    return current.pending;
+      }
+      current.projectedVersion = passVersion;
+    } catch (error) {
+      current.dirty = null;
+      throw error;
+    }
   }
 
   /** The same ordered projection feeds resource reads and RPCs. */
@@ -268,12 +319,13 @@ export class TabService implements TabServicePort {
       const { rows, layout } = await this.#catalog(actor.ownerId);
       return { tabs: [...rows.values()], layout };
     }
-    return this.#snapshotProject(actor, database);
+    const { tabs, layout } = await this.#snapshotProject(actor, database);
+    return { tabs, layout };
   }
   async #snapshotProject(
     actor: TabActor,
     database: TabDatabase,
-  ): Promise<{ tabs: Tab[]; layout: TabLayout }> {
+  ): Promise<{ tabs: Tab[]; layout: TabLayout; windowIds: Map<TabId, WindowId> }> {
     const ownerId = owner(actor),
       { rows, layout } = await this.options.store.snapshot(ownerId, database);
     return this.#projectRows(actor, rows, layout, database);
@@ -284,7 +336,7 @@ export class TabService implements TabServicePort {
     layout: TabLayout,
     database: TabDatabase,
     catalog?: ReadonlyMap<TabId, Pick<Tab, "groupId">>,
-  ): Promise<{ tabs: Tab[]; layout: TabLayout }> {
+  ): Promise<{ tabs: Tab[]; layout: TabLayout; windowIds: Map<TabId, WindowId> }> {
     const ownerId = owner(actor);
     const canRead = this.options.readAuthority
       ? await this.options.readAuthority(actor, database)
@@ -376,7 +428,12 @@ export class TabService implements TabServicePort {
       ...tab,
       usedBy: tab.usedBy.filter(({ taskId }) => readable.has(taskId)).slice(0, 128),
     }));
-    return { tabs, layout: projected };
+    const windowIds = new Map(
+      shown.flatMap((row) =>
+        row.kind === "window" && row.windowId ? [[row.id, row.windowId] as const] : [],
+      ),
+    );
+    return { tabs, layout: projected, windowIds };
   }
   async #tab(
     actor: TabActor,
@@ -412,6 +469,7 @@ export class TabService implements TabServicePort {
         ownerId,
         await this.options.devices.requireDeviceSelfRunnerId(row.computerId),
         row.windowId!,
+        row.windowApp,
       );
     else if (row.kind === "phone")
       live = this.options.deviceNativeTargets

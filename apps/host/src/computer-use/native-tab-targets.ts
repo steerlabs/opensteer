@@ -45,9 +45,37 @@ export interface NativeTabTargetsOptions {
   phoneUnavailable(
     computerId: ComputerTargetId,
   ): "paused" | "protected" | "locked" | "unsupported" | null;
+  readonly now?: () => number;
+  readonly windowRefreshTtlMs?: number;
+  readonly onWindowStateChanged?: (
+    ownerId: UserId,
+    computerId: ComputerTargetId,
+    windowId: WindowId,
+  ) => void;
 }
+type WindowUnavailableCode = Extract<
+  NativeTabTargetState,
+  { state: "unavailable" }
+>["unavailableCode"];
+type ObservedWindow =
+  | {
+      readonly kind: "live";
+      readonly computerId: ComputerTargetId;
+      readonly app: ComputerAppIdentity;
+      readonly checkedAt: number;
+      readonly generation: number;
+    }
+  | {
+      readonly kind: "unavailable";
+      readonly computerId: ComputerTargetId;
+      readonly code: WindowUnavailableCode;
+      readonly reason: string;
+      readonly checkedAt: number;
+      readonly generation: number;
+    };
+const defaultWindowRefreshTtlMs = 30_000;
 const unavailable = (
-  unavailableCode: Extract<NativeTabTargetState, { state: "unavailable" }>["unavailableCode"],
+  unavailableCode: WindowUnavailableCode,
   unavailableReason: string,
 ): NativeTabTargetState => ({
   state: "unavailable",
@@ -55,13 +83,182 @@ const unavailable = (
   unavailableReason,
   usedBy: [],
 });
+function mapWindowUnavailableReason(reason: string): {
+  code: WindowUnavailableCode;
+  reason: string;
+} {
+  if (reason === "window-closed") return { code: reason, reason: "Window closed" };
+  if (reason === "window-identity-lost")
+    return { code: reason, reason: "This window's identity is no longer available." };
+  if (reason === "locked" || reason === "minimized" || reason === "unsupported")
+    return { code: reason, reason: `This window is ${reason}.` };
+  return { code: "runtime-failed", reason: "This window is unavailable." };
+}
+function sameObservedProjection(
+  previous: ObservedWindow | undefined,
+  next: ObservedWindow,
+): boolean {
+  if (!previous) return next.kind === "live";
+  if (previous.kind !== next.kind) return false;
+  if (previous.kind === "live" && next.kind === "live")
+    return computerAppIdentitiesEqual(previous.app, next.app);
+  return (
+    previous.kind === "unavailable" &&
+    next.kind === "unavailable" &&
+    previous.code === next.code &&
+    previous.reason === next.reason
+  );
+}
 
 export class NativeTabTargets implements NativeTabTargetsPort {
   readonly #options: NativeTabTargetsOptions;
+  readonly #now: () => number;
+  readonly #refreshTtlMs: number;
+  readonly #generations = new Map<ComputerTargetId, number>();
+  readonly #observed = new Map<string, ObservedWindow>();
+  readonly #inFlight = new Map<string, Promise<void>>();
   #acquired: NativeTargetAcquiredHandler | undefined;
   #capture: ((ownerId: UserId) => Promise<number>) | undefined;
   constructor(options: NativeTabTargetsOptions) {
     this.#options = options;
+    this.#now = options.now ?? Date.now;
+    this.#refreshTtlMs = options.windowRefreshTtlMs ?? defaultWindowRefreshTtlMs;
+  }
+  #generation(computerId: ComputerTargetId): number {
+    return this.#generations.get(computerId) ?? 0;
+  }
+  #windowKey(computerId: ComputerTargetId, windowId: WindowId): string {
+    return `${computerId}:${windowId}`;
+  }
+  #hasApprovedApp(
+    connections: readonly DeviceComputerConnection[],
+    app: ComputerAppIdentity,
+  ): boolean {
+    return connections.some(
+      (entry) => entry.computer?.app && computerAppIdentitiesEqual(entry.computer.app, app),
+    );
+  }
+  forgetComputer(computerId: ComputerTargetId): void {
+    this.#generations.set(computerId, this.#generation(computerId) + 1);
+    for (const [key, entry] of this.#observed) {
+      if (entry.computerId === computerId) this.#observed.delete(key);
+    }
+    const prefix = `${computerId}:`;
+    for (const key of this.#inFlight.keys()) {
+      if (key.startsWith(prefix)) this.#inFlight.delete(key);
+    }
+  }
+  observeView(view: ComputerView): boolean {
+    if (view.target.kind !== "app") return false;
+    const windowId = view.target.windowId ?? view.window?.windowId;
+    if (!windowId) return false;
+    const computerId = view.machineId as ComputerTargetId;
+    const generation = this.#generation(computerId);
+    const key = this.#windowKey(computerId, windowId);
+    const previous = this.#observed.get(key);
+    let next: ObservedWindow | undefined;
+    if (view.state === "ready") {
+      next = {
+        kind: "live",
+        computerId,
+        app: view.target.app,
+        checkedAt: this.#now(),
+        generation,
+      };
+    } else if (
+      view.state === "unavailable" &&
+      (view.unavailableReason === "window-closed" ||
+        view.unavailableReason === "window-identity-lost" ||
+        view.unavailableReason === "minimized" ||
+        view.unavailableReason === "locked" ||
+        view.unavailableReason === "unsupported")
+    ) {
+      const mapped = mapWindowUnavailableReason(view.unavailableReason);
+      next = {
+        kind: "unavailable",
+        computerId,
+        code: mapped.code,
+        reason: mapped.reason,
+        checkedAt: this.#now(),
+        generation,
+      };
+    }
+    if (!next) return false;
+    this.#observed.set(key, next);
+    return !sameObservedProjection(previous, next);
+  }
+  #observeQueryResult(
+    computerId: ComputerTargetId,
+    windowId: WindowId,
+    result: NativeWindowQueryResult,
+    generation: number,
+  ): ObservedWindow {
+    const checkedAt = this.#now();
+    if (result.unavailableReason) {
+      const mapped = mapWindowUnavailableReason(result.unavailableReason);
+      return {
+        kind: "unavailable",
+        computerId,
+        code: mapped.code,
+        reason: mapped.reason,
+        checkedAt,
+        generation,
+      };
+    }
+    if (result.windowId !== windowId || !result.app) {
+      return {
+        kind: "unavailable",
+        computerId,
+        code: "access-denied",
+        reason: "This app is unavailable.",
+        checkedAt,
+        generation,
+      };
+    }
+    return {
+      kind: "live",
+      computerId,
+      app: result.app,
+      checkedAt,
+      generation,
+    };
+  }
+  #refreshWindow(
+    ownerId: UserId,
+    computerId: ComputerTargetId,
+    windowId: WindowId,
+    generation: number,
+  ): void {
+    const key = this.#windowKey(computerId, windowId);
+    if (this.#inFlight.has(key)) return;
+    const probe = (async () => {
+      let next: ObservedWindow;
+      try {
+        const result = await this.#options.queryWindow(computerId, { windowId });
+        if (this.#generation(computerId) !== generation || !this.#options.connected(computerId))
+          return;
+        next = this.#observeQueryResult(computerId, windowId, result, generation);
+      } catch {
+        if (this.#generation(computerId) !== generation || !this.#options.connected(computerId))
+          return;
+        next = {
+          kind: "unavailable",
+          computerId,
+          code: "runtime-failed",
+          reason: "This window is unavailable.",
+          checkedAt: this.#now(),
+          generation,
+        };
+      }
+      const previous = this.#observed.get(key);
+      this.#observed.set(key, next);
+      if (!sameObservedProjection(previous, next)) {
+        this.#options.onWindowStateChanged?.(ownerId, computerId, windowId);
+      }
+    })().finally(() => {
+      if (this.#inFlight.get(key) === probe) this.#inFlight.delete(key);
+    });
+    this.#inFlight.set(key, probe);
   }
   async #connections(ownerId: UserId, computerId: ComputerTargetId) {
     if (!(await this.#options.owns(ownerId, computerId)))
@@ -81,6 +278,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
     const connections = await this.#connections(ownerId, computerId);
     if (!this.#options.connected(computerId))
       throw refused("runner_offline", "This computer is offline.");
+    const generation = this.#generation(computerId);
     const app =
       "bundleId" in target
         ? connections.find((entry) => entry.computer?.app?.bundleId === target.bundleId)?.computer
@@ -98,10 +296,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
       ("windowId" in target && result.windowId !== target.windowId) ||
       !result.windowId ||
       !result.app ||
-      !current.some(
-        (entry) =>
-          entry.computer?.app && computerAppIdentitiesEqual(entry.computer.app, result.app!),
-      )
+      !this.#hasApprovedApp(current, result.app)
     )
       throw refused(
         "not_found",
@@ -109,8 +304,18 @@ export class NativeTabTargets implements NativeTabTargetsPort {
           ? "Window closed"
           : "This window's identity is no longer available.",
       );
+    const windowId = WindowIdSchema.parse(result.windowId);
+    if (this.#generation(computerId) === generation) {
+      this.#observed.set(this.#windowKey(computerId, windowId), {
+        kind: "live",
+        computerId,
+        app: result.app,
+        checkedAt: this.#now(),
+        generation,
+      });
+    }
     return {
-      windowId: WindowIdSchema.parse(result.windowId),
+      windowId,
       app: result.app,
       appName: result.app.displayName,
       bundleId: result.app.bundleId,
@@ -121,6 +326,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
     ownerId: UserId,
     computerId: ComputerTargetId,
     windowId: WindowId,
+    app?: ComputerAppIdentity | null,
   ): Promise<NativeTabTargetState> {
     let connections: readonly DeviceComputerConnection[];
     try {
@@ -130,38 +336,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
     }
     if (!this.#options.connected(computerId))
       return unavailable("computer-offline", "This computer is offline.");
-    let result: NativeWindowQueryResult;
-    try {
-      result = await this.#options.queryWindow(computerId, { windowId });
-    } catch {
-      return this.#options.connected(computerId)
-        ? unavailable("runtime-failed", "This window is unavailable.")
-        : unavailable("computer-offline", "This computer is offline.");
-    }
-    try {
-      connections = await this.#connections(ownerId, computerId);
-    } catch {
-      return unavailable("access-denied", "This computer is unavailable.");
-    }
-    if (!this.#options.connected(computerId))
-      return unavailable("computer-offline", "This computer is offline.");
-    if (result.unavailableReason) {
-      const reason = result.unavailableReason;
-      if (reason === "window-closed") return unavailable(reason, "Window closed");
-      if (reason === "window-identity-lost")
-        return unavailable(reason, "This window's identity is no longer available.");
-      if (reason === "locked" || reason === "minimized" || reason === "unsupported")
-        return unavailable(reason, `This window is ${reason}.`);
-      return unavailable("runtime-failed", "This window is unavailable.");
-    }
-    if (
-      result.windowId !== windowId ||
-      !result.app ||
-      !connections.some(
-        (entry) =>
-          entry.computer?.app && computerAppIdentitiesEqual(entry.computer.app, result.app!),
-      )
-    )
+    if (app && !this.#hasApprovedApp(connections, app))
       return unavailable("access-denied", "This app is unavailable.");
     const usedBy = this.#options.users(ownerId, computerId, windowId);
     const views = await this.#options.views.list(ownerId, computerId);
@@ -169,6 +344,24 @@ export class NativeTabTargets implements NativeTabTargetsPort {
       (view) =>
         view.state === "ready" && view.target.kind === "app" && view.target.windowId === windowId,
     );
+    const generation = this.#generation(computerId);
+    const key = this.#windowKey(computerId, windowId);
+    const observed = this.#observed.get(key);
+    const fresh =
+      observed !== undefined &&
+      observed.generation === generation &&
+      this.#now() - observed.checkedAt < this.#refreshTtlMs;
+    if (!fresh) {
+      this.#refreshWindow(ownerId, computerId, windowId, generation);
+    }
+    if (observed && observed.generation === generation) {
+      if (observed.kind === "live") {
+        if (!this.#hasApprovedApp(connections, observed.app))
+          return unavailable("access-denied", "This app is unavailable.");
+      } else if (!viewed && !usedBy.length) {
+        return unavailable(observed.code, observed.reason);
+      }
+    }
     return { state: usedBy.length || viewed ? "open" : "asleep", usedBy };
   }
   async phoneState(ownerId: UserId, computerId: ComputerTargetId): Promise<NativeTabTargetState> {
@@ -203,14 +396,16 @@ export class NativeTabTargets implements NativeTabTargetsPort {
       return unavailable(refusal.unavailableReason, `This phone is ${refusal.unavailableReason}.`);
     return { state: usedBy.length || viewed ? "open" : "asleep", usedBy };
   }
-  openOwnerView(
+  async openOwnerView(
     ownerId: UserId,
     input: Omit<Parameters<DeviceNativeTabTargetsPort["openOwnerView"]>[1], "computerId"> & {
       computerId: ComputerTargetId;
     },
     key: string,
   ): Promise<ComputerView> {
-    return this.#options.views.openForTab(ownerId, input, key);
+    const view = await this.#options.views.openForTab(ownerId, input, key);
+    this.observeView(view);
+    return view;
   }
   closeOwnerViews(ownerId: UserId, tabId: TabId, tabGeneration: number): Promise<void> {
     return this.#options.views.closeTabViews(ownerId, tabId, tabGeneration);

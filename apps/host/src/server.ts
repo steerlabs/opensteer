@@ -3057,6 +3057,7 @@ function attachRunnerSocket(
     readonly reason: "agent-phone-outdated" | "runner-outdated";
   }) => Promise<void>,
 ): void {
+  installWebSocketLiveness(socket);
   const peer = jsonPeer(socket, `runner-peer:${randomUUID()}`);
   // A Run can stream many small events at once, for example a command's output
   // delta by delta. The Runner awaits each frame's write, so pausing the socket
@@ -3372,6 +3373,7 @@ function attachRunnerAuxiliarySocket(options: {
   readonly socket: WebSocket;
 }): void {
   const { module, socket } = options;
+  installWebSocketLiveness(socket);
   const dispatch = runnerAuxiliaryModuleDispatch(options)[module];
   const { peer } = dispatch;
   const inbox = new BoundedAsyncInbox<{ readonly frame: Buffer; readonly isBinary: boolean }>({
