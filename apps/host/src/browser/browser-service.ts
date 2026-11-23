@@ -4941,6 +4941,7 @@ export class BrowserService {
     captureAuthority?: (facts: StandardCdpAuthority) => void,
     /** Hears the same facts as `captureAuthority` without changing how the admission answers. */
     noteAuthority?: (facts: StandardCdpAuthority) => void,
+    inRunnerAdmission = false,
   ) {
     const sessionId = input.sessionId ?? (await this.#followedAgentSessionId(input));
     // Attaching is new access; a command on an open attachment follows its Run's end.
@@ -4980,7 +4981,12 @@ export class BrowserService {
         "The browser cannot keep your tab separate from the agent's tab. Update Opensteer on that computer, then reopen the tab.",
       );
     if (captured) (captureAuthority ?? noteAuthority)?.(captured);
-    if (hold && input.sessionId) await this.#holdForAgent(input, record);
+    if (hold && input.sessionId)
+      await this.#holdForAgent(
+        input,
+        record,
+        inRunnerAdmission ? { inRunnerAdmission } : undefined,
+      );
     return { record, broker, backend };
   }
 
@@ -5815,7 +5821,12 @@ export class BrowserService {
         throw error;
       }
     }
-    return this.#attachCdpForAgent(input, onEvent, onClosed);
+    if (record.profileId !== null && this.#standardCdpProfiles.busy(record.profileId)) {
+      return this.#attachCdpForAgent(input, onEvent, onClosed, undefined, false);
+    }
+    return this.withRunnerAdmission(record.runnerId, () =>
+      this.#attachCdpForAgent(input, onEvent, onClosed, undefined, true),
+    );
   }
 
   async #attachCdpForAgent(
@@ -5832,6 +5843,7 @@ export class BrowserService {
     onEvent: (event: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"]) => void,
     onClosed?: () => void,
     pooledRelay?: PooledBrowserRelay,
+    inRunnerAdmission = false,
   ): Promise<{
     readonly session: HostedBrowserSession;
     readonly pooledWitness?: string;
@@ -5859,6 +5871,7 @@ export class BrowserService {
       (facts) => {
         if (facts.agentConnectionId !== null) connectionWork = true;
       },
+      inRunnerAdmission,
     );
     const accessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
     // A runtime that says it can hold the rules itself is told the work is a connection's, so a
@@ -5933,8 +5946,8 @@ export class BrowserService {
     const unsubscribe = broker.subscribeCdp((event) => {
       if (event.scriptAttachmentId === scriptAttachmentId) onEvent(event);
     }, close);
-    const admissionWaited = this.#agentAdmissions.busy(record.runnerId);
-    await this.withRunnerAdmission(record.runnerId, async () => {
+    const admissionWaited = !inRunnerAdmission && this.#agentAdmissions.busy(record.runnerId);
+    const registerAttachment = async () => {
       if (
         !nativeAttachment &&
         (admissionWaited ||
@@ -5974,7 +5987,9 @@ export class BrowserService {
           throw error;
         }
       }
-    });
+    };
+    if (inRunnerAdmission) await registerAttachment();
+    else await this.withRunnerAdmission(record.runnerId, registerAttachment);
     const expired = { result: Promise.resolve({ status: "expired" }) };
     // Admission is everything before the command is handed to the browser; its
     // fences apply until then. The answer arrives on `result`.
@@ -8001,6 +8016,7 @@ export class BrowserService {
       readonly recheck?: boolean;
       readonly requireAccess?: boolean;
       readonly accessGeneration?: number;
+      readonly inRunnerAdmission?: boolean;
     },
   ): Promise<void> {
     const accessGeneration =
@@ -8023,8 +8039,9 @@ export class BrowserService {
           )
         : undefined;
       try {
-        const admissionWaited = this.#agentAdmissions.busy(record.runnerId);
-        await this.withRunnerAdmission(record.runnerId, async () => {
+        const admissionWaited =
+          !options?.inRunnerAdmission && this.#agentAdmissions.busy(record.runnerId);
+        const holdStep = async () => {
           if (this.#closed || this.#endedBindings.has(input.agentBindingId))
             throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
           const mustRecheck = Boolean(
@@ -8062,7 +8079,9 @@ export class BrowserService {
             this.#noteLastHeldSession(record.id, input.agentBindingId);
             this.announceUsage(credits);
           }
-        });
+        };
+        if (options?.inRunnerAdmission) await holdStep();
+        else await this.withRunnerAdmission(record.runnerId, holdStep);
       } finally {
         reservation?.release();
       }
@@ -10131,7 +10150,7 @@ export class HostedBrowserBroker {
         if (!this.#reconnecting) {
           if (!this.#adoptedFromPool) await this.#sendSavedTabs();
           const updated = await this.#onState("ready");
-          readyConfirmed = updated.state === "ready";
+          readyConfirmed = updated?.state === undefined || updated.state === "ready";
         }
         if (readyConfirmed && !this.#stopping && !this.#detaching) {
           this.#reconnecting = false;

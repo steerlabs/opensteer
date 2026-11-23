@@ -15,6 +15,10 @@ export class StandardCdpProfileLeases {
     return this.#lane.run(profileId, () => operation(waited));
   }
 
+  busy(profileId: BrowserProfileId): boolean {
+    return this.#lane.busy(profileId);
+  }
+
   held(profileId: BrowserProfileId) {
     return this.#active.get(profileId);
   }

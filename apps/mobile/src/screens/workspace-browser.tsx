@@ -1012,12 +1012,7 @@ function BrowserTab(props: {
             if (dismissingUnconfirmed) return;
             setDismissingUnconfirmed(true);
             void dismissBrowserSession(hostClient, closeUnconfirmed.sessionId)
-              .catch((error: unknown) =>
-                Alert.alert(
-                  closeUnconfirmed.title,
-                  error instanceof Error ? error.message : "Try again in a moment.",
-                ),
-              )
+              .catch(() => Alert.alert(closeUnconfirmed.title, "Try again in a moment."))
               .finally(() => setDismissingUnconfirmed(false));
           },
         }}
