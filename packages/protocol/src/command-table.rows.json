@@ -27,7 +27,9 @@
       "note": "`tsvc:74`",
       "effect": {
         "where": "database",
-        "why": "server.ts:1809 → thread-service.ts:141 → command-service.ts:83: one store write; what follows from it leaves after the commit, from the committed rows"
+        "why": "server.ts:1809 → thread-service.ts:141 → command-service.ts:83: one store write; what follows from it leaves after the commit, from the committed rows",
+        "ongoing": true,
+        "lineageWhy": "a task a connection creates is its own lineage's (thread-inbox.ts:1494)"
       }
     },
     {
@@ -50,7 +52,8 @@
       "note": "agent path `tsvc:470` (`write`); D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "database",
-        "why": "server.ts:1887 → command-service.ts:92: one store write"
+        "why": "server.ts:1887 → command-service.ts:92: one store write",
+        "ongoing": false
       }
     },
     {
@@ -73,7 +76,8 @@
       "note": "`commands.setThreadIcon` takes no authority (`server.ts:1893`)",
       "effect": {
         "where": "database",
-        "why": "server.ts:1900 → command-service.ts:104: one store write"
+        "why": "server.ts:1900 → command-service.ts:104: one store write",
+        "ongoing": false
       }
     },
     {
@@ -96,7 +100,9 @@
       "note": "`connection` with selected grant: own lineage only",
       "effect": {
         "where": "outside",
-        "why": "thread-service.ts:262 and server.ts:1829 run after the commit and may fail"
+        "why": "thread-service.ts:262 and server.ts:1829 run after the commit and may fail",
+        "ongoing": true,
+        "lineageWhy": "the Run it starts takes the sender's connection (thread-inbox.ts:1494-1496)"
       }
     },
     {
@@ -119,7 +125,8 @@
       "note": "step C splits by who paused (brief C7); X11: the inputs it releases run in the task's lineage, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "database",
-        "why": "thread-service.ts:412 → command-service.ts:229: one store write; what follows from it leaves after the commit, from the committed rows; the wake is in memory"
+        "why": "thread-service.ts:412 → command-service.ts:229: one store write; what follows from it leaves after the commit, from the committed rows; the wake is in memory",
+        "ongoing": true
       }
     },
     {
@@ -142,7 +149,8 @@
       "note": "; X11: the input steers the running Run, in that Run's lineage, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "database",
-        "why": "thread-service.ts:432 → command-service.ts:178: one store write; what follows from it leaves after the commit, from the committed rows"
+        "why": "thread-service.ts:432 → command-service.ts:178: one store write; what follows from it leaves after the commit, from the committed rows",
+        "ongoing": true
       }
     },
     {
@@ -165,7 +173,8 @@
       "note": "",
       "effect": {
         "where": "database",
-        "why": "thread-service.ts:452 → command-service.ts:187: one store write"
+        "why": "thread-service.ts:452 → command-service.ts:187: one store write",
+        "ongoing": false
       }
     },
     {
@@ -188,7 +197,8 @@
       "note": "",
       "effect": {
         "where": "database",
-        "why": "thread-service.ts:468 → command-service.ts:194: one store write"
+        "why": "thread-service.ts:468 → command-service.ts:194: one store write",
+        "ongoing": false
       }
     },
     {
@@ -211,7 +221,8 @@
       "note": "a lease belongs to one signed-in editor (`server.ts:1836-1846`)",
       "effect": {
         "where": "database",
-        "why": "server.ts:1842 → command-service.ts:153: one store write"
+        "why": "server.ts:1842 → command-service.ts:153: one store write",
+        "ongoing": false
       }
     },
     {
@@ -234,7 +245,8 @@
       "note": "",
       "effect": {
         "where": "database",
-        "why": "server.ts:1842 → command-service.ts:159: one store write"
+        "why": "server.ts:1842 → command-service.ts:159: one store write",
+        "ongoing": false
       }
     },
     {
@@ -257,7 +269,8 @@
       "note": "",
       "effect": {
         "where": "database",
-        "why": "server.ts:1842 → command-service.ts:164: one store write"
+        "why": "server.ts:1842 → command-service.ts:164: one store write",
+        "ongoing": false
       }
     },
     {
@@ -280,7 +293,8 @@
       "note": "refused today: \"Only the owner can edit waiting inputs.\" (`tsvc:344-347`); needs a lease-less edit",
       "effect": {
         "where": "database",
-        "why": "thread-service.ts:359 → command-service.ts:171: one store write"
+        "why": "thread-service.ts:359 → command-service.ts:171: one store write",
+        "ongoing": false
       }
     },
     {
@@ -303,7 +317,8 @@
       "note": "an agent marking a task read would hide it from the person",
       "effect": {
         "where": "database",
-        "why": "server.ts:1757 → notification-state.ts:70: one personal mutation"
+        "why": "server.ts:1757 → notification-state.ts:70: one personal mutation",
+        "ongoing": false
       }
     },
     {
@@ -336,7 +351,8 @@
       "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "database",
-        "why": "server.ts:1765 → command-service.ts:305: one store write; a round that grew writes nothing"
+        "why": "server.ts:1765 → command-service.ts:305: one store write; a round that grew writes nothing",
+        "ongoing": false
       }
     },
     {
@@ -359,7 +375,8 @@
       "note": "`tsvc:263`; X11: the task's later Runs use it, in the task's lineage, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "database",
-        "why": "thread-service.ts:306 → command-service.ts:134: one store write"
+        "why": "thread-service.ts:306 → command-service.ts:134: one store write",
+        "ongoing": false
       }
     },
     {
@@ -392,7 +409,8 @@
       "note": "`server.ts:1906` owner-only",
       "effect": {
         "where": "outside",
-        "why": "server.ts:1927: lowers live browser sessions and agent operations after the commit"
+        "why": "server.ts:1927: lowers live browser sessions and agent operations after the commit",
+        "ongoing": false
       }
     },
     {
@@ -415,7 +433,8 @@
       "note": "`tsvc:507`",
       "effect": {
         "where": "database",
-        "why": "thread-service.ts:519 → command-service.ts:333: a control row the dispatcher sends after the commit"
+        "why": "thread-service.ts:519 → command-service.ts:333: a control row the dispatcher sends after the commit",
+        "ongoing": false
       }
     },
     {
@@ -438,7 +457,8 @@
       "note": "`h/product.ts:908` passes `authority`",
       "effect": {
         "where": "database",
-        "why": "server.ts:1936 → command-service.ts:322: a stop row the dispatcher sends after the commit"
+        "why": "server.ts:1936 → command-service.ts:322: a stop row the dispatcher sends after the commit",
+        "ongoing": false
       }
     },
     {
@@ -461,7 +481,8 @@
       "note": "`h/product.ts:927` passes `admission`",
       "effect": {
         "where": "database",
-        "why": "server.ts:1812 → command-service.ts:269: one store write; a round that grew writes nothing"
+        "why": "server.ts:1812 → command-service.ts:269: one store write; a round that grew writes nothing",
+        "ongoing": false
       }
     },
     {
@@ -507,7 +528,8 @@
       "note": "answer face exists (`h/product.ts:964`); allow face \"asks\" = points at the same Request (no new one); decline face B; X11: the Run that asked goes on, in its lineage, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "outside",
-        "why": "server.ts:1970: a durable answer runs its kind's continuation (browser access, a plugin approval, a device setup)"
+        "why": "server.ts:1970: a durable answer runs its kind's continuation (browser access, a plugin approval, a device setup)",
+        "ongoing": true
       }
     },
     {
@@ -530,7 +552,8 @@
       "note": "A4: the person's answer to a command Request; an agent's ask about it points at that Request",
       "effect": {
         "where": "outside",
-        "why": "registry.ts:118: runs another command"
+        "why": "registry.ts:118: runs another command",
+        "ongoing": false
       }
     },
     {
@@ -553,7 +576,8 @@
       "note": "(c)(d): its own session only; another connection's → nf",
       "effect": {
         "where": "outside",
-        "why": "server.ts:1950: stops a live session"
+        "why": "server.ts:1950: stops a live session",
+        "ongoing": false
       }
     },
     {
@@ -576,7 +600,8 @@
       "note": "bytes arrive on the session-bound binary route; agents pass files by path",
       "effect": {
         "where": "database",
-        "why": "server.ts:1796 → attachment-service.ts:80: one store write, before any bytes"
+        "why": "server.ts:1796 → attachment-service.ts:80: one store write, before any bytes",
+        "ongoing": false
       }
     },
     {
@@ -599,7 +624,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "attachment-service.ts:197: removes the file"
+        "why": "attachment-service.ts:197: removes the file",
+        "ongoing": false
       }
     },
     {
@@ -633,7 +659,8 @@
       "note": "`admin-svc:369`; review G2: raising the mode new tasks start in lifts a gate (`packages/database/src/harness-store.ts:1098-1131`); D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "database",
-        "why": "administration-service.ts:383: one store write"
+        "why": "administration-service.ts:383: one store write",
+        "ongoing": false
       }
     },
     {
@@ -656,7 +683,8 @@
       "note": "echoes only, stores nothing (`admin-svc:366-367`)",
       "effect": {
         "where": "database",
-        "why": "administration-service.ts:358: writes nothing"
+        "why": "administration-service.ts:358: writes nothing",
+        "ongoing": false
       }
     },
     {
@@ -679,7 +707,8 @@
       "note": "`admin-svc:342`",
       "effect": {
         "where": "database",
-        "why": "administration-service.ts:335 → notification-state.ts:88: one personal mutation"
+        "why": "administration-service.ts:335 → notification-state.ts:88: one personal mutation",
+        "ongoing": false
       }
     },
     {
@@ -702,7 +731,8 @@
       "note": "refused today (`admin-svc:135-137`)",
       "effect": {
         "where": "outside",
-        "why": "administration-service.ts:349: not shown to be one transaction"
+        "why": "administration-service.ts:349: not shown to be one transaction",
+        "ongoing": false
       }
     },
     {
@@ -725,7 +755,8 @@
       "note": "refused today (`admin-svc:130-134`) and its store write takes no identity (`admin-svc:334-340`)",
       "effect": {
         "where": "outside",
-        "why": "administration-service.ts:330: reconciles after the write"
+        "why": "administration-service.ts:330: reconciles after the write",
+        "ongoing": false
       }
     },
     {
@@ -748,7 +779,8 @@
       "note": "device key of the person's own client",
       "effect": {
         "where": "outside",
-        "why": "server.ts:1786: not shown to be one transaction"
+        "why": "server.ts:1786: not shown to be one transaction",
+        "ongoing": false
       }
     },
     {
@@ -782,7 +814,8 @@
       "note": "`server.ts:2085`; sign-in that follows is its own secret command; lead decision 2: an endpoint elsewhere sends what tasks say to that server (`packages/harness/src/compatible-endpoint.ts:20-35`, `packages/harness-antigravity/src/config.ts:6-9`)",
       "effect": {
         "where": "database",
-        "why": "server.ts:2145: one store write; server.ts:2154 schedules the inspection in memory"
+        "why": "server.ts:2145: one store write; server.ts:2154 schedules the inspection in memory",
+        "ongoing": false
       }
     },
     {
@@ -805,7 +838,8 @@
       "note": "`server.ts:2146`",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2157: installs on the work location's Runner"
+        "why": "server.ts:2157: installs on the work location's Runner",
+        "ongoing": false
       }
     },
     {
@@ -828,7 +862,8 @@
       "note": "ambient CLI: only its Mac's owner (`server.ts:1001-1014`) — stays ask",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2251: removes on the Runner after the write"
+        "why": "server.ts:2251: removes on the Runner after the write",
+        "ongoing": false
       }
     },
     {
@@ -851,7 +886,8 @@
       "note": "`admin-svc:413`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "database",
-        "why": "administration-service.ts:455: one store write, then an in-memory schedule"
+        "why": "administration-service.ts:455: one store write, then an in-memory schedule",
+        "ongoing": false
       }
     },
     {
@@ -874,7 +910,8 @@
       "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "database",
-        "why": "administration-service.ts:480: one store write, then an in-memory schedule"
+        "why": "administration-service.ts:480: one store write, then an in-memory schedule",
+        "ongoing": false
       }
     },
     {
@@ -907,7 +944,8 @@
       "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "database",
-        "why": "administration-service.ts:480: one store write, then an in-memory schedule"
+        "why": "administration-service.ts:480: one store write, then an in-memory schedule",
+        "ongoing": false
       }
     },
     {
@@ -930,7 +968,8 @@
       "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "database",
-        "why": "administration-service.ts:513: one store write"
+        "why": "administration-service.ts:513: one store write",
+        "ongoing": false
       }
     },
     {
@@ -953,7 +992,9 @@
       "note": "collected on the person's screen",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2261: the engine's sign-in on the Runner"
+        "why": "server.ts:2261: the engine's sign-in on the Runner",
+        "ongoing": true,
+        "lineageWhy": "a sign-in only the person completes (step none)"
       }
     },
     {
@@ -976,7 +1017,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2279: the engine's sign-in on the Runner"
+        "why": "server.ts:2279: the engine's sign-in on the Runner",
+        "ongoing": false
       }
     },
     {
@@ -999,7 +1041,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2293: the engine's sign-in on the Runner"
+        "why": "server.ts:2293: the engine's sign-in on the Runner",
+        "ongoing": false
       }
     },
     {
@@ -1022,7 +1065,8 @@
       "note": "redirect",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2303: the engine's sign-in on the Runner"
+        "why": "server.ts:2303: the engine's sign-in on the Runner",
+        "ongoing": false
       }
     },
     {
@@ -1045,7 +1089,8 @@
       "note": "ambient CLI rule stays (`server.ts:2313`)",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2319: the engine's sign-in on the Runner"
+        "why": "server.ts:2319: the engine's sign-in on the Runner",
+        "ongoing": false
       }
     },
     {
@@ -1078,7 +1123,8 @@
       "note": "`server.ts:2339`; store already computes `changed` (`packages/database/src/machine-store.ts:396-400`)",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2350: not shown to be one transaction; the policy reaches the device"
+        "why": "server.ts:2350: not shown to be one transaction; the policy reaches the device",
+        "ongoing": false
       }
     },
     {
@@ -1101,7 +1147,8 @@
       "note": "`admin-svc:545`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "database",
-        "why": "administration-service.ts:537: one store write"
+        "why": "administration-service.ts:537: one store write",
+        "ongoing": false
       }
     },
     {
@@ -1124,7 +1171,8 @@
       "note": "`admin-svc:532`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "outside",
-        "why": "administration-service.ts:525: ends the device's connections"
+        "why": "administration-service.ts:525: ends the device's connections",
+        "ongoing": false
       }
     },
     {
@@ -1147,7 +1195,8 @@
       "note": "`admin-svc:577`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "outside",
-        "why": "administration-service.ts:589: closes the session's sockets"
+        "why": "administration-service.ts:589: closes the session's sockets",
+        "ongoing": false
       }
     },
     {
@@ -1170,7 +1219,8 @@
       "note": "device-bound proof (`server.ts:2329`)",
       "effect": {
         "where": "database",
-        "why": "server.ts:2342: one store write"
+        "why": "server.ts:2342: one store write",
+        "ongoing": false
       }
     },
     {
@@ -1193,7 +1243,8 @@
       "note": "needs the owner's signed-in session (`admin-svc:558-562`); ask until that is understood",
       "effect": {
         "where": "outside",
-        "why": "administration-service.ts:559: the device's driver"
+        "why": "administration-service.ts:559: the device's driver",
+        "ongoing": false
       }
     },
     {
@@ -1216,7 +1267,8 @@
       "note": "same refusal today; detach should not need the session",
       "effect": {
         "where": "outside",
-        "why": "administration-service.ts:559: the device's driver"
+        "why": "administration-service.ts:559: the device's driver",
+        "ongoing": false
       }
     },
     {
@@ -1239,7 +1291,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "registry.ts:132: a live owner view"
+        "why": "registry.ts:132: a live owner view",
+        "ongoing": false
       }
     },
     {
@@ -1262,7 +1315,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "registry.ts:132: a live owner view"
+        "why": "registry.ts:132: a live owner view",
+        "ongoing": false
       }
     },
     {
@@ -1285,7 +1339,8 @@
       "note": "token is never returned to an agent",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2467: not shown to be one transaction"
+        "why": "server.ts:2467: not shown to be one transaction",
+        "ongoing": false
       }
     },
     {
@@ -1308,7 +1363,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2489: not shown to be one transaction"
+        "why": "server.ts:2489: not shown to be one transaction",
+        "ongoing": false
       }
     },
     {
@@ -1331,7 +1387,8 @@
       "note": "`server.ts:2495`",
       "effect": {
         "where": "database",
-        "why": "server.ts:2509: one store write"
+        "why": "server.ts:2509: one store write",
+        "ongoing": false
       }
     },
     {
@@ -1354,7 +1411,8 @@
       "note": "today's `app_access_request` is this ask (`h/devices.ts:180`)",
       "effect": {
         "where": "outside",
-        "why": "device-routes.ts:246: the device's app approvals"
+        "why": "device-routes.ts:246: the device's app approvals",
+        "ongoing": false
       }
     },
     {
@@ -1388,7 +1446,8 @@
       "note": "allow face points at the same Request; re-authenticates the session (`dev-routes:274-283`)",
       "effect": {
         "where": "outside",
-        "why": "device-routes.ts:266: the device's app approvals"
+        "why": "device-routes.ts:266: the device's app approvals",
+        "ongoing": false
       }
     },
     {
@@ -1411,7 +1470,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "device-routes.ts:294: the device's app approvals"
+        "why": "device-routes.ts:294: the device's app approvals",
+        "ongoing": false
       }
     },
     {
@@ -1434,7 +1494,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "device-routes.ts:259: the device's app approvals"
+        "why": "device-routes.ts:259: the device's app approvals",
+        "ongoing": false
       }
     },
     {
@@ -1457,7 +1518,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "device-routes.ts:231: the device's app approvals"
+        "why": "device-routes.ts:231: the device's app approvals",
+        "ongoing": false
       }
     },
     {
@@ -1480,7 +1542,8 @@
       "note": "store takes an identity already",
       "effect": {
         "where": "outside",
-        "why": "device-routes.ts:239: the device's app approvals"
+        "why": "device-routes.ts:239: the device's app approvals",
+        "ongoing": false
       }
     },
     {
@@ -1503,7 +1566,8 @@
       "note": "today's `app_access_request {dataApp}`",
       "effect": {
         "where": "outside",
-        "why": "device-routes.ts:312: a device grant"
+        "why": "device-routes.ts:312: a device grant",
+        "ongoing": false
       }
     },
     {
@@ -1529,7 +1593,8 @@
       },
       "effect": {
         "where": "outside",
-        "why": "device-administration.ts:43: a device grant"
+        "why": "device-administration.ts:43: a device grant",
+        "ongoing": false
       }
     },
     {
@@ -1555,7 +1620,8 @@
       },
       "effect": {
         "where": "outside",
-        "why": "device-administration.ts:60: the device's connection"
+        "why": "device-administration.ts:60: the device's connection",
+        "ongoing": false
       }
     },
     {
@@ -1578,7 +1644,8 @@
       "note": "`dev-admin:39`",
       "effect": {
         "where": "outside",
-        "why": "device-administration.ts:40: a local server's files and process"
+        "why": "device-administration.ts:40: a local server's files and process",
+        "ongoing": false
       }
     },
     {
@@ -1601,7 +1668,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "device-routes.ts:287: a local server's secrets"
+        "why": "device-routes.ts:287: a local server's secrets",
+        "ongoing": false
       }
     },
     {
@@ -1634,7 +1702,8 @@
       "note": "store takes an identity; handler does not pass it (`server.ts:1746`)",
       "effect": {
         "where": "outside",
-        "why": "server.ts:1750: not shown to be one transaction"
+        "why": "server.ts:1750: not shown to be one transaction",
+        "ongoing": false
       }
     },
     {
@@ -1668,7 +1737,9 @@
       "note": "session-bound service (`server.ts:2393`)",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2404: Remote access, through the Opensteer account"
+        "why": "server.ts:2404: Remote access, through the Opensteer account",
+        "ongoing": true,
+        "lineageWhy": "Remote access, the person's to turn on (widen-other, step none for connections)"
       }
     },
     {
@@ -1691,7 +1762,8 @@
       "note": "code never returned to an agent",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2426: Remote access pairing"
+        "why": "server.ts:2426: Remote access pairing",
+        "ongoing": false
       }
     },
     {
@@ -1714,7 +1786,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2439: the Opensteer account service"
+        "why": "server.ts:2439: the Opensteer account service",
+        "ongoing": false
       }
     },
     {
@@ -1737,7 +1810,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2440: the Opensteer account service"
+        "why": "server.ts:2440: the Opensteer account service",
+        "ongoing": false
       }
     },
     {
@@ -1760,7 +1834,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2441: the Opensteer account service"
+        "why": "server.ts:2441: the Opensteer account service",
+        "ongoing": false
       }
     },
     {
@@ -1783,7 +1858,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2435: the Opensteer account service"
+        "why": "server.ts:2435: the Opensteer account service",
+        "ongoing": false
       }
     },
     {
@@ -1806,7 +1882,8 @@
       "note": "`server.ts:2452`",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2464: signs out and closes the session's connections"
+        "why": "server.ts:2464: signs out and closes the session's connections",
+        "ongoing": false
       }
     },
     {
@@ -1839,7 +1916,8 @@
       "note": "the ask points at the consent screen itself; review G2: denying a consent ends the ask (`apps/host/src/mcp/connections/connection-oauth.ts:374-408`)",
       "effect": {
         "where": "outside",
-        "why": "connection-routes.ts:404: not shown to be one transaction"
+        "why": "connection-routes.ts:404: not shown to be one transaction",
+        "ongoing": false
       }
     },
     {
@@ -1873,7 +1951,8 @@
       "note": "on the branch a chat's grant and mode are edited here (`channel-handlers.ts:64-65` comment); (c)(d): own connection only — a chat is another principal, not_found",
       "effect": {
         "where": "outside",
-        "why": "connection-routes.ts:394: stops the lineage after a narrowing commits"
+        "why": "connection-routes.ts:394: stops the lineage after a narrowing commits",
+        "ongoing": false
       }
     },
     {
@@ -1896,7 +1975,8 @@
       "note": "(c)(d): own connection only; a chat is another principal, not_found",
       "effect": {
         "where": "outside",
-        "why": "connection-routes.ts:384: stops the lineage after the commit"
+        "why": "connection-routes.ts:384: stops the lineage after the commit",
+        "ongoing": false
       }
     },
     {
@@ -1919,7 +1999,8 @@
       "note": "",
       "effect": {
         "where": "database",
-        "why": "connection-routes.ts:398: one store write"
+        "why": "connection-routes.ts:398: one store write",
+        "ongoing": false
       }
     },
     {
@@ -1942,7 +2023,8 @@
       "note": "the person's acknowledgement of evidence; an agent must not clear it",
       "effect": {
         "where": "database",
-        "why": "connection-routes.ts:401: one store write"
+        "why": "connection-routes.ts:401: one store write",
+        "ongoing": false
       }
     },
     {
@@ -1965,7 +2047,8 @@
       "note": "`pauth:390`; (d): a new plugin is outside the grant, ask for more; X11: its code runs wherever the plugin is used, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "outside",
-        "why": "plugin-owner-api.ts:1046: the plugin engine's own work"
+        "why": "plugin-owner-api.ts:1046: the plugin engine's own work",
+        "ongoing": true
       }
     },
     {
@@ -1988,7 +2071,8 @@
       "note": "(d): a new version is a changed target (architecture: \"A granted thing that changed is not granted\"); X11: what the plugin's schedules and workflows run from now on, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "outside",
-        "why": "plugin-owner-api.ts:1079: the plugin engine's own work"
+        "why": "plugin-owner-api.ts:1079: the plugin engine's own work",
+        "ongoing": true
       }
     },
     {
@@ -2011,7 +2095,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "plugin-owner-api.ts:1085: the plugin engine's own work"
+        "why": "plugin-owner-api.ts:1085: the plugin engine's own work",
+        "ongoing": false
       }
     },
     {
@@ -2045,7 +2130,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "plugin-owner-api.ts:1091: the plugin engine's own work"
+        "why": "plugin-owner-api.ts:1091: the plugin engine's own work",
+        "ongoing": false
       }
     },
     {
@@ -2068,7 +2154,8 @@
       "note": "today's `plugin_account_request`",
       "effect": {
         "where": "outside",
-        "why": "plugin-owner-api.ts:1096: the plugin engine's own work"
+        "why": "plugin-owner-api.ts:1096: the plugin engine's own work",
+        "ongoing": false
       }
     },
     {
@@ -2091,7 +2178,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "plugin-owner-api.ts:1121: the plugin engine's own work"
+        "why": "plugin-owner-api.ts:1121: the plugin engine's own work",
+        "ongoing": false
       }
     },
     {
@@ -2114,7 +2202,8 @@
       "note": "today's `plugin_account_request`",
       "effect": {
         "where": "outside",
-        "why": "plugin-owner-api.ts:1131: the plugin engine's own work"
+        "why": "plugin-owner-api.ts:1131: the plugin engine's own work",
+        "ongoing": false
       }
     },
     {
@@ -2137,7 +2226,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "plugin-owner-api.ts:1135: the plugin engine's own work"
+        "why": "plugin-owner-api.ts:1135: the plugin engine's own work",
+        "ongoing": false
       }
     },
     {
@@ -2185,7 +2275,8 @@
       },
       "effect": {
         "where": "outside",
-        "why": "plugin-owner-api.ts:1150: the plugin engine's own work"
+        "why": "plugin-owner-api.ts:1150: the plugin engine's own work",
+        "ongoing": true
       }
     },
     {
@@ -2218,7 +2309,8 @@
       "note": "the ask points at the approval itself; review G2: declining a scheduled run narrows (`packages/protocol/src/plugins.ts:607-612`)",
       "effect": {
         "where": "outside",
-        "why": "plugin-owner-api.ts:1160: the plugin engine's own work"
+        "why": "plugin-owner-api.ts:1160: the plugin engine's own work",
+        "ongoing": false
       }
     },
     {
@@ -2245,7 +2337,8 @@
       },
       "effect": {
         "where": "outside",
-        "why": "plugin-owner-api.ts:1164: the plugin engine's own work"
+        "why": "plugin-owner-api.ts:1164: the plugin engine's own work",
+        "ongoing": true
       }
     },
     {
@@ -2272,7 +2365,8 @@
       },
       "effect": {
         "where": "outside",
-        "why": "plugin-owner-api.ts:1176: the plugin engine's own work"
+        "why": "plugin-owner-api.ts:1176: the plugin engine's own work",
+        "ongoing": false
       }
     },
     {
@@ -2299,7 +2393,8 @@
       },
       "effect": {
         "where": "outside",
-        "why": "plugin-owner-api.ts:1180: the plugin engine's own work"
+        "why": "plugin-owner-api.ts:1180: the plugin engine's own work",
+        "ongoing": false
       }
     },
     {
@@ -2322,7 +2417,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "plugin-owner-api.ts:1181: the plugin engine's own work"
+        "why": "plugin-owner-api.ts:1181: the plugin engine's own work",
+        "ongoing": false
       }
     },
     {
@@ -2345,7 +2441,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "plugin-owner-api.ts:1188: the plugin engine's own work"
+        "why": "plugin-owner-api.ts:1188: the plugin engine's own work",
+        "ongoing": true
       }
     },
     {
@@ -2368,7 +2465,8 @@
       "note": "redirect on the person's device",
       "effect": {
         "where": "outside",
-        "why": "plugin-oauth-routes.ts:57: the provider's sign-in"
+        "why": "plugin-oauth-routes.ts:57: the provider's sign-in",
+        "ongoing": false
       }
     },
     {
@@ -2391,7 +2489,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "plugin-oauth-routes.ts:66: the provider's sign-in"
+        "why": "plugin-oauth-routes.ts:66: the provider's sign-in",
+        "ongoing": false
       }
     },
     {
@@ -2414,7 +2513,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "plugin-oauth-routes.ts:76: the provider's sign-in"
+        "why": "plugin-oauth-routes.ts:76: the provider's sign-in",
+        "ongoing": false
       }
     },
     {
@@ -2437,7 +2537,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "plugin-oauth-routes.ts:81: the provider's sign-in"
+        "why": "plugin-oauth-routes.ts:81: the provider's sign-in",
+        "ongoing": false
       }
     },
     {
@@ -2460,7 +2561,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "plugin-oauth-routes.ts:83: the provider's app registration"
+        "why": "plugin-oauth-routes.ts:83: the provider's app registration",
+        "ongoing": false
       }
     },
     {
@@ -2483,7 +2585,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "plugin-oauth-routes.ts:94: the provider's app registration"
+        "why": "plugin-oauth-routes.ts:94: the provider's app registration",
+        "ongoing": false
       }
     },
     {
@@ -2506,7 +2609,9 @@
       "note": "; X13: a chat account and its chats are other connections, so not found for every connected agent",
       "effect": {
         "where": "outside",
-        "why": "channel-handlers.ts:40: the messaging provider"
+        "why": "channel-handlers.ts:40: the messaging provider",
+        "ongoing": true,
+        "lineageWhy": "another connection, never a connected agent's (X13)"
       }
     },
     {
@@ -2529,7 +2634,8 @@
       "note": "; X13: a chat account and its chats are other connections, so not found for every connected agent",
       "effect": {
         "where": "outside",
-        "why": "channel-handlers.ts:58: the messaging provider"
+        "why": "channel-handlers.ts:58: the messaging provider",
+        "ongoing": false
       }
     },
     {
@@ -2552,7 +2658,8 @@
       "note": "; X13: a chat account and its chats are other connections, so not found for every connected agent",
       "effect": {
         "where": "outside",
-        "why": "channel-handlers.ts:50: the messaging provider"
+        "why": "channel-handlers.ts:50: the messaging provider",
+        "ongoing": false
       }
     },
     {
@@ -2587,7 +2694,8 @@
       "note": "branch `channel-handlers.ts:84-86`; agent path `administration-service.ts:314` still passes the identity; no tool builds it on the branch; chat states `packages/database/src/connection-liveness.ts:15-16,92-93`; X13: a chat account and its chats are other connections, so not found for every connected agent",
       "effect": {
         "where": "outside",
-        "why": "administration-service.ts:315: the messaging provider"
+        "why": "administration-service.ts:315: the messaging provider",
+        "ongoing": false
       }
     },
     {
@@ -2610,7 +2718,9 @@
       "note": "branch `host-api.ts:1026-1044`, `channel-handlers.ts:66-77`; \"anyone\" senders only for a named channel, holding tasks and plugins only; X13: a chat account and its chats are other connections, so not found for every connected agent",
       "effect": {
         "where": "outside",
-        "why": "channel-handlers.ts:68: the messaging provider"
+        "why": "channel-handlers.ts:68: the messaging provider",
+        "ongoing": true,
+        "lineageWhy": "another connection, never a connected agent's (X13)"
       }
     },
     {
@@ -2633,7 +2743,8 @@
       "note": "branch `host-api.ts:1046-1054`, `channel-handlers.ts:80-83`; the code is never returned to an agent; X13: a chat account and its chats are other connections, so not found for every connected agent",
       "effect": {
         "where": "outside",
-        "why": "channel-handlers.ts:81: the messaging provider"
+        "why": "channel-handlers.ts:81: the messaging provider",
+        "ongoing": false
       }
     },
     {
@@ -2656,7 +2767,8 @@
       "note": "owner-only `browser.start` (`server.ts:2504`); `tab_open` is the actor path; X11: the session goes on for the task it was started for, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2535: the browser runtime"
+        "why": "server.ts:2535: the browser runtime",
+        "ongoing": true
       }
     },
     {
@@ -2679,7 +2791,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2628: the browser runtime"
+        "why": "server.ts:2628: the browser runtime",
+        "ongoing": false
       }
     },
     {
@@ -2702,7 +2815,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "browser-service.ts:1517: tells the Runners after the write"
+        "why": "browser-service.ts:1517: tells the Runners after the write",
+        "ongoing": false
       }
     },
     {
@@ -2728,7 +2842,8 @@
       },
       "effect": {
         "where": "outside",
-        "why": "browser-service.ts:1528: tells the Runners after the write"
+        "why": "browser-service.ts:1528: tells the Runners after the write",
+        "ongoing": false
       }
     },
     {
@@ -2751,7 +2866,8 @@
       "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "outside",
-        "why": "browser-service.ts:1550: stops the profile's sessions"
+        "why": "browser-service.ts:1550: stops the profile's sessions",
+        "ongoing": false
       }
     },
     {
@@ -2777,7 +2893,8 @@
       },
       "effect": {
         "where": "outside",
-        "why": "browser-service.ts:2019: the profile's browser"
+        "why": "browser-service.ts:2019: the profile's browser",
+        "ongoing": false
       }
     },
     {
@@ -2800,7 +2917,8 @@
       "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "outside",
-        "why": "browser-service.ts:2019: the profile's browser"
+        "why": "browser-service.ts:2019: the profile's browser",
+        "ongoing": false
       }
     },
     {
@@ -2823,7 +2941,8 @@
       "note": "Home-wide, not a grant-nameable resource; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2); destroy, as decided: it cannot be put back, so a connection removes it only at Full access and a selected grant asks",
       "effect": {
         "where": "outside",
-        "why": "browser-source-registration.ts:113: the paired Chrome's copies"
+        "why": "browser-source-registration.ts:113: the paired Chrome's copies",
+        "ongoing": false
       }
     },
     {
@@ -2846,7 +2965,9 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "browser-source-registration.ts:101: pairs a Chrome"
+        "why": "browser-source-registration.ts:101: pairs a Chrome",
+        "ongoing": true,
+        "lineageWhy": "a pairing only the person completes (step none)"
       }
     },
     {
@@ -2869,7 +2990,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "browser-source-registration.ts:103: not shown to be one transaction"
+        "why": "browser-source-registration.ts:103: not shown to be one transaction",
+        "ongoing": false
       }
     },
     {
@@ -2892,7 +3014,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "browser-source-registration.ts:110: ends the paired Chrome's connection"
+        "why": "browser-source-registration.ts:110: ends the paired Chrome's connection",
+        "ongoing": false
       }
     },
     {
@@ -2915,7 +3038,8 @@
       "note": "today's `chrome_cookies_request`",
       "effect": {
         "where": "outside",
-        "why": "browser-source-registration.ts:119: a sign-in in the person's browser"
+        "why": "browser-source-registration.ts:119: a sign-in in the person's browser",
+        "ongoing": false
       }
     },
     {
@@ -2950,7 +3074,8 @@
       "note": "allow face points at the same Request",
       "effect": {
         "where": "outside",
-        "why": "browser-source-registration.ts:131: a sign-in in the person's browser"
+        "why": "browser-source-registration.ts:131: a sign-in in the person's browser",
+        "ongoing": false
       }
     },
     {
@@ -2984,7 +3109,8 @@
       "note": "needs `context.session` (`bsr:150-154`); review G2: approve and approve-card release a saved login or a card (`apps/host/src/browser/password-sign-in-service.ts:815-927`); the allow face points at the same Request",
       "effect": {
         "where": "outside",
-        "why": "browser-source-registration.ts:149: a sign-in in the person's browser"
+        "why": "browser-source-registration.ts:149: a sign-in in the person's browser",
+        "ongoing": false
       }
     },
     {
@@ -3007,7 +3133,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2638: the pooled browser"
+        "why": "server.ts:2638: the pooled browser",
+        "ongoing": false
       }
     },
     {
@@ -3030,7 +3157,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2631: not shown to be one transaction"
+        "why": "server.ts:2631: not shown to be one transaction",
+        "ongoing": false
       }
     },
     {
@@ -3054,7 +3182,8 @@
       "note": "`TabActor` (`apps/host/src/tabs/ports.ts:45-49`); X12: today's tab_open refuses below the read-write ceiling (Full access or Auto), recorded in D0a, so the door asks there; approved C2 line: a connection opens tabs from Auto up and asks below it",
       "effect": {
         "where": "outside",
-        "why": "server.ts:596: the browser runtime"
+        "why": "server.ts:596: the browser runtime",
+        "ongoing": false
       }
     },
     {
@@ -3077,7 +3206,8 @@
       "note": "; approved C2 line: a connection closes tabs from Auto up and asks below it; your own agents as today's tab_close (D0a)",
       "effect": {
         "where": "outside",
-        "why": "server.ts:584: the browser runtime"
+        "why": "server.ts:584: the browser runtime",
+        "ongoing": false
       }
     },
     {
@@ -3100,7 +3230,8 @@
       "note": "takes `TabActor` but its agent admission is unverified (`tab-service.ts:792-800`)",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2572: the browser runtime"
+        "why": "server.ts:2572: the browser runtime",
+        "ongoing": false
       }
     },
     {
@@ -3123,7 +3254,8 @@
       "note": "the agent equivalent is `show_to_person`",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2591: the browser runtime"
+        "why": "server.ts:2591: the browser runtime",
+        "ongoing": false
       }
     },
     {
@@ -3146,7 +3278,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2597: the browser runtime"
+        "why": "server.ts:2597: the browser runtime",
+        "ongoing": false
       }
     },
     {
@@ -3169,7 +3302,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2609: the browser runtime"
+        "why": "server.ts:2609: the browser runtime",
+        "ongoing": false
       }
     },
     {
@@ -3192,7 +3326,8 @@
       "note": "`deleteGroup(ownerId, …)` (`tab-service.ts:913`)",
       "effect": {
         "where": "outside",
-        "why": "server.ts:2620: the browser runtime"
+        "why": "server.ts:2620: the browser runtime",
+        "ongoing": false
       }
     },
     {
@@ -3215,7 +3350,8 @@
       "note": "`rename(ownerId, …)` (`app-service.ts:401`)",
       "effect": {
         "where": "outside",
-        "why": "app-routes.ts:59: not shown to be one transaction"
+        "why": "app-routes.ts:59: not shown to be one transaction",
+        "ongoing": false
       }
     },
     {
@@ -3238,7 +3374,8 @@
       "note": "`AppActor` (`app-service.ts:51-53`); X11: an app server runs on, in no connection's Disconnect set, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "outside",
-        "why": "app-routes.ts:61: the app's process"
+        "why": "app-routes.ts:61: the app's process",
+        "ongoing": true
       }
     },
     {
@@ -3261,7 +3398,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "app-routes.ts:63: the app's process"
+        "why": "app-routes.ts:63: the app's process",
+        "ongoing": false
       }
     },
     {
@@ -3284,7 +3422,8 @@
       "note": "",
       "effect": {
         "where": "outside",
-        "why": "app-routes.ts:65: the app's process and files"
+        "why": "app-routes.ts:65: the app's process and files",
+        "ongoing": false
       }
     },
     {
@@ -3307,7 +3446,8 @@
       "note": "`TriggerService.manage` (`trigger-service.ts:272`); review D1: Full access, as today's tool (`packages/agent-tools/src/tools/triggers.ts:47`); D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2); X11: the automation takes its anchor task's lineage (trigger-store.ts:2437), so a connection asks unless that lineage is its own",
       "effect": {
         "where": "database",
-        "why": "trigger-service.ts:77: one store write; the notices after it are in memory"
+        "why": "trigger-service.ts:77: one store write; the notices after it are in memory",
+        "ongoing": true
       }
     },
     {
@@ -3340,7 +3480,8 @@
       "note": "another lineage's program stays nf/refused (`h/triggers.ts:58-61`); a new program needs Full access, as today's tool (`packages/agent-tools/src/tools/triggers.ts:65`); D0a: today's tool refuses any change below Full access, a name included (opensteer_automation_update for a Supervised Run: access_denied); X11: a new program or source runs on in the automation's lineage, so a connection outside that lineage asks",
       "effect": {
         "where": "database",
-        "why": "trigger-service.ts:165: one store write; the notices after it are in memory"
+        "why": "trigger-service.ts:165: one store write; the notices after it are in memory",
+        "ongoing": true
       }
     },
     {
@@ -3383,7 +3524,8 @@
       "note": "(b): archive needs full access today (`t/triggers.ts:86`); X11: resuming starts the automation again in its own lineage, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "database",
-        "why": "trigger-service.ts:183: one store write; the notices after it are in memory"
+        "why": "trigger-service.ts:183: one store write; the notices after it are in memory",
+        "ongoing": true
       }
     },
     {
@@ -3406,7 +3548,8 @@
       "note": "full access today; X11: the occurrence is the automation's lineage's (`trigger-store.ts:1879`), so a connection outside that lineage asks",
       "effect": {
         "where": "database",
-        "why": "trigger-service.ts:220: an occurrence row, run from the committed row"
+        "why": "trigger-service.ts:220: an occurrence row, run from the committed row",
+        "ongoing": true
       }
     },
     {
@@ -3429,7 +3572,8 @@
       "note": "",
       "effect": {
         "where": "database",
-        "why": "trigger-service.ts:267: one store write"
+        "why": "trigger-service.ts:267: one store write",
+        "ongoing": false
       }
     }
   ],

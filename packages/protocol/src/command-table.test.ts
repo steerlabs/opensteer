@@ -28,7 +28,14 @@ interface ExpectedRow {
   readonly stepFor?: Readonly<Record<string, string>>;
   readonly faces: readonly ExpectedFace[];
   /** Where its handler's effect can be, read from the handler, with that line. */
-  readonly effect?: { readonly where: string; readonly why: string };
+  readonly effect?: {
+    readonly where: string;
+    readonly why: string;
+    /** It starts something that goes on after the command returns. */
+    readonly ongoing?: boolean;
+    /** Why an ongoing effect needs no `lineage` face: it is the caller's own lineage. */
+    readonly lineageWhy?: string;
+  };
 }
 const rows = expected.rows as readonly ExpectedRow[];
 const step = (value: string): CommandStep => (value === "—" ? "none" : (value as CommandStep));
@@ -237,6 +244,15 @@ describe("the command table", () => {
       if (!/[a-z-]+\.ts:\d+/u.test(row.effect.why)) missing.push(`${row.type}: no handler line`);
       if (commandEffect(table) !== row.effect.where)
         missing.push(`${row.type}: table ${commandEffect(table)}, rows file ${row.effect.where}`);
+      // Whether it starts something ongoing is said for every row; one that does carries
+      // `lineage` on a face, or says why it runs in the caller's own lineage (AD4).
+      if (typeof row.effect.ongoing !== "boolean") missing.push(`${row.type}: ongoing unsaid`);
+      else if (
+        row.effect.ongoing &&
+        !table.faces.some((face) => face.lineage) &&
+        !row.effect.lineageWhy
+      )
+        missing.push(`${row.type}: ongoing with no lineage face and no reason`);
     }
     expect(missing).toEqual([]);
   });

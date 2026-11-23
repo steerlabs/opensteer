@@ -952,7 +952,12 @@ export const commandTable: CommandTable = {
     step: "A",
     stepFor: { connections: "B" },
     // Approval set to automatic lifts the browser approval the person would otherwise give.
-    faces: [{ class: "widen-self" }, { class: "narrow" }, { class: "approve", step: "none" }],
+    // A schedule switched on runs on in the plugin engine, as the person's (AD4, X11).
+    faces: [
+      { class: "widen-self", lineage: true },
+      { class: "narrow" },
+      { class: "approve", step: "none" },
+    ],
     // Left out, an enabled schedule takes the default the store applies, which on the person's own
     // path is automatic: only an explicit browser approval keeps it from approving itself.
     face: (c) =>
@@ -1011,7 +1016,8 @@ export const commandTable: CommandTable = {
     family: "plugins",
     scope: "nameable",
     step: "B",
-    faces: one("widen-self"),
+    // A webhook set up delivers on, in the plugin engine, as the person's (AD4, X11).
+    faces: one("widen-self", { lineage: true }),
     governs: (c) => resource("plugin", c.pluginId),
     // The signing secret the person copies from the provider.
     secretFields: ["secret"],
