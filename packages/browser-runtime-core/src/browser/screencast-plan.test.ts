@@ -859,4 +859,19 @@ describe("the state after each event", () => {
       unpictured: 0,
     });
   });
+
+  it("clears a pending tab-closed redraw when the running cast stops or its casts end", () => {
+    const base = facts();
+    const key = keyOf(base);
+    const pendingRedraw = after(
+      { ...initialTabCastState(), lastKey: key, shown: true, told: { key, state: "running" } },
+      { kind: "tab-closed-beside" },
+      base,
+    );
+    expect(pendingRedraw.redraw).toBe(true);
+    expect(
+      after(pendingRedraw, { kind: "stopped", retry: false }, facts({ density: 1 })).redraw,
+    ).toBe(false);
+    expect(after(pendingRedraw, { kind: "casts-ended" }, base).redraw).toBe(false);
+  });
 });

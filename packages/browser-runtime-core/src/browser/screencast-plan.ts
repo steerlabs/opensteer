@@ -779,6 +779,7 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
         // A stop for a change (resize, pause, leaving) starts the next cast's key afresh so a
         // timed-out stop's count is kept for the start that follows it (U4).
         lastKey: change ? null : state.lastKey,
+        redraw: false,
         shown: false,
         told: { state: "none" },
         trouble: null,
@@ -813,7 +814,7 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
     case "casts-ended":
       // The start in flight is ended with them: the follow view lets it go (S1).
       return told.state === "sent" || told.state === "running"
-        ? { ...state, shown: false, told: { state: "none" }, trouble: null }
+        ? { ...state, redraw: false, shown: false, told: { state: "none" }, trouble: null }
         : state;
     case "stop-timed-out":
       // S3 / U4: the stop counts as answered, and the start after it as an attempt with no picture,
