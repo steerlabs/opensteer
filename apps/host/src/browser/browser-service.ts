@@ -664,6 +664,8 @@ export type StartBrowserSessionInput = {
   readonly tabGeneration?: number;
   readonly previousPageBinding?: PageBinding;
   readonly initialSurfaceId?: BrowserSurfaceId;
+  /** The initial tab's row exactly as binding it to this session wrote it. */
+  readonly onPageBound?: (row: TabRecord) => void;
   readonly dormantSurfaceIds?: readonly BrowserSurfaceId[];
   readonly opener?: BrowserSessionOpenerRecord | null;
   readonly agentBindingId?: string;
@@ -4058,6 +4060,7 @@ export class BrowserService {
           .map((other) => other.id);
         this.#pagesAwaitingNavigation.add(row.id);
         const budget = this.#poolStartBudget(signal);
+        let bound: TabRecord | undefined;
         try {
           const finish = await this.#prepareStart(
             {
@@ -4065,6 +4068,9 @@ export class BrowserService {
               sessionId,
               tabGroupId: binding.lineageId,
               initialSurfaceId: row.id,
+              onPageBound: (written) => {
+                bound = written;
+              },
               tabGeneration: row.generation,
               previousPageBinding: binding,
               dormantSurfaceIds: dormant,
@@ -4089,7 +4095,23 @@ export class BrowserService {
             budget,
           );
           await finish();
-          row = await this.#requireWorkspaceGeneration(ownerId, initial);
+          try {
+            row = await this.#requireWorkspaceGeneration(ownerId, initial);
+          } catch (error) {
+            this.#pagesAwaitingNavigation.delete(initial.id);
+            // Only the tab's own verdict that it is gone ends the page that started for it: no
+            // tab shows that page and no one could close it. Any other failure leaves the person's
+            // open tab bound to its live session for the next activation. The witness is the row
+            // as the bind wrote it; the refusal does not wait on the close.
+            if (error instanceof OpensteerError && error.code === "not_found")
+              void this.#queuePhysicalPageClose(
+                sessionId,
+                initial.id,
+                undefined,
+                bound ? { ownerId, row: bound } : undefined,
+              ).catch((closeError: unknown) => this.#onError(closeError));
+            throw error;
+          }
           const record = row.pageBinding
             ? await this.#repository.getBrowserSessionForOwner(row.pageBinding.sessionId, ownerId)
             : null;
@@ -6876,6 +6898,7 @@ export class BrowserService {
               code: "conflict",
               message: "The page closed during restoration.",
             });
+          input.onPageBound?.(bound);
         }
       }
       if (input.tabGroupId) this.#onTabsChanged();
