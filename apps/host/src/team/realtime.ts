@@ -170,8 +170,8 @@ export class TeamRealtimeHub {
       generation: subscription.generation,
     }));
   }
-  #sidebar(actor: TeamActor, version: number) {
-    const key = JSON.stringify([actor, version, this.access.revision]);
+  #sidebar(actor: TeamActor, version: number, revision = this.access.revision) {
+    const key = JSON.stringify([actor, version, revision]);
     let pending = this.#sidebars.get(key);
     if (!pending) {
       pending = withTeamPeerVersion(version, () =>
@@ -180,6 +180,27 @@ export class TeamRealtimeHub {
       this.#sidebars.set(key, pending);
     }
     return pending;
+  }
+  /** Delivers a sidebar only if its access revision still matches at handoff; rebuilds if access changed. */
+  async #sendSidebar(peer: Peer): Promise<void> {
+    let revision = await this.access.current();
+    let sidebar = await this.#sidebar(peer.actor, peer.version, revision);
+    if (peer.closed) return;
+    await withTeamPeerVersion(peer.version, () =>
+      this.access.handoff(
+        revision,
+        async () => {
+          if (peer.closed) return true;
+          if (!(await this.#authorize(peer))) return false;
+          revision = this.access.revision;
+          sidebar = await this.#sidebar(peer.actor, peer.version, revision);
+          return true;
+        },
+        () => {
+          if (!peer.closed) this.#write(peer, { type: "team.sidebar", sidebar });
+        },
+      ),
+    );
   }
   async visible(userId: UserId, channelId: TeamChannelId) {
     const result = await sql`select 1 from team_presence where user_id=${userId} and visible
@@ -229,12 +250,7 @@ export class TeamRealtimeHub {
       for (const subscription of peer.subscriptions.values())
         if (subscription.scope) this.#dirty.add(subscription.scope.channelId);
       if ([...peer.subscriptions.values()].some((s) => s.sidebar)) {
-        const revision = await this.access.current();
-        await this.#handoff(
-          peer,
-          { type: "team.sidebar", sidebar: await this.#sidebar(peer.actor, peer.version) },
-          revision,
-        );
+        await this.#sendSidebar(peer);
       }
     }
     const members = await this.access.database.selectFrom("teamMembers").select("userId").execute();
@@ -292,10 +308,10 @@ export class TeamRealtimeHub {
             });
           const hadSidebar = [...peer.subscriptions.values()].some((s) => s.sidebar);
           peer.subscriptions.set(subscription.id, subscription);
-          if (frame.sidebar && !hadSidebar) {
-            const revision = await this.access.current();
-            const sidebar = await this.#sidebar(actor, peer.version);
-            await this.#handoff(peer, { type: "team.sidebar", sidebar }, revision);
+          // Initial sidebar subscribes and idle sidebar-only liveness probes both expect a
+          // `team.sidebar` response; channel/thread subscribes and unsubscribes do not.
+          if (frame.sidebar && (!hadSidebar || (subscription.id === "sidebar" && !frame.scope))) {
+            await this.#sendSidebar(peer);
           }
           if (frame.scope) {
             const revision = await this.access.current();

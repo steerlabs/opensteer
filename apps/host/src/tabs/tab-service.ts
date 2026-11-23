@@ -6,9 +6,12 @@ import {
   TabIdSchema,
   TabSchema,
   DeviceTabTargetSchema,
+  type App,
   type AppId,
   type DeviceId,
+  type RunnerId,
   type Tab,
+  type TabGroup,
   type TabGroupId,
   type TabId,
   type TabLayout,
@@ -24,6 +27,8 @@ import {
   TabOrganizeInputSchema,
   type TabBootstrap,
   type TabCloseResult,
+  type TabCommand,
+  type TabCommandResult,
   type TabGroupUpdateInput,
   type TabListInput,
   type TabListResult,
@@ -37,6 +42,8 @@ import { z } from "zod";
 import {
   TabStore,
   tabGroupOf,
+  tabLayoutIds,
+  tabMutationMeta,
   type TabAuthorization,
   type TabDatabase,
   type TabRecord,
@@ -72,6 +79,12 @@ export interface PageTabsPort {
   bind(claims: RunToolScope, row: TabRecord): Promise<PageAgentBinding>;
   closeViewers(ownerId: UserId, row: TabRecord): Promise<void>;
 }
+export interface TabComputerFact {
+  readonly name: string;
+  readonly connected: boolean;
+  readonly removed: boolean;
+  readonly selfRunnerId?: RunnerId | null | undefined;
+}
 export interface TabServiceOptions {
   store: TabStore;
   devices: Pick<OpensteerStore, "requireSelfDeviceId" | "requireDeviceSelfRunnerId">;
@@ -79,11 +92,7 @@ export interface TabServiceOptions {
   deviceNativeTargets?: DeviceNativeTabTargetsPort;
   pages: PageTabsPort;
   apps: Pick<AppTabPort, "get">;
-  computer(
-    ownerId: UserId,
-    computerId: DeviceId,
-    database: TabDatabase,
-  ): Promise<{ name: string; connected: boolean; removed: boolean }>;
+  computer(ownerId: UserId, computerId: DeviceId, database: TabDatabase): Promise<TabComputerFact>;
   /** Metadata reach includes offline computers; this must not depend on runtime connectivity. */
   canRead(actor: TabActor, row: TabRecord, database: TabDatabase): Promise<boolean>;
   readAuthority?(
@@ -94,7 +103,7 @@ export interface TabServiceOptions {
     ownerId: UserId,
     ids: DeviceId[],
     database: TabDatabase,
-  ): Promise<Map<DeviceId, { name: string; connected: boolean; removed: boolean }>>;
+  ): Promise<Map<DeviceId, TabComputerFact>>;
   readableTasks?(
     actor: TabActor,
     ids: RunToolScope["threadId"][],
@@ -147,21 +156,59 @@ const cursorSchema = z.strictObject({
   after: z.string(),
 });
 
+function layoutGroupMap(layout: TabLayout): Map<TabId, TabGroupId | null> {
+  const groups = new Map<TabId, TabGroupId | null>();
+  for (const item of layout.items) {
+    if (item.kind === "tab") groups.set(item.tabId, null);
+    else for (const tabId of item.group.tabIds) groups.set(tabId, item.group.groupId);
+  }
+  return groups;
+}
+
+function maskVisibleLayout(layout: TabLayout, visible: ReadonlySet<TabId>): TabLayout {
+  const hiddenGroups = new Set(
+    layout.items.flatMap((item) =>
+      item.kind === "group" && item.group.tabIds.some((id) => !visible.has(id))
+        ? [item.group.groupId]
+        : [],
+    ),
+  );
+  return {
+    revision: layout.revision,
+    items: layout.items.flatMap<TabLayout["items"][number]>((item) =>
+      item.kind === "tab"
+        ? visible.has(item.tabId)
+          ? [item]
+          : []
+        : hiddenGroups.has(item.group.groupId)
+          ? item.group.tabIds
+              .filter((id) => visible.has(id))
+              .map((tabId) => ({ kind: "tab" as const, tabId }))
+          : [item],
+    ),
+  };
+}
+
+interface OwnerTabCatalog {
+  rows: Map<TabId, Tab>;
+  /** Tracks the catalog.version at which each row was last projected/installed. */
+  rowVersions: Map<TabId, number>;
+  layout: TabLayout;
+  windowIds: Map<TabId, WindowId>;
+  complete: boolean;
+  /** null = full reload needed; otherwise maps dirty TabId -> catalog.version when invalidated. */
+  dirty: Map<TabId, number> | null;
+  version: number;
+  projectedVersion: number;
+  /** Bumped on every structural layout update so concurrent activations cannot write stale groupIds. */
+  structureEpoch: number;
+  pending?: Promise<void>;
+}
+
 export class TabService implements TabServicePort {
   readonly #stopAcquired: () => void;
   readonly options: TabServiceOptions;
-  readonly #catalogs = new Map<
-    UserId,
-    {
-      rows: Map<TabId, Tab>;
-      layout: TabLayout;
-      windowIds: Map<TabId, WindowId>;
-      dirty: Set<TabId> | null;
-      version: number;
-      projectedVersion: number;
-      pending?: Promise<void>;
-    }
-  >();
+  readonly #catalogs = new Map<UserId, OwnerTabCatalog>();
   async acquired(target: DeviceNativeTargetAcquired): Promise<TabId> {
     if (target.ownerId !== target.runClaims.requestedBy) notFound();
     const intent =
@@ -192,7 +239,7 @@ export class TabService implements TabServicePort {
           ...target,
           computerId: await options.devices.requireSelfDeviceId(target.computerId),
         }),
-      async (ownerId) => (await options.store.snapshot(ownerId)).layout.revision,
+      async (ownerId) => this.#layoutRevision(ownerId),
     );
   }
   changed(ownerId?: UserId, tabIds?: readonly TabId[]): void {
@@ -202,8 +249,8 @@ export class TabService implements TabServicePort {
         catalog.dirty = null;
         catalog.version += 1;
       } else if (tabIds.length) {
-        if (catalog.dirty) for (const tabId of tabIds) catalog.dirty.add(tabId);
         catalog.version += 1;
+        if (catalog.dirty) for (const tabId of tabIds) catalog.dirty.set(tabId, catalog.version);
       }
     }
   }
@@ -228,16 +275,108 @@ export class TabService implements TabServicePort {
     this.#stopAcquired();
     this.#catalogs.clear();
   }
+  async #layoutRevision(ownerId: UserId): Promise<number> {
+    if (typeof this.options.store.resourceLayout === "function") {
+      return (
+        await this.options.store.resourceLayout(this.options.store.database, ownerId, {
+          after: 0,
+          limit: 1,
+        })
+      ).revision;
+    }
+    return (await this.options.store.snapshot(ownerId)).layout.revision;
+  }
+  #registerWindowBeforeProjection(ownerId: UserId, row: TabRecord): void {
+    if (row.kind !== "window" || !row.windowId) return;
+    const catalog = this.#catalogs.get(ownerId);
+    if (catalog && !catalog.pending && catalog.projectedVersion > 0 && catalog.dirty !== null) {
+      catalog.windowIds.set(row.id, row.windowId);
+    }
+  }
+  #applyCatalogMutation(
+    ownerId: UserId,
+    nextLayout: TabLayout,
+    updatedTabs?: readonly Tab[],
+    updatedWindowIds?: ReadonlyMap<TabId, WindowId>,
+    baseVersion?: number,
+  ): void {
+    const catalog = this.#catalogs.get(ownerId);
+    if (!catalog) return;
+    if (
+      catalog.pending ||
+      catalog.projectedVersion === 0 ||
+      catalog.dirty === null ||
+      !catalog.complete
+    ) {
+      this.changed(ownerId);
+      return;
+    }
+    if (nextLayout.revision < catalog.layout.revision) return;
+    const updatedById = new Map(updatedTabs?.map((tab) => [tab.tabId, tab]) ?? []);
+    const nextOrder = tabLayoutIds(nextLayout);
+    const nextGroupByTab = layoutGroupMap(nextLayout);
+    const nextRows = new Map<TabId, Tab>();
+    const nextRowVersions = new Map<TabId, number>();
+    for (const tabId of nextOrder) {
+      const existing = catalog.rows.get(tabId);
+      const projected = updatedById.get(tabId);
+      const rowVersion = catalog.rowVersions.get(tabId) ?? 0;
+      const dirtyVersion = catalog.dirty.get(tabId) ?? 0;
+      const useProjected =
+        projected !== undefined &&
+        (!existing ||
+          (baseVersion !== undefined &&
+            catalog.projectedVersion <= baseVersion &&
+            rowVersion <= baseVersion &&
+            dirtyVersion <= baseVersion));
+      const chosen = useProjected ? projected : existing;
+      if (!chosen) {
+        this.changed(ownerId);
+        return;
+      }
+      const groupId = nextGroupByTab.get(tabId) ?? null;
+      nextRows.set(tabId, chosen.groupId === groupId ? chosen : { ...chosen, groupId });
+      nextRowVersions.set(tabId, useProjected ? (baseVersion ?? catalog.version) : rowVersion);
+    }
+    catalog.rows = nextRows;
+    catalog.rowVersions = nextRowVersions;
+    catalog.layout = structuredClone(nextLayout);
+    catalog.structureEpoch += 1;
+    for (const tabId of catalog.windowIds.keys()) {
+      if (!nextRows.has(tabId)) catalog.windowIds.delete(tabId);
+    }
+    if (updatedWindowIds) {
+      for (const [tabId, windowId] of updatedWindowIds) {
+        if (nextRows.has(tabId)) catalog.windowIds.set(tabId, windowId);
+      }
+    }
+    for (const [tabId, dirtyAt] of catalog.dirty) {
+      if (!nextRows.has(tabId)) {
+        catalog.dirty.delete(tabId);
+      } else if (
+        updatedById.has(tabId) &&
+        baseVersion !== undefined &&
+        catalog.projectedVersion <= baseVersion &&
+        (catalog.rowVersions.get(tabId) ?? 0) <= baseVersion &&
+        dirtyAt <= baseVersion
+      ) {
+        catalog.dirty.delete(tabId);
+      }
+    }
+  }
   async #catalog(ownerId: UserId) {
     let catalog = this.#catalogs.get(ownerId);
     if (!catalog) {
       catalog = {
         rows: new Map(),
+        rowVersions: new Map(),
         layout: { revision: 0, items: [] },
         windowIds: new Map(),
+        complete: true,
         dirty: null,
         version: 1,
         projectedVersion: 0,
+        structureEpoch: 0,
       };
       this.#catalogs.set(ownerId, catalog);
     }
@@ -251,20 +390,10 @@ export class TabService implements TabServicePort {
     }
     return { rows: current.rows, layout: current.layout };
   }
-  async #refreshCatalog(
-    ownerId: UserId,
-    current: {
-      rows: Map<TabId, Tab>;
-      layout: TabLayout;
-      windowIds: Map<TabId, WindowId>;
-      dirty: Set<TabId> | null;
-      version: number;
-      projectedVersion: number;
-    },
-  ): Promise<void> {
+  async #refreshCatalog(ownerId: UserId, current: OwnerTabCatalog): Promise<void> {
     const passVersion = current.version;
     const ids = current.dirty;
-    current.dirty = new Set();
+    current.dirty = new Map();
     try {
       if (ids === null) {
         const projected = await this.#snapshotProject(
@@ -272,18 +401,25 @@ export class TabService implements TabServicePort {
           this.options.store.database,
         );
         current.rows = new Map(projected.tabs.map((tab) => [tab.tabId, tab]));
+        current.rowVersions = new Map(projected.tabs.map((tab) => [tab.tabId, passVersion]));
         current.layout = projected.layout;
         current.windowIds = projected.windowIds;
+        current.complete = projected.complete;
+        current.structureEpoch += 1;
       } else if (ids.size) {
-        const rows = await this.options.store.rows(ownerId, [...ids]);
-        if (rows.length !== ids.size || rows.some((row) => !current.rows.has(row.id))) {
+        const tabIds = [...ids.keys()];
+        const rows = await this.options.store.rows(ownerId, tabIds);
+        if (rows.length !== tabIds.length || rows.some((row) => !current.rows.has(row.id))) {
           const projected = await this.#snapshotProject(
             { kind: "person", ownerId },
             this.options.store.database,
           );
           current.rows = new Map(projected.tabs.map((tab) => [tab.tabId, tab]));
+          current.rowVersions = new Map(projected.tabs.map((tab) => [tab.tabId, passVersion]));
           current.layout = projected.layout;
           current.windowIds = projected.windowIds;
+          current.complete = projected.complete;
+          current.structureEpoch += 1;
         } else {
           const projected = await this.#projectRows(
             { kind: "person", ownerId },
@@ -292,13 +428,18 @@ export class TabService implements TabServicePort {
             this.options.store.database,
             current.rows,
           );
-          for (const id of ids) {
+          for (const id of tabIds) {
             if (!projected.tabs.some((tab) => tab.tabId === id)) {
               current.rows.delete(id);
+              current.rowVersions.delete(id);
               current.windowIds.delete(id);
+              current.complete = false;
             }
           }
-          for (const tab of projected.tabs) current.rows.set(tab.tabId, tab);
+          for (const tab of projected.tabs) {
+            current.rows.set(tab.tabId, tab);
+            current.rowVersions.set(tab.tabId, passVersion);
+          }
           for (const [id, windowId] of projected.windowIds) current.windowIds.set(id, windowId);
         }
       }
@@ -325,10 +466,77 @@ export class TabService implements TabServicePort {
   async #snapshotProject(
     actor: TabActor,
     database: TabDatabase,
-  ): Promise<{ tabs: Tab[]; layout: TabLayout; windowIds: Map<TabId, WindowId> }> {
+  ): Promise<{
+    tabs: Tab[];
+    layout: TabLayout;
+    windowIds: Map<TabId, WindowId>;
+    complete: boolean;
+  }> {
     const ownerId = owner(actor),
       { rows, layout } = await this.options.store.snapshot(ownerId, database);
     return this.#projectRows(actor, rows, layout, database);
+  }
+  async #projectVisibleLayout(
+    actor: TabActor,
+    layout: TabLayout,
+    database: TabDatabase,
+  ): Promise<TabLayout> {
+    if (actor.kind === "person") return layout;
+    const ownerId = owner(actor);
+    const ids = tabLayoutIds(layout);
+    const rows = ids.length ? await this.options.store.rows(ownerId, ids) : [];
+    const canRead = this.options.readAuthority
+      ? await this.options.readAuthority(actor, database)
+      : (row: TabRecord) => this.options.canRead(actor, row, database);
+    const visible = new Set(
+      (await Promise.all(rows.map(async (row) => ((await canRead(row)) ? row.id : null)))).filter(
+        (id): id is TabId => id !== null,
+      ),
+    );
+    return maskVisibleLayout(layout, visible);
+  }
+  async #groupIdForTab(
+    actor: TabActor,
+    tabId: TabId,
+    layout: TabLayout,
+    database: TabDatabase,
+  ): Promise<TabGroupId | null> {
+    const groupId = tabGroupOf(layout, tabId);
+    if (!groupId) return null;
+    if (actor.kind === "person") return groupId;
+    const groupItem = layout.items.find(
+      (item) => item.kind === "group" && item.group.groupId === groupId,
+    );
+    if (groupItem?.kind !== "group") return null;
+    const siblings = await this.options.store.rows(owner(actor), groupItem.group.tabIds);
+    if (siblings.length !== groupItem.group.tabIds.length) return null;
+    const canRead = this.options.readAuthority
+      ? await this.options.readAuthority(actor, database)
+      : (row: TabRecord) => this.options.canRead(actor, row, database);
+    const allowed = await Promise.all(siblings.map((sibling) => canRead(sibling)));
+    return allowed.every(Boolean) ? groupId : null;
+  }
+  async #singleTabGroupId(
+    ownerId: UserId,
+    tabId: TabId,
+    database: TabDatabase,
+  ): Promise<TabGroupId | null> {
+    const catalog = this.#catalogs.get(ownerId);
+    if (
+      catalog &&
+      !catalog.pending &&
+      catalog.projectedVersion > 0 &&
+      catalog.dirty !== null &&
+      catalog.rows.has(tabId)
+    ) {
+      return catalog.rows.get(tabId)!.groupId;
+    }
+    if (typeof this.options.store.resourceTabGroups === "function") {
+      const groups = await this.options.store.resourceTabGroups(database, ownerId, [tabId]);
+      return groups.get(tabId) ?? null;
+    }
+    const { layout } = await this.options.store.snapshot(ownerId, database);
+    return tabGroupOf(layout, tabId);
   }
   async #projectRows(
     actor: TabActor,
@@ -336,7 +544,12 @@ export class TabService implements TabServicePort {
     layout: TabLayout,
     database: TabDatabase,
     catalog?: ReadonlyMap<TabId, Pick<Tab, "groupId">>,
-  ): Promise<{ tabs: Tab[]; layout: TabLayout; windowIds: Map<TabId, WindowId> }> {
+  ): Promise<{
+    tabs: Tab[];
+    layout: TabLayout;
+    windowIds: Map<TabId, WindowId>;
+    complete: boolean;
+  }> {
     const ownerId = owner(actor);
     const canRead = this.options.readAuthority
       ? await this.options.readAuthority(actor, database)
@@ -346,31 +559,7 @@ export class TabService implements TabServicePort {
         (id): id is TabId => id !== null,
       ),
     );
-    const hiddenGroups = new Set(
-      catalog
-        ? []
-        : layout.items.flatMap((item) =>
-            item.kind === "group" && item.group.tabIds.some((id) => !visible.has(id))
-              ? [item.group.groupId]
-              : [],
-          ),
-    );
-    const projected: TabLayout = catalog
-      ? layout
-      : {
-          revision: layout.revision,
-          items: layout.items.flatMap<TabLayout["items"][number]>((item) =>
-            item.kind === "tab"
-              ? visible.has(item.tabId)
-                ? [item]
-                : []
-              : hiddenGroups.has(item.group.groupId)
-                ? item.group.tabIds
-                    .filter((id) => visible.has(id))
-                    .map((tabId) => ({ kind: "tab" as const, tabId }))
-                : [item],
-          ),
-        };
+    const projected: TabLayout = catalog ? layout : maskVisibleLayout(layout, visible);
     const shown = rows.filter((row) => visible.has(row.id));
     const computerIds = [...new Set(shown.map((row) => row.computerId))];
     const computers = this.options.computers
@@ -395,19 +584,85 @@ export class TabService implements TabServicePort {
           ).map((profile) => [profile.id, profile.name])
         : [],
     );
-    const pageStates = this.options.pages.states
-      ? await this.options.pages.states(
-          ownerId,
-          shown.filter((row) => row.kind === "page"),
-        )
-      : undefined;
+    const appIds = [
+      ...new Set(
+        shown.flatMap((row) => {
+          if (row.kind !== "app" || !row.appId) return [];
+          const computer = computers.get(row.computerId);
+          return computer && !computer.removed ? [row.appId] : [];
+        }),
+      ),
+    ];
+    const apps = new Map<AppId, App | null>(
+      await Promise.all(
+        appIds.map(
+          async (appId) =>
+            [
+              appId,
+              await this.options.apps.get(ownerId, appId).catch((error: unknown) => {
+                if (error instanceof OpensteerError && error.code === "not_found") return null;
+                throw error;
+              }),
+            ] as const,
+        ),
+      ),
+    );
+    const selfRunnerIds = new Map<DeviceId, RunnerId>();
+    const needRunnerIds = [
+      ...new Set(
+        shown.flatMap((row) => {
+          const computer = computers.get(row.computerId);
+          if (!computer || computer.removed || !computer.connected) return [];
+          const needsRunner =
+            row.kind === "window" || (row.kind === "phone" && !this.options.deviceNativeTargets);
+          if (!needsRunner) return [];
+          if (computer.selfRunnerId) {
+            selfRunnerIds.set(row.computerId, computer.selfRunnerId);
+            return [];
+          }
+          return [row.computerId];
+        }),
+      ),
+    ];
+    await Promise.all(
+      needRunnerIds.map(async (deviceId) => {
+        selfRunnerIds.set(deviceId, await this.options.devices.requireDeviceSelfRunnerId(deviceId));
+      }),
+    );
+    const activeWindows = shown.flatMap((row) => {
+      if (row.kind !== "window" || !row.windowId) return [];
+      const computer = computers.get(row.computerId);
+      if (!computer || computer.removed || !computer.connected) return [];
+      const runnerId = selfRunnerIds.get(row.computerId);
+      if (!runnerId) return [];
+      return [{ tabId: row.id, computerId: runnerId, windowId: row.windowId, app: row.windowApp }];
+    });
+    const [pageStates, windowStates] = await Promise.all([
+      this.options.pages.states
+        ? this.options.pages.states(
+            ownerId,
+            shown.filter((row) => row.kind === "page"),
+          )
+        : undefined,
+      activeWindows.length && this.options.nativeTargets.windowStates
+        ? this.options.nativeTargets.windowStates(ownerId, activeWindows)
+        : undefined,
+    ]);
+    const groupByTab = catalog ? undefined : layoutGroupMap(projected);
     let tabs = await Promise.all(
       shown.map(async (row) => {
         const tab = await this.#tab(actor, row, projected, {
           computer: computers.get(row.computerId)!,
           profile: row.profileId ? profiles.get(row.profileId) : undefined,
-          live: pageStates?.get(row.id),
-          groupId: catalog?.get(row.id)?.groupId,
+          live:
+            row.kind === "page"
+              ? pageStates?.get(row.id)
+              : row.kind === "window"
+                ? windowStates?.get(row.id)
+                : undefined,
+          app: row.kind === "app" && row.appId ? apps.get(row.appId) : undefined,
+          selfRunnerId: selfRunnerIds.get(row.computerId),
+          groupId: catalog ? catalog.get(row.id)?.groupId : (groupByTab?.get(row.id) ?? null),
         });
         return tab;
       }),
@@ -433,16 +688,18 @@ export class TabService implements TabServicePort {
         row.kind === "window" && row.windowId ? [[row.id, row.windowId] as const] : [],
       ),
     );
-    return { tabs, layout: projected, windowIds };
+    return { tabs, layout: projected, windowIds, complete: visible.size === rows.length };
   }
   async #tab(
     actor: TabActor,
     row: TabRecord,
     layout: TabLayout,
     facts: {
-      computer: { name: string; connected: boolean; removed: boolean };
+      computer: TabComputerFact;
       profile?: string | undefined;
       live?: NativeTabTargetState | undefined;
+      app?: App | null | undefined;
+      selfRunnerId?: RunnerId | undefined;
       groupId?: TabGroupId | null | undefined;
     },
   ): Promise<Tab> {
@@ -465,26 +722,33 @@ export class TabService implements TabServicePort {
         usedBy: [],
       };
     else if (row.kind === "window")
-      live = await this.options.nativeTargets.windowState(
-        ownerId,
-        await this.options.devices.requireDeviceSelfRunnerId(row.computerId),
-        row.windowId!,
-        row.windowApp,
-      );
+      live =
+        facts.live ??
+        (await this.options.nativeTargets.windowState(
+          ownerId,
+          facts.selfRunnerId ??
+            (await this.options.devices.requireDeviceSelfRunnerId(row.computerId)),
+          row.windowId!,
+          row.windowApp,
+        ));
     else if (row.kind === "phone")
       live = this.options.deviceNativeTargets
         ? await this.options.deviceNativeTargets.phoneState(ownerId, row.computerId)
         : await this.options.nativeTargets.phoneState(
             ownerId,
-            await this.options.devices.requireDeviceSelfRunnerId(row.computerId),
+            facts.selfRunnerId ??
+              (await this.options.devices.requireDeviceSelfRunnerId(row.computerId)),
           );
     else if (row.kind === "page")
       live = facts.live ?? (await this.options.pages.state(ownerId, row));
     else {
-      const app = await this.options.apps.get(ownerId, row.appId!).catch((error: unknown) => {
-        if (error instanceof OpensteerError && error.code === "not_found") return null;
-        throw error;
-      });
+      const app =
+        facts.app !== undefined
+          ? facts.app
+          : await this.options.apps.get(ownerId, row.appId!).catch((error: unknown) => {
+              if (error instanceof OpensteerError && error.code === "not_found") return null;
+              throw error;
+            });
       title = app?.name ?? row.title;
       live =
         app && (app.kind === "html" || app?.state === "running")
@@ -621,12 +885,21 @@ export class TabService implements TabServicePort {
     /** The person typed a page's address. */
     typed = false,
   ): Promise<{ tab: Tab }> {
+    const { tab } = await this.#open(actor, targetInput, key, membershipRevision, typed);
+    return { tab };
+  }
+  async #open(
+    actor: TabActor,
+    targetInput: TabTarget,
+    key: string,
+    membershipRevision?: number,
+    typed = false,
+  ): Promise<{ tab: Tab; layout: TabLayout }> {
     const target = DeviceTabTargetSchema.parse(targetInput);
     const ownerId = owner(actor),
       database = this.options.store.database;
     await this.options.authorize(actor, target, database);
-    const initialRevision =
-      membershipRevision ?? (await this.options.store.snapshot(ownerId)).layout.revision;
+    const initialRevision = membershipRevision ?? (await this.#layoutRevision(ownerId));
     const openedBy: TabOpenedBy =
       actor.kind === "run" ? { taskId: actor.claims.threadId } : "person";
     const hash = operationKey(actor, key);
@@ -714,16 +987,73 @@ export class TabService implements TabServicePort {
       target,
       initialRevision,
     );
-    if (write.kind === "page") await this.options.pages.admitted?.(write);
-    this.changed(ownerId);
-    return { tab: await this.#get(actor, result.tabIds[0]!) };
+    const meta = tabMutationMeta(result);
+    const responseLayout = meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout;
+    try {
+      if (write.kind === "page") await this.options.pages.admitted?.(write);
+      const openedId = result.tabIds[0];
+      if (!openedId) notFound();
+      const baseVersion = this.#catalogs.get(ownerId)?.version ?? 0;
+      const row = await this.options.store.get(ownerId, openedId);
+      if (!row) notFound();
+      if (!meta.replayed && actor.kind === "person") {
+        this.#registerWindowBeforeProjection(ownerId, row);
+      }
+      const groupId = await this.#groupIdForTab(actor, openedId, responseLayout, database);
+      const projected = await this.#projectRows(
+        actor,
+        [row],
+        responseLayout,
+        database,
+        new Map([[row.id, { groupId }]]),
+      );
+      const tab = projected.tabs[0];
+      if (!tab) notFound();
+      if (!meta.replayed) {
+        if (actor.kind === "person") {
+          this.#applyCatalogMutation(
+            ownerId,
+            result.layout,
+            projected.tabs,
+            projected.windowIds,
+            baseVersion,
+          );
+        } else {
+          this.changed(ownerId);
+        }
+      }
+      return { tab, layout: responseLayout };
+    } catch (error) {
+      if (!meta.replayed) this.changed(ownerId);
+      throw error;
+    }
   }
-  get(ownerId: UserId, tabId: TabId): Promise<Tab> {
-    return this.#get({ kind: "person", ownerId }, tabId);
-  }
-  async #get(actor: TabActor, tabId: TabId): Promise<Tab> {
-    const { tabs } = await this.project(actor);
-    return tabs.find((tab) => tab.tabId === tabId) ?? notFound();
+  async get(ownerId: UserId, tabId: TabId): Promise<Tab> {
+    const actor = { kind: "person", ownerId } as const;
+    const database = this.options.store.database;
+    await this.options.authorizeMembership(actor, database);
+    const catalog = this.#catalogs.get(ownerId);
+    if (
+      catalog &&
+      !catalog.pending &&
+      catalog.projectedVersion > 0 &&
+      catalog.dirty !== null &&
+      !catalog.dirty.has(tabId)
+    ) {
+      const cached = catalog.rows.get(tabId);
+      if (cached) return cached;
+    }
+    const row = await this.options.store.get(ownerId, tabId);
+    if (!row) notFound();
+    const groupId = await this.#singleTabGroupId(ownerId, tabId, database);
+    const { tabs } = await this.#projectRows(
+      actor,
+      [row],
+      { revision: 0, items: [] },
+      database,
+      new Map([[row.id, { groupId }]]),
+    );
+    return tabs[0] ?? notFound();
   }
   async #row(actor: TabActor, tabId: TabId): Promise<TabRecord> {
     const row = await this.options.store.get(owner(actor), tabId);
@@ -742,22 +1072,31 @@ export class TabService implements TabServicePort {
       conflict();
   }
   async close(actor: TabActor, tabIds: TabId[], key: string): Promise<TabCloseResult> {
+    const { closed, failed } = await this.#close(actor, tabIds, key);
+    return { closed, failed };
+  }
+  async #close(
+    actor: TabActor,
+    tabIds: TabId[],
+    key: string,
+  ): Promise<TabCloseResult & { layout: TabLayout }> {
     TabCloseInputSchema.parse({ tabIds });
+    const ownerId = owner(actor);
     const failed: TabCloseResult["failed"] = [],
       permitted = new Set<TabId>(),
       cleanup: TabRecord[] = [];
     const result = await this.options.store.close(
-      owner(actor),
+      ownerId,
       tabIds,
       operationKey(actor, key),
       async (tx, rows) => {
         for (const tabId of tabIds) {
           try {
             const row = rows.find((row) => row.id === tabId);
-            if (!row || row.ownerId !== owner(actor)) notFound();
+            if (!row || row.ownerId !== ownerId) notFound();
             await this.options.authorizeMembership(actor, tx);
             permitted.add(tabId);
-            cleanup.push(row);
+            if (!row.closedAt) cleanup.push(row);
           } catch (error) {
             failed.push({
               tabId,
@@ -772,18 +1111,26 @@ export class TabService implements TabServicePort {
       },
       (row) => permitted.has(row.id),
     );
-    this.changed(owner(actor));
-    for (const row of cleanup)
-      if (result.tabIds.includes(row.id)) {
-        try {
-          if (row.kind === "page") await this.options.pages.closeViewers(owner(actor), row);
-          else if (row.kind === "phone" || row.kind === "window")
-            await this.options.nativeTargets.closeOwnerViews(owner(actor), row.id, row.generation);
-        } catch (error) {
-          this.options.onError(error);
+    const meta = tabMutationMeta(result);
+    if (!meta.replayed) {
+      this.#applyCatalogMutation(ownerId, result.layout);
+      for (const row of cleanup)
+        if (result.tabIds.includes(row.id)) {
+          try {
+            if (row.kind === "page") await this.options.pages.closeViewers(ownerId, row);
+            else if (row.kind === "phone" || row.kind === "window")
+              await this.options.nativeTargets.closeOwnerViews(ownerId, row.id, row.generation);
+          } catch (error) {
+            this.options.onError(error);
+          }
         }
-      }
-    return { closed: result.tabIds.filter((id) => permitted.has(id)), failed };
+    }
+    const responseLayout = meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout;
+    return {
+      closed: result.tabIds.filter((id) => permitted.has(id)),
+      failed,
+      layout: responseLayout,
+    };
   }
 
   async reopen(
@@ -791,13 +1138,17 @@ export class TabService implements TabServicePort {
     tabId: TabId | undefined,
     key: string,
   ): Promise<{ tab: Tab; layout: TabLayout }> {
+    const ownerId = owner(actor);
+    const database = this.options.store.database;
     const result = await this.options.store.reopen(
-      owner(actor),
+      ownerId,
       tabId,
       operationKey(actor, key),
-      async (tx, rows) => {
-        const row = tabId
-          ? rows.find((row) => row.id === tabId)
+      async (tx, rows, _layout, replayedTabIds) => {
+        const targetId = tabId ?? replayedTabIds?.[0];
+        const row = targetId
+          ? (rows.find((row) => row.id === targetId) ??
+            (await this.options.store.get(ownerId, targetId, true, tx)))
           : rows
               .filter((row) => row.closedAt)
               .sort(
@@ -807,11 +1158,46 @@ export class TabService implements TabServicePort {
         await this.options.authorize(actor, row, tx);
       },
     );
-    this.changed(owner(actor));
-    const projected = await this.project(actor);
-    const tab = projected.tabs.find((tab) => tab.tabId === result.tabIds[0]);
-    if (!tab) notFound();
-    return { tab, layout: projected.layout };
+    const meta = tabMutationMeta(result);
+    const responseLayout = meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout;
+    try {
+      const reopenedId = result.tabIds[0];
+      if (!reopenedId) notFound();
+      const baseVersion = this.#catalogs.get(ownerId)?.version ?? 0;
+      const visibleLayout = await this.#projectVisibleLayout(actor, responseLayout, database);
+      const row = await this.options.store.get(ownerId, reopenedId);
+      if (!row) notFound();
+      if (!meta.replayed && actor.kind === "person") {
+        this.#registerWindowBeforeProjection(ownerId, row);
+      }
+      const groupId = tabGroupOf(visibleLayout, reopenedId);
+      const projected = await this.#projectRows(
+        actor,
+        [row],
+        visibleLayout,
+        database,
+        new Map([[row.id, { groupId }]]),
+      );
+      const tab = projected.tabs[0];
+      if (!tab) notFound();
+      if (!meta.replayed) {
+        if (actor.kind === "person") {
+          this.#applyCatalogMutation(
+            ownerId,
+            result.layout,
+            projected.tabs,
+            projected.windowIds,
+            baseVersion,
+          );
+        } else {
+          this.changed(ownerId);
+        }
+      }
+      return { tab, layout: visibleLayout };
+    } catch (error) {
+      if (!meta.replayed) this.changed(ownerId);
+      throw error;
+    }
   }
   async activate(
     ownerId: UserId,
@@ -855,6 +1241,9 @@ export class TabService implements TabServicePort {
       viewer = { kind: row.kind, view };
     }
     this.changed(ownerId, [tabId]);
+    const catalogBeforeGet = this.#catalogs.get(ownerId);
+    const versionBeforeGet = catalogBeforeGet?.version;
+    const epochBeforeGet = catalogBeforeGet?.structureEpoch;
     let tab: Tab;
     try {
       tab = await this.get(ownerId, tabId);
@@ -864,6 +1253,21 @@ export class TabService implements TabServicePort {
         await this.options.nativeTargets.closeOwnerViews(ownerId, tabId, row.generation);
       throw error;
     }
+    const catalog = this.#catalogs.get(ownerId);
+    if (
+      catalog &&
+      catalog === catalogBeforeGet &&
+      catalog.version === versionBeforeGet &&
+      catalog.structureEpoch === epochBeforeGet &&
+      !catalog.pending &&
+      catalog.projectedVersion > 0 &&
+      catalog.dirty !== null &&
+      catalog.rows.has(tabId)
+    ) {
+      catalog.rows.set(tabId, tab);
+      catalog.rowVersions.set(tabId, versionBeforeGet);
+      catalog.dirty.delete(tabId);
+    }
     return { tab, viewer };
   }
   async organize(
@@ -872,9 +1276,20 @@ export class TabService implements TabServicePort {
     key: string,
     fingerprintInput: TabOrganizeInput = input,
   ): Promise<TabOrganizeResult> {
+    const { tabs, groups } = await this.#organize(actor, input, key, fingerprintInput);
+    return { tabs, groups };
+  }
+  async #organize(
+    actor: TabActor,
+    input: TabOrganizeInput,
+    key: string,
+    fingerprintInput: TabOrganizeInput = input,
+  ): Promise<TabOrganizeResult & { layout: TabLayout }> {
     TabOrganizeInputSchema.parse(input);
-    await this.options.store.organize(
-      owner(actor),
+    const ownerId = owner(actor);
+    const database = this.options.store.database;
+    const result = await this.options.store.organize(
+      ownerId,
       input,
       operationKey(actor, key),
       this.#authorize(
@@ -884,38 +1299,143 @@ export class TabService implements TabServicePort {
       ),
       fingerprintInput,
     );
-    this.changed(owner(actor));
-    const { tabs, layout } = await this.project(actor);
-    return {
-      tabs: input.tabIds.flatMap((id) => tabs.filter((tab) => tab.tabId === id)),
-      groups: layout.items.flatMap((item) => (item.kind === "group" ? [item.group] : [])),
-    };
+    const meta = tabMutationMeta(result);
+    const responseLayout = meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout;
+    try {
+      const baseVersion = this.#catalogs.get(ownerId)?.version ?? 0;
+      const visibleLayout = await this.#projectVisibleLayout(actor, responseLayout, database);
+      const groupByTab = layoutGroupMap(visibleLayout);
+      const fetched = await this.options.store.rows(ownerId, input.tabIds);
+      const byId = new Map(fetched.map((row) => [row.id, row]));
+      const orderedRows = input.tabIds.flatMap((id) => {
+        const row = byId.get(id);
+        return row ? [row] : [];
+      });
+      const groupCatalog = new Map(
+        orderedRows.map((row) => [row.id, { groupId: groupByTab.get(row.id) ?? null }]),
+      );
+      const projected = await this.#projectRows(
+        actor,
+        orderedRows,
+        visibleLayout,
+        database,
+        groupCatalog,
+      );
+      if (!meta.replayed) {
+        if (actor.kind === "person") {
+          this.#applyCatalogMutation(
+            ownerId,
+            result.layout,
+            projected.tabs,
+            projected.windowIds,
+            baseVersion,
+          );
+        } else {
+          this.#applyCatalogMutation(ownerId, result.layout);
+        }
+      }
+      return {
+        tabs: projected.tabs,
+        groups: visibleLayout.items.flatMap((item) => (item.kind === "group" ? [item.group] : [])),
+        layout: visibleLayout,
+      };
+    } catch (error) {
+      if (!meta.replayed) this.changed(ownerId);
+      throw error;
+    }
   }
   async updateGroup(actor: TabActor, input: TabGroupUpdateInput, key: string) {
+    const { group } = await this.#updateGroup(actor, input, key);
+    return { group };
+  }
+  async #updateGroup(
+    actor: TabActor,
+    input: TabGroupUpdateInput,
+    key: string,
+  ): Promise<{ group: TabGroup; layout: TabLayout }> {
     TabGroupUpdateInputSchema.parse(input);
-    await this.options.store.updateGroup(
-      owner(actor),
+    const ownerId = owner(actor);
+    const database = this.options.store.database;
+    const result = await this.options.store.updateGroup(
+      ownerId,
       input,
       operationKey(actor, key),
       this.#authorize(actor, [], [input.groupId]),
     );
-    this.changed(owner(actor));
-    const { layout } = await this.project(actor);
-    const item = layout.items.find(
+    const meta = tabMutationMeta(result);
+    if (!meta.replayed) {
+      this.#applyCatalogMutation(ownerId, result.layout);
+    }
+    const responseLayout = meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout;
+    const visibleLayout = await this.#projectVisibleLayout(actor, responseLayout, database);
+    const item = visibleLayout.items.find(
       (item) => item.kind === "group" && item.group.groupId === input.groupId,
     );
     if (item?.kind !== "group") notFound();
-    return { group: item.group };
+    return { group: item.group, layout: visibleLayout };
   }
   async deleteGroup(ownerId: UserId, groupId: TabGroupId, key: string) {
-    const { layout } = await this.options.store.deleteGroup(
+    const result = await this.options.store.deleteGroup(
       ownerId,
       groupId,
       operationKey({ kind: "person", ownerId }, key),
       this.#authorize({ kind: "person", ownerId }, [], [groupId]),
     );
-    this.changed(ownerId);
-    return { layout };
+    const meta = tabMutationMeta(result);
+    if (!meta.replayed) {
+      this.#applyCatalogMutation(ownerId, result.layout);
+    }
+    return {
+      layout: meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout,
+    };
+  }
+  async executeCommand(ownerId: UserId, command: TabCommand): Promise<TabCommandResult> {
+    const actor = { kind: "person", ownerId } as const;
+    switch (command.type) {
+      case "tab.open":
+        return {
+          type: command.type,
+          ...(await this.#open(
+            actor,
+            command.target,
+            command.idempotencyKey,
+            undefined,
+            command.typed === true,
+          )),
+        };
+      case "tab.reopen":
+        return {
+          type: command.type,
+          ...(await this.reopen(actor, command.tabId, command.idempotencyKey)),
+        };
+      case "tab.close":
+        return {
+          type: command.type,
+          ...(await this.#close(actor, command.tabIds, command.idempotencyKey)),
+        };
+      case "tab.activate":
+        return {
+          type: command.type,
+          ...(await this.activate(ownerId, command.tabId, command.idempotencyKey)),
+        };
+      case "tab.organize": {
+        const { type, idempotencyKey, ...input } = command;
+        const { tabs, layout } = await this.#organize(actor, input, idempotencyKey);
+        return { type, tabs, layout };
+      }
+      case "tab.group.update": {
+        const { type, idempotencyKey, ...input } = command;
+        return {
+          type,
+          ...(await this.#updateGroup(actor, input, idempotencyKey)),
+        };
+      }
+      case "tab.group.delete":
+        return {
+          type: command.type,
+          ...(await this.deleteGroup(ownerId, command.groupId, command.idempotencyKey)),
+        };
+    }
   }
   async bootstrap(ownerId: UserId, maxBytes: number): Promise<TabBootstrap> {
     const { tabs, layout } = await this.project({ kind: "person", ownerId });
@@ -987,9 +1507,16 @@ export class TabService implements TabServicePort {
 
   async authorizeShow(claims: RunToolScope, tabId: TabId): Promise<void> {
     const actor = { kind: "run", claims } as const;
-    await this.#row(actor, tabId);
-    const { tabs } = await this.project(actor);
-    const tab = tabs.find((tab) => tab.tabId === tabId);
+    const database = this.options.store.database;
+    const row = await this.#row(actor, tabId);
+    const { tabs } = await this.#projectRows(
+      actor,
+      [row],
+      { revision: 0, items: [] },
+      database,
+      new Map([[row.id, { groupId: null }]]),
+    );
+    const tab = tabs[0];
     if (!tab) notFound();
     if (tab.state === "unavailable")
       throw new OpensteerError({ code: "conflict", message: tab.unavailableReason! });

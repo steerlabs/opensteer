@@ -117,6 +117,15 @@ export interface NativeTabTargetsPort {
     windowId: WindowId,
     app?: ComputerAppIdentity | null,
   ): Promise<NativeTabTargetState>;
+  windowStates?(
+    ownerId: UserId,
+    windows: readonly {
+      readonly tabId: TabId;
+      readonly computerId: RunnerId;
+      readonly windowId: WindowId;
+      readonly app?: ComputerAppIdentity | null | undefined;
+    }[],
+  ): Promise<Map<TabId, NativeTabTargetState>>;
   phoneState(ownerId: UserId, computerId: RunnerId): Promise<NativeTabTargetState>;
   openOwnerView(
     ownerId: UserId,

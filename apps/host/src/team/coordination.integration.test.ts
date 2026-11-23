@@ -368,3 +368,60 @@ it("settles a link presence change that arrives after its copy's database closed
     hub.close();
   }
 });
+
+it("answers repeated sidebar-only liveness probes with team.sidebar without redundant sidebars on channel changes", async () => {
+  const actor = { kind: "human" as const, userId: f.userId };
+  const channel = await chatA.create(actor, {
+    id: createId("teamChannel"),
+    name: "liveness",
+    kind: "public",
+    peopleOnly: false,
+    access: [],
+  });
+  const frames: { type: string }[] = [];
+  const peer = hubA.connect(actor, {
+    send: (frame) => {
+      frames.push(frame);
+      return true;
+    },
+    close: () => {},
+  });
+  const sidebarFrame = {
+    type: "team.subscribe",
+    teamApiVersion,
+    subscriptionId: "sidebar",
+    generation: 1,
+    sidebar: true,
+    scope: null,
+    sinceSeq: null,
+  };
+  await peer.receive(sidebarFrame);
+  expect(frames.filter((frame) => frame.type === "team.sidebar")).toHaveLength(1);
+
+  // Opening or clearing a channel/thread subscription must not emit redundant sidebars.
+  await peer.receive({
+    type: "team.subscribe",
+    teamApiVersion,
+    subscriptionId: "channel",
+    generation: 2,
+    sidebar: true,
+    scope: { kind: "channel", channelId: channel.id },
+    sinceSeq: null,
+  });
+  await peer.receive({
+    type: "team.subscribe",
+    teamApiVersion,
+    subscriptionId: "channel",
+    generation: 3,
+    sidebar: true,
+    scope: null,
+    sinceSeq: null,
+  });
+  expect(frames.filter((frame) => frame.type === "team.sidebar")).toHaveLength(1);
+
+  // Idle sidebar-only liveness probes must always be answered with team.sidebar.
+  await peer.receive(sidebarFrame);
+  await peer.receive(sidebarFrame);
+  expect(frames.filter((frame) => frame.type === "team.sidebar")).toHaveLength(3);
+  peer.close();
+});
