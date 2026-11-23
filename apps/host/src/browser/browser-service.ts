@@ -4086,7 +4086,17 @@ export class BrowserService {
             budget,
           );
           await finish();
-          row = await this.#requireWorkspaceGeneration(ownerId, initial);
+          try {
+            row = await this.#requireWorkspaceGeneration(ownerId, initial);
+          } catch (error) {
+            // The tab closed or moved on while its page was starting: no tab shows that page
+            // and no one could close it, so it ends here. The refusal does not wait on it.
+            void this.#queuePhysicalPageClose(sessionId, initial.id, undefined, {
+              ownerId,
+              row: initial,
+            }).catch((closeError: unknown) => this.#onError(closeError));
+            throw error;
+          }
           const record = row.pageBinding
             ? await this.#repository.getBrowserSessionForOwner(row.pageBinding.sessionId, ownerId)
             : null;
