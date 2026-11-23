@@ -6,6 +6,7 @@ import {
   createIntegrationId,
   IntegrationDefinitionSchema,
   integrationDefinitionSummary,
+  pluginDeviceFromManifest,
 } from "@opensteer/integration-core";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
@@ -527,5 +528,64 @@ describeStore("a name from outside enters the Home clean", (it) => {
       expected.push(cleanTitle);
     }
     expect(actual).toEqual(expected);
+  });
+  it("keeps the manifest display name and local server title clean across installation and updates", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const { userId } = await storeFixture.createRunFixture("outside-plugins");
+    const platform = new IntegrationPlatformStore(database);
+    const pluginId = createIntegrationId("installation");
+    const installationId = createIntegrationId("installation");
+    for (const [index, title] of forged.entries()) {
+      const packageName = "local-fixture";
+      const manifest = {
+        name: packageName,
+        extensions: { "com.opensteer": { device: { kind: "other", name: title } } },
+      };
+      const version = { digest: `outside-${index}`, packageFormat: "fixture", manifest };
+      if (index === 0) {
+        await platform.plugins.install({
+          ...version,
+          id: pluginId,
+          actorUserId: userId,
+          name: packageName,
+          source: {},
+        });
+      } else await platform.plugins.update({ ...version, pluginId });
+      const { installation } = await platform.install({
+        actorUserId: userId,
+        installation: {
+          description: "",
+          id: installationId,
+          manifest,
+          name: packageName,
+          pluginId,
+          provenance: {},
+          sourceKind: "plugin",
+          status: "active",
+          title,
+          trust: "administrator-approved",
+          version: null,
+        },
+        requestId: `outside-plugin-${index}`,
+        servers: [],
+      });
+      const [plugin] = await platform.plugins.current(userId);
+      const name = cleaned[index] ?? "x".repeat(80);
+      expect
+        .soft({
+          pluginDevice: pluginDeviceFromManifest(plugin?.manifest)?.name,
+          installationDevice: pluginDeviceFromManifest(installation.manifest)?.name,
+          title: installation.title,
+        })
+        .toEqual({
+          pluginDevice: name,
+          installationDevice: name,
+          title: cleaned[index] ?? "x".repeat(160),
+        });
+      expect(plugin?.name).toBe(packageName);
+      expect(installation.name).toBe(packageName);
+    }
   });
 });
