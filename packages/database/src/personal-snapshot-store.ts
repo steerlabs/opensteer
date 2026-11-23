@@ -26,6 +26,7 @@ import {
   taskPageThreadSelections,
   taskPageThreadsFromRows,
   threadRunQueued,
+  threadRunStartHoldReason,
   type TaskExternalWork,
 } from "./personal-task-store.js";
 
@@ -55,11 +56,13 @@ export function taskView(task: Task) {
     doneReason: task.doneReason,
     pendingRequestCount: task.pendingRequestCount,
     lastReplyPreview: task.lastReplyPreview,
+    ...(task.failureCode ? { failureCode: task.failureCode } : { failureCode: null }),
     failurePreview: task.failurePreview,
     latestRunCompletedAt: task.latestRunCompletedAt?.toISOString() ?? null,
     environmentId: task.environmentId,
     harnessInstanceId: task.harnessInstanceId,
     runQueued: task.runQueued,
+    ...(task.runStartHoldReason ? { runStartHoldReason: task.runStartHoldReason } : {}),
     ...(task.externalWork?.status === "active"
       ? { agentSessionId: task.externalWork.sessionId }
       : {}),
@@ -124,6 +127,7 @@ export async function detailThreadValue(tx: Tx, viewerId: UserId, threadId: Thre
     .selectAll("threads")
     .select(taskPageThreadSelections())
     .select(threadRunQueued.as("runQueued"))
+    .select(threadRunStartHoldReason.as("runStartHoldReason"))
     .select(taskExternalWorkSelection)
     .where("threads.id", "=", threadId)
     .where("threads.createdBy", "=", viewerId)

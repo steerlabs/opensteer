@@ -54,7 +54,8 @@ export class ThreadService {
       | "harnessAccessModes"
       | "identityForEnvironment"
       | "attachmentInputFailure"
-    >;
+    > &
+      Partial<Pick<RunnerRegistry, "recheckThreadStop">>;
     readonly placeContext: Pick<PlaceContextService, "assertIncludable">;
     readonly browser: Pick<BrowserService, "announceUsage">;
   };
@@ -412,6 +413,28 @@ export class ThreadService {
       thread: result.thread,
       asOfSequence: result.asOfSequence,
     };
+  }
+  async recheckThreadStop(
+    actor: ThreadActor,
+    command: Command<"thread.stop.recheck">,
+    signal: AbortSignal,
+  ): Promise<{ readonly proven: boolean }> {
+    const thread = await this.assertTarget(actor, command.threadId);
+    if (!this.options.runners.recheckThreadStop) {
+      throw new OpensteerError({
+        code: "runner_offline",
+        message: "That device is offline",
+      });
+    }
+    const result = await this.options.runners.recheckThreadStop(
+      thread.environmentId,
+      thread.id,
+      signal,
+    );
+    if (result.proven) {
+      await this.options.store.clearThreadStartHold(thread.id);
+    }
+    return result;
   }
   async steer(
     actor: ThreadActor,

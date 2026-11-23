@@ -1833,6 +1833,16 @@ export async function createHostServer(
           type: command.type,
         };
 
+      case "thread.stop.recheck":
+        return {
+          ...(await threadService.recheckThreadStop(
+            { kind: "person", userId },
+            command,
+            AbortSignal.timeout(35_000),
+          )),
+          type: command.type,
+        };
+
       case "thread.input.lease.take":
       case "thread.input.lease.renew":
       case "thread.input.lease.release":

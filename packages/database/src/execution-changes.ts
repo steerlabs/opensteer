@@ -30,6 +30,8 @@ export function transcriptRuns(database: Kysely<DatabaseSchema>) {
       "completedAt",
       "terminalReplyMessageId",
       "failure",
+      "interruptedCause",
+      "stopConfirmedAt",
       "maintenance",
       "phase",
       "finishIntent",
@@ -56,6 +58,8 @@ export function describeTranscriptRun(
   const view = {
     status,
     ...(run.completedAt ? { endedAt: run.completedAt.toISOString() } : {}),
+    ...(run.stopConfirmedAt ? { stopConfirmedAt: run.stopConfirmedAt.toISOString() } : {}),
+    ...(run.interruptedCause ? { interruptedCause: run.interruptedCause } : {}),
     ...(run.terminalReplyMessageId ? { replyMessageId: run.terminalReplyMessageId } : {}),
     ...(usage ? { usage } : {}),
     ...(run.failure

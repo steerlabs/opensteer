@@ -176,6 +176,7 @@ export interface RunnerRuntimeOptions {
     readonly graceMs?: number;
     readonly sharedEngineSettleMs?: number;
     readonly uncontainedRetryMs?: number;
+    readonly unprovenLastResortMs?: number;
   };
   /** Schedules credential refresh only; leases, sockets and engine timers stay real. */
   readonly credentialRefreshClock?: Pick<Clock, "schedule">;
@@ -349,6 +350,7 @@ type EngineSessionEndResult =
       readonly proven: false;
       readonly termination: Exclude<TerminationProof, "proven">;
       readonly engineStopping?: Promise<void> | undefined;
+      readonly lastResort?: (() => Promise<void>) | undefined;
     };
 
 type ExecutionEndReport = Extract<
@@ -391,6 +393,8 @@ const executionStopGraceMs = 3_000;
  */
 const sharedEngineStopSettleMs = 90_000;
 const uncontainedRetryMs = 5_000;
+/** How soon after an unproven stop the Runner runs its scoped last resort and re-checks. */
+const unprovenStopLastResortMs = 10_000;
 /** Matches the Host coordinator's hard attempt lifetime so neither side outlives the other. */
 const harnessAuthenticationLifetimeMs = 15 * 60_000;
 /**
@@ -449,6 +453,7 @@ export class RunnerRuntime {
   readonly #stopGraceMs: number;
   readonly #sharedEngineSettleMs: number;
   readonly #uncontainedRetryMs: number;
+  readonly #unprovenLastResortMs: number;
   readonly #machineAccess: RunnerRuntimeOptions["machineAccess"];
   readonly #mode: RuntimeMode;
   readonly #privateStateDirectory: string;
@@ -469,8 +474,13 @@ export class RunnerRuntime {
     ThreadId,
     {
       readonly scopes: Set<string>;
-      readonly engineStops: Set<{ readonly done: boolean; readonly settled: Promise<void> }>;
+      readonly engineStops: Set<{
+        done: boolean;
+        readonly settled: Promise<void>;
+        readonly lastResort?: () => Promise<void>;
+      }>;
       readonly cancel: () => void;
+      readonly runLastResort: () => Promise<boolean>;
     }
   >();
   /**
@@ -626,6 +636,8 @@ export class RunnerRuntime {
     this.#sharedEngineSettleMs =
       options.stopTimings?.sharedEngineSettleMs ?? sharedEngineStopSettleMs;
     this.#uncontainedRetryMs = options.stopTimings?.uncontainedRetryMs ?? uncontainedRetryMs;
+    this.#unprovenLastResortMs =
+      options.stopTimings?.unprovenLastResortMs ?? unprovenStopLastResortMs;
     this.#credentialRefreshClock = options.credentialRefreshClock ?? systemClock;
     this.#attachmentCache = options.attachmentCache;
     this.#agentSkills = options.agentSkills;
@@ -2093,42 +2105,82 @@ export class RunnerRuntime {
   /**
    * Keeps a Thread closed to new executions until everything its last Run or
    * retired warm engine left behind — Run-scoped processes and any shared
-   * engine stop — has settled. Each Thread is held once under one retry loop.
+   * engine stop — has settled. Each Thread is held once under one retry loop
+   * and one bounded last-resort recovery pass.
    */
   #holdUncontainedThread(
     threadId: ThreadId,
     runId: RunId | null,
     executionId: string,
     engineStopping?: Promise<void>,
+    lastResort?: () => Promise<void>,
   ): void {
-    this.#logger?.error("A stopped Run left processes the Runner could not end", {
-      ...(runId ? { runId } : {}),
-      threadId,
-    });
+    this.#logger?.error(
+      engineStopping
+        ? "A stopped Run's engine stop has not settled yet"
+        : "A stopped Run left processes the Runner could not end",
+      {
+        ...(runId ? { runId } : {}),
+        threadId,
+      },
+    );
     const existing = this.#uncontainedThreads.get(threadId);
     const scopes = existing ? new Set(existing.scopes) : new Set<string>();
     scopes.add(executionId);
     const engineStops = existing
       ? new Set(existing.engineStops)
-      : new Set<{ readonly done: boolean; readonly settled: Promise<void> }>();
-    if (engineStopping) engineStops.add(settledFlag(engineStopping));
+      : new Set<{
+          done: boolean;
+          readonly settled: Promise<void>;
+          readonly lastResort?: () => Promise<void>;
+        }>();
+    if (engineStopping) {
+      const stop: {
+        done: boolean;
+        settled: Promise<void>;
+        readonly lastResort?: () => Promise<void>;
+      } = {
+        done: false,
+        settled: Promise.resolve(),
+        ...(lastResort ? { lastResort } : {}),
+      };
+      stop.settled = engineStopping.then(
+        () => {
+          stop.done = true;
+        },
+        () => {
+          stop.done = true;
+        },
+      );
+      engineStops.add(stop);
+    }
     existing?.cancel();
     let checking = false;
+    let rechecking: Promise<boolean> | undefined;
     let retry: ReturnType<typeof setInterval> | undefined;
-    const hold = {
-      scopes,
-      engineStops,
-      cancel: () => {
-        if (!retry) return;
+    let lastResortTimer: ReturnType<typeof setTimeout> | undefined;
+    const cancel = () => {
+      if (retry) {
         clearInterval(retry);
         retry = undefined;
-      },
+      }
+      if (lastResortTimer) {
+        clearTimeout(lastResortTimer);
+        lastResortTimer = undefined;
+      }
     };
-    this.#uncontainedThreads.set(threadId, hold);
     const allEngineStopsDone = () => {
-      for (const stop of hold.engineStops) {
+      for (const stop of engineStops) {
         if (!stop.done) return false;
       }
+      return true;
+    };
+    const liftIfProven = (): boolean => {
+      if (this.#uncontainedThreads.get(threadId) !== hold) return !this.#uncontainedThreads.has(threadId);
+      if (!allEngineStopsDone() || scopes.size > 0) return false;
+      cancel();
+      this.#uncontainedThreads.delete(threadId);
+      this.#flushUnverifiedRunEnds(threadId);
       return true;
     };
     const ensurePolling = () => {
@@ -2136,6 +2188,54 @@ export class RunnerRuntime {
       retry = setInterval(check, this.#uncontainedRetryMs);
       retry.unref?.();
     };
+    const recheckScopes = async (deleteProven: boolean): Promise<void> => {
+      await Promise.all(
+        [...scopes].map(async (scope) => {
+          const termination = await this.#containment
+            .terminate(scope)
+            .catch(() => "unknown" as const);
+          if (termination === "proven" && deleteProven) scopes.delete(scope);
+        }),
+      );
+    };
+    const runLastResort = (): Promise<boolean> => {
+      if (rechecking) return rechecking;
+      rechecking = (async () => {
+        if (this.#uncontainedThreads.get(threadId) !== hold) {
+          return !this.#uncontainedThreads.has(threadId);
+        }
+        // Scoped last resort: retire ONLY the failing session's shared engine
+        // (never adapter-wide) and terminate every recorded Run process scope.
+        const pendingStops = [...engineStops].filter((stop) => !stop.done);
+        await Promise.all(
+          pendingStops.map(async (stop) => {
+            if (!stop.lastResort) return;
+            const settled = await settleBy(
+              stop.lastResort().then(
+                () => true,
+                () => false,
+              ),
+              Date.now() + this.#sharedEngineSettleMs,
+            );
+            if (settled === true) stop.done = true;
+          }),
+        );
+        await recheckScopes(allEngineStopsDone());
+        if (liftIfProven()) return true;
+        if (allEngineStopsDone() && scopes.size > 0) ensurePolling();
+        return false;
+      })().finally(() => {
+        rechecking = undefined;
+      });
+      return rechecking;
+    };
+    const hold = {
+      scopes,
+      engineStops,
+      cancel,
+      runLastResort,
+    };
+    this.#uncontainedThreads.set(threadId, hold);
     // A shared engine still stopping is the rest of what must be proven; its
     // stop settling is the late evidence, looked at as soon as it arrives.
     // Do not start the containment retry interval while an engine stop is
@@ -2144,23 +2244,11 @@ export class RunnerRuntime {
       if (checking || this.#uncontainedThreads.get(threadId) !== hold) return;
       if (!allEngineStopsDone()) return;
       checking = true;
-      void Promise.all(
-        [...hold.scopes].map(async (scope) => {
-          const termination = await this.#containment
-            .terminate(scope)
-            .catch(() => "unknown" as const);
-          if (termination === "proven") hold.scopes.delete(scope);
-        }),
-      ).finally(() => {
+      void recheckScopes(true).finally(() => {
         checking = false;
         if (this.#uncontainedThreads.get(threadId) !== hold) return;
         if (!allEngineStopsDone()) return;
-        if (hold.scopes.size > 0) {
-          ensurePolling();
-          return;
-        }
-        hold.cancel();
-        this.#uncontainedThreads.delete(threadId);
+        if (!liftIfProven()) ensurePolling();
       });
     };
     if (allEngineStopsDone()) {
@@ -2169,6 +2257,56 @@ export class RunnerRuntime {
       for (const stop of hold.engineStops) {
         if (!stop.done) void stop.settled.then(check);
       }
+    }
+    if ([...hold.engineStops].some((stop) => !stop.done && stop.lastResort) || scopes.size > 0) {
+      lastResortTimer = setTimeout(() => {
+        lastResortTimer = undefined;
+        void runLastResort();
+      }, this.#unprovenLastResortMs);
+      lastResortTimer.unref?.();
+    }
+  }
+
+  /**
+   * Re-runs the Runner's scoped last resort and containment check for a held
+   * Thread on demand ("Check again"). Never unlocks without proof.
+   */
+  async recheckThreadStop(threadId: ThreadId): Promise<{ readonly proven: boolean }> {
+    if (this.#threads.has(threadId)) return { proven: false };
+    const hold = this.#uncontainedThreads.get(threadId);
+    if (hold) {
+      const proven = await hold.runLastResort();
+      return { proven };
+    }
+    let stillUnproven = false;
+    for (const [key, pending] of [...this.#unverifiedRunEnds.entries()]) {
+      if (pending.report.event.threadId !== threadId) continue;
+      const proof = await this.#containment.terminate(pending.scope).catch(() => "unknown");
+      if (proof !== "proven" || pending.engineStopped?.done === false) {
+        stillUnproven = true;
+        continue;
+      }
+      this.#unverifiedRunEnds.delete(key);
+      const report = {
+        ...pending.report,
+        event: { ...pending.report.event, emittedAt: new Date().toISOString() },
+      };
+      this.#rememberEndReceipt(report);
+      void this.#connection?.send(report).catch(() => undefined);
+    }
+    return { proven: !stillUnproven };
+  }
+
+  #flushUnverifiedRunEnds(threadId: ThreadId): void {
+    for (const [key, pending] of [...this.#unverifiedRunEnds.entries()]) {
+      if (pending.report.event.threadId !== threadId) continue;
+      this.#unverifiedRunEnds.delete(key);
+      const report = {
+        ...pending.report,
+        event: { ...pending.report.event, emittedAt: new Date().toISOString() },
+      };
+      this.#rememberEndReceipt(report);
+      void this.#connection?.send(report).catch(() => undefined);
     }
   }
 
@@ -2211,6 +2349,7 @@ export class RunnerRuntime {
       proven: false,
       termination: pending ? "unknown" : termination,
       ...(pending ? { engineStopping: pending } : {}),
+      ...(settled?.lastResort ? { lastResort: settled.lastResort } : {}),
     };
   }
 
@@ -2226,11 +2365,26 @@ export class RunnerRuntime {
     asked: Promise<void> | undefined,
     sharedEngine = false,
   ): Promise<
-    | { readonly stopping: Promise<void>; readonly recheckContainment?: false }
-    | { readonly stopping?: undefined; readonly recheckContainment: true }
+    | {
+        readonly stopping: Promise<void>;
+        readonly lastResort?: (() => Promise<void>) | undefined;
+        readonly recheckContainment?: false;
+      }
+    | {
+        readonly stopping?: undefined;
+        readonly lastResort?: undefined;
+        readonly recheckContainment: true;
+      }
     | undefined
   > {
     const deadline = Date.now() + this.#sharedEngineSettleMs;
+    const retireFor = (target: HarnessSession): (() => Promise<void>) | undefined =>
+      target.engineProcess === "shared" && target.retireEngine
+        ? () =>
+            target.retireEngine!(
+              "Stopping could not be confirmed in time, so this session's shared engine was ended",
+            )
+        : undefined;
     let current = session;
     if (!current && opening) {
       const opened = await settleBy(
@@ -2241,19 +2395,35 @@ export class RunnerRuntime {
         deadline,
       );
       if (opened === boundPassed) {
+        let lateLastResort: (() => Promise<void>) | undefined;
         return {
           stopping: opening.then(
-            (late) => stopEvidence(late),
-            (error: unknown) =>
-              !sharedEngine && !(error instanceof HarnessStopUnprovenError)
+            (late) => {
+              lateLastResort = retireFor(late);
+              return stopEvidence(late);
+            },
+            (error: unknown) => {
+              if (error instanceof HarnessStopUnprovenError && error.retireEngine) {
+                const retire = error.retireEngine;
+                lateLastResort = () =>
+                  retire(
+                    "A shared-engine session failed to open cleanly during stop, so its engine was ended",
+                  );
+              }
+              return !sharedEngine && !(error instanceof HarnessStopUnprovenError)
                 ? undefined
                 : isOpenStopProven(error)
                   ? undefined
                   : retireOpenFailureOrNever(
                       error,
                       "A shared-engine session failed to open cleanly during stop, so its engine was ended",
-                    ),
+                    );
+            },
           ),
+          lastResort: async () => {
+            if (!lateLastResort) throw new Error("Engine open has not yielded a scoped engine");
+            await lateLastResort();
+          },
         };
       }
       if (!opened.ok) {
@@ -2261,12 +2431,24 @@ export class RunnerRuntime {
           return { recheckContainment: true };
         }
         if (isOpenStopProven(opened.error)) return { recheckContainment: true };
+        const retire =
+          opened.error instanceof HarnessStopUnprovenError ? opened.error.retireEngine : undefined;
         const stopping = retireOpenFailureOrNever(
           opened.error,
           "A shared-engine session failed to open cleanly during stop, so its engine was ended",
         );
         return (await settleBy(stopping, deadline)) === boundPassed
-          ? { stopping }
+          ? {
+              stopping,
+              ...(retire
+                ? {
+                    lastResort: () =>
+                      retire(
+                        "A shared-engine session failed to open cleanly during stop, so its engine was ended",
+                      ),
+                  }
+                : {}),
+            }
           : { recheckContainment: true };
       }
       current = opened.session;
@@ -2274,12 +2456,14 @@ export class RunnerRuntime {
       // and containment is checked again after it stops.
       const stopping = stopEvidence(current);
       return (await settleBy(stopping, deadline)) === boundPassed
-        ? { stopping }
+        ? { stopping, lastResort: retireFor(current) }
         : { recheckContainment: true };
     }
     if (!current || current.engineProcess !== "shared") return undefined;
     const stopping = asked ?? stopEvidence(current);
-    return (await settleBy(stopping, deadline)) === boundPassed ? { stopping } : undefined;
+    return (await settleBy(stopping, deadline)) === boundPassed
+      ? { stopping, lastResort: retireFor(current) }
+      : undefined;
   }
 
   /**
@@ -2388,6 +2572,16 @@ export class RunnerRuntime {
     acks: Extract<HostToRunnerMessage, { readonly type: "host.executions.acked" }>["acks"],
   ): void {
     for (const ack of acks) {
+      for (const [key, report] of this.#endedAttempts) {
+        if (
+          typeof report !== "string" &&
+          report.type === "runner.event" &&
+          report.event.runId === ack.runId &&
+          report.event.ordinal <= ack.throughOrdinal
+        ) {
+          this.#endedAttempts.set(key, "ended");
+        }
+      }
       const active = this.#runs.get(ack.runId) ?? this.#settledRuns.get(ack.runId);
       if (!active) continue;
       const { journal } = active;
@@ -2618,7 +2812,12 @@ export class RunnerRuntime {
       return reject("conflict", "Thread already has an active run", true);
     }
     if (this.#uncontainedThreads.has(command.context.threadId)) {
-      return reject("conflict", "The Thread's previous Run is still stopping", true);
+      return reject(
+        "conflict",
+        "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+        true,
+        "previous-stop-unconfirmed",
+      );
     }
     if (this.#runs.size >= this.#maxConcurrentRuns) {
       return reject("conflict", "Runner Run concurrency limit is saturated", true);
@@ -3056,9 +3255,10 @@ export class RunnerRuntime {
       // An engine that may live on keeps its Thread from running anything else.
       if (this.#uncontainedThreads.has(context.threadId)) {
         throw new OpensteerError({
-          code: "conflict",
-          message: "The Thread's previous engine is still stopping",
-          retryable: true,
+          code: runTerminationUnprovenCode,
+          message:
+            "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+          retryable: false,
         });
       }
       if (warmEngine) {
@@ -3403,7 +3603,12 @@ export class RunnerRuntime {
           )
         : active.abort.signal.aborted
           ? { data: { status: "interrupted" }, type: "run.interrupted" }
-          : failureEvent(safeMessage(error, safeMessageOptions), "runner_execution_error");
+          : failureEvent(
+              safeMessage(error, safeMessageOptions),
+              error instanceof OpensteerError && error.code === runTerminationUnprovenCode
+                ? runTerminationUnprovenCode
+                : "runner_execution_error",
+            );
     } finally {
       if (workspace && this.#skillObserver) {
         await this.#scanAgentHomeSkills(workspace.path, context.bindingGeneration).catch(
@@ -3435,11 +3640,13 @@ export class RunnerRuntime {
       const kept = warmEngine ? await this.#keepWarmEngine(active, warmEngine, terminal) : false;
       let termination: TerminationProof = "proven";
       let engineStopping: Promise<void> | undefined;
+      let engineLastResort: (() => Promise<void>) | undefined;
       if (warmEngine && !kept) {
         // Everything the engine held ends with it; an unproven end holds the Thread once below.
         const ended = await this.#retireWarmEngine(warmEngine, { holdThread: false });
         termination = ended.termination;
         engineStopping = ended.proven ? undefined : ended.engineStopping;
+        engineLastResort = ended.proven ? undefined : ended.lastResort;
       } else if (!kept) {
         // Whatever the engine left running ends with its Run, including what
         // it orphans as it stops. The Thread takes no new execution until all
@@ -3452,6 +3659,7 @@ export class RunnerRuntime {
         });
         termination = ended.termination;
         engineStopping = ended.proven ? undefined : ended.engineStopping;
+        engineLastResort = ended.proven ? undefined : ended.lastResort;
         await plugins?.cleanup().catch(() => undefined);
         await browserCdpRelay?.close().catch(() => undefined);
         await credentialProxy?.close().catch(() => undefined);
@@ -3521,6 +3729,7 @@ export class RunnerRuntime {
           context.runId,
           warmEngine?.scope ?? active.containmentScope,
           engineStopping,
+          engineLastResort,
         );
       }
       if (this.#threads.get(context.threadId) === context.runId) {
@@ -3593,7 +3802,13 @@ export class RunnerRuntime {
     await engine.credentialProxy.close().catch(() => undefined);
     await engine.machineAccess?.close().catch(() => undefined);
     if (!ended.proven && options?.holdThread !== false) {
-      this.#holdUncontainedThread(engine.threadId, null, engine.scope, ended.engineStopping);
+      this.#holdUncontainedThread(
+        engine.threadId,
+        null,
+        engine.scope,
+        ended.engineStopping,
+        ended.lastResort,
+      );
     }
     return ended;
   }
@@ -4191,8 +4406,16 @@ export function errorCatalog(
   });
 }
 
-function reject(code: ProtocolError["code"], message: string, retryable: boolean): CommandDecision {
-  return { error: { code, message: message.slice(0, 2_000), retryable }, status: "rejected" };
+function reject(
+  code: ProtocolError["code"],
+  message: string,
+  retryable: boolean,
+  reason?: string,
+): CommandDecision {
+  return {
+    error: { code, message: message.slice(0, 2_000), ...(reason ? { reason } : {}), retryable },
+    status: "rejected",
+  };
 }
 
 /**

@@ -1359,4 +1359,75 @@ it.each([false, true])(
   },
 );
 
+it.each([false, true])(
+  "explains in plain words when a shared engine retired under another task's stop (Chat: %s)",
+  (conversation) => {
+    const view = setup(conversation);
+    view.render([
+      {
+        ...run,
+        interruptedCause: "engine-retired",
+        status: "interrupted",
+      },
+    ]);
+    expect(view.container.textContent).not.toContain("This run stopped.");
+    expect(view.container.textContent).toContain("Run cut short");
+    expect(view.container.textContent).toContain(
+      "restart its engine to make sure another task had stopped",
+    );
+    expect(view.container.textContent).toContain("send a message to continue");
+  },
+);
+
+it("shows Check again on an unproven stop and calls recheckThreadStop without any force-unlock action", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  const recheck = vi.spyOn(client, "recheckThreadStop").mockResolvedValue({ proven: false });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  roots.push(root);
+  const threadId = ThreadIdSchema.parse(createId("thread"));
+  const unproven: RunEntry = {
+    ...run,
+    error: {
+      code: "execution_termination_unproven",
+      message: "Stopping could not be confirmed.",
+      retryable: false,
+    },
+    status: "failed",
+  };
+  const [group] = groupTranscriptEntries([unproven]);
+  await act(async () => {
+    root.render(
+      <TranscriptHostClientContext value={client}>
+        <TaskScopeContext
+          value={{
+            focused: true,
+            hostClient: client,
+            onOpenSubagent: () => undefined,
+            onViewWork: () => undefined,
+            threadId,
+          }}
+        >
+          <TranscriptGroupRow group={group!} />
+        </TaskScopeContext>
+      </TranscriptHostClientContext>,
+    );
+  });
+  expect(container.textContent).toContain("Couldn’t confirm this stopped");
+  expect(container.textContent).toContain("Check again");
+  expect(container.textContent).not.toContain("Force unlock");
+  expect(container.textContent).not.toContain("Ignore");
+  const button = [...container.querySelectorAll("button")].find(
+    (node) => node.textContent === "Check again",
+  );
+  expect(button).toBeDefined();
+  await act(async () => {
+    button!.click();
+  });
+  expect(recheck).toHaveBeenCalledWith(threadId);
+  expect(container.textContent).toContain("Still couldn’t confirm this stopped");
+  client.dispose();
+});
+
 vi.mock("../report-mail.js", () => ({ contactSupport: vi.fn() }));

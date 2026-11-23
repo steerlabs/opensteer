@@ -3,6 +3,7 @@ import type { DatabaseSchema } from "./schema.js";
 import type {
   AgentSessionEndReason,
   AgentSessionId,
+  RunStartHoldReason,
   Thread,
   ThreadId,
   UserId,
@@ -40,6 +41,7 @@ const taskFields = [
   "revision",
   "pendingRequestCount",
   "lastReplyPreview",
+  "failureCode",
   "failurePreview",
   "latestRunCompletedAt",
   "environmentId",
@@ -48,6 +50,9 @@ const taskFields = [
 
 /** A Run of this thread waits to start and none is executing (the task row's `runQueued`). */
 export const threadRunQueued = sql<boolean>`(exists (select 1 from runs where runs.thread_id = threads.id and runs.status = 'queued') and not exists (select 1 from runs where runs.thread_id = threads.id and runs.status in ('starting','running','waiting')))`;
+
+/** Why the earliest queued Run of this thread is being held back from starting, if any. */
+export const threadRunStartHoldReason = sql<RunStartHoldReason | null>`(select runs.start_hold_reason from runs where runs.thread_id = threads.id and runs.status = 'queued' and runs.start_hold_reason is not null order by runs.run_ordinal limit 1)`;
 
 export interface TaskExternalWork {
   readonly sessionId: AgentSessionId;
@@ -85,6 +90,7 @@ export function currentTasks(tx: PersonalMutationTransaction, viewerId: UserId) 
     .selectFrom("threads")
     .select(taskFields)
     .select(threadRunQueued.as("runQueued"))
+    .select(threadRunStartHoldReason.as("runStartHoldReason"))
     .select(taskExternalWorkSelection)
     .where("createdBy", "=", viewerId)
     .where("removedAt", "is", null);

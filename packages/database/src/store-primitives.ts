@@ -154,12 +154,14 @@ export async function returnRunToQueue(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly run: Pick<RunRow, "environmentId" | "id" | "threadId">;
+    readonly startHoldReason?: import("@opensteer/core").RunStartHoldReason | null;
   },
 ): Promise<void> {
   const queued = await transaction
     .updateTable("runs")
     .set({
       bindingGeneration: null,
+      startHoldReason: input.startHoldReason ?? null,
       status: "queued",
     })
     .where("id", "=", input.run.id)

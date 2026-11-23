@@ -245,6 +245,37 @@ describe("AgentTranscript", () => {
       expect(markup).not.toContain("Opensteer couldn’t finish");
       expect(markup).toContain("Couldn’t confirm this stopped");
       expect(markup).toContain("may still be running on that device");
+      expect(markup).not.toContain("Force unlock");
+      expect(markup).not.toContain("Ignore");
+    }
+    const confirmed = run({
+      status: "interrupted",
+      stopConfirmedAt: "2026-08-16T10:05:00.000Z",
+    });
+    const confirmedMarkup = renderToStaticMarkup(
+      <MemoryRouter>
+        <AgentTranscript entries={[confirmed]} />
+      </MemoryRouter>,
+    );
+    expect(confirmedMarkup).toContain("Run stopped.");
+    expect(confirmedMarkup).toContain("Confirmed stopped at");
+  });
+
+  it("explains in plain words when a shared engine retired under another task's stop", () => {
+    const retired = run({
+      interruptedCause: "engine-retired",
+      status: "interrupted",
+    });
+    for (const conversation of [false, true]) {
+      const markup = renderToStaticMarkup(
+        <MemoryRouter>
+          <AgentTranscript conversation={conversation} entries={[retired]} />
+        </MemoryRouter>,
+      );
+      expect(markup).not.toContain("Run stopped.");
+      expect(markup).toContain("Run cut short");
+      expect(markup).toContain("restart its engine to make sure another task had stopped");
+      expect(markup).toContain("send a message to continue");
     }
   });
 });

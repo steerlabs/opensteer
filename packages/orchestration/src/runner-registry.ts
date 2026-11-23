@@ -478,6 +478,18 @@ interface RunnerConnection {
       reject: (error: unknown) => void;
     }
   >;
+  readonly pendingStopRechecks: Map<
+    string,
+    {
+      resolve: (
+        result: Extract<
+          RunnerOperationalMessage,
+          { readonly type: "runner.thread.stop.recheck.result" }
+        >,
+      ) => void;
+      reject: (error: unknown) => void;
+    }
+  >;
   /**
    * Work that may have crossed the transport boundary on this exact socket.
    * An acknowledgement can be lost after the Runner accepted a command. The Host must retain ownership
@@ -764,6 +776,7 @@ export class RunnerRegistry {
       pendingAppSyncs: new Map(),
       pendingRunFiles: new Map(),
       pendingHomeFiles: new Map(),
+      pendingStopRechecks: new Map(),
       agentHomeReady: false,
       ownedRunIds: new Set(),
       ownedRunBindings: new Map(),
@@ -2143,6 +2156,59 @@ export class RunnerRegistry {
   }
 
   /**
+   * Asks the Runner serving `environmentId` to run its scoped last resort and
+   * containment check for `threadId` again ("Check again").
+   */
+  async recheckThreadStop(
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    signal: AbortSignal,
+  ): Promise<{ readonly proven: boolean }> {
+    const connection = this.#byEnvironment.get(environmentId);
+    if (!connection?.attached) {
+      const asleep = connection ? this.isRunnerAsleep(connection.identity.runnerId) : false;
+      throw new OpensteerError({
+        code: "runner_offline",
+        ...(asleep ? { reason: "device-asleep" } : {}),
+        message: asleep ? "That device is asleep" : "That device is offline",
+      });
+    }
+    signal.throwIfAborted();
+    const fence = connection.identity.fence;
+    const requestId = randomUUID();
+    const pending =
+      deferred<
+        Extract<RunnerOperationalMessage, { readonly type: "runner.thread.stop.recheck.result" }>
+      >();
+    connection.pendingStopRechecks.set(requestId, pending);
+    try {
+      const result = await withDeadline(
+        Promise.all([
+          pending.promise,
+          connection.peer.send({
+            ...fence,
+            requestId,
+            threadId,
+            type: "host.thread.stop.recheck",
+          }),
+        ]).then(([answer]) => answer),
+        30_000,
+        signal,
+        "That device did not answer the stop check in time",
+      );
+      if (!sameRunnerConnectionFence(result, fence)) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Stop check response belongs to another connection",
+        });
+      }
+      return { proven: result.proven };
+    } finally {
+      connection.pendingStopRechecks.delete(requestId);
+    }
+  }
+
+  /**
    * Sends a durable command and resolves when the Runner accepts it. A caller
    * that prepared the command for one connection names its generation: a
    * command meant for a connection that has since been replaced is never sent
@@ -2991,6 +3057,9 @@ export class RunnerRegistry {
       case "runner.home-files.result":
         connection.pendingHomeFiles.get(message.requestId)?.resolve(message);
         break;
+      case "runner.thread.stop.recheck.result":
+        connection.pendingStopRechecks.get(message.requestId)?.resolve(message);
+        break;
       case "runner.harness-catalog-invalidated":
         connection.catalogGeneration += 1;
         connection.catalogCache.delete(message.harnessInstanceId);
@@ -3335,6 +3404,7 @@ export class RunnerRegistry {
     for (const pending of connection.pendingApps.values()) pending.reject(error);
     for (const pending of connection.pendingRunFiles.values()) pending.reject(error);
     for (const pending of connection.pendingHomeFiles.values()) pending.reject(error);
+    for (const pending of connection.pendingStopRechecks.values()) pending.reject(error);
     connection.pendingAcks.clear();
     connection.pendingCatalogs.clear();
     connection.pendingHarnessAuthentications.clear();
@@ -3347,6 +3417,7 @@ export class RunnerRegistry {
     connection.pendingAppSyncs.clear();
     connection.pendingRunFiles.clear();
     connection.pendingHomeFiles.clear();
+    connection.pendingStopRechecks.clear();
     connection.ownedRunIds.clear();
     connection.ownedRunBindings.clear();
     connection.ownedTriggerOccurrenceIds.clear();

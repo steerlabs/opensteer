@@ -21,6 +21,7 @@ import { sql } from "kysely";
 import { recordPersonWaited } from "./run-visibility.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { pauseTriggerInTransaction } from "./trigger-store.js";
+import { refreshInputQueue } from "./waiting-inputs.js";
 import {
   OpensteerError,
   MessageContentSchema,
@@ -28,6 +29,7 @@ import {
   ReplyTargetSchema,
   type RequestCancellationReason,
   type RunId,
+  type RunInterruptedCause,
   type RunAttemptId,
   type RunFailure,
 } from "@opensteer/core";
@@ -49,6 +51,7 @@ interface FinalizeRunRequest {
   readonly completedAt: Date;
   readonly expectedCommandId?: CommandRow["id"];
   readonly failure?: RunFailure;
+  readonly interruptedCause?: RunInterruptedCause;
   /** How a channel status message names the Thread it points at. */
   readonly links: ChannelLinks;
   /** The proof source determines both event authorship and execute receipt. */
@@ -166,6 +169,7 @@ export async function finalizeRunTransaction(
         completedAt: input.completedAt.toISOString(),
         replyMessageId: reply?.id ?? null,
         ...(input.failure ? { failure: input.failure } : {}),
+        ...(input.interruptedCause ? { interruptedCause: input.interruptedCause } : {}),
         ...(input.statement ? { statement: input.statement } : {}),
         ...(input.requestCancellationReason
           ? { requestCancellationReason: input.requestCancellationReason }
@@ -477,6 +481,7 @@ export async function drainRunFinish(
         source:
           (intent.mode ?? (intent.statement ? "runner" : "host")) === "runner" ? "runner" : "host",
         ...(intent.failure ? { failure: intent.failure } : {}),
+        ...(intent.interruptedCause ? { interruptedCause: intent.interruptedCause } : {}),
         ...(intent.requestCancellationReason
           ? { requestCancellationReason: intent.requestCancellationReason }
           : {}),
@@ -583,7 +588,9 @@ async function finalizeRunOutcome(
       text:
         input.status === "failed"
           ? `Something went wrong and the agent could not finish. ${failureSummary(input.failure)} Open the Thread in Opensteer: ${threadUrl}`
-          : `The agent was stopped. Open the Thread in Opensteer: ${threadUrl}`,
+          : input.interruptedCause === "engine-retired"
+            ? `This Run was cut short: Opensteer had to restart its engine to make sure another task had stopped. What it was doing at that moment may not have finished; send a message to continue. Open the Thread in Opensteer: ${threadUrl}`
+            : `The agent was stopped. Open the Thread in Opensteer: ${threadUrl}`,
     });
   }
   await recordPersonWaited(transaction, run.id);
@@ -716,6 +723,8 @@ async function finalizeRunOutcome(
       runnerSafetyTerminal: input.source === "runner" && input.status !== "completed",
       ...(mutation ? { revision: mutation.sequence } : {}),
       failure: input.status === "failed" ? jsonValue(input.failure!) : null,
+      interruptedCause: input.status === "interrupted" ? (input.interruptedCause ?? null) : null,
+      startHoldReason: null,
       status: input.status,
     })
     .where("id", "=", run.id)
@@ -774,6 +783,28 @@ async function finalizeRunOutcome(
   // A corrupt selection must not roll back an already accepted terminal event.
   // Pending work remains queued until an explicit engine selection repairs it.
   if (!offline) {
+    // When a shared engine had to retire under an innocent neighbour, pause
+    // queued follow-ups rather than silently continuing over work whose state
+    // may be partial.
+    if (
+      input.status === "interrupted" &&
+      input.interruptedCause === "engine-retired" &&
+      thread.purpose !== "voice" &&
+      !thread.doneAt &&
+      !thread.inputQueuePaused
+    ) {
+      await transaction
+        .updateTable("threads")
+        .set({
+          inputQueuePaused: true,
+          inputQueuePausedBy: null,
+          updatedAt: input.completedAt,
+        })
+        .where("id", "=", run.threadId)
+        .execute();
+      thread.inputQueuePaused = true;
+      await refreshInputQueue(transaction, run.threadId);
+    }
     await ensureQueuedRun(transaction, thread, {
       onInvalidSelection: "defer",
     });

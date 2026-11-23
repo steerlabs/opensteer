@@ -1,3 +1,4 @@
+import { runTerminationUnprovenCode } from "@opensteer/core";
 import { MenuView, type MenuComponentRef } from "@expo/ui/community/menu";
 import {
   heldThread,
@@ -229,7 +230,9 @@ export function TaskRowState(
       )
     ) : row.tone === "failed" ? (
       <AppText role="caption" tone="danger">
-        Couldn't finish
+        {row.failureCode === runTerminationUnprovenCode
+          ? "Couldn’t confirm it stopped"
+          : "Couldn't finish"}
       </AppText>
     ) : row.tone === "waiting" ? (
       <AppText role="caption" tone="muted">

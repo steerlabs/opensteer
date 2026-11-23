@@ -105,6 +105,8 @@ export function transcriptCard(
         error: item.failure ?? null,
         replyMessageId: item.replyMessageId ?? null,
         ...(item.endedAt ? { endedAt: item.endedAt } : {}),
+        ...(item.interruptedCause ? { interruptedCause: item.interruptedCause } : {}),
+        ...(item.stopConfirmedAt ? { stopConfirmedAt: item.stopConfirmedAt } : {}),
         ...(item.usage ? { usage: item.usage } : {}),
         ...(view.status === "background" ? { background: true } : {}),
         status,

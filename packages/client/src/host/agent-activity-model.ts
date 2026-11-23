@@ -3,6 +3,7 @@ import { pageSiteLabel } from "./surfaces.js";
 import {
   imageGenerationToolName,
   isIntegrationGatewayTool,
+  runTerminationUnprovenCode,
   type AnsweredQuestion,
   type AssignmentSummary,
   type WaitingRequest,
@@ -3099,10 +3100,34 @@ function clipText(value: string): string {
   return value.length <= max ? value : `…${value.slice(value.length - max)}`;
 }
 
-export const runTerminationUnprovenCode = "execution_termination_unproven";
+export { runTerminationUnprovenCode };
 
 export function isRunTerminationUnproven(run: Pick<RunEntry, "error" | "status">): boolean {
   return run.status === "failed" && run.error?.code === runTerminationUnprovenCode;
+}
+
+export function isRunEngineRetired(
+  run: Pick<RunEntry, "interruptedCause" | "status">,
+): boolean {
+  return run.status === "interrupted" && run.interruptedCause === "engine-retired";
+}
+
+export function runInterruptedTitle(
+  run: Pick<RunEntry, "interruptedCause" | "status">,
+  options?: { readonly conversation?: boolean | undefined; readonly mobile?: boolean | undefined },
+): string {
+  if (isRunEngineRetired(run)) return "Run cut short";
+  if (options?.conversation === true) return "Stopped.";
+  return options?.mobile === true ? "This run stopped." : "Run stopped.";
+}
+
+export function runInterruptedMessage(
+  run: Pick<RunEntry, "interruptedCause" | "status">,
+): string | null {
+  if (isRunEngineRetired(run)) {
+    return "This Run was cut short: Opensteer had to restart its engine to make sure another task had stopped. What it was doing at that moment may not have finished; send a message to continue.";
+  }
+  return null;
 }
 
 export function runOutcomeTitle(
@@ -3131,6 +3156,15 @@ interface ActivityFeedPresentation {
 
 export function activityFeedPresentation(entry: ActivityFeedEntry): ActivityFeedPresentation {
   if (entry.kind === "run") {
+    if (entry.status === "interrupted") {
+      return {
+        detail: runInterruptedMessage(entry) ?? "",
+        detailKind: "prose",
+        icon: isRunEngineRetired(entry) ? "alert-circle" : "stop",
+        label: runInterruptedTitle(entry),
+        marker: "stopped",
+      };
+    }
     return {
       detail: runOutcomeMessage(entry) ?? "",
       detailKind: "prose",

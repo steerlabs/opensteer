@@ -1509,6 +1509,10 @@ export class OpensteerStore {
   }> {
     return threadStore.updateThreadExecutionSelection(this.#database, input);
   }
+  async clearThreadStartHold(threadId: ThreadId): Promise<boolean> {
+    return executionRecovery.clearThreadStartHold(this.#database, threadId);
+  }
+
   async resumeThreadInputQueue(input: {
     readonly authority?: import("./thread-caller.js").ThreadCallerAuthority;
     readonly idempotencyKey: string;

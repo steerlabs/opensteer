@@ -3181,6 +3181,11 @@ async function executeMockCommand(
         asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
         type: command.type,
       });
+    case "thread.stop.recheck":
+      return rpcSuccess({
+        proven: true,
+        type: command.type,
+      });
     case "thread.input.steer":
       return rpcSuccess({
         input: client.steerThreadInput(command.threadId, command.messageId, command.expectedRunId),
@@ -5100,6 +5105,18 @@ export class MockHostClient implements HostClient {
       threadId,
       type: "thread.inputQueue.resume",
     });
+  }
+
+  async recheckThreadStop(threadId: string): Promise<{ readonly proven: boolean }> {
+    const result = await this.dispatch({
+      idempotencyKey: `mock-stop-recheck:${crypto.randomUUID()}`,
+      threadId,
+      type: "thread.stop.recheck",
+    });
+    if (result.type !== "thread.stop.recheck") {
+      throw new Error(`Unexpected thread.stop.recheck response: ${result.type}`);
+    }
+    return { proven: result.proven };
   }
 
   async steerThreadInput(threadId: string, messageId: string): Promise<void> {

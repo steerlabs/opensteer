@@ -3266,8 +3266,18 @@ describe("one Codex app-server per account", () => {
       const [pid] = await runServerPids(fixture);
       expect(processAlive(pid!)).toBe(false);
       await otherObserver.done;
-      // The other task's turn was cut short by the server's end, not failed.
-      expect(normalizedTypes(otherObserver.events)).toContain("run.interrupted");
+      // The other task's turn was cut short by the server's end with its own cause,
+      // while the stopping task's turn ended as a plain stop.
+      const otherEnd = otherObserver.events.find((event) => event.type === "run.interrupted");
+      expect(otherEnd).toEqual({
+        type: "run.interrupted",
+        data: { status: "interrupted", cause: "engine-retired" },
+      });
+      const stoppingEnd = stoppingObserver.events.find((event) => event.type === "run.interrupted");
+      expect(stoppingEnd).toEqual({
+        type: "run.interrupted",
+        data: { status: "interrupted" },
+      });
       expect(normalizedTypes(otherObserver.events)).not.toContain("run.failed");
       expect(other.usable).toBe(false);
       await other.stop();

@@ -39,6 +39,7 @@ import { endStoppedUnconfirmedRun, finalizeRunTransaction } from "./run-finaliza
 import { revokeRunGrants, runWasStopped, type RevokedRunGrant } from "./run-grants.js";
 import { cancelPending } from "./request-store.js";
 import { publishExecutionInput, updateExecutionThread } from "./execution-changes.js";
+import { publishRunQueue } from "./thread-status.js";
 import { ensureQueuedRun } from "./thread-inbox.js";
 export interface RecoveredRunTarget {
   readonly environmentId: EnvironmentId;
@@ -721,11 +722,61 @@ export async function attachRunnerExecutions(
     input.stoppedComputerName,
   );
   revokedGrants.push(...lost.revokedGrants);
+  // A reconnecting or rebooted Runner may no longer hold a thread whose queued
+  // Run was waiting on previous-stop-unconfirmed: clear the hold so the
+  // coordinator checks once against the live Runner.
+  const heldThreads = await database
+    .selectFrom("runs")
+    .innerJoin("executionEnvironments", "executionEnvironments.id", "runs.environmentId")
+    .select("runs.threadId")
+    .distinct()
+    .where("executionEnvironments.runnerId", "=", input.runnerId)
+    .where("runs.status", "=", "queued")
+    .where("runs.startHoldReason", "=", "previous-stop-unconfirmed")
+    .execute();
+  for (const { threadId } of heldThreads) {
+    await clearThreadStartHold(database, threadId);
+  }
   return {
     resumed,
     results,
     revokedGrants,
   };
+}
+
+/** Lifts `previous-stop-unconfirmed` holds on queued Runs of a thread and wakes dispatch. */
+export async function clearThreadStartHold(
+  database: Kysely<DatabaseSchema>,
+  threadId: ThreadId,
+): Promise<boolean> {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
+    // Lock held `runs` rows before `threads` (canonical lock order: runs -> threads).
+    const held = await transaction
+      .selectFrom("runs")
+      .select("id")
+      .where("threadId", "=", threadId)
+      .where("status", "=", "queued")
+      .where("startHoldReason", "is not", null)
+      .orderBy("id", "asc")
+      .forNoKeyUpdate()
+      .execute();
+    if (held.length === 0) return false;
+    await transaction
+      .updateTable("runs")
+      .set({
+        startHoldReason: null,
+        revision: mutation.sequence,
+      })
+      .where(
+        "id",
+        "in",
+        held.map(({ id }) => id),
+      )
+      .execute();
+    await lockThreadRow(transaction, threadId);
+    await publishRunQueue(transaction, threadId);
+    return true;
+  });
 }
 async function recoverLostExecutions(
   database: Kysely<DatabaseSchema>,

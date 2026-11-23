@@ -2,6 +2,7 @@ import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { executionDate } from "./personal-transaction.js";
 import {
   projectThreadState,
+  publishRunQueue,
   publishThreadSummary,
   replyPreview,
   writeThreadSummary,
@@ -14,6 +15,7 @@ import { beginPersonalRunFinish, readFinishChildren } from "./personal-run-state
 import { completePersonalToolCall, startPersonalToolCall } from "./personal-tool-calls.js";
 import {
   publishExecutionInput,
+  publishTranscriptRun,
   recordExecutionRunChange,
   writeExecutionItem,
 } from "./execution-changes.js";
@@ -946,6 +948,72 @@ export async function commitRunnerEvent(
         mutation,
         statement,
         async (digest, event, authority, { run, attempt, ...context }) => {
+          // Late confirmation from the Runner that an unproven stop has now settled:
+          // move the Run from failed/execution_termination_unproven to interrupted
+          // with stopConfirmedAt, lift any previous-stop-unconfirmed hold on queued
+          // Runs, and clear the failed task status. Never becomes completed.
+          if (
+            run.status === "failed" &&
+            run.failure?.code === runTerminationUnprovenCode &&
+            event.type === "run.interrupted"
+          ) {
+            const confirmedAt = mutation.state.now;
+            // Lock and update any held queued Runs BEFORE locking `threads`
+            // (lock order: runs -> threads -> transcriptItems -> providerSessions -> runAttempts).
+            await tx
+              .updateTable("runs")
+              .set({
+                startHoldReason: null,
+                revision: mutation.sequence,
+              })
+              .where("threadId", "=", run.threadId)
+              .where("status", "=", "queued")
+              .where("startHoldReason", "is not", null)
+              .execute();
+            await lockStatementThread(tx, event.threadId, context.channelInputs);
+            await lockRunProjectionRows(tx, {
+              threadIds: [run.threadId],
+              runIds: [run.id],
+            });
+            await tx
+              .updateTable("runs")
+              .set({
+                status: "interrupted",
+                failure: null,
+                completedAt: confirmedAt,
+                stopConfirmedAt: confirmedAt,
+                runnerSafetyTerminal: true,
+                revision: mutation.sequence,
+              })
+              .where("id", "=", run.id)
+              .executeTakeFirstOrThrow();
+            if (run.providerSessionId) {
+              await tx
+                .updateTable("providerSessions")
+                .set({
+                  status: "ready",
+                  updatedAt: confirmedAt,
+                })
+                .where("id", "=", run.providerSessionId)
+                .where("status", "=", "broken")
+                .execute();
+            }
+            await tx
+              .updateTable("runAttempts")
+              .set({
+                outcome: "interrupted",
+                endedAt: confirmedAt,
+                terminalEvidenceAt: confirmedAt,
+                contactLostAt: null,
+              })
+              .where("runId", "=", run.id)
+              .where("bindingGeneration", "=", event.bindingGeneration)
+              .execute();
+            await projectThreadState(tx, run.threadId, confirmedAt, true);
+            await publishTranscriptRun(tx, mutation, run.id);
+            await publishRunQueue(tx, run.threadId);
+            return "applied";
+          }
           const lostExecution =
             event.type === "run.interrupted" && event.data.cause === "lease-lost";
           if (
@@ -1080,6 +1148,9 @@ export async function commitRunnerEvent(
                     ? "failed"
                     : "interrupted",
               ...(event.type === "run.failed" ? { failure: event.data } : {}),
+              ...(event.type === "run.interrupted" && event.data.cause
+                ? { interruptedCause: event.data.cause }
+                : {}),
               statement: {
                 ordinal: event.ordinal,
                 runnerId: input.runnerId,

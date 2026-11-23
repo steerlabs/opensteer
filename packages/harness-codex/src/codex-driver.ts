@@ -2269,8 +2269,14 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     }
   }
 
-  serverFailed(error: OpensteerError, options?: { readonly interrupted?: boolean }): void {
-    this.#handleConnectionFailure(error, options?.interrupted === true);
+  serverFailed(
+    error: OpensteerError,
+    options?: { readonly interrupted?: boolean; readonly engineRetired?: boolean },
+  ): void {
+    this.#handleConnectionFailure(error, {
+      interrupted: options?.interrupted === true,
+      engineRetired: options?.engineRetired === true,
+    });
   }
 
   requestTimedOut(error: OpensteerError): void {
@@ -3215,7 +3221,11 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     active.imageGenerations.clear();
   }
 
-  #publishTerminal(active: ActiveTurn, status: "completed" | "interrupted"): void {
+  #publishTerminal(
+    active: ActiveTurn,
+    status: "completed" | "interrupted",
+    options?: { readonly cause?: import("@opensteer/core").RunInterruptedCause },
+  ): void {
     this.#cancelImageGenerations(active);
     if (!this.#publisher.claimTerminal(active)) return;
     void this.#trackCancellation(this.#drainPendingRequests("run-ended"));
@@ -3224,7 +3234,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       if (status === "completed") this.#ensureRunStarted(active);
       this.#endNodes(active);
       this.#publishUsage(active);
-      this.#publish(runEndedEvent(status));
+      this.#publish(runEndedEvent(status, options));
     } finally {
       active.rootStart?.resolve();
       active.completion.resolve();
@@ -3258,15 +3268,24 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
    * The Run ends now, as the stop it was asked for if one was, and the session
    * stops, which frees its conversation for the next Run at once.
    */
-  #handleConnectionFailure(error: OpensteerError, interrupted = false): void {
+  #handleConnectionFailure(
+    error: OpensteerError,
+    options?: { readonly interrupted?: boolean; readonly engineRetired?: boolean },
+  ): void {
     if (!this.#publisher.unusable) {
       this.#publisher.latchUnusable(error);
       const active = this.#activeTurn;
       if (active) {
         try {
-          if (this.#closed || active.interruptRequested || interrupted)
-            this.#publishTerminal(active, "interrupted");
-          else this.#publishFailure(active, error);
+          if (this.#closed || active.interruptRequested || options?.interrupted === true) {
+            const engineRetired =
+              options?.engineRetired === true && !this.#closed && !active.interruptRequested;
+            this.#publishTerminal(
+              active,
+              "interrupted",
+              engineRetired ? { cause: "engine-retired" } : undefined,
+            );
+          } else this.#publishFailure(active, error);
         } catch {
           // The active turn is terminal even when its terminal event could not fit.
         }

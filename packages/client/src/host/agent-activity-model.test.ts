@@ -820,6 +820,21 @@ describe("a task's turn", () => {
     expect(unproven.label).toBe("Couldn’t confirm this stopped");
     expect(unproven.detail).toContain("may still be running on that device");
 
+    const retired = activityFeedPresentation(
+      run({
+        interruptedCause: "engine-retired",
+        status: "interrupted",
+      }),
+    );
+    expect(retired.label).toBe("Run cut short");
+    expect(retired.detail).toContain("restart its engine to make sure another task had stopped");
+    expect(retired.marker).toBe("stopped");
+
+    const stopped = activityFeedPresentation(run({ status: "interrupted" }));
+    expect(stopped.label).toBe("Run stopped.");
+    expect(stopped.detail).toBe("");
+    expect(stopped.marker).toBe("stopped");
+
     const joined = groupTranscriptEntries([
       run({ status: "running" }),
       command("ls"),

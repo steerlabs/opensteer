@@ -14,7 +14,10 @@ import {
   conversationTurn,
   formatClockTime,
   hasRunOutcome,
+  isRunEngineRetired,
   isRunTerminationUnproven,
+  runInterruptedMessage,
+  runInterruptedTitle,
   runOutcomeMessage,
   runOutcomeTitle,
   silentRunLabel,
@@ -85,7 +88,7 @@ import {
   type TaskScope,
 } from "./task-line.js";
 import { AppCard } from "./app-card.js";
-import { MessageAttachments } from "./attachment-views.js";
+import { MessageAttachments, TranscriptHostClientContext } from "./attachment-views.js";
 import { Bubble, bubble } from "./bubble.js";
 import { ComputerUseLine, KeptComputerStopLine, useComputerLine } from "./computer-use-line.js";
 import { EditedMark } from "./edited-mark.js";
@@ -1873,6 +1876,10 @@ function RunOutcome(props: {
   readonly run: RunEntry;
 }): ReactNode {
   const { run } = props;
+  const client = useContext(TranscriptHostClientContext);
+  const scope = useContext(TaskScopeContext);
+  const [rechecking, setRechecking] = useState(false);
+  const [recheckNote, setRecheckNote] = useState<string | null>(null);
   const footer = restarted(run) ? (
     <AppText role="caption" tone="muted">
       Restarted to include your message
@@ -1881,6 +1888,7 @@ function RunOutcome(props: {
   if (run.status === "failed") {
     const message = runOutcomeMessage(run);
     const unproven = isRunTerminationUnproven(run);
+    const threadId = scope?.threadId ?? null;
     return (
       <>
         <View accessibilityRole="alert" style={styles.failure}>
@@ -1892,6 +1900,40 @@ function RunOutcome(props: {
               {message}
             </AppText>
           )}
+          {unproven && client !== null && threadId !== null ? (
+            <View>
+              <Pressable
+                accessibilityRole="button"
+                disabled={rechecking}
+                onPress={() => {
+                  setRechecking(true);
+                  setRecheckNote(null);
+                  void client
+                    .recheckThreadStop(threadId)
+                    .then(({ proven }) => {
+                      setRecheckNote(
+                        proven
+                          ? "Confirmed stopped."
+                          : "Still couldn’t confirm this stopped. Something may still be running on that device.",
+                      );
+                    })
+                    .catch(() => {
+                      setRecheckNote("Couldn’t check right now. Try again in a moment.");
+                    })
+                    .finally(() => setRechecking(false));
+                }}
+              >
+                <AppText role="secondaryMedium" tone="default">
+                  {rechecking ? "Checking…" : "Check again"}
+                </AppText>
+              </Pressable>
+              {recheckNote === null ? null : (
+                <AppText role="caption" tone="muted">
+                  {recheckNote}
+                </AppText>
+              )}
+            </View>
+          ) : null}
           {run.error?.retryable === true && !unproven ? (
             <AppText role="caption" tone="muted">
               This looks temporary. Sending again may work.
@@ -1903,10 +1945,31 @@ function RunOutcome(props: {
     );
   }
   if (run.status === "interrupted") {
+    const retired = isRunEngineRetired(run);
+    const message = runInterruptedMessage(run);
+    if (retired && message !== null) {
+      return (
+        <>
+          <View accessibilityRole="summary" style={styles.failure}>
+            <AppText role="secondaryMedium" tone="soft">
+              {runInterruptedTitle(run, { conversation: props.conversation === true, mobile: true })}
+            </AppText>
+            <AppText role="secondary" selectable tone="soft">
+              {message}
+            </AppText>
+          </View>
+          {footer}
+        </>
+      );
+    }
+    const confirmedLabel = run.stopConfirmedAt
+      ? ` Confirmed stopped at ${formatClockTime(run.stopConfirmedAt)}.`
+      : "";
     return (
       <>
         <AppText role="secondary" tone="muted">
-          {props.conversation === true ? "Stopped." : "This run stopped."}
+          {runInterruptedTitle(run, { conversation: props.conversation === true, mobile: true })}
+          {confirmedLabel}
         </AppText>
         {footer}
       </>

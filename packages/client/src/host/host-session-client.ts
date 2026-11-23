@@ -1850,7 +1850,12 @@ export class HttpHostClient {
       SequenceSchema.parse(row.revision),
       row,
     );
-    const entry = { thread, lastReply: row.lastReplyPreview, failure: row.failurePreview };
+    const entry = {
+      thread,
+      lastReply: row.lastReplyPreview,
+      failure: row.failurePreview,
+      failureCode: row.failureCode ?? null,
+    };
     this.#shellEntries.set(row, entry);
     return entry;
   }
@@ -1937,6 +1942,8 @@ export class HttpHostClient {
               latestRunCompletedAt: row.latestRunCompletedAt,
               inputQueuePaused: row.inputQueuePaused ?? held.inputQueuePaused,
               runQueued: row.runQueued,
+              runStartHoldReason: row.runStartHoldReason ?? null,
+              failureCode: row.failureCode ?? null,
               agentSessionId: row.agentSessionId ?? null,
               externalWork: row.externalWork ?? null,
             },
@@ -3396,6 +3403,18 @@ export class HttpHostClient {
       threadId,
       type: "thread.inputQueue.resume",
     });
+  }
+
+  async recheckThreadStop(threadId: string): Promise<{ readonly proven: boolean }> {
+    const result = await this.dispatch({
+      idempotencyKey: mutationIdempotencyKey("thread-stop-recheck"),
+      threadId,
+      type: "thread.stop.recheck",
+    });
+    if (result.type !== "thread.stop.recheck") {
+      throw new Error(`Unexpected thread.stop.recheck response: ${result.type}`);
+    }
+    return { proven: result.proven };
   }
 
   /**
@@ -5032,6 +5051,8 @@ function compactThread(
     environmentId: row.environmentId,
     harnessInstanceId: row.harnessInstanceId,
     runQueued: row.runQueued,
+    runStartHoldReason: row.runStartHoldReason ?? null,
+    failureCode: row.failureCode ?? null,
     agentSessionId: row.agentSessionId ?? null,
     externalWork: row.externalWork ?? null,
     modelSelection: unknownModelSelection,

@@ -2020,6 +2020,12 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     requestId: CorrelationIdSchema,
     result: RunnerVoiceResultSchema,
   }),
+  z.strictObject({
+    ...fencedMessageBase,
+    type: z.literal("runner.thread.stop.recheck.result"),
+    requestId: CorrelationIdSchema,
+    proven: z.boolean(),
+  }),
   RunnerPowerSleepingSchema,
   RunnerAgentsStoppedSchema,
   RunnerAgentsResumedSchema,
@@ -2053,6 +2059,12 @@ export type RunnerToHostMessage = z.infer<typeof RunnerToHostMessageSchema>;
 
 export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ ...fencedMessageBase, type: z.literal("host.shell.probe-full-disk-access") }),
+  z.strictObject({
+    ...fencedMessageBase,
+    type: z.literal("host.thread.stop.recheck"),
+    requestId: CorrelationIdSchema,
+    threadId: ThreadIdSchema,
+  }),
   z.strictObject({ ...fencedMessageBase, type: z.literal("host.live.resync"), runId: RunIdSchema }),
   HostBackgroundTextSchema,
   RunnerChallengeSchema,

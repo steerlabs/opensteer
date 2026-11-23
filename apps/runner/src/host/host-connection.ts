@@ -1469,6 +1469,7 @@ export const stoppedWorkAllowed = {
   "host.run-file.receive": false,
   "host.run-file.send": false,
   "host.runs.revoked": true,
+  "host.thread.stop.recheck": true,
   "host.voice": false,
 } satisfies Record<
   Exclude<
@@ -1698,6 +1699,26 @@ export class AgentsWorkSession implements RunnerWorkSession {
       case "host.live.resync":
         this.#options.agents.runtime.resynchronizeLive(message.runId);
         return;
+      case "host.thread.stop.recheck": {
+        void this.#options.agents.runtime
+          .recheckThreadStop(message.threadId)
+          .then(
+            ({ proven }) =>
+              this.#options.sink.send({
+                type: "runner.thread.stop.recheck.result",
+                requestId: message.requestId,
+                proven,
+              }),
+            () =>
+              this.#options.sink.send({
+                type: "runner.thread.stop.recheck.result",
+                requestId: message.requestId,
+                proven: false,
+              }),
+          )
+          .catch(() => undefined);
+        return;
+      }
       case "host.executions.acked":
         this.#options.agents.runtime.acknowledge(message.acks);
         return;
@@ -2522,6 +2543,13 @@ function reachOnlyWorkSession(
             fence: message.fence,
             ok: false,
             error: notRunningAgents,
+          });
+          return;
+        case "host.thread.stop.recheck":
+          await sink.send({
+            type: "runner.thread.stop.recheck.result",
+            requestId: message.requestId,
+            proven: true,
           });
           return;
         // A computer that runs no agents holds no Runs to stop, resume or renew.

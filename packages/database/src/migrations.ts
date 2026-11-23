@@ -649,6 +649,36 @@ export function migrationProvider(options?: {
                   );
                 },
               },
+              "0052_stop_truth_and_recovery": {
+                /**
+                 * Records why an interrupted Run ended (e.g. a shared engine had to retire),
+                 * why a queued Run is being held back from starting, when a late stop proof
+                 * arrived, and the failure code of a failed task so lists do not collapse
+                 * unconfirmed stops into generic failures.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table runs
+                      add column interrupted_cause text check (interrupted_cause in ('lease-lost', 'engine-retired')),
+                      add column start_hold_reason text check (start_hold_reason in ('previous-stop-unconfirmed')),
+                      add column stop_confirmed_at timestamptz;
+                    alter table threads
+                      add column failure_code text;
+                    update threads t
+                      set failure_code = last_run.code
+                      from (
+                        select distinct on (thread_id) thread_id, failure->>'code' as code
+                        from runs
+                        where maintenance is null
+                        order by thread_id, run_ordinal desc
+                      ) last_run
+                      where t.id = last_run.thread_id
+                        and t.status = 'failed'
+                        and last_run.code is not null;
+                    update client_sync_state set epoch = gen_random_uuid();
+                  `.execute(database);
+                },
+              },
             }
           : {}),
       };

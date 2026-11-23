@@ -3720,6 +3720,8 @@ describe("RunnerRuntime", () => {
       /** Resolved when a session open has reached the gate. */
       readonly openReached?: () => void;
       readonly settleMs?: number;
+      readonly retryMs?: number;
+      readonly unprovenLastResortMs?: number;
       readonly sharedEngineProcess?: boolean;
       readonly listProcesses?: ConstructorParameters<
         typeof ExecutionContainment
@@ -3796,7 +3798,14 @@ describe("RunnerRuntime", () => {
                 : [];
             }),
         }),
-        stopTimings: { graceMs: 20, sharedEngineSettleMs: options.settleMs ?? 10_000 },
+        stopTimings: {
+          graceMs: 20,
+          sharedEngineSettleMs: options.settleMs ?? 10_000,
+          ...(options.retryMs !== undefined ? { uncontainedRetryMs: options.retryMs } : {}),
+          ...(options.unprovenLastResortMs !== undefined
+            ? { unprovenLastResortMs: options.unprovenLastResortMs }
+            : {}),
+        },
       });
       const messages: RunnerOperationalReport[] = [];
       const sink: RunnerMessageSink = {
@@ -3989,7 +3998,9 @@ describe("RunnerRuntime", () => {
           status: "rejected",
           error: {
             code: "conflict",
-            message: "The Thread's previous Run is still stopping",
+            message:
+              "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+            reason: "previous-stop-unconfirmed",
             retryable: true,
           },
         });
@@ -4240,7 +4251,9 @@ describe("RunnerRuntime", () => {
           status: "rejected",
           error: {
             code: "conflict",
-            message: "The Thread's previous Run is still stopping",
+            message:
+              "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+            reason: "previous-stop-unconfirmed",
             retryable: true,
           },
         });
@@ -4393,7 +4406,9 @@ describe("RunnerRuntime", () => {
           status: "rejected",
           error: {
             code: "conflict",
-            message: "The Thread's previous Run is still stopping",
+            message:
+              "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+            reason: "previous-stop-unconfirmed",
             retryable: true,
           },
         });
@@ -4444,7 +4459,9 @@ describe("RunnerRuntime", () => {
           status: "rejected",
           error: {
             code: "conflict",
-            message: "The Thread's previous Run is still stopping",
+            message:
+              "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+            reason: "previous-stop-unconfirmed",
             retryable: true,
           },
         });
@@ -4529,9 +4546,9 @@ describe("RunnerRuntime", () => {
         // containment is checked again, and only then does the Thread unlock.
         opened.resolve();
         await waitUntil(() => sessions.length >= 1 && sessions[0]!.stops);
-        await waitUntil(async () => {
+        await vi.waitFor(async () => {
           const decision = await f.runtime.handleCommand(nextTurn(execute), f.sink);
-          return decision.status === "accepted";
+          expect(decision.status).toBe("accepted");
         });
         expect(containmentChecks).toBeGreaterThan(checksBeforeOpen);
       } finally {
@@ -4587,6 +4604,104 @@ describe("RunnerRuntime", () => {
         });
       } finally {
         opened.resolve();
+        await f.runtime.close();
+      }
+    });
+
+    it("H5(a): runs its own scoped last resort within a bound after an unproven stop, lifting the hold and sending late confirmation", async () => {
+      let retiredReason: string | undefined;
+      let processAlive = true;
+      const stopGate = deferred<void>();
+      const session = new SharedEngineSession(stopGate.promise, "shared", async (reason) => {
+        retiredReason = reason;
+        stopGate.resolve();
+      });
+      const f = sharedStopFixture({
+        session: () => session,
+        listProcesses: async () =>
+          processAlive ? [{ identity: "h5a-proc", pid: 99_201, ppid: 1, scope: null }] : [],
+        settleMs: 30,
+        retryMs: 60_000,
+        unprovenLastResortMs: 60,
+      });
+      const execute = executeCommand(f.environmentId);
+      await reconcile(f.registry, execute);
+      try {
+        await f.runtime.handleCommand(execute, f.sink);
+        await waitUntil(() => f.driver.contexts.length === 1);
+        await f.runtime.handleCommand(stopOf(execute), f.sink);
+        // Stop hangs past settleMs -> Run ends unproven and holds the Thread.
+        await waitUntil(() => f.ends().length === 1);
+        expect(f.ends()[0]).toMatchObject({
+          type: "run.failed",
+          data: { code: runTerminationUnprovenCode },
+        });
+        await waitUntil(() => f.runtime.activeRunIds().length === 0);
+        const blocked = await f.runtime.handleCommand(nextTurn(execute), f.sink);
+        expect(blocked).toMatchObject({
+          status: "rejected",
+          error: { code: "conflict", retryable: true, reason: "previous-stop-unconfirmed" },
+        });
+        // Once the process exits, the Runner's automatic last resort (scoped retire + containment)
+        // lifts the hold and emits the confirmed-stopped run.interrupted receipt.
+        processAlive = false;
+        await waitUntil(() => retiredReason !== undefined, 15_000);
+        await waitUntil(
+          () => f.ends().some((event) => event.type === "run.interrupted"),
+          15_000,
+        );
+        expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toEqual({
+          status: "accepted",
+        });
+      } finally {
+        stopGate.resolve();
+        await f.runtime.close();
+      }
+    });
+
+    it("H5(b): rechecks a held Thread on demand via recheckThreadStop and keeps holding until proven", async () => {
+      let allowRetire = false;
+      const stopGate = deferred<void>();
+      const session = new SharedEngineSession(stopGate.promise, "shared", async () => {
+        if (!allowRetire) throw new Error("engine still busy");
+        stopGate.resolve();
+      });
+      const f = sharedStopFixture({
+        session: () => session,
+        settleMs: 30,
+        retryMs: 60_000,
+        unprovenLastResortMs: 60_000,
+      });
+      const execute = executeCommand(f.environmentId);
+      await reconcile(f.registry, execute);
+      try {
+        await f.runtime.handleCommand(execute, f.sink);
+        await waitUntil(() => f.driver.contexts.length === 1);
+        await f.runtime.handleCommand(stopOf(execute), f.sink);
+        await waitUntil(() => f.ends().length === 1);
+        await waitUntil(() => f.runtime.activeRunIds().length === 0);
+
+        // First recheck cannot prove the stop -> stays false and thread remains held.
+        expect(await f.runtime.recheckThreadStop(execute.context.threadId)).toEqual({
+          proven: false,
+        });
+        expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toMatchObject({
+          status: "rejected",
+          error: { code: "conflict", reason: "previous-stop-unconfirmed", retryable: true },
+        });
+
+        // Once the scoped retire succeeds, recheckThreadStop proves the stop, lifts
+        // the hold, and sends the late confirmation receipt.
+        allowRetire = true;
+        expect(await f.runtime.recheckThreadStop(execute.context.threadId)).toEqual({
+          proven: true,
+        });
+        await waitUntil(() => f.ends().some((event) => event.type === "run.interrupted"));
+        expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toEqual({
+          status: "accepted",
+        });
+      } finally {
+        stopGate.resolve();
         await f.runtime.close();
       }
     });

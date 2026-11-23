@@ -23,6 +23,7 @@ import {
   taskPageThreadSelections,
   taskPageThreadsFromRows,
   threadRunQueued,
+  threadRunStartHoldReason,
 } from "./personal-task-store.js";
 import { detailThreadValue, taskView } from "./personal-snapshot-store.js";
 import { publishThreadQueues } from "./personal-queue-view.js";
@@ -58,6 +59,7 @@ export async function writeThreadSummary(
       .returningAll()
       .returning(taskPageThreadSelections())
       .returning(threadRunQueued.as("runQueued"))
+      .returning(threadRunStartHoldReason.as("runStartHoldReason"))
       .returning(taskExternalWorkSelection)
       .executeTakeFirstOrThrow();
     const threadScope = `thread:${threadId}` as const;
@@ -223,6 +225,7 @@ export async function projectThreadState(
         )`.as("agentSession"),
         "threads.status",
         "threads.inputQueuePaused",
+        "threads.failureCode",
         "threads.failurePreview",
         "threads.latestRunCompletedAt",
         "active.activeStatus",
@@ -250,14 +253,19 @@ export async function projectThreadState(
             agentSession: row.agentSession as "active" | "waiting" | null,
           });
     const failure = last?.failure;
+    const failureCode = failed && failure ? failure.code : null;
     const failurePreview =
       failed && failure ? plainTextExcerpt(failure.message, taskLineMaxLength) : null;
-    const changed = status !== thread.status || failurePreview !== thread.failurePreview;
+    const changed =
+      status !== thread.status ||
+      failureCode !== thread.failureCode ||
+      failurePreview !== thread.failurePreview;
     if (changed || force) {
       await tx
         .updateTable("threads")
         .set({
           status,
+          failureCode,
           failurePreview,
           ...(last?.maintenance ? {} : { updatedAt }),
         })

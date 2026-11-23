@@ -14,6 +14,7 @@ import type {
   RunAttemptId,
   RunId,
   RunFailure,
+  RunInterruptedCause,
   RunnerId,
   TabId,
   RunUsage,
@@ -60,6 +61,7 @@ export interface FinishIntent {
   readonly requestCancellationReason?: import("@opensteer/core").RequestCancellationReason;
   readonly queuedInputCancellation?: "activation-input" | "authority-cohort" | "seed-input";
   readonly failure?: RunFailure;
+  readonly interruptedCause?: RunInterruptedCause;
   readonly statement?: {
     readonly ordinal: number;
     readonly runnerId: RunnerId;
@@ -136,6 +138,8 @@ export interface TranscriptPreview {
   readonly endedAt?: string;
   readonly replyMessageId?: MessageId;
   readonly failure?: RunFailure;
+  readonly interruptedCause?: RunInterruptedCause;
+  readonly stopConfirmedAt?: string;
   readonly usage?: RunUsage;
   readonly messageKind?: Extract<MessageKind, "input" | "assistant" | "continuation">;
   readonly messageAuthor?: MessageAuthor;
