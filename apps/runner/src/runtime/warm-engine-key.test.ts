@@ -25,7 +25,7 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
   } as unknown as Parameters<typeof warmEngineKey>[0]["context"];
   const input = {
     context,
-    attachmentRoot: null,
+    attachmentDirectory: null,
     baseEnvironment: {},
     instructions: "Agent home instructions",
     machineAccessLaunch: "",

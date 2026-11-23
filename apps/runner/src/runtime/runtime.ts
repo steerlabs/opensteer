@@ -118,7 +118,7 @@ import {
 } from "./execution-containment.js";
 import { warmEngineKey, WarmEnginePool, type WarmEngine } from "./warm-engine-pool.js";
 import { startProgramEndpoints, type ProgramEndpointSet } from "../agent/program-endpoints.js";
-import { TriggerProgramExecutor, type ProgramLaunchPlanner } from "../agent/program-executor.js";
+import { TriggerProgramExecutor } from "../agent/program-executor.js";
 import { WatchSupervisor } from "../triggers/watch-supervisor.js";
 import {
   isMachineAccessRoutes,
@@ -165,6 +165,15 @@ export interface RunnerMessageSink {
 export interface RunnerRuntimeOptions {
   /** Execution leases only; request, engine and transport budgets stay real. */
   readonly executionClock?: Clock;
+  /**
+   * How long a stopped Run's engine gets before its processes are ended, and
+   * how long a session on a shared engine gets to settle its stop before the
+   * Run's end is unknown. Tests shorten them.
+   */
+  readonly stopTimings?: {
+    readonly graceMs?: number;
+    readonly sharedEngineSettleMs?: number;
+  };
   /** Schedules credential refresh only; leases, sockets and engine timers stay real. */
   readonly credentialRefreshClock?: Pick<Clock, "schedule">;
   readonly attachmentCache?: AttachmentCache;
@@ -362,6 +371,12 @@ const terminalEventReserveBytes = pendingAgentEventMaxSerializedBytes;
 const runtimeTaskStopWaitMs = 30_000;
 /** How long a stopped Run's engine gets to wind down before the Runner ends its processes. */
 const executionStopGraceMs = 3_000;
+/**
+ * How long a session on a shared engine may take to settle its stop: its own
+ * interrupt (Codex waits its request limit, 30 s by default) and the unload of
+ * its conversations (up to 40 s), after which it retires its server itself.
+ */
+const sharedEngineStopSettleMs = 90_000;
 const uncontainedRetryMs = 5_000;
 /** Matches the Host coordinator's hard attempt lifetime so neither side outlives the other. */
 const harnessAuthenticationLifetimeMs = 15 * 60_000;
@@ -418,6 +433,8 @@ export class RunnerRuntime {
   readonly #credentialRefreshClock: Pick<Clock, "schedule">;
   readonly #executionClock: Clock | undefined;
   readonly #executionNow: () => number;
+  readonly #stopGraceMs: number;
+  readonly #sharedEngineSettleMs: number;
   readonly #machineAccess: RunnerRuntimeOptions["machineAccess"];
   readonly #mode: RuntimeMode;
   readonly #privateStateDirectory: string;
@@ -462,6 +479,8 @@ export class RunnerRuntime {
   readonly #unverifiedRunEnds = new Map<
     string,
     {
+      /** A shared engine's stop that had not settled when the Run ended. */
+      readonly engineStopped?: { readonly done: boolean };
       readonly scope: string;
       readonly report: Extract<ExecutionEndReport, { type: "runner.event" }>;
     }
@@ -582,6 +601,9 @@ export class RunnerRuntime {
   constructor(options: RunnerRuntimeOptions) {
     this.#executionClock = options.executionClock;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
+    this.#stopGraceMs = options.stopTimings?.graceMs ?? executionStopGraceMs;
+    this.#sharedEngineSettleMs =
+      options.stopTimings?.sharedEngineSettleMs ?? sharedEngineStopSettleMs;
     this.#credentialRefreshClock = options.credentialRefreshClock ?? systemClock;
     this.#attachmentCache = options.attachmentCache;
     this.#agentSkills = options.agentSkills;
@@ -632,7 +654,7 @@ export class RunnerRuntime {
       new WatchSupervisor({
         environmentId: options.environmentId,
         nodeExecutable: options.nodeExecutable ?? process.execPath,
-        planLaunch: (executionId, launch) => this.#planProgramLaunch(executionId, launch),
+        planLaunch: (executionId) => this.#planProgramLaunch(executionId),
         privateStateDirectory: this.#privateStateDirectory,
         terminate: (executionId) => this.#containment.terminate(executionId),
         onStopped: (report) => this.#rememberEndReceipt(report),
@@ -647,7 +669,7 @@ export class RunnerRuntime {
     this.appServers = new AppServerManager({
       privateDirectory: join(options.dataDirectory, "private", "app-servers"),
       resolveRoot: (spec) => options.agentHome.folder(spec.folder, spec.agentHome),
-      planLaunch: (id, launch) => this.#planProgramLaunch(id, launch),
+      planLaunch: (id) => this.#planProgramLaunch(id),
       terminate: (id, stopEngine) => this.#containment.terminate(id, stopEngine),
     });
     this.#warm = new WarmEnginePool({
@@ -915,10 +937,6 @@ export class RunnerRuntime {
 
   subscribeHarnessPreparation(listener: (instanceId: HarnessInstanceId) => void): () => void {
     return this.#harnesses.subscribePreparations(listener);
-  }
-
-  providerStateModes(): readonly ("ambient" | "isolated")[] {
-    return ["ambient", "isolated"];
   }
 
   /**
@@ -2042,7 +2060,7 @@ export class RunnerRuntime {
             .terminate(active.containmentScope)
             .catch(() => undefined)
             .then(() => resolve());
-        }, executionStopGraceMs);
+        }, this.#stopGraceMs);
         timer.unref?.();
       };
       if (active.abort.signal.aborted) halt();
@@ -2054,13 +2072,22 @@ export class RunnerRuntime {
    * Keeps a Thread closed to new executions until the processes its last Run
    * left behind are proven gone, retrying their termination meanwhile.
    */
-  #holdUncontainedThread(threadId: ThreadId, runId: RunId | null, executionId: string): void {
+  #holdUncontainedThread(
+    threadId: ThreadId,
+    runId: RunId | null,
+    executionId: string,
+    engineStopping?: Promise<void>,
+  ): void {
     this.#uncontainedThreads.set(threadId, executionId);
     this.#logger?.error("A stopped Run left processes the Runner could not end", {
       ...(runId ? { runId } : {}),
       threadId,
     });
-    const retry = setInterval(() => {
+    // A shared engine still stopping is the rest of what must be proven; its
+    // stop settling is the late evidence, looked at as soon as it arrives.
+    const engineStopped = engineStopping ? settledFlag(engineStopping) : { done: true };
+    const check = () => {
+      if (!engineStopped.done) return;
       void this.#containment
         .terminate(executionId)
         .catch(() => "unknown" as const)
@@ -2071,8 +2098,48 @@ export class RunnerRuntime {
             this.#uncontainedThreads.delete(threadId);
           }
         });
-    }, uncontainedRetryMs);
+    };
+    const retry = setInterval(check, uncontainedRetryMs);
     retry.unref?.();
+    void engineStopping?.then(check);
+  }
+
+  /**
+   * Waits, within the bound, for the stop of a session on a shared engine,
+   * including one that was still opening when the Run was stopped. Returns the
+   * stop still in flight when the bound passes, and nothing once it settled.
+   */
+  async #settleEngineStop(
+    session: HarnessSession | undefined,
+    opening: Promise<HarnessSession> | undefined,
+    asked: Promise<void> | undefined,
+  ): Promise<{ readonly stopping: Promise<void> } | undefined> {
+    const deadline = Date.now() + this.#sharedEngineSettleMs;
+    let current = session;
+    if (!current && opening) {
+      const opened = await settleBy(
+        opening.then(
+          (value) => value,
+          () => null,
+        ),
+        deadline,
+      );
+      if (opened === boundPassed)
+        return {
+          stopping: opening.then(
+            (late) => late.stop().catch(() => undefined),
+            () => undefined,
+          ),
+        };
+      if (!opened) return undefined;
+      current = opened;
+      // A session that opened after its Run was stopped is stopped like any other.
+      const stopping = current.stop().catch(() => undefined);
+      return (await settleBy(stopping, deadline)) === boundPassed ? { stopping } : undefined;
+    }
+    if (!current || current.engineProcess !== "shared") return undefined;
+    const stopping = asked ?? current.stop().catch(() => undefined);
+    return (await settleBy(stopping, deadline)) === boundPassed ? { stopping } : undefined;
   }
 
   /**
@@ -2576,7 +2643,7 @@ export class RunnerRuntime {
       output = await this.#programExecutor.execute({
         context,
         endpoints: endpoints.endpoints,
-        planLaunch: (launch) => this.#planProgramLaunch(key, launch),
+        planLaunch: () => this.#planProgramLaunch(key),
         signal: active.abort.signal,
         workspace,
       });
@@ -2639,10 +2706,7 @@ export class RunnerRuntime {
    * A Trigger or Watch program's launch, marked with its execution's scope so
    * nothing it starts outlives it.
    */
-  async #planProgramLaunch(
-    executionId: string,
-    _launch: Parameters<ProgramLaunchPlanner>[0],
-  ): Promise<HarnessProcessLaunchWrapper> {
+  async #planProgramLaunch(executionId: string): Promise<HarnessProcessLaunchWrapper> {
     return this.#containment.wrap(executionId, (input) => input);
   }
 
@@ -2660,6 +2724,9 @@ export class RunnerRuntime {
     // An engine this Run took from the warm pool, or one it may leave there.
     let warmEngine: WarmEngine | undefined;
     let unlinkEngineLifetime: (() => void) | undefined;
+    // A session still opening when the Run is stopped holds its conversation
+    // until it settles; the end waits for it, within a bound.
+    let opening: Promise<HarnessSession> | undefined;
     // Settles once a stopped Run's grace has passed and its processes have
     // been ended for it, so no wait on the engine outlasts that.
     const halted = this.#haltAfterGrace(active);
@@ -2740,8 +2807,7 @@ export class RunnerRuntime {
       const attachmentDirectory = attachmentRoot
         ? join(attachmentRoot, context.threadId)
         : undefined;
-      const attachmentContext =
-        attachmentRoot && attachmentDirectory ? { attachmentDirectory, attachmentRoot } : {};
+      const attachmentContext = attachmentDirectory ? { attachmentDirectory } : {};
       this.#requireInputAttachments(command.inputs, attachments);
       this.#requireInputAttachments(command.reports.messages, attachments);
       // Shared Messaging must not trigger native discovery of the owner's home instructions.
@@ -2752,7 +2818,11 @@ export class RunnerRuntime {
             context.providerSessionId,
           );
       if (!context.personalContext) await mkdir(workingDirectory, { recursive: true, mode: 0o700 });
-      const writableRoots = [...new Set([workspace.path, workingDirectory])];
+      // A task without personal context gets its own folder and nothing of the
+      // person's Agent home: not to write in, and not named to it.
+      const writableRoots = context.personalContext
+        ? [...new Set([workspace.path, workingDirectory])]
+        : [workingDirectory];
       // Once taken, the idle engine remains this Run’s to reuse or retire.
       warmEngine = await this.#warm.take(context.threadId);
       // An engine that failed or was recycled while it waited serves no Run.
@@ -2816,7 +2886,7 @@ export class RunnerRuntime {
       const warmKeyFor = (providerSessionReference: string | null, machineAccessLaunch: string) =>
         warmEngineKey({
           warmSelection: adapter.capabilities.warmSelection,
-          attachmentRoot: attachmentRoot ?? null,
+          attachmentDirectory: attachmentDirectory ?? null,
           baseEnvironment,
           context,
           instructions,
@@ -2958,7 +3028,7 @@ export class RunnerRuntime {
         launch?.wrapProcessLaunch ?? ((input) => input),
       );
       const runVariables = {
-        OPENSTEER_AGENT_WORKSPACE: workspace.path,
+        OPENSTEER_AGENT_WORKSPACE: context.personalContext ? workspace.path : workingDirectory,
         OPENSTEER_BROWSER_CDP_WS: browserCdpUrl,
         OPENSTEER_BROWSER_HARNESS: this.#browserHarnessExecutable,
       };
@@ -3040,10 +3110,11 @@ export class RunnerRuntime {
         warmEngine.session.rebind?.(sessionContext);
         active.session = warmEngine.session;
       } else {
+        opening = context.providerSessionReference
+          ? adapter.resumeSession(context.providerSessionReference, sessionContext)
+          : adapter.startSession(sessionContext);
         active.session = await Promise.race([
-          context.providerSessionReference
-            ? adapter.resumeSession(context.providerSessionReference, sessionContext)
-            : adapter.startSession(sessionContext),
+          opening,
           halted.then(() => Promise.reject(active.abort.signal.reason)),
         ]);
         if (warmKey && warmScope && warmLifetime) {
@@ -3214,16 +3285,21 @@ export class RunnerRuntime {
       // proof that nothing of this Run lives on in it.
       const kept = warmEngine ? await this.#keepWarmEngine(active, warmEngine, terminal) : false;
       let termination: TerminationProof = "proven";
+      // The session's stop, asked for once and then waited for below.
+      const stop: { session?: Promise<void> | undefined } = {};
       if (warmEngine && !kept) {
         // Everything the engine held ends with it; an unproven end holds the Thread.
-        termination = await this.#retireWarmEngine(warmEngine);
+        termination = await this.#retireWarmEngine(warmEngine, stop);
       } else if (!kept) {
         // Whatever the engine left running ends with its Run, including what
         // it orphans as it stops. The Thread takes no new execution until all
         // of it is proven gone.
         termination = await this.#containment
           .terminate(active.containmentScope, () =>
-            withinStopGrace(active.session?.stop().catch(() => undefined)),
+            withinStopGrace(
+              (stop.session = active.session?.stop().catch(() => undefined)),
+              this.#stopGraceMs,
+            ),
           )
           .catch(() => "unknown" as const);
         await plugins?.cleanup().catch(() => undefined);
@@ -3231,6 +3307,19 @@ export class RunnerRuntime {
         await credentialProxy?.close().catch(() => undefined);
         await machineAccessSetup?.close().catch(() => undefined);
       }
+      // A shared engine's own work leaves no process in the Run's scope: the
+      // only evidence it ended is its session's stop settling. The processes
+      // were ended on time above; only the Run's end and its Thread wait.
+      const engineStopping = kept
+        ? undefined
+        : (
+            await this.#settleEngineStop(
+              warmEngine?.session ?? active.session,
+              opening,
+              stop.session,
+            )
+          )?.stopping;
+      if (engineStopping) termination = "unknown";
       await this.#attachmentCache?.clear(context.threadId).catch(() => undefined);
       if (internalBinding) {
         this.#sessions.release({
@@ -3251,6 +3340,7 @@ export class RunnerRuntime {
         );
         const key = `${context.runId}:${context.bindingGeneration}`;
         this.#unverifiedRunEnds.set(key, {
+          ...(engineStopping ? { engineStopped: settledFlag(engineStopping) } : {}),
           scope: warmEngine?.scope ?? active.containmentScope,
           report: {
             type: "runner.event",
@@ -3288,8 +3378,13 @@ export class RunnerRuntime {
         });
       this.#runs.delete(context.runId);
       this.#activityChanged();
-      if (termination === "unknown" && !warmEngine) {
-        this.#holdUncontainedThread(context.threadId, context.runId, active.containmentScope);
+      if (termination === "unknown" && (!warmEngine || engineStopping)) {
+        this.#holdUncontainedThread(
+          context.threadId,
+          context.runId,
+          warmEngine?.scope ?? active.containmentScope,
+          engineStopping,
+        );
       }
       if (this.#threads.get(context.threadId) === context.runId) {
         this.#threads.delete(context.threadId);
@@ -3347,11 +3442,15 @@ export class RunnerRuntime {
   }
 
   /** Ends a warm engine and everything it held, proving its processes gone. */
-  async #retireWarmEngine(engine: WarmEngine): Promise<TerminationProof> {
+  async #retireWarmEngine(
+    engine: WarmEngine,
+    stop: { session?: Promise<void> | undefined } = {},
+  ): Promise<TerminationProof> {
     const termination = await this.#containment
       .terminate(engine.scope, () => {
         engine.lifetime.abort(new Error("Warm engine retired"));
-        return withinStopGrace(engine.session.stop().catch(() => undefined));
+        stop.session = engine.session.stop().catch(() => undefined);
+        return withinStopGrace(stop.session, this.#stopGraceMs);
       })
       .catch(() => "unknown" as const);
     await engine.plugins.cleanup().catch(() => undefined);
@@ -3648,7 +3747,7 @@ export class RunnerRuntime {
         if (pending.report.event.threadId !== threadId)
           return reject("forbidden", "Interrupt targets a different thread", false);
         const proof = await this.#containment.terminate(pending.scope).catch(() => "unknown");
-        if (proof !== "proven")
+        if (proof !== "proven" || pending.engineStopped?.done === false)
           return reject("conflict", "Run containment could not be verified", true);
         this.#unverifiedRunEnds.delete(key);
         const report = {
@@ -3991,13 +4090,44 @@ function leaseLeadMs(leaseMs: number): number {
 }
 
 /** Waits for `work`, but no longer than a stopped Run's grace. */
-async function withinStopGrace(work: Promise<unknown> | undefined): Promise<void> {
+const boundPassed = Symbol("bound passed");
+
+/** The work's value if it settles by `deadline`, or `boundPassed`. */
+async function settleBy<T>(work: Promise<T>, deadline: number): Promise<T | typeof boundPassed> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<typeof boundPassed>((resolve) => {
+        timer = setTimeout(() => resolve(boundPassed), Math.max(0, deadline - Date.now()));
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Whether `work` has settled, read without waiting. */
+function settledFlag(work: Promise<unknown>): { readonly done: boolean } {
+  const flag = { done: false };
+  void work.then(
+    () => (flag.done = true),
+    () => (flag.done = true),
+  );
+  return flag;
+}
+
+async function withinStopGrace(
+  work: Promise<unknown> | undefined,
+  graceMs = executionStopGraceMs,
+): Promise<void> {
   if (!work) return;
   let timer: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([
     work.catch(() => undefined),
     new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, executionStopGraceMs);
+      timer = setTimeout(resolve, graceMs);
       timer.unref?.();
     }),
   ]);

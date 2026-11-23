@@ -162,7 +162,6 @@ export type HarnessProcessLaunchWrapper = (launch: HarnessProcessLaunch) => Harn
 export interface HarnessModelCommandContext {
   readonly accessMode: ThreadAccessMode;
   readonly attachmentDirectory?: string;
-  readonly attachmentRoot?: string;
   readonly environment: Readonly<Record<string, string>>;
   readonly providerState: HarnessProviderState;
   readonly workspacePath: string;
@@ -257,8 +256,6 @@ export interface HarnessSessionContext {
   readonly voiceCall?: HarnessVoiceCall;
   /** Model-visible, verified per-Thread attachment directory, outside private state. */
   readonly attachmentDirectory?: string;
-  /** The attachment cache root `attachmentDirectory` is a child of. */
-  readonly attachmentRoot?: string;
   /** Durable per-Thread access policy snapshotted onto this Run. */
   readonly accessMode: ThreadAccessMode;
   readonly agentTools: RunAgentToolsPlan;

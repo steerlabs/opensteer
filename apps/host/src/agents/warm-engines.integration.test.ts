@@ -500,8 +500,10 @@ integration("Warm engines", () => {
       expect(
         capture.filter((line) => line.backgroundTerminalsCleaned === "codex-child-thread-1"),
       ).not.toHaveLength(0);
+      // Every Codex task of the account runs on one shared app-server: the
+      // engine not kept is the first Run's session, and the second opens anew.
       const engines = turnServers(capture);
-      expect(engines).toBe(2);
+      expect(engines).toBe(1);
       const starts = [
         await engineStart(active, first.runId),
         await engineStart(active, second.runId),
@@ -640,8 +642,10 @@ integration("Warm engines", () => {
       const again = await pendingRequest(active, queuedAgain.runId!);
       await answer(active, again, "allow-once");
       await settled(active, queuedAgain.runId!);
+      // On the account's one shared app-server, the session is what is not kept.
       const engines = turnServers(await captured(captureFile));
-      expect(engines).toBe(2);
+      expect(engines).toBe(1);
+      expect(await engineStart(active, queuedAgain.runId!)).toBe("cold");
       journeys.push({
         engines,
         name: "run-scoped approval",
@@ -688,8 +692,11 @@ integration("Warm engines", () => {
       );
       const second = await run(active, threadId, "Second question");
       const capture = await captured(captureFile);
+      // The new engine is a new session on the account's one shared app-server,
+      // resuming the conversation.
       const engines = turnServers(capture);
-      expect(engines).toBe(2);
+      expect(engines).toBe(1);
+      expect(await engineStart(active, second.runId)).toBe("cold");
       expect(capture.filter((line) => line.method === "thread/resume")).toHaveLength(1);
 
       // The first engine's turn, the second engine's restatement of it, and
@@ -782,8 +789,9 @@ integration("Warm engines", () => {
       expect(await engineStart(active, third.runId)).toBe("cold");
       const fourth = await run(active, threadId, "Fourth question");
       expect(await engineStart(active, fourth.runId)).toBe("warm");
+      // Each new engine is a new session on the account's one shared app-server.
       const engines = turnServers(await captured(captureFile));
-      expect(engines).toBe(3);
+      expect(engines).toBe(1);
       journeys.push({
         engines,
         name: "workspace skills change",
@@ -942,14 +950,24 @@ integration("Warm engines", () => {
       await active.interruptRun(threadId, runId);
       await settled(active, runId);
       expect((await runRow(active, runId)).status).toBe("interrupted");
-      // Whatever the stopped turn left is gone with its engine, before the Thread runs again.
-      expect(alive(kept)).toBe(false);
+      // The stopped Run's session is gone before the Thread runs again: its
+      // conversation was let go of on the account's shared app-server, which
+      // lives on for the account's other sessions.
+      const conversation = await codexThreadOf(active, threadId);
+      const unsubscribed = async () =>
+        (await captured(captureFile)).filter(
+          (line) => line.method === "thread/unsubscribe" && line.params?.threadId === conversation,
+        );
+      expect(await unsubscribed()).toHaveLength(1);
+      expect(alive(kept)).toBe(true);
       await active.resumeThreadInputQueue(threadId);
       const third = await run(active, threadId, "Third question");
       expect((await runRow(active, third.runId)).status).toBe("completed");
       const engines = turnServers(await captured(captureFile));
-      expect(engines).toBe(2);
+      expect(engines).toBe(1);
       expect(await engineStart(active, third.runId)).toBe("cold");
+      // The third Run's session is kept warm, so nothing more was let go of.
+      expect(await unsubscribed()).toHaveLength(1);
       journeys.push({
         engines,
         name: "stop",
@@ -990,6 +1008,7 @@ integration("Warm engines", () => {
 interface Captured {
   readonly params?: {
     readonly additionalContext?: Readonly<Record<string, unknown>>;
+    readonly threadId?: string;
   };
   readonly backgroundTerminalsCleaned?: string;
   /** A request the driver sent the app server. */

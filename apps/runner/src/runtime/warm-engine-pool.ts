@@ -170,7 +170,8 @@ export class WarmEnginePool {
  */
 export function warmEngineKey(input: {
   readonly warmSelection?: HarnessCapabilities["warmSelection"];
-  readonly attachmentRoot: string | null;
+  /** Where this Run's attachments are delivered, or null when they are not. */
+  readonly attachmentDirectory: string | null;
   readonly baseEnvironment: Readonly<Record<string, string>>;
   readonly context: Extract<RunnerCommand, { readonly type: "run.execute" }>["context"];
   readonly instructions: string | null;
@@ -225,7 +226,7 @@ export function warmEngineKey(input: {
         context.plugins.skillPolicy ?? null,
         context.agentTools.url,
         context.browserCdp.url,
-        input.attachmentRoot,
+        input.attachmentDirectory,
         input.baseEnvironment,
         input.machineAccessLaunch,
       ]),

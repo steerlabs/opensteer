@@ -3709,6 +3709,305 @@ describe("RunnerRuntime", () => {
     }
   });
 
+  describe("a stopped Run on a shared engine", () => {
+    /**
+     * A Run on a shared engine leaves no process in its scope but the commands
+     * it started: the engine's own work ends only when its session's stop does.
+     */
+    function sharedStopFixture(options: {
+      readonly session: () => HarnessSession;
+      readonly startGate?: Promise<void>;
+      /** Resolved when a session open has reached the gate. */
+      readonly openReached?: () => void;
+      readonly settleMs?: number;
+    }) {
+      const driver = new FakeHarnessDriver("test-driver", options.session);
+      const create = driver.create.bind(driver);
+      driver.create = async (input) => {
+        const adapter = await create(input);
+        if (!options.startGate) return adapter;
+        const gate = options.startGate;
+        return {
+          ...adapter,
+          startSession: async (context) => {
+            options.openReached?.();
+            await gate;
+            return adapter.startSession(context);
+          },
+          resumeSession: async (reference, context) => {
+            options.openReached?.();
+            await gate;
+            return adapter.resumeSession(reference, context);
+          },
+        };
+      };
+      const registry = new HarnessRegistry();
+      registry.registerDriver(driver);
+      // One long-lived command the turn started, carrying the Run's scope.
+      const command = { alive: true, signalled: [] as string[] };
+      const environmentId = createId("environment");
+      const runtime = runtimeWithLeaseGrants({
+        nativeFsHelperBinary: testNativeFsHelperBinary,
+        nodeExecutable: process.execPath,
+        agentSkills: testAgentSkills,
+        plugins: noPlugins,
+        bootId: "boot-test",
+        browserHarnessExecutable: testBrowserHarnessExecutable,
+        deploymentShape: testDeploymentShape,
+        environmentId,
+        harnesses: registry,
+        maxConcurrentRuns: 2,
+        dataDirectory: dirname(testPrivateStateRoot),
+        privateStateDirectory: testPrivateStateRoot,
+        projectContinuationIdentity,
+        agentHome: {
+          folder: async ({ path }: { readonly path: string }) => path,
+          prepare: async () => ({ instructions: undefined, path: "/runner/runs/test/workspace" }),
+        },
+        containment: new ExecutionContainment({
+          bootId: "boot-test",
+          dataDirectory: dirname(testPrivateStateRoot),
+          listProcesses: async () => {
+            const scope = driver.context?.commandEnvironment[executionScopeVariable];
+            return command.alive && scope
+              ? [
+                  {
+                    identity: "command-1",
+                    pid: 4_242,
+                    ppid: 1,
+                    scope,
+                    signal: (name: NodeJS.Signals) => {
+                      command.signalled.push(name);
+                      command.alive = false;
+                    },
+                  },
+                ]
+              : [];
+          },
+        }),
+        stopTimings: { graceMs: 20, sharedEngineSettleMs: options.settleMs ?? 10_000 },
+      });
+      const messages: RunnerOperationalReport[] = [];
+      const sink: RunnerMessageSink = {
+        send: async (message) => {
+          messages.push(message);
+        },
+      };
+      const ends = () =>
+        messages.flatMap((message) =>
+          message.type === "runner.event" &&
+          (message.event.type === "run.interrupted" ||
+            message.event.type === "run.failed" ||
+            message.event.type === "run.completed")
+            ? [message.event]
+            : [],
+        );
+      /** Fails when an end arrives within `ms`: what must not happen yet. */
+      const noEndWithin = async (ms: number) =>
+        expect(
+          vi.waitFor(
+            () => {
+              if (ends().length === 0) throw new Error("no end yet");
+            },
+            { interval: 10, timeout: ms },
+          ),
+        ).rejects.toThrow("no end yet");
+      return { command, driver, environmentId, ends, noEndWithin, registry, runtime, sink };
+    }
+
+    function stopOf(execute: Extract<RunnerCommand, { type: "run.execute" }>) {
+      return {
+        commandId: createId("command"),
+        correlationId: execute.correlationId,
+        environmentId: execute.environmentId,
+        runId: execute.context.runId,
+        threadId: execute.context.threadId,
+        type: "run.interrupt" as const,
+      };
+    }
+
+    function nextTurn(execute: Extract<RunnerCommand, { type: "run.execute" }>) {
+      return RunnerCommandSchema.parse({
+        ...execute,
+        commandId: createId("command"),
+        context: { ...execute.context, runId: createId("run") },
+      }) as typeof execute;
+    }
+
+    it("ends the command on time, ends the Run when the stop settles, then opens the next turn", async () => {
+      const stopped = deferred<void>();
+      const f = sharedStopFixture({ session: () => new SharedEngineSession(stopped.promise) });
+      const execute = executeCommand(f.environmentId);
+      await reconcile(f.registry, execute);
+      try {
+        await f.runtime.handleCommand(execute, f.sink);
+        await waitUntil(() => f.driver.contexts.length === 1);
+        await f.runtime.handleCommand(stopOf(execute), f.sink);
+        // The command is ended on today's timing while the engine still stops.
+        await waitUntil(() => !f.command.alive);
+        await f.noEndWithin(300);
+        expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toMatchObject({
+          status: "rejected",
+        });
+        stopped.resolve();
+        await waitUntil(() => f.ends().length === 1);
+        expect(f.ends()[0]?.type).toBe("run.interrupted");
+        await waitUntil(() => f.runtime.activeRunIds().length === 0);
+        expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toEqual({
+          status: "accepted",
+        });
+      } finally {
+        stopped.resolve();
+        await f.runtime.close();
+      }
+    });
+
+    it("stops a session that was still opening when the Run was stopped", async () => {
+      const opened = deferred<void>();
+      const reached = deferred<void>();
+      const sessions: SharedEngineSession[] = [];
+      const f = sharedStopFixture({
+        session: () => {
+          const session = new SharedEngineSession(Promise.resolve());
+          sessions.push(session);
+          return session;
+        },
+        startGate: opened.promise,
+        openReached: () => reached.resolve(),
+      });
+      const execute = executeCommand(f.environmentId);
+      await reconcile(f.registry, execute);
+      try {
+        await f.runtime.handleCommand(execute, f.sink);
+        await reached.promise;
+        await f.runtime.handleCommand(stopOf(execute), f.sink);
+        await f.noEndWithin(300);
+        opened.resolve();
+        await waitUntil(() => f.ends().length === 1);
+        expect(sessions).toHaveLength(1);
+        expect(sessions[0]!.stops).toBe(true);
+        expect(f.ends()[0]?.type).toBe("run.interrupted");
+      } finally {
+        opened.resolve();
+        await f.runtime.close();
+      }
+    });
+
+    it("says the end is unverified and holds the task when the stop outlasts its bound", async () => {
+      const stopped = deferred<void>();
+      const f = sharedStopFixture({
+        session: () => new SharedEngineSession(stopped.promise),
+        settleMs: 50,
+      });
+      const execute = executeCommand(f.environmentId);
+      await reconcile(f.registry, execute);
+      try {
+        await f.runtime.handleCommand(execute, f.sink);
+        await waitUntil(() => f.driver.contexts.length === 1);
+        await f.runtime.handleCommand(stopOf(execute), f.sink);
+        await waitUntil(() => f.ends().length === 1);
+        expect(f.ends()[0]).toMatchObject({
+          type: "run.failed",
+          data: { code: runTerminationUnprovenCode },
+        });
+        await waitUntil(() => f.runtime.activeRunIds().length === 0);
+        expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toEqual({
+          status: "rejected",
+          error: {
+            code: "conflict",
+            message: "The Thread's previous Run is still stopping",
+            retryable: true,
+          },
+        });
+        // A second Stop proves nothing while the engine is still stopping.
+        expect(
+          await f.runtime.handleCommand(
+            { ...stopOf(execute), bindingGeneration: execute.context.bindingGeneration },
+            f.sink,
+          ),
+        ).toMatchObject({ status: "rejected" });
+        // Once it settles, the task is free again and a Stop reports the end.
+        stopped.resolve();
+        await vi.waitFor(async () =>
+          expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toEqual({
+            status: "accepted",
+          }),
+        );
+      } finally {
+        stopped.resolve();
+        await f.runtime.close();
+      }
+    });
+
+    it("ends a Run on its own engine on today's timing, without waiting for the engine's stop", async () => {
+      const stopped = deferred<void>();
+      const f = sharedStopFixture({
+        session: () => new SharedEngineSession(stopped.promise, "own"),
+      });
+      const execute = executeCommand(f.environmentId);
+      await reconcile(f.registry, execute);
+      try {
+        await f.runtime.handleCommand(execute, f.sink);
+        await waitUntil(() => f.driver.contexts.length === 1);
+        await f.runtime.handleCommand(stopOf(execute), f.sink);
+        await waitUntil(() => f.ends().length === 1);
+        expect(f.ends()[0]?.type).toBe("run.interrupted");
+        expect(f.command.alive).toBe(false);
+        await waitUntil(() => f.runtime.activeRunIds().length === 0);
+        expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toEqual({
+          status: "accepted",
+        });
+      } finally {
+        stopped.resolve();
+        await f.runtime.close();
+      }
+    });
+  });
+
+  // Codex makes `writableRoots` its sandbox's writable roots and Claude its
+  // additional directories, so this is what both engines are handed.
+  it("hands a task without personal context its own folder only, never Agent home", async () => {
+    const driver = new FakeHarnessDriver();
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    const agentHome = {
+      folder: async ({ path }: { readonly path: string }) => path,
+      prepare: async () => ({ instructions: undefined, path: "/runner/runs/test/workspace" }),
+    };
+    const environmentId = createId("environment");
+    const runtime = runtimeWithLeaseGrants({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
+      nodeExecutable: process.execPath,
+      agentSkills: testAgentSkills,
+      plugins: noPlugins,
+      bootId: "boot-test",
+      browserHarnessExecutable: testBrowserHarnessExecutable,
+      deploymentShape: testDeploymentShape,
+      environmentId,
+      harnesses: registry,
+      maxConcurrentRuns: 1,
+      dataDirectory: dirname(testPrivateStateRoot),
+      privateStateDirectory: testPrivateStateRoot,
+      projectContinuationIdentity,
+      agentHome,
+    });
+    const sink: RunnerMessageSink = { send: async () => undefined };
+    const personal = executeCommand(environmentId);
+    const command = RunnerCommandSchema.parse({
+      ...personal,
+      context: { ...personal.context, personalContext: false },
+    }) as typeof personal;
+    await reconcile(registry, command);
+
+    await expect(runtime.handleCommand(command, sink)).resolves.toEqual({ status: "accepted" });
+    await waitUntil(() => runtime.activeRunIds().length === 0);
+
+    const context = driver.context!;
+    expect(context.workspacePath).not.toBe("/runner/runs/test/workspace");
+    expect(context.writableRoots).toEqual([context.workspacePath]);
+    expect(context.environment.OPENSTEER_AGENT_WORKSPACE).toBe(context.workspacePath);
+  });
+
   it("normalizes a run, fences its session, and emits terminal status", async () => {
     const driver = new FakeHarnessDriver();
     const registry = new HarnessRegistry();
@@ -5633,6 +5932,42 @@ class InteractiveHarnessSession implements HarnessSession {
   }
 }
 
+/** A session on an engine shared with other Runs, whose stop settles when the test says. */
+class SharedEngineSession implements HarnessSession {
+  readonly providerSessionReference = "shared-provider-session";
+  readonly engineProcess: "own" | "shared";
+  readonly #stream = new BoundedEventStream<HarnessEvent>({ maxBytes: 100_000, maxItems: 100 });
+  readonly events: AsyncIterable<HarnessEvent> = this.#stream;
+  readonly #interrupted = deferred<void>();
+  readonly #settled: Promise<void>;
+  #stopping: Promise<void> | undefined;
+  stops = false;
+
+  constructor(settled: Promise<void>, engineProcess: "own" | "shared" = "shared") {
+    this.#settled = settled;
+    this.engineProcess = engineProcess;
+  }
+
+  async execute(_turn: HarnessRunInput): Promise<void> {
+    publish(this.#stream, { data: { status: "running" }, type: "run.started" });
+    await this.#interrupted.promise;
+    publish(this.#stream, { data: { status: "interrupted" }, type: "run.interrupted" });
+  }
+
+  async interrupt(): Promise<void> {
+    this.#interrupted.resolve();
+  }
+
+  async resolveRequest(_requestId: RequestId, _response: RequestResponse): Promise<void> {}
+
+  stop(): Promise<void> {
+    this.stops = true;
+    this.#interrupted.resolve();
+    this.#stopping ??= this.#settled.then(() => this.#stream.close());
+    return this.#stopping;
+  }
+}
+
 class BlockingHarnessSession implements HarnessSession {
   readonly providerSessionReference = "blocking-provider-session";
   readonly #stream = new BoundedEventStream<HarnessEvent>({ maxBytes: 100_000, maxItems: 100 });
@@ -6535,7 +6870,7 @@ it("invalidates warm engines when the pinned package set changes, regardless of 
   const context = executeCommand(createId("environment")).context;
   const input = {
     context,
-    attachmentRoot: null,
+    attachmentDirectory: null,
     baseEnvironment: {},
     instructions: null,
     machineAccessLaunch: "",
