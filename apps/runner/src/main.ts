@@ -14,7 +14,7 @@ import {
 } from "@opensteer/shared/processSecrets";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { ensurePrivateDirectory } from "@opensteer/shared/privateFiles";
-import { urlCredentialRedaction } from "@opensteer/shared/safeMessage";
+import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import type { EnvironmentId, RunnerId } from "@opensteer/core";
 import { harnessRuntimeBoundaryForRunner } from "@opensteer/harness";
 import { RunnerBootIdSchema, type RunnerDescriptor } from "@opensteer/protocol";
@@ -563,17 +563,17 @@ const entryPath = process.argv[1];
 if (entryPath && import.meta.url === pathToFileURL(entryPath).href) {
   main().catch((error: unknown) => {
     process.exitCode = 1;
+    const secrets = networkCredentialSecrets(process.env);
     if (error instanceof WorkHomeEnrollmentRefused) {
-      process.stderr.write(`${error.message}\n`);
+      process.stderr.write(`${redactNetworkCredentials(error.message, secrets)}\n`);
       return;
     }
     const message = error instanceof Error ? error.message : "Runner failed";
     process.stderr.write(
       `${JSON.stringify({
-        error: message
+        error: redactNetworkCredentials(message, secrets)
           .replace(/Bearer\s+[^\s]+/gi, "Bearer [redacted]")
           .replace(/os_secret_[A-Za-z0-9_-]+/g, "os_secret_[redacted]")
-          .replace(urlCredentialRedaction.pattern, urlCredentialRedaction.replacement)
           .slice(0, 2_000),
         level: "fatal",
         service: "opensteer-runner",
