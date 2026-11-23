@@ -663,6 +663,19 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
+              "0115_provider_session_person_lineage": {
+                /**
+                 * Tracks whether a native provider session was created under the person's own
+                 * lineage so a narrowing (`true -> false`) rotates the session instead of
+                 * resuming a conversation that already loaded the person's own configuration.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table provider_sessions
+                    add column person_lineage boolean not null default true
+                  `.execute(database);
+                },
+              },
             }
           : {}),
       };

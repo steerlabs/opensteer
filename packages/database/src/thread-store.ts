@@ -1530,6 +1530,8 @@ export async function updateThreadExecutionSelection(
             id: providerSessionId,
             leaseExpiresAt: null,
             leaseTokenHash: null,
+            personalContext: selected?.personalContext ?? true,
+            personLineage: selected?.personLineage ?? true,
             providerSessionReference: null,
             runnerBootId: null,
             runnerId: null,

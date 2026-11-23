@@ -5480,6 +5480,62 @@ describe("harness process environment", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("starts a fresh session and never resumes the old reference when personLineage narrows", async () => {
+    let calls = 0;
+    const driver = new FakeHarnessDriver("claude", () => {
+      calls += 1;
+      const session = new FakeHarnessSession();
+      Object.defineProperty(session, "providerSessionReference", {
+        value: `claude-native-session-${calls}`,
+      });
+      return session;
+    });
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+    try {
+      const ownCommand = executeCommand(environmentId, "claude");
+      await reconcile(registry, ownCommand);
+      await runtime.handleCommand(ownCommand, sink);
+      await waitUntil(() =>
+        messages.some(
+          (message) =>
+            message.type === "runner.event" &&
+            message.event.runId === ownCommand.context.runId &&
+            message.event.type === "run.completed",
+        ),
+      );
+      const rotatedCommand = RunnerCommandSchema.parse({
+        ...ownCommand,
+        commandId: createId("command"),
+        correlationId: CorrelationIdSchema.parse(createId("command")),
+        context: {
+          ...ownCommand.context,
+          personLineage: false,
+          providerSessionId: createId("providerSession"),
+          providerSessionReference: null,
+          runId: createId("run"),
+        },
+      }) as Extract<RunnerCommand, { readonly type: "run.execute" }>;
+      await runtime.handleCommand(rotatedCommand, sink);
+      await waitUntil(() =>
+        messages.some(
+          (message) =>
+            message.type === "runner.event" &&
+            message.event.runId === rotatedCommand.context.runId &&
+            message.event.type === "run.completed",
+        ),
+      );
+      expect(driver.contexts.map((context) => context.personLineage)).toEqual([true, false]);
+      expect(driver.resumedReferences).toEqual([]);
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("keeps a proxy password out of a Run's recorded failure", async () => {
     const session = new ScriptedHarnessSession([
       {

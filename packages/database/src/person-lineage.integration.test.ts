@@ -224,4 +224,102 @@ describeStore("the person's own lineage", (it) => {
     });
     expect(plan).toContain("thread_inputs_written_by_connection");
   });
+
+  it("rotates the provider session when personLineage narrows so a not-own Run never resumes the person's native conversation", async ({
+    storeFixture: f,
+  }) => {
+    const fixture = await f.createRunFixture("lineage-session-rotate");
+    const agent = await connectedAgent(f, fixture.userId);
+    const own = await f.enqueueHumanTrigger({
+      content: [{ type: "text", text: "Person starts with own config" }],
+      idempotencyKey: "rotate-own",
+      requestedBy: fixture.userId,
+      threadId: fixture.threadId,
+    });
+    const started = await startPersonalQueuedRunFixture(f.store, own.run.id);
+    // Native engine (e.g. Claude Code or Pi) records its session reference under the person's config.
+    await f.database
+      .updateTable("providerSessions")
+      .set({ providerSessionReference: "native-own-session-ref" })
+      .where("id", "=", own.run.providerSessionId)
+      .execute();
+    await f.store.commitRunnerEvent({
+      environmentId: fixture.environmentId,
+      runnerId: fixture.runnerId,
+      runnerBootId: started.runnerBootId,
+      event: pendingEvent({
+        type: "run.completed",
+        environmentId: fixture.environmentId,
+        threadId: fixture.threadId,
+        runId: own.run.id,
+        bindingGeneration: started.bindingGeneration,
+        ordinal: 1,
+        data: { status: "completed" },
+      }),
+    });
+
+    // A connected agent with `everything` writes into the same task: personalContext stays true,
+    // but personLineage narrows true -> false. The provider session MUST rotate so the engine
+    // starts fresh and never resumes "native-own-session-ref".
+    const sent = await f.store.enqueueThreadInput({
+      content: [{ type: "text", text: "Connected agent follow-up" }],
+      idempotencyKey: "rotate-agent",
+      policy: "queue",
+      requestedBy: fixture.userId,
+      source: { connectionId: agent.id, kind: "connection" },
+      threadId: fixture.threadId,
+    });
+    if (!sent.run || !sent.command) throw new Error("Expected connected agent Run");
+    expect(sent.run.providerSessionId).not.toBe(own.run.providerSessionId);
+    expect(
+      await f.database
+        .selectFrom("providerSessions")
+        .select(["active", "personLineage", "providerSessionReference"])
+        .where("id", "=", own.run.providerSessionId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      active: false,
+      personLineage: true,
+      providerSessionReference: "native-own-session-ref",
+    });
+    expect(
+      await f.database
+        .selectFrom("providerSessions")
+        .select(["active", "personLineage", "providerSessionReference"])
+        .where("id", "=", sent.run.providerSessionId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      active: true,
+      personLineage: false,
+      providerSessionReference: null,
+    });
+    const agentStarted = await startPersonalQueuedRunFixture(f.store, sent.run.id);
+    const dispatch = await f.store.loadRunDispatchContext(sent.command.id);
+    expect(dispatch.personalContext).toBe(true);
+    expect(dispatch.lineage.personLineage).toBe(false);
+    expect(dispatch.run.providerSessionId).toBe(sent.run.providerSessionId);
+    // Completing the rotated session keeps the task in not-own lineage:
+    // a subsequent Run by the person stays on the rotated session and never returns to the old one.
+    await f.store.commitRunnerEvent({
+      environmentId: fixture.environmentId,
+      runnerId: fixture.runnerId,
+      runnerBootId: agentStarted.runnerBootId,
+      event: pendingEvent({
+        type: "run.completed",
+        environmentId: fixture.environmentId,
+        threadId: fixture.threadId,
+        runId: sent.run.id,
+        bindingGeneration: agentStarted.bindingGeneration,
+        ordinal: 1,
+        data: { status: "completed" },
+      }),
+    });
+    const personAfter = await f.enqueueHumanTrigger({
+      content: [{ type: "text", text: "Person writes again" }],
+      idempotencyKey: "rotate-person-after",
+      requestedBy: fixture.userId,
+      threadId: fixture.threadId,
+    });
+    expect(personAfter.run.providerSessionId).toBe(sent.run.providerSessionId);
+  });
 });

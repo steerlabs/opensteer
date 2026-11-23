@@ -2,7 +2,7 @@ import { commitPersonalMutation } from "./personal-mutation.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { compactionIsEligible } from "./compaction-eligibility.js";
 import { freshContextBoundary } from "./fresh-context.js";
-import { runAllowsPersonalContext, runContextLineage } from "./run-personal-context.js";
+import { runContextLineage } from "./run-personal-context.js";
 import { personalSettings } from "./personal-settings-store.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
 import "./connection.js";
@@ -580,6 +580,7 @@ export async function acquireExecutionBinding(
   input: {
     readonly bindingLeaseExpiresAt: Date;
     readonly personalContext?: boolean;
+    readonly personLineage?: boolean;
     readonly continuationIdentity: ProviderContinuationIdentity;
     readonly harnessInstanceId: HarnessInstanceId;
     readonly leaseTokenHash: string;
@@ -753,19 +754,28 @@ export async function acquireExecutionBinding(
       ))
     )
       throw new OpensteerError({ code: "conflict", message: "Compaction is no longer eligible" });
-    const personalContext = await runAllowsPersonalContext(transaction, input.runId);
+    const lineage = await runContextLineage(transaction, input.runId);
     if (
-      (input.personalContext !== undefined && input.personalContext !== personalContext) ||
-      (session.personalContext !== personalContext && session.providerSessionReference !== null)
+      (input.personalContext !== undefined && input.personalContext !== lineage.personalContext) ||
+      (input.personLineage !== undefined && input.personLineage !== lineage.personLineage) ||
+      ((session.personalContext !== lineage.personalContext ||
+        (session.personLineage && !lineage.personLineage)) &&
+        session.providerSessionReference !== null)
     )
       throw new OpensteerError({
         code: "forbidden",
         message: "Messaging personal context changed before execution",
       });
-    if (session.personalContext !== personalContext)
+    if (
+      session.personalContext !== lineage.personalContext ||
+      session.personLineage !== lineage.personLineage
+    )
       await transaction
         .updateTable("providerSessions")
-        .set({ personalContext })
+        .set({
+          personalContext: lineage.personalContext,
+          personLineage: lineage.personLineage,
+        })
         .where("id", "=", session.id)
         .execute();
     if (

@@ -25,7 +25,7 @@ import {
 } from "./waiting-inputs.js";
 import { compactionIsEligible } from "./compaction-eligibility.js";
 import { freshContextBoundary } from "./fresh-context.js";
-import { threadAllowsPersonalContext } from "./run-personal-context.js";
+import { threadContextLineage } from "./run-personal-context.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import {
@@ -1528,9 +1528,11 @@ export async function claimRunInputBatch(
     return;
   }
   if (seed.freshContext) {
+    const lineage = await threadContextLineage(transaction, thread.id, thread.createdBy);
     const providerSessionId = await ensureSelectedProviderSession(transaction, thread, {
       freshRunId: run.id,
-      personalContext: await threadAllowsPersonalContext(transaction, thread.id, thread.createdBy),
+      personalContext: lineage.personalContext,
+      personLineage: lineage.personLineage && run.connectionId === null,
     });
     await transaction
       .updateTable("runs")
@@ -3682,11 +3684,15 @@ export async function ensureSelectedProviderSession(
     readonly id: ThreadId;
     readonly harnessInstanceId: HarnessInstanceId;
   },
-  options: { readonly personalContext?: boolean; readonly freshRunId?: RunId } = {},
+  options: {
+    readonly personalContext?: boolean;
+    readonly personLineage?: boolean;
+    readonly freshRunId?: RunId;
+  } = {},
 ): Promise<ProviderSessionId> {
   const selected = await transaction
     .selectFrom("providerSessions")
-    .select(["id", "harnessInstanceId", "personalContext"])
+    .select(["id", "harnessInstanceId", "personalContext", "personLineage"])
     .where("threadId", "=", thread.id)
     .where("active", "=", true)
     .forNoKeyUpdate()
@@ -3701,7 +3707,8 @@ export async function ensureSelectedProviderSession(
     if (
       !options.freshRunId &&
       (options.personalContext === undefined ||
-        selected.personalContext === options.personalContext)
+        selected.personalContext === options.personalContext) &&
+      (options.personLineage === undefined || selected.personLineage === options.personLineage)
     )
       return selected.id;
     const active = await transaction
@@ -3743,6 +3750,7 @@ export async function ensureSelectedProviderSession(
     .values({
       active: true,
       personalContext: options.personalContext ?? true,
+      personLineage: options.personLineage ?? true,
       bindingGeneration: 0,
       continuationIdentity: null,
       harnessInstanceId: thread.harnessInstanceId,
@@ -4012,17 +4020,17 @@ export async function ensureQueuedRun(
     }
   }
   if (!seed) return { command: null, run: null };
+  const connectionId = thread.originConnectionId ?? seed.connectionId;
   const selectedSession = options.maintenance
     ? options.maintenance.providerSessionId
-    : await ensureSelectedProviderSession(transaction, thread, {
-        personalContext: await threadAllowsPersonalContext(
-          transaction,
-          thread.id,
-          thread.createdBy,
-        ),
-      });
+    : await (async () => {
+        const lineage = await threadContextLineage(transaction, thread.id, thread.createdBy);
+        return ensureSelectedProviderSession(transaction, thread, {
+          personalContext: lineage.personalContext,
+          personLineage: lineage.personLineage && connectionId === null,
+        });
+      })();
   const runId = createId("run");
-  const connectionId = thread.originConnectionId ?? seed.connectionId;
   const runRow = await transaction
     .insertInto("runs")
     .values({
