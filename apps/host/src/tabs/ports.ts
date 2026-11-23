@@ -78,6 +78,11 @@ export interface TabServicePort {
     key: string,
   ): Promise<{ group: TabGroup }>;
   deleteGroup(ownerId: UserId, groupId: TabGroupId, key: string): Promise<{ layout: TabLayout }>;
+  closeGroup(
+    actor: TabActor,
+    groupId: TabGroupId,
+    key: string,
+  ): Promise<TabCloseResult & { groupClosed: boolean; layout: TabLayout }>;
   get(ownerId: UserId, tabId: TabId): Promise<Tab>;
   bootstrap(ownerId: UserId, maxBytes: number): Promise<TabBootstrap>;
   requireOpenPage(claims: RunToolScope, tabId: TabId): Promise<PageAgentBinding>;
@@ -139,7 +144,17 @@ export interface NativeTabTargetsPort {
     ownerId: UserId,
     computerId: RunnerId,
     windowId: WindowId,
+    app?: ComputerAppIdentity | null,
   ): Promise<NativeTabTargetState>;
+  windowStates?(
+    ownerId: UserId,
+    windows: readonly {
+      readonly tabId: TabId;
+      readonly computerId: RunnerId;
+      readonly windowId: WindowId;
+      readonly app?: ComputerAppIdentity | null | undefined;
+    }[],
+  ): Promise<Map<TabId, NativeTabTargetState>>;
   phoneState(ownerId: UserId, computerId: RunnerId): Promise<NativeTabTargetState>;
   openOwnerView(
     ownerId: UserId,

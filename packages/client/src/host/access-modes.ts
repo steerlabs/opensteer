@@ -13,12 +13,14 @@ export interface AccessModeOption {
  */
 export const accessModeOptions: readonly AccessModeOption[] = [
   {
-    description: "Ask before commands and file changes.",
+    description:
+      "Ask before commands and file changes, unless a rule you set in the engine already allows it.",
     label: "Supervised",
     mode: "approval-required",
   },
   {
-    description: "Auto-approve edits, ask before other actions.",
+    description:
+      "Auto-approve edits, ask before other actions, unless a rule you set in the engine already allows it.",
     label: "Auto-accept edits",
     mode: "auto-accept-edits",
   },

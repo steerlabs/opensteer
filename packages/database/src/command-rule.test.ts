@@ -13,7 +13,12 @@ import { commandRule, type CommandAnswer, type CommandRuleCaller } from "./resou
 type Column = "a" | "b" | "c" | "d";
 interface ExpectedRow {
   readonly type: string;
-  readonly faces: readonly { readonly answers: Readonly<Record<Column, CommandAnswer>> }[];
+  readonly faces: readonly {
+    /** `b:auto` where Auto answers otherwise than the other modes below Full access. */
+    readonly answers: Readonly<Record<Column, CommandAnswer>> & {
+      readonly "b:auto"?: CommandAnswer;
+    };
+  }[];
 }
 const rows = expected.rows as readonly ExpectedRow[];
 const belowFullAccess = ThreadAccessModeSchema.options.filter(
@@ -52,9 +57,13 @@ describe("the command rule, generated from the table", () => {
           const modes = column === "b" ? belowFullAccess : [undefined];
           for (const mode of modes) {
             const got = answer(expectedRow.type, index, callers[column](mode));
-            if (got !== face.answers[column])
+            const want =
+              column === "b" && mode === "auto"
+                ? (face.answers["b:auto"] ?? face.answers.b)
+                : face.answers[column];
+            if (got !== want)
               mismatches.push(
-                `${expectedRow.type} face ${index} (${column}${mode ? ` ${mode}` : ""}): ${got}, expected ${face.answers[column]}`,
+                `${expectedRow.type} face ${index} (${column}${mode ? ` ${mode}` : ""}): ${got}, expected ${want}`,
               );
           }
         }
@@ -71,7 +80,12 @@ describe("the command rule, generated from the table", () => {
         for (const mode of belowFullAccess) {
           for (const column of ["c", "d"] as const) {
             const full = face.answers[column];
-            const want = full === "now" && face.answers.b !== "now" ? "ask" : full;
+            const own =
+              mode === "auto" ? (face.answers["b:auto"] ?? face.answers.b) : face.answers.b;
+            // A face that holds only connections to the read-write ceiling asks below Auto.
+            const heldToReadWrite =
+              row(expectedRow.type).faces[index]?.readWrite === "connections" && mode !== "auto";
+            const want = full === "now" && (own !== "now" || heldToReadWrite) ? "ask" : full;
             expect(
               answer(expectedRow.type, index, callers[column](mode)),
               `${expectedRow.type} face ${index} (${column} ${mode})`,
@@ -220,6 +234,89 @@ describe("the command rule, generated from the table", () => {
     }
   });
 
+  it("lets a connection remove something for good only at Full access (the lead's C2 line)", () => {
+    for (const type of [
+      "browser.profile.delete",
+      "browser.history.clear",
+      "browser.history.remove",
+      "browser.site.remove",
+      "machine.revoke",
+    ]) {
+      const at = (grant: "everything" | "selected", mode: ThreadAccessMode) =>
+        answer(type, 0, {
+          connection: { grant },
+          mode,
+          reach: true,
+          ownWork: true,
+          ownLineage: true,
+        });
+      expect(at("everything", "full-access"), type).toBe("now");
+      for (const mode of belowFullAccess)
+        expect(at("everything", mode), `${type} ${mode}`).toBe("ask");
+      for (const mode of ThreadAccessModeSchema.options)
+        expect(at("selected", mode), `${type} selected ${mode}`).not.toBe("now");
+    }
+  });
+
+  it("lets a connection change and run an automation in its own lineage as the rule says (X11 pin)", () => {
+    const own = (mode: ThreadAccessMode) => ({
+      connection: { grant: "everything" as const },
+      mode,
+      reach: true,
+      ownWork: true,
+      ownLineage: true,
+    });
+    const program = { toolContractVersion: 5, language: "javascript", source: "x" };
+    for (const command of [
+      { type: "trigger.create", input: { anchorThreadId: "thr_1", name: "n", program } },
+      { type: "trigger.update", triggerId: "trg_1", input: { program } },
+      { type: "trigger.run", triggerId: "trg_1" },
+    ]) {
+      const at = (mode: ThreadAccessMode) =>
+        commandRule(row(command.type), commandFace(command as never), own(mode)).answer;
+      expect(at("full-access"), command.type).toBe("now");
+      // Below Full access these need Full access today (D1), so they ask.
+      for (const mode of belowFullAccess) expect(at(mode), `${command.type} ${mode}`).toBe("ask");
+    }
+  });
+
+  it("asks before opening a tab below the read-write ceiling, as today's tab_open refuses (X12)", () => {
+    for (const type of ["tab.open"]) {
+      const at = (mode: ThreadAccessMode) =>
+        answer(type, 0, { connection: null, mode, reach: true, ownWork: true });
+      expect(at("full-access"), type).toBe("now");
+      expect(at("auto"), type).toBe("now");
+      expect(at("approval-required"), type).toBe("ask");
+      expect(at("auto-accept-edits"), type).toBe("ask");
+    }
+  });
+
+  it("lets a connection open or close a tab from Auto up and asks below it (approved C2 line)", () => {
+    for (const type of ["tab.open", "tab.close"]) {
+      const at = (mode: ThreadAccessMode) =>
+        answer(type, 0, {
+          connection: { grant: "everything" },
+          mode,
+          reach: true,
+          ownWork: true,
+          ownLineage: true,
+        });
+      expect(at("full-access"), type).toBe("now");
+      expect(at("auto"), type).toBe("now");
+      expect(at("auto-accept-edits"), type).toBe("ask");
+      expect(at("approval-required"), type).toBe("ask");
+    }
+    // Your own agent closes a tab as today's tab_close lets it, in any mode (D0a recording).
+    expect(
+      answer("tab.close", 0, {
+        connection: null,
+        mode: "approval-required",
+        reach: true,
+        ownWork: true,
+      }),
+    ).toBe("now");
+  });
+
   it("asks your own agent below Full access about a task above its mode", () => {
     // In reach (the person's own task) but not its own work: a higher mode than it holds.
     for (const [type, table] of Object.entries(commandTable)) {
@@ -230,6 +327,27 @@ describe("the command rule, generated from the table", () => {
           expect(got, `${type} ${mode}`).toBe(face.class === "person-view" ? "not_found" : "ask");
         }
       });
+    }
+  });
+
+  it("lets your own Full agent make a schedule that approves itself, and asks everyone else", () => {
+    // The lead's ruling: a schedule a task makes never asks less than that task, and at Full
+    // access nothing asks; a connection's would run on past its Disconnect.
+    const automatic = commandFace({
+      type: "plugins.schedule.configure",
+      pluginId: "plugin",
+      schedule: "tick",
+      enabled: true,
+      idempotencyKey: "k",
+    } as never);
+    expect(automatic).toBe(2);
+    const rule = (caller: CommandRuleCaller) =>
+      commandRule(row("plugins.schedule.configure"), automatic, caller).answer;
+    expect(rule(callers.a())).toBe("now");
+    for (const mode of belowFullAccess) expect(rule(callers.b(mode)), mode).toBe("ask");
+    for (const mode of ThreadAccessModeSchema.options) {
+      expect(rule(callers.c(mode)), `everything ${mode}`).toBe("ask");
+      expect(rule(callers.d(mode)), `selected ${mode}`).toBe("ask");
     }
   });
 
@@ -262,6 +380,19 @@ describe("the command rule, generated from the table", () => {
       d: nowInStepA("d"),
       // b is 19, not the data file's first 21: creating (D1) or changing (D0a) an automation
       // needs Full access, as today's tools say.
-    }).toEqual({ a: 51, b: 19, c: 46, d: 22 });
+    }).toEqual({ a: 51, b: 19, c: 46, d: 23 });
+  });
+});
+
+describe("a command whose effect a store cannot admit, for an agent (AD3)", () => {
+  it("never runs the owner's name change for an agent: every caller, every mode, asks or finds nothing", () => {
+    // `viewer.name.update` goes through `ownerProfile.update`, which takes no identity: so no agent
+    // may reach it as `now`. An approval runs it as the person, on the person's session.
+    for (const column of ["a", "b", "c", "d"] as const)
+      for (const mode of ThreadAccessModeSchema.options)
+        expect(
+          answer("viewer.name.update", 0, callers[column](mode)),
+          `${column} ${mode}`,
+        ).not.toBe("now");
   });
 });

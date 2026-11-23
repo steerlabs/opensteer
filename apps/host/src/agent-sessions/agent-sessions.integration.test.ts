@@ -147,6 +147,7 @@ async function setUp(
     organize: unexpectedTabOperation,
     updateGroup: unexpectedTabOperation,
     deleteGroup: unexpectedTabOperation,
+    closeGroup: unexpectedTabOperation,
     get: unexpectedTabOperation,
     bootstrap: unexpectedTabOperation,
     requireOpenPage: unexpectedTabOperation,
@@ -1278,11 +1279,11 @@ describeStore("an external agent's direct work through sessions", (it) => {
     expect(request.presentation).toMatchObject({
       title: "Run a script in Work?",
       detailFormat: "plain",
-      detail: `Work · Mac\nTest agent wants to run a script in Work.\n\nWhat it will run:\n${code}`,
+      detail: `Work · Mac\n“\u2068Test agent\u2069” wants to run a script in Work.\n\nWhat it will run:\n${code}`,
       fields: [{ choices: [{ label: "Allow once" }, { label: "Don't allow" }] }],
     });
     expect(request.agentOperation).toMatchObject({
-      summary: "Work · Mac\nTest agent wants to run a script in Work.",
+      summary: "Work · Mac\n“\u2068Test agent\u2069” wants to run a script in Work.",
     });
     expect(
       await database
@@ -1382,10 +1383,13 @@ describeStore("an external agent's direct work through sessions", (it) => {
       .executeTakeFirstOrThrow();
     expect(request.presentation).toMatchObject({
       title: "Act on Work?",
-      detail: "Test agent wants to act on Work.\n\nWhat it will run:\nApply the change",
+      detail:
+        "“\u2068Test agent\u2069” wants to act on Work.\n\nWhat it will run:\nApply the change",
       detailFormat: "plain",
     });
-    expect(request.agentOperation).toMatchObject({ summary: "Test agent wants to act on Work." });
+    expect(request.agentOperation).toMatchObject({
+      summary: "“\u2068Test agent\u2069” wants to act on Work.",
+    });
   });
 
   it("stores inert app and page titles without changing the question or choices", async ({
@@ -1421,7 +1425,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
             app: { kind: "mac-app", bundleId: "com.example.editor", teamId: null },
           },
         },
-        question: "Let Test agent use com.example.editor on Studio Mac?",
+        question: "Let “\u2068Test agent\u2069” use com.example.editor on Studio Mac?",
         line: "The app calls itself",
       },
       {

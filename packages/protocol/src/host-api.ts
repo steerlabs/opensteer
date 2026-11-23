@@ -25,6 +25,7 @@ import {
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
 import {
   AgentGrantSchema,
+  AgentCommandActivitySchema,
   AgentOperationViewSchema,
   AgentSessionIdSchema,
   DeviceIdSchema,
@@ -462,6 +463,8 @@ export type DeviceMachineSessionBindCommand = z.infer<typeof DeviceMachineSessio
 const AgentOperationPageSchema = z.object({
   operations: z.array(AgentOperationViewSchema).max(100),
   nextBefore: z.string().max(200).nullable(),
+  /** The commands sent through the door in the same span as this page's operations, newest first. */
+  commands: z.array(AgentCommandActivitySchema).max(100),
 });
 const otherCommandInputSchema = z.discriminatedUnion("type", [
   IphoneScreenAttachCommandSchema,
@@ -855,9 +858,14 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("personal.accountLink.resume"),
   }),
-  /** Ends this Home's Account link here and at the Account, with no Remote access involved. */
+  /**
+   * Ends this Home's Account link here and at the Account, with no Remote access involved. The
+   * Mac app sends it as two steps with its Account work between them: `revoke-sessions` ends the
+   * Home's Remote access sessions, `remove-link` forgets the link. Without `step`, both.
+   */
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    step: z.enum(["revoke-sessions", "remove-link"]).optional(),
     type: z.literal("personal.accountLink.unlink"),
   }),
   z.strictObject({
@@ -976,6 +984,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     requestId: z.uuid(),
     type: z.literal("integration.computer.setup.cancel"),
+  }),
+  /** The person ends one computer-use session from its live view: it narrows, and runs now. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    sessionId: ComputerUseSessionIdSchema,
+    type: z.literal("integration.computer.session.stop"),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1418,6 +1432,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("integration.computer.setup.request"),
   }),
   z.object({ type: z.literal("integration.computer.setup.cancel") }),
+  z.object({ type: z.literal("integration.computer.session.stop") }),
   z.object({
     type: z.literal("integration.computer.setup.respond"),
   }),
@@ -1916,11 +1931,6 @@ const hostApiGroup3 = defineRpc({
    * Stop a live session from any client, which is the person saying so from
    * somewhere other than the Mac's own pill. Only that Mac's owner may.
    */
-  "integration.computer.session.stop": declaration(
-    "POST",
-    z.strictObject({ sessionId: ComputerUseSessionIdSchema }),
-    emptyOutputSchema,
-  ),
 } as const);
 
 const hostApiGroup4 = defineRpc({

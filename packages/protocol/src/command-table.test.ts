@@ -12,7 +12,14 @@ import {
   type CommandStep,
   type CommandType,
 } from "./command-table.js";
-import { commandEditor, commandSentence, commandTitles } from "./command-words.js";
+import {
+  commandAskedWords,
+  commandDoneWords,
+  commandEditor,
+  commandPastTenseKnown,
+  commandSentence,
+  commandTitles,
+} from "./command-words.js";
 import { decidingInputPaths } from "./command-inputs.test-support.js";
 import expected from "./command-table.rows.json" with { type: "json" };
 
@@ -28,7 +35,14 @@ interface ExpectedRow {
   readonly stepFor?: Readonly<Record<string, string>>;
   readonly faces: readonly ExpectedFace[];
   /** Where its handler's effect can be, read from the handler, with that line. */
-  readonly effect?: { readonly where: string; readonly why: string };
+  readonly effect?: {
+    readonly where: string;
+    readonly why: string;
+    /** It starts something that goes on after the command returns. */
+    readonly ongoing?: boolean;
+    /** Why an ongoing effect needs no `lineage` face: it is the caller's own lineage. */
+    readonly lineageWhy?: string;
+  };
 }
 const rows = expected.rows as readonly ExpectedRow[];
 const step = (value: string): CommandStep => (value === "—" ? "none" : (value as CommandStep));
@@ -71,7 +85,7 @@ describe("the command table", () => {
     const types = [...unionMembers().keys()].sort();
     expect(Object.keys(commandTable).sort()).toEqual(types);
     expect(rows.map((row) => row.type).sort()).toEqual(types);
-    expect(types).toHaveLength(137);
+    expect(types).toHaveLength(139);
   });
 
   it("says what the data file says, row by row and face by face", () => {
@@ -237,8 +251,34 @@ describe("the command table", () => {
       if (!/[a-z-]+\.ts:\d+/u.test(row.effect.why)) missing.push(`${row.type}: no handler line`);
       if (commandEffect(table) !== row.effect.where)
         missing.push(`${row.type}: table ${commandEffect(table)}, rows file ${row.effect.where}`);
+      // Whether it starts something ongoing is said for every row; one that does carries
+      // `lineage` on a face, or says why it runs in the caller's own lineage (AD4).
+      if (typeof row.effect.ongoing !== "boolean") missing.push(`${row.type}: ongoing unsaid`);
+      else if (
+        row.effect.ongoing &&
+        !table.faces.some((face) => face.lineage) &&
+        !row.effect.lineageWhy
+      )
+        missing.push(`${row.type}: ongoing with no lineage face and no reason`);
     }
     expect(missing).toEqual([]);
+  });
+
+  it("sets no endpoint when it sets a model's limits (brief 10a holds for it by its shape)", () => {
+    const configure = (settings: unknown) =>
+      hostApi["commands.dispatch"].payload.safeParse({
+        type: "harness.model.configure",
+        idempotencyKey: "k",
+        environmentId: "env_00000000-0000-4000-8000-000000000001",
+        harnessInstanceId: "hin_00000000-0000-4000-8000-000000000001",
+        nativeModelId: "gpt-5.6-sol",
+        settings,
+      }).success;
+    expect(configure({ contextWindow: 100_000 })).toBe(true);
+    expect(configure({ contextWindow: 100_000, baseUrl: "https://elsewhere.example" })).toBe(false);
+    expect(configure({ contextWindow: 100_000, endpoint: "https://elsewhere.example" })).toBe(
+      false,
+    );
   });
 
   it("has a verdict for every input that could decide a command, and none for a gone one (D0b)", () => {
@@ -306,5 +346,30 @@ describe("the command table", () => {
     // Only the stored policy says whether a switch goes up.
     expect(commandTable["machine.access.update"].face?.({} as never)).toBeUndefined();
     expect(commandTable["connection.update"].face?.({} as never)).toBeUndefined();
+  });
+});
+
+describe("activity's words for a command (C5)", () => {
+  it("says every command in the past, from its own title", () => {
+    for (const type of Object.keys(commandTitles) as (keyof typeof commandTitles)[])
+      expect(commandPastTenseKnown(type), type).toBe(true);
+    expect(commandDoneWords({ type: "thread.rename" })).toBe("renamed a task");
+    expect(commandDoneWords({ type: "thread.sendMessage" })).toBe("sent a message to a task");
+    expect(commandAskedWords({ type: "thread.rename" })).toBe("asked to rename a task");
+    // One title, three changes: activity says the one made.
+    const chat = { type: "channel.connection.status.set", status: "paused" } as const;
+    expect(commandDoneWords(chat)).toBe("paused a chat account");
+    expect(commandAskedWords({ ...chat, status: "revoked" })).toBe(
+      "asked to disconnect a chat account",
+    );
+  });
+});
+
+describe("the generated command table (table.md drift)", () => {
+  it("is exactly what the rows say: command-table.md is generated, never written by hand", async () => {
+    const { commandTableMarkdown } = await import("./command-table-markdown.test-support.js");
+    await expect(commandTableMarkdown(expected.rows as never)).toMatchFileSnapshot(
+      "./command-table.md",
+    );
   });
 });

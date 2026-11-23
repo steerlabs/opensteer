@@ -670,10 +670,6 @@ export const CommandRequestPartSchema = z.object({
     .optional(),
   /** The approving call's own key: the same approval again answers with its outcome. */
   approvalKey: z.string().min(1).max(200).optional(),
-  /** Asks the Home held back while this one waited, because too many were waiting. */
-  heldBack: z.number().int().nonnegative().optional(),
-  /** It reached the end of its lifetime unanswered. */
-  expired: z.boolean().optional(),
 });
 export type CommandRequestPart = z.infer<typeof CommandRequestPartSchema>;
 export type CommandRequestOutcome = z.infer<typeof commandRequestOutcomeSchema>;

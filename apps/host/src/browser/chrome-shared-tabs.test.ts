@@ -42,6 +42,59 @@ function shared(openerShareId?: string): BrowserSourceTabShared {
   };
 }
 
+it("keeps shared Chrome titles clean on add and update (the wire caps length)", async () => {
+  const admitExecution = vi.fn<OpensteerStore["admitExecution"]>(
+    async ({ ownerUserId, subject }) => ({
+      ownerUserId,
+      subject,
+      actor: "native",
+      agentConnection: null,
+      mode: "full-access",
+      runId: null,
+      runMode: null,
+      threadId: null,
+      taskMode: null,
+    }),
+  );
+  const service = new ChromeSharedTabs({ admitExecution });
+  const ownerId = createId("user");
+  const source = service.connectSource({
+    ownerId,
+    sourceId: createId("browserSource"),
+    name: "Chrome",
+    write: () => true,
+    fail: () => {},
+  });
+  const cases = [
+    ["Helper\u202E\nDisconnected", "Helper Disconnected"],
+    ["#ops\u202E\nOnly you can message this chat", "#ops Only you can message this chat"],
+    ["Work\u200DOps", "WorkOps"],
+    ["Tab\tName", "Tab Name"],
+  ] as const;
+  try {
+    const actual = [];
+    const expected = [];
+    for (const [index, [title, cleanTitle]] of cases.entries()) {
+      const frame = { ...shared(), url: "https://example.test/?title=%E2%80%AE%09", title };
+      const authority = { agentBindingId: "run:fixture", ownerId };
+      await source.receive(frame);
+      actual.push(
+        (await service.listForBinding(authority)).find((tab) => tab.tabId === frame.shareId),
+      );
+      expected.push(expect.objectContaining({ title: cleanTitle, url: frame.url }));
+      const [updated, cleanUpdated] = cases[(index + 1) % cases.length]!;
+      await source.receive({ ...frame, title: updated });
+      actual.push(
+        (await service.listForBinding(authority)).find((tab) => tab.tabId === frame.shareId),
+      );
+      expected.push(expect.objectContaining({ title: cleanUpdated, url: frame.url }));
+    }
+    expect(actual).toEqual(expected);
+  } finally {
+    source.close();
+  }
+});
+
 function chromePeer(accept: (frame: BrowserSourceTabPart<"tab.result" | "tab.event">) => void) {
   const commands: BrowserSourceTabCommand[] = [];
   const assembly = new BrowserSourceTabAssembly();

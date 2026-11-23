@@ -1,6 +1,7 @@
 import { outsideName } from "@opensteer/shared/outsideName";
 import { chatParityProvider } from "./chat-parity.js";
 import { ItemTextStore } from "../host/item-text-store.js";
+import { taskOriginEndedMessage } from "../host/connected-agents-copy.js";
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import {
   mockMessageContent,
@@ -2198,9 +2199,9 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "needsYou.get": async (input) =>
       rpcSuccess(mockNeedsYou(client.getSnapshot(), input.before, input.limit)),
     "connections.activity": async (input) =>
-      rpcSuccess(client.agentActivity({ connectionId: input.connectionId })),
+      rpcSuccess({ ...client.agentActivity({ connectionId: input.connectionId }), commands: [] }),
     "threads.activity": async (input) =>
-      rpcSuccess(client.agentActivity({ threadId: input.threadId })),
+      rpcSuccess({ ...client.agentActivity({ threadId: input.threadId }), commands: [] }),
     "connections.list": async (input) => {
       if (client.unreadable) throw new Error("The preview Home can't be reached.");
       const connections = client.listConnections(input.includeRevoked === true);
@@ -2662,10 +2663,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       } catch (error) {
         return mockRefusal(error);
       }
-    },
-    "integration.computer.session.stop": async (input) => {
-      await client.stopComputerUseSession(input.sessionId);
-      return rpcSuccess({});
     },
     "integration.computer.apps.installed": async (input) => {
       try {
@@ -3144,6 +3141,7 @@ async function executeMockCommand(
       });
     }
     case "thread.sendMessage": {
+      client.assertThreadOriginLive(command.threadId);
       if (command.freshContext && command.delivery !== "queue")
         throw mockConflict("freshContext requires queue delivery.");
       const body = command.content
@@ -3245,6 +3243,7 @@ async function executeMockCommand(
         type: command.type,
       });
     case "thread.input.steer":
+      client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({
         input: client.steerThreadInput(command.threadId, command.messageId, command.expectedRunId),
         type: command.type,
@@ -3258,13 +3257,16 @@ async function executeMockCommand(
       client.moveThreadInput(command.threadId, command.messageId, command.beforeMessageId);
       return rpcSuccess({ type: command.type });
     case "thread.input.lease.take":
+      client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({ ...client.takeEditLease(command), type: command.type });
     case "thread.input.lease.renew":
+      client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({ lease: client.renewEditLease(command), type: command.type });
     case "thread.input.lease.release":
       client.releaseEditLease(command);
       return rpcSuccess({ type: command.type });
     case "thread.input.edit":
+      client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({ ...client.editWaitingInput(command), type: command.type });
     case "execution.preferences.remember":
       return rpcSuccess(
@@ -3523,6 +3525,9 @@ async function executeMockCommand(
     case "integration.computer.setup.cancel":
       client.cancelComputerAppSetup(command.requestId);
       return rpcSuccess({ type: command.type });
+    case "integration.computer.session.stop":
+      await client.stopComputerUseSession(command.sessionId);
+      return rpcSuccess({ type: command.type });
     case "integration.computer.setup.set":
       if ("deviceId" in command.input) return client.executeCommandOnce(command);
       return rpcSuccess({
@@ -3693,6 +3698,7 @@ async function executeMockCommand(
     case "tab.organize":
     case "tab.group.update":
     case "tab.group.delete":
+    case "tab.group.close":
       return rpcSuccess(await client.tabCommand(command));
     case "app.rename":
     case "app.start":
@@ -4114,6 +4120,7 @@ export class MockHostClient implements HostClient {
   readonly organizeTabs: TabsClient["organizeTabs"];
   readonly updateTabGroup: TabsClient["updateTabGroup"];
   readonly deleteTabGroup: TabsClient["deleteTabGroup"];
+  readonly closeTabGroup: TabsClient["closeTabGroup"];
   readonly listApps: TabsClient["listApps"];
   readonly getApp: TabsClient["getApp"];
   readonly renameApp: TabsClient["renameApp"];
@@ -4347,6 +4354,7 @@ export class MockHostClient implements HostClient {
     this.organizeTabs = tabs.organizeTabs;
     this.updateTabGroup = tabs.updateTabGroup;
     this.deleteTabGroup = tabs.deleteTabGroup;
+    this.closeTabGroup = tabs.closeTabGroup;
     this.listApps = tabs.listApps;
     this.getApp = tabs.getApp;
     this.renameApp = tabs.renameApp;
@@ -5222,7 +5230,7 @@ export class MockHostClient implements HostClient {
     const result = await this.dispatch({
       type: "thread.create",
       ...input,
-      title: input.title?.trim() || "New task",
+      title: (input.title ? outsideName(input.title, 240) : "") || "New task",
       idempotencyKey: input.idempotencyKey ?? crypto.randomUUID(),
     });
     if (result.type !== "thread.create") throw new Error("Thread result mismatch.");
@@ -5235,7 +5243,7 @@ export class MockHostClient implements HostClient {
     const result = await this.dispatch({
       type: "thread.rename",
       threadId,
-      title: ThreadTitleSchema.parse(title),
+      title: outsideName(ThreadTitleSchema.parse(title), 240) || "Task",
       idempotencyKey: `mock-thread-rename:${crypto.randomUUID()}`,
     });
     if (result.type !== "thread.rename") throw new Error("Thread command mismatch.");
@@ -5816,6 +5824,11 @@ class MockHostState {
         catalog.deleteGroup(command.groupId);
         republish();
         return { type: command.type, layout: catalog.layout() };
+      case "tab.group.close": {
+        const result = catalog.closeGroup(command.groupId);
+        republish();
+        return { type: command.type, ...result, layout: catalog.layout() };
+      }
     }
   }
   async #openTab(target: TabTarget, idempotencyKey: string, typed = false): Promise<TabId> {
@@ -5974,7 +5987,10 @@ class MockHostState {
     };
     switch (command.type) {
       case "app.rename":
-        return { type: command.type, app: put({ ...app, name: command.name, updatedAt: at }) };
+        return {
+          type: command.type,
+          app: put({ ...app, name: outsideName(command.name, 160) || "App", updatedAt: at }),
+        };
       case "app.start":
       case "app.stop": {
         if (!app.server)
@@ -6137,14 +6153,26 @@ class MockHostState {
     tasks.sort((left, right) => (left.at < right.at ? 1 : left.at > right.at ? -1 : 0));
     return { ...bridge, tasks: tasks.map(({ task }) => task) };
   }
+  readonly #threadOriginConnection = new Map<string, string>();
+  assertThreadOriginLive(threadId: string) {
+    const thread = this.snapshot.threads.find(({ id }) => id === threadId);
+    if (!thread?.endedOrigin) return;
+    throw new HostClientRequestError({
+      code: "forbidden",
+      message: taskOriginEndedMessage(thread.endedOrigin),
+      status: 403,
+    });
+  }
   /**
    * As on the Home: what it may do moves on (its revision), and a chat remembers that you ended
    * it; it is no longer paused, so nothing says why it was.
    */
   revokeConnection(id: string, endedBy: "you" | "account" = "you") {
     const revokedAt = this.now().toISOString();
+    let endedOrigin: "chat" | "agent" | null = null;
     this.connections = this.connections.map((row) => {
       if (row.id !== id || row.userId !== this.snapshot.user?.id || row.revokedAt) return row;
+      endedOrigin = row.bridge ? "chat" : "agent";
       const ended = {
         ...row,
         state: "stopped" as const,
@@ -6159,6 +6187,26 @@ class MockHostState {
         ...bridge
       } = row.bridge;
       return { ...ended, bridge: { ...bridge, endedBy } };
+    });
+    if (endedOrigin === null) return;
+    const affected = new Set(
+      [...this.#threadOriginConnection.entries()]
+        .filter(([, connId]) => connId === id)
+        .map(([threadId]) => threadId),
+    );
+    if (affected.size === 0) return;
+    this.update({
+      ...this.snapshot,
+      threads: this.snapshot.threads.map((thread) =>
+        affected.has(thread.id)
+          ? {
+              ...thread,
+              endedOrigin,
+              status: thread.status === "running" ? "idle" : thread.status,
+            }
+          : thread,
+      ),
+      runQueue: this.snapshot.runQueue.filter((run) => !affected.has(run.threadId)),
     });
   }
   updateConnection(command: Extract<HostApiCommand, { type: "connection.update" }>) {
@@ -6887,6 +6935,8 @@ class MockHostState {
   >();
 
   private readonly activeRuns = new Map<string, ActiveMockRun>();
+  /** Runs a person stopped: as on the Host, their end is never news. */
+  private readonly stoppedRuns = new Set<string>();
   private readonly integrations = createInitialIntegrationState(mockUserId);
   readonly chrome: MockChromeSignIns;
   private readonly nextRunOrdinals = new Map<string, number>();
@@ -7347,8 +7397,16 @@ class MockHostState {
     );
     if (!template) return;
     const at = new Date(this.now().getTime() - 60_000).toISOString();
-    for (const connection of this.connections)
+    for (const connection of this.connections) {
+      const originEnded =
+        connection.revokedAt !== null ||
+        connection.state === "stopped" ||
+        connection.state === "stopping" ||
+        connection.state === "revoked" ||
+        connection.state === "expired";
+      const endedOrigin = originEnded ? (connection.bridge ? "chat" : "agent") : null;
       for (const [index, task] of (connection.bridge?.tasks ?? []).entries()) {
+        this.#threadOriginConnection.set(task.id, connection.id);
         if (this.snapshot.threads.some(({ id }) => id === task.id)) continue;
         const updatedAt = new Date(Date.parse(at) - index * 60_000).toISOString();
         this.#provisionalIcons.add(task.id);
@@ -7359,6 +7417,7 @@ class MockHostState {
             {
               ...template,
               agentSessionId: null,
+              endedOrigin,
               externalWork: null,
               createdAt: updatedAt,
               icon: null,
@@ -7385,6 +7444,7 @@ class MockHostState {
             : this.snapshot.runQueue,
         };
       }
+    }
   }
   private readonly acceptedCommands = new Map<
     string,
@@ -9078,7 +9138,7 @@ class MockHostState {
         candidate.id === harnessInstanceId && candidate.environmentId === environmentId,
     );
     if (!current) throw new Error("AI engine not found.");
-    const harness = { ...current, name };
+    const harness = { ...current, name: outsideName(name, 120) || current.name };
     this.update({
       ...this.snapshot,
       harnesses: this.snapshot.harnesses.map((candidate) =>
@@ -9248,7 +9308,7 @@ class MockHostState {
       currentRevisionId: revision.id,
       id: triggerId,
       kind: input.source.kind,
-      name: input.name,
+      name: outsideName(input.name, 160) || "Automation",
       nextFireAt: triggerNextFireAt(input.source, now),
       pauseReason: null,
       status: "active",
@@ -9320,7 +9380,10 @@ class MockHostState {
     const trigger = TriggerSchema.parse({
       ...record.trigger,
       currentRevisionId: revision.id,
-      name: input.name ?? record.trigger.name,
+      name:
+        input.name === undefined
+          ? record.trigger.name
+          : outsideName(input.name, 160) || record.trigger.name,
       nextFireAt:
         input.source === undefined
           ? record.trigger.nextFireAt
@@ -10782,6 +10845,7 @@ class MockHostState {
     access?: import("@opensteer/protocol").DeviceInitialAccess,
     preparedIdentity?: import("@opensteer/protocol").DevicePreparedIdentity,
   ) {
+    const cleanedName = outsideName(name, 120) || "Computer";
     const expiresAt = new Date(this.now().getTime() + 10 * 60_000).toISOString();
     const enrollmentId = `ren_${crypto.randomUUID()}`;
     if (preparedIdentity) this.preparedLocalRunners.set(enrollmentId, preparedIdentity.runnerId);
@@ -10825,7 +10889,7 @@ class MockHostState {
             messaging: { checkedAt: null, detail: null, readiness: "unavailable" },
             shell: { checkedAt: null, detail: null, readiness: "unavailable" },
           },
-          name,
+          name: cleanedName,
           ownership: "mine",
 
           revocable: false,
@@ -10954,10 +11018,11 @@ class MockHostState {
   }
 
   async renameMachine(machineId: string, name: string): Promise<void> {
+    const cleanedName = outsideName(name, 120) || "Computer";
     this.update({
       ...this.snapshot,
       machines: this.snapshot.machines.map((machine) =>
-        machine.id === machineId ? { ...machine, name } : machine,
+        machine.id === machineId ? { ...machine, name: cleanedName } : machine,
       ),
     });
   }
@@ -10999,10 +11064,11 @@ class MockHostState {
     idempotencyKey: string,
     access?: import("@opensteer/protocol").DeviceInitialAccess,
   ) {
+    const cleanedName = outsideName(name, 120) || "Computer";
     const existing = this.phoneEnrollments.get(idempotencyKey);
     if (existing) {
       if (
-        existing.name !== name ||
+        existing.name !== cleanedName ||
         existing.profile !== (profile ?? null) ||
         JSON.stringify(existing.access) !== JSON.stringify(access)
       )
@@ -11049,7 +11115,7 @@ class MockHostState {
             browser: { checkedAt: null, detail: null, readiness: "unavailable" },
             integrations: { checkedAt: null, detail: null, readiness: "unavailable" },
           },
-          name,
+          name: cleanedName,
           ownership: "mine",
 
           revocable: false,
@@ -11064,7 +11130,12 @@ class MockHostState {
       pairing: mockAgentPhonePairingTarget,
       token: `mock-phone-runner-enrollment-token-${enrollmentId}`,
     };
-    this.phoneEnrollments.set(idempotencyKey, { name, profile: profile ?? null, result, access });
+    this.phoneEnrollments.set(idempotencyKey, {
+      name: cleanedName,
+      profile: profile ?? null,
+      result,
+      access,
+    });
     return result;
   }
 
@@ -11362,7 +11433,7 @@ class MockHostState {
       capabilities: [...inspection.capabilities],
       connectionMethod: "bring-your-own",
       createdAt: now,
-      displayName: identity.connectionDisplayName,
+      displayName: outsideName(identity.connectionDisplayName, 160) || manifest.label,
       externalIdentityId: identity.externalIdentityId,
       externalTenantId: identity.externalAccountId,
       id: connectionId,
@@ -11377,9 +11448,12 @@ class MockHostState {
     const account = {
       connectionId,
       createdAt: now,
-      displayName: identity.accountDisplayName,
+      displayName:
+        outsideName(identity.accountDisplayName, 160) ||
+        outsideName(identity.externalAccountId, 160) ||
+        "Account",
       externalAccountId: identity.externalAccountId,
-      handle: identity.handle,
+      handle: identity.handle ? outsideName(identity.handle, 160) || null : null,
       id: `cha_${crypto.randomUUID()}`,
       metadata: identity.metadata,
       provider: manifest.provider,
@@ -11719,7 +11793,11 @@ class MockHostState {
         status: 409,
         message: "Choose a computer for this browser profile.",
       });
-    const profile = { homeRunnerId: home, id: createId("browserProfile"), name };
+    const profile = {
+      homeRunnerId: home,
+      id: createId("browserProfile"),
+      name: outsideName(name, 120) || "Browser profile",
+    };
     this.update({ ...this.snapshot, browserProfiles: [...this.snapshot.browserProfiles, profile] });
     return profile;
   }
@@ -11777,7 +11855,9 @@ class MockHostState {
     const thread = this.snapshot.threads.find((thread) => thread.id === threadId);
     if (!thread) throw new Error("Task not found.");
     this.#provisionalTitles.delete(threadId);
-    this.publishThreadName(thread, { title: ThreadTitleSchema.parse(title) });
+    this.publishThreadName(thread, {
+      title: outsideName(ThreadTitleSchema.parse(title), 240) || "Task",
+    });
     return this.snapshot.threads.find((thread) => thread.id === threadId)!;
   }
   setThreadIcon(threadId: string, icon: IconName | null): ThreadSummary {
@@ -11816,7 +11896,7 @@ class MockHostState {
     if (last?.data.tabId === tabId) return;
     const event = PlaceEnteredEventViewSchema.parse({
       createdAt: this.now().toISOString(),
-      data: { tabId, title: data.title, site: data.site },
+      data: { tabId, title: outsideName(data.title, 1024), site: data.site },
       environmentId: thread.environmentId,
       eventId: createId("event"),
       runId,
@@ -11959,7 +12039,7 @@ class MockHostState {
       pendingRequests: 0,
       purpose: "task",
       status: "idle",
-      title: input.title?.trim() || "New task",
+      title: (input.title ? outsideName(input.title, 240) : "") || "New task",
       icon: null,
       color: this.allocateMarkColor("thread"),
       unread: false,
@@ -12840,6 +12920,7 @@ class MockHostState {
     if (runId === undefined) throw new Error("This Thread has nothing to stop.");
     if (active) active.cancelled = true;
     this.activeRuns.delete(threadId);
+    this.stoppedRuns.add(runId);
 
     const timestamp = this.now().toISOString();
     const runQueue = this.snapshot.runQueue.filter((entry) => entry.id !== runId);
@@ -13502,7 +13583,9 @@ class MockHostState {
   private replaceTranscript(threadId: string, entries: TranscriptEntry[]): void {
     const run = entries.findLast((entry) => entry.kind === "run");
     const completedAt =
-      run?.kind === "run" && ["completed", "failed", "interrupted"].includes(run.status)
+      run?.kind === "run" &&
+      (["completed", "failed"].includes(run.status) ||
+        (run.status === "interrupted" && (run.runId === null || !this.stoppedRuns.has(run.runId))))
         ? (run.endedAt ?? run.createdAt)
         : null;
     this.update({

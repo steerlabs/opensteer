@@ -767,4 +767,40 @@ describe("a chat's address, as parts", () => {
     const row = connectedAgentRow(slack, { profiles: [] });
     expect(plainSentence(row.lineParts)).toBe(row.line);
   });
+
+  it("keeps outside names as parts in Disconnect, paused, and uncertain notices", () => {
+    const revokedDetail = connectedAgentDetail(connection({ label: "Grok" }), names, {
+      grantsAvailable: true,
+      now,
+      revoked: new Set([connection().id]),
+    });
+    expect(revokedDetail.status.labelParts).toContainEqual({ name: "Grok" });
+    expect(plainSentence(revokedDetail.status.labelParts!)).toBe(revokedDetail.status.label);
+
+    const stoppingDetail = connectedAgentDetail(
+      connection({ label: "Shop helper", state: "stopping", lastActionUncertain: true }),
+      names,
+      { grantsAvailable: true, now },
+    );
+    expect(stoppingDetail.status.detailParts).toContainEqual({ name: "Shop helper" });
+    expect(plainSentence(stoppingDetail.status.detailParts!)).toBe(stoppingDetail.status.detail);
+    expect(stoppingDetail.uncertain?.detailParts).toContainEqual({ name: "Shop helper" });
+    expect(plainSentence(stoppingDetail.uncertain!.detailParts!)).toBe(
+      stoppingDetail.uncertain!.detail,
+    );
+
+    const expiredDetail = connectedAgentDetail(
+      connection({ label: "Old search agent", state: "expired" }),
+      names,
+      { grantsAvailable: true, now },
+    );
+    expect(expiredDetail.status.detailParts).toContainEqual({ name: "Old search agent" });
+    expect(plainSentence(expiredDetail.status.detailParts!)).toBe(expiredDetail.status.detail);
+
+    const chats = mockConnectedAgents("chats").connections;
+    const onCall = chats.find(({ label }) => label === "Slack · On-call")!;
+    const pausedDetail = connectedAgentDetail(onCall, names, { grantsAvailable: true, now });
+    expect(pausedDetail.status.detailParts).toContainEqual({ name: "On-call" });
+    expect(plainSentence(pausedDetail.status.detailParts!)).toBe(pausedDetail.status.detail);
+  });
 });

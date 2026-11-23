@@ -32,6 +32,7 @@ import {
   lineagePersonalContext,
   readLiveAgentConnectionRow,
 } from "./resource-access.js";
+import { threadContextLineage } from "./run-personal-context.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import {
@@ -1088,6 +1089,7 @@ export async function steerThreadInputInTransaction(
     request.requestedBy,
     "Only the execution owner can steer this Thread",
   );
+  await assertPersonMayContinue(transaction, request.requestedBy, thread.originConnectionId);
   const row = await transaction
     .selectFrom("threadInputs")
     .selectAll()
@@ -1459,6 +1461,67 @@ export async function cancelThreadInputInTransaction(
   const advanced = await advanceThreadQueue(transaction, thread);
   return { ...advanced, input, wasDuplicate: false };
 }
+
+/**
+ * Disconnect cancels any waiting or awaiting-approval input of an ended connection — even when
+ * its task is paused, done, archived, or holds an edit lease — and defers invalid provider
+ * sessions so one broken task never stalls cleanup of the connection.
+ */
+export async function cancelDisconnectedThreadInputInTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  request: { readonly threadId: ThreadId; readonly messageId: MessageId },
+): Promise<{ readonly revokedGrants: readonly RevokedRunGrant[] }> {
+  const observed = await transaction
+    .selectFrom("threads")
+    .select("id")
+    .where("id", "=", request.threadId)
+    .executeTakeFirst();
+  if (!observed) return { revokedGrants: [] };
+  const thread = await lockInputQueueProjection(transaction, request.threadId);
+  const row = await transaction
+    .selectFrom("threadInputs")
+    .selectAll()
+    .where("messageId", "=", request.messageId)
+    .where("threadId", "=", thread.id)
+    .forNoKeyUpdate()
+    .executeTakeFirst();
+  const state: string | undefined = row?.state;
+  if (!row || (state !== "pending" && state !== "awaiting-approval") || row.runId !== null)
+    return { revokedGrants: [] };
+  const reserved = await transaction
+    .selectFrom("runs")
+    .select("id")
+    .where("seedInputId", "=", row.messageId)
+    .where("status", "in", nonTerminalRunStatuses)
+    .executeTakeFirst();
+  if (reserved) return { revokedGrants: [] };
+  const cancelled = await transaction
+    .updateTable("threadInputs")
+    .set({
+      ...clearInputLease,
+      cancelReason: "authority-revoked",
+      state: "cancelled",
+      updatedAt: new Date(),
+    })
+    .where("messageId", "=", row.messageId)
+    .where(sql<boolean>`state in ('pending', 'awaiting-approval')`)
+    .returningAll()
+    .executeTakeFirst();
+  if (!cancelled) return { revokedGrants: [] };
+  if (row.editLeaseExpiresAt) await wakeRequestDeadlines(transaction);
+  await refreshInputQueue(transaction, thread.id, cancelled.messageId);
+  await ensureQueuedRun(transaction, thread, { onInvalidSelection: "defer" });
+  const active = await transaction
+    .selectFrom("runs")
+    .select("id")
+    .where("threadId", "=", thread.id)
+    .where("status", "=", "running")
+    .executeTakeFirst();
+  const handed = active
+    ? await deliverConversationInputsInTransaction(transaction, active.id)
+    : { revokedGrants: [] };
+  return { revokedGrants: handed.revokedGrants };
+}
 export async function claimRunInputBatch(
   transaction: Transaction<DatabaseSchema>,
   runId: RunId,
@@ -1538,9 +1601,11 @@ export async function claimRunInputBatch(
     return;
   }
   if (seed.freshContext) {
+    const lineage = await threadContextLineage(transaction, thread.id, thread.createdBy);
     const providerSessionId = await ensureSelectedProviderSession(transaction, thread, {
       freshRunId: run.id,
-      personalContext: await lineagePersonalContext(transaction, run.connectionId),
+      personalContext: lineage.personalContext,
+      personLineage: lineage.personLineage && run.connectionId === null,
     });
     await transaction
       .updateTable("runs")
@@ -2718,6 +2783,7 @@ export async function enqueueThreadInputInTransaction(
       .set({
         doneAt: null,
         doneReason: null,
+        doneBy: null,
       })
       .where("id", "=", thread.id)
       .execute();
@@ -2725,6 +2791,7 @@ export async function enqueueThreadInputInTransaction(
       ...thread,
       doneAt: null,
       doneReason: null,
+      doneBy: null,
     };
     await publishThreadSummary(transaction, thread.id);
   }
@@ -3294,17 +3361,19 @@ async function resolveThreadInputFacts(
         owner
           ? {
               kind: "human",
-              displayName: `${owner.displayName} (via ${connection.label})`.slice(0, 160),
+              displayName:
+                outsideName(`${owner.displayName} (via ${connection.label})`, 160) || "Someone",
               principalId: actorPrincipalId,
               userId: input.requestedBy,
             }
           : {
               kind: "connection",
               connectionId: connection.id,
-              displayName: (chat
-                ? `${chat.sender.displayName} in ${connection.label}`
-                : connection.label
-              ).slice(0, 160),
+              displayName:
+                outsideName(
+                  chat ? `${chat.sender.displayName} in ${connection.label}` : connection.label,
+                  160,
+                ) || "Someone",
             },
       ),
       authoritySource: {
@@ -3617,11 +3686,15 @@ export async function ensureSelectedProviderSession(
     readonly id: ThreadId;
     readonly harnessInstanceId: HarnessInstanceId;
   },
-  options: { readonly personalContext?: boolean; readonly freshRunId?: RunId } = {},
+  options: {
+    readonly personalContext?: boolean;
+    readonly personLineage?: boolean;
+    readonly freshRunId?: RunId;
+  } = {},
 ): Promise<ProviderSessionId> {
   const selected = await transaction
     .selectFrom("providerSessions")
-    .select(["id", "harnessInstanceId", "personalContext"])
+    .select(["id", "harnessInstanceId", "personalContext", "personLineage"])
     .where("threadId", "=", thread.id)
     .where("active", "=", true)
     .forNoKeyUpdate()
@@ -3636,7 +3709,8 @@ export async function ensureSelectedProviderSession(
     if (
       !options.freshRunId &&
       (options.personalContext === undefined ||
-        selected.personalContext === options.personalContext)
+        selected.personalContext === options.personalContext) &&
+      (options.personLineage === undefined || selected.personLineage === options.personLineage)
     )
       return selected.id;
     const active = await transaction
@@ -3678,6 +3752,7 @@ export async function ensureSelectedProviderSession(
     .values({
       active: true,
       personalContext: options.personalContext ?? true,
+      personLineage: options.personLineage ?? true,
       bindingGeneration: 0,
       continuationIdentity: null,
       harnessInstanceId: thread.harnessInstanceId,
@@ -3935,9 +4010,13 @@ export async function ensureQueuedRun(
   const connectionId = thread.originConnectionId ?? seed.connectionId;
   const selectedSession = options.maintenance
     ? options.maintenance.providerSessionId
-    : await ensureSelectedProviderSession(transaction, thread, {
-        personalContext: await lineagePersonalContext(transaction, connectionId),
-      });
+    : await (async () => {
+        const lineage = await threadContextLineage(transaction, thread.id, thread.createdBy);
+        return ensureSelectedProviderSession(transaction, thread, {
+          personalContext: lineage.personalContext,
+          personLineage: lineage.personLineage && connectionId === null,
+        });
+      })();
   const runId = createId("run");
   const runRow = await transaction
     .insertInto("runs")
@@ -5696,7 +5775,10 @@ export async function delegateThreadInTransaction(
     threadRow,
     reusedRow
       ? {}
-      : { personalContext: await lineagePersonalContext(transaction, childConnectionId) },
+      : {
+          personalContext: await lineagePersonalContext(transaction, childConnectionId),
+          personLineage: childConnectionId === null,
+        },
   );
   await transaction
     .insertInto("commands")

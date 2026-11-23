@@ -72,6 +72,7 @@ import type {
   RunnerId,
   SecurityAuditId,
   ThreadAccessMode,
+  ThreadDoneBy,
   ThreadDoneReason,
   QuietTaskDays,
   ThreadIconSource,
@@ -707,6 +708,8 @@ export interface ThreadTable {
   doneAt: Generated<Date | null>;
   /** Set only while Done, when the Host moved the task there because nothing touched it. */
   doneReason: Generated<ThreadDoneReason | null>;
+  /** Who marked the task Done: the person, an agent/automation, or quiet auto-close. */
+  doneBy: Generated<ThreadDoneBy | null>;
   pendingRequestCount: Generated<number>;
   revision: Generated<string>;
   nextTranscriptPosition: Generated<string>;
@@ -889,6 +892,11 @@ export interface RunTable {
   threadId: ThreadId;
   environmentId: EnvironmentId;
   failure: ColumnType<RunFailure | null, RunFailure | null | undefined, RunFailure | null>;
+  providerRetry: ColumnType<
+    import("@opensteer/core").RunRetry | null,
+    import("@opensteer/core").RunRetry | null | undefined,
+    import("@opensteer/core").RunRetry | null
+  >;
   harnessInstanceId: HarnessInstanceId;
   modelSelection: JsonColumn<ModelSelection>;
   replyTarget: JsonColumn<ReplyTarget | null>;
@@ -1060,6 +1068,19 @@ export interface DelegationTable {
   updatedAt: Timestamp;
 }
 
+/** A command with an effect outside the database: recorded before it acts, settled after (G4). */
+export interface CommandAttemptTable {
+  id: string;
+  requestedBy: UserId;
+  callerKey: string;
+  /** The connection whose Disconnect waits on it, when a connection (or its lineage) asked. */
+  connectionId: string | null;
+  type: string;
+  idempotencyKey: string;
+  state: Generated<"running" | "done" | "failed" | "unknown">;
+  startedAt: Generated<Date>;
+  settledAt: Date | null;
+}
 export interface RequestTable {
   revision: Generated<string>;
   id: RequestId;
@@ -1254,6 +1275,7 @@ export interface TriggerOccurrenceAttemptTable {
 export interface ProviderSessionTable {
   contextSnapshot: Generated<import("@opensteer/core").ProviderContextSnapshot | null>;
   personalContext: Generated<boolean>;
+  personLineage: Generated<boolean>;
   active: boolean;
   stateLayout: "thread" | "session";
   id: ProviderSessionId;
@@ -2226,6 +2248,7 @@ export interface DatabaseSchema {
   grants: GrantTable;
   delegations: DelegationTable;
   requests: RequestTable;
+  commandAttempts: CommandAttemptTable;
   taskQuestionNotices: {
     requestId: RequestId;
     messageId: MessageId | null;

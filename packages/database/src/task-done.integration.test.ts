@@ -307,7 +307,14 @@ integration.sequential("Shared task Done", () => {
       requestedBy: f.userId,
       idempotencyKey: "child-stops-parent-subtree",
     });
-    expect((await store.getThreadForOwner(child.thread.id, f.userId))?.doneAt).not.toBeNull();
+    expect(await store.getThreadForOwner(f.thread.id, f.userId)).toMatchObject({
+      doneAt: expect.any(String),
+      doneBy: "agent",
+    });
+    expect(await store.getThreadForOwner(child.thread.id, f.userId)).toMatchObject({
+      doneAt: expect.any(String),
+      doneBy: "agent",
+    });
     expect(
       await database
         .selectFrom("delegations")
@@ -338,6 +345,53 @@ integration.sequential("Shared task Done", () => {
       assignmentId: child.assignment.id,
       triggerId: trigger.trigger.id,
     };
+  });
+  it("preserves the person's Done timestamp and attribution when a deferred self-Done Run finalizes later", async () => {
+    const f = await fixture("self-done-vs-person-done");
+    const run = await running(f, "self-done-race");
+
+    // The active Run schedules deferred self-Done for when it finishes.
+    const selfDone = await store.setThreadDone({
+      done: true,
+      actorRunId: run.id,
+      threadId: f.thread.id,
+      requestedBy: f.userId,
+      idempotencyKey: "run-self-done",
+    });
+    expect(selfDone.doneWhenRunEnds).toBe(true);
+    expect((await store.getThreadForOwner(f.thread.id, f.userId))?.doneAt).toBeNull();
+
+    // Before the Run exits, the person marks the task Done directly.
+    const personDone = await store.setThreadDone({
+      done: true,
+      threadId: f.thread.id,
+      requestedBy: f.userId,
+      idempotencyKey: "person-done-first",
+    });
+    expect(personDone.doneWhenRunEnds).toBe(false);
+    const personDoneAt = personDone.thread.doneAt;
+    expect(personDoneAt).not.toBeNull();
+    expect(personDone.thread.doneBy).toBe("person");
+
+    // When the interrupted Run finalizes later, finalization must NOT overwrite person Done.
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      event: pendingEvent({
+        bindingGeneration: f.bindingGeneration,
+        data: { status: "interrupted" },
+        environmentId: f.environmentId,
+        ordinal: f.ordinal++,
+        runId: run.id,
+        threadId: f.thread.id,
+        type: "run.interrupted",
+      }),
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
+
+    const after = await store.getThreadForOwner(f.thread.id, f.userId);
+    expect(after?.doneBy).toBe("person");
+    expect(after?.doneAt).toBe(personDoneAt);
   });
   it("keeps an own-task automation running past its Done parent, which its reports and notices reopen", async () => {
     const f = await fixture("own-task");

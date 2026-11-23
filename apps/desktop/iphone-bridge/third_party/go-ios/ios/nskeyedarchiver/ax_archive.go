@@ -30,11 +30,12 @@ func Unarchive(data []byte) ([]interface{}, error) {
 	if !ok {
 		return nil, ErrArchive
 	}
-	budget := 100000
+	budget := 500000
+	memo := map[plist.UID]interface{}{}
 	var resolve func(interface{}, int, map[plist.UID]bool) (interface{}, error)
 	resolve = func(v interface{}, depth int, chain map[plist.UID]bool) (interface{}, error) {
 		budget--
-		if budget < 0 || depth > 64 {
+		if budget < 0 || depth > 256 {
 			return nil, ErrArchive
 		}
 		switch x := v.(type) {
@@ -45,9 +46,15 @@ func Unarchive(data []byte) ([]interface{}, error) {
 			if x == 0 && objects[0] == "$null" {
 				return nil, nil
 			}
+			if cached, ok := memo[x]; ok {
+				return cached, nil
+			}
 			chain[x] = true
 			result, e := resolve(objects[x], depth+1, chain)
 			delete(chain, x)
+			if e == nil {
+				memo[x] = result
+			}
 			return result, e
 		case []interface{}:
 			result := make([]interface{}, len(x))

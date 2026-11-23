@@ -2029,4 +2029,112 @@ describeStore("a connected agent's authority at the send", (it) => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("refuses steering, edit lease, and editing waiting inputs on tasks of an ended chat or connected agent", async ({
+    storeFixture,
+  }) => {
+    const chatEnded =
+      "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging.";
+    const agentEnded =
+      "This connected agent's access ended, so this task takes no new messages. Start a new task, or reconnect it from Connected agents.";
+    const { database, store } = storeFixture;
+    const runningChat = await storeFixture.startRunFixture("ended-steer-chat");
+    const bridge = await storeFixture.createBridgeFixture("ended-steer-bridge");
+    await database
+      .updateTable("agentConnections")
+      .set({ userId: runningChat.userId })
+      .where("id", "=", bridge.bridge.id)
+      .execute();
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridge.bridge.id })
+      .where("id", "=", runningChat.thread.id)
+      .execute();
+    const chatQueued = await store.enqueueThreadInput({
+      requestedBy: runningChat.userId,
+      threadId: runningChat.thread.id,
+      content: [{ type: "text", text: "Waiting while chat runs" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "ended-steer-chat-q",
+    });
+
+    const runningAgent = await storeFixture.startRunFixture("ended-steer-agent");
+    const url = await serveMcp(storeFixture);
+    const agent = await connection(store, url, {
+      userId: runningAgent.userId,
+      accessMode: "approval-required",
+    });
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: agent.id })
+      .where("id", "=", runningAgent.thread.id)
+      .execute();
+    const agentQueued = await store.enqueueThreadInput({
+      requestedBy: runningAgent.userId,
+      threadId: runningAgent.thread.id,
+      content: [{ type: "text", text: "Waiting while agent runs" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "ended-steer-agent-q",
+    });
+
+    // Disconnect both (without running cleanup yet, so their Runs remain running and inputs waiting).
+    const connections = new AgentConnectionStore(database);
+    await connections.revoke(runningChat.userId, bridge.bridge.id);
+    await connections.revoke(runningAgent.userId, agent.id);
+
+    const sessionId = `aus_${crypto.randomUUID()}` as never;
+    for (const entry of [
+      {
+        label: "chat",
+        userId: runningChat.userId,
+        threadId: runningChat.thread.id,
+        runId: runningChat.run.id,
+        messageId: chatQueued.message.id,
+        expected: chatEnded,
+      },
+      {
+        label: "agent",
+        userId: runningAgent.userId,
+        threadId: runningAgent.thread.id,
+        runId: runningAgent.run.id,
+        messageId: agentQueued.message.id,
+        expected: agentEnded,
+      },
+    ]) {
+      await expect(
+        store.steerThreadInput({
+          expectedRunId: entry.runId,
+          idempotencyKey: `ended-steer-${entry.label}`,
+          messageId: entry.messageId,
+          requestedBy: entry.userId,
+          threadId: entry.threadId,
+        }),
+      ).rejects.toMatchObject({ code: "forbidden", message: entry.expected });
+      await expect(
+        store.takeThreadInputLease({
+          deviceLabel: "Mac",
+          leaseId: `lease-${entry.label}`,
+          messageId: entry.messageId,
+          requestedBy: entry.userId,
+          sessionId,
+          takeOver: false,
+          threadId: entry.threadId,
+        }),
+      ).rejects.toMatchObject({ code: "forbidden", message: entry.expected });
+      await expect(
+        store.editThreadInput({
+          content: [{ type: "text", text: "Edited after disconnect" }],
+          deviceLabel: "Mac",
+          expectedRevision: 0,
+          idempotencyKey: `ended-edit-${entry.label}`,
+          messageId: entry.messageId,
+          requestedBy: entry.userId,
+          sessionId,
+          threadId: entry.threadId,
+        }),
+      ).rejects.toMatchObject({ code: "forbidden", message: entry.expected });
+    }
+  });
 });

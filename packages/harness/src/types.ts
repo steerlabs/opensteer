@@ -231,6 +231,7 @@ export type HarnessDurableEventType = Extract<
   | "run.status"
   | "run.context-measured"
   | "run.compaction"
+  | "run.retry"
   | "run.usage"
   | "tool.completed"
   | "tool.started"
@@ -324,6 +325,18 @@ export interface HarnessSessionContext {
   readonly skills: HarnessSkillPlan | undefined;
   /** Exact provider/model/options snapshot chosen for this Run. */
   readonly modelSelection: ModelSelection;
+  /**
+   * The task works for the person themselves, not for a connected agent's
+   * lineage or a conversation others can speak in. A driver reads it only
+   * through `engineConfiguration`.
+   */
+  readonly personalContext: boolean;
+  /**
+   * The task and every task it descends from are the person's own: no
+   * connected agent's lineage and no chat in it. A driver reads it only
+   * through `engineConfiguration`.
+   */
+  readonly personLineage: boolean;
   /** Runner-owned storage for this profile. */
   readonly providerState: HarnessProviderState;
   readonly runtimeBoundary: HarnessRuntimeBoundary;
@@ -689,10 +702,16 @@ export type HarnessObservedUsageScope =
 
 /** One provider-reported consumption window against an account's plan. */
 export interface HarnessObservedUsageWindow {
-  /** How the provider frames the window — "5h", "weekly", "30d". */
+  /** How the provider frames the window — "5h", "weekly", "30d", "Gemini 5h". */
   readonly label: string;
+  /**
+   * Providers whose models draw from this window when it represents a shared
+   * pool rather than the whole account or one model. An empty array marks an
+   * informational bucket whose model membership is unknown.
+   */
+  readonly providerIds?: readonly ModelSelection["providerId"][];
   readonly resetsAt: string | null;
-  /** Absent means the account as a whole. */
+  /** Absent means the account as a whole unless `providerIds` narrows it. */
   readonly scope?: HarnessObservedUsageScope;
   readonly usedPercent: number;
 }

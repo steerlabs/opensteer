@@ -2998,6 +2998,115 @@ describe("Claude Agent SDK harness", () => {
     },
   );
 
+  it("surfaces Claude api_retry notices and clears them once output arrives", async () => {
+    const sdk = new FakeSdk((parameters) => {
+      const sessionId = providerSessionId(parameters.options);
+      const system = (fields: Record<string, unknown>) =>
+        message({ session_id: sessionId, type: "system", uuid: randomProviderUuid(), ...fields });
+      const drained = (async () => {
+        for await (const _input of streamingPrompt(parameters));
+      })();
+      return generatedQuery(async function* () {
+        yield initMessage(sessionId);
+        yield system({
+          subtype: "api_retry",
+          attempt: 1,
+          max_retries: 4,
+          retry_delay_ms: 5_000,
+          error_status: 529,
+          error: "Overloaded",
+        });
+        // Non-substantive stream lifecycle frames and empty deltas must NOT clear active retry.
+        yield message({
+          session_id: sessionId,
+          type: "stream_event",
+          uuid: randomProviderUuid(),
+          parent_tool_use_id: null,
+          event: { type: "message_start", message: { id: "msg_1", role: "assistant" } },
+        });
+        yield message({
+          session_id: sessionId,
+          type: "stream_event",
+          uuid: randomProviderUuid(),
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "" },
+          },
+        });
+        yield system({
+          subtype: "api_retry",
+          attempt: 2,
+          max_retries: 4,
+          retry_delay_ms: 10_000,
+          error_status: 529,
+          error: "Overloaded",
+        });
+        yield assistantMessage(sessionId, [{ type: "text", text: "Recovered reply" }]);
+        yield successMessage(sessionId, "Recovered reply");
+        await drained;
+      });
+    });
+    const directory = await temporaryDirectory();
+    const driver = new ClaudeHarnessDriver({ executable: fakeClaudeExecutable, sdk });
+    const adapter = await driver.create({
+      sourceId: "anthropic",
+      config: {},
+      instanceId: createId("harnessInstance"),
+    });
+    const session = await adapter.startSession(await context(directory));
+    const observer = observe(session.events);
+    await session.execute({
+      environment: {},
+      inputs: [humanInput("Hello")],
+      context: noThreadContext,
+      reports: { messages: [], omittedCount: 0, throughSequence: null },
+      requestedBy: createId("user"),
+      runId: createId("run"),
+      signal: new AbortController().signal,
+    });
+    await session.stop();
+    await observer.done;
+    const retries = observer.events.filter((event) => event.type === "run.retry");
+    expect(retries).toEqual([
+      {
+        type: "run.retry",
+        data: {
+          status: "retrying",
+          attempt: 1,
+          maxAttempts: 4,
+          retryDelayMs: 5_000,
+          code: "http_529",
+          message: "Overloaded",
+        },
+      },
+      {
+        type: "run.retry",
+        data: {
+          status: "retrying",
+          attempt: 2,
+          maxAttempts: 4,
+          retryDelayMs: 10_000,
+          code: "http_529",
+          message: "Overloaded",
+        },
+      },
+      {
+        type: "run.retry",
+        data: {
+          status: "recovered",
+          attempt: 2,
+          maxAttempts: 4,
+          code: "http_529",
+          message: "Overloaded",
+        },
+      },
+    ]);
+    expect(observer.events.some((event) => event.type === "run.completed")).toBe(true);
+    await adapter.close();
+  });
+
   it("tells the model this Run's computer inventory on every turn, resumed or not", async () => {
     const received: SDKUserMessage[][] = [];
     const sdk = new FakeSdk((parameters) => {
@@ -4375,6 +4484,9 @@ async function openSession(
     readonly machineAccessPlatform?: "darwin" | "linux";
     readonly machineAccessRelaySocket?: string;
     readonly modelSelection?: HarnessSessionContext["modelSelection"];
+    readonly personalContext?: boolean;
+    /** Defaults to `personalContext`: the person's own task unless a test says otherwise. */
+    readonly personLineage?: boolean;
     readonly runtimeBoundary?: HarnessRuntimeBoundary;
     readonly sourceId?: string;
     readonly wrapProcessLaunch?: HarnessSessionContext["wrapProcessLaunch"];
@@ -4408,6 +4520,9 @@ async function openSession(
     machineAccessPlatform: overrides.machineAccessPlatform,
     machineAccessRelaySocket: overrides.machineAccessRelaySocket,
     modelSelection: overrides.modelSelection ?? baseContext.modelSelection,
+    personalContext: overrides.personalContext ?? baseContext.personalContext,
+    personLineage:
+      overrides.personLineage ?? overrides.personalContext ?? baseContext.personLineage,
     wrapProcessLaunch: overrides.wrapProcessLaunch ?? baseContext.wrapProcessLaunch,
   };
   const session = await adapter.startSession(sessionContext);
@@ -4433,6 +4548,8 @@ async function context(
   await mkdir(threadStateDirectory, { recursive: true });
   return {
     accessMode: "full-access",
+    personalContext: false,
+    personLineage: false,
     machineAccessNotice: noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,
@@ -5081,4 +5198,300 @@ it("retains Claude tool-result images", async () => {
     await session.stop();
     await adapter.close();
   }
+});
+
+describe("whose configuration Claude Code starts with", () => {
+  const doneSdk = () =>
+    new FakeSdk((parameters) =>
+      scriptedQuery([
+        initMessage(providerSessionId(parameters.options)),
+        successMessage(providerSessionId(parameters.options), "Done."),
+      ]),
+    );
+
+  it("starts a Run without personal context with none of the person's configuration", async () => {
+    const sdk = doneSdk();
+    const fixture = await openSession(sdk, {
+      accessMode: "approval-required",
+      personalContext: false,
+      personLineage: false,
+    });
+    await send(fixture.session, "Hello");
+    await fixture.session.stop();
+    const options = sdk.calls[0]!.options;
+    // No user, project or local settings: only Opensteer's private skill root.
+    expect(options.settingSources).toEqual(["project"]);
+    expect(options.projectConfigRoot?.startsWith(fixture.context.threadStateDirectory)).toBe(true);
+    expect(options.skills).toEqual(["opensteer:projects"]);
+    // No MCP server but Opensteer's, and none of the person's.
+    expect(options.strictMcpConfig).toBe(true);
+    expect(Object.keys(options.mcpServers ?? {})).toEqual(["opensteer"]);
+    expect(options.tools).not.toContain("WebSearch");
+    expect(options.tools).not.toContain("WebFetch");
+    expect(options.managedSettings).toEqual({
+      disableAllHooks: true,
+      disableBundledSkills: true,
+      disableClaudeAiConnectors: true,
+      disableRemoteControl: true,
+    });
+    expect(options.env).toMatchObject({
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+      CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1",
+      CLAUDE_CODE_DISABLE_WORKFLOWS: "1",
+      ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+    });
+    // The instruction file it gets is what it got before: the Run's own.
+    expect(options.systemPrompt).toMatchObject({
+      append: "Opensteer platform guide.\n\nFollow workspace policy.",
+    });
+    // Today's shell approval hook, and nothing else.
+    expect(options.hooks?.PreToolUse).toHaveLength(1);
+    expect(options.hooks?.PreToolUse?.[0]?.matcher).toBe("Bash");
+    await fixture.adapter.close();
+  });
+
+  it("starts a Run with personal context with Claude Code's own configuration", async () => {
+    const sdk = doneSdk();
+    const fixture = await openSession(sdk, {
+      accessMode: "approval-required",
+      personalContext: true,
+    });
+    await fixture.session.stop();
+    const skills = await collisionSkills(fixture.context.workspacePath);
+    const session = await fixture.adapter.startSession({ ...fixture.context, skills });
+    await send(session, "Hello");
+    await session.stop();
+    const options = sdk.calls.at(-1)!.options;
+    expect(options.settingSources).toEqual(["user", "project", "local"]);
+    expect(options.projectConfigRoot).toBeUndefined();
+    expect(options.strictMcpConfig).toBe(false);
+    expect(options.tools).toEqual({ preset: "claude_code", type: "preset" });
+    // No skill filter: the person's own skills stay beside Opensteer's.
+    expect(options).not.toHaveProperty("skills");
+    expect(options.plugins).toHaveLength(2);
+    // Agent home's loose skills arrive in an added directory.
+    const added = options.additionalDirectories?.at(-1);
+    expect(await realpath(join(added!, ".claude", "skills", "review"))).toBe(
+      await realpath(skills.skills[2]!.path),
+    );
+    expect(options.mcpServers?.opensteer).toMatchObject({ url: fixture.context.agentTools.url });
+    expect(options.managedSettings).toEqual({ disableRemoteControl: true });
+    expect(options.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined();
+    expect(options.env?.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS).toBeUndefined();
+    expect(options.env?.CLAUDE_CODE_DISABLE_WORKFLOWS).toBeUndefined();
+    expect(options.env?.ENABLE_CLAUDEAI_MCP_SERVERS).toBeUndefined();
+    expect(options.env?.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
+    expect(options.env?.DISABLE_LOGIN_COMMAND).toBe("1");
+    expect(options.permissionMode).toBe("default");
+    expect(options.allowDangerouslySkipPermissions).toBeUndefined();
+    // Agent home's AGENTS.md is still appended: Claude Code reads a project's
+    // AGENTS.md only when it has no CLAUDE.md.
+    expect(options.systemPrompt).toMatchObject({
+      append: "Opensteer platform guide.\n\nFollow workspace policy.",
+    });
+    // The person's own rules decide; Opensteer adds no hook of its own.
+    expect(options.hooks).toBeUndefined();
+    await fixture.adapter.close();
+  });
+
+  it("starts a connected agent's or a chat's task with personal context with none of the person's configuration", async () => {
+    const sdk = doneSdk();
+    const fixture = await openSession(sdk, {
+      accessMode: "approval-required",
+      personalContext: true,
+      personLineage: false,
+    });
+    await send(fixture.session, "Hello");
+    await fixture.session.stop();
+    const options = sdk.calls[0]!.options;
+    expect(options.settingSources).toEqual(["project"]);
+    expect(options.strictMcpConfig).toBe(true);
+    expect(Array.isArray(options.tools)).toBe(true);
+    expect(options.managedSettings).toMatchObject({ disableAllHooks: true });
+    expect(options.hooks?.PreToolUse?.[0]?.matcher).toBe("Bash");
+    await fixture.adapter.close();
+  });
+
+  it("adds no hook of Opensteer's in Full access either", async () => {
+    const sdk = doneSdk();
+    const fixture = await openSession(sdk, { accessMode: "full-access", personalContext: true });
+    await send(fixture.session, "Hello");
+    await fixture.session.stop();
+    expect(sdk.calls[0]!.options.hooks).toBeUndefined();
+    expect(sdk.calls[0]!.options.permissionMode).toBe("bypassPermissions");
+    await fixture.adapter.close();
+  });
+
+  it("fails a Run of the person's own task in which Opensteer's server is missing", async () => {
+    const sdk = new FakeSdk((parameters) =>
+      scriptedQuery([
+        initMessage(providerSessionId(parameters.options), {
+          mcp_servers: [{ name: "person-server", source: "user", status: "connected" }],
+        }),
+        successMessage(providerSessionId(parameters.options), "Done."),
+      ]),
+    );
+    const fixture = await openSession(sdk, { personalContext: true });
+    const observer = observe(fixture.session.events);
+    await send(fixture.session, "Hello").catch(() => undefined);
+    await fixture.session.stop();
+    await observer.done;
+    expect(JSON.stringify(observer.events.find((event) => event.type === "run.failed"))).toContain(
+      "did not load Opensteer's own MCP server",
+    );
+    await fixture.adapter.close();
+  });
+
+  it("accepts the person's own servers and tools, but not one replacing Opensteer's", async () => {
+    const own = (source: string) =>
+      new FakeSdk((parameters) =>
+        scriptedQuery([
+          initMessage(providerSessionId(parameters.options), {
+            mcp_servers: [
+              { name: "opensteer", source, status: "connected" },
+              { name: "person-server", source: "user", status: "connected" },
+            ],
+            tools: ["Bash", "WebSearch", "WebFetch", "mcp__person-server__lookup"],
+          }),
+          successMessage(providerSessionId(parameters.options), "Done."),
+        ]),
+      );
+    for (const [source, failed] of [
+      ["dynamic", false],
+      ["user", true],
+    ] as const) {
+      const fixture = await openSession(own(source), { personalContext: true });
+      const observer = observe(fixture.session.events);
+      await send(fixture.session, "Hello").catch(() => undefined);
+      await fixture.session.stop();
+      await observer.done;
+      const failure = observer.events.find((event) => event.type === "run.failed");
+      if (failed) {
+        expect(JSON.stringify(failure)).toContain(
+          "loaded an MCP server named opensteer from user settings",
+        );
+      } else expect(failure).toBeUndefined();
+      await fixture.adapter.close();
+    }
+  });
+});
+
+describe("how Claude Code reaches the network", () => {
+  it("scrubs a configured refresh token from a Claude Code failure", async () => {
+    const token = "fake-refresh-value";
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        yield initMessage(providerSessionId(parameters.options));
+        throw new Error(`Connection failed with refresh token ${token}`);
+      }),
+    );
+    const fixture = await openSession(sdk, { environment: { REFRESH_TOKEN: token } });
+    try {
+      const observer = observe(fixture.session.events);
+      await send(fixture.session, "Hello").catch(() => undefined);
+      await fixture.session.stop();
+      await observer.done;
+      const failure = observer.events.find((event) => event.type === "run.failed");
+      expect(failure?.data.message).toContain("refresh token [REDACTED]");
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("scrubs a five-character token while keeping a plain proxy address visible", async () => {
+    const proxy = "http://proxy.corp:8080";
+    const token = "t0k3n";
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        yield initMessage(providerSessionId(parameters.options));
+        throw new Error(`connect to ${proxy} failed with token ${token}`);
+      }),
+    );
+    const fixture = await openSession(sdk, {
+      environment: { HTTPS_PROXY: proxy, REFRESH_TOKEN: token },
+    });
+    try {
+      const observer = observe(fixture.session.events);
+      await send(fixture.session, "Hello").catch(() => undefined);
+      await fixture.session.stop();
+      await observer.done;
+      const failure = observer.events.find((event) => event.type === "run.failed");
+      expect(failure?.data.message).toContain(`connect to ${proxy} failed with token [REDACTED]`);
+      expect(failure?.data.message).not.toContain(token);
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("scrubs a configured proxy password printed separately in a Claude Code failure", async () => {
+    const proxy = "http://alice:p@ss-word@proxy.invalid:8080";
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        yield initMessage(providerSessionId(parameters.options));
+        throw new Error(`Connection failed via ${proxy}; password p@ss-word`);
+      }),
+    );
+    const fixture = await openSession(sdk, { environment: { HTTPS_PROXY: proxy } });
+    try {
+      const observer = observe(fixture.session.events);
+      await send(fixture.session, "Hello").catch(() => undefined);
+      await fixture.session.stop();
+      await observer.done;
+      const failure = observer.events.find((event) => event.type === "run.failed");
+      expect(failure?.data.message).toContain("password [REDACTED]");
+      expect(failure?.data.message).not.toContain("ss-word");
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("passes the lowercase HTTPS proxy from the process environment to Claude Code", async () => {
+    const proxy = "http://proxy.invalid:8080";
+    vi.stubEnv("https_proxy", proxy);
+    try {
+      const sdk = new FakeSdk((parameters) => {
+        const id = providerSessionId(parameters.options);
+        return scriptedQuery([initMessage(id), successMessage(id, "Done.")]);
+      });
+      const fixture = await openSession(sdk);
+      try {
+        await send(fixture.session, "Hello");
+        expect(sdk.calls[0]!.options.env?.https_proxy).toBe(proxy);
+      } finally {
+        await fixture.adapter.close();
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("hands Claude Code the proxy and certificates and keeps a proxy password out of its errors", async () => {
+    const proxy = "http://person:fake-proxy-password@proxy.example.test:8080";
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        yield initMessage(providerSessionId(parameters.options));
+        throw new Error(`API connection failed through ${proxy}`);
+      }),
+    );
+    const fixture = await openSession(sdk, {
+      environment: {
+        HTTPS_PROXY: proxy,
+        NODE_EXTRA_CA_CERTS: "/etc/company/ca.pem",
+        NO_PROXY: "localhost",
+      },
+    });
+    const observer = observe(fixture.session.events);
+    await send(fixture.session, "Hello").catch(() => undefined);
+    await fixture.session.stop();
+    await observer.done;
+    expect(sdk.calls[0]!.options.env).toMatchObject({
+      HTTPS_PROXY: proxy,
+      NODE_EXTRA_CA_CERTS: "/etc/company/ca.pem",
+      NO_PROXY: "localhost",
+    });
+    const failure = observer.events.find((event) => event.type === "run.failed");
+    expect(failure).toBeDefined();
+    expect(JSON.stringify(observer.events)).not.toContain("fake-proxy-password");
+    await fixture.adapter.close();
+  });
 });

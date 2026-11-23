@@ -26,7 +26,7 @@ import { sql, type Kysely, type Transaction } from "kysely";
 import "./connection.js";
 import type { DatabaseSchema, ThreadRow } from "./schema.js";
 import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
-import { publishedMessagePredicate } from "./message-visibility.js";
+import { changedTasksSubquery } from "./changed-tasks.js";
 
 import { createThreadInTransaction } from "./thread-store.js";
 import { createTriggerInTransaction } from "./trigger-store.js";
@@ -246,50 +246,12 @@ export async function memoryPassWakeContext(
     (wakes.completed?.getTime() ?? (wakes.first?.getTime() ?? now) - firstPassWindow[role]) -
       commitOverlap,
   );
-  const workers = transaction
-    .selectFrom("triggers")
-    .select("anchorThreadId")
-    .where("systemRole", "is not", null);
-  // Only what opensteer_task_read shows; a waiting input is dated by its delivery once it is.
-  const conversations = await transaction
-    .selectFrom("messages")
-    .innerJoin("threads", "threads.id", "messages.threadId")
-    .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
-    .select(({ fn }) => [
-      "threads.id",
-      "threads.title",
-      fn.countAll<string>().as("count"),
-      sql<Date>`min(messages.created_at)`.as("first"),
-      sql<Date>`max(coalesce(thread_inputs.updated_at, messages.created_at))`.as("newest"),
-    ])
-    .where("threads.id", "not in", workers)
-    // A task that could not read the person's memory is never a source of it.
+  // A task that could not read the person's memory is never a source of it.
+  const conversations = await changedTasksSubquery(transaction, since, {
+    excludeSystemWorkers: true,
+  })
     .where(lineageHasPersonalContext(sql.ref("threads.origin_connection_id")))
-    .where(
-      sql<boolean>`coalesce(messages.author->>'threadId', '') not in (
-      select anchor_thread_id from triggers
-      where system_role is not null
-    )`,
-    )
-    .where("messages.kind", "!=", "continuation")
-    .where(publishedMessagePredicate("threadInputs"))
-    .where(sql<Date>`coalesce(thread_inputs.updated_at, messages.created_at)`, ">", since)
-    .where(
-      "messages.id",
-      "in",
-      transaction
-        .selectFrom("messages")
-        .select("id")
-        .where("createdAt", ">", since)
-        .union(
-          transaction
-            .selectFrom("threadInputs")
-            .select("messageId as id")
-            .where("updatedAt", ">", since),
-        ),
-    )
-    .groupBy(["threads.id", "threads.title"])
-    .orderBy(sql`max(messages.created_at)`, "desc")
+    .orderBy("newest", "desc")
     .limit(maxConversations + 1)
     .execute();
   const quiet = conversations.every(
@@ -319,9 +281,16 @@ export async function memoryPassWakeContext(
   return memoryPassWakeText({
     since,
     completedRunId: wakes.completed ? wakes.completedRunId : null,
-    changes: conversations
-      .slice(0, maxConversations)
-      .map((change) => ({ ...change, count: Number(change.count) })),
+    changes: conversations.slice(0, maxConversations).map((change) => ({
+      id: change.threadId,
+      title: change.title,
+      count: Number(change.newMessages),
+      first: change.firstNewAt,
+      questionsAnswered: Number(change.questionsAnswered),
+      questionsDismissed: Number(change.questionsDismissed),
+      doneAt: change.doneSinceAt,
+      doneBy: change.doneSinceBy,
+    })),
     more: conversations.length > maxConversations,
   });
 }

@@ -22,7 +22,14 @@ const plugin = {
 const selected = (tasks: boolean, ...resources: unknown[]) =>
   AgentGrantSchema.parse({ scope: "selected", tasks, resources });
 
-const common = ["ask_person", "discover"];
+/** Every shape that holds a Home command lists the two command tools (A5). */
+const common = [
+  "ask_person",
+  "discover",
+  "opensteer_commands",
+  "opensteer_command",
+  "opensteer_state",
+];
 const browser = ["browser_connect", "browser_use"];
 const passwords = ["saved_login_request", "card_request"];
 const plugins = ["plugin_call", "plugin_resume"];
@@ -116,6 +123,7 @@ describe("the connection's actual MCP listing", () => {
     readonly string[],
     "approval-required" | undefined,
   ][] = [
+    // The person's settings are read at Full access only, as opensteer_defaults_read was.
     ["everything", full, everything, undefined],
     ["everything supervised", full, everything, "approval-required"],
     [
@@ -142,6 +150,32 @@ describe("the connection's actual MCP listing", () => {
     ["tasks only", selected(true), [...common, ...tasks], undefined],
     ["empty", selected(false), [], undefined],
   ];
+  it.each(shapes)(
+    "names only the state areas %s may read (G5)",
+    async (_name, grant, _e, accessMode) => {
+      const { tools } = await measureMcpContext("connection", {
+        grant,
+        ...(accessMode ? { accessMode } : {}),
+      });
+      const state = tools.find((tool) => tool.name === "opensteer_state");
+      if (!state) return;
+      const areas = (state.inputSchema.properties?.area as { enum?: string[] } | undefined)?.enum;
+      const selectedGrant = (grant as { scope: string }).scope === "selected";
+      const apps = JSON.stringify(grant).includes('"computer-app"');
+      expect(areas?.sort()).toEqual(
+        [
+          "connections",
+          "requests",
+          "activity",
+          ...(selectedGrant ? [] : ["settings", "engines", "policy"]),
+          ...(!selectedGrant || apps ? ["devices"] : []),
+        ].sort(),
+      );
+      // Its words name only those, and the connections area as this connection's own.
+      expect(state.description).not.toMatch(/\bchats?\b|another agent|other AI apps/u);
+      expect(state.description).toContain("connections: this connection");
+    },
+  );
   it.each(shapes)(
     "names only callable tools and supported shapes for %s",
     async (_name, grant, expected, accessMode) => {

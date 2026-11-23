@@ -215,6 +215,11 @@ export const CaseSchema = z
       .optional(),
     browser: BrowserFixtureSchema.optional(),
     fixtures: z.record(fixturePath, z.string()).default({}),
+    /**
+     * Files of the person's own engine configuration, written into the sample's
+     * temporary engine home (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`) before it starts.
+     */
+    engineHomeFixtures: z.record(fixturePath, z.string()).default({}),
     /** Published task messages, including this worker's prior handoffs. Explicit mocks win. */
     tasks: z
       .array(
@@ -284,6 +289,12 @@ export const CaseSchema = z
       /** Checked against assistant text from turns before the graded last turn. */
       earlierTextMust: z.array(regex).default([]),
       maxInvalidCalls: z.number().int().nonnegative().default(0),
+      /**
+       * `requested`: the engine must ask the person before a native tool runs.
+       * The eval never grants it: the ask ends the turn, graded as this check,
+       * instead of making the sample incomplete.
+       */
+      nativeApproval: z.enum(["requested"]).optional(),
     }),
   })
   .superRefine((c, ctx) => {
@@ -341,15 +352,34 @@ export function withHostMemoryWakes(testCase: EvalCase): EvalCase {
     const changes = testCase.tasks.flatMap(({ task, items, self }) => {
       if (self || task.purpose === "background-job") return [];
       const fresh = published(items).filter((item) => Date.parse(item.createdAt) > since.getTime());
-      if (!fresh.length) return [];
-      const dates = fresh.map((item) => Date.parse(item.createdAt));
+      const freshQuestions = items.filter(
+        (item) =>
+          item.type === "request.resolved" &&
+          (item.status === "fulfilled" || item.status === "declined") &&
+          Date.parse(item.createdAt) > since.getTime(),
+      );
+      const doneAt =
+        task.doneAt && Date.parse(task.doneAt) > since.getTime() && task.doneBy !== "quiet"
+          ? new Date(task.doneAt)
+          : null;
+      if (!fresh.length && !freshQuestions.length && !doneAt) return [];
+      const messageDates = fresh.map((item) => Date.parse(item.createdAt));
+      const allDates = [
+        ...messageDates,
+        ...freshQuestions.map((item) => Date.parse(item.createdAt)),
+        ...(doneAt ? [doneAt.getTime()] : []),
+      ];
       return [
         {
           id: task.id,
           title: task.title ?? "",
           count: fresh.length,
-          first: new Date(Math.min(...dates)),
-          newest: Math.max(...dates),
+          first: messageDates.length ? new Date(Math.min(...messageDates)) : null,
+          newest: Math.max(...allDates),
+          questionsAnswered: freshQuestions.filter((item) => item.status === "fulfilled").length,
+          questionsDismissed: freshQuestions.filter((item) => item.status === "declined").length,
+          doneAt,
+          doneBy: doneAt ? (task.doneBy ?? null) : null,
         },
       ];
     });

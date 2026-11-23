@@ -11,6 +11,7 @@ import {
   RequestIdSchema,
   RunAttemptIdSchema,
   RunIdSchema,
+  RunRetryViewSchema,
   TaskPurposeSchema,
   ThreadIdSchema,
   ThreadStatusSchema,
@@ -221,10 +222,16 @@ const task = z.object({
     })
     .nullable()
     .optional(),
+  /** Active provider retry on the earliest executing Run, when retrying. */
+  retry: RunRetryViewSchema.nullable().optional(),
 });
 export type PersonalTaskExternalWork = NonNullable<z.infer<typeof task>["externalWork"]>;
 /** A task row plus the full Thread detail view, return hint included. */
-export const PersonalDetailThreadSchema = task.extend({ thread: ThreadViewSchema });
+export const PersonalDetailThreadSchema = task.extend({
+  thread: ThreadViewSchema,
+  /** The chat or connected agent that started this task has ended, so it takes no new messages. */
+  endedOrigin: z.enum(["chat", "agent"]).nullable().optional(),
+});
 const visit = z.object({
   threadId: ThreadIdSchema,
   lastVisitedAt: z.iso.datetime(),

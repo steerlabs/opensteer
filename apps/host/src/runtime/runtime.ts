@@ -17,7 +17,11 @@ import {
   installPersonalMutationHooks,
   type PersonalCommitReaction,
 } from "@opensteer/database/personal-mutation";
-import { createRunFinishDrain, republishThreads } from "@opensteer/database";
+import {
+  createRunFinishDrain,
+  recoverCommandAttempts,
+  republishThreads,
+} from "@opensteer/database";
 import { shadowRunsTouched } from "../browser/shadow-host.js";
 import { createReturnHintRefresh } from "./personal-return-hints.js";
 import { withUpgradeHeartbeat } from "./upgrade-heartbeat.js";
@@ -254,7 +258,9 @@ import {
   type NotificationPublicationTarget,
 } from "../notifications/notification-publication-client.js";
 import { createHostServer } from "../server.js";
-import { CommandRequestExpiry, CommandRequestService } from "../commands/requests.js";
+import { CommandRequestService } from "../commands/requests.js";
+import { agentCommandRegistry } from "../commands/agent-door.js";
+import { CommandTools } from "../mcp/handlers/commands.js";
 import { CommandRequestStore } from "@opensteer/database";
 import { EgressService } from "../server/egress-service.js";
 import { HostStaticDistribution } from "../server/static-distribution.js";
@@ -530,7 +536,10 @@ export async function createHostRuntime(
   let notificationDispatcher: NotificationDispatcher | undefined;
   let removeMutationHooks: (() => void) | undefined;
   let deadlines: RequestDeadlines | undefined;
-  let stopCommandRequestExpiry: (() => void) | undefined;
+  // The agents' tools are built before the Home's command Requests; they read it when called.
+  let commandRequestsForTools: CommandRequestService | undefined;
+  // The person's read handlers, handed over when the server builds them; read by the state tool.
+  let personReadHandlers: Readonly<Record<string, unknown>> | undefined;
   let executionLeaseLoop: DeadlineDrain | undefined;
   let finishLoop: DeadlineDrain | undefined;
   let connectionMaintenance: DeadlineDrain | undefined;
@@ -943,6 +952,7 @@ export async function createHostRuntime(
     // lost, so one of the two is bound after the other exists.
     let computerUse: ComputerUseService | undefined;
     let computerViews: ComputerViewService | undefined;
+    let nativeTabs: NativeTabTargets | undefined;
     let displayStreams: DisplayStreamHub | undefined;
     let pluginPackages: PluginPackageService | undefined;
     const deviceDrivers = new DeviceDriverResolver({
@@ -974,13 +984,19 @@ export async function createHostRuntime(
       onDeviceRemoved: (deviceId, removed) => {
         computerUse?.forgetDevice(deviceId, removed);
         computerViews?.forgetDevice(deviceId);
+        nativeTabs?.forgetComputer(deviceId);
         displayStreams?.forgetDevice(deviceId);
+        tabs?.changed();
+        announceResources("tab");
       },
       onDeviceInvalidated: (binding) => {
         computerUse?.forgetDriver(binding);
         computerViews?.forgetDriver(binding);
+        nativeTabs?.forgetComputer(binding.deviceId);
+        nativeTabs?.forgetComputer(binding.runnerId);
         displayStreams?.forgetDriver(binding);
         tabs?.changed();
+        announceResources("tab");
       },
       requireAgentAccess: async (runnerId) =>
         requireRunnerDeviceAccess(database, runnerId, "apps", runners.isRunnerConnected(runnerId), {
@@ -1001,13 +1017,21 @@ export async function createHostRuntime(
       onRunnerDetached: (runnerId, reason) => {
         if (reason === "device-restarting") displayStreams?.forgetRunner(runnerId, reason);
         computerViews?.forgetRunner(runnerId, reason === "device-restarting" ? reason : undefined);
+        nativeTabs?.forgetComputer(runnerId);
         if (reason !== "device-restarting") displayStreams?.forgetRunner(runnerId, reason);
         computerUse?.forgetRunner(runnerId);
+        tabs?.changed();
+        announceResources("tab");
       },
       onDisplayEvent: (runnerId, event) => displayStreams?.handlePhoneEvent(runnerId, event),
       onPluginDataRemoved: (runnerId, pluginId) =>
         integrationPlatformStore.plugins.confirmDataRemoval(runnerId, pluginId),
-      onRunnerAttached: (runnerId) => localServers.computerRunnerAttached(runnerId),
+      onRunnerAttached: (runnerId) => {
+        nativeTabs?.forgetComputer(runnerId);
+        tabs?.changed();
+        announceResources("tab");
+        localServers.computerRunnerAttached(runnerId);
+      },
     });
     computerUse = new ComputerUseService({
       deploymentId: deployment.id,
@@ -1551,7 +1575,9 @@ export async function createHostRuntime(
       connections: listConnections,
       owners: (ids) => store.effectiveDeviceOwners(ids.map((id) => DeviceIdSchema.parse(id))),
       changed: (ownerId, notice) => {
-        if (notice.type === "host.computer-view.removed")
+        if (notice.type === "host.computer-view.changed") {
+          nativeTabs?.observeView(notice.view);
+        } else if (notice.type === "host.computer-view.removed")
           app.log.info(
             {
               machineId: notice.machineId,
@@ -1569,7 +1595,7 @@ export async function createHostRuntime(
       ended: (viewId, generation, reason) =>
         displayStreams?.endOwnerView(viewId, generation, reason),
     });
-    const nativeTabs = new NativeTabTargets({
+    nativeTabs = new NativeTabTargets({
       views: computerViews,
       connections: listConnections,
       owns: async (owner, computer) =>
@@ -1581,6 +1607,10 @@ export async function createHostRuntime(
         computerApps.resolveWindow(computer, target, { timeoutMs: 10_000 }),
       users: (owner, computer, window) => computerUse!.nativeTargetUsers(owner, computer, window),
       phoneUnavailable: (computer) => computerApps.displayUnavailableReason(computer),
+      onWindowStateChanged: (ownerId, _computerId, windowId) => {
+        tabs?.windowChanged(ownerId, windowId);
+        announceResources("tab");
+      },
     });
     tabs = new TabService({
       store: tabStore,
@@ -2001,7 +2031,8 @@ export async function createHostRuntime(
         ?.revalidate()
         .catch((error: unknown) => reportComputerUseSweepError(error));
       realtime.broadcast({ type: "host.connections-changed" });
-      announceResources("machine");
+      tabs?.changed();
+      announceResources("machine", "tab");
       void channelService?.syncRuntimes();
       // A bridge whose computer app lost its approval ends: the cleanup worker revokes it now.
       connectionMaintenance?.wake();
@@ -3297,6 +3328,8 @@ export async function createHostRuntime(
     });
     const pluginOwnerApi = new PluginOwnerApi({
       service: pluginService,
+      folder: (directory) =>
+        withFolderPluginPackage({ directory, files, install: pluginSourceFiles }),
       pages: pluginPages,
       webhooks: { service: pluginService, origin: () => pluginService!.webhookOrigin() },
       settings: pluginAgentStore,
@@ -3390,6 +3423,15 @@ export async function createHostRuntime(
       store,
       handlers: agentToolHandlers({
         administration,
+        commands: new CommandTools({
+          database,
+          reads: () => personReadHandlers,
+          policy: async () => (claimedWork ? claimedWork.applied() : null),
+          registry: agentCommandRegistry(administration.service),
+          requests: () => commandRequestsForTools,
+          sessions: agentSessions,
+          administration,
+        }),
         plugins: pluginTools,
         localServers: localServerRegistry,
         apps,
@@ -3606,24 +3648,21 @@ export async function createHostRuntime(
       });
     }
     const commandRequestStore = new CommandRequestStore(store.database, store.requests);
-    // A proposed command waits a day: one timer for the earliest open ask's end, none while none
-    // is open, so an idle Home does no periodic work for asks. Approving a stale one is refused.
-    const commandRequestExpiry = new CommandRequestExpiry(commandRequestStore, (error) =>
-      reportMutationFailure(error),
-    );
-    stopCommandRequestExpiry = () => commandRequestExpiry.stop();
-    const commandRequests = new CommandRequestService({
+    const commandRequests = (commandRequestsForTools = new CommandRequestService({
       store: commandRequestStore,
       database: store.database,
       requests: store.requests,
-      expiry: commandRequestExpiry,
-    });
+    }));
     // An approval cut off by a restart may have taken effect: it is unknown, never run again.
-    // The same read says when the earliest open ask ends.
-    commandRequestExpiry.arm((await commandRequestStore.recoverRunning()).nextExpiry);
+    await commandRequestStore.recoverRunning();
+    // A command that was acting outside the database when the Home stopped may have happened.
+    await recoverCommandAttempts(store.database);
     const app = await createHostServer(
       {
         commandRequests,
+        personReads: (handlers) => {
+          personReadHandlers = handlers;
+        },
         connections,
         connectionEffects: { stopLineage: driveConnectionCleanups },
         agentOperations: agentSessions,
@@ -4041,7 +4080,6 @@ export async function createHostRuntime(
     await assignmentReturns?.close();
     await connectionMaintenance?.close();
     await catalogConvergence?.close();
-    stopCommandRequestExpiry?.();
     await deadlines?.close();
     removeMutationHooks?.();
     await pluginChangeNotices?.close();

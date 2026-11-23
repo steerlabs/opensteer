@@ -81,6 +81,27 @@ describe("Cursor runtime boundary", () => {
   );
 });
 
+describe("Cursor and whose task it is", () => {
+  it.each(["start", "resume"] as const)(
+    "refuses a task a connected agent or a chat started on %s",
+    async (mode) => {
+      const fixture = await setup({ personLineage: false });
+      if (mode === "resume") await seedTranscript(fixture);
+      const open =
+        mode === "start"
+          ? fixture.adapter.startSession(fixture.context)
+          : fixture.adapter.resumeSession(fixture.reference, fixture.context);
+      await expect(open).rejects.toThrow(
+        "Cursor starts with your own Cursor settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+      );
+      await expect(open).rejects.toMatchObject({ code: "forbidden" });
+      // Nothing was launched: Cursor never read the person's configuration.
+      expect(await fixture.invocations()).toEqual([]);
+      await fixture.adapter.close();
+    },
+  );
+});
+
 describe("Cursor access-mode hooks", () => {
   it.each([
     ["approval-required", "Write", "file-change"],
@@ -109,8 +130,8 @@ describe("Cursor access-mode hooks", () => {
 
 describe("Cursor plugin materialisation", () => {
   it.each([
-    ["approval-required", ["beforeShellExecution", "beforeMCPExecution", "preToolUse"]],
-    ["auto-accept-edits", ["beforeShellExecution", "beforeMCPExecution", "preToolUse"]],
+    ["approval-required", ["beforeShellExecution", "preToolUse"]],
+    ["auto-accept-edits", ["beforeShellExecution", "preToolUse"]],
     ["full-access", []],
   ] as const)("writes the %s hook table and the MCP servers", async (accessMode, events) => {
     const fixture = await setup({ accessMode });
@@ -792,6 +813,24 @@ describe("Cursor turns", () => {
     expect(cursorExitFailure(1, "")).toMatchObject({ code: "cursor_harness_error" });
   });
 
+  it("scrubs configured proxy credentials from Cursor stderr", () => {
+    const proxy = "http://alice:p@ss-word@proxy.invalid:8080";
+    expect(
+      cursorExitFailure(1, `Connection failed via ${proxy}; password p@ss-word`, {
+        HTTPS_PROXY: proxy,
+      }).message,
+    ).toBe("Connection failed via http://[REDACTED]@proxy.invalid:8080; password [REDACTED]");
+  });
+
+  it("scrubs a configured refresh token from Cursor stderr", () => {
+    const token = "fake-refresh-value";
+    expect(
+      cursorExitFailure(1, `Connection failed with refresh token ${token}`, {
+        REFRESH_TOKEN: token,
+      }).message,
+    ).toBe("Connection failed with refresh token [REDACTED]");
+  });
+
   it("projects a tool kind it has never seen without failing the Run", async () => {
     const fixture = await setup({ scenario: "unknown-tool" });
     const session = await fixture.adapter.startSession(fixture.context);
@@ -913,20 +952,13 @@ describe("Cursor approvals", () => {
     await open.adapter.close();
   });
 
-  it("always allows Opensteer's own MCP servers and asks about everybody else's", async () => {
+  it("adds no prompt of Opensteer's to any MCP server, the person's own included", async () => {
     const fixture = await setup({ accessMode: "approval-required", scenario: "hook-mcp" });
     const session = await fixture.adapter.startSession(fixture.context);
     const observer = observe(session.events);
-    const turn = session.execute(fixture.turn("Call both servers"));
-    const request = await observer.waitFor("request.opened");
-    expect(request.data.request.presentation).toMatchObject({
-      detail: "plugin-probe-other · probe",
-      title: "Use this tool?",
-    });
-    await session.resolveRequest(request.data.request.id, { kind: "choice", optionId: "reject" });
-    await turn;
+    await session.execute(fixture.turn("Call both servers"));
     await session.stop();
-    expect(observer.events.filter((event) => event.type === "request.opened")).toHaveLength(1);
+    expect(observer.events.filter((event) => event.type === "request.opened")).toHaveLength(0);
     const started = observer.events.filter((event) => event.type === "tool.started");
     // An MCP call reports the tool's own arguments, not Cursor's wrapper
     // naming the server and tool.
@@ -1226,6 +1258,8 @@ describe("Cursor interruption and lifetime", () => {
 
 interface SetupOptions {
   readonly accessMode?: HarnessSessionContext["accessMode"];
+  /** The person's own task unless a test says otherwise: the only kind Cursor runs. */
+  readonly personLineage?: boolean;
   readonly config?: Record<string, unknown>;
   readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
   readonly machineAccessNotice?: string;
@@ -1303,6 +1337,8 @@ async function setup(options: SetupOptions): Promise<Fixture> {
     history: [],
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: "Follow the workspace instructions.",
+    personalContext: true,
+    personLineage: options.personLineage ?? true,
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,

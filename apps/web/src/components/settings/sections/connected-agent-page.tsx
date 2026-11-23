@@ -23,6 +23,7 @@ import {
 } from "@opensteer/client/host";
 import {
   useChromeTabGrantCatalog,
+  useConnectedAgentActivity,
   useConnectedAgentLive,
   useConnectedAgents,
   useLiveTasks,
@@ -63,6 +64,7 @@ export function ConnectedAgentPage({
   // What this page sends is what the chat parity script covers.
   const chatHost = chatScreenHost(client);
   const live = useConnectedAgentLive(client, connectionId);
+  const activity = useConnectedAgentActivity(client, connectionId, live?.threadId ?? null);
   const liveTasks = useLiveTasks(client);
   const chromeTabs = useChromeTabGrantCatalog(client, true);
   const workPolicy = useWorkPolicy(client);
@@ -124,6 +126,7 @@ export function ConnectedAgentPage({
     revoked: agents.revoked,
     grantsAvailable: agents.grantsAvailable,
     live,
+    ...(activity ? { activity } : {}),
   });
   const who = detail.row.identity.who;
   // A withdrawn verification offers Disconnect once, in its own notice.
@@ -224,7 +227,11 @@ export function ConnectedAgentPage({
             <span>
               <strong>{detail.uncertain.label}</strong>
               <br />
-              {detail.uncertain.detail}
+              {detail.uncertain.detailParts ? (
+                <SentenceText parts={detail.uncertain.detailParts} />
+              ) : (
+                detail.uncertain.detail
+              )}
             </span>
           </p>
         ) : null}
@@ -425,8 +432,12 @@ function StatusNotice({ status }: { readonly status: ConnectedAgentStatus }) {
     <div className="notice connected-agent__status" role="status">
       <span aria-hidden className={`status-dot status-dot--${dotTone(status.tone)}`} />
       <div>
-        <strong className="connected-agent__status-label">{status.label}</strong>
-        <span className="connected-agent__status-detail">{status.detail}</span>
+        <strong className="connected-agent__status-label">
+          {status.labelParts ? <SentenceText parts={status.labelParts} /> : status.label}
+        </strong>
+        <span className="connected-agent__status-detail">
+          {status.detailParts ? <SentenceText parts={status.detailParts} /> : status.detail}
+        </span>
         {status.steps.length ? (
           <ol className="connected-agent__steps">
             {status.steps.map((step) => (

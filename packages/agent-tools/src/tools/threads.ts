@@ -90,7 +90,7 @@ export const opensteer_task_read = defineAgentTool({
   targetFields: ["taskId"],
   title: "Read a task",
   description:
-    "Read a task with its current AI account, model and access mode; omit taskId for this task. The messages view returns published messages, newest first; activity adds places, apps, Requests and one item per tool call. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its tabId goes to show_to_person. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only. Mention returned items by their `link`, verbatim.",
+    "Read a task with its AI account, model, access mode, doneBy, lastVisitedAt and pendingRequests; omit taskId for this task. The messages view returns published messages and settled non-secret questions, newest first; activity adds places, apps, all settled Requests and one item per tool call. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its tabId goes to show_to_person. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only. Mention returned items by their `link`, verbatim.",
   input: readInput,
   output: ThreadReadOutputSchema,
   access: "read",
@@ -101,13 +101,18 @@ export const opensteer_task_list = defineAgentTool({
   name: "opensteer_task_list",
   title: "List tasks",
   description:
-    "List reachable tasks, newest updated first, up to 50 per page; page with cursor. parentTaskId lists the tasks that task delegated (for this task's own, take its ID from opensteer_task_read), and each row carries its delegationId and taskStatus. changedSince lists only tasks with messages after that time, most recent first, with newMessages and firstNewAt; read them with opensteer_task_read. Mention returned items by their `link`, verbatim.",
+    "List reachable tasks, newest updated first, up to 50 per page; page with cursor. Filter by done, hasPendingRequests, parentTaskId or query (titles and messages). parentTaskId lists the tasks that task delegated, with delegationId and taskStatus. changedSince lists tasks with new messages, settled questions or non-quiet Done changes after that time, most recent first; read them with opensteer_task_read. Mention returned items by their `link`, verbatim.",
   input: z.strictObject({
     changedSince: IsoDateTimeSchema.optional(),
     cursor: CursorSchema.optional(),
+    done: z.boolean().optional().describe("Filter by whether the task is marked Done."),
+    hasPendingRequests: z
+      .boolean()
+      .optional()
+      .describe("Filter by whether the task has pending Requests."),
     limit: z.number().int().min(1).max(50).default(25),
     parentTaskId: ThreadIdSchema.optional(),
-    query: z.string().trim().min(1).max(256).optional().describe("Search titles."),
+    query: z.string().trim().min(1).max(256).optional().describe("Search titles and messages."),
   }),
   output: ThreadListOutputSchema,
   access: "read",

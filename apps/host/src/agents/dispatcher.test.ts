@@ -706,6 +706,30 @@ describe("HostCommandDispatcher model selection", () => {
     if (command.type !== "run.execute") throw new Error("Expected run.execute");
     expect(RunExecutionContextSchema.parse(command.context)).toEqual(command.context);
   });
+  it.each([
+    ["the person's own task", { fromChat: false, runConnectionId: null }, true],
+    ["a connected agent's task", { fromChat: false, runConnectionId: "agentConnection_1" }, false],
+    ["a chat's task the person alone speaks in", { fromChat: true, runConnectionId: null }, false],
+  ] as const)(
+    "passes on what the lineage walk decided for %s",
+    async (_label, lineage, personLineage) => {
+      const { dispatch, run } = dispatchRun({
+        lineage: {
+          ...lineage,
+          personLineage,
+          taskOriginConnectionId: lineage.runConnectionId,
+        },
+        models: [gpt5],
+        modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+      });
+      await run();
+      const command = dispatch.mock.calls[0]![0];
+      if (command.type !== "run.execute") throw new Error("Expected run.execute");
+      // Every one of them carries personal context; only the first is the person's own.
+      expect(command.context.personalContext).toBe(true);
+      expect(command.context.personLineage).toBe(personLineage);
+    },
+  );
   const readerCapabilities = [
     "native-session-continuation-v1",
     "assignments-v1",
@@ -723,6 +747,12 @@ describe("HostCommandDispatcher model selection", () => {
     readonly modelSelection: unknown;
     readonly inputs?: readonly unknown[];
     readonly inputOrigins?: ReadonlyMap<string, unknown>;
+    readonly lineage?: {
+      readonly fromChat: boolean;
+      readonly personLineage: boolean;
+      readonly runConnectionId: string | null;
+      readonly taskOriginConnectionId: string | null;
+    };
   }) {
     const models = input.models.map((model) => HarnessModelDescriptorSchema.parse(model));
     const modelSelection = ModelSelectionSchema.parse(input.modelSelection);
@@ -792,9 +822,19 @@ describe("HostCommandDispatcher model selection", () => {
       } as never,
       store: {
         admitExecution: async () => {
+          if (input.lineage?.runConnectionId)
+            return {
+              agentConnection: {
+                agentConnectionId: input.lineage.runConnectionId,
+                grant: { scope: "everything" },
+                grantRevision: 1,
+              },
+              mode: "full-access",
+            };
           throw new Error("Native Runs skip the connection resolver");
         },
         recordConnectionRunHandoff: async () => {
+          if (input.lineage?.runConnectionId) return;
           throw new Error("Native Runs skip the connection witness");
         },
         acquireExecutionBinding: async () => ({
@@ -823,7 +863,12 @@ describe("HostCommandDispatcher model selection", () => {
         }),
         getAgentHomeSettings: async () => ({ settings: {}, file: { status: "missing" } }),
         loadRunDispatchContext: async () => ({
-          lineage: { runConnectionId: null, taskOriginConnectionId: null },
+          lineage: input.lineage ?? {
+            fromChat: false,
+            personLineage: true,
+            runConnectionId: null,
+            taskOriginConnectionId: null,
+          },
           providerSessionStateLayout: "session",
           personalContext: true,
           agentHome: { computerId, path: "/tmp/dispatcher" },
@@ -992,7 +1037,12 @@ describe("HostCommandDispatcher run planning", () => {
           }),
           getAgentHomeSettings: async () => ({ settings: {}, file: { status: "missing" } }),
           loadRunDispatchContext: async () => ({
-            lineage: { runConnectionId: null, taskOriginConnectionId: null },
+            lineage: {
+              fromChat: false,
+              personLineage: true,
+              runConnectionId: null,
+              taskOriginConnectionId: null,
+            },
             providerSessionStateLayout: "session",
             personalContext: true,
             agentHome,

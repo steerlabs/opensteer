@@ -43,12 +43,16 @@ try {
       assert.equal(local("parent.json").passed, true);
       break;
     case "profile-restore": {
+      // The ten native phases, each ended as it should (the crash phase by SIGKILL) with passing evidence.
       const value = local("results.json");
-      assert.equal(Object.keys(value.checks).length, 12);
-      assert(Object.values(value.checks).every((row) => row.status === "pass"));
+      assert.equal(value.passed, true);
+      assert.equal(value.phases.length, 10);
       assert(
-        value.phases.every((phase) =>
-          Object.values(phase.results).every((row) => row.status === "pass"),
+        value.phases.every(
+          (phase) =>
+            phase.passed === true &&
+            Object.values(phase.results).length > 0 &&
+            Object.values(phase.results).every((row) => row.status === "pass"),
         ),
       );
       break;

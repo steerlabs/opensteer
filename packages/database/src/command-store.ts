@@ -3,9 +3,11 @@ import { assignmentWasCancelled } from "./execution-authority.js";
 import { assertRequestRevision, refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
+import { assertRequestOriginMayContinue } from "./resource-access.js";
 import { failNodeStop } from "./node-control.js";
 import {
   assertThreadCaller,
+  callerAuthoritySource,
   lockThreadCaller,
   type ThreadCallerAuthority,
 } from "./thread-caller.js";
@@ -125,6 +127,8 @@ export type RunnerControlInput =
       readonly expectedBindingGeneration?: number | null;
       readonly stop?: { readonly id: CommandRow["id"]; readonly bootId: string };
       readonly authority?: ThreadCallerAuthority;
+      /** The teammate whose ask this task answers withdrew it; no one here stopped it. */
+      readonly teamCancel?: { readonly teamId: string; readonly requestId: string };
     }
   | {
       readonly idempotencyKey: string;
@@ -940,7 +944,7 @@ export async function enqueueRunnerControlInTransaction(
   }
   const thread = await transaction
     .selectFrom("threads")
-    .select(["environmentId", "id", "purpose", "status"])
+    .select(["environmentId", "id", "originConnectionId", "purpose", "status"])
     .where("id", "=", input.threadId)
     .executeTakeFirst();
   if (!thread)
@@ -1017,6 +1021,12 @@ export async function enqueueRunnerControlInTransaction(
       throw new OpensteerError({
         code: "conflict",
         message: "This Run was stopped, so it no longer takes answers",
+      });
+    }
+    if (input.type === "request.respond") {
+      await assertRequestOriginMayContinue(transaction, run.requestedBy, {
+        connectionId: run.connectionId,
+        threadOriginConnectionId: thread.originConnectionId,
       });
     }
   }
@@ -1133,17 +1143,12 @@ export async function enqueueRunnerControlInTransaction(
   const command = await persistRunnerControlCommand(transaction, {
     actorPrincipalId,
     authoritySource: jsonValue(
-      input.type === "request.respond" && input.agentResponder
-        ? {
-            kind: "thread-agent",
-            runId: input.agentResponder.authority.scope.runId,
-            threadId: input.agentResponder.authority.scope.threadId,
-            userId: input.requestedBy,
-          }
-        : {
-            kind: "user-session",
-            userId: input.requestedBy,
-          },
+      input.type === "run.interrupt" && input.teamCancel
+        ? { kind: "team-cancel", ...input.teamCancel }
+        : callerAuthoritySource(
+            input.type === "request.respond" ? input.agentResponder?.authority : input.authority,
+            input.requestedBy,
+          ),
     ),
     dispatcherId: null,
     environmentId: thread.environmentId,

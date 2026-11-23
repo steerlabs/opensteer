@@ -170,6 +170,7 @@ function isDeviceCommand(type: CommandType): boolean {
     case "integration.disconnect":
     case "integration.computer.setup.request":
     case "integration.computer.setup.cancel":
+    case "integration.computer.session.stop":
     case "integration.computer.setup.set":
     case "integration.computer.setup.respond":
     case "integration.computer.policy.set":

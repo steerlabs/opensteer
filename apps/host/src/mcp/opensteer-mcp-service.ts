@@ -666,7 +666,8 @@ export class OpensteerMcpService {
         error instanceof AgentOperationFailure ? error.cause : error,
         access,
         failureCaller ? deviceVisibleTo(callerLineage(failureCaller)?.grant) : () => false,
-        failureCaller?.kind === "connection",
+        // Under a connection's grant: the connection, or a Run in its lineage (AD11).
+        failureCaller ? callerLineage(failureCaller) !== null : false,
       );
       if (failure.code === internalToolFailureCode && !signal.aborted)
         this.options.onToolError?.(error, name);
@@ -995,7 +996,7 @@ export class OpensteerMcpService {
       });
     if (kind === "person-agent" && task?.worker === "external") {
       if (task.originConnectionId !== caller.connectionId)
-        throw new OpensteerError({ code: "not_found", message: "Task is unavailable" });
+        throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
       throw new OpensteerError({
         code: "conflict",
         message:
@@ -1039,11 +1040,9 @@ export class OpensteerMcpService {
           ...(selected === undefined ? {} : { lineageConnectionId: selected }),
           ...(writableBy === undefined ? {} : { writableBy }),
         });
+        // One refusal; agentToolFailure says it as not_found to every caller under a grant.
         if (!thread)
-          throw new OpensteerError({
-            code: caller.kind === "connection" ? "not_found" : "forbidden",
-            message: "Task is unavailable",
-          });
+          throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
         return thread;
       }),
     );

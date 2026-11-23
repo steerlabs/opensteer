@@ -688,11 +688,9 @@ export function commandContinuation(request: Request): string {
   const Asked = `${asked[0]!.toUpperCase()}${asked.slice(1)}`;
   if (request.status === "withdrawn") return `${Asked} was withdrawn; nothing changed.`;
   if (request.status === "cancelled")
-    return command.expired
-      ? `No one answered ${asked} within a day, so nothing changed. You may propose it again if it is still needed.`
-      : request.cancellationReason === "authority-revoked"
-        ? `${Asked} closed: you can no longer ask for it, so nothing changed.`
-        : `${Asked} was cancelled (${request.cancellationReason}); nothing changed.`;
+    return request.cancellationReason === "authority-revoked"
+      ? `${Asked} closed: you can no longer ask for it, so nothing changed.`
+      : `${Asked} was cancelled (${request.cancellationReason}); nothing changed.`;
   if (request.status === "declined") {
     const words =
       request.response?.kind === "form"

@@ -16,6 +16,7 @@ import {
   ModelIdSchema,
   ModelProviderIdSchema,
   ModelSelectionSchema,
+  PersonQuestionRecordSchema,
   PlaceContentPartSchema,
   ProviderSessionIdSchema,
   RequestIdSchema,
@@ -27,6 +28,7 @@ import {
   TriggerIdSchema,
   RunSchema,
   RunnerIdSchema,
+  ThreadDoneBySchema,
   ThreadIdSchema,
   PersonNameSchema,
   TriggerOccurrenceIdSchema,
@@ -158,6 +160,8 @@ export const ThreadDetailSchema = z.object({
   pendingRequests: task.pendingRequests,
   inputQueuePaused: task.inputQueuePaused,
   doneAt: task.doneAt,
+  doneBy: ThreadDoneBySchema.nullable().optional(),
+  lastVisitedAt: task.lastVisitedAt.optional(),
   createdAt: task.createdAt,
   updatedAt: task.updatedAt,
 });
@@ -165,6 +169,8 @@ export const ThreadSummarySchema = z.object({
   link: AgentLinkSchema.optional(),
   delegationId: AssignmentIdSchema.nullable(),
   doneAt: task.doneAt.optional(),
+  doneBy: ThreadDoneBySchema.nullable().optional(),
+  lastVisitedAt: task.lastVisitedAt.optional(),
   id: ThreadIdSchema,
   parentTaskId: task.parentThreadId,
   pendingRequests: task.pendingRequests,
@@ -174,6 +180,8 @@ export const ThreadSummarySchema = z.object({
   updatedAt: task.updatedAt,
   newMessages: z.number().int().positive().optional(),
   firstNewAt: task.updatedAt.optional(),
+  questionsAnswered: z.number().int().positive().optional(),
+  questionsDismissed: z.number().int().positive().optional(),
 });
 export const ThreadListOutputSchema = z.object({
   tasks: z.array(ThreadSummarySchema).max(50),
@@ -280,9 +288,11 @@ export const RequestOutputSchema = z.object({
   originatingTaskId: ThreadIdSchema.nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string().optional(),
+  resolvedAt: z.string().nullable().optional(),
   title: z.string().optional(),
   revision: z.string().optional(),
   presentation: RequestPresentationSchema.optional(),
+  question: PersonQuestionRecordSchema.optional(),
   settlementProvenance: ToolRequestAnswererSchema.nullable().optional(),
 });
 export const RequestListOutputSchema = z.object({
@@ -559,6 +569,7 @@ export const ThreadReadOutputSchema = z
         }),
       )
       .max(10),
+    pendingRequests: z.array(RequestOutputSchema).max(25).optional(),
     items: z.array(ThreadItemSchema).max(100),
     ...PageSchema,
   })

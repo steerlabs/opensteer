@@ -1,14 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
 import { deviceAccess } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
-import {
-  OpensteerError,
-  type DeviceId,
-  type RunId,
-  type RunnerId,
-  type UserId,
-} from "@opensteer/core";
-import type { OpensteerStore, RevokedRunGrant } from "@opensteer/database";
+import { OpensteerError, type DeviceId, type RunId, type RunnerId } from "@opensteer/core";
+import type { OpensteerStore, RevokedRunGrant, ShellStopIdempotency } from "@opensteer/database";
 import type {
   RunnerAuxiliaryStream,
   RunnerRegistry,
@@ -723,7 +717,7 @@ export class ShellHub implements ShellControlStreamHandler {
   async end(
     sessionId: ShellSessionId,
     reason: ShellCloseReason,
-    options: { readonly idempotency?: { readonly key: string; readonly requestedBy: UserId } } = {},
+    options: { readonly idempotency?: ShellStopIdempotency } = {},
   ): Promise<{ readonly ended: boolean }> {
     // Outside the machine's admission turn, on purpose. Claiming is a
     // synchronous state change, and so is the commit that makes a session
@@ -742,7 +736,13 @@ export class ShellHub implements ShellControlStreamHandler {
         ...(options.idempotency ? { idempotency: options.idempotency } : {}),
       });
     }
-    return this.#persistTerminal(claimed, options);
+    // The sockets are already going: the row must end now whatever the agent's authority, so
+    // its admission is the one its command made just before, and the record still names it.
+    const { admit: _admitted, ...recorded } = options.idempotency ?? {};
+    return this.#persistTerminal(
+      claimed,
+      options.idempotency ? { idempotency: recorded as ShellStopIdempotency } : {},
+    );
   }
 
   async endRunSessions(runId: RunId, reason: ShellCloseReason): Promise<void> {
@@ -930,7 +930,7 @@ export class ShellHub implements ShellControlStreamHandler {
   #persistTerminal(
     record: ShellTerminalRecord,
     options: {
-      readonly idempotency?: { readonly key: string; readonly requestedBy: UserId };
+      readonly idempotency?: ShellStopIdempotency;
     } = {},
   ): Promise<{ readonly ended: boolean }> {
     if (record.persisting) return record.persisting;
@@ -948,7 +948,7 @@ export class ShellHub implements ShellControlStreamHandler {
   async #writeTerminal(
     record: ShellTerminalRecord,
     options: {
-      readonly idempotency?: { readonly key: string; readonly requestedBy: UserId };
+      readonly idempotency?: ShellStopIdempotency;
     } = {},
   ): Promise<{ readonly ended: boolean }> {
     if (!record.closeRequested) {

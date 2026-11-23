@@ -1,47 +1,16 @@
-import type { CommandRequestStore } from "@opensteer/database";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { CommandRequestExpiry, titleFirst } from "./requests.js";
-
-afterEach(() => {
-  vi.useRealTimers();
-});
-
-describe("the expiry of agents' asks (X16)", () => {
-  it("arms nothing while no ask is open, and one timer for the earliest one", async () => {
-    vi.useFakeTimers();
-    const passes: string[] = [];
-    let next: Date | null = null;
-    const store = {
-      expire: async () => {
-        passes.push("expire");
-        return [];
-      },
-      nextExpiry: async () => next,
-    } as unknown as CommandRequestStore;
-    const expiry = new CommandRequestExpiry(store, (error) => {
-      throw error;
-    });
-    // An idle Home: nothing is armed, and nothing runs however long it waits.
-    expiry.arm(null);
-    expect(expiry.armed).toBe(false);
-    await vi.advanceTimersByTimeAsync(7 * 24 * 60 * 60_000);
-    expect(passes).toEqual([]);
-    // Two asks open: one wake, at the earlier.
-    const now = Date.now();
-    expiry.arm(new Date(now + 2 * 60_000));
-    expiry.arm(new Date(now + 60_000));
-    expiry.arm(new Date(now + 3 * 60_000));
-    next = new Date(now + 2 * 60_000);
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(passes).toEqual(["expire"]);
-    // It arms for the next one, and once none is open, for nothing.
-    next = null;
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(passes).toEqual(["expire", "expire"]);
-    expect(expiry.armed).toBe(false);
-    expiry.stop();
-  });
-});
+import { describe, expect, it } from "vitest";
+import {
+  commandRow,
+  type CommandRow,
+  type CommandResource,
+} from "@opensteer/protocol/command-table";
+import { commandGives, commandSentence } from "@opensteer/protocol/command-words";
+import {
+  CommandRequestService,
+  commandPresentation,
+  proposedCommand,
+  titleFirst,
+} from "./requests.js";
 
 describe("a command Request's title (X3)", () => {
   it("keeps the Home's sentence whole and cuts only what follows", () => {
@@ -51,5 +20,45 @@ describe("a command Request's title (X3)", () => {
     expect(title).toHaveLength(240);
     expect(title.endsWith("…")).toBe(true);
     expect(titleFirst(sentence, " · short")).toBe(`${sentence} · short`);
+  });
+});
+
+describe("an ask names only what the asking agent supplied (rule 5)", () => {
+  it("puts a plugin install to the person in the connection's own words, and nothing of the Home", async () => {
+    // A grant that holds nothing asks for more (the table's (d)): the Request it reads back names
+    // the catalog entry it sent and no plugin, catalog name or other thing the Home holds.
+    const command = {
+      type: "plugins.install",
+      idempotencyKey: "install-1",
+      source: { kind: "catalog", catalogId: "fixture" },
+    } as const;
+    const row = commandRow(command.type) as CommandRow;
+    const governs = (row.governs as (c: typeof command) => CommandResource)(command);
+    const requests = new CommandRequestService({
+      store: {} as never,
+      database: {} as never,
+      requests: {} as never,
+    });
+    expect(await requests.name(governs, "usr_owner" as never)).toBeNull();
+    const sentence = commandSentence(command as never, () => null);
+    expect(sentence).toBe("Install a plugin");
+    const stored = proposedCommand(row, command as never);
+    expect(stored).toEqual({ type: "plugins.install", source: command.source });
+    const gives = commandGives(command as never, 0);
+    const shown = commandPresentation(
+      { summary: sentence, command: stored, gives, agentReason: null } as never,
+      sentence,
+      "Asked by the agent “Parity agent”",
+    );
+    expect(shown.detail).toBe(
+      [
+        "What changes: Install a plugin",
+        "Asked by the agent “Parity agent”.",
+        `As proposed: ${JSON.stringify(stored)}`,
+        ...(gives ? [gives] : []),
+      ].join("\n\n"),
+    );
+    // What it gives is the table's sentence, the same for every caller, and names nothing held.
+    expect(gives ?? "").not.toMatch(/fixture|“/u);
   });
 });

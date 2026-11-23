@@ -4,6 +4,7 @@ import { AttachmentCache } from "../attachments/attachment-cache.js";
 import { RunFileError, RunFiles } from "../attachments/run-files.js";
 import { agentTools, appHostingGuide } from "@opensteer/agent-tools";
 import { hostCommandPlatform } from "@opensteer/shared/command";
+import { networkCredentialSecrets } from "@opensteer/shared/safeMessage";
 import {
   ignoreForeignTestRequest,
   probeTestServer,
@@ -706,7 +707,7 @@ describe("RunnerRuntime", () => {
   it.each([false, true])(
     "hands a Run without personal context nothing of Agent home (personal context: %s)",
     async (personalContext) => {
-      const driver = new FakeHarnessDriver();
+      const driver = new FakeHarnessDriver("claude");
       const registry = new HarnessRegistry();
       registry.registerDriver(driver);
       const environmentId = createId("environment");
@@ -722,7 +723,7 @@ describe("RunnerRuntime", () => {
         },
         registry,
       });
-      const base = executeCommand(environmentId);
+      const base = executeCommand(environmentId, "claude");
       const execute = { ...base, context: { ...base.context, personalContext } };
       const agentHome = base.agentHome!.path;
       const underHome = (value: string | undefined) =>
@@ -1057,6 +1058,116 @@ describe("RunnerRuntime", () => {
       expect(catalogs[0]).toMatchObject({
         supersededContinuationIdentities: [expect.stringMatching(/^runner:v1:/)],
       });
+    } finally {
+      await runtime.close();
+      await rm(temporaryRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps an authenticated catalog ready when a driver returns invalid usage telemetry", async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-invalid-usage-"));
+    const registry = new HarnessRegistry();
+    const driverKind = HarnessIdSchema.parse("invalid-usage-test");
+    registry.registerDriver({
+      capabilities: fakeHarnessCapabilities,
+      accessModes: fakeHarnessAccessModes,
+      sources: fakeHarnessSources,
+      configSchema: z.strictObject({}),
+      create: async () => {
+        throw new Error("Unexpected adapter creation");
+      },
+      inspect: async () => ({
+        connections: [
+          {
+            authKind: "subscription",
+            connectionSlot: "primary",
+            label: "Subscription",
+            status: "connected",
+            usage: {
+              limitReached: false,
+              observedAt: "2026-11-01T00:00:00.000Z",
+              windows: [
+                {
+                  label: "Claude & GPT (shared) · Weekly",
+                  resetsAt: "2026-11-07T00:00:00.000Z",
+                  usedPercent: 40,
+                },
+              ],
+            },
+          },
+          {
+            authKind: "subscription",
+            connectionSlot: "secondary",
+            label: "Secondary",
+            status: "connected",
+            usage: {
+              limitReached: false,
+              observedAt: "2026-11-01T00:00:00.000Z",
+              windows: [
+                {
+                  label: "Gemini 5h",
+                  resetsAt: "2026-11-01T05:00:00.000Z",
+                  usedPercent: 25,
+                },
+              ],
+            },
+          },
+        ],
+        models: [
+          {
+            acceptsImages: false,
+            displayName: "Demo",
+            isDefault: true,
+            modelId: catalogSelection.modelId,
+            options: [],
+            providerId: catalogSelection.providerId,
+          },
+        ],
+        status: "ready",
+      }),
+      kind: driverKind,
+    });
+    const runtime = configuredRuntime({
+      environmentId: createId("environment"),
+      privateStateDirectory: join(temporaryRoot, "private"),
+      registry,
+    });
+
+    try {
+      const [catalog] = await runtime.inspectHarnesses(
+        [harnessDefinition(driverKind, "Invalid usage", 1)],
+        new AbortController().signal,
+      );
+      expect(catalog).toMatchObject({
+        connections: [
+          {
+            authKind: "subscription",
+            connectionSlot: "primary",
+            label: "Subscription",
+            status: "connected",
+          },
+          {
+            authKind: "subscription",
+            connectionSlot: "secondary",
+            label: "Secondary",
+            status: "connected",
+            usage: {
+              limitReached: false,
+              observedAt: "2026-11-01T00:00:00.000Z",
+              windows: [
+                {
+                  label: "Gemini 5h",
+                  resetsAt: "2026-11-01T05:00:00.000Z",
+                  usedPercent: 25,
+                },
+              ],
+            },
+          },
+        ],
+        models: [expect.objectContaining({ modelId: catalogSelection.modelId })],
+        status: "ready",
+      });
+      expect(catalog?.connections[0]?.usage).toBeUndefined();
     } finally {
       await runtime.close();
       await rm(temporaryRoot, { force: true, recursive: true });
@@ -4109,7 +4220,7 @@ describe("RunnerRuntime", () => {
     const workspacePath = join(temporaryRoot, "workspace");
     const stateRoot = join(temporaryRoot, "private", "harness-state");
     await writeWorkspaceSkill(workspacePath, "release-notes");
-    const driver = new FakeHarnessDriver("test-driver", () => new FakeHarnessSession());
+    const driver = new FakeHarnessDriver("claude", () => new FakeHarnessSession());
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
     const environmentId = createId("environment");
@@ -4144,7 +4255,7 @@ describe("RunnerRuntime", () => {
       scans.push(scan);
     });
     try {
-      const base = executeCommand(environmentId);
+      const base = executeCommand(environmentId, "claude");
       const command = {
         ...base,
         agentHome: { ...base.agentHome!, path: workspacePath },
@@ -5532,6 +5643,12 @@ describe("RunnerRuntime", () => {
 });
 
 describe("harness process environment", () => {
+  it("passes the lowercase HTTPS proxy through to engines on macOS and Linux", () => {
+    const source = { https_proxy: "http://proxy.invalid:8080" };
+    expect(harnessProcessEnvironment(source, [], "darwin")).toEqual(source);
+    expect(harnessProcessEnvironment(source, [], "linux")).toEqual(source);
+  });
+
   it("keeps the Windows baseline and engine variables but no Runner credentials", () => {
     const source = {
       CLAUDE_CONFIG_DIR: "C:\\Users\\Ada\\.claude",
@@ -5554,6 +5671,183 @@ describe("harness process environment", () => {
     expect(harnessProcessEnvironment(source, [], "darwin")).toEqual({
       USERPROFILE: "C:\\Users\\Ada",
     });
+  });
+
+  it("hands the engine the person's proxy and certificates, for every task", () => {
+    const network = {
+      ALL_PROXY: "socks5://proxy.example.test:1080",
+      HTTPS_PROXY: "http://person:fake-proxy-password@proxy.example.test:8080",
+      HTTP_PROXY: "http://proxy.example.test:8080",
+      NODE_EXTRA_CA_CERTS: "/etc/company/ca.pem",
+      NO_PROXY: "localhost,127.0.0.1",
+      SSL_CERT_DIR: "/etc/company/certs",
+      SSL_CERT_FILE: "/etc/company/ca.pem",
+    };
+    expect(
+      harnessProcessEnvironment({ ...network, OPENSTEER_RUNNER_TOKEN: "private" }, [], "darwin"),
+    ).toEqual(network);
+  });
+
+  it("refuses an engine not shown to run others' tasks before it starts, as forbidden", async () => {
+    const session = new ScriptedHarnessSession([]);
+    const execute = vi.spyOn(session, "execute");
+    const failure = (await eventsOfScriptedRun(session, { personLineage: false })).find(
+      (event) => event.type === "run.failed",
+    )!;
+    expect(failure.data).toMatchObject({
+      code: "forbidden",
+      message: expect.stringContaining(
+        "so it runs only tasks you started yourself that no connected agent or chat has written to.",
+      ),
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("starts a fresh session and never resumes the old reference when personLineage narrows", async () => {
+    let calls = 0;
+    const driver = new FakeHarnessDriver("claude", () => {
+      calls += 1;
+      const session = new FakeHarnessSession();
+      Object.defineProperty(session, "providerSessionReference", {
+        value: `claude-native-session-${calls}`,
+      });
+      return session;
+    });
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+    try {
+      const ownCommand = executeCommand(environmentId, "claude");
+      await reconcile(registry, ownCommand);
+      await runtime.handleCommand(ownCommand, sink);
+      await waitUntil(() =>
+        messages.some(
+          (message) =>
+            message.type === "runner.event" &&
+            message.event.runId === ownCommand.context.runId &&
+            message.event.type === "run.completed",
+        ),
+      );
+      const rotatedCommand = RunnerCommandSchema.parse({
+        ...ownCommand,
+        commandId: createId("command"),
+        correlationId: CorrelationIdSchema.parse(createId("command")),
+        context: {
+          ...ownCommand.context,
+          personLineage: false,
+          providerSessionId: createId("providerSession"),
+          providerSessionReference: null,
+          runId: createId("run"),
+        },
+      }) as Extract<RunnerCommand, { readonly type: "run.execute" }>;
+      await runtime.handleCommand(rotatedCommand, sink);
+      await waitUntil(() =>
+        messages.some(
+          (message) =>
+            message.type === "runner.event" &&
+            message.event.runId === rotatedCommand.context.runId &&
+            message.event.type === "run.completed",
+        ),
+      );
+      expect(driver.contexts.map((context) => context.personLineage)).toEqual([true, false]);
+      expect(driver.resumedReferences).toEqual([]);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("keeps a proxy password out of a Run's recorded failure", async () => {
+    const session = new ScriptedHarnessSession([
+      {
+        data: {
+          code: "engine_error",
+          message: "stream failed via http://person:fake-proxy-password@proxy.example.test:8080",
+          retryable: false,
+          status: "failed",
+        },
+        type: "run.failed",
+      },
+    ]);
+    const failure = (await eventsOfScriptedRun(session)).find(
+      (event) => event.type === "run.failed",
+    )!;
+    expect(JSON.stringify(failure)).not.toContain("fake-proxy-password");
+    expect(failure.data.message).toBe(
+      "stream failed via http://[REDACTED]@proxy.example.test:8080",
+    );
+  });
+
+  it("keeps configured proxy credentials out of an engine inspection failure", async () => {
+    const proxy = "http://alice:p@ss/word@proxy.invalid:8080";
+    vi.stubEnv("HTTPS_PROXY", proxy);
+    const driverKind = HarnessIdSchema.parse("inspection-proxy-test");
+    const registry = new HarnessRegistry();
+    registry.registerDriver({
+      ...catalogDriver(driverKind),
+      inspect: async () => {
+        throw new Error(`Inspection failed via ${proxy}`);
+      },
+    });
+    const runtime = configuredRuntime({
+      environmentId: createId("environment"),
+      networkSecrets: networkCredentialSecrets({ HTTPS_PROXY: process.env.HTTPS_PROXY }),
+      registry,
+    });
+    try {
+      await expect(
+        runtime.inspectHarnesses(
+          [harnessDefinition(driverKind, "Proxy inspection", 1)],
+          new AbortController().signal,
+          true,
+        ),
+      ).resolves.toMatchObject([
+        {
+          detail: "Inspection failed via http://[REDACTED]@proxy.invalid:8080",
+          status: "error",
+        },
+      ]);
+    } finally {
+      vi.unstubAllEnvs();
+      await runtime.close();
+    }
+  });
+
+  it("keeps configured proxy credentials out of a rejected command", async () => {
+    const proxy = "http://alice:p@ss/word@proxy.invalid:8080";
+    vi.stubEnv("HTTPS_PROXY", proxy);
+    const environmentId = createId("environment");
+    const driverKind = HarnessIdSchema.parse("rejection-proxy-test");
+    const registry = new HarnessRegistry();
+    vi.spyOn(registry, "driverInstallation").mockResolvedValue({
+      descriptor: {
+        detail: `Update unavailable via ${proxy}`,
+        latestVersion: null,
+        scope: "ambient",
+        update: "manual",
+        version: "1.0.0",
+      },
+    });
+    const runtime = configuredRuntime({
+      environmentId,
+      networkSecrets: networkCredentialSecrets({ HTTPS_PROXY: process.env.HTTPS_PROXY }),
+      registry,
+    });
+    try {
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), {
+          send: async () => undefined,
+        }),
+      ).resolves.toMatchObject({
+        error: { message: "Update unavailable via http://[REDACTED]@proxy.invalid:8080" },
+        status: "rejected",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      await runtime.close();
+    }
   });
 });
 
@@ -6238,6 +6532,7 @@ function executeCommand(
     context: {
       accessMode: "full-access",
       personalContext: true,
+      personLineage: true,
       assignment: null,
       agentTools: {
         tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
@@ -6474,10 +6769,12 @@ async function eventsOfScriptedRun(
   session: HarnessSession,
   options: {
     readonly interrupt?: true;
+    readonly personLineage?: false;
     readonly resolveRequests?: readonly { requestId: RequestId; response: RequestResponse }[];
   } = {},
 ) {
-  const driver = new FakeHarnessDriver("scripted-driver", () => session);
+  const started = vi.fn(() => session);
+  const driver = new FakeHarnessDriver("scripted-driver", started);
   const registry = new HarnessRegistry();
   registry.registerDriver(driver);
   const environmentId = createId("environment");
@@ -6485,7 +6782,11 @@ async function eventsOfScriptedRun(
   const messages: RunnerOperationalReport[] = [];
   const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
   try {
-    const execute = executeCommand(environmentId, "scripted-driver");
+    const built = executeCommand(environmentId, "scripted-driver");
+    const execute =
+      options.personLineage === false
+        ? { ...built, context: { ...built.context, personLineage: false } }
+        : built;
     await reconcile(registry, execute);
     await runtime.handleCommand(execute, sink);
     for (const { requestId, response } of options.resolveRequests ?? []) {
@@ -6609,6 +6910,7 @@ function configuredRuntime(input: {
   readonly maxRunEvents?: number;
   readonly maxConcurrentRuns?: number;
   readonly mode?: ConstructorParameters<typeof RunnerRuntime>[0]["mode"];
+  readonly networkSecrets?: readonly string[];
   readonly privateStateDirectory?: string;
   readonly registry: HarnessRegistry;
   readonly workspacePrepare?: ConstructorParameters<
@@ -6635,6 +6937,7 @@ function configuredRuntime(input: {
       maxConcurrentRuns: input.maxConcurrentRuns ?? 1,
       ...(input.maxRunEvents === undefined ? {} : { maxRunEvents: input.maxRunEvents }),
       ...(input.mode === undefined ? {} : { mode: input.mode }),
+      ...(input.networkSecrets === undefined ? {} : { networkSecrets: input.networkSecrets }),
       dataDirectory: dirname(input.privateStateDirectory ?? testPrivateStateRoot),
       privateStateDirectory: input.privateStateDirectory ?? testPrivateStateRoot,
       projectContinuationIdentity,
@@ -6821,7 +7124,7 @@ it.each([false, true])(
       transport: { mode: "development", hostOrigin: new URL("http://localhost") },
     });
     const registry = new HarnessRegistry();
-    const driver = new FakeHarnessDriver("test-driver", () => new HeldHarnessSession());
+    const driver = new FakeHarnessDriver("claude", () => new HeldHarnessSession());
     Object.defineProperty(driver, "capabilities", {
       value: {
         ...fakeHarnessCapabilities,
@@ -6830,7 +7133,7 @@ it.each([false, true])(
     });
     registry.registerDriver(driver);
     const environmentId = createId("environment");
-    const base = executeCommand(environmentId);
+    const base = executeCommand(environmentId, "claude");
     const command = {
       ...base,
       agentHome: { ...base.agentHome!, path: agentHome },
@@ -6980,4 +7283,95 @@ describe("this computer's own view and Stop of its Runs", () => {
       await runtime.close();
     }
   });
+});
+
+it("strips unacknowledged run.retry events and keeps ordinals contiguous on Host rollback", async () => {
+  type RunnerEventFrame = Extract<RunnerOperationalReport, { type: "runner.event" }>["event"];
+  const registry = new HarnessRegistry();
+  const session = new HeldHarnessSession();
+  const driver = new FakeHarnessDriver("test-driver", () => session);
+  registry.registerDriver(driver);
+  const environmentId = createId("environment");
+  const command = executeCommand(environmentId);
+  const runtime = configuredRuntime({ environmentId, registry });
+  await reconcile(registry, command);
+  const initialEvents: RunnerEventFrame[] = [];
+  const initialSink: RunnerMessageSink = {
+    send: async (message) => {
+      if (message.type === "runner.event") initialEvents.push(message.event);
+    },
+  };
+  const rollbackEvents: RunnerEventFrame[] = [];
+  const rollbackSink: RunnerMessageSink = {
+    send: async (message) => {
+      if (message.type === "runner.event") rollbackEvents.push(message.event);
+    },
+  };
+
+  try {
+    runtime.setHostRunRetryEvents(true);
+    await expect(runtime.handleCommand(command, initialSink)).resolves.toEqual({
+      status: "accepted",
+    });
+    await waitUntil(() => initialEvents.some((event) => event.type === "run.started"));
+    session.publish({
+      data: {
+        attempt: 1,
+        code: "server_overloaded",
+        maxAttempts: 5,
+        message: "Selected model is at capacity.",
+        status: "retrying",
+      },
+      type: "run.retry",
+    });
+    session.publish({
+      data: { phase: "turn" },
+      type: "run.phase",
+    });
+    await waitUntil(() => initialEvents.some((event) => event.type === "run.phase"));
+    expect(initialEvents.map((event) => [event.ordinal, event.type])).toEqual([
+      [0, "run.started"],
+      [1, "run.retry"],
+      [2, "run.phase"],
+    ]);
+
+    // Simulate disconnecting before the new Host acknowledged ordinals >= 1
+    // and reconnecting to an older Host without run-retry-v1.
+    await runtime.connectionLost(initialSink);
+    runtime.setHostRunRetryEvents(false);
+    runtime.attachInventory();
+    await runtime.attach(
+      {
+        ...testConnectionFence,
+        leaseMs: command.context.executionLeaseMs,
+        results: [{ nextOrdinal: 1, runId: command.context.runId, status: "attached" }],
+        type: "host.executions.attached",
+      },
+      rollbackSink,
+    );
+    await waitUntil(() => rollbackEvents.some((event) => event.type === "run.phase"));
+
+    // Emit another run.retry (must be suppressed) and complete the run.
+    session.publish({
+      data: {
+        attempt: 1,
+        maxAttempts: 5,
+        message: "Selected model is at capacity.",
+        status: "recovered",
+      },
+      type: "run.retry",
+    });
+    session.publish({
+      data: { status: "completed" },
+      type: "run.completed",
+    });
+    await waitUntil(() => rollbackEvents.some((event) => event.type === "run.completed"));
+
+    expect(rollbackEvents.map((event) => [event.ordinal, event.type])).toEqual([
+      [1, "run.phase"],
+      [2, "run.completed"],
+    ]);
+  } finally {
+    await runtime.close();
+  }
 });

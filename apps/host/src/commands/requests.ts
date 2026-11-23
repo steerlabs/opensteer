@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import {
-  isRaisedBeforeEffect,
   OpensteerError,
   RequestJsonObjectSchema,
   requestTitleMaxLength,
@@ -13,9 +12,9 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
+import { commandAttempts, runCommandEffect } from "./command-effect.js";
 import {
   admitCommand,
-  commandRequestLifetimeMs,
   commandSubject,
   type CommandRequestOrigin,
   type CommandRequestStore,
@@ -25,7 +24,6 @@ import { hostApi, type HostApiCommand, type HostApiCommandOutput } from "@openst
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
   commandAgentOutput,
-  commandEffect,
   commandResourceKey,
   commandRow,
   type CommandResource,
@@ -112,7 +110,6 @@ export type CommandProposed =
       readonly existing: boolean;
     }
   | { readonly status: "declined"; readonly requestId: RequestId }
-  | { readonly status: "expired"; readonly requestId: RequestId }
   | { readonly status: "withdrawn"; readonly requestId: RequestId }
   /** Closed without an answer: the agent could no longer ask for it, or its task ended. */
   | { readonly status: "closed"; readonly requestId: RequestId }
@@ -125,7 +122,6 @@ export type CommandProposed =
 
 /** The form field an app without the command part answers; whatever it sends declines. */
 export const commandDecisionFieldId = "decision";
-const approvingNeedsAnUpdatedApp = "Approving this needs an up-to-date Opensteer app.";
 const maxResultBytes = 64 * 1_024;
 /** A name inside the Home's sentence is cut, so the sentence itself always fits whole. */
 const maxNameLength = 80;
@@ -157,18 +153,14 @@ export class CommandRequestService {
   readonly #store: CommandRequestStore;
   readonly #database: Kysely<DatabaseSchema>;
   readonly #requests: { get(id: RequestId): Promise<Request | null> };
-  readonly #expiry: CommandRequestExpiry | undefined;
   constructor(options: {
     readonly store: CommandRequestStore;
     readonly database: Kysely<DatabaseSchema>;
     readonly requests: { get(id: RequestId): Promise<Request | null> };
-    /** The one timer for the earliest open ask's end; armed as asks open. */
-    readonly expiry?: CommandRequestExpiry;
   }) {
     this.#store = options.store;
     this.#database = options.database;
     this.#requests = options.requests;
-    this.#expiry = options.expiry;
   }
 
   /** Opens the person's Request for a command the door put to the person. */
@@ -188,7 +180,7 @@ export class CommandRequestService {
     const face = commandAskedFace(input.command.type, input.face);
     const governs = (row.governs as (c: HostApiCommand) => CommandResource)(input.command);
     const stored = proposedCommand(row, input.command);
-    const names = await this.#name(governs, input.ownerUserId);
+    const names = await this.name(governs, input.ownerUserId);
     const named = commandSentence(input.command, () => names).slice(0, requestTitleMaxLength);
     const asker = askedBy(input.proposer);
     const summary = titleFirst(named, ` · ${asker}`);
@@ -219,8 +211,6 @@ export class CommandRequestService {
       presentation: commandPresentation(part, named, asker),
     });
     if (opened.status !== "pending") return opened;
-    if (!opened.replayed)
-      this.#expiry?.arm(new Date(Date.parse(opened.request.createdAt) + commandRequestLifetimeMs));
     return { status: "pending", requestId: opened.request.id, existing: opened.replayed };
   }
 
@@ -289,18 +279,24 @@ export class CommandRequestService {
     // A connection's ask is answerable only while it could still ask for this: a Disconnect or a
     // narrowing since closes it, and nothing runs.
     const connectionId = pending.command.proposer.connectionId;
-    if (connectionId && !(await this.#stillAsks(actor.userId, connectionId, command))) {
-      await this.#store.close(input.requestId);
-      throw new OpensteerError({
-        code: "forbidden",
-        reason: "proposer-gone",
-        message: "The agent that asked can no longer ask for this, so its Request closed.",
-      });
-    }
     const approved = RequestJsonObjectSchema.parse(
       JSON.parse(JSON.stringify(proposedCommand(row, command))),
     );
-    await this.#store.beginApproval({
+    const begun = await this.#store.beginApproval({
+      ...(connectionId
+        ? {
+            // As the connection the door admitted it under (`connection:<id>`), in the approval's
+            // own transaction.
+            stillAsks: (transaction) =>
+              this.#stillAsks(
+                transaction,
+                actor.userId,
+                connectionId,
+                pending.originatingAgentSessionId ?? null,
+                command,
+              ),
+          }
+        : {}),
       requestId: input.requestId,
       expectedRevision: input.expectedRevision,
       resolvedBy: actor.userId,
@@ -319,43 +315,72 @@ export class CommandRequestService {
           throw changesWhatWasAsked();
       },
     });
+    if (begun.closed)
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "proposer-gone",
+        message: "The agent that asked can no longer ask for this, so its Request closed.",
+      });
     const approver = person({
       requestId: input.requestId,
       revision: input.expectedRevision,
       proposedBy: { ...pending.command.proposer },
     });
+    // The one way a command acts (G4): its attempt in the proposer's Disconnect set, the act,
+    // then what is known of it. Its last admission is the approval's own (#stillAsks above).
+    const effect = await runCommandEffect({
+      row,
+      attempts: commandAttempts(this.#database),
+      attempt: {
+        requestedBy: actor.userId,
+        callerKey: `request:${input.requestId}`,
+        connectionId: connectionId ?? null,
+        type: command.type,
+        idempotencyKey: (command as { readonly idempotencyKey: string }).idempotencyKey,
+      },
+      act: () => run(approver, command),
+    });
     let outcome: CommandRequestOutcome;
-    try {
-      const output = await run(approver, command);
-      // Exactly what the door gives that agent for this command when it runs it itself.
-      const result = JSON.parse(JSON.stringify(commandAgentOutput(command, output) ?? null));
+    if (effect.status === "done") {
+      // Exactly what the door gives that agent for this command when it runs it itself; what
+      // ran is done even if its result cannot be kept.
+      let result: unknown = null;
+      try {
+        result = JSON.parse(JSON.stringify(commandAgentOutput(command, effect.output) ?? null));
+      } catch {
+        result = undefined;
+      }
       outcome =
-        JSON.stringify(result).length <= maxResultBytes
-          ? { status: "done", result }
+        result !== undefined && JSON.stringify(result).length <= maxResultBytes
+          ? { status: "done", result: result as never }
           : { status: "done" };
-    } catch (error) {
-      // Unknown is the default: failed only where nothing can have left the Home, a command whose
-      // handler changes the Home's database alone (a throw rolled it back), or a refusal marked
-      // where it was raised, before anything was sent. The proposer reads the Home's words only.
-      outcome =
-        commandEffect(row) === "database" || isRaisedBeforeEffect(error)
-          ? {
-              status: "failed",
-              code: error instanceof OpensteerError ? error.code : "internal",
-              message: commandRefusedWords,
-            }
-          : { status: "unknown" };
-    }
+    } else if (effect.status === "failed") {
+      // The proposer reads the Home's words only.
+      outcome = {
+        status: "failed",
+        code: effect.error instanceof OpensteerError ? effect.error.code : "internal",
+        message: commandRefusedWords,
+      };
+    } else outcome = { status: "unknown" };
     await this.#store.settle(input.requestId, outcome);
     return outcome;
   }
 
   /** Whether the proposing connection could still ask for this command, as it is now. */
-  async #stillAsks(owner: UserId, connectionId: string, command: HostApiCommand): Promise<boolean> {
+  async #stillAsks(
+    database: Kysely<DatabaseSchema>,
+    owner: UserId,
+    connectionId: string,
+    sessionId: string | null,
+    command: HostApiCommand,
+  ): Promise<boolean> {
     try {
-      const admission = await admitCommand(this.#database, {
+      // As the door admitted it: in its direct session when it asked from one (G2d).
+      const admission = await admitCommand(database, {
         ownerUserId: owner,
-        subject: commandSubject(`connection:${connectionId}`),
+        subject: sessionId
+          ? { kind: "binding", bindingId: `session:${sessionId}` }
+          : commandSubject(`connection:${connectionId}`),
         command,
       });
       return admission.answer !== "not_found";
@@ -367,7 +392,7 @@ export class CommandRequestService {
   }
 
   /** The governed thing as the person's apps name it, where the Home can tell cheaply. */
-  async #name(resource: CommandResource, owner: UserId): Promise<string | null> {
+  async name(resource: CommandResource, owner: UserId): Promise<string | null> {
     const id = resource.id;
     const database = this.#database;
     const quoted = (value: string | null | undefined) =>
@@ -430,6 +455,33 @@ export class CommandRequestService {
               .executeTakeFirst()
           )?.name,
         );
+      case "engine":
+        // An engine account belongs to its Home's work location; the rule admitted the caller on it.
+        return quoted(
+          (
+            await database
+              .selectFrom("harnessInstances")
+              .select("name")
+              .where("id", "=", id as never)
+              .executeTakeFirst()
+          )?.name,
+        );
+      case "chat-account":
+        return quoted(
+          (
+            await database
+              .selectFrom("channelAccounts")
+              .innerJoin(
+                "integrationConnections",
+                "integrationConnections.id",
+                "channelAccounts.connectionId",
+              )
+              .select("channelAccounts.displayName")
+              .where("channelAccounts.connectionId", "=", id as never)
+              .where("integrationConnections.ownerUserId", "=", owner)
+              .executeTakeFirst()
+          )?.displayName,
+        );
       default:
         return null;
     }
@@ -462,7 +514,6 @@ export function commandPresentation(
     `As proposed: ${JSON.stringify(part.command)}`.slice(0, 4_000),
   ];
   if (part.gives) lines.push(part.gives);
-  lines.push(approvingNeedsAnUpdatedApp);
   if (part.agentReason)
     lines.push(`The agent's own reason (its words, not checked): ${part.agentReason}`);
   return {
@@ -473,7 +524,7 @@ export function commandPresentation(
     fields: [
       {
         id: commandDecisionFieldId,
-        prompt: "Decline it here, or approve it in an up-to-date Opensteer app.",
+        prompt: "Decline it here, or approve it on its own screen.",
         choices: [{ label: "Decline", value: "decline" }],
         custom: true,
         multiSelect: false,
@@ -481,52 +532,6 @@ export function commandPresentation(
       },
     ],
   };
-}
-
-/**
- * One timer for the earliest open ask's end, and none while none is open: an idle Home does no
- * periodic work for asks. Each pass expires what is due and arms for the next.
- */
-export class CommandRequestExpiry {
-  readonly #store: CommandRequestStore;
-  readonly #onError: (error: unknown) => void;
-  #timer: ReturnType<typeof setTimeout> | undefined;
-  #at: number | undefined;
-  #stopped = false;
-  constructor(store: CommandRequestStore, onError: (error: unknown) => void) {
-    this.#store = store;
-    this.#onError = onError;
-  }
-  /** Wakes at `at` unless an earlier wake is armed. */
-  arm(at: Date | null): void {
-    if (this.#stopped || at === null) return;
-    const when = at.getTime();
-    if (this.#at !== undefined && this.#at <= when) return;
-    if (this.#timer) clearTimeout(this.#timer);
-    this.#at = when;
-    // A timer holds at most about 24.8 days; an ask lives one.
-    this.#timer = setTimeout(() => void this.#pass(), Math.max(0, when - Date.now()));
-    this.#timer.unref?.();
-  }
-  /** Whether a wake is armed. */
-  get armed(): boolean {
-    return this.#timer !== undefined;
-  }
-  stop(): void {
-    this.#stopped = true;
-    if (this.#timer) clearTimeout(this.#timer);
-    this.#timer = undefined;
-  }
-  async #pass(): Promise<void> {
-    this.#timer = undefined;
-    this.#at = undefined;
-    try {
-      await this.#store.expire();
-      this.arm(await this.#store.nextExpiry());
-    } catch (error) {
-      this.#onError(error);
-    }
-  }
 }
 
 function changesWhatWasAsked(): OpensteerError {

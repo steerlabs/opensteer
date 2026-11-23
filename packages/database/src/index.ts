@@ -40,6 +40,8 @@ export {
 } from "./operation-budget.js";
 
 export * from "./resource-access.js";
+export * from "./run-personal-context.js";
+export * from "./command-attempts.js";
 export * from "./connection-liveness.js";
 export * from "./agent-grant-targets.js";
 
@@ -67,9 +69,17 @@ export * from "./administration-command.js";
 export * from "./personal-desktop-update-store.js";
 
 export * from "./agent-thread-history.js";
-export { encodeThreadHistoryCursor, readThreadHistory } from "./thread-history.js";
+export {
+  encodeThreadHistoryCursor,
+  isThreadHistoryCursor,
+  readThreadHistory,
+} from "./thread-history.js";
 export { assignmentSummaryInTransaction } from "./assignment-store.js";
-export { personalDeploymentOwner, personalShellSessionState } from "./machine-store.js";
+export {
+  personalDeploymentOwner,
+  personalShellSessionState,
+  type ShellStopIdempotency,
+} from "./machine-store.js";
 
 export {
   hasEligibleBrowserPlacement,

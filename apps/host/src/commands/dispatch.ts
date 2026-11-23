@@ -1,14 +1,19 @@
 import { OpensteerError } from "@opensteer/core";
 import { z } from "zod";
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
+import { runCommandEffect, type CommandAttempts } from "./command-effect.js";
 import {
   admitCommand,
+  assertCommandAdmitted,
   commandAdmission,
-  commandCallerScope,
-  commandHeld,
+  commandCallerHolder,
+  commandHolds,
   commandNotFoundMessage,
   commandSubject,
+  connectionAdmissionSubject,
   type CommandAdmission,
   type CommandAskReason,
+  type CommandHolder,
   type CommandIdentity,
   type DatabaseSchema,
 } from "@opensteer/database";
@@ -20,10 +25,12 @@ import {
 } from "@opensteer/protocol";
 import {
   commandAgentOutput,
+  commandFaceStep,
   commandRow,
   commandTable,
   type CommandAnsweredAsk,
   type CommandRow,
+  type CommandType,
 } from "@opensteer/protocol/command-table";
 import type { Kysely } from "kysely";
 import type { AgentCaller } from "../mcp/agent-caller.js";
@@ -53,7 +60,7 @@ export type AgentCommandOutcome =
   /** The person declined this ask within the last day: answered at once, nothing opened. */
   | { readonly status: "declined"; readonly requestId: string }
   /** The same call again, after its Request ended unapproved: what became of it. */
-  | { readonly status: "expired" | "withdrawn" | "closed"; readonly requestId: string }
+  | { readonly status: "withdrawn" | "closed"; readonly requestId: string }
   /** The same call again, after the person approved it: what it came to. */
   | {
       readonly status: "answered";
@@ -70,10 +77,18 @@ export interface CommandDoor {
 export interface AgentCommandDoor extends CommandDoor {
   readonly admit: (caller: AgentCaller, command: HostApiCommand) => Promise<CommandAdmission>;
   /**
-   * The grant the caller's lineage holds as the Home has it now, never as it was at sign-in:
-   * `gone` once its connection works for no one. Null for your own agents.
+   * What the caller holds as the Home has it now, never as it was at sign-in: its scope and
+   * effective grant (null for your own agents) and its live mode; `gone` once it may not act.
    */
-  readonly scope: (caller: AgentCaller) => Promise<"everything" | "selected" | "gone" | null>;
+  readonly scope: (caller: AgentCaller) => Promise<CommandHolder | "gone">;
+  /** Where an outside command's attempt is recorded and settled (G4); a stand-in door has none. */
+  readonly attempts?: CommandAttempts;
+  /** The last admission, in the transaction that records the attempt (G3). */
+  readonly readmit?: (
+    transaction: Kysely<DatabaseSchema>,
+    caller: AgentCaller,
+    command: HostApiCommand,
+  ) => Promise<void>;
   /** Opens the person's Request for a command that waits for them; without it, `ask` is returned. */
   readonly propose?: (
     caller: AgentCaller,
@@ -83,23 +98,45 @@ export interface AgentCommandDoor extends CommandDoor {
   ) => Promise<CommandProposed>;
 }
 
-/** The scope of the caller's connection from its own row; your own agents read nothing. */
-export function agentCommandScope(database: Kysely<DatabaseSchema>): AgentCommandDoor["scope"] {
-  return (caller) =>
-    commandCallerScope(
-      database,
-      caller.kind === "connection"
-        ? caller.connectionId
-        : (caller.agentConnection?.agentConnectionId ?? null),
-    );
+/**
+ * The subject an agent is admitted as: a connection as its live direct session when it has one
+ * (the task it names, or its active session), so that task is its own work (G2d); anyone else as
+ * its credential says.
+ */
+function admittedSubject(database: Kysely<DatabaseSchema>, caller: AgentCaller, taskId?: string) {
+  return caller.kind === "connection"
+    ? connectionAdmissionSubject(database, caller.connectionId, taskId)
+    : Promise.resolve(commandSubject(caller.key));
+}
+
+/** What the caller holds, from the one admission's own read of it. */
+export function agentCommandScope(
+  database: Kysely<DatabaseSchema>,
+  taskId?: string,
+): AgentCommandDoor["scope"] {
+  return async (caller) =>
+    commandCallerHolder(database, caller.userId, await admittedSubject(database, caller, taskId));
+}
+
+/** The last admission before an outside command acts, as the door admitted it (G3). */
+export function agentCommandReadmission(taskId?: string): NonNullable<AgentCommandDoor["readmit"]> {
+  return async (transaction, caller, command) =>
+    assertCommandAdmitted(transaction, {
+      ownerUserId: caller.userId,
+      subject: await admittedSubject(transaction, caller, taskId),
+      command,
+    });
 }
 
 /** `admitCommand` for an agent the Home authenticated, from its live execution. */
-export function agentCommandAdmission(database: Kysely<DatabaseSchema>): AgentCommandDoor["admit"] {
-  return (caller, command) =>
+export function agentCommandAdmission(
+  database: Kysely<DatabaseSchema>,
+  taskId?: string,
+): AgentCommandDoor["admit"] {
+  return async (caller, command) =>
     admitCommand(database, {
       ownerUserId: caller.userId,
-      subject: commandSubject(caller.key),
+      subject: await admittedSubject(database, caller, taskId),
       command,
     });
 }
@@ -146,15 +183,12 @@ export async function dispatchCommand(
   if (!Object.hasOwn(commandTable, command.type)) throw notFound();
   const row = commandRow(command.type) as CommandRow;
   // A type this caller does not hold reads as nothing at all, before its input is looked at.
-  const scope = await door.scope(actor);
-  if (
-    scope === "gone" ||
-    !commandHeld(row, { connection: scope ? { grant: scope } : null, mode: actor.accessMode })
-  )
-    throw notFound();
+  const holder = await door.scope(actor);
+  if (holder === "gone" || !commandHolds(command.type as CommandType, holder)) throw notFound();
   // A type it holds is read with its schema; what is wrong with it may be said. A value only the
   // person types is left out by the agent, so a schema that requires it reads the rest without it.
-  const parsed = parseHeld(row, command);
+  // Under a connection's grant (the scope just read says so) the own-agents-only kinds are absent.
+  const parsed = parseHeld(row, command, holder.scope !== null);
   if (!parsed.success)
     throw new OpensteerError({
       code: "bad_request",
@@ -168,10 +202,34 @@ export async function dispatchCommand(
   if (admission.answer === "not_found") throw notFound();
   assertNoSecretPaths(row, command);
   const handler = door.registry[command.type] as CommandHandler<HostApiCommand["type"]>;
-  if (admission.answer === "now" && handler.accepts === "any") {
+  if (
+    admission.answer === "now" &&
+    handler.accepts === "any" &&
+    agentRunsNow(row, admission.face, handler, holder?.scope ?? null)
+  ) {
     const authority = commandAuthority(actor, command);
-    const output = await handler.run(actor, command as never, { context: null, authority });
-    return { status: "done", output: commandAgentOutput(command, output) };
+    const readmit = door.readmit;
+    const effect = await runCommandEffect({
+      row,
+      attempts: door.attempts,
+      attempt: {
+        requestedBy: actor.userId,
+        callerKey: actor.key,
+        connectionId:
+          actor.kind === "connection"
+            ? actor.connectionId
+            : (actor.agentConnection?.agentConnectionId ?? null),
+        type: command.type,
+        idempotencyKey: (command as { readonly idempotencyKey: string }).idempotencyKey,
+      },
+      readmit: readmit ? (transaction) => readmit(transaction, actor, command) : undefined,
+      act: () => handler.run(actor, command as never, { context: null, authority }),
+    });
+    if (effect.status === "done")
+      return { status: "done", output: commandAgentOutput(command, effect.output) };
+    if (effect.status === "failed") throw effect.error;
+    // It may have happened: never failed, never retried by the Home (rule 4).
+    throw new OperationOutcomeUnknown("This change may have happened. Check before trying again.");
   }
   const answers =
     row.answersAsk && admission.face !== undefined && row.answersAsk.faces.includes(admission.face)
@@ -189,6 +247,24 @@ export async function dispatchCommand(
   if (answers || !door.propose) return ask;
   const proposed = await door.propose(actor, command, ask, admission.face);
   return proposed.status === "pending" ? { ...proposed, reason: ask.reason } : proposed;
+}
+
+/**
+ * Whether a `now` of the rule runs at once for an agent: its face is built for agents (step A
+ * for this caller) and its handler is written for agents. Otherwise it waits for the person,
+ * "no agent handler yet". The listing marks a command with this same answer.
+ */
+export function agentRunsNow(
+  row: CommandRow,
+  face: number | undefined,
+  handler: { readonly accepts: string },
+  scope: "everything" | "selected" | null,
+): boolean {
+  if (handler.accepts !== "any") return false;
+  const caller = { connection: scope !== null, selected: scope === "selected" };
+  // Where only the store can tell the face, every face it may be must be built for agents.
+  const faces = face === undefined ? row.faces.map((_, index) => index) : [face];
+  return faces.every((index) => commandFaceStep(row, index, caller) === "A");
 }
 
 /** What a handler written for agents is given: the identity its store admits at commit. */
@@ -236,14 +312,41 @@ const variants = (() => {
   return byType;
 })();
 
+const connectionVariants = new Map<string, readonly z.ZodObject[]>();
+/**
+ * A command's schemas as a caller may send them: under a connection's grant, without the kinds
+ * only your own agents send, so such a kind reads like one the schema does not know.
+ */
+export function commandVariants(type: string, underConnection: boolean): readonly z.ZodObject[] {
+  const all = variants.get(type) ?? [];
+  const hidden = Object.hasOwn(commandTable, type)
+    ? ((commandRow(type as CommandType) as CommandRow).ownAgentsOnly ?? [])
+    : [];
+  if (!underConnection || hidden.length === 0) return all;
+  const cached = connectionVariants.get(type);
+  if (cached) return cached;
+  const narrowed = all.map((variant) =>
+    hidden.reduce((schema, { field, kind }) => {
+      const union = variant.shape[field] as z.ZodDiscriminatedUnion<z.ZodObject[]> | undefined;
+      if (!union) return schema;
+      const kept = union.options.filter(
+        (option) => (option.shape.kind as z.ZodLiteral<string>).value !== kind,
+      );
+      return schema.extend({ [field]: z.discriminatedUnion("kind", kept as never) });
+    }, variant),
+  );
+  connectionVariants.set(type, narrowed);
+  return narrowed;
+}
+
 /** Reads a command with its own schema, leaving out each top-level secret field it does not carry. */
-function parseHeld(row: CommandRow, command: HostApiCommand) {
+function parseHeld(row: CommandRow, command: HostApiCommand, underConnection: boolean) {
   const input = command as unknown as Record<string, unknown>;
   const absent = (row.secretFields ?? []).filter(
     (path) => !path.includes(".") && input[path] === undefined,
   );
   let first: ReturnType<z.ZodObject["safeParse"]> | undefined;
-  for (const variant of variants.get(command.type) ?? []) {
+  for (const variant of commandVariants(command.type, underConnection)) {
     const schema = absent.length
       ? variant.omit(Object.fromEntries(absent.map((key) => [key, true])) as never)
       : variant;

@@ -33,8 +33,10 @@ describe("a task a connected agent works itself", () => {
     await mount(task(mockAgentWorkThreads.working), options);
     await vi.waitFor(() => expect(document.querySelector(".session-bar")).not.toBeNull());
     const bar = document.querySelector(".session-bar")!;
-    expect(bar.textContent).toContain("Claude is working");
-    expect(bar.textContent).toContain("Claude works this task itself. You can’t write to it here.");
+    expect(bar.textContent).toContain("“Claude” is working");
+    expect(bar.textContent).toContain(
+      "“Claude” works this task itself. You can’t write to it here.",
+    );
     expect(
       document.querySelector(
         ".thread .composer-dock [contenteditable], .thread .composer-dock textarea",
@@ -48,7 +50,7 @@ describe("a task a connected agent works itself", () => {
     expect(activity.textContent).toContain("Uncertain");
     expect(activity.textContent).toContain("can’t say whether this happened");
     const dispatch = vi.spyOn(client, "dispatch");
-    await act(async () => button("Stop Claude")!.click());
+    await act(async () => button("Stop “Claude”")!.click());
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "agent.session.stop",
@@ -58,7 +60,7 @@ describe("a task a connected agent works itself", () => {
     await vi.waitFor(() =>
       expect(document.querySelector(".session-bar")?.textContent).toContain("Stopped by you"),
     );
-    expect(button("Stop Claude")).toBeUndefined();
+    expect(button("Stop “Claude”")).toBeUndefined();
   });
 
   it("stays stopped, and says when its agent was disconnected", async () => {
@@ -73,7 +75,7 @@ describe("a task a connected agent works itself", () => {
     await act(async () => goTo!(task(mockAgentWorkThreads.ended)));
     await vi.waitFor(() =>
       expect(document.querySelector(".session-bar")?.textContent).toContain(
-        "Ended: Shop helper was disconnected",
+        "Ended: “Shop helper” was disconnected",
       ),
     );
   });
@@ -87,7 +89,7 @@ describe("a task a connected agent works itself", () => {
     );
     const row = document.querySelector(`[data-thread-id="${mockAgentWorkThreads.working}"]`)!;
     expect(row.querySelector(".agent-mark")).not.toBeNull();
-    expect(row.textContent).toContain("Claude is working");
+    expect(row.textContent).toContain("“Claude” is working");
   });
 });
 
@@ -105,18 +107,20 @@ describe("a tab a connected agent uses", () => {
     await act(async () => goTo!(`/${tabSearch(tabOf(mockAgentWorkThreads.working))}`));
     await vi.waitFor(() =>
       expect(document.querySelector(".tab-agent-status")?.textContent).toContain(
-        "Claude is using this page for “Find flights to Lisbon”",
+        "“Claude” is using this page for “Find flights to Lisbon”",
       ),
     );
     expect(document.querySelector(".tab-agent-status button")?.textContent).toContain("Stop");
     await act(async () => goTo!(`/${tabSearch(tabOf(mockAgentWorkThreads.waiting))}`));
     await vi.waitFor(() =>
       expect(document.querySelector(".tab-agent-status")?.textContent).toContain(
-        "You and Grok are using this page, for “Buy the phone case”",
+        "You and “Grok” are using this page, for “Buy the phone case”",
       ),
     );
     // Grok waits on the person's Allow once: Answer back to the Request, and Stop beside it.
-    expect(button("Answer")?.getAttribute("aria-label")).toBe("Grok needs you. Answer");
+    expect(button("Answer")?.getAttribute("aria-label")).toBe(
+      "“\u2068Grok\u2069” needs you. Answer",
+    );
     const dispatch = vi.spyOn(client, "dispatch");
     await act(async () => button("Stop")!.click());
     expect(dispatch).toHaveBeenCalledWith(
@@ -151,10 +155,12 @@ describe("what a connected agent asks the person itself", () => {
     await act(async () => button("Open the page")!.click());
     await vi.waitFor(() =>
       expect(document.querySelector(".tab-agent-status")?.textContent).toContain(
-        "Claude is using this page for “Find flights to Lisbon”",
+        "“Claude” is using this page for “Find flights to Lisbon”",
       ),
     );
-    expect(button("Answer")?.getAttribute("aria-label")).toBe("Claude needs you. Answer");
+    expect(button("Answer")?.getAttribute("aria-label")).toBe(
+      "“\u2068Claude\u2069” needs you. Answer",
+    );
     // Stop stays beside Answer while the question waits.
     expect(document.querySelector(".tab-agent-status")?.textContent).toContain("Stop");
     await act(async () => button("Answer")!.click());
@@ -177,7 +183,7 @@ describe("a direct operation that needs the person", () => {
     expect(card.querySelector(".operation-request__summary")?.textContent).toBe(
       "Shopping · Studio Mac",
     );
-    expect(card.querySelector(".operation-request__says")?.textContent).toContain("Grok says:");
+    expect(card.querySelector(".operation-request__says")?.textContent).toContain("“Grok” says:");
     expect(card.querySelector(".operation-request__code")).toBeNull();
     await act(async () => button("Show exactly what it will run")!.click());
     expect(card.querySelector(".operation-request__code")?.textContent).toContain("Place order");
@@ -207,12 +213,49 @@ describe("a direct operation that needs the person", () => {
       (document.querySelector('[title="Open Needs you"]') as HTMLButtonElement).click(),
     );
     await vi.waitFor(() =>
-      expect(document.body.textContent).toContain("Grok: Run a script in Shopping?"),
+      expect(document.body.textContent).toContain("“Grok”: Run a script in Shopping?"),
     );
     const row = [...document.querySelectorAll(".side-task--needs-you")].find((entry) =>
-      entry.textContent?.includes("Grok: Run a script"),
+      entry.textContent?.includes("“Grok”: Run a script"),
     )!;
     expect(row.querySelector(".agent-mark")).not.toBeNull();
+  });
+
+  it("quotes and isolates an unverified agent named Opensteer on the approval card, Needs you row, and tab status", async () => {
+    const spoofed = {
+      mock: mockConnectedAgents("seeded"),
+      hostClient: (source: MockHostClient) => {
+        source.mockAgentWork();
+        const snapshot = source.getSnapshot();
+        const waitingThread = snapshot.threads.find(
+          (entry) => entry.id === mockAgentWorkThreads.waiting,
+        )!;
+        if (waitingThread.externalWork?.connection) {
+          (waitingThread.externalWork.connection as { label: string; clientName: string }).label =
+            "Opensteer";
+          (
+            waitingThread.externalWork.connection as { label: string; clientName: string }
+          ).clientName = "Opensteer";
+        }
+        return source;
+      },
+    };
+    await mount(task(mockAgentWorkThreads.waiting), spoofed);
+    await vi.waitFor(() => expect(document.querySelector(".operation-request")).not.toBeNull());
+    const card = document.querySelector(".operation-request")!;
+    const saysLabel = card.querySelector(".operation-request__says-label")!;
+    expect(saysLabel.textContent).toBe("“Opensteer” says:");
+    expect(saysLabel.querySelector("bdi.outside-name")?.textContent).toBe("Opensteer");
+    await act(async () =>
+      (document.querySelector('[title="Open Needs you"]') as HTMLButtonElement).click(),
+    );
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("“Opensteer”: Run a script in Shopping?"),
+    );
+    const needsYouRow = [...document.querySelectorAll(".side-task--needs-you")].find((entry) =>
+      entry.textContent?.includes("“Opensteer”: Run a script"),
+    )!;
+    expect(needsYouRow.querySelector("bdi.outside-name")?.textContent).toBe("Opensteer");
   });
 });
 
@@ -253,12 +296,12 @@ describe("who a connected agent is", () => {
 
   it("names a verified pair, a self-given name as self-given, and an app on this computer", async () => {
     expect((await agentPage(6)).querySelector(".agent-who--verified")?.textContent).toContain(
-      "Verified: Errand via AgentPay",
+      "Verified: “Errand via AgentPay”",
     );
     act(() => page?.unmount());
     const grok = await agentPage(1);
     expect(grok.querySelector(".agent-who--verified")).toBeNull();
-    expect(grok.querySelector(".agent-who")?.textContent).toContain("Says it is Grok");
+    expect(grok.querySelector(".agent-who")?.textContent).toContain("Says it is “Grok”");
     expect(grok.querySelector(".agent-who")?.textContent).toContain("https://grok.com");
     act(() => page?.unmount());
     expect((await agentPage(7)).querySelector(".agent-who")?.textContent).toContain(

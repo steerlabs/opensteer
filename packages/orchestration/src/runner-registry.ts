@@ -41,6 +41,7 @@ import {
   type RunnerVoiceResult,
   computerAppMaxTimeoutMs,
   CorrelationIdSchema,
+  runRetryCapability,
   RunnerCommandSchema,
   sameRunnerConnectionFence,
   type HostToRunnerMessage,
@@ -843,6 +844,9 @@ export class RunnerRegistry {
           : {}),
         ...(this.#acceptsHomeFiles(identity) ? { acceptsHomeFiles: true as const } : {}),
         ...agentHome,
+        ...(identity.capabilities.includes(runRetryCapability)
+          ? { runRetryEvents: true as const }
+          : {}),
         serverTime: new Date(now).toISOString(),
         type: "host.welcome",
       });

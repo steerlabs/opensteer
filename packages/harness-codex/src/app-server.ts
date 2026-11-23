@@ -58,6 +58,8 @@ export interface CodexAppServerOptions {
   readonly cwd: string;
   readonly environment: Readonly<Record<string, string>>;
   readonly features: CodexFeatureBoundary;
+  /** `named` when the process runs Codex's own configuration and `features` holds only Opensteer's overrides. */
+  readonly featureScope?: "every" | "named";
   readonly launch: CodexLaunch;
   readonly log?: HarnessLog;
   /** Called once, when the process can serve nothing more. */
@@ -90,6 +92,8 @@ export class CodexAppServer {
   readonly dedicated: boolean;
   /** The feature boundary the process was started with; every conversation repeats it. */
   readonly features: CodexFeatureBoundary;
+  /** Whether the process runs Codex's own configuration (`named`) or none of the person's. */
+  readonly featureScope: "every" | "named";
   readonly #after: { readonly message: CodexMethodMessage; readonly owner: CodexThreadOwner }[] =
     [];
   readonly #attached = new Set<CodexThreadOwner>();
@@ -125,6 +129,7 @@ export class CodexAppServer {
     this.client = client;
     this.dedicated = options.dedicated === true;
     this.features = options.features;
+    this.featureScope = options.featureScope ?? "every";
     this.#lifetime = lifetime;
     this.#log = options.log;
     this.#onEnded = options.onEnded;
@@ -184,7 +189,12 @@ export class CodexAppServer {
         requireString(initialize.userAgent, "initialize result.userAgent"),
       );
       await client.notify("initialized", {});
-      await assertCodexFeatureBoundary(client, options.features, options.config.startupTimeoutMs);
+      await assertCodexFeatureBoundary(
+        client,
+        options.features,
+        options.config.startupTimeoutMs,
+        options.featureScope ?? "every",
+      );
       // A start whose session gave up still ends unless another session comes.
       if (!server.dedicated) server.#idleUnlessAttached();
       return server;

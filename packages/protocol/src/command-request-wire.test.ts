@@ -120,7 +120,8 @@ describe("a command Request on the wire", () => {
         }).success,
         JSON.stringify(response),
       ).toBe(true);
-    // The v66 baseline (re-recorded per AGENTS.md rule 6) includes request.command.approve.
+    // Approving is its own command, never a respond: no release is kept yet (rule 6), so the
+    // frozen shapes are this branch's own and hold it; only the person's session sends it.
     expect(baseline.input["command request.command.approve"]).toBeDefined();
     expect(
       hostApi["commands.dispatch"].payload.safeParse({

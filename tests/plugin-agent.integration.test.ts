@@ -796,7 +796,7 @@ test("a connected plugin write is reviewed once, can be declined, and records th
   const reply = async (pending: Record<string, unknown>, decision: "allow" | "deny") => {
     const requestId = RequestIdSchema.parse(pending.requestId);
     expect(await store.requests.get(requestId)).toMatchObject({
-      presentation: { title: "Let External change Fixture?" },
+      presentation: { title: "Let “\u2068External\u2069” change Fixture?" },
       agentOperation: {
         calls: JSON.stringify({ calls: { input: { amount: 7 }, path: "tools.fixture.reviewed" } }),
         agentReason: "My reason",

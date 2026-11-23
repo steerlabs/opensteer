@@ -18,6 +18,7 @@ import {
   minThreadAccessMode,
   OpensteerError,
   type AgentGrant,
+  type AgentGrantResource,
   type RequestId,
   type AgentGrantTarget,
   type ResourceAccessLevel,
@@ -29,17 +30,20 @@ import {
 import {
   commandFace,
   commandFaceStep,
+  commandGovernedKinds,
   commandRow,
   type Command,
   type CommandFace,
   type CommandResource,
+  type CommandResourceKind,
   type CommandRow,
+  type CommandType,
   type CommandScope,
   type EffectClass,
 } from "@opensteer/protocol/command-table";
 import { sql, type Kysely, type RawBuilder } from "kysely";
 import type { BridgeSenders, DatabaseSchema } from "./schema.js";
-import { connectionState, liveConnection } from "./connection-liveness.js";
+import { connectionState } from "./connection-liveness.js";
 import { withDatabaseTransaction } from "./connection.js";
 
 /**
@@ -64,6 +68,23 @@ export interface AgentConnectionAuthority {
    * bridge anyone in its conversation may speak to runs without the person's personal context.
    */
   readonly bridgeSenders?: BridgeSenders | null;
+}
+
+/**
+ * The grant a connection's lineage holds, the only one admission, its reach and the listing
+ * read: a chat anyone may speak in holds what a selected grant with nothing in it holds (X15),
+ * its own tasks as its grant allows them (a chat's messages are delegated work) and no thing of
+ * the person's.
+ */
+export function effectiveConnectionGrant(
+  grant: AgentGrant,
+  bridgeSenders: BridgeSenders | null | undefined,
+): AgentGrant {
+  // Such a chat is made holding only tasks and the plugins the person chose; an `everything`
+  // grant on one (it cannot be made so now) holds its tasks and nothing of the person's.
+  return bridgeSenders === "anyone" && grant.scope === "everything"
+    ? { scope: "selected", tasks: true, resources: [] }
+    : grant;
 }
 
 /** Whether work in this lineage may use the person's personal context (memory, tabs, apps). */
@@ -290,7 +311,8 @@ export async function liveAgentConnection(
     throw waiting
       ? new ConnectionWaiting()
       : forbidden(chat ? chatEndedMessage : lineageEndedMessage);
-  const grant = AgentGrantSchema.parse(row.grant);
+  // The raw grant is not read past this point: a chat anyone may speak in is narrowed here.
+  const grant = effectiveConnectionGrant(AgentGrantSchema.parse(row.grant), row.bridgeSenders);
   return {
     agentConnectionId: row.id,
     grant,
@@ -424,6 +446,28 @@ export async function assertPersonMayContinue(
   const standing = await readConnectionRowStanding(database, ownerUserId, taskOriginConnectionId);
   if (standing.row || standing.waiting) return;
   throw forbidden(standing.chat ? chatEndedMessage : agentEndedForPersonMessage);
+}
+
+/**
+ * The one standing check for answering a Request (live, durable, or direct-operation): neither the
+ * Request's own connection nor its task's origin connection may have ended. Called in the
+ * transaction that records a decision, never in a post-effect receipt write. For the person's own
+ * tasks both ids are null and this runs no query.
+ */
+export async function assertRequestOriginMayContinue(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  origin: {
+    readonly connectionId: string | null;
+    readonly threadOriginConnectionId: string | null;
+  },
+): Promise<void> {
+  await assertPersonMayContinue(database, ownerUserId, origin.connectionId);
+  if (
+    origin.threadOriginConnectionId !== null &&
+    origin.threadOriginConnectionId !== origin.connectionId
+  )
+    await assertPersonMayContinue(database, ownerUserId, origin.threadOriginConnectionId);
 }
 
 /** The send rule against the connection as it stands now; refuses as an unknown task would. */
@@ -619,6 +663,18 @@ export async function admitExecution(
     readonly threadId?: ThreadId | undefined;
   },
 ): Promise<ExecutionAuthority> {
+  return admitExecutionWith(database, input, undefined);
+}
+
+/**
+ * The admission, given the binding's row when the caller already read it in this transaction,
+ * so a command's admission reads its Run once.
+ */
+async function admitExecutionWith(
+  database: Kysely<DatabaseSchema>,
+  input: Parameters<typeof admitExecution>[1],
+  known: BindingFacts | null | undefined,
+): Promise<ExecutionAuthority> {
   await assertPersonalOwner(database, input.ownerUserId);
   const { subject, ownerUserId } = input;
   const base = { ownerUserId, subject, runId: null, runMode: null } as const;
@@ -659,7 +715,7 @@ export async function admitExecution(
       mode: connection.accessMode,
     };
   }
-  const facts = await bindingFacts(database, subject.bindingId);
+  const facts = known === undefined ? await bindingFacts(database, subject.bindingId) : known;
   // Owner means a known owner: an unknown, ended or inconsistent execution is refused.
   if (
     !facts ||
@@ -913,7 +969,10 @@ function classRule(
   }
   switch (effect) {
     case "approve":
-      return { answer: "ask", reason: "approval" };
+      // A schedule your own Full agent makes asks no less than its task, which asks nothing.
+      return face.ownFullAccess && !connection && caller.mode === "full-access"
+        ? { answer: "now" }
+        : { answer: "ask", reason: "approval" };
     case "widen-other":
       return { answer: "ask", reason: "widens-other" };
     case "secret":
@@ -933,6 +992,11 @@ function classRule(
   if (selected && (effect === "destroy" || (effect === "widen-self" && scope === "new")))
     return { answer: "ask", reason: "grant" };
   if (caller.mode === "full-access") return { answer: "now" };
+  if (
+    (face.readWrite === true || (face.readWrite === "connections" && connection)) &&
+    caller.mode !== "auto"
+  )
+    return { answer: "ask", reason: "mode" };
   // Below Full access the person is asked for every effect outside the caller's own task work.
   const ownTaskWork =
     scope === "task" &&
@@ -955,6 +1019,28 @@ export interface CommandAdmission {
 /** The store's own view of what a two-faced command does, reported inside its transaction. */
 export interface CommandStoredFace {
   readonly face: EffectClass;
+}
+
+/**
+ * The subject a connection is admitted as: its direct session when it has one live (the one its
+ * `taskId` names, or its active one), so what it does in that task is its own work and its own
+ * asks are its own; otherwise the connection itself. Reads only for a connection.
+ */
+export async function connectionAdmissionSubject(
+  database: Kysely<DatabaseSchema>,
+  connectionId: string,
+  taskId?: string | null,
+): Promise<AuthoritySubject> {
+  let query = database
+    .selectFrom("agentSessions")
+    .select("id")
+    .where("connectionId", "=", connectionId)
+    .where("status", "=", "active");
+  if (taskId) query = query.where("threadId", "=", taskId as ThreadId);
+  const session = await query.orderBy("id").executeTakeFirst();
+  return session
+    ? { kind: "binding", bindingId: `session:${session.id}` }
+    : { kind: "connection", agentConnectionId: connectionId };
 }
 
 /** The subject an agent's credential speaks for: its connection, or the execution it is bound to. */
@@ -992,13 +1078,18 @@ export async function admitCommand(
   const face = commandFaceFor(row, input);
   if (input.subject.kind === "person") return { answer: "now", face, execution: null };
   const admit = async (transaction: Kysely<DatabaseSchema>) => {
+    // A Run's row is read once: it names the connection to hold, and admission reads the rest of
+    // it. The connection itself is read after the hold, so a Disconnect meanwhile is seen.
+    const binding =
+      input.subject.kind === "binding"
+        ? await bindingFacts(transaction, input.subject.bindingId)
+        : undefined;
     const connectionId =
       input.subject.kind === "connection"
         ? input.subject.agentConnectionId
-        : await bindingAgentConnectionId(
-            transaction,
-            (input.subject as Extract<AuthoritySubject, { kind: "binding" }>).bindingId,
-          );
+        : binding && !binding.inconsistent
+          ? binding.agentConnectionId
+          : null;
     if (connectionId)
       await transaction
         .selectFrom("agentConnections")
@@ -1006,10 +1097,11 @@ export async function admitCommand(
         .where("id", "=", connectionId)
         .forShare()
         .executeTakeFirst();
-    const execution = await admitExecution(transaction, {
-      ownerUserId: input.ownerUserId,
-      subject: input.subject,
-    });
+    const execution = await admitExecutionWith(
+      transaction,
+      { ownerUserId: input.ownerUserId, subject: input.subject },
+      binding,
+    );
     const reach = await commandReach(
       transaction,
       execution,
@@ -1051,44 +1143,96 @@ export async function admitCommand(
   return { ...best, face: undefined };
 }
 
-/** The grant scope the rule reads: a chat anyone may speak in reaches no more than a selected grant. */
+/** The grant scope the rule reads, from the effective grant admission holds; null for your own agents. */
 function effectiveGrantScope(
   execution: Pick<ExecutionAuthority, "agentConnection">,
 ): "everything" | "selected" | null {
-  return commandGrantScope(execution.agentConnection ?? null);
+  return execution.agentConnection?.grant.scope ?? null;
+}
+
+/** A caller as whether it holds a command reads it: its live scope and grant, and its mode. */
+export interface CommandHolder {
+  readonly scope: "everything" | "selected" | null;
+  readonly grant: AgentGrant | null;
+  readonly mode: ThreadAccessMode;
+  /** A chat anyone in its conversation may message: it may have no automation (X15). */
+  readonly anyoneChat?: boolean;
 }
 
 /**
- * The grant a lineage's connection holds as the command rule reads it; null for your own agents.
- * The one place it is decided: a chat anyone may speak in reaches no more than a selected grant.
+ * Whether a caller holds a command type at all: the one function the listing and the door both
+ * ask, from the caller's live grant, before any input is read (rule 5). A selected grant holds a
+ * type only if it holds the kind of thing the type governs, as admission reaches it per thing.
  */
-export function commandGrantScope(
-  connection: Pick<AgentConnectionAuthority, "grant" | "bridgeSenders"> | null,
-): "everything" | "selected" | null {
-  if (!connection) return null;
-  return lineageAllowsPersonalContext(connection) ? connection.grant.scope : "selected";
+export function commandHolds(type: CommandType, holder: CommandHolder): boolean {
+  const row = commandRow(type) as CommandRow;
+  if (
+    !commandHeld(row, {
+      connection: holder.scope ? { grant: holder.scope } : null,
+      mode: holder.mode,
+    })
+  )
+    return false;
+  const grant = holder.grant;
+  if (holder.scope !== "selected" || grant?.scope !== "selected") return true;
+  // A new thing has nothing to be outside of: admission reaches it, and a selected grant asks.
+  if (row.scope === "new") return true;
+  // Otherwise what it governs must be a kind this grant reaches some thing of.
+  if (holder.anyoneChat && commandGovernedKinds(type).every((kind) => kind === "automation"))
+    return false;
+  return commandGovernedKinds(type).some((kind) => selectedHoldsKind(kind, grant));
 }
 
 /**
- * The scope of a lineage's connection as its own row has it now, for whether a caller holds a
- * command type at all: `gone` once it works for no one. Your own agents read nothing.
+ * Whether a selected grant reaches any thing of this kind, by the rule `commandReach` applies to
+ * the thing itself: a kind it names through `grantNamed` (or through one, as a profile's tabs),
+ * task work through Tasks, and its own session's Requests, its sessions and its own connection
+ * (D9). A kind with no reach rule for a selected grant is not held.
  */
-export async function commandCallerScope(
+function selectedHoldsKind(
+  kind: CommandResourceKind,
+  grant: Extract<AgentGrant, { scope: "selected" }>,
+): boolean {
+  const named = grantNamed[(reachedThrough[kind] ?? kind) as keyof typeof grantNamed];
+  if (named) return grant.resources.some((entry) => named.holds(entry));
+  switch (kind) {
+    case "task":
+    case "assignment":
+    case "automation":
+      return agentGrantAllowsTasks(grant);
+    case "request":
+    case "agent-session":
+    case "connection":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * What a caller holds, from the one admission's own read (`admitExecution`): its scope and
+ * effective grant (null for your own agents) and its live mode; `gone` once it may not act.
+ * The listing, the parse gate and the door's admission all start from this.
+ */
+export async function commandCallerHolder(
   database: Kysely<DatabaseSchema>,
-  connectionId: string | null,
-): Promise<"everything" | "selected" | "gone" | null> {
-  if (connectionId === null) return null;
-  const row = await database
-    .selectFrom("agentConnections")
-    .select(["grant", "bridgeSenders"])
-    .where("id", "=", connectionId)
-    .where(liveConnection(database))
-    .executeTakeFirst();
-  if (!row) return "gone";
-  const grant = AgentGrantSchema.safeParse(row.grant);
-  return grant.success
-    ? commandGrantScope({ grant: grant.data, bridgeSenders: row.bridgeSenders })
-    : "gone";
+  ownerUserId: UserId,
+  subject: AuthoritySubject,
+): Promise<CommandHolder | "gone"> {
+  try {
+    const execution = await admitExecution(database, { ownerUserId, subject });
+    const connection = execution.agentConnection;
+    return {
+      scope: connection?.grant.scope ?? null,
+      grant: connection?.grant ?? null,
+      mode: execution.mode,
+      ...(connection && !lineageAllowsPersonalContext(connection) ? { anyoneChat: true } : {}),
+    };
+  } catch (error) {
+    if (error instanceof ConnectionWaiting) return "gone";
+    if (error instanceof OpensteerError && error.code === "forbidden") return "gone";
+    throw error;
+  }
 }
 
 export const commandNotFoundMessage = "That item is unavailable.";
@@ -1173,8 +1317,7 @@ async function commandReach(
     // A connection's own task (its direct session's) is its own, with or without Tasks.
     if (connection && threadId !== ownTask) {
       if (!agentGrantAllowsTasks(connection.grant)) return outOfReach;
-      if (!sendEligible({ ...connection, grant: scopedGrant(connection.grant, scope) }, lineage))
-        return outOfReach;
+      if (!sendEligible(connection, lineage)) return outOfReach;
     }
     return {
       reach: true,
@@ -1332,7 +1475,9 @@ async function commandReach(
       return { reach: true, ownWork: used };
     }
     case "browser-profile": {
-      // A page with no profile is a Guest page: no selected grant names one.
+      // A new profile has nothing to be outside of; a page with no profile is a Guest page,
+      // which no selected grant names.
+      if (row.scope === "new" && resource.id === null) return inReach;
       const reach = resource.id === null ? !selected : await profile(resource.id);
       if (!reach) return outOfReach;
       if (resource.task !== undefined) return task(resource.task);
@@ -1401,26 +1546,46 @@ export function commandHeld(
   );
 }
 
-function scopedGrant(grant: AgentGrant, scope: "everything" | "selected" | null): AgentGrant {
-  return scope === "selected" && grant.scope === "everything"
-    ? { scope: "selected", tasks: true, resources: [] }
-    : grant;
-}
+/**
+ * The kinds a selected grant names a thing of, and how: the one table both what is listed
+ * (`selectedHoldsKind`) and what is reached (`grantTargetOf`) read.
+ */
+const grantNamed = {
+  "browser-profile": {
+    target: (id: string): AgentGrantTarget => ({ kind: "browser-profile", profileId: id }),
+    holds: (entry: AgentGrantResource) => entry.kind === "browser-profile",
+  },
+  chrome: {
+    target: (id: string): AgentGrantTarget => ({ kind: "chrome-tabs", sourceId: id }),
+    holds: (entry: AgentGrantResource) => entry.kind === "chrome-tabs",
+  },
+  plugin: {
+    target: (id: string): AgentGrantTarget => ({
+      kind: "plugin",
+      target: { kind: "installed", pluginId: id },
+    }),
+    holds: (entry: AgentGrantResource) =>
+      entry.kind === "plugin" && entry.target.kind === "installed",
+  },
+  "local-server": {
+    target: (id: string): AgentGrantTarget => ({
+      kind: "plugin",
+      target: { kind: "local-server", serverId: id },
+    }),
+    holds: (entry: AgentGrantResource) =>
+      entry.kind === "plugin" && entry.target.kind === "local-server",
+  },
+} satisfies Partial<Record<CommandResourceKind, unknown>>;
+/** Kinds reached through a thing a grant names: a profile's sessions and tabs. */
+const reachedThrough: Partial<Record<CommandResourceKind, keyof typeof grantNamed>> = {
+  "browser-session": "browser-profile",
+  tabs: "browser-profile",
+};
 
 function grantTargetOf(resource: CommandResource): AgentGrantTarget | null {
   if (resource.id === null) return null;
-  switch (resource.kind) {
-    case "browser-profile":
-      return { kind: "browser-profile", profileId: resource.id };
-    case "chrome":
-      return { kind: "chrome-tabs", sourceId: resource.id };
-    case "plugin":
-      return { kind: "plugin", target: { kind: "installed", pluginId: resource.id } };
-    case "local-server":
-      return { kind: "plugin", target: { kind: "local-server", serverId: resource.id } };
-    default:
-      return null;
-  }
+  const named = grantNamed[resource.kind as keyof typeof grantNamed];
+  return named ? named.target(resource.id) : null;
 }
 
 export async function assertLineageCompatibleReuse(

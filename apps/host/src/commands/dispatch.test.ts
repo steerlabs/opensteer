@@ -6,7 +6,7 @@ import type {
   ThreadAccessMode,
   UserId,
 } from "@opensteer/core";
-import { commandHeld, commandRule } from "@opensteer/database";
+import { commandHolds, commandRule } from "@opensteer/database";
 import type { HostApiCommand, HostApiServerContext } from "@opensteer/protocol";
 import {
   commandFace,
@@ -16,6 +16,7 @@ import {
 } from "@opensteer/protocol/command-table";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import { personActor, type PersonActor } from "./actor.js";
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import { dispatchCommand, type AgentCommandOutcome } from "./dispatch.js";
 import type { CommandRegistry, PersonCommandHandler } from "./registry.js";
 import { sampleCommand } from "@opensteer/protocol/test-support/command-samples";
@@ -35,19 +36,22 @@ function sample(type: CommandType): HostApiCommand {
   } as unknown as HostApiCommand;
 }
 const parses = (type: CommandType) => sampleCommand(type).valid;
-/** The caller as `commandHeld` reads it: its grant's scope and its mode, nothing else. */
-const shapeOf = (agent: AgentCaller) => ({
-  connection:
-    agent.kind === "connection"
-      ? { grant: agent.grant.scope }
-      : agent.agentConnection
-        ? { grant: agent.agentConnection.grant.scope }
-        : null,
-  mode: agent.accessMode,
-});
+
+/** Whether the door holds a type for this agent, from its grant: the listing's own answer. */
+const holds = (agent: AgentCaller, type: CommandType) => {
+  const grant = agent.kind === "connection" ? agent.grant : agent.agentConnection?.grant;
+  return commandHolds(type, {
+    scope: grant?.scope ?? null,
+    grant: grant ?? null,
+    mode: agent.accessMode,
+  });
+};
 
 /** The grant as the Home has it now: in these doors, the one the caller signed in with. */
-const signedIn = async (agent: AgentCaller) => shapeOf(agent).connection?.grant ?? null;
+const signedIn = async (agent: AgentCaller) => {
+  const grant = agent.kind === "connection" ? agent.grant : agent.agentConnection?.grant;
+  return { scope: grant?.scope ?? null, grant: grant ?? null, mode: agent.accessMode };
+};
 
 function spyRegistry() {
   const calls: CommandType[] = [];
@@ -153,6 +157,32 @@ describe("dispatchCommand", () => {
     }
   });
 
+  it("ends a computer-use session for the person at once, never as an ask, with nothing added (AD10 route 7)", async () => {
+    // The person's Stop of a computer-use session is the handler the route called, run once:
+    // the door's person path reads no admission, no scope and opens no Request, so it costs
+    // what the route cost and cannot become an ask.
+    const { registry, calls } = spyRegistry();
+    const admit = vi.fn(async () => ({ answer: "ask" as const, face: 0, execution: null }));
+    const scope = vi.fn(async () => null);
+    const propose = vi.fn();
+    const command = {
+      type: "integration.computer.session.stop",
+      idempotencyKey: "k",
+      sessionId: "cus_00000000-0000-4000-8000-000000000001",
+    } as unknown as HostApiCommand;
+    const output = await dispatchCommand(
+      personActor(context),
+      command,
+      { registry, admit, scope, propose } as never,
+      context,
+    );
+    expect(output).toEqual({ type: "integration.computer.session.stop" });
+    expect(calls).toEqual(["integration.computer.session.stop"]);
+    expect(admit).not.toHaveBeenCalled();
+    expect(scope).not.toHaveBeenCalled();
+    expect(propose).not.toHaveBeenCalled();
+  });
+
   describe.each(agents)("for %s", (_name, agent) => {
     /** The rule's own answer for this agent, as `admitCommand` would give it on live facts. */
     const byRule = async (caller: AgentCaller, command: HostApiCommand) => {
@@ -185,7 +215,7 @@ describe("dispatchCommand", () => {
         for (const type of types) {
           const command = sample(type);
           const admitted = await admit(agent, command);
-          const held = commandHeld(commandTable[type] as CommandRow, shapeOf(agent));
+          const held = holds(agent, type);
           const answer = held ? admitted.answer : "not_found";
           const outcome = dispatchCommand(agent, command, { registry, admit, scope: signedIn });
           if (held && !parses(type))
@@ -222,6 +252,63 @@ describe("dispatchCommand", () => {
             type,
           ).rejects.toThrow("That item is unavailable.");
     });
+  });
+
+  it("settles an outside command whose handler throws after acting as unknown (G4, rule 4)", async () => {
+    const thrown = new Error("The computer stopped answering mid-revoke");
+    const registry = {
+      ...spyRegistry().registry,
+      "machine.revoke": {
+        accepts: "any",
+        run: async () => {
+          throw thrown;
+        },
+      },
+    } as unknown as CommandRegistry;
+    const settled: string[] = [];
+    const door = {
+      registry,
+      admit: async () => ({ answer: "now" as const, face: 0, execution: null }),
+      scope: signedIn,
+      attempts: {
+        begin: async () => ({ kind: "begun" as const, id: "cat_1" }),
+        settle: async (_id: string, state: string) => {
+          settled.push(state);
+        },
+      },
+    };
+    const outcome = dispatchCommand(run("full-access"), sample("machine.revoke"), door);
+    await expect(outcome).rejects.toBeInstanceOf(OperationOutcomeUnknown);
+    expect(settled).toEqual(["unknown"]);
+  });
+
+  it("reads a folder install under a connection's grant like a kind the schema does not know (rule 5)", async () => {
+    const { registry } = spyRegistry();
+    const asked = async () => ({ answer: "ask" as const, face: 0, execution: null });
+    const install = (source: Record<string, unknown>) =>
+      ({
+        type: "plugins.install",
+        idempotencyKey: "install-1",
+        source,
+      }) as unknown as HostApiCommand;
+    const refusal = (caller: AgentCaller, source: Record<string, unknown>) =>
+      dispatchCommand(caller, install(source), { registry, admit: asked, scope: signedIn }).catch(
+        (error: unknown) => error,
+      );
+    for (const caller of [connection("full-access", everything), run("full-access", everything)]) {
+      const folder = await refusal(caller, { kind: "folder", directory: "draft" });
+      const unknown = await refusal(caller, { kind: "unheard-of", directory: "draft" });
+      expect(folder).toMatchObject({ code: "bad_request" });
+      expect(folder).toEqual(unknown);
+    }
+    // Your own agent's folder install is a command the door reads and puts to the person.
+    await expect(
+      dispatchCommand(run("full-access"), install({ kind: "folder", directory: "draft" }), {
+        registry,
+        admit: asked,
+        scope: signedIn,
+      }),
+    ).resolves.toMatchObject({ status: "ask" });
   });
 
   it("refuses an agent's command that carries a value only the person types, nested included", async () => {
@@ -309,7 +396,7 @@ describe("dispatchCommand", () => {
     };
     for (const [name, agent] of agents)
       for (const type of types) {
-        if (commandHeld(commandTable[type] as CommandRow, shapeOf(agent))) continue;
+        if (holds(agent, type)) continue;
         // What reaches the agent: everything but where in the Home it was thrown.
         const said = (error: unknown) => {
           const { code, message, reason, next, details } = error as OpensteerError;
@@ -377,12 +464,73 @@ describe("dispatchCommand", () => {
     const agent = connection("full-access", everything);
     // Not even valid: a type it no longer holds must not say what is wrong with its input.
     const bad = { type: "harness.rename", idempotencyKey: "k" } as unknown as HostApiCommand;
-    for (const now of ["selected", "gone"] as const)
+    const narrowed = { scope: "selected" as const, grant: selected, mode: "full-access" as const };
+    for (const now of [narrowed, "gone" as const])
       await expect(
         dispatchCommand(agent, bad, { registry, admit: admitNothing, scope: async () => now }),
-        now,
+        String(now),
       ).rejects.toMatchObject({ code: "not_found", message: "That item is unavailable." });
     expect(calls).toEqual([]);
+  });
+
+  it("lists a type exactly where the door holds it, and parses nothing it does not (AD1)", async () => {
+    const shapes: Record<string, AgentGrant> = {
+      empty: { scope: "selected", tasks: false, resources: [] },
+      tasks: { scope: "selected", tasks: true, resources: [] },
+      profile: {
+        scope: "selected",
+        tasks: false,
+        resources: [
+          { kind: "browser-profile", profileId: "bpr_00000000-0000-4000-8000-000000000001" },
+        ],
+      },
+      chrome: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "chrome-tabs", sourceId: "bsr_00000000-0000-4000-8000-000000000001" }],
+      },
+      plugin: {
+        scope: "selected",
+        tasks: false,
+        resources: [
+          {
+            kind: "plugin",
+            target: { kind: "installed", pluginId: "notes" },
+            access: "read-write",
+          },
+        ],
+      },
+      everything: { scope: "everything" },
+    } as unknown as Record<string, AgentGrant>;
+    for (const [name, grant] of Object.entries(shapes)) {
+      const agent = connection("full-access", grant);
+      const door = {
+        registry: spyRegistry().registry,
+        admit: async () => ({ answer: "now" as const, face: 0, execution: null }),
+        scope: async () => ({ scope: grant.scope, grant, mode: "full-access" as const }),
+      };
+      for (const type of types) {
+        const listed = commandHolds(type, { scope: grant.scope, grant, mode: "full-access" });
+        // Not even valid: only a type it holds may say what is wrong with its input.
+        const answer = await dispatchCommand(
+          agent,
+          { type, idempotencyKey: "k" } as unknown as HostApiCommand,
+          door,
+        ).then(
+          () => "ran",
+          (error: OpensteerError) => error.code,
+        );
+        expect(answer === "not_found", `${type} for ${name}`).toBe(!listed);
+      }
+    }
+    // The reader's case: a grant with no plugin, removing one, is told nothing of its input.
+    expect(
+      commandHolds("plugins.remove", {
+        scope: "selected",
+        grant: shapes.tasks!,
+        mode: "full-access",
+      }),
+    ).toBe(false);
   });
 
   it("refuses at runtime a person's actor that personActor did not make", async () => {

@@ -96,6 +96,18 @@ export type AdministrationCommand =
       }
     >
   | Parameters<typeof executeDeviceAdministration>[2];
+/**
+ * The commands this service runs for agents as well as the person: its own, the browser's site
+ * removal, a chat account's status and the device administration it hands on.
+ */
+export const agentAdministrationTypes: ReadonlySet<string> = new Set([
+  ...coreTypes,
+  "browser.site.remove",
+  "channel.connection.status.set",
+  "plugin.remove",
+  "integration.grant.revoke",
+  "integration.disconnect",
+]);
 export function isAdministrationCommand(
   command: HostApiCommand,
 ): command is CoreAdministrationCommand {
@@ -324,6 +336,7 @@ export class AdministrationService {
 
       case "settings.idleCompaction.set": {
         const policy = await dependencies.store.notificationState.setIdleCompactionPolicy({
+          administration,
           policy: command.policy,
           userId,
         });
@@ -593,6 +606,10 @@ export class AdministrationService {
             idempotency: {
               key: command.idempotencyKey,
               requestedBy: userId,
+              // An agent's Stop: its record names it, and it is admitted where it commits.
+              ...(administration
+                ? { authoritySource: administration.authoritySource, admit: administration.admit }
+                : {}),
             },
           },
         );

@@ -77,6 +77,9 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       "card_request",
       "computer_use",
       "discover",
+      "opensteer_command",
+      "opensteer_commands",
+      "opensteer_state",
       "opensteer_task_create",
       "opensteer_task_interrupt",
       "opensteer_task_read",
@@ -366,6 +369,15 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(stopped.structuredContent).toMatchObject({
       interruptedRunId: (result.structuredContent as { runId: string }).runId,
     });
+    // The connection stopped it, not the person, so its end is still news to them.
+    expect(
+      await storeFixture.database
+        .selectFrom("commands")
+        .select("authoritySource")
+        .where("threadId", "=", threadId)
+        .where("type", "=", "run.interrupt")
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ authoritySource: { kind: "connection" } });
     const stopReplay = await agent.client.callTool({
       name: "opensteer_task_interrupt",
       arguments: { taskId: threadId },
@@ -1077,6 +1089,15 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
           timeoutError: () => new Error("Self interrupt never revoked its grant"),
         }),
       ).toMatchObject({ runId: f.run.id, threadId: f.thread.id });
+      // An agent's Stop is recorded as the agent's, never as its person's.
+      expect(
+        await storeFixture.database
+          .selectFrom("commands")
+          .select("authoritySource")
+          .where("runId", "=", f.run.id)
+          .where("type", "=", "run.interrupt")
+          .executeTakeFirstOrThrow(),
+      ).toMatchObject({ authoritySource: { kind: "thread-agent", runId: f.run.id } });
     } finally {
       detach();
     }
@@ -1208,7 +1229,14 @@ describeStore("connection grants and lineage", (it) => {
     });
     const listed = (await plugins.client.listTools()).tools.map(({ name }) => name);
     expect(listed.length).toBeGreaterThan(0);
-    expect(listed.filter((name) => name.startsWith("opensteer_"))).toEqual([]);
+    // No task tool; the Home's command tools, cut to what the grant holds, are not task tools.
+    expect(
+      listed.filter(
+        (name) =>
+          name.startsWith("opensteer_") &&
+          !["opensteer_commands", "opensteer_command", "opensteer_state"].includes(name),
+      ),
+    ).toEqual([]);
     for (const name of [
       "opensteer_task_list",
       "opensteer_task_read",
@@ -1466,7 +1494,7 @@ describeStore("connection grants and lineage", (it) => {
     expect(context.reports.messages.map(({ id }) => id)).toEqual([report.message.id]);
   });
 
-  it("only lets an everything seed join the owner's provider session while it still qualifies", async ({
+  it("rotates off the owner's provider session on an everything seed and fails the queued seed if access ends", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("lineage-provider-session");
@@ -1491,7 +1519,20 @@ describeStore("connection grants and lineage", (it) => {
       .executeTakeFirstOrThrow();
     expect((await send(agent, task, "join-owner-session")).isError).not.toBe(true);
     const [reserved] = await read();
-    expect(reserved).toMatchObject({ providerSessionId: session.id, status: "queued" });
+    expect(reserved?.status).toBe("queued");
+    // A connected agent's Run never resumes a provider session created under the
+    // person's own configuration (`person_lineage = true`).
+    expect(reserved?.providerSessionId).not.toBe(session.id);
+    const rotated = await database
+      .selectFrom("providerSessions")
+      .select(["id", "personalContext", "personLineage"])
+      .where("id", "=", reserved!.providerSessionId!)
+      .executeTakeFirstOrThrow();
+    expect(rotated).toEqual({
+      id: reserved!.providerSessionId,
+      personalContext: true,
+      personLineage: false,
+    });
     const command = await database
       .selectFrom("commands")
       .select("id")

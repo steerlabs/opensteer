@@ -1,4 +1,5 @@
 import { lockRunProjectionRows } from "./run-projection-locks.js";
+import { outsideName } from "@opensteer/shared/outsideName";
 import { executionDate } from "./personal-transaction.js";
 import {
   projectThreadState,
@@ -13,6 +14,7 @@ import { beginPersonalRunFinish, readFinishChildren } from "./personal-run-state
 import { completePersonalToolCall, startPersonalToolCall } from "./personal-tool-calls.js";
 import {
   publishExecutionInput,
+  publishTranscriptRun,
   recordExecutionRunChange,
   writeExecutionItem,
 } from "./execution-changes.js";
@@ -615,9 +617,17 @@ async function applyEventProjection(
         !event.runId ||
         ((await runHasActiveGrant(transaction, event.runId)) &&
           (await runAssignmentAcceptsRequests(transaction, event.runId)));
+      const request = event.data.request;
+      const presentation =
+        request.kind === "harness.approval"
+          ? {
+              ...request.presentation,
+              title: outsideName(request.presentation.title, 240) || "Approval required",
+            }
+          : request.presentation;
       await transaction
         .insertInto("requests")
-        .values(requestInsert(event.data.request))
+        .values(requestInsert({ ...request, presentation }))
         .executeTakeFirstOrThrow();
       if (!accepted) {
         await transaction
@@ -806,6 +816,18 @@ async function applyEventProjection(
             .set({ contextSnapshot: null })
             .where("id", "=", run.providerSessionId)
             .execute();
+      }
+      break;
+    }
+    case "run.retry": {
+      if (event.runId) {
+        const activeRetry = event.data.status === "retrying" ? jsonValue(event.data) : null;
+        await transaction
+          .updateTable("runs")
+          .set({ providerRetry: activeRetry })
+          .where("id", "=", event.runId)
+          .execute();
+        await publishTranscriptRun(transaction, mutation, event.runId);
       }
       break;
     }
@@ -1119,7 +1141,11 @@ export async function commitRunnerEvent(
             });
             if (event.type !== "run.phase") await assignmentActivityEventsForRun(tx, run.id);
           }
-          if (event.type === "run.context-measured" || event.type === "run.compaction")
+          if (
+            event.type === "run.context-measured" ||
+            event.type === "run.compaction" ||
+            event.type === "run.retry"
+          )
             await publishThreadSummary(tx, run.threadId);
           return "applied";
         },

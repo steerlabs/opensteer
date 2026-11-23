@@ -24,6 +24,7 @@ import {
   ModelSelectionSchema,
   createId,
   harnessUsageLimitFailureCode,
+  requestOptionDeclines,
   toolOutputTextMaxBytes,
   utf8ByteLength,
   voiceCallSeed,
@@ -46,8 +47,13 @@ import {
   type HarnessRunInput,
   type SupervisedProcess,
 } from "@opensteer/harness";
+import { accountWideLimitActive } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodexHarnessDriver, codexAccessModeConfiguration } from "./index.js";
+import {
+  CodexHarnessDriver,
+  codexAccessModeConfiguration,
+  codexOthersHomeDirectory,
+} from "./index.js";
 import { CodexHarnessConfigSchema, MINIMUM_CODEX_CLI_VERSION } from "./config.js";
 
 // A Run outside any task with nothing earlier to state, for a person whose
@@ -987,6 +993,22 @@ describe("Codex app-server harness", () => {
     });
   });
 
+  it("preserves an active Codex spend-control block independently of rate-limit window resets", async () => {
+    const inspected = await inspectScenario("rate-limits-spend-control");
+
+    if (inspected?.status !== "ready") throw new Error("Expected a ready Codex inspection");
+    const usage = inspected.connections?.[0]?.usage;
+    expect(usage).toMatchObject({
+      limitReached: true,
+      windows: [
+        expect.objectContaining({ label: "weekly", usedPercent: 100 }),
+        expect.objectContaining({ label: "5h", usedPercent: 12 }),
+        { label: "Spend limit", resetsAt: null, usedPercent: 100 },
+      ],
+    });
+    expect(accountWideLimitActive(usage!, Date.parse("2026-09-08T00:00:00.000Z"))).toBe(true);
+  });
+
   it.each(["rate-limits-missing", "rate-limits-malformed"] as const)(
     "stays ready with no usage when Codex answers %s",
     async (scenario) => {
@@ -1854,6 +1876,42 @@ describe("Codex app-server harness", () => {
     await fixture.adapter.close();
   });
 
+  it("declines a Codex 0.162.0 cancel-only command approval through requestOptionDeclines", async () => {
+    const fixture = await setup("cancel-only-approval");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    const execution = session.execute(fixture.turn("Run a command"));
+    const opened = await observer.waitFor("request.opened");
+    if (opened.data.request.presentation.kind !== "choice") {
+      throw new Error("Expected choice approval request");
+    }
+    expect(opened.data.request.presentation.options.map((option) => option.id)).toEqual([
+      "allow-once",
+      "cancel",
+    ]);
+    await expect(
+      session.resolveRequest(opened.data.request.id, { kind: "choice", optionId: "reject" }),
+    ).rejects.toThrow("Response does not match the pending Codex Request");
+
+    const decline = opened.data.request.presentation.options.find(requestOptionDeclines);
+    expect(decline?.id).toBe("cancel");
+    await session.resolveRequest(opened.data.request.id, {
+      kind: "choice",
+      optionId: decline!.id,
+    });
+    await execution;
+    await session.stop();
+    await observer.done;
+
+    const captured = await fixture.capture();
+    expect(captured.find((message) => message.id === "cancel-only-approval-rpc")).toEqual({
+      id: "cancel-only-approval-rpc",
+      result: { decision: "cancel" },
+    });
+    expect(observer.events.at(-1)?.type).toBe("run.interrupted");
+    await fixture.adapter.close();
+  });
+
   it("normalizes file and permission approvals and returns the exact provider payloads", async () => {
     const fixture = await setup("approval-kinds");
     const session = await fixture.adapter.startSession(fixture.context);
@@ -2611,6 +2669,232 @@ describe("Codex app-server harness", () => {
     expect(fixture.context.environment.HOME).toBe(process.env.HOME);
     await session.stop();
     await fixture.adapter.close();
+  });
+
+  describe("whose configuration Codex starts with", () => {
+    const threadStartOf = async (fixture: Fixture) => {
+      const captured = await fixture.capture();
+      const process = captured.find((message) => "fakeCodexProcess" in message)
+        ?.fakeCodexProcess as { argv?: string[] } | undefined;
+      const threadStart = captured.find((message) => message.method === "thread/start");
+      const turnStart = captured.find((message) => message.method === "turn/start");
+      return {
+        argv: process?.argv ?? [],
+        config: ((threadStart?.params ?? {}) as { config?: Record<string, unknown> }).config ?? {},
+        turn: turnStart?.params as Record<string, unknown> | undefined,
+      };
+    };
+
+    /** The first turn's parameters, from a scenario whose turns complete. */
+    const firstTurnOf = async (personalContext: boolean) => {
+      const fixture = await setup("reasoning", {
+        accessMode: "approval-required",
+        personalContext,
+      });
+      const session = await fixture.adapter.startSession(fixture.context);
+      await session.execute(fixture.turn("Hello"));
+      await session.stop();
+      const { turn } = await threadStartOf(fixture);
+      await fixture.adapter.close();
+      return turn;
+    };
+
+    it("starts a Run without personal context with none of the person's configuration", async () => {
+      const fixture = await setup("ambient-extensions", {
+        accessMode: "approval-required",
+        personalContext: false,
+      });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const { argv, config } = await threadStartOf(fixture);
+      const turn = await firstTurnOf(false);
+      expect(argv).toEqual(
+        expect.arrayContaining(["tools.update_plan.enabled=false", 'web_search="disabled"']),
+      );
+      // No project instruction file, Codex skill, plan tool or web search.
+      expect(config).toMatchObject({
+        "skills.bundled.enabled": false,
+        "tools.update_plan.enabled": false,
+        project_doc_max_bytes: 0,
+        web_search: "disabled",
+      });
+      // No MCP server but Opensteer's: the person's are switched off.
+      expect(config).toMatchObject({
+        'mcp_servers."company.docs".enabled': false,
+        "mcp_servers.github.enabled": false,
+        "mcp_servers.opensteer.enabled": true,
+      });
+      // The instruction file it gets is what it got before: the Run's own.
+      expect(JSON.stringify(turn?.additionalContext)).toContain(
+        "Follow the workspace instructions.",
+      );
+      await session.stop();
+      await fixture.adapter.close();
+    });
+
+    it("starts a Run with personal context with Codex's own configuration", async () => {
+      const fixture = await setup("ambient-extensions", {
+        accessMode: "approval-required",
+        personalContext: true,
+      });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const { argv, config } = await threadStartOf(fixture);
+      const turn = await firstTurnOf(true);
+      expect(argv).not.toContain("tools.update_plan.enabled=false");
+      expect(argv).not.toContain('web_search="disabled"');
+      // Only the features Opensteer needs are set; the rest are the person's.
+      expect(argv).toContain('features={"multi_agent"=false,"multi_agent_v2"=true}');
+      for (const key of [
+        "project_doc_max_bytes",
+        "web_search",
+        "tools.update_plan.enabled",
+        "skills.bundled.enabled",
+        "skills.config",
+      ]) {
+        expect(config).not.toHaveProperty(key);
+      }
+      expect(config.features).toEqual({ multi_agent: false, multi_agent_v2: true });
+      expect(config.allow_login_shell).toBe(false);
+      // The person's servers stay on, approved as their own configuration says.
+      expect(config).not.toHaveProperty('mcp_servers."company.docs".enabled');
+      expect(config).not.toHaveProperty('mcp_servers."company.docs".default_tools_approval_mode');
+      expect(config).not.toHaveProperty("mcp_servers.github.default_tools_approval_mode");
+      // Opensteer's own server, exactly as without personal context.
+      expect(config).toMatchObject({
+        "mcp_servers.opensteer.default_tools_approval_mode": "approve",
+        "mcp_servers.opensteer.enabled": true,
+        "mcp_servers.opensteer.http_headers": {
+          Authorization: `Bearer ${fixture.context.agentTools.token}`,
+        },
+        "mcp_servers.opensteer.url": fixture.context.agentTools.url,
+      });
+      expect(config).not.toHaveProperty("mcp_servers.opensteer.disabled_tools");
+      // Codex reads Agent home's AGENTS.md itself; Opensteer does not repeat it.
+      expect(JSON.stringify(turn?.additionalContext)).not.toContain(
+        "Follow the workspace instructions.",
+      );
+      expect(JSON.stringify(turn?.additionalContext)).not.toContain(
+        "There are no current task instructions",
+      );
+      // The task's mode, on every turn, whatever the person's config.toml says.
+      expect(turn).toMatchObject({
+        approvalPolicy: "untrusted",
+        sandboxPolicy: { networkAccess: false, type: "readOnly" },
+      });
+      await session.stop();
+      await fixture.adapter.close();
+    });
+
+    it("says plainly when the person's own server named opensteer runs a command", async () => {
+      const fixture = await setup("person-opensteer-command", { personalContext: true });
+      await expect(fixture.adapter.startSession(fixture.context)).rejects.toMatchObject({
+        code: "conflict",
+        message: expect.stringContaining(
+          "Your Codex configuration has an MCP server named opensteer that runs a command",
+        ),
+      });
+      await fixture.adapter.close();
+    });
+
+    it("keeps the person's own enabled_tools from filtering Opensteer's tools", async () => {
+      const fixture = await setup("person-opensteer-url", { personalContext: true });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const { config } = await threadStartOf(fixture);
+      expect(config["mcp_servers.opensteer.enabled_tools"]).toEqual(
+        expect.arrayContaining(["opensteer_task_read"]),
+      );
+      expect(config["mcp_servers.opensteer.disabled_tools"]).toEqual([]);
+      await session.stop();
+      await fixture.adapter.close();
+    });
+
+    it("starts a connected agent's or a chat's task with personal context with none of the person's configuration", async () => {
+      const fixture = await setup("ambient-extensions", {
+        accessMode: "approval-required",
+        personalContext: true,
+        personLineage: false,
+      });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const { argv, config } = await threadStartOf(fixture);
+      expect(argv).toEqual(
+        expect.arrayContaining(['web_search="disabled"', 'cli_auth_credentials_store="file"']),
+      );
+      expect(config).toMatchObject({
+        "mcp_servers.github.enabled": false,
+        project_doc_max_bytes: 0,
+        web_search: "disabled",
+      });
+      await session.stop();
+      await fixture.adapter.close();
+    });
+
+    it("starts others' tasks from an Opensteer-owned CODEX_HOME linking auth.json and keeping only model-reaching config", async () => {
+      const root = await mkdtemp(join(tmpdir(), "opensteer-codex-others-home-"));
+      temporaryDirectories.push(root);
+      const personCodexHome = join(root, "person-codex");
+      await mkdir(personCodexHome, { recursive: true });
+      const personAuth = join(personCodexHome, "auth.json");
+      await writeFile(
+        personAuth,
+        JSON.stringify({ OPENAI_API_KEY: "sk-stub", auth_mode: "apikey" }),
+      );
+      await writeFile(
+        join(personCodexHome, "config.toml"),
+        [
+          'model_provider = "corp"',
+          'notify = ["touch", "/tmp/should-not-run"]',
+          'developer_instructions = "PRIVATE-MARKER"',
+          "[model_providers.corp]",
+          'name = "Corp"',
+          'base_url = "https://corp.invalid/v1"',
+          'wire_api = "responses"',
+          'env_key = "CORP_API_KEY"',
+          "[agents.custom]",
+          'description = "PRIVATE-AGENT"',
+        ].join("\n"),
+      );
+      const fixture = await setup("ambient-extensions", {
+        environmentOverrides: { CODEX_HOME: personCodexHome },
+        personalContext: true,
+        personLineage: false,
+      });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const captured = await fixture.capture();
+      const processRecord = captured.find((message) => message.fakeCodexProcess)
+        ?.fakeCodexProcess as { environment?: Record<string, string | null> } | undefined;
+      const codexHome = processRecord?.environment?.CODEX_HOME ?? undefined;
+      expect(codexHome).toBeDefined();
+      expect(codexHome).not.toBe(personCodexHome);
+      const authLink = join(codexHome!, "auth.json");
+      expect((await lstat(authLink)).isSymbolicLink()).toBe(true);
+      expect(await readlink(authLink)).toBe(personAuth);
+      const generatedConfig = await readFile(join(codexHome!, "config.toml"), "utf8");
+      expect(generatedConfig).toContain('cli_auth_credentials_store = "file"');
+      expect(generatedConfig).toContain('model_provider = "corp"');
+      expect(generatedConfig).toContain('base_url = "https://corp.invalid/v1"');
+      expect(generatedConfig).not.toContain("notify");
+      expect(generatedConfig).not.toContain("PRIVATE-MARKER");
+      expect(generatedConfig).not.toContain("PRIVATE-AGENT");
+      await session.stop();
+      await fixture.adapter.close();
+    });
+
+    it("refuses others' tasks before spawning Codex when the person uses keyring auth or has no auth.json", async () => {
+      const root = await mkdtemp(join(tmpdir(), "opensteer-codex-keyring-"));
+      temporaryDirectories.push(root);
+      const keyringHome = join(root, "keyring-codex");
+      await mkdir(keyringHome, { recursive: true });
+      await writeFile(join(keyringHome, "config.toml"), 'cli_auth_credentials_store = "keyring"\n');
+      const fixture = await setup("ambient-extensions", {
+        environmentOverrides: { CODEX_HOME: keyringHome },
+        personalContext: true,
+        personLineage: false,
+      });
+      await expect(fixture.adapter.startSession(fixture.context)).rejects.toMatchObject({
+        code: "forbidden",
+        message: expect.stringContaining('cli_auth_credentials_store = "file"'),
+      });
+      await fixture.adapter.close();
+    });
   });
 
   it("refuses startup when the required computer_use tool is missing", async () => {
@@ -3805,7 +4089,11 @@ interface SetupOptions {
   readonly maxStderrBytes?: number;
   readonly maxWriteBufferBytes?: number;
   readonly machineAccessNotice?: string;
+  readonly personalContext?: boolean;
+  /** Defaults to `personalContext`: the person's own task unless a test says otherwise. */
+  readonly personLineage?: boolean;
   readonly requestTimeoutMs?: number;
+  readonly retryBudgetMs?: number;
   readonly providerStateKind?: "ambient" | "isolated";
   readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
   readonly shutdownGraceMs?: number;
@@ -3823,9 +4111,18 @@ interface Fixture {
 async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixture> {
   const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-test-"));
   temporaryDirectories.push(directory);
+  const defaultCodexHome = join(directory, "ambient-codex-home");
+  if (!options.environmentOverrides?.CODEX_HOME) {
+    await mkdir(defaultCodexHome, { recursive: true });
+    await writeFile(
+      join(defaultCodexHome, "auth.json"),
+      JSON.stringify({ OPENAI_API_KEY: "sk-test-stub", auth_mode: "apikey" }),
+    );
+  }
   const capturePath = join(directory, "capture.jsonl");
   const environment = stringEnvironment({
     ...process.env,
+    CODEX_HOME: defaultCodexHome,
     ...options.environmentOverrides,
     ...(scenario === "ambient-extensions"
       ? { FAKE_CODEX_AMBIENT_SKILL_PATH: join(directory, "ambient-skill", "SKILL.md") }
@@ -3841,6 +4138,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
       arguments: options.executable ? [] : [fakeServer, ...(options.serverArguments ?? [])],
       executable: options.executable ?? process.execPath,
     },
+    ...(options.retryBudgetMs !== undefined ? { retryBudgetMs: options.retryBudgetMs } : {}),
   });
   const harnessInstanceId = createId("harnessInstance") as HarnessInstanceId;
   const compatible = compatibleContext(directory, "isolated");
@@ -3863,6 +4161,8 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     instanceId: harnessInstanceId,
   });
   const context: HarnessSessionContext = {
+    personalContext: options.personalContext ?? false,
+    personLineage: options.personLineage ?? options.personalContext ?? false,
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,
@@ -4307,6 +4607,83 @@ describe("Codex Thread naming", () => {
       await fixture.adapter.close();
     }
   });
+
+  it("runs ambient background text from the Opensteer-owned CODEX_HOME and refuses keyring logins without spawning", async () => {
+    const ambientHome = await mkdtemp(join(tmpdir(), "opensteer-codex-bg-ambient-"));
+    temporaryDirectories.push(ambientHome);
+    await writeFile(
+      join(ambientHome, "auth.json"),
+      JSON.stringify({ OPENAI_API_KEY: "sk-bg-stub", auth_mode: "apikey" }),
+    );
+    await writeFile(
+      join(ambientHome, "config.toml"),
+      [
+        'notify = ["echo", "never-run-for-bg"]',
+        'developer_instructions = "person-secret"',
+        'model_provider = "openai"',
+        "",
+      ].join("\n"),
+    );
+    let launched: HarnessProcessLaunch | undefined;
+    const fixture = await setup("thread-name", {
+      environmentOverrides: { CODEX_HOME: ambientHome },
+      providerStateKind: "ambient",
+    });
+    try {
+      expect(
+        await fixture.adapter.generateText!({
+          context: {
+            ...fixture.context,
+            scratchDirectory: fixture.context.threadStateDirectory,
+            wrapProcessLaunch: (launch) => {
+              launched = launch;
+              return launch;
+            },
+          },
+          modelSelection: fixture.context.modelSelection,
+          prompt: "Name it",
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toEqual({ ok: true, text: "Support migration\nheadphones" });
+      const expectedHome = codexOthersHomeDirectory(fixture.context.providerState, ambientHome);
+      expect(launched?.environment.CODEX_HOME).toBe(expectedHome);
+      expect(launched?.args).toContain('cli_auth_credentials_store="file"');
+      const writtenConfig = await readFile(join(expectedHome, "config.toml"), "utf8");
+      expect(writtenConfig).not.toContain("never-run-for-bg");
+      expect(writtenConfig).not.toContain("person-secret");
+    } finally {
+      await fixture.adapter.close();
+    }
+
+    const keyringHome = await mkdtemp(join(tmpdir(), "opensteer-codex-bg-keyring-"));
+    temporaryDirectories.push(keyringHome);
+    await writeFile(join(keyringHome, "config.toml"), 'cli_auth_credentials_store = "keyring"\n');
+    let keyringSpawns = 0;
+    const keyringFixture = await setup("thread-name", {
+      environmentOverrides: { CODEX_HOME: keyringHome },
+      providerStateKind: "ambient",
+    });
+    try {
+      expect(
+        await keyringFixture.adapter.generateText!({
+          context: {
+            ...keyringFixture.context,
+            scratchDirectory: keyringFixture.context.threadStateDirectory,
+            wrapProcessLaunch: (launch) => {
+              keyringSpawns += 1;
+              return launch;
+            },
+          },
+          modelSelection: keyringFixture.context.modelSelection,
+          prompt: "Name it",
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toEqual({ ok: false, failure: "unavailable" });
+      expect(keyringSpawns).toBe(0);
+    } finally {
+      await keyringFixture.adapter.close();
+    }
+  });
 });
 
 it("delivers distinct full names for two plugins and a loose review skill", async () => {
@@ -4350,4 +4727,179 @@ it("retains tool-result image files without provider base64", async () => {
     await session.stop();
     await fixture.adapter.close();
   }
+});
+
+describe("Codex provider retry visibility and budget", () => {
+  it("surfaces retry notices, ignores userMessage items for recovery, and emits recovered on model output", async () => {
+    const fixture = await setup("retry-recover");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("Go"));
+      await observer.waitFor("run.completed");
+      const retries = observer.events.filter((event) => event.type === "run.retry");
+      expect(retries).toEqual([
+        {
+          type: "run.retry",
+          data: {
+            status: "retrying",
+            attempt: 1,
+            maxAttempts: 5,
+            code: "other",
+            message: "Selected model is at capacity. Please try a different model.",
+          },
+        },
+        {
+          type: "run.retry",
+          data: {
+            status: "retrying",
+            attempt: 2,
+            maxAttempts: 5,
+            code: "other",
+            message: "Selected model is at capacity. Please try a different model.",
+          },
+        },
+        {
+          type: "run.retry",
+          data: {
+            status: "recovered",
+            attempt: 2,
+            maxAttempts: 5,
+            code: "other",
+            message: "Selected model is at capacity. Please try a different model.",
+          },
+        },
+      ]);
+      expect(observer.events.some((event) => event.type === "run.completed")).toBe(true);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("fails the run and interrupts Codex once the wall-clock retry budget expires", async () => {
+    const fixture = await setup("retry-budget-exceeded", { retryBudgetMs: 120 });
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("Go"));
+      const failed = await observer.waitFor("run.failed");
+      expect(failed.data).toMatchObject({
+        code: "other",
+        retryable: false,
+      });
+      expect(failed.data.message).toContain("Selected model is at capacity.");
+      expect(observer.events.some((event) => event.type === "run.completed")).toBe(false);
+      const captured = await fixture.capture();
+      expect(captured.some((entry) => entry.method === "turn/interrupt")).toBe(true);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("preserves explicit usageLimitExceeded on expiry without misclassifying plain HTTP 429", async () => {
+    const rateLimited = await setup("retry-budget-429", { retryBudgetMs: 80 });
+    const rateLimitedSession = await rateLimited.adapter.startSession(rateLimited.context);
+    const rateLimitedObserver = observe(rateLimitedSession.events);
+    try {
+      await rateLimitedSession.execute(rateLimited.turn("Go"));
+      const failed = await rateLimitedObserver.waitFor("run.failed");
+      expect(failed.data.retryable).toBe(false);
+      expect(failed.data.code).not.toBe(harnessUsageLimitFailureCode);
+    } finally {
+      await rateLimitedSession.stop();
+      await rateLimited.adapter.close();
+    }
+
+    const quota = await setup("retry-budget-usage-limit", { retryBudgetMs: 80 });
+    const quotaSession = await quota.adapter.startSession(quota.context);
+    const quotaObserver = observe(quotaSession.events);
+    try {
+      await quotaSession.execute(quota.turn("Go"));
+      const failed = await quotaObserver.waitFor("run.failed");
+      expect(failed.data).toMatchObject({
+        code: harnessUsageLimitFailureCode,
+        retryable: false,
+      });
+    } finally {
+      await quotaSession.stop();
+      await quota.adapter.close();
+    }
+  });
+
+  it("clears the root retry timer when the root turn settles while waiting on a child", async () => {
+    const fixture = await setup("retry-root-settles-with-child", { retryBudgetMs: 90 });
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("Go"));
+      await observer.waitFor("run.completed");
+      expect(observer.events.some((event) => event.type === "run.failed")).toBe(false);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("tracks retry notices and delta recovery for collabAgentToolCall children before adoption", async () => {
+    const recovering = await setup("retry-child-collab-delta-recovers", { retryBudgetMs: 90 });
+    const recoveringSession = await recovering.adapter.startSession(recovering.context);
+    const recoveringObserver = observe(recoveringSession.events);
+    try {
+      await recoveringSession.execute(recovering.turn("Go"));
+      await recoveringObserver.waitFor("run.completed");
+      const retries = recoveringObserver.events.filter((event) => event.type === "run.retry");
+      expect(retries.map((event) => event.data.status)).toEqual(["retrying", "recovered"]);
+      expect(recoveringObserver.events.some((event) => event.type === "run.failed")).toBe(false);
+    } finally {
+      await recoveringSession.stop();
+      await recovering.adapter.close();
+    }
+
+    const expiring = await setup("retry-child-collab-expires", { retryBudgetMs: 90 });
+    const expiringSession = await expiring.adapter.startSession(expiring.context);
+    const expiringObserver = observe(expiringSession.events);
+    try {
+      await expiringSession.execute(expiring.turn("Go"));
+      const failed = await expiringObserver.waitFor("run.failed");
+      expect(failed.data.retryable).toBe(false);
+      expect(failed.data.message).toContain("Child stuck at capacity.");
+    } finally {
+      await expiringSession.stop();
+      await expiring.adapter.close();
+    }
+  });
+
+  it("does not let child adoption replay cancel a live retry deadline", async () => {
+    const fixture = await setup("retry-child-adopt-replay-preserves-retry", { retryBudgetMs: 90 });
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("Go"));
+      const failed = await observer.waitFor("run.failed");
+      expect(failed.data.retryable).toBe(false);
+      expect(failed.data.message).toContain("Child stalled after early reasoning.");
+      const retries = observer.events.filter((event) => event.type === "run.retry");
+      expect(retries.map((event) => event.data.status)).toEqual(["retrying"]);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("enriches a generic turn/completed failure with prior non-retryable error details", async () => {
+    const fixture = await setup("error-nonretryable-detail");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("Go"));
+      const failed = await observer.waitFor("run.failed");
+      expect(failed.data.message).toContain("Selected model is at capacity.");
+      expect(observer.events.some((event) => event.type === "run.retry")).toBe(false);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
 });

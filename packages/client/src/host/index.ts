@@ -88,6 +88,7 @@ export * from "./request-settlement.js";
 export * from "./personal-remote-access.js";
 export * from "./home-account-link.js";
 export * from "./remote-access.js";
+export * from "./remote-access-activity.js";
 export * from "./browser-cursor.js";
 export * from "./connected-agents.js";
 export * from "./chat-screen-host.js";
@@ -118,6 +119,7 @@ export * from "./needs-you.js";
 export * from "./thread-visits.js";
 
 export * from "./idle-compaction.js";
+export * from "./provider-retry.js";
 
 export * from "./asset-urls.js";
 

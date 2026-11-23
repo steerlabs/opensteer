@@ -11,6 +11,9 @@ export * from "./input-projection.js";
 export * from "./initial-context.js";
 export * from "./installed-engine.js";
 export * from "./engine-installation.js";
+export * from "./codex-config.js";
+export * from "./pi-config.js";
+export * from "./engine-configuration.js";
 export * from "./native-images.js";
 export * from "./labels.js";
 export * from "./model-servers.js";
@@ -36,3 +39,11 @@ export { resolveLightModel } from "./light-model.js";
 export * from "./generated-image.js";
 export * from "./output-images.js";
 export * from "./image-generation-events.js";
+export * from "./provider-retry.js";
+export {
+  HarnessObservedUsageSchema,
+  harnessObservedUsageLabelMaxLength,
+  harnessObservedUsageMaxWindows,
+  usageWindowHasReset,
+  usageWindowIsAccountWide,
+} from "@opensteer/protocol";

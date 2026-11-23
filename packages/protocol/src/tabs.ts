@@ -125,6 +125,8 @@ export const TabCommandSchema = z.discriminatedUnion("type", [
   TabOrganizeInputSchema.extend({ ...command, type: z.literal("tab.organize") }),
   TabGroupUpdateInputSchema.safeExtend({ ...command, type: z.literal("tab.group.update") }),
   z.strictObject({ ...command, type: z.literal("tab.group.delete"), groupId }),
+  /** Closes the members the group has when it runs, and the group once none is left. */
+  z.strictObject({ ...command, type: z.literal("tab.group.close"), groupId }),
 ]);
 export type TabCommand = z.infer<typeof TabCommandSchema>;
 export const TabCommandResultSchema = z.discriminatedUnion("type", [
@@ -142,6 +144,12 @@ export const TabCommandResultSchema = z.discriminatedUnion("type", [
     layout: TabLayoutViewSchema,
   }),
   z.object({ type: z.literal("tab.group.delete"), layout: TabLayoutViewSchema }),
+  TabCloseResultSchema.extend({
+    type: z.literal("tab.group.close"),
+    /** Whether the group is gone: false while a member that could not close keeps it. */
+    groupClosed: z.boolean(),
+    layout: TabLayoutViewSchema,
+  }),
   z.object({ type: z.literal("tab.activate"), tab: TabViewSchema, viewer: TabViewerSchema }),
 ]);
 export type TabCommandResult = z.infer<typeof TabCommandResultSchema>;

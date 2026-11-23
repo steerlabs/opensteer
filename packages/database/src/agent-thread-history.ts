@@ -1,11 +1,16 @@
 import {
   OpensteerError,
+  personQuestionRecord,
   requestTitleText,
   utf8Prefix,
   type ExecutionNodeId,
   type IntegrationCallSubject,
   type Message,
+  type PersonQuestionRecord,
+  type Request,
   type RequestId,
+  type RequestPresentation,
+  type RequestResponse,
   type RunId,
   type ThreadId,
   type UserId,
@@ -19,7 +24,10 @@ import { z } from "zod";
 import type { PlaceView } from "./personal-state-schema.js";
 import { authorizedDetail, authorizedSyncState } from "./personal-sync-store.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
+import { requestFromRow } from "./request-persistence.js";
+import { connectionRequests } from "./request-agent-response.js";
 import type { DatabaseSchema } from "./schema.js";
+import type { ThreadCallerAuthority } from "./thread-caller.js";
 import { executionNodeFromRow, messagesFromRows } from "./thread-row-mappers.js";
 
 type Database = Kysely<DatabaseSchema>;
@@ -53,32 +61,70 @@ export type AgentThreadActivityItem = ActivityBase &
         requestId: RequestId;
         title: string;
         requestKind: string;
+        requestStatus: Request["status"];
+        question: PersonQuestionRecord | null;
+        questionOversized?: boolean;
       }
   );
 
 export async function readAgentThreadRecent(
   database: Database,
-  input: { threadId: ThreadId; ownerId: UserId; runLimit: number },
+  input: {
+    threadId: ThreadId;
+    ownerId: UserId;
+    runLimit: number;
+    connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
+  },
 ) {
   return withPersonalReadTransaction(database, async (tx) => {
     await authorizedSyncState(tx, input.ownerId);
     if (!(await authorizedDetail(tx, input.ownerId, { kind: "thread", threadId: input.threadId })))
       return null;
-    const runs = await tx
-      .selectFrom("runs")
-      .select([
-        "id as runId",
-        "status",
-        "assignmentId",
-        "modelSelection",
-        "createdAt",
-        "startedAt",
-        "completedAt",
-      ])
-      .where("threadId", "=", input.threadId)
-      .orderBy("runOrdinal", "desc")
-      .limit(Math.max(25, Math.min(50, input.runLimit)))
-      .execute();
+    const visibleRequests = input.connectionAuthority
+      ? await connectionRequests(tx, input.connectionAuthority, { ownerVerified: true })
+      : null;
+    const [runs, pending] = await Promise.all([
+      tx
+        .selectFrom("runs")
+        .select([
+          "id as runId",
+          "status",
+          "assignmentId",
+          "modelSelection",
+          "createdAt",
+          "startedAt",
+          "completedAt",
+        ])
+        .where("threadId", "=", input.threadId)
+        .orderBy("runOrdinal", "desc")
+        .limit(Math.max(25, Math.min(50, input.runLimit)))
+        .execute(),
+      visibleRequests
+        ? tx
+            .selectFrom(visibleRequests.as("visible_requests"))
+            .selectAll("visible_requests")
+            .select(sql<number>`count(*) over ()::int`.as("totalPending"))
+            .where("visible_requests.originatingThreadId", "=", input.threadId)
+            .where("visible_requests.status", "=", "pending")
+            .orderBy("visible_requests.createdAt", "asc")
+            .orderBy("visible_requests.id", "asc")
+            .limit(25)
+            .execute()
+            .then((rows) => ({
+              rows: rows.map(({ totalPending: _totalPending, ...row }) => row),
+              count: Number(rows[0]?.totalPending ?? 0),
+            }))
+        : tx
+            .selectFrom("requests")
+            .selectAll()
+            .where("originatingThreadId", "=", input.threadId)
+            .where("status", "=", "pending")
+            .orderBy("createdAt", "asc")
+            .orderBy("id", "asc")
+            .limit(25)
+            .execute()
+            .then((rows) => ({ rows, count: undefined })),
+    ]);
     const recent = runs.slice(0, 25).map(({ runId }) => runId);
     const places = recent.length
       ? (
@@ -102,6 +148,8 @@ export async function readAgentThreadRecent(
         completedAt: run.completedAt?.toISOString() ?? null,
       })),
       places,
+      pendingRequests: pending.rows.map(requestFromRow),
+      ...(pending.count !== undefined ? { pendingRequestCount: pending.count } : {}),
     };
   });
 }
@@ -128,15 +176,26 @@ function activityMetadata(
     nodeId?: ExecutionNodeId;
     messagesOnly?: boolean;
   },
+  visibleRequests?: Awaited<ReturnType<typeof connectionRequests>>,
 ) {
   const query = tx
     .selectFrom("transcriptItems as item")
     .leftJoin("messages as message", "message.id", "item.messageId")
+    .$if(visibleRequests !== undefined, (q) =>
+      q.leftJoin(visibleRequests!.as("request"), (join) =>
+        join.onRef("request.id", "=", "item.requestId"),
+      ),
+    )
+    .$if(visibleRequests === undefined, (q) =>
+      q.leftJoin("requests as request", "request.id", "item.requestId"),
+    )
     .select(["item.id", "item.position"])
     .select(
-      sql<number>`coalesce(octet_length(jsonb_build_array(message.content,message.author,message.quote,message.origin)::text),0)`.as(
-        "messageBytes",
-      ),
+      sql<number>`coalesce(octet_length(jsonb_build_array(message.content,message.author,message.quote,message.origin)::text),0)
+        + case when item.kind='request' and request.kind='person.question' and not jsonb_path_exists(request.presentation, '$.fields[*] ? (@.secret == true)')
+          then coalesce(case when octet_length(request.presentation::text)<=2097152 then octet_length(request.presentation::text) end,0)
+            + coalesce(case when octet_length(request.response::text)<=2097152 then octet_length(request.response::text) end,0)
+          else 0 end`.as("messageBytes"),
     )
     .where("item.threadId", "=", input.threadId)
     .where(sql<boolean>`item.visible`);
@@ -148,10 +207,21 @@ function activityMetadata(
           ? sql<boolean>`item.kind='node-message'`
           : sql<boolean>`item.kind in ('node-message','tool')`,
       );
+  if (input.messagesOnly)
+    return query
+      .where("item.nodeId", "is", null)
+      .where(
+        sql<boolean>`((item.kind='message' and message.published and message.author->>'kind' is distinct from 'team-member') or (item.kind='request' and request.kind='person.question'))`,
+      );
   return query
     .where("item.nodeId", "is", null)
     .where(sql<boolean>`item.kind in ('message','tool','place','app','request','node')`)
-    .where(sql<boolean>`item.kind <> 'message' or message.published`);
+    .where(
+      sql<boolean>`(item.kind <> 'message' or (message.published and message.author->>'kind' is distinct from 'team-member'))`,
+    )
+    .$if(visibleRequests !== undefined, (q) =>
+      q.where(sql<boolean>`(item.kind <> 'request' or request.id is not null)`),
+    );
 }
 
 async function activityItems(
@@ -188,6 +258,15 @@ async function activityItems(
     .select([
       sql<boolean>`request.presentation->>'agentProposed' = 'true'`.as("agentProposed"),
       sql<string | null>`left(request.presentation->>'title',240)`.as("requestTitle"),
+      sql<RequestPresentation | null>`case when request.kind='person.question' and not jsonb_path_exists(request.presentation, '$.fields[*] ? (@.secret == true)') and octet_length(request.presentation::text)<=2097152 then request.presentation end`.as(
+        "requestPresentation",
+      ),
+      sql<RequestResponse | null>`case when request.kind='person.question' and not jsonb_path_exists(request.presentation, '$.fields[*] ? (@.secret == true)') and octet_length(request.response::text)<=2097152 then request.response end`.as(
+        "requestResponse",
+      ),
+      sql<boolean>`coalesce(request.kind='person.question' and not jsonb_path_exists(request.presentation, '$.fields[*] ? (@.secret == true)') and (octet_length(request.presentation::text)>2097152 or octet_length(request.response::text)>2097152), false)`.as(
+        "questionOversized",
+      ),
       sql<string | PlaceView | null>`case when item.kind='place' then item.body
         when item.kind='node-message' then case when ${named} and octet_length(item.body::text)<=491520 then item.body
           else to_jsonb(left(item.body#>>'{}',2048)) end end`.as("placeOrText"),
@@ -289,29 +368,40 @@ async function activityItems(
               },
             ]
           : [];
-      case "request":
-        return row.requestId && row.requestKind
-          ? [
-              {
-                ...base,
-                type:
-                  row.requestStatus === "cancelled"
-                    ? "request.cancelled"
-                    : row.requestStatus === "pending"
-                      ? "request.opened"
-                      : "request.resolved",
-                requestId: row.requestId,
-                title: utf8Prefix(
-                  requestTitleText({
-                    title: row.requestTitle ?? "Request",
-                    ...(row.agentProposed ? { agentProposed: true } : {}),
-                  }),
-                  240,
-                ),
-                requestKind: row.requestKind,
-              },
-            ]
-          : [];
+      case "request": {
+        if (!row.requestId || !row.requestKind || !row.requestStatus) return [];
+        const rawQuestion = row.requestPresentation
+          ? personQuestionRecord({
+              kind: row.requestKind,
+              status: row.requestStatus,
+              presentation: row.requestPresentation,
+              response: row.requestResponse ?? null,
+            })
+          : null;
+        return [
+          {
+            ...base,
+            type:
+              row.requestStatus === "cancelled"
+                ? "request.cancelled"
+                : row.requestStatus === "pending"
+                  ? "request.opened"
+                  : "request.resolved",
+            requestId: row.requestId,
+            title: utf8Prefix(
+              requestTitleText({
+                title: row.requestTitle ?? "Request",
+                ...(row.agentProposed ? { agentProposed: true } : {}),
+              }),
+              240,
+            ),
+            requestKind: row.requestKind,
+            requestStatus: row.requestStatus,
+            question: rawQuestion,
+            ...(row.questionOversized ? { questionOversized: true } : {}),
+          },
+        ];
+      }
       default:
         return [];
     }
@@ -328,6 +418,7 @@ export async function readAgentThreadActivity(
     limit: number;
     before?: string;
     itemId?: string;
+    connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
   },
 ) {
   return withPersonalReadTransaction(database, async (tx) => {
@@ -337,6 +428,10 @@ export async function readAgentThreadActivity(
       : { kind: "thread" as const, threadId: input.threadId };
     const thread = await authorizedDetail(tx, input.ownerId, scope);
     if (!thread) return null;
+    const visibleRequests =
+      input.connectionAuthority && !input.nodeId
+        ? await connectionRequests(tx, input.connectionAuthority, { ownerVerified: true })
+        : undefined;
     const address = {
       deploymentId: state.deploymentId,
       epoch: state.epoch,
@@ -362,7 +457,7 @@ export async function readAgentThreadActivity(
     const encodeCursor = (key: ActivityKey) =>
       Buffer.from(JSON.stringify({ ...address, ...key })).toString("base64url");
     const limit = Math.min(100, Math.max(1, input.limit));
-    let query = activityMetadata(tx, input);
+    let query = activityMetadata(tx, input, visibleRequests);
     if (input.itemId) query = query.where("item.id", "=", input.itemId);
     else if (before)
       query = query.where(

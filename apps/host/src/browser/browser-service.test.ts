@@ -8627,6 +8627,132 @@ it("person activation resumes the exact suspended workspace tab in its existing 
   expect(await activated).toEqual({ kind: "page", sessionId, surfaceId: row.id });
 });
 
+it("a tab closed while activation reopens it in a new session leaves no page running", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      surfaceState: true,
+      tabRestoreVersion: true,
+    });
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "sleep",
+  );
+  await memory.add(descriptor);
+  const row = memory.rows.get(descriptor.id)!;
+  // Its browser ended while it slept: activation starts a session of its own for it.
+  row.pageBinding = { ...row.pageBinding!, sessionId: createBrowserSessionId() };
+  row.url = "https://example.test/f1";
+  // The person closes the tab once the restore has read it, while its page is starting.
+  const get = memory.store.get.bind(memory.store);
+  let reads = 0;
+  (memory.store as { get: typeof get }).get = async (owner, id, closed) => {
+    const current = await get(owner, id, closed);
+    if (id === row.id && ++reads === 1) row.closedAt = new Date();
+    return current;
+  };
+  await expect(service.pageTabs.activate!(ownerId, row, "activate")).rejects.toMatchObject({
+    code: "not_found",
+  });
+  // The page that started for it is fenced and closed, as any closed tab's page is.
+  const sent = (method: string) =>
+    runtime.receivedCommands().find((message) => {
+      const command = message.command as
+        { method?: string; parameters?: { surfaceId?: string } } | undefined;
+      return (
+        message.type === "cdp.command" &&
+        command?.method === method &&
+        command.parameters?.surfaceId === row.id
+      );
+    });
+  await vi.waitFor(() => expect(sent(browserHostMethods.fenceTab)).toBeDefined());
+  runtime.sendServer({
+    type: "cdp.result",
+    requestId: sent(browserHostMethods.fenceTab)!.requestId,
+    result: {},
+  });
+  await vi.waitFor(() => expect(sent(browserHostMethods.closeTab)).toBeDefined());
+});
+
+it("a reopening whose last read fails for another reason keeps the open tab and its new page", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      surfaceState: true,
+      tabRestoreVersion: true,
+    });
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "sleep",
+  );
+  await memory.add(descriptor);
+  const row = memory.rows.get(descriptor.id)!;
+  // Its browser ended while it slept: activation starts a session of its own for it.
+  const dead = createBrowserSessionId();
+  row.pageBinding = { ...row.pageBinding!, sessionId: dead };
+  row.url = "https://example.test/f1";
+  // The read after the page started fails, as a lost database connection does; the tab is open.
+  const failure = new Error("Connection terminated unexpectedly");
+  const get = memory.store.get.bind(memory.store);
+  let reads = 0;
+  (memory.store as { get: typeof get }).get = async (owner, id, closed) => {
+    // The fourth read of this tab is the reopening's own, after its page started.
+    if (id === row.id && ++reads === 4) throw failure;
+    return get(owner, id, closed);
+  };
+  await expect(service.pageTabs.activate!(ownerId, row, "activate")).rejects.toBe(failure);
+  const started = row.pageBinding!.sessionId;
+  expect(started).not.toBe(dead);
+  expect(row.closedAt).toBeNull();
+  // The page is there, and the next activation finds it in the same session.
+  runtime.publishTabs({
+    surfaces: [
+      {
+        id: row.id,
+        state: "live",
+        active: true,
+        title: "Restored",
+        url: "https://example.test/f1",
+      },
+    ],
+  });
+  await vi.waitFor(() => expect(service.tabStateOf(started, row.id)).toBe("live"));
+  expect(await service.pageTabs.activate!(ownerId, row, "again")).toMatchObject({
+    kind: "page",
+    sessionId: started,
+    surfaceId: row.id,
+  });
+  // A queued close would have refused that activation as still closing; nothing was sent for it.
+  const sentFor = (method: string) =>
+    runtime.receivedCommands().some((message) => {
+      const command = message.command as
+        { method?: string; parameters?: { surfaceId?: string } } | undefined;
+      return (
+        message.type === "cdp.command" &&
+        command?.method === method &&
+        command.parameters?.surfaceId === row.id
+      );
+    });
+  expect(sentFor(browserHostMethods.fenceTab)).toBe(false);
+  expect(sentFor(browserHostMethods.closeTab)).toBe(false);
+});
+
 function memoryTabs() {
   const rows = new Map<string, TabRecord>();
   const add = async (write: TabWrite) => {
@@ -8676,6 +8802,24 @@ function memoryTabs() {
       descriptor: object,
     ) => {
       Object.assign(rows.get(id) ?? {}, descriptor);
+    },
+    bindPage: async (
+      _owner: UserId,
+      id: string,
+      generation: number,
+      previous: unknown,
+      binding: TabRecord["pageBinding"],
+    ) => {
+      const row = rows.get(id);
+      if (
+        !row ||
+        row.closedAt ||
+        row.generation !== generation ||
+        JSON.stringify(row.pageBinding) !== JSON.stringify(previous)
+      )
+        return null;
+      row.pageBinding = binding;
+      return { ...row };
     },
     close,
   } as unknown as TabStore;

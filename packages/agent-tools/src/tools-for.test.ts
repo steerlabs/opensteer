@@ -16,6 +16,9 @@ it("offers discovery for both browser grants and reserves saved fills for profil
     "browser_connect",
     "browser_use",
     "discover",
+    "opensteer_command",
+    "opensteer_commands",
+    "opensteer_state",
   ]);
   expect(offered({ kind: "browser-profile", profileId: createId("browserProfile") })).toEqual([
     "ask_person",
@@ -23,6 +26,9 @@ it("offers discovery for both browser grants and reserves saved fills for profil
     "browser_use",
     "card_request",
     "discover",
+    "opensteer_command",
+    "opensteer_commands",
+    "opensteer_state",
     "saved_login_request",
   ]);
 });

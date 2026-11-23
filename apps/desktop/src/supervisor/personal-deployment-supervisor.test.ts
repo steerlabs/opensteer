@@ -1043,6 +1043,30 @@ describe("PersonalDeploymentSupervisor", () => {
     expect(fixture.supervisor.status.issue?.detail).not.toContain("private-value");
   });
 
+  it("scrubs a configured proxy password from deployment status details", async () => {
+    vi.stubEnv("HTTPS_PROXY", "http://alice:p@ss/word@proxy.invalid:8080");
+    try {
+      const fixture = supervisorFixture(null);
+      fixture.host.waitForHost.mockImplementationOnce(() => new Promise(() => undefined));
+      const starting = fixture.supervisor.start();
+      await vi.waitFor(() => {
+        expect(
+          fixture.processes.children.find(({ component }) => component === "host"),
+        ).toBeDefined();
+      });
+      const host = fixture.processes.children.find(({ component }) => component === "host");
+      if (!host) throw new Error("Host test process was not created");
+      host.stderr.write("network authentication failed for password p@ss/word\n");
+      host.stderr.end();
+      host.emit("exit", 1, null);
+
+      await expect(starting).rejects.toThrow(/network authentication failed/u);
+      expect(fixture.supervisor.status.issue?.detail).toContain("password [REDACTED]");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("keeps a pinned copy before converting, and refuses the update when it cannot", async () => {
     const configured = deploymentManifest({ databaseInitialized: true, ownerInitialized: true });
     const nextRelease = verifiedRelease({ hostVersion: "1.2.4", runnerVersion: "2.3.5" });
@@ -1307,24 +1331,31 @@ describe("PersonalDeploymentSupervisor", () => {
 
     const messagingChildren = () =>
       fixture.processes.children.filter(({ component }) => component === "messaging");
-    const waited: number[] = [];
-    for (const generation of [1, 2]) {
-      const messaging = messagingChildren().at(-1);
-      if (!messaging) throw new Error("Messaging test process was not created");
-      messaging.stderr.write("token=private-value messaging could not enroll\n");
-      messaging.stderr.end();
-      const crashedAt = Date.now();
-      messaging.emit("exit", 1, null);
-      await vi.waitFor(() => expect(messagingChildren()).toHaveLength(generation + 1), {
-        interval: 5,
-      });
-      waited.push(Date.now() - crashedAt);
+    const scheduledDelays: number[] = [];
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      for (const generation of [1, 2]) {
+        const messaging = messagingChildren().at(-1);
+        if (!messaging) throw new Error("Messaging test process was not created");
+        messaging.stderr.write("token=private-value messaging could not enroll\n");
+        messaging.stderr.end();
+        const beforeCalls = setTimeoutSpy.mock.calls.length;
+        messaging.emit("exit", 1, null);
+        await vi.waitFor(() => expect(messagingChildren()).toHaveLength(generation + 1), {
+          interval: 5,
+        });
+        const backoffCall = setTimeoutSpy.mock.calls
+          .slice(beforeCalls)
+          .find(([, delayMs]) => typeof delayMs === "number" && delayMs >= 25);
+        scheduledDelays.push(Number(backoffCall?.[1]));
+      }
+    } finally {
+      setTimeoutSpy.mockRestore();
     }
 
-    // Exponential, not immediate: 25ms then 50ms. setTimeout is never early, so
-    // the second restart cannot clear this bound without the backoff doubling.
-    expect(waited[0]).toBeGreaterThanOrEqual(25);
-    expect(waited[1]).toBeGreaterThanOrEqual(50);
+    // Exponential, not immediate: 25ms then 50ms. Checking the delay passed to
+    // setTimeout avoids 1ms wall-clock (`Date.now()`) vs monotonic-timer skew.
+    expect(scheduledDelays).toEqual([25, 50]);
     await vi.waitFor(() => {
       expect(fixture.supervisor.status).toMatchObject({
         components: { messaging: { state: "ready" } },

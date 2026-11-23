@@ -18,7 +18,7 @@ import { expectedMutationSessionHeader } from "@opensteer/protocol";
 import { responseChunkReader } from "@opensteer/shared/boundedJson";
 import { describe, expect, it, vi } from "vitest";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
-import { HttpHostClient } from "@opensteer/client/host";
+import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
 import {
   classifyClientFailure,
   DeploymentCatalogSchema,
@@ -30,7 +30,6 @@ import {
   type HostNetworkSocketEvents,
 } from "@opensteer/client/connections";
 import {
-  controlledClientSession,
   signTestDiscoveryEnvelope,
   signTestPersonalAccessRoute,
   testDiscoveryEnvelope,
@@ -55,11 +54,13 @@ describe("DesktopHostTransport", () => {
     ["web", 62],
     ["web", 63],
     ["web", 64],
+    ["web", scopedPersonalApiVersion],
     ["desktop", 60],
     ["desktop", 61],
     ["desktop", 62],
     ["desktop", 63],
     ["desktop", 64],
+    ["desktop", scopedPersonalApiVersion],
   ] as const)(
     "%s checks the Personal API %i before admitting sends and task creation",
     async (surface, version) => {
@@ -73,14 +74,6 @@ describe("DesktopHostTransport", () => {
       const modelSelection = { modelId: "claude", providerId: "anthropic", options: {} };
       const at = "2026-09-01T00:00:00Z";
       const messageId = createId("message");
-      const scope = {
-        authorityKey: row.authority.document.canonicalOrigin,
-        deploymentId,
-        viewerId: userId,
-        loginId,
-      };
-      const view = controlledClientSession();
-      view.change({ scope });
       const admitted: { type: string; session: string | null }[] = [];
       const answer = (headers: Headers, path: string, body: string | null) => {
         expect(path.endsWith("/commands.dispatch")).toBe(true);
@@ -179,6 +172,7 @@ describe("DesktopHostTransport", () => {
           : null;
       const host = new HttpHostClient({
         baseUrl: new URL(routeOrigin),
+        capabilities: [],
         fetch: transport
           ? hostFetch(transport, deploymentId)
           : async (input, init) =>
@@ -187,8 +181,95 @@ describe("DesktopHostTransport", () => {
                 String(input),
                 typeof init?.body === "string" ? init.body : null,
               ),
+        webSocketFactory: (): WebSocketClient => {
+          const listeners = new Map<string, Set<(event: never) => void>>();
+          const emit = (type: string, event: unknown) => {
+            for (const listener of listeners.get(type) ?? []) listener(event as never);
+          };
+          const ws: WebSocketClient = {
+            binaryType: "arraybuffer",
+            readyState: 0,
+            addEventListener: (type, listener) => {
+              const set = listeners.get(type) ?? new Set();
+              set.add(listener as (event: never) => void);
+              listeners.set(type, set);
+            },
+            close: () => {
+              (ws as { readyState: number }).readyState = 3;
+            },
+            send: (raw) => {
+              const frame = JSON.parse(String(raw)) as { type?: string; generation?: number };
+              if (frame.type !== "client.attach") return;
+              const generation = frame.generation ?? 1;
+              queueMicrotask(() => {
+                emit("message", {
+                  data: JSON.stringify({
+                    type: "host.snapshot",
+                    subscriptionId: "shell",
+                    scope: { kind: "shell" },
+                    generation,
+                    throughSequence: "0",
+                    snapshot: {
+                      deploymentId,
+                      viewerId: userId,
+                      epoch: crypto.randomUUID(),
+                      tasks: [],
+                      visits: [],
+                      attention: [],
+                      attentionHasMore: false,
+                      counts: {
+                        pendingRequestCount: 0,
+                        pendingRequestsRevision: "0",
+                        needsYouCount: 0,
+                        unreadTaskCount: 0,
+                      },
+                      session: {
+                        sessionId: loginId,
+                        sessionSurface: "canonical",
+                        user: {
+                          id: userId,
+                          displayName: "Person",
+                          email: "person@example.test",
+                          image: null,
+                          emailVerified: true,
+                          disabledAt: null,
+                        },
+                        can: {
+                          createTasks: true,
+                          useVoice: true,
+                          manageComputers: true,
+                          managePrivateResources: true,
+                        },
+                      },
+                      activeTaskIds: [],
+                      activeNextBefore: null,
+                      recentTaskIds: [],
+                      nextBefore: null,
+                      taskCounts: { active: 0, open: 0 },
+                    },
+                  }),
+                });
+                emit("message", {
+                  data: JSON.stringify({
+                    type: "host.synchronized",
+                    subscriptionId: "shell",
+                    scope: { kind: "shell" },
+                    generation,
+                    throughSequence: "0",
+                  }),
+                });
+              });
+            },
+          };
+          queueMicrotask(() => {
+            (ws as { readyState: number }).readyState = 1;
+            emit("open", {});
+          });
+          return ws;
+        },
       });
-      vi.spyOn(host.connection, "getSnapshot").mockImplementation(view.connection.getSnapshot);
+      await host.load();
+      const scope = host.connection.getSnapshot().scope!;
       try {
         const create = host.dispatch(
           {
@@ -248,7 +329,7 @@ describe("DesktopHostTransport", () => {
         fetch: hostFetch(transport, id),
         onAuthenticationRequired: () => {},
       });
-      const expectedSessionId = "session-that-owned-the-draft";
+      const expectedSessionId = createId("authSession");
       await rpc["commands.dispatch"](
         {
           type: "thread.sendMessage",
@@ -3308,6 +3389,61 @@ describe("routing to a Home that is not selected", () => {
         send(transport, expectedDeploymentId, "/v1/rpc/attention.get"),
       ).rejects.toMatchObject({ code: "deployment-changed" });
       expect(network.request).toHaveBeenCalledTimes(1);
+    } finally {
+      transport.dispose();
+    }
+  });
+
+  it("lets a pinned read of a Home that is not selected finish while the selection moves, and fences the selected Home's own", async () => {
+    const home = deployment("Home", "https://home.example.test", "personal");
+    const work = deployment("Work", "https://work.example.test", "personal");
+    const other = deployment("Other", "https://other.example.test", "personal");
+    const homeId = home.authority.document.deploymentId;
+    const workId = work.authority.document.deploymentId;
+    const catalog = catalogStore([home, work, other], homeId);
+    const bodies = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
+    const started = new Map<string, PromiseWithResolvers<void>>([
+      ["home", Promise.withResolvers<void>()],
+      ["work", Promise.withResolvers<void>()],
+    ]);
+    const network = {
+      request: vi.fn(async ({ url }: HostNetworkRequest) => {
+        const host = new URL(String(url)).hostname.split(".")[0]!;
+        const body = new ReadableStream<Uint8Array>({
+          start: (controller) => {
+            bodies.set(host, controller);
+          },
+        });
+        started.get(host)?.resolve();
+        return new Response(body, { headers: { "content-type": "application/json" } });
+      }),
+      openWebSocket: vi.fn(() => socket()),
+    };
+    const transport = desktopHostTransport({ catalog, network });
+    const text = new TextEncoder();
+    try {
+      // Work is pinned for its summary read; Home is the selection's own.
+      const pinned = send(transport, workId, "/v1/rpc/attention.get", {
+        method: "POST",
+        body: "{}",
+        headers: { "content-type": "application/json" },
+      });
+      const selected = send(transport, homeId, "/v1/rpc/tasks.list");
+      void selected.catch(() => undefined);
+      await started.get("work")!.promise;
+      await started.get("home")!.promise;
+      bodies.get("work")!.enqueue(text.encode('{"ok":true,"data":'));
+      bodies.get("home")!.enqueue(text.encode('{"ok":true,"data":'));
+      // The selection moves to a third Home while both bodies are under way.
+      catalog.replace([home, work, other], other.authority.document.deploymentId);
+      await transport.selection();
+      bodies.get("work")!.enqueue(text.encode('{"needsYou":2,"unread":false}}'));
+      bodies.get("work")!.close();
+      await expect(pinned).resolves.toMatchObject({
+        status: 200,
+        body: '{"ok":true,"data":{"needsYou":2,"unread":false}}',
+      });
+      await expect(selected).rejects.toMatchObject({ code: "deployment-changed" });
     } finally {
       transport.dispose();
     }

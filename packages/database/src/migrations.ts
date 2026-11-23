@@ -21,12 +21,18 @@ import {
   applyAnsweredQuestionRecords,
   applyBrowserSessionTabsIndex,
   applyInlineTranscriptMessages,
+  applyStoppedRunsNotNews,
+  applyThreadDoneBy,
+  applyRunProviderRetry,
   applyPersonalStateSchema,
   browserSessionTabsIndexMigrationName,
   applyDropDeviceAccessCount,
   applyTaskApprovalReceipts,
   dropDeviceAccessCountMigrationName,
   inlineTranscriptMessagesMigrationName,
+  stoppedRunsNotNewsMigrationName,
+  threadDoneByMigrationName,
+  runProviderRetryMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 import { agentGrantsMigrationName, applyAgentGrants } from "./agent-grants-migration.js";
@@ -327,7 +333,7 @@ create unique index plugins_owner_name on plugins(installed_by, name);
  * the Host stores each such package again under its current digest at startup.
  */
 export const pluginPackageFormatMigrationName = "0037_plugin_package_format";
-export const commandRequestsMigrationName = "0054_command_requests";
+export const commandRequestsMigrationName = "0112_command_requests";
 const PLUGIN_PACKAGE_FORMAT_SQL = `
 alter table plugin_versions add column package_format text;
 `;
@@ -625,9 +631,12 @@ export function migrationProvider(options?: {
               [dropDeviceAccessCountMigrationName]: { up: applyDropDeviceAccessCount },
               [browserSessionTabsIndexMigrationName]: { up: applyBrowserSessionTabsIndex },
               [inlineTranscriptMessagesMigrationName]: { up: applyInlineTranscriptMessages },
+              [stoppedRunsNotNewsMigrationName]: { up: applyStoppedRunsNotNews },
+              [threadDoneByMigrationName]: { up: applyThreadDoneBy },
+              [runProviderRetryMigrationName]: { up: applyRunProviderRetry },
               [agentGrantsMigrationName]: { up: applyAgentGrants },
               [agentSessionsMigrationName]: { up: applyAgentSessions },
-              "0046_chrome_live_tabs_source": {
+              "0102_chrome_live_tabs_source": {
                 async up(database: Kysely<unknown>) {
                   await sql`alter table browser_sources add column live_tabs_only boolean not null default false`.execute(
                     database,
@@ -635,7 +644,7 @@ export function migrationProvider(options?: {
                 },
               },
               [agentDirectoryMigrationName]: { up: applyAgentDirectoryVerification },
-              "0048_shared_chrome_grants": {
+              "0104_shared_chrome_grants": {
                 async up(database: Kysely<unknown>) {
                   await sql`
                     alter table browser_source_pairings add column device_id text;
@@ -646,7 +655,7 @@ export function migrationProvider(options?: {
               },
               [workHomeMigrationName]: { up: applyWorkHome },
               [browserPoolMigrationName]: { up: applyBrowserPool },
-              "0051_needs_you_counts_requests": {
+              "0107_needs_you_counts_requests": {
                 /**
                  * A Home that used teams counted its teammates' asks in Needs you, and those
                  * rows no longer list: the count is what the list shows, Requests alone. A
@@ -665,9 +674,10 @@ export function migrationProvider(options?: {
               [commandRequestsMigrationName]: {
                 /**
                  * An agent's proposed Home command rides an ordinary Request, with its parts in one
-                 * column. One open ask per proposer and thing; a decline is found by the same key.
+                 * column. One open ask per proposer and thing.
                  * An approval a restart cut off is found by its own small index, however many
-                 * Requests the Home has.
+                 * Requests the Home has. Activity finds an agent's asks and the commands it ran at
+                 * once by who sent them (C5).
                  */
                 async up(database: Kysely<unknown>) {
                   await sql`
@@ -675,15 +685,70 @@ export function migrationProvider(options?: {
                     create unique index requests_command_open on requests
                       (requested_by, (command->>'askKey'))
                       where command is not null and status = 'pending';
-                    create index requests_command_asks on requests
-                      (requested_by, (command->>'askKey'), resolved_at desc)
-                      where command is not null;
                     create index requests_command_running on requests (id)
                       where status = 'fulfilled' and (command->'outcome'->>'status') = 'running';
+                    create index requests_command_proposer on requests
+                      ((command->'proposer'->>'key'), created_at desc)
+                      where command is not null;
+                    create index requests_command_thread on requests
+                      (originating_thread_id, created_at desc)
+                      where command is not null;
+                    create index commands_agent_caller on commands
+                      ((authority_source->>'callerKey'), created_at desc)
+                      where authority_source->>'kind' = 'mcp';
+                    -- A command with an effect outside the database, recorded before it acts and
+                    -- settled after: what a Disconnect waits on for a connection's (G4).
+                    create table command_attempts (
+                      id text primary key,
+                      requested_by text not null references users(id) on delete cascade,
+                      caller_key text not null,
+                      connection_id text references agent_connections(id) on delete cascade,
+                      type text not null,
+                      idempotency_key text not null,
+                      state text not null default 'running'
+                        check (state in ('running', 'done', 'failed', 'unknown')),
+                      started_at timestamptz not null default now(),
+                      settled_at timestamptz,
+                      check ((state = 'running') = (settled_at is null))
+                    );
+                    create index command_attempts_connection on command_attempts (connection_id)
+                      where connection_id is not null;
+                    create index command_attempts_running on command_attempts (id)
+                      where state = 'running';
+                    -- One key, one attempt (K1): an earlier one that did not fail answers instead.
+                    create unique index command_attempts_one_key on command_attempts
+                      (requested_by, caller_key, idempotency_key) where state <> 'failed';
                   `.execute(database);
                 },
               },
               [automationsContractMigrationName]: { up: applyAutomationsContract },
+              "0114_thread_inputs_written_by_connection": {
+                /**
+                 * Indexes connection-written inputs per task so `threadContextLineage` checks
+                 * whether any ancestor task was written into by a connected agent without
+                 * scanning `thread_inputs` per ancestor.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    create index if not exists thread_inputs_written_by_connection
+                    on thread_inputs(thread_id)
+                    where connection_id is not null and state <> 'cancelled'
+                  `.execute(database);
+                },
+              },
+              "0115_provider_session_person_lineage": {
+                /**
+                 * Tracks whether a native provider session was created under the person's own
+                 * lineage so a narrowing (`true -> false`) rotates the session instead of
+                 * resuming a conversation that already loaded the person's own configuration.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table provider_sessions
+                    add column if not exists person_lineage boolean not null default true
+                  `.execute(database);
+                },
+              },
             }
           : {}),
       };

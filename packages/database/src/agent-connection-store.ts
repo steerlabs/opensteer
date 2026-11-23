@@ -1,6 +1,7 @@
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { publishThreadSummary } from "./thread-status.js";
 import {
   AgentGrantSchema,
   agentGrantAllowsTasks,
@@ -328,8 +329,8 @@ export class AgentConnectionStore {
             and (cleanup_reason is null or cleanup_reason = 'narrowed')),
         (select ${retryAt}::timestamptz where exists (
           select 1 from agent_connections
-          where removed_at is null and ((cleanup_requested_at is not null
-            and cleanup_completed_at is null) or ${chatEndedUnrevoked(this.database, this.now())})
+          where (cleanup_requested_at is not null and cleanup_completed_at is null)
+            or (removed_at is null and ${chatEndedUnrevoked(this.database, this.now())})
         )),
         (select ${this.now()}::timestamptz + (min(expires_at) - clock_timestamp())
           from agent_embedder_assertion_claims)
@@ -626,6 +627,14 @@ export class AgentConnectionStore {
         })
         .where("id", "=", row.id)
         .execute();
+      const originated = await tx
+        .selectFrom("threads")
+        .select("id")
+        .where("originConnectionId", "=", row.id)
+        .where("removedAt", "is", null)
+        .orderBy("id")
+        .execute();
+      for (const { id: threadId } of originated) await publishThreadSummary(tx, threadId);
       return true;
     });
   }
@@ -667,7 +676,6 @@ export class AgentConnectionStore {
         .updateTable("agentConnections")
         .set({
           removedAt: now,
-          cleanupCompletedAt: row.cleanupCompletedAt ?? now,
           ...(row.cleanupRequestedAt === null
             ? {
                 cleanupRequestedAt: row.revokedAt ?? row.expiresAt,

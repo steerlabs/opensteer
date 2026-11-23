@@ -667,6 +667,8 @@ export type StartBrowserSessionInput = {
   readonly tabGeneration?: number;
   readonly previousPageBinding?: PageBinding;
   readonly initialSurfaceId?: BrowserSurfaceId;
+  /** The initial tab's row exactly as binding it to this session wrote it. */
+  readonly onPageBound?: (row: TabRecord) => void;
   readonly dormantSurfaceIds?: readonly BrowserSurfaceId[];
   readonly opener?: BrowserSessionOpenerRecord | null;
   readonly agentBindingId?: string;
@@ -1349,7 +1351,10 @@ export class BrowserService {
         },
         readSessionState: () => this.#sessionState(sessionId),
         onPageChanged: () => this.#announcePresence(sessionId),
-        onTabsChanged: () => this.#queueTabDescriptors(sessionId),
+        onTabsChanged: (structural) => {
+          if (structural) void this.#flushTabDescriptors(sessionId).catch(this.#onError);
+          else this.#queueTabDescriptors(sessionId);
+        },
         onRecordsChanged: (ids) => this.tabInventoryChanged(sessionId, ids),
         onActivity: (activity) => this.#runtimeActivity(sessionId, activity),
         cdpBoundary: target.cdpBoundary === true,
@@ -4058,6 +4063,7 @@ export class BrowserService {
           .map((other) => other.id);
         this.#pagesAwaitingNavigation.add(row.id);
         const budget = this.#poolStartBudget(signal);
+        let bound: TabRecord | undefined;
         try {
           const finish = await this.#prepareStart(
             {
@@ -4065,6 +4071,9 @@ export class BrowserService {
               sessionId,
               tabGroupId: binding.lineageId,
               initialSurfaceId: row.id,
+              onPageBound: (written) => {
+                bound = written;
+              },
               tabGeneration: row.generation,
               previousPageBinding: binding,
               dormantSurfaceIds: dormant,
@@ -4089,7 +4098,23 @@ export class BrowserService {
             budget,
           );
           await finish();
-          row = await this.#requireWorkspaceGeneration(ownerId, initial);
+          try {
+            row = await this.#requireWorkspaceGeneration(ownerId, initial);
+          } catch (error) {
+            this.#pagesAwaitingNavigation.delete(initial.id);
+            // Only the tab's own verdict that it is gone ends the page that started for it: no
+            // tab shows that page and no one could close it. Any other failure leaves the person's
+            // open tab bound to its live session for the next activation. The witness is the row
+            // as the bind wrote it; the refusal does not wait on the close.
+            if (error instanceof OpensteerError && error.code === "not_found")
+              void this.#queuePhysicalPageClose(
+                sessionId,
+                initial.id,
+                undefined,
+                bound ? { ownerId, row: bound } : undefined,
+              ).catch((closeError: unknown) => this.#onError(closeError));
+            throw error;
+          }
           const record = row.pageBinding
             ? await this.#repository.getBrowserSessionForOwner(row.pageBinding.sessionId, ownerId)
             : null;
@@ -6911,6 +6936,7 @@ export class BrowserService {
               code: "conflict",
               message: "The page closed during restoration.",
             });
+          input.onPageBound?.(bound);
         }
       }
       if (input.tabGroupId) this.#onTabsChanged();
@@ -7071,8 +7097,9 @@ export class BrowserService {
                   },
                 }
               : {}),
-            onTabsChanged: () => {
-              this.#queueTabDescriptors(sessionId);
+            onTabsChanged: (structural) => {
+              if (structural) void this.#flushTabDescriptors(sessionId).catch(this.#onError);
+              else this.#queueTabDescriptors(sessionId);
               this.#shadows.get(sessionId)?.inventoryChanged();
             },
             onRecordsChanged: (ids) => this.tabInventoryChanged(sessionId, ids),
@@ -8038,7 +8065,7 @@ interface HostedBrowserBrokerOptions {
     readonly favicon: string;
   };
   readonly personTabGeneration?: (surfaceId: BrowserSurfaceId) => Promise<number | null>;
-  readonly onTabsChanged: () => void;
+  readonly onTabsChanged: (structural?: boolean) => void;
   readonly onRecordsChanged: (ids: readonly string[]) => void;
   readonly onActivity: (activity: BrowserRuntimeActivity) => void;
   /** The active page's title or site changed; called at most once per `pageNoticeDelayMs`. */
@@ -8218,7 +8245,7 @@ export class HostedBrowserBroker {
     this.#storedTabStateRevision = changes.stateRevision;
   }
   readonly #personTabGeneration: HostedBrowserBrokerOptions["personTabGeneration"];
-  readonly #onTabsChanged: () => void;
+  readonly #onTabsChanged: (structural?: boolean) => void;
   readonly #onRecordsChanged: (ids: readonly string[]) => void;
   readonly #onActivity: (activity: BrowserRuntimeActivity) => void;
   readonly #runtimeTargets = new Map<string, boolean>();
@@ -9533,20 +9560,34 @@ export class HostedBrowserBroker {
       });
       assertBrowserDialogSurface(this.#snapshot?.dialog ?? null, this.#surfaces);
       this.#reconcileHistory(this.#surfaces);
-      if (!this.#runtimeReady) {
+      const becameReady = !this.#runtimeReady;
+      if (becameReady) {
         if (!this.#reconnecting) {
           if (!this.#adoptedFromPool) await this.#sendSavedTabs();
           await this.#onState("ready");
         }
         this.#reconnecting = false;
         this.#runtimeReady = true;
-        await this.#sendSessionState();
+        // #onState("ready") transitions the session and may schedule a deferred
+        // refreshSessionState() timer with a pool hold; flush it now so no stale
+        // 50 ms hold outlives the initial session.state send.
+        if (this.#sessionStateTimer) clearTimeout(this.#sessionStateTimer);
+        this.#sessionStateTimer = undefined;
+        const hold = this.#sessionStateHold;
+        this.#sessionStateHold = undefined;
+        try {
+          await this.#sendSessionState();
+        } finally {
+          hold?.release();
+        }
         const reconnectReady = this.#reconnectReady;
         this.#reconnectReady = null;
         reconnectReady?.resolve();
       }
       this.#onRecordsChanged([...changes.added, ...changes.updated, ...changes.removed]);
-      this.#onTabsChanged();
+      this.#onTabsChanged(
+        changes.added.length > 0 || changes.removed.length > 0 || changes.structural,
+      );
       const page = this.page;
       if (previousPage?.title !== page?.title || previousPage?.url !== page?.url)
         this.#noticePage();
@@ -9566,9 +9607,10 @@ export class HostedBrowserBroker {
           this.#sendViewerSurface(consumer);
       }
       if (
-        previousActive !== active ||
-        changes.removed.length ||
-        changes.added.some((id) => this.#pendingPersonUse.has(BrowserSurfaceIdSchema.parse(id)))
+        !becameReady &&
+        (previousActive !== active ||
+          changes.removed.length ||
+          changes.added.some((id) => this.#pendingPersonUse.has(BrowserSurfaceIdSchema.parse(id))))
       )
         this.refreshSessionState();
       return stream.op === "end";

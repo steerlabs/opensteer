@@ -4,6 +4,7 @@ import { createId, ThreadIdSchema } from "@opensteer/core";
 import { readAsDrawn } from "./read-as-drawn.test-support.js";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { HostTransportError } from "@opensteer/client/connections";
 import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
 import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -82,6 +83,7 @@ const claude = "mcn_00000000-0000-4000-8000-000000000002";
 const trips = "mcn_00000000-0000-4000-8000-000000000003";
 const shopHelper = "mcn_00000000-0000-4000-8000-000000000004";
 const oldNotes = "mcn_00000000-0000-4000-8000-000000000005";
+const oldSearch = "mcn_00000000-0000-4000-8000-000000000009";
 const shopping = "bpr_00000000-0000-4000-8000-000000000003";
 
 async function open(
@@ -217,9 +219,8 @@ describe("one connected agent on the phone", () => {
     ]);
     expect(row("tasks", "tasks")).toMatchObject({ value: true });
     expect(row("mode", "auto")).toMatchObject({ selected: true });
-    expect(row("activity", "unavailable").label).toBe(
-      "This Opensteer doesn’t keep a list of what connected agents did yet.",
-    );
+    // Its Recent activity is what the Home reports for it (connections.activity): nothing yet.
+    expect(row("activity", "empty").label).toBe("Nothing yet.");
     expect(
       section("about")?.rows.map((candidate) => [
         candidate.label,
@@ -362,7 +363,9 @@ describe("one connected agent on the phone", () => {
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ type: "connection.revoke", connectionId: grok }),
     );
-    await vi.waitFor(() => expect(status().label).toBe("Grok can’t do anything now"));
+    await vi.waitFor(() =>
+      expect(readAsDrawn(status().label)).toBe("“Grok” can’t do anything now"),
+    );
     expect(status().steps?.map((step) => step.state)).toEqual(["done", "current", "pending"]);
     expect(section("scope")).toBeUndefined();
     Object.defineProperty(client.rpc, "connections.list", { value: list, configurable: true });
@@ -381,7 +384,9 @@ describe("one connected agent on the phone", () => {
   it("keeps Stopping and a lost last action apart, with nothing to disconnect or remove", async () => {
     await open(shopHelper);
     expect(status()).toMatchObject({ label: "Stopping its work" });
-    expect(section("status")?.footer?.text).toContain("Shop helper already can’t use anything");
+    expect(readAsDrawn(section("status")?.footer?.text ?? "")).toContain(
+      "“Shop helper” already can’t use anything",
+    );
     expect(section("uncertain")?.rows[0]).toMatchObject({
       tone: "attention",
       label: "Check its last action",
@@ -392,6 +397,15 @@ describe("one connected agent on the phone", () => {
   it("offers Remove from list for a stopped agent", async () => {
     await open(oldNotes);
     expect(status()).toMatchObject({ label: "Disconnected", tone: "good" });
+    expect(row("end", "remove").label).toBe("Remove from list");
+  });
+
+  it("shows an expired agent with its quoted reconnect sentence and Remove from list", async () => {
+    await open(oldSearch);
+    expect(status()).toMatchObject({ label: "Expired", tone: "neutral" });
+    expect(readAsDrawn(section("status")?.footer?.text ?? "")).toContain(
+      "Connect it again from “Old search agent” to use it.",
+    );
     expect(row("end", "remove").label).toBe("Remove from list");
   });
 
@@ -765,6 +779,22 @@ describe("a chat on the phone", () => {
         "Its messaging account was disconnected. To use it again, add the chat again on Messaging.",
       ),
     );
+  });
+
+  it("says it couldn't confirm the task was stopped when the answer is lost, and keeps Stop enabled", async () => {
+    const client = await open(chat(1), chats());
+    const real = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+      if (command.type !== "run.interrupt") return real(command);
+      throw new HostTransportError("timed-out");
+    });
+    await press(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop"));
+    await vi.waitFor(() => expect(state.alerts.at(-1)?.title).toBe("Stop"));
+    expect(state.alerts.at(-1)?.body).toContain("Couldn't confirm the task was stopped.");
+    expect(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop")).toMatchObject({
+      label: "Stop",
+      disabled: false,
+    });
   });
 
   it("says why a task could not be stopped, in words, never the raw error", async () => {

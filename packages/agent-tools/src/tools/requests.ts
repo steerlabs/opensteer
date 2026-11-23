@@ -1,5 +1,5 @@
 import { defineAgentTool } from "../registry.js";
-import { RequestIdSchema, RequestResponseSchema } from "@opensteer/core";
+import { RequestIdSchema, RequestResponseSchema, ThreadIdSchema } from "@opensteer/core";
 import { z } from "zod";
 import { CursorSchema } from "./inputs.js";
 import { RequestListOutputSchema, RequestWithdrawOutputSchema } from "./outputs.js";
@@ -7,10 +7,12 @@ export const opensteer_request_list = defineAgentTool({
   name: "opensteer_request_list",
   title: "List Requests",
   description:
-    "List Requests from tasks and background jobs, newest first. A pending Request is not permission. Mention returned items by their `link`, verbatim.",
+    "List Requests across reachable tasks, newest first. Filter by status (pending or all) or taskId. Non-secret person.question Requests include their question details and outcome; a pending Request is not permission. Mention returned items by their `link`, verbatim.",
   input: z.strictObject({
     cursor: CursorSchema.optional(),
     limit: z.number().int().min(1).max(100).default(50),
+    status: z.enum(["pending", "all"]).default("all"),
+    taskId: ThreadIdSchema.optional().describe("Limit to Requests from one task."),
   }),
   output: RequestListOutputSchema,
   access: "read",
@@ -20,7 +22,7 @@ export const opensteer_request_read = defineAgentTool({
   name: "opensteer_request_read",
   title: "Read a Request",
   description:
-    "Read one Request's status, its ordinary question details and its revision before answering it. Mention returned items by their `link`, verbatim.",
+    "Read one Request's status, revision, and non-secret question details or answer. Mention returned items by their `link`, verbatim.",
   input: z.strictObject({ requestId: RequestIdSchema }),
   output: RequestWithdrawOutputSchema,
   access: "read",

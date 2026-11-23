@@ -841,14 +841,15 @@ export async function cancelComputerUseSetup(
 }
 
 export async function stopComputerUseSession(
-  hostClient: Pick<HostClient, "rpc">,
+  hostClient: Pick<HostClient, "dispatch">,
   sessionId: ComputerUseSessionSummary["sessionId"],
-  signal?: AbortSignal,
 ): Promise<void> {
-  await hostClient.rpc["integration.computer.session.stop"](
-    { sessionId },
-    signal ? { signal } : undefined,
-  ).then(unwrapRpcResult);
+  // The person's command, through the one door (AD10).
+  await hostClient.dispatch({
+    idempotencyKey: mutationIdempotencyKey(`computer-use:stop:${sessionId}`),
+    sessionId,
+    type: "integration.computer.session.stop",
+  });
 }
 
 /** One owner-visible computer session that can show a live picture. */

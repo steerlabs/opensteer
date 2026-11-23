@@ -28,6 +28,7 @@ import {
   answerAgentConnection,
   connectedAgentIdentity,
   connectionDestination,
+  connectionModeDescriptions,
   consentVerificationChanged,
   draftForCatalog,
   createDedicatedProfile,
@@ -410,8 +411,10 @@ function ConsentForm({
         <AgentWhoLine nameShown={false} who={identity.who} />
       ) : (
         <>
-          {heading.claim ? (
-            <p className="agent-who__claim agent-consent__claim">{heading.claim}</p>
+          {heading.claimParts ? (
+            <p className="agent-who__claim agent-consent__claim">
+              <SentenceText parts={heading.claimParts} />
+            </p>
           ) : null}
           <p className="agent-consent__where">
             <Icon name={identity.local ? "laptop" : "globe"} />
@@ -458,7 +461,11 @@ function ConsentForm({
                 />
                 <span className="card__row-body">
                   <span className="card__row-title">{option.label}</span>
-                  <span className="card__row-detail">{option.description}</span>
+                  {/* A connected agent's work never runs with the person's engine
+                      settings, so the own-task sentence would not be true here. */}
+                  <span className="card__row-detail">
+                    {connectionModeDescriptions[option.mode]}
+                  </span>
                 </span>
               </label>
             ))}

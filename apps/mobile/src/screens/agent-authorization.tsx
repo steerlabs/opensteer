@@ -1,6 +1,7 @@
 import { classifyClientFailure } from "@opensteer/client/connections";
 import {
   accessModeOptions,
+  connectionModeDescriptions,
   agentClaim,
   agentConsentHeading,
   agentWhoOriginParts,
@@ -313,7 +314,12 @@ function AgentAuthorization(props: {
             : null
         }
         mode={mode}
-        modes={accessModeOptions}
+        // A connected agent's work never runs with the person's engine settings,
+        // so each mode reads as it does for a connection.
+        modes={accessModeOptions.map((option) => ({
+          ...option,
+          description: connectionModeDescriptions[option.mode],
+        }))}
         notice={changed ? agentWords("consent.error.verificationChanged") : null}
         onAllow={() => void decide(true)}
         onDeny={() => void decide(false)}
@@ -344,7 +350,9 @@ function AgentAuthorization(props: {
         title={heading.title}
         work={workHomeMark(workPolicy)?.badge ?? null}
         who={{
-          heading: heading.claim ?? workWords("who.verified"),
+          heading: heading.claimParts
+            ? phoneSentence(heading.claimParts)
+            : workWords("who.verified"),
           origins: who.verified
             ? who.origins.map((origin) => phoneSentence(agentWhoOriginParts(origin)))
             : [],

@@ -4,6 +4,7 @@ import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   lockThreadCaller,
   assertThreadCaller,
+  callerAuthoritySource,
   type ThreadCallerAuthority,
 } from "./thread-caller.js";
 import { isDeepStrictEqual } from "node:util";
@@ -345,10 +346,7 @@ export async function setThreadDone(
               kind: "quiet-tasks",
               userId: input.requestedBy,
             }
-          : {
-              kind: "user-session",
-              userId: input.requestedBy,
-            },
+          : callerAuthoritySource(input.authority, input.requestedBy),
       );
       if (!existing && stillQuiet) {
         const self =
@@ -364,10 +362,13 @@ export async function setThreadDone(
             .execute();
           doneWhenRunEnds = true;
         } else {
-          // Reopen withdraws this task's own pending self-Done; the calling
-          // Run, locked above only to authorize it, keeps its intent.
-          const reopened = runs.filter(({ threadId }) => threadId === input.threadId);
-          if (!input.done && reopened.length)
+          // Both direct Done and reopen withdraw pending deferred self-Done on the affected
+          // tasks (the calling Run, locked above only to authorize it, keeps its intent when
+          // acting on another task).
+          const affectedRuns = input.done
+            ? runs.filter(({ threadId }) => scope.threadIds.includes(threadId))
+            : runs.filter(({ threadId }) => threadId === input.threadId);
+          if (affectedRuns.length)
             await transaction
               .updateTable("runs")
               .set({
@@ -376,9 +377,14 @@ export async function setThreadDone(
               .where(
                 "id",
                 "in",
-                reopened.map(({ id }) => id),
+                affectedRuns.map(({ id }) => id),
               )
               .execute();
+          const doneBy = input.quiet
+            ? ("quiet" as const)
+            : input.authority || input.actorRunId || input.admission
+              ? ("agent" as const)
+              : ("person" as const);
           for (const row of threads) {
             if (input.done) {
               await transaction
@@ -386,6 +392,7 @@ export async function setThreadDone(
                 .set({
                   doneAt: row.doneAt ?? now,
                   doneReason: row.doneAt ? row.doneReason : input.quiet ? "quiet" : null,
+                  doneBy: row.doneAt ? row.doneBy : doneBy,
                   inputQueuePaused: false,
                   inputQueuePausedBy: null,
                 })
@@ -397,6 +404,7 @@ export async function setThreadDone(
                 .set({
                   doneAt: null,
                   doneReason: null,
+                  doneBy: null,
                   updatedAt: now,
                 })
                 .where("id", "=", row.id)
