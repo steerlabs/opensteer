@@ -17,7 +17,7 @@ import { deploymentRoot, deploymentsRoot, selectionRootTransition } from "./navi
 export const navigationRef = createNavigationContainerRef<RootParamList>();
 
 /** Whether the root stack is already the bare Home screen for `deploymentId`. */
-export function isAtDeploymentRoot(deploymentId: string): boolean {
+function isAtDeploymentRoot(deploymentId: string): boolean {
   if (!navigationRef.isReady()) return false;
   const state = navigationRef.getRootState();
   if (state === undefined || state.routes.length !== 1 || state.index !== 0) return false;
@@ -65,8 +65,9 @@ export function resetToDeployments(): void {
   resetRoot(deploymentsRoot());
 }
 
+/** Arrives at the bare Home root for `deploymentId`; does nothing if already there. */
 export function resetToDeployment(deploymentId: string): void {
-  resetRoot(deploymentRoot(deploymentId));
+  if (!isAtDeploymentRoot(deploymentId)) resetRoot(deploymentRoot(deploymentId));
 }
 
 /** Opens a subagent's own view over whatever is in front, from outside a screen's tree. */

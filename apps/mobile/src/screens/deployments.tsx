@@ -34,7 +34,7 @@ import {
   type DeploymentRow,
   type DeploymentStatus,
 } from "../client/deployment-rows.js";
-import { isAtDeploymentRoot, resetToDeployment, resetToDeployments } from "../navigation-ref.js";
+import { resetToDeployment, resetToDeployments } from "../navigation-ref.js";
 import {
   color,
   controlFontScaleLimit,
@@ -444,7 +444,7 @@ export function DeploymentsScreen(): ReactNode {
         opened = true;
         attempt.cancel();
         void AccessibilityInfo.announceForAccessibility(`Opening ${row.name}`);
-        if (!isAtDeploymentRoot(row.deploymentId)) resetToDeployment(row.deploymentId);
+        resetToDeployment(row.deploymentId);
       };
       attempt.detach = client.subscribe(openSelected);
       openSelected();

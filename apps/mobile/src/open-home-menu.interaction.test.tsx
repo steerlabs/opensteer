@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { createRequire } from "node:module";
+import { cloudWords } from "@opensteer/client/computers";
 import { DeploymentIdSchema } from "@opensteer/core";
 import { act, useEffect, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -46,6 +47,7 @@ const harness = vi.hoisted(() => {
   let attention = 12;
   let preventRemove = false;
   let homeMounts = 0;
+  let cloudScreen: unknown = { kind: "none" };
 
   const notify = (): void => {
     for (const listener of Array.from(listeners)) listener();
@@ -96,6 +98,7 @@ const harness = vi.hoisted(() => {
   return {
     client,
     getAttention: () => attention,
+    getCloudScreen: () => cloudScreen,
     getHomeMounts: () => homeMounts,
     getPreventRemove: () => preventRemove,
     incrementHomeMounts: () => {
@@ -111,8 +114,12 @@ const harness = vi.hoisted(() => {
       attention = 12;
       preventRemove = false;
       homeMounts = 0;
+      cloudScreen = { kind: "none" };
       client.openDeployment.mockClear();
       client.readAttention.mockClear();
+    },
+    setCloudScreen: (next: unknown) => {
+      cloudScreen = next;
     },
     setPreventRemove: (next: boolean) => {
       preventRemove = next;
@@ -136,7 +143,14 @@ vi.mock("@react-navigation/native", async () => {
   return { ...core, NavigationContainer: core.BaseNavigationContainer };
 });
 vi.mock("@opensteer/client/react", () => ({
-  useCloudComputer: () => ({ screen: { kind: "none" } }),
+  useCloudComputer: () => ({
+    act: vi.fn(),
+    actionFailure: null,
+    pending: null,
+    refresh: vi.fn(),
+    screen: harness.getCloudScreen(),
+    work: [],
+  }),
   useHostSelector: () => ({ homeName: null, needsYou: 0, unread: false }),
 }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
@@ -198,6 +212,34 @@ vi.mock("./screens/welcome.js", () => ({ Welcome: () => <div>Welcome</div> }));
 vi.mock("./screens/work-home.js", () => ({
   useCloudComputerIds: () => new Set(),
   useWorkBadges: () => new Map(),
+  workHomeSections: () => [],
+}));
+vi.mock("./screens/native-settings-page.js", () => ({
+  NativeSettingsPage: ({
+    sections,
+  }: {
+    readonly sections: readonly {
+      readonly rows: readonly {
+        readonly key: string;
+        readonly label: string;
+        readonly onPress?: () => void;
+      }[];
+    }[];
+  }) => (
+    <div>
+      {sections.flatMap((section) =>
+        section.rows.map((row) =>
+          row.onPress ? (
+            <button aria-label={row.label} key={row.key} onClick={row.onPress} type="button">
+              {row.label}
+            </button>
+          ) : (
+            <span key={row.key}>{row.label}</span>
+          ),
+        ),
+      )}
+    </div>
+  ),
 }));
 vi.mock("./threads/task-row.js", () => ({ UnreadDot: () => null }));
 
@@ -218,6 +260,7 @@ import {
   resetRoot,
   resetToDeployments,
 } from "./navigation-ref.js";
+import { CloudComputerScreen } from "./screens/cloud-computer.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
 import {
   SidebarControlContext,
@@ -435,6 +478,11 @@ async function mountApp(options?: {
               name="Settings"
               options={{ presentation: "modal", title: "Settings" }}
             />
+            <Stack.Screen
+              component={CloudComputerScreen}
+              name="CloudComputer"
+              options={{ title: "Cloud Computer" }}
+            />
           </Stack.Navigator>
         </NavigationContainer>
       </SidebarDockedContext.Provider>
@@ -641,5 +689,56 @@ describe("opening a Home from Your Opensteers", () => {
       container.querySelector('section[data-route="Thread"] header button[aria-label^="Menu"]'),
     ).toBeNull();
     expect(latestOptionsByRoute.get(threadKey!)?.headerLeft?.({ canGoBack: false })).toBeNull();
+  });
+
+  it("resets the root once when opening a Cloud Computer from Settings › Cloud Computer and keeps Menu on Tasks' first render", async () => {
+    harness.setCloudScreen({
+      kind: "ready",
+      computer: {
+        address: "https://cloud.opensteer.example",
+        browserAddress: null,
+        browserIp: { detail: "Dedicated", label: "Dedicated" },
+        canDelete: false,
+        canResume: false,
+        canSuspend: false,
+        deploymentId: mockDeploymentId,
+        host: "cloud.opensteer.example",
+        id: "cc_1",
+        lastBackup: null,
+        region: null,
+        status: { label: "Running", reason: null, tone: "positive" },
+      },
+      plan: { line: "Opensteer Cloud Computer", name: "Opensteer Cloud Computer" },
+    });
+    const { container, initialLeadingByRoute, resetRootSpy } = await mountApp({
+      initialState: {
+        index: 2,
+        routes: [{ name: "Deployments" }, { name: "Settings" }, { name: "CloudComputer" }],
+      },
+    });
+    resetRootSpy.mockClear();
+
+    const openButton = container.querySelector<HTMLButtonElement>(
+      `button[aria-label="${cloudWords("cloud.ready.open")}"]`,
+    );
+    expect(openButton, "Open button must be on Settings › Cloud Computer").not.toBeNull();
+
+    await act(async () => {
+      openButton!.click();
+    });
+
+    expect(harness.client.openDeployment).toHaveBeenCalledWith(mockDeploymentId);
+    expect(resetRootSpy).toHaveBeenCalledTimes(1);
+
+    const homeRoute = navigationRef.getRootState()?.routes[0];
+    expect(homeRoute?.name).toBe("Home");
+    const initialHomeLeading = initialLeadingByRoute.get(homeRoute!.key) ?? [];
+    expect(
+      initialHomeLeading.some((item) => (item.accessibilityLabel ?? item.label).startsWith("Menu")),
+      "Menu must be present in Home's initial header options",
+    ).toBe(true);
+    expect(
+      container.querySelector('section[data-route="Home"] header button[aria-label^="Menu"]'),
+    ).not.toBeNull();
   });
 });
