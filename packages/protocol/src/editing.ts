@@ -62,15 +62,23 @@ export const EditingCommandSchema = z.enum([
 export type EditingCommand = z.infer<typeof EditingCommandSchema>;
 
 /**
- * CY7: the commands relative to the caret, the single backward deletion and the plain caret
- * moves the phone sends. Made under an earlier context of the focused field, one of these still
- * applies at the caret as it now is; every other command made under any context but the current
- * one is refused alone.
+ * The plain caret moves the phone sends. They are also what a client computes from an edit
+ * (moving the caret back where the person had it): after the far side refuses an edit, the moves
+ * of that producer under that context go with it until its next edit applies (CY5).
+ */
+export const caretMoveEditingCommands: ReadonlySet<EditingCommand> = new Set([
+  "moveBackward",
+  "moveForward",
+]);
+/**
+ * CY7: the commands relative to the caret, the single backward deletion (always a Backspace the
+ * person pressed at a caret) and the plain caret moves. Made under an earlier context of the
+ * focused field, one of these still applies at the caret as it now is; every other command made
+ * under any context but the current one is refused alone.
  */
 export const caretRelativeEditingCommands: ReadonlySet<EditingCommand> = new Set([
   "deleteBackward",
-  "moveBackward",
-  "moveForward",
+  ...caretMoveEditingCommands,
 ]);
 
 /** One grapheme, which a single keystroke types; long enough for ZWJ sequences. */

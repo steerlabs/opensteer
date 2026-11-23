@@ -1,5 +1,8 @@
 import type { EditingOperation, EditingProxyInstruction } from "@opensteer/client/editing";
-import { caretRelativeEditingCommands } from "@opensteer/protocol/editing";
+import {
+  caretMoveEditingCommands,
+  caretRelativeEditingCommands,
+} from "@opensteer/protocol/editing";
 import { splitGraphemes } from "unicode-segmenter/grapheme";
 
 /*
@@ -872,6 +875,15 @@ export class FarField {
     this.refused.push(operation);
     this.rotate();
   }
+  /**
+   * The page rewrote its own value under an open composition (a mask): Blink ends the composition
+   * without a compositionend and its text stays where it was (tests/editing-far-model.test.ts,
+   * "ends the composition when the page rewrites its value under it").
+   */
+  endComposition() {
+    this.composition = null;
+    this.composer = null;
+  }
   /** A new context for this same field: the page rewrote it, or refused an edit. */
   rotate() {
     if (this.contextId !== null) this.earlier.add(this.contextId);
@@ -922,9 +934,10 @@ export class FarField {
       }
     }
     // CY5: the moves computed from an edit refused go with it, until that producer's next edit
-    // that applies.
+    // that applies. A Backspace is the person's own.
     if (
       operation.kind === "command" &&
+      caretMoveEditingCommands.has(operation.command) &&
       context !== null &&
       this.refusedFrom?.contextId === context &&
       this.refusedFrom.producer === producer

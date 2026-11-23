@@ -1,4 +1,4 @@
-import type { EditingContext } from "@opensteer/protocol/editing";
+import { editingTextMaxLength, type EditingContext } from "@opensteer/protocol/editing";
 import {
   createEditingState,
   editingRefusalMessages,
@@ -84,7 +84,15 @@ export function NativeEditingProxy({
           retired.set(
             left,
             own
-              ? { ...state, composition: { ...state.composition!, detached: true } }
+              ? {
+                  ...state,
+                  composition: {
+                    ...state.composition!,
+                    detached: true,
+                    // The change commits its text to the page (CY4).
+                    committed: state.composition!.text,
+                  },
+                }
               : state.composition
                 ? {
                     ...state,
@@ -116,8 +124,46 @@ export function NativeEditingProxy({
    */
   const scoped = (operation: EditingOperation, contextId = current()): EditingOperation =>
     operation.kind === "command" && contextId ? { ...operation, contextId } : operation;
-  const latest = useRef({ sendOperation, onDone, scoped });
-  latest.current = { sendOperation, onDone, scoped };
+  /**
+   * CY8: what the late path sends of an operation, under the context it was made in: an edit or a
+   * composition as it is, a command with that context, a plain paste as the text it inserts (in
+   * insertions within the protocol's limit, in order: insertions compose, split between code
+   * points), a key not at all (it would land in whatever has focus now).
+   */
+  const lateOperations = (operation: EditingOperation, contextId: string): EditingOperation[] => {
+    if (operation.kind === "edit" || operation.kind === "compose") return [operation];
+    if (operation.kind === "command") return [scoped(operation, contextId)];
+    if (operation.kind !== "paste") return [];
+    const item = operation.items.find((candidate) => candidate.type === "text/plain");
+    if (!item) return [];
+    const parts: string[] = [""];
+    for (const point of new TextDecoder().decode(item.bytes)) {
+      if (parts.at(-1)!.length + point.length > editingTextMaxLength) parts.push("");
+      parts[parts.length - 1] += point;
+    }
+    return parts
+      .filter((text) => text !== "")
+      .map((text) => ({ kind: "edit", edit: { contextId, text, before: "", after: "" } }));
+  };
+  /**
+   * CY8: the one send of both paths. Each operation in order; at the first the transport refuses,
+   * the reducer it came from is told (the current one, or the late one of its context), nothing
+   * after it goes, and the person sees the refusal.
+   */
+  const send = (
+    operations: EditingOperation[],
+    refused: (operation: EditingOperation) => void,
+  ): boolean => {
+    for (const operation of operations)
+      if (!sendOperation(operation)) {
+        refused(operation);
+        setRefusal("Editing refused. Waiting for the remote field.");
+        return false;
+      }
+    return true;
+  };
+  const latest = useRef({ sendOperation, onDone, scoped, send });
+  latest.current = { sendOperation, onDone, scoped, send };
   const nativeComposing = useRef(false);
   const [finishCompositionRequest, requestFinish] = useState(0);
   const [instruction, setInstruction] = useState<EditingProxyInstruction>({});
@@ -134,8 +180,10 @@ export function NativeEditingProxy({
       },
       interrupt(type = "pointerdown") {
         const result = step({ type });
-        for (const operation of result.operations)
-          latest.current.sendOperation(latest.current.scoped(operation));
+        latest.current.send(
+          result.operations.map((operation) => latest.current.scoped(operation)),
+          (operation) => step({ type: "refused", operation }),
+        );
         setInstruction(result.instruction);
         if (nativeComposing.current) requestFinish((previous) => previous + 1);
         setPreedit("");
@@ -148,8 +196,10 @@ export function NativeEditingProxy({
     // Native configure owns the old composition ending and the new context's reset.
     setInstruction({});
     setPreedit("");
-    for (const operation of result.operations)
-      latest.current.sendOperation(latest.current.scoped(operation));
+    latest.current.send(
+      result.operations.map((operation) => latest.current.scoped(operation)),
+      (operation) => step({ type: "refused", operation }),
+    );
   }, [context, step]);
   useEffect(
     () => () => {
@@ -186,25 +236,11 @@ export function NativeEditingProxy({
             )
               nativeComposing.current = true;
             else if (event.type === "compositionend") nativeComposing.current = false;
-            for (const operation of result.operations) {
-              const text =
-                operation.kind === "paste"
-                  ? operation.items.find((item) => item.type === "text/plain")
-                  : null;
-              if (operation.kind === "edit" || operation.kind === "compose")
-                sendOperation(operation);
-              else if (operation.kind === "command") sendOperation(scoped(operation, contextId));
-              else if (text)
-                sendOperation({
-                  kind: "edit",
-                  edit: {
-                    contextId,
-                    text: new TextDecoder().decode(text.bytes),
-                    before: "",
-                    after: "",
-                  },
-                });
-            }
+            const operations = result.operations.flatMap((operation) =>
+              lateOperations(operation, contextId),
+            );
+            if (!send(operations, (operation) => late(contextId, { type: "refused", operation })))
+              return { preventDefault: true };
             return result.instruction;
           }}
           onEvent={(event) => {
@@ -224,13 +260,14 @@ export function NativeEditingProxy({
               else if (["compositionend", "blur", "pointerdown"].includes(event.type))
                 setPreedit("");
             }
-            for (const operation of result.operations)
-              if (!sendOperation(scoped(operation))) {
-                // It never left: a composition it carried goes again as a fresh start.
-                step({ type: "refused", operation });
-                setRefusal("Editing refused. Waiting for the remote field.");
-                return { preventDefault: true };
-              }
+            // A refused one never left: a composition it carried goes again as a fresh start.
+            if (
+              !send(
+                result.operations.map((operation) => scoped(operation)),
+                (operation) => step({ type: "refused", operation }),
+              )
+            )
+              return { preventDefault: true };
             if (
               nativeComposing.current &&
               result.operations.some((operation) => operation.kind !== "compose")

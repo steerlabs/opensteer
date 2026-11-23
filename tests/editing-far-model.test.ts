@@ -405,6 +405,43 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
       },
       "A",
     );
+  // CY4: what the page does to an open composition when it rewrites its own value (a mask), as
+  // FarField.endComposition and regime C's PageModel have it: Blink ends the composition without a
+  // compositionend, its text stays where it was, an insertion then lands at the page's caret and
+  // the next composition is a new one.
+  it("ends the composition when the page rewrites its value under it", async () => {
+    await seed(page, kind, "ab", 2);
+    await settle();
+    const earlier = observer.context.contextId!;
+    expect(await composeA("に")).toBe(true);
+    await page.evaluate((kind) => {
+      const element = document.getElementById("f")!;
+      if (kind === "textarea") {
+        const area = element as HTMLTextAreaElement;
+        const caret = area.selectionEnd;
+        area.value = `Z${area.value}`;
+        area.setSelectionRange(caret + 1, caret + 1);
+        return;
+      }
+      const caret = getSelection()!.focusOffset;
+      element.textContent = `Z${element.textContent ?? ""}`;
+      const range = document.createRange();
+      range.setStart(element.firstChild!, caret + 1);
+      range.collapse(true);
+      getSelection()!.removeAllRanges();
+      getSelection()!.addRange(range);
+    }, kind);
+    await settle();
+    expect(observer.context.contextId).not.toBe(earlier);
+    expect(await read(page, kind)).toEqual({ value: "Zabに", caret: 4, collapsed: true });
+    expect(
+      await send({ kind: "edit", edit: { contextId: earlier, text: "x", before: "", after: "" } }),
+    ).toBe(true);
+    expect(await read(page, kind)).toEqual({ value: "Zabにx", caret: 5, collapsed: true });
+    expect(await composeA("日")).toBe(true);
+    expect(await read(page, kind)).toEqual({ value: "Zabにx日", caret: 6, collapsed: true });
+  });
+
   it("types nothing into a field that took focus between the close's read and its send", async () => {
     await seed(page, kind, "", 0);
     await settle();
@@ -660,6 +697,26 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     // The person's own swipe afterwards moves as ever.
     expect(await send({ kind: "command", command: "moveBackward", contextId: earlier })).toBe(true);
     expect((await read(page, kind)).caret).toBe(5);
+  });
+
+  // CY5: only the moves computed from a refused edit go with it. A Backspace is always the
+  // person's own, pressed at a caret: after the refusal it still deletes before the page's caret.
+  it("still applies the person's Backspace after a refused deletion", async () => {
+    await seed(page, kind, "abcd", 4);
+    await settle();
+    const earlier = observer.context.contextId!;
+    await seed(page, kind, "ab-cd", 5);
+    await settle();
+    expect(
+      await send({
+        kind: "edit",
+        edit: { contextId: earlier, text: "cd", before: "abcd", after: "" },
+      }),
+    ).toBe(false);
+    expect(await send({ kind: "command", command: "deleteBackward", contextId: earlier })).toBe(
+      true,
+    );
+    expect(await read(page, kind)).toEqual({ value: "ab-c", caret: 4, collapsed: true });
   });
 
   // CY7: under an earlier context of the same field only the commands in the protocol's relative

@@ -32,6 +32,12 @@ interface Composition {
   readonly end: number;
   readonly sent: boolean;
   readonly detached: boolean;
+  /**
+   * CY4: detached by committing its text to the far side (an interruption, a change of context):
+   * what was committed then. The input method's own commit that follows still goes, as far as it
+   * differs from it.
+   */
+  readonly committed?: string;
 }
 export interface EditingState {
   readonly platform: EditingViewerPlatform;
@@ -386,7 +392,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
     const transaction = state.composition;
     if (transaction && !transaction.detached) {
       commit(transaction, transaction.text);
-      state.composition = { ...transaction, detached: true };
+      state.composition = { ...transaction, detached: true, committed: transaction.text };
     }
     reset();
   };
@@ -579,6 +585,32 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       if (!transaction) break;
       let proxy = event.proxy,
         remoteCaret = proxy.selectionEnd;
+      // CY4: the input method commits a composition already committed for it (the field rotated
+      // or was interrupted under it). What it commits goes as an insertion under the
+      // composition's own context, deleting nothing: the part after what was committed when that
+      // extends it, nothing when it is that, else all of it. Only the reducer of that context
+      // sends it (the context left keeps its own reducer; a change of context leaves this one
+      // with the composition it ended).
+      if (
+        transaction.detached &&
+        transaction.committed !== undefined &&
+        event.data &&
+        transaction.contextId &&
+        transaction.contextId === state.context?.contextId
+      ) {
+        const committed = transaction.committed;
+        const text =
+          event.data === committed
+            ? ""
+            : event.data.startsWith(committed)
+              ? event.data.slice(committed.length)
+              : event.data;
+        if (text)
+          emit({
+            kind: "edit",
+            edit: { contextId: transaction.contextId, text, before: "", after: "" },
+          });
+      }
       if (!transaction.detached) {
         if (!event.data) {
           commit(transaction, "");
@@ -997,24 +1029,31 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       // selection: the selection is deleted first, and the paste goes in where it was.
       const { value, selectionStart: start, selectionEnd: end } = state.proxy;
       let selected = start === end;
-      if (items.length && !state.composition && start < end && state.context) {
+      if (items.length && !state.composition && start < end) {
         const removed = {
           value: value.slice(0, start) + value.slice(end),
           selectionStart: start,
           selectionEnd: start,
         };
-        const edit = textEdit(state.proxy, removed, state.caret, state.context.contextId, null);
-        if (
+        // CY12: without a field context there is nothing to delete it in.
+        const edit = state.context
+          ? textEdit(state.proxy, removed, state.caret, state.context.contextId, null)
+          : null;
+        const deletion =
           edit &&
           edit !== "unverified" &&
-          (state.abilities.rangeEdits || (!edit.before && !edit.after)) &&
-          emit({ kind: "edit", edit })
-        ) {
-          move(state.caret - edit.before.length + edit.text.length, start, removed.value);
+          (state.abilities.rangeEdits || (!edit.before && !edit.after))
+            ? edit
+            : null;
+        // CY12: the far caret goes where the selection was, by commands, or nothing goes.
+        const far = deletion ? state.caret - deletion.before.length + deletion.text.length : 0;
+        const placed = deletion !== null && (far === start || state.abilities.commands);
+        if (deletion && placed && emit({ kind: "edit", edit: deletion })) {
+          move(far, start, removed.value);
           selected = true;
         } else {
           // CW9 (CT8): the selection could not go first, so the paste does not go either.
-          refusal ??= "range-edits";
+          refusal ??= deletion && !placed ? "commands" : "range-edits";
           break;
         }
       }
@@ -1032,7 +1071,14 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         state.abilities.rangeEdits &&
         value.length - (end - start) + plain.length < editingTextMaxLength
       ) {
-        if (start === end && state.caret !== start) move(state.caret, start, value);
+        if (start === end && state.caret !== start) {
+          // CY12: the paste goes where the person's caret is, or not at all.
+          if (!state.abilities.commands) {
+            refusal ??= "commands";
+            break;
+          }
+          move(state.caret, start, value);
+        }
         emit({ kind: "paste", items });
         const at = start + plain.length;
         state.proxy = {

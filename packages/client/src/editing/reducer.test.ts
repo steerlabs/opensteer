@@ -986,6 +986,42 @@ describe("a paste over a selection the target cannot delete", () => {
     expect(result.operations).toEqual([]);
     expect(result.refusal).toBe("range-edits");
   });
+  // CY12: in every way the selection cannot go first, or the caret cannot be placed.
+  const typed = (target: typeof abilities) => {
+    let state = createEditingState("ios", target);
+    for (const event of [
+      { type: "context", context },
+      { type: "beforeinput", inputType: "insertText", data: "hello" },
+      input("hello"),
+    ] satisfies EditingProxyEvent[])
+      state = reduceEditing(state, event).state;
+    return state;
+  };
+  const paste = {
+    type: "paste",
+    items: [{ type: "text/plain", bytes: new TextEncoder().encode("x") }],
+  } as const;
+  it("is refused whole with no field context", () => {
+    const state = { ...typed(abilities), context: null, proxy: proxy("hello", 0, 2) };
+    const result = reduceEditing(state, paste);
+    expect(result.operations).toEqual([]);
+    expect(result.refusal).toBeDefined();
+  });
+  it.each([
+    ["a selection", 0, 2],
+    ["a caret", 2, 2],
+  ] as const)(
+    "is refused whole over %s away from the far caret on a target without commands",
+    (_name, start, end) => {
+      const state = {
+        ...typed({ ...abilities, commands: false }),
+        proxy: proxy("hello", start, end),
+      };
+      const result = reduceEditing(state, paste);
+      expect(result.operations).toEqual([]);
+      expect(result.refusal).toBe("commands");
+    },
+  );
 });
 
 // CV1 (found by regime C, seed 735): a Backspace at the mirror's start is the page's, at its

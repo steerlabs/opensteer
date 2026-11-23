@@ -8,6 +8,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
+  caretMoveEditingCommands,
   caretRelativeEditingCommands,
   EditingContextSchema,
   type EditingCommand,
@@ -520,8 +521,12 @@ export class PageEditingObserver {
       (contextId === this.#context.contextId ||
         (relative && this.#focused !== null && this.#earlier.has(contextId)));
     if (!admitted()) return false;
-    // A move or deletion computed from an edit the page refused goes with it (CY5).
-    if (this.#refusedFrom?.contextId === contextId && this.#refusedFrom.producer === producer)
+    // A move computed from an edit the page refused goes with it (CY5); a Backspace is the person's.
+    if (
+      caretMoveEditingCommands.has(command) &&
+      this.#refusedFrom?.contextId === contextId &&
+      this.#refusedFrom.producer === producer
+    )
       return false;
     if (!focus) {
       await action();

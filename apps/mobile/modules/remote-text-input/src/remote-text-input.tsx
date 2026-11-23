@@ -112,8 +112,9 @@ export function RemoteTextInput(
             packet.contextId !== undefined && packet.contextId !== (context?.contextId ?? null);
           // A composition of the context just left ends in both: there, so what comes after it in
           // that context is taken; here, where the change left it ended. A key's release and a
-          // blur are the field's whatever its context.
-          if (old && packet.event.type === "compositionend")
+          // blur are the field's whatever its context; a blur also clears the mirror the native
+          // field still holds for the context left, which that context must know (CY9).
+          if (old && (packet.event.type === "compositionend" || packet.event.type === "blur"))
             onLateEvent?.(packet.contextId!, packet.event);
           const instruction =
             old && !["compositionend", "keyup", "blur"].includes(packet.event.type)
