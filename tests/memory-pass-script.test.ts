@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { memoryPassScript } from "../apps/host/src/agents/memory-pass-script.js";
 import { startProgramEndpoints } from "../apps/runner/src/agent/program-endpoints.js";
 import { AutomationScriptExecutor } from "../apps/runner/src/agent/script-executor.js";
+import { scriptEventFromTriggerEvent } from "../apps/runner/src/runtime/runtime.js";
 
 const temporaryDirectories: string[] = [];
 const nativeFsHelperBinary = fileURLToPath(
@@ -115,19 +116,30 @@ describe("memoryPassScript real execution (AA1)", () => {
     const planLaunch = async () => (launch: HarnessProcessLaunch) => launch;
     try {
       const lightTaskId = createId("thread");
+      const lightTriggerId = createId("trigger");
+      const lightOccurrenceId = createId("triggerOccurrence");
       const lightScheduledFor = "2026-11-23T04:00:00.000Z";
-      const lightResult = await executor.execute({
-        automationId: createId("trigger"),
-        endpoints: endpoints.endpoints,
+      const lightEvent = scriptEventFromTriggerEvent({
         event: {
-          automationId: createId("trigger"),
-          firedAt: "2026-11-23T04:00:01.000Z",
-          firingId: createId("triggerOccurrence"),
-          kind: "schedule",
-          scheduledFor: lightScheduledFor,
-          taskId: lightTaskId,
+          id: lightOccurrenceId,
+          payload: null,
+          receivedAt: "2026-11-23T04:00:01.000Z",
+          source: { kind: "schedule", scheduledFor: lightScheduledFor },
+          trigger: {
+            anchorThreadId: lightTaskId,
+            id: lightTriggerId,
+            revisionId: createId("triggerRevision"),
+          },
         },
-        firingId: createId("triggerOccurrence"),
+        occurrenceId: lightOccurrenceId,
+        triggerId: lightTriggerId,
+      } as Parameters<typeof scriptEventFromTriggerEvent>[0]);
+      expect(lightEvent.taskId).toBe(lightTaskId);
+      const lightResult = await executor.execute({
+        automationId: lightTriggerId,
+        endpoints: endpoints.endpoints,
+        event: lightEvent,
+        firingId: lightOccurrenceId,
         planLaunch,
         script: memoryPassScript("memory-light"),
         signal: new AbortController().signal,
@@ -137,18 +149,30 @@ describe("memoryPassScript real execution (AA1)", () => {
       expect(lightResult.exitCode).toBe(0);
 
       const nightlyTaskId = createId("thread");
+      const nightlyTriggerId = createId("trigger");
+      const nightlyOccurrenceId = createId("triggerOccurrence");
       const nightlyFiredAt = "2026-11-23T07:00:00.000Z";
-      const nightlyResult = await executor.execute({
-        automationId: createId("trigger"),
-        endpoints: endpoints.endpoints,
+      const nightlyEvent = scriptEventFromTriggerEvent({
         event: {
-          automationId: createId("trigger"),
-          firedAt: nightlyFiredAt,
-          firingId: createId("triggerOccurrence"),
-          kind: "manual",
-          taskId: nightlyTaskId,
+          id: nightlyOccurrenceId,
+          payload: null,
+          receivedAt: nightlyFiredAt,
+          source: { kind: "manual" },
+          trigger: {
+            anchorThreadId: nightlyTaskId,
+            id: nightlyTriggerId,
+            revisionId: createId("triggerRevision"),
+          },
         },
-        firingId: createId("triggerOccurrence"),
+        occurrenceId: nightlyOccurrenceId,
+        triggerId: nightlyTriggerId,
+      } as Parameters<typeof scriptEventFromTriggerEvent>[0]);
+      expect(nightlyEvent.taskId).toBe(nightlyTaskId);
+      const nightlyResult = await executor.execute({
+        automationId: nightlyTriggerId,
+        endpoints: endpoints.endpoints,
+        event: nightlyEvent,
+        firingId: nightlyOccurrenceId,
         planLaunch,
         script: memoryPassScript("memory-nightly"),
         signal: new AbortController().signal,

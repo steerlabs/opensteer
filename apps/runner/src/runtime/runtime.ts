@@ -4173,7 +4173,7 @@ function reject(code: ProtocolError["code"], message: string, retryable: boolean
  * executable and native filesystem helper are resolved before the runtime
  * exists, so their absence here is a composition bug rather than a runtime condition.
  */
-function scriptEventFromTriggerEvent(
+export function scriptEventFromTriggerEvent(
   context: Extract<RunnerCommand, { readonly type: "trigger.execute" }>["context"],
 ): AutomationScriptEvent {
   const { event } = context;
