@@ -182,8 +182,7 @@ export async function readConnectionRowStanding(
   { grantTarget, writeTargetName }: ConnectionTargetCheck = {},
 ) {
   const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, lock);
-  if (!read || read.state !== "live")
-    return { row: undefined, waiting: read?.state === "waiting" };
+  if (!read || read.state !== "live") return { row: undefined, waiting: read?.state === "waiting" };
   const row = read.connection;
   const access = grantTarget && agentGrantAccess(row.grant, grantTarget);
   if (access === null)
