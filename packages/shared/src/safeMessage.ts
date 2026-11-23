@@ -52,6 +52,8 @@ const proxyAddressNames = [
   "http_proxy",
 ] as const;
 
+const proxyAddressNameSet: ReadonlySet<string> = new Set(proxyAddressNames);
+
 /** Names of environment variables whose values may appear in engine diagnostics. */
 export const credentialNamePattern =
   /(?:AUTHORIZATION|COOKIE|TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|CREDENTIAL|PRIVATE_KEY|PROXY)/iu;
@@ -88,10 +90,16 @@ export function networkCredentialSecrets(
 }
 
 export function engineDiagnosticSecrets(
-  environment: Readonly<Record<string, string>>,
+  environment: Readonly<Record<string, string | undefined>>,
 ): readonly string[] {
   const namedValues = Object.entries(environment)
-    .filter(([name, value]) => value.length >= 8 && credentialNamePattern.test(name))
+    .filter(
+      (entry): entry is [string, string] =>
+        typeof entry[1] === "string" &&
+        entry[1].length >= 8 &&
+        !proxyAddressNameSet.has(entry[0]) &&
+        credentialNamePattern.test(entry[0]),
+    )
     .map(([, value]) => value)
     .sort((left, right) => right.length - left.length);
   // Mask proxy userinfo first so diagnostics can still show the proxy endpoint.

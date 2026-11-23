@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import {
   credentialNamePattern,
+  engineDiagnosticSecrets,
   networkCredentialSecrets,
   redactNetworkCredentials,
   redactUrlCredentials,
@@ -168,4 +169,32 @@ it("redacts safe messages before truncating", () => {
       secrets,
     }),
   ).toBe("via http://[REDACTED]@pro");
+});
+
+it("keeps proxy endpoints visible while scrubbing proxy passwords and other PROXY-named secrets", () => {
+  const plainSecrets = engineDiagnosticSecrets({
+    HTTPS_PROXY: "http://proxy.corp:8080",
+    https_proxy: "http://proxy2.corp:8080",
+    HTTP_PROXY: "http://proxy3.corp:8080",
+    http_proxy: "http://proxy4.corp:8080",
+    ALL_PROXY: "socks5://proxy5.corp:1080",
+    all_proxy: "socks5://proxy6.corp:1080",
+    PROXY_PASSWORD: "top-secret-proxy-password",
+  });
+  expect(
+    redactNetworkCredentials(
+      "connect to http://proxy.corp:8080 failed (auth top-secret-proxy-password)",
+      plainSecrets,
+    ),
+  ).toBe("connect to http://proxy.corp:8080 failed (auth [REDACTED])");
+
+  const withAuthSecrets = engineDiagnosticSecrets({
+    HTTPS_PROXY: "http://alice:secret-pw@proxy.corp:8080",
+  });
+  expect(
+    redactNetworkCredentials(
+      "connect to http://alice:secret-pw@proxy.corp:8080 failed; secret-pw",
+      withAuthSecrets,
+    ),
+  ).toBe("connect to http://[REDACTED]@proxy.corp:8080 failed; [REDACTED]");
 });
