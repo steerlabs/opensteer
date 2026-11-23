@@ -5,8 +5,6 @@ import type {
   CloudComputerProviderWrite,
   CloudComputerReport,
   GoogleComputeServerRef,
-  WorkAssignmentId,
-  OrganizationId,
   ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
 import type { NullableTimestamp, Timestamp } from "../database/schema.js";
@@ -18,7 +16,6 @@ export type BillingStatus =
 export interface CloudComputerTable {
   id: CloudComputerId;
   accountId: ControlPlaneAccountId | null;
-  workAssignmentId: Generated<WorkAssignmentId | null>;
   generation: number;
   state: CloudComputerDesired["state"];
   hostname: string;
@@ -137,8 +134,6 @@ export interface CloudComputerBackupTargetTable {
   computerId: CloudComputerId | null;
   checkoutKey: string | null;
   purgeComputerId: Generated<CloudComputerId | null>;
-  reservedOrganizationId: Generated<OrganizationId | null>;
-  organizationReservationRequestId: Generated<string | null>;
   needsRotation: Generated<boolean>;
 }
 

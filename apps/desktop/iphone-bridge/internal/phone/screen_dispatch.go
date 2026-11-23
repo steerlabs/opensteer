@@ -190,16 +190,23 @@ func (m *Manager) displayOperation(ctx context.Context, method string, params in
 		match := d != nil && d.ref == ref
 		if match {
 			if p, ok := params.(*wire.DisplayDemandParams); ok {
+				s.displayMu.Unlock()
+				d.demandMu.Lock()
+				defer d.demandMu.Unlock()
+				s.displayMu.Lock()
+				if s.display != d || d.ref != ref {
+					s.displayMu.Unlock()
+					return nil, wire.Fail(wire.StaleEpoch)
+				}
 				if p.MaxLongSide != nil {
 					d.config.MaxLongSide = *p.MaxLongSide
 				}
 				if p.MaxFPS != nil {
 					d.config.MaxFPS = *p.MaxFPS
 				}
-				maxLongSide, maxFPS := d.config.MaxLongSide, d.config.MaxFPS
 				pipeline := d.pipeline
 				s.displayMu.Unlock()
-				pipeline.UpdateDemand(maxLongSide, maxFPS)
+				pipeline.ApplyDemand(p.MaxLongSide, p.MaxFPS, p.Active)
 				return wire.Empty{}, nil
 			}
 			if method == "display.refresh" {
@@ -287,13 +294,14 @@ func (m *Manager) displayOperation(ctx context.Context, method string, params in
 		case *wire.DisplayInputParams:
 			return wire.Empty{}, s.displayInput(ctx, d, p.Geometry, p.Events, guard, waitDuration)
 		case *wire.DisplayPowerParams:
+			sample := s.privacySample()
 			state, err := s.backend.State(ctx)
 			if err != nil {
 				s.hideDisplay("protected", "target-unavailable")
 				return nil, err
 			}
 			f, fgKnown := s.foregroundChecked(ctx)
-			s.applyPrivacy(state, f, fgKnown)
+			s.applyPrivacySample(state, f, fgKnown, &sample)
 			if f != nil && f.AppID == opensteerAppID {
 				return nil, wire.Fail(wire.Unsupported)
 			}

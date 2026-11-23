@@ -48,6 +48,7 @@ func TestDisplayRequestsRejectMalformedParams(t *testing.T) {
 		{"display.start", `"maxLongSide":1920,"maxFps":61`},
 		{"display.start", `"maxLongSide":1920`},
 		{"display.demand", `"maxFps":null`},
+		{"display.demand", `"active":null`},
 		{"display.refresh", `"sessionId":"unexpected"`},
 		{"display.stop", `"streamId":"duplicate"`},
 		{"display.power", `"action":"unlock"`},
@@ -73,7 +74,30 @@ func TestDisplayRequestsRejectMalformedParams(t *testing.T) {
 			}
 		})
 	}
+	for _, tc := range []struct {
+		name   string
+		params string
+		want   *bool
+	}{
+		{"active-false", `"active":false`, boolPtr(false)},
+		{"active-true", `"maxFps":24,"active":true`, boolPtr(true)},
+		{"active-omitted", `"maxFps":24`, nil},
+	} {
+		t.Run("display.demand/"+tc.name, func(t *testing.T) {
+			raw := json.RawMessage(fmt.Sprintf("{%s,%s}", fixtureDisplayRef, tc.params))
+			parsed, err := Params(Request{Method: "display.demand", Params: raw})
+			if err != nil {
+				t.Fatalf("valid demand rejected: %v", err)
+			}
+			demand := parsed.(*DisplayDemandParams)
+			if (demand.Active == nil) != (tc.want == nil) || (tc.want != nil && *demand.Active != *tc.want) {
+				t.Fatalf("got active=%v want=%v", demand.Active, tc.want)
+			}
+		})
+	}
 }
+
+func boolPtr(v bool) *bool { return &v }
 
 func TestExpandedActionValidation(t *testing.T) {
 	valid := []string{

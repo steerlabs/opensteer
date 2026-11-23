@@ -2566,8 +2566,12 @@ it.each([
           } else
             await testRpcData(
               host.origin,
-              "integration.computer.session.stop",
-              { sessionId: current.id },
+              "commands.dispatch",
+              {
+                type: "integration.computer.session.stop",
+                idempotencyKey: randomUUID(),
+                sessionId: current.id,
+              } as never,
               owner,
             );
           await closed(taskView);
@@ -2613,8 +2617,12 @@ it.each([
                 revoke: async () => {
                   await testRpcData(
                     host.origin,
-                    "integration.computer.session.stop",
-                    { sessionId: current.id },
+                    "commands.dispatch",
+                    {
+                      type: "integration.computer.session.stop",
+                      idempotencyKey: randomUUID(),
+                      sessionId: current.id,
+                    } as never,
                     owner,
                   );
                   await current.finish();

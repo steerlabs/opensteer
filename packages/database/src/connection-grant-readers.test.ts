@@ -4,8 +4,7 @@ import { expect, it } from "vitest";
 
 /**
  * A connection's grant is read for its standing in one statement only
- * (`readConnectionStanding` in resource-access.ts), with the Work policy joined on a work Home.
- * Any other query that reads `grant` from `agentConnections` is listed here with why it may;
+ * (`readConnectionStanding` in resource-access.ts). Any other query that reads `grant` from `agentConnections` is listed here with why it may;
  * a new one fails until it goes through that statement or says why it need not.
  */
 const allowed: Readonly<Record<string, { readonly count: number; readonly reason: string }>> = {
@@ -17,10 +16,6 @@ const allowed: Readonly<Record<string, { readonly count: number; readonly reason
     count: 2,
     reason:
       "The person's list of connections and the row an edit locks and rewrites: drawn for the person and written, never an admission.",
-  },
-  "packages/database/src/work-home.ts": {
-    count: 1,
-    reason: "The policy writer itself: it reads every grant to narrow or revoke it.",
   },
 };
 

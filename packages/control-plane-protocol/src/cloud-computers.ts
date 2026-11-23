@@ -5,7 +5,6 @@ import {
   HostKeyFingerprintSchema,
 } from "@opensteer/core";
 import { z } from "zod";
-import { WorkHomeMarkerSchema } from "./organizations.js";
 import { ControlPlaneAccountIdSchema, prefixedIdSchema } from "./account-id.js";
 
 export const CloudComputerIdSchema = prefixedIdSchema("cc")
@@ -327,7 +326,6 @@ export const CloudComputerBootResponseSchema = z.strictObject({
   releaseManifestUrl: CloudComputerReleaseManifestUrlSchema.optional(),
   egress: CloudComputerEgressSchema.optional(),
   managedHome: CloudComputerManagedHomeSchema.optional(),
-  work: WorkHomeMarkerSchema.optional(),
   browserPool: z.boolean().optional(),
   ipv6Enabled: z.boolean(),
   restoreSnapshot: CloudComputerSnapshotSchema.optional(),
@@ -375,7 +373,6 @@ export const CloudComputerReasonCodeSchema = z.enum([
   "cloud-computer-no-capacity",
   "cloud-computer-sales-not-open",
   "cloud-computer-billing-problem",
-  "cloud-computer-work-managed",
   "cloud-computer-checkout-expired",
   "cloud-computer-checkout-complete",
   "cloud-computer-checkout-in-progress",
@@ -407,7 +404,6 @@ export type CloudComputerPreparationStep = z.infer<typeof CloudComputerPreparati
 const cloudComputerViewFields = {
   id: CloudComputerIdSchema,
   egress: z.enum(["pending", "assigned", "unavailable"]),
-  work: WorkHomeMarkerSchema.optional(),
   deploymentId: DeploymentIdSchema.optional(),
   region: CloudComputerRegionSchema.optional(),
   egressAddress: CloudComputerEgressAddressSchema.optional(),
@@ -512,7 +508,6 @@ export const ManagedHomeClaimClaimsSchema = z
     // The installation that answered the discovery this claim was built from.
     authority: ManagedHomeClaimAuthoritySchema.extend({ hostInstanceId: HostInstanceIdSchema }),
     claim: ManagedHomeClaimTargetSchema,
-    work: WorkHomeMarkerSchema.optional(),
     owner: z.strictObject({
       email: z.email().max(320),
       displayName: z.string().trim().min(1).max(120),
@@ -556,7 +551,6 @@ export const ManagedHomeClaimReceiptDocumentSchema = z.strictObject({
   account: z.strictObject({ issuer: bareHttpsOrigin, subject: ControlPlaneAccountIdSchema }),
   authority: ManagedHomeClaimAuthoritySchema.extend({ hostInstanceId: HostInstanceIdSchema }),
   claim: ManagedHomeClaimTargetSchema,
-  work: WorkHomeMarkerSchema.optional(),
   linkGeneration: base64Url43,
   /** The digest of the Account link credential the Home committed with this claim. */
   hostCredentialSha256: base64Url43,
@@ -598,15 +592,6 @@ export function managedHomeClaimReceiptSigningBytes(
       hostCredentialSha256: document.hostCredentialSha256,
       linkGeneration: document.linkGeneration,
       purpose: document.purpose,
-      ...(document.work
-        ? {
-            work: {
-              organizationId: document.work.organizationId,
-              organizationName: document.work.organizationName,
-              assignmentId: document.work.assignmentId,
-            },
-          }
-        : {}),
     })}`,
   );
 }

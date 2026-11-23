@@ -71,3 +71,18 @@ export class OpensteerError extends Error {
     this.details = options.details;
   }
 }
+
+const beforeEffect = new WeakSet<object>();
+/**
+ * Marks an error as raised before its command's effect began: nothing left the Home. It is set
+ * where the error is raised (a refusal while choosing where to act, before anything is sent),
+ * never inferred from a code. An unmarked error from a command that can act outside the Home's
+ * database leaves its outcome unknown.
+ */
+export function raisedBeforeEffect<E extends Error>(error: E): E {
+  beforeEffect.add(error);
+  return error;
+}
+export function isRaisedBeforeEffect(error: unknown): boolean {
+  return typeof error === "object" && error !== null && beforeEffect.has(error);
+}

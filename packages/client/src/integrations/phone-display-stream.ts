@@ -1172,6 +1172,7 @@ export function computerDisplayStatus(
       switch (display.reason) {
         case "paused":
         case "opensteer-app":
+        case "target-unavailable":
           return say(display.reason);
         case "locked-screen":
           return say("locked");

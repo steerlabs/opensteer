@@ -52,3 +52,5 @@ patches/plugin-engine-*.patch
 apps/mobile/modules/remote-text-input/ios/Tests/Cases/typing-sequences.json
 # Recorded from UIKit's own UITextView by UIKitRecordingTests.swift, which compares it byte for byte.
 apps/mobile/modules/remote-text-input/ios/Tests/Cases/uikit-recordings.json
+# Written by the command table drift test (toMatchFileSnapshot), which compares it byte for byte.
+packages/protocol/src/command-table.md

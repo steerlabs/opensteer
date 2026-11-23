@@ -1604,7 +1604,8 @@ export async function claimRunInputBatch(
     const lineage = await threadContextLineage(transaction, thread.id, thread.createdBy);
     const providerSessionId = await ensureSelectedProviderSession(transaction, thread, {
       freshRunId: run.id,
-      personalContext: lineage.personalContext,
+      personalContext:
+        lineage.personalContext && (await lineagePersonalContext(transaction, run.connectionId)),
       personLineage: lineage.personLineage && run.connectionId === null,
     });
     await transaction
@@ -3296,8 +3297,8 @@ async function resolveThreadInputFacts(
     const chat = source.chat;
     // A chat's message reads through the one sender admission: the bridge is live, it covers
     // this conversation, and this sender may speak under the revision the message was admitted
-    // under. Any other connection's message reads its live row with its organization's policy in
-    // the same statement. The task is already locked here, so the row is read, not locked.
+    // under. Any other connection's message reads its live row in one statement. The task is
+    // already locked here, so the row is read, not locked.
     const admitted = chat
       ? await admitBridgeSender(transaction, {
           ownerUserId: input.requestedBy,
@@ -4009,7 +4010,8 @@ export async function ensureQueuedRun(
     : await (async () => {
         const lineage = await threadContextLineage(transaction, thread.id, thread.createdBy);
         return ensureSelectedProviderSession(transaction, thread, {
-          personalContext: lineage.personalContext,
+          personalContext:
+            lineage.personalContext && (await lineagePersonalContext(transaction, connectionId)),
           personLineage: lineage.personLineage && connectionId === null,
         });
       })();
@@ -4940,7 +4942,11 @@ export function readConnectionChildResult(
     )
       return undefined;
     return {
-      assignment: await assignmentSummaryInTransaction(transaction, row),
+      assignment: await assignmentSummaryInTransaction(transaction, row, {
+        connectionAuthority: authority,
+        ownerVerified: true,
+        scope,
+      }),
       result: row.resultText,
     };
   });
@@ -4952,6 +4958,7 @@ export function readAssignmentResult(
   input: {
     readonly assignmentId: AssignmentId;
     readonly authority: ThreadCallerAuthority;
+    readonly connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
     readonly signal?: AbortSignal;
   },
 ) {
@@ -5002,7 +5009,16 @@ export function readAssignmentResult(
         readOnly: true,
       });
       input.signal?.throwIfAborted();
-      return { assignment: await assignmentSummaryInTransaction(transaction, assignment), result };
+      return {
+        assignment: await assignmentSummaryInTransaction(
+          transaction,
+          assignment,
+          input.connectionAuthority
+            ? { connectionAuthority: input.connectionAuthority, ownerVerified: true }
+            : undefined,
+        ),
+        result,
+      };
     },
     (error) => error instanceof TransactionScopeChanged,
   );

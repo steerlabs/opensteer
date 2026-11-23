@@ -1,7 +1,5 @@
 import { registerAgentDirectoryRoutes } from "../agent-directory/routes.js";
 import type { AgentDirectoryReader } from "../agent-directory/store.js";
-import { registerOrganizationRoutes } from "../organizations/routes.js";
-import type { OrganizationStore } from "../organizations/store.js";
 import {
   registerCloudComputerRoutes,
   type CloudComputerRouteOptions,
@@ -89,8 +87,6 @@ export async function createControlPlaneServer(
     readonly hostedOAuthBroker?: HostedOAuthBrokerService;
     readonly cloudComputers?: CloudComputerRouteOptions;
     readonly agentDirectory?: AgentDirectoryReader;
-    readonly organizations?: OrganizationStore;
-    readonly workHomeFetch?: typeof globalThis.fetch;
     readonly desktopDownloadUrl?: string;
     readonly iosAppUrl?: string;
     readonly androidAppUrl?: string;
@@ -187,12 +183,6 @@ export async function createControlPlaneServer(
     ...(dependencies.appleSignIn ? { appleSignIn: dependencies.appleSignIn } : {}),
     auth: dependencies.auth,
     connectLifecycle: dependencies.connectLifecycle,
-    ...(dependencies.organizations
-      ? {
-          resolveOrganizationCheckouts: (account) =>
-            dependencies.organizations!.resolveAccountCheckouts(account),
-        }
-      : {}),
     store: dependencies.store,
   });
   const portal = dependencies.portalSessions
@@ -208,8 +198,6 @@ export async function createControlPlaneServer(
         ...(dependencies.cloudComputers
           ? { cloudComputers: dependencies.cloudComputers.store }
           : {}),
-        ...(dependencies.organizations ? { organizations: dependencies.organizations } : {}),
-        ...(dependencies.workHomeFetch ? { workHomeFetch: dependencies.workHomeFetch } : {}),
         portalOrigin: dependencies.portalOrigin,
         portalSessions: dependencies.portalSessions,
         ...(dependencies.personalRemoteAccount
@@ -238,13 +226,6 @@ export async function createControlPlaneServer(
       authenticator: dependencies.authenticator,
       authenticateHostCredential: (authorization) =>
         dependencies.store.authenticateHostCredential(authorization),
-    });
-  }
-  if (dependencies.organizations && dependencies.cloudComputers) {
-    registerOrganizationRoutes(app, {
-      ...dependencies,
-      organizations: dependencies.organizations,
-      cloudComputers: dependencies.cloudComputers.store,
     });
   }
   if (dependencies.hostedOAuthBroker) {
@@ -308,21 +289,7 @@ export async function createControlPlaneServer(
       token && request.method === "POST" && clientId
         ? await computers?.pendingReplacementOwnerAccess(clientId)
         : undefined;
-    const response =
-      clientId && dependencies.organizations
-        ? await dependencies.organizations.issueWorkSignIn(
-            clientId,
-            authorize
-              ? async () => {
-                  const session = await dependencies.auth.api.getSession({
-                    headers: toWebHeaders(request.headers),
-                  });
-                  return session?.user.id;
-                }
-              : undefined,
-            issue,
-          )
-        : await issue();
+    const response = await issue();
     if (computers && clientId && replacement?.accountId && response.ok) {
       const result = IssuedIdTokenSchema.safeParse(await response.clone().json());
       if (result.success) {

@@ -28,7 +28,7 @@ import { requestFromRow } from "./request-persistence.js";
 import { connectionRequests } from "./request-agent-response.js";
 import type { DatabaseSchema } from "./schema.js";
 import type { ThreadCallerAuthority } from "./thread-caller.js";
-import { executionNodeFromRow, messagesFromRows } from "./thread-row-mappers.js";
+import { executionNodeFromRow, keptMessageSql, messagesFromRows } from "./thread-row-mappers.js";
 
 type Database = Kysely<DatabaseSchema>;
 type Tx = Transaction<DatabaseSchema>;
@@ -211,13 +211,13 @@ function activityMetadata(
     return query
       .where("item.nodeId", "is", null)
       .where(
-        sql<boolean>`((item.kind='message' and message.published and message.author->>'kind' is distinct from 'team-member') or (item.kind='request' and request.kind='person.question'))`,
+        sql<boolean>`((item.kind='message' and message.published and ${keptMessageSql("message")}) or (item.kind='request' and request.kind='person.question'))`,
       );
   return query
     .where("item.nodeId", "is", null)
     .where(sql<boolean>`item.kind in ('message','tool','place','app','request','node')`)
     .where(
-      sql<boolean>`(item.kind <> 'message' or (message.published and message.author->>'kind' is distinct from 'team-member'))`,
+      sql<boolean>`(item.kind <> 'message' or (message.published and ${keptMessageSql("message")}))`,
     )
     .$if(visibleRequests !== undefined, (q) =>
       q.where(sql<boolean>`(item.kind <> 'request' or request.id is not null)`),

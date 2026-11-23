@@ -18,6 +18,6 @@ A browser error is about that tab or its browser: read its message, which says w
 
 Guest sign-ins cannot be saved into a profile. To keep a sign-in, open the right named profile before signing in. Never offer to convert or copy Guest.
 
-With full access, `browser_profile_update` renames a profile and `browser_profile_remove` deletes one, clears or trims its history, or forgets a remembered site.
+`opensteer_command` renames a profile (`browser.profile.rename`), deletes one (`browser.profile.delete`), clears or trims its history (`browser.history.clear`, `browser.history.remove`) or forgets a remembered site (`browser.site.remove`); `opensteer_commands` says which of these run now and which ask the person.
 
 Use `opensteer_request_list` to see open Requests and `opensteer_request_withdraw` for one this task no longer needs. Replaying the same tool call returns the same Request; a new call can create another.

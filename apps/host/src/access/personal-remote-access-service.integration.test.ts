@@ -5,7 +5,7 @@ import type { IdentityService } from "@opensteer/identity";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { PersonalRemoteAccessService } from "./personal-remote-access-service.js";
 import type { AuthenticatedHostSession, HostCredentialKind } from "../identity/auth.js";
-import { signHostDiscovery } from "../identity/host-keys.js";
+import { signHostDiscovery, signPersonalHostAccessRoute } from "../identity/host-keys.js";
 
 const ownerId = createId("user");
 let owner: Awaited<
@@ -85,6 +85,185 @@ describe("PersonalRemoteAccessService", () => {
         }),
       ).resolves.toMatchObject({ generation: 1, mode: "private" });
     }
+  });
+
+  it("changes Remote access only as the step of an unfinished operation that asked for it (AD10)", async () => {
+    const attempt = async (operation: Parameters<typeof configureDatabase>[1]) => {
+      const fixture = configureDatabase(
+        { generation: 0, mode: "off", routeOrigin: null },
+        operation,
+      );
+      const service = new PersonalRemoteAccessService({
+        authority,
+        database: ownerAuthority(fixture.database) as never,
+        identity: fakeIdentity(),
+        keys: generateKeyPairSync("ed25519"),
+      });
+      const result = service.configure(ownerSession(), {
+        mode: "private",
+        routeOrigin: "https://private.example",
+        schemaVersion: 1,
+      });
+      return { result, fixture };
+    };
+    // With the person's admitted, unfinished request for this mode: it is carried out.
+    const carried = await attempt({
+      intent: { action: "configure", mode: "private" },
+      state: "running",
+    });
+    await expect(carried.result).resolves.toMatchObject({ mode: "private" });
+    // Without any operation, for a finished one, or for one that asked for another mode: refused
+    // before anything changes.
+    for (const operation of [
+      null,
+      { intent: { action: "configure", mode: "private" }, state: "succeeded" },
+      { intent: { action: "configure", mode: "private" }, state: "failed" },
+      { intent: { action: "configure", mode: "off" }, state: "running" },
+    ]) {
+      const refused = await attempt(operation);
+      await expect(refused.result, JSON.stringify(operation)).rejects.toMatchObject({
+        code: "conflict",
+      });
+      expect(refused.fixture.updated).not.toHaveBeenCalled();
+    }
+  });
+
+  it("issues a Connect credential and publishes Connect as on only as the step of its operation (AD10)", async () => {
+    const issuer = "https://accounts.opensteer.test";
+    const keys = generateKeyPairSync("ed25519");
+    const refusal = "Remote access changes only as part of a change you asked for in Opensteer.";
+    const steps = [
+      {
+        name: "connect-provision",
+        asks: { action: "configure", mode: "connect" },
+        run: (service: PersonalRemoteAccessService) =>
+          service.connectCredentialForExecutor({} as never, false),
+      },
+      {
+        name: "connect-rotate",
+        asks: { action: "rotate" },
+        run: (service: PersonalRemoteAccessService) =>
+          service.connectCredentialForExecutor({} as never, true),
+      },
+      {
+        name: "connect-projection (on)",
+        asks: { action: "configure", mode: "connect" },
+        run: (service: PersonalRemoteAccessService) =>
+          service.publishConnectProjection(ownerSession(), {
+            expectedAccessRoute: signPersonalHostAccessRoute(keys, {
+              authority,
+              documentVersion: 2,
+              purpose: "opensteer-personal-access-route",
+              route: { generation: 1, kind: "connect", origin: "https://connect.test" },
+            }),
+            schemaVersion: 2,
+            state: "ready",
+          }),
+      },
+    ];
+    for (const step of steps) {
+      const attempt = async (operation: Parameters<typeof projectionDatabase>[3]) => {
+        const fetch = vi.fn(async () => Response.json({}, { status: 500 }));
+        const service = new PersonalRemoteAccessService({
+          authority,
+          database: ownerAuthority(
+            projectionDatabase(issuer, `osc_${"h".repeat(43)}`, undefined, operation),
+          ) as never,
+          fetch,
+          grantVerifier: { issuer } as never,
+          identity: fakeIdentity(),
+          keys,
+        });
+        const outcome = await step.run(service).then(
+          () => "done",
+          (error: { readonly message?: string }) => error.message ?? "error",
+        );
+        return { outcome, fetch };
+      };
+      // With its admitted, unfinished operation: past the check, to what the step does next.
+      const carried = await attempt({ intent: step.asks, state: "running" });
+      expect(carried.outcome, step.name).not.toBe(refusal);
+      // Without one, for a finished or failed one, or for one that asked for something else:
+      // refused before anything reaches the Opensteer account.
+      for (const operation of [
+        null,
+        { intent: step.asks, state: "succeeded" },
+        { intent: step.asks, state: "failed" },
+        { intent: { action: "configure", mode: "private" }, state: "running" },
+      ]) {
+        const refused = await attempt(operation);
+        expect(refused.outcome, `${step.name} ${JSON.stringify(operation)}`).toBe(refusal);
+        expect(refused.fetch).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it("takes Remote access away with no operation behind it, on record for the person (AD10)", async () => {
+    const issuer = "https://accounts.opensteer.test";
+    const keys = generateKeyPairSync("ed25519");
+    const database = projectionDatabase(issuer, `osc_${"h".repeat(43)}`);
+    const fetch = vi.fn(async () =>
+      Response.json({
+        accessRoute: null,
+        generation: 1,
+        lastSeenAt: null,
+        origin: null,
+        state: "disabled",
+      }),
+    );
+    const service = new PersonalRemoteAccessService({
+      authority,
+      database: ownerAuthority(database) as never,
+      fetch,
+      grantVerifier: { issuer } as never,
+      identity: fakeIdentity(),
+      keys,
+    });
+    // The Mac app's startup cleanup: no operation, never refused.
+    await expect(
+      service.publishConnectProjection(ownerSession(), {
+        expectedAccessRoute: null,
+        schemaVersion: 2,
+        state: "disabled",
+      }),
+    ).resolves.toBeUndefined();
+    await service
+      .revokeConnectResource(ownerSession(), {
+        hostInstanceId: authority.hostInstanceId,
+        operationId: `cop_${crypto.randomUUID()}`,
+      })
+      .catch(() => undefined);
+    expect(database.audits.map((row) => row.action)).toEqual([
+      "remote-access.connect-off",
+      "remote-access.connect-removed",
+    ]);
+    // No operation behind them: the Mac app cleaning up, never the person (Activity's words).
+    expect(
+      database.audits.map((row) => JSON.parse(row.metadata as string) as { by: string }),
+    ).toEqual([
+      { narrowing: true, by: "app-cleanup" },
+      { narrowing: true, by: "app-cleanup" },
+    ]);
+    // With the person's own Off behind it: the person.
+    const asked = projectionDatabase(issuer, `osc_${"h".repeat(43)}`, undefined, {
+      intent: { action: "configure", mode: "off" },
+      state: "running",
+    });
+    await new PersonalRemoteAccessService({
+      authority,
+      database: ownerAuthority(asked) as never,
+      fetch,
+      grantVerifier: { issuer } as never,
+      identity: fakeIdentity(),
+      keys,
+    }).publishConnectProjection(ownerSession(), {
+      expectedAccessRoute: null,
+      schemaVersion: 2,
+      state: "disabled",
+    });
+    expect(asked.audits.map((row) => JSON.parse(row.metadata as string))).toEqual([
+      { narrowing: true, by: "person" },
+    ]);
   });
 
   it("refuses non-owners before any administration effect", async () => {
@@ -653,6 +832,9 @@ function rowQuery<T>(row: T) {
     orderBy() {
       return this;
     },
+    limit() {
+      return this;
+    },
     forUpdate() {
       return this;
     },
@@ -673,12 +855,20 @@ function rowQuery<T>(row: T) {
  * The one stored remote-access row, answered from a mutable state object so a
  * second `configure` reads back exactly what the first one wrote.
  */
-function configureDatabase(initial: {
-  readonly generation: number;
-  readonly mode: "off" | "connect" | "private";
-  readonly routeOrigin: string | null;
-}) {
+function configureDatabase(
+  initial: {
+    readonly generation: number;
+    readonly mode: "off" | "connect" | "private";
+    readonly routeOrigin: string | null;
+  },
+  /** The latest Remote access operation: by default, the person's unfinished request for private. */
+  operation: { readonly intent: Record<string, unknown>; readonly state: string } | null = {
+    intent: { action: "configure", mode: "private" },
+    state: "running",
+  },
+) {
   let state = { ...initial };
+  const operationQuery = rowQuery(operation ?? undefined);
   const remoteAccessQuery = {
     executeTakeFirstOrThrow: vi.fn(async () => state),
     forNoKeyUpdate() {
@@ -733,7 +923,9 @@ function configureDatabase(initial: {
         ? remoteAccessQuery
         : table === "authSessions"
           ? liveSessionQuery()
-          : marker,
+          : table === "personalRemoteAdministration"
+            ? operationQuery
+            : marker,
     ),
     updateTable: vi.fn(() => updateQuery),
   };
@@ -757,7 +949,12 @@ function projectionDatabase(
     readonly mode: "off" | "connect" | "private";
     readonly routeOrigin: string | null;
   } = { generation: 1, mode: "off", routeOrigin: null },
+  /** The latest Remote access operation; none by default. */
+  operation: { readonly intent: Record<string, unknown>; readonly state: string } | null = null,
 ) {
+  const operationQuery = rowQuery(operation ?? undefined);
+  /** What the steps put on record for the person's activity. */
+  const audits: Record<string, unknown>[] = [];
   const link = {
     accountOperation: null as import("kysely").Selectable<
       import("@opensteer/database").DatabaseSchema["personalRemoteAccountLink"]
@@ -814,8 +1011,13 @@ function projectionDatabase(
     },
   };
   return {
+    audits,
     selectFrom: vi.fn((table: string) =>
-      table === "personalRemoteAccess" ? remoteAccessQuery : linkQuery,
+      table === "personalRemoteAccess"
+        ? remoteAccessQuery
+        : table === "personalRemoteAdministration"
+          ? operationQuery
+          : linkQuery,
     ),
     transaction: () => ({
       execute: (run: (value: unknown) => unknown) =>
@@ -824,6 +1026,13 @@ function projectionDatabase(
             compileQuery: () => ({}),
             executeQuery: vi.fn(async () => ({ rows: [] })),
             transformQuery: (node: unknown) => node,
+          }),
+          insertInto: (table: string) => ({
+            values(row: Record<string, unknown>) {
+              if (table === "securityAudit") audits.push(row);
+              return this;
+            },
+            execute: async () => [],
           }),
           updateTable: () => ({
             set(values: Partial<typeof link>) {
@@ -840,7 +1049,9 @@ function projectionDatabase(
               ? liveSessionQuery()
               : table === "personalRemoteAccess"
                 ? remoteAccessQuery
-                : linkQuery,
+                : table === "personalRemoteAdministration"
+                  ? operationQuery
+                  : linkQuery,
           ),
         }),
     }),
@@ -935,6 +1146,12 @@ function accountMutationDatabase(
     },
   };
   const transaction = {
+    insertInto: () => ({
+      values() {
+        return this;
+      },
+      execute: async () => [],
+    }),
     deleteFrom: vi.fn((table: string) =>
       table === "personalRemoteAccountLink"
         ? deleteQuery

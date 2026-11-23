@@ -25,9 +25,7 @@ import {
   cloudComputerUnavailableBody,
   type CloudComputerLanding,
   type CloudComputerRefusal,
-  type WorkHomeCard,
 } from "./portal-pages.js";
-import type { OrganizationStore } from "../organizations/store.js";
 import type { CloudComputerStore } from "./store.js";
 
 /** How often a page still being set up asks the browser to load it again, in seconds. */
@@ -48,8 +46,6 @@ export function registerCloudComputerPortal(
   app: FastifyInstance,
   options: {
     readonly cloudComputers: CloudComputerStore | undefined;
-    /** Present when this Account offers organizations, so a person's work Homes show too. */
-    readonly organizations?: OrganizationStore | undefined;
     /** Where this person opens a Home, found by its pinned deployment; null when unknown. */
     readonly openHome?: (
       account: ControlPlaneAccountId,
@@ -90,7 +86,7 @@ export function registerCloudComputerPortal(
     if (!cloudComputers) return unavailable(reply);
     const session = await readSession(request, reply);
     if (!session) return signIn(reply, cloudComputerCheckoutPortalPath);
-    const current = currentComputer(await cloudComputers.list(accountOf(session)));
+    const current = currentComputer(await cloudComputers.listForAccount(accountOf(session)));
     // Nothing to buy while one is set up or running: its own page says where it stands.
     if (current) return reply.redirect(cloudComputerPortalPath, 303);
     return renderCheckout(reply, cloudComputers, null);
@@ -193,7 +189,7 @@ export function registerCloudComputerPortal(
       };
     } else {
       const account = accountOf(session);
-      const [computers, work] = await Promise.all([store.list(account), workHomes(store, account)]);
+      const computers = await store.listForAccount(account);
       const current = currentComputer(computers);
       state = current
         ? {
@@ -201,23 +197,19 @@ export function registerCloudComputerPortal(
             plan: store.plan,
             computer: current,
             openHref: await open(account, current),
-            work,
           }
         : {
             kind: "offer",
             plan: store.plan,
             deleted: computers[0]?.status === "deleted",
             ...(computers[0]?.deletion ? { deletion: computers[0].deletion } : {}),
-            work,
           };
     }
     // A plain timed reload follows setup without a script.
     if (
       (state.kind === "computer" &&
         (state.computer.status === "preparing" || state.computer.deletion)) ||
-      (state.kind === "offer" && state.deletion && !state.deletion.storedBackupDataRemovedAt) ||
-      (state.kind !== "signed-out" &&
-        state.work.some(({ assignment }) => assignment.homeStatus === "preparing"))
+      (state.kind === "offer" && state.deletion && !state.deletion.storedBackupDataRemovedAt)
     )
       void reply.header("refresh", String(cloudComputerPreparingRefreshSeconds));
     return sendBrowserPage(reply, {
@@ -226,40 +218,6 @@ export function registerCloudComputerPortal(
       layout: "card",
       title: titles,
     });
-  }
-
-  /** The person's work Homes, each with the Account's own view of its computer. */
-  async function workHomes(
-    store: CloudComputerStore,
-    account: ControlPlaneAccountId,
-  ): Promise<readonly WorkHomeCard[]> {
-    const organizations = options.organizations;
-    if (!organizations) return [];
-    const mine = await organizations.mine(account);
-    const homes = await Promise.all(
-      mine.organizations.map(({ id }) => organizations.memberHome(id, account)),
-    );
-    return Promise.all(
-      homes
-        .flatMap((home) => (home ? [home] : []))
-        .map(async ({ assignment, policy }) => {
-          const computer = await store
-            .show(assignment.computerId, account)
-            .catch((error: unknown) => {
-              if (error instanceof ControlPlaneError && error.code === "not_found") return null;
-              throw error;
-            });
-          return {
-            assignment,
-            policy,
-            computer,
-            openHref:
-              computer && !assignment.signInCut && assignment.homeStatus === "ready"
-                ? await open(account, computer)
-                : null,
-          };
-        }),
-    );
   }
 
   async function open(account: ControlPlaneAccountId, computer: CloudComputerView) {
@@ -346,13 +304,4 @@ const cloudComputerStyles = `<style>
 .cloud-computer__danger{color:var(--red)}
 .step[data-state="failed"]{color:color-mix(in srgb,var(--amber) 70%,var(--text))}
 .step[data-state="failed"]::before{background:var(--amber)}
-.cloud-computer__work{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;padding-top:18px;border-top:1px solid var(--rim-plate)}
-.cloud-computer__work-title{display:grid;gap:8px;justify-items:start;margin:0;color:var(--text);font-family:var(--font-display);font-size:20px;font-weight:500}
-.cloud-computer__badge{padding:3px 9px;border:1px solid var(--rim-accent);border-radius:999px;color:var(--text-soft);font-family:var(--font-sans);font-size:11.5px;font-weight:600}
-.cloud-computer__list-title{margin:0;color:var(--text);font-size:13px;font-weight:600}
-.cloud-computer__list{display:grid;gap:6px;margin:0;padding:0;list-style:none;color:var(--muted);font-size:13px;line-height:1.45}
-.cloud-computer__list li{position:relative;padding-left:18px}
-.cloud-computer__list li::before{position:absolute;left:0}
-.cloud-computer__list--sees li::before{content:"·";color:var(--text)}
-.cloud-computer__list--never li::before{content:"✕";color:var(--red)}
 </style>`;

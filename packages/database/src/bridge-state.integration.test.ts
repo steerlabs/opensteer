@@ -1,18 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { createId } from "@opensteer/core";
 import { sql } from "kysely";
 import { createChannelId, type ChannelConversationId } from "@opensteer/channel-core";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
-import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
-import { commitPersonalMutation } from "./personal-mutation.js";
 import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
-import { describeStore, testMessagingRunnerId } from "./store.integration.test-support.js";
+import { describeStore } from "./store.integration.test-support.js";
 
 /**
  * A chat is live, waiting or ended, from one function, and every layer reads it. These are the
- * ends and the waiting a person can cause or see: the chat paused, the organization's work Home
- * offboarding, tasks turned off by its policy, and the Mac a chat runs on removed.
+ * ends and the waiting a person can cause or see: the chat paused, and the Mac a chat runs on
+ * removed.
  */
 describeStore("a chat is live, waiting or ended, and every layer reads which", (it) => {
   it("reads as paused while its account is paused, never as active", async ({ storeFixture }) => {
@@ -378,69 +375,6 @@ describeStore("a chat is live, waiting or ended, and every layer reads which", (
       ).toEqual({ run: "failed", input: "cancelled" });
     });
 
-  it("ends when the organization's work Home is offboarding: nothing more is enqueued, sent or handed off", async ({
-    storeFixture,
-  }) => {
-    const { bridgeId, channels, conversationId, fixture } =
-      await storeFixture.createChannelDeliveryFixture("state-offboard");
-    const { database, insertChannelDelivery, store } = storeFixture;
-    const { WorkHomeStore } = await import("./work-home.js");
-    const work = new WorkHomeStore(database);
-    const marker = {
-      organizationId: `org_${randomUUID()}` as never,
-      organizationName: "Workshop",
-      assignmentId: `was_${randomUUID()}` as never,
-    };
-    await work.initialize(marker, fixture.deploymentId);
-    await work.apply({
-      assignmentId: marker.assignmentId,
-      deploymentId: fixture.deploymentId,
-      policy: {
-        externalMaxMode: "full-access",
-        allowEverything: false,
-        allowTasks: true,
-        devices: "assignee-may-enroll",
-      },
-      revision: 1,
-      state: "active",
-    });
-    const waiting = await insertChannelDelivery({
-      accountId: (await bridgeAccount(database, bridgeId!)) as never,
-      conversationId,
-      status: "pending",
-    });
-    await work.offboard();
-    // Nothing more is enqueued, what waits is never handed out, and no Run is handed off.
-    await commitPersonalMutation(database, (tx) =>
-      enqueueChannelConversationStatus(tx, { conversationId, text: "after offboarding" }),
-    );
-    expect(
-      (
-        await database
-          .selectFrom("bridgeDeliveries")
-          .select("id")
-          .where("bridgeId", "=", bridgeId!)
-          .execute()
-      ).map(({ id }) => id),
-    ).toEqual([waiting]);
-    expect(await channels.claimDelivery(testMessagingRunnerId)).toBeNull();
-    await expect(
-      store.recordConnectionRunHandoff({
-        runId: createId("run"),
-        bindingGeneration: 1,
-        connectionId: bridgeId!,
-        grantRevision: 1,
-        mode: "approval-required",
-      }),
-    ).rejects.toThrow("The agent connection changed before this Run could be sent");
-    // And the person reads it as ending, never as active.
-    const connections = new AgentConnectionStore(database);
-    const listed = (await connections.list(fixture.userId, { includeRevoked: true })).find(
-      ({ id }) => id === bridgeId,
-    );
-    expect(listed?.state).not.toBe("active");
-  });
-
   it("ends when the Mac it runs on is removed, and the end is shown with evidence", async ({
     storeFixture,
   }) => {
@@ -484,15 +418,3 @@ describeStore("a chat is live, waiting or ended, and every layer reads which", (
     expect(await listed()).toMatchObject({ state: "stopped", revokedAt: expect.any(String) });
   });
 });
-
-async function bridgeAccount(
-  database: import("kysely").Kysely<import("./schema.js").DatabaseSchema>,
-  bridgeId: string,
-) {
-  const { bridgeAccountId } = await database
-    .selectFrom("agentConnections")
-    .select("bridgeAccountId")
-    .where("id", "=", bridgeId)
-    .executeTakeFirstOrThrow();
-  return bridgeAccountId;
-}

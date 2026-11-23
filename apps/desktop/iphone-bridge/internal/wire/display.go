@@ -18,8 +18,9 @@ type DisplayStartParams struct {
 }
 type DisplayDemandParams struct {
 	DisplayRef
-	MaxLongSide *int `json:"maxLongSide,omitempty"`
-	MaxFPS      *int `json:"maxFps,omitempty"`
+	MaxLongSide *int  `json:"maxLongSide,omitempty"`
+	MaxFPS      *int  `json:"maxFps,omitempty"`
+	Active      *bool `json:"active,omitempty"`
 }
 type DisplayInputParams struct {
 	DisplayRef

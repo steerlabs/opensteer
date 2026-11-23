@@ -80,36 +80,6 @@ it('calls a Home on a Mac "Mac" under its own name, from the one table of kinds'
   });
 });
 
-it("badges the Home an organization pays for, by the Home the Account pinned", () => {
-  const work = createId("deployment");
-  const mine = createId("deployment");
-  const deployment = (id: string, name: string) => ({
-    id,
-    name,
-    kind: "personal",
-    availableActions: ["select"],
-    canonicalOrigin: "https://w3r8.cloud.opensteer.example",
-    onThisComputer: false,
-    accountAccess: "owner",
-    source: "account",
-    status: "idle",
-    statusInfo: placeStatus.unavailable("host-too-old", name),
-  });
-  const rows = placeRows(
-    {
-      account: { available: true, status: "signed-in" },
-      deployments: [deployment(work, "Acme work"), deployment(mine, "Mine")],
-      selectedDeploymentId: null,
-      unavailable: [],
-    } as unknown as DeploymentAccessSnapshot,
-    { thisComputer: "This Mac", work: new Map([[work, "Work · Acme Robotics"]]) },
-  );
-  expect(Object.fromEntries(rows.map((row) => [row.name, row.work]))).toEqual({
-    "Acme work": "Work · Acme Robotics",
-    Mine: undefined,
-  });
-});
-
 describe("what kind of Home a row is", () => {
   const cloud = createId("deployment");
   const mac = createId("deployment");

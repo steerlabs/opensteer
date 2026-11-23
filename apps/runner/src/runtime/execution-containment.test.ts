@@ -130,6 +130,7 @@ describe.runIf(platformVerifies)("ExecutionContainment", () => {
     const containment = new ExecutionContainment({
       bootId: "rbt_a",
       dataDirectory: await dataDirectory(),
+      terminationGraceMs: 100,
     });
     const [stubborn] = await launch(
       containment,
@@ -231,6 +232,7 @@ describe("ExecutionContainment from supervised scopes, as on Windows", () => {
       bootId: "rbt_a",
       dataDirectory: await dataDirectory(),
       platform: "win32",
+      terminationGraceMs: 100,
     });
     await expect(containment.liveRoots("run_1")).resolves.toBe(0);
     const first = await supervised(containment, "run_1", "setInterval(()=>{},1000)");

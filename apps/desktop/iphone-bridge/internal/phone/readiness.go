@@ -112,10 +112,13 @@ func (s *Session) recordScreenState(state DeviceState, reason wire.Reason) {
 	screen := s.screen
 	s.mu.Unlock()
 	if screen != nil && (reason != "" || state.screenBlocker() != "") {
-		if state.Display == "off" {
+		switch {
+		case state.Display == "off":
 			screen.hideDisplay("screen-off", "locked-screen")
-		} else {
+		case state.Lock == "locked":
 			screen.hideDisplay("protected", "locked-screen")
+		default:
+			screen.hideDisplay("protected", "target-unavailable")
 		}
 	}
 	if changed {

@@ -13,7 +13,11 @@ it.for(["before-ready", "ignores-close", "orphan", "detached"])(
   "owns and reaps a Runner child: %s",
   async (scenario, context) => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-runner-owner-"));
-    const containment = new ExecutionContainment({ bootId: "child", dataDirectory: directory });
+    const containment = new ExecutionContainment({
+      bootId: "child",
+      dataDirectory: directory,
+      terminationGraceMs: 100,
+    });
     const owned: (() => Promise<void>)[] = [];
     const running = forkRunnerChild(
       fileURLToPath(new URL("./runner-child-fixture.test-support.mjs", import.meta.url)),

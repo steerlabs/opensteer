@@ -1,3 +1,4 @@
+import { asRemoteAccessStep } from "../access/remote-access-operation.test-support.js";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -27,12 +28,19 @@ export async function configurePersonalRemoteAccess(
   host: Pick<MachineAccessHost, "runtime" | "ownerHeaders">,
   input: ConfigurePersonalRemoteAccessRequest,
 ) {
-  const response = await host.runtime.app.inject({
-    method: "PUT",
-    url: "/v1/personal-remote-access",
-    headers: { ...host.ownerHeaders, [hostApiVersionHeader]: String(hostApiVersion) },
-    payload: input,
-  });
+  // As the Mac app sends it: the step of the person's admitted request for this mode (AD10).
+  const response = await asRemoteAccessStep(
+    host.runtime.store.database,
+    input.mode,
+    () =>
+      host.runtime.app.inject({
+        method: "PUT",
+        url: "/v1/personal-remote-access",
+        headers: { ...host.ownerHeaders, [hostApiVersionHeader]: String(hostApiVersion) },
+        payload: input,
+      }),
+    input.routeOrigin,
+  );
   if (response.statusCode !== 200)
     throw new Error(`Remote access configuration failed: ${response.body}`);
   return PersonalRemoteAccessStatusSchema.parse(response.json());

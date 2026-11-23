@@ -31,11 +31,11 @@ export const AgentConnectionStateSchema = z.enum([
 export type AgentConnectionState = z.infer<typeof AgentConnectionStateSchema>;
 
 /**
- * How the Home words who asked, from what it could prove at consent: a verified embedder via a
- * verified platform, a verified platform, or the name the client gave itself.
+ * How the Home words who asked, from what it could prove at consent: verified by the origin it is
+ * reached at, or the name the client gave itself.
  */
 export const AgentConnectionIdentityPresentationSchema = z.object({
-  evidenceKind: z.enum(["platform-and-embedder", "platform", "unverified"]),
+  evidenceKind: z.enum(["verified", "unverified"]),
   verified: z.boolean(),
   selfAsserted: z.boolean(),
   heading: z.string().min(1).max(300),
@@ -43,7 +43,7 @@ export const AgentConnectionIdentityPresentationSchema = z.object({
   origins: z
     .array(
       z.object({
-        role: z.enum(["embedder", "platform", "redirect"]),
+        role: z.enum(["verified", "redirect"]),
         label: z.string().min(1).max(200),
         origin: z.string().max(2048),
       }),
@@ -59,13 +59,7 @@ export type AgentConnectionIdentityPresentation = z.infer<
 export const BridgeSendersSchema = z.enum(["owner", "anyone"]);
 export type BridgeSenders = z.infer<typeof BridgeSendersSchema>;
 /** Why a chat ended, in the person's terms. */
-export const ChatEndedBySchema = z.enum([
-  "you",
-  "organization",
-  "account",
-  "computer",
-  "work-home",
-]);
+export const ChatEndedBySchema = z.enum(["you", "account", "computer"]);
 export type ChatEndedBy = z.infer<typeof ChatEndedBySchema>;
 export const AgentConnectionBridgeSchema = z.object({
   accountId: z.string().min(1).max(255),

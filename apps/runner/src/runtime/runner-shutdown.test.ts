@@ -47,7 +47,11 @@ it.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
       const processIdentities = await containment.note("test-shell", [shell.pid!]);
       expect(processIdentities).toEqual([expect.stringMatching(new RegExp(`^${shell.pid}@`))]);
       await expect(
-        confirmRunnerShutdown(dataDirectory, { bootId, processIdentities: [...processIdentities] }),
+        confirmRunnerShutdown(
+          dataDirectory,
+          { bootId, processIdentities: [...processIdentities] },
+          { terminationGraceMs: 100 },
+        ),
       ).resolves.toBe(true);
       for (const child of children) expect(() => process.kill(child.pid!, 0)).toThrow(/ESRCH/);
       expect(await Promise.all(exits)).toEqual([
