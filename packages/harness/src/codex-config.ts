@@ -143,14 +143,42 @@ const safeProviderNumberKeys = [
 
 const safeProviderStringMapKeys = ["query_params", "http_headers", "env_http_headers"] as const;
 
-function providerUsesCommandAuth(provider: Record<string, unknown>): boolean {
-  if (provider.auth !== undefined) return true;
-  if (isRecord(provider.aws)) {
-    if (provider.aws.credential_export !== undefined || provider.aws.auth_refresh !== undefined) {
-      return true;
-    }
+const builtInBedrockProviderIds = new Set(["amazon-bedrock", "amazon-bedrock-runtime"]);
+const amazonBedrockProviderNames = new Set(["Amazon Bedrock", "Amazon Bedrock Runtime"]);
+
+function isAmazonBedrockProvider(
+  providerId: string,
+  provider?: Readonly<Record<string, unknown>>,
+): boolean {
+  if (builtInBedrockProviderIds.has(providerId)) return true;
+  return typeof provider?.name === "string" && amazonBedrockProviderNames.has(provider.name);
+}
+
+/**
+ * Returns a refusal reason when a Codex model provider can execute a local
+ * program to obtain credentials:
+ * - `model_providers.<id>.auth` (`codex-rs/login/src/auth/external_bearer.rs`)
+ * - `model_providers.<id>.aws.credential_export`
+ *   (`codex-rs/model-provider/src/amazon_bedrock/credential_export.rs`)
+ * - `model_providers.<id>.aws.auth_refresh`
+ *   (`codex-rs/model-provider/src/amazon_bedrock/auth_refresh.rs`)
+ * - `model_providers.<id>.aws` (`profile`, `region`, or empty table) and the
+ *   built-in `amazon-bedrock` / `amazon-bedrock-runtime` providers
+ *   (`codex-rs/model-provider-info/src/lib.rs`, `codex-rs/aws-auth/src/config.rs`),
+ *   which load `~/.aws/config` via the AWS SDK credential chain and can invoke
+ *   `credential_process` or an AWS SSO helper.
+ */
+function providerCredentialProgramRefusal(
+  providerId: string,
+  provider?: Readonly<Record<string, unknown>>,
+): string | undefined {
+  if (provider?.auth !== undefined) {
+    return "Your Codex model provider runs a local command to sign in, which Opensteer does not run for tasks a connected agent or chat started.";
   }
-  return false;
+  if (provider?.aws !== undefined || isAmazonBedrockProvider(providerId, provider)) {
+    return "Your Codex model provider uses AWS credentials (which can run a local credential command or SSO helper from your AWS configuration), which Opensteer does not run for tasks a connected agent or chat started.";
+  }
+  return undefined;
 }
 
 function sanitizeSafeTomlObject(value: unknown): Record<string, TomlValue> | undefined {
@@ -237,17 +265,18 @@ export function extractCodexModelConfig(parsed: Record<string, unknown>):
         : undefined;
 
   const activeProviderId = model_provider ?? "openai";
+  const builtInRefusal = providerCredentialProgramRefusal(activeProviderId);
+  if (builtInRefusal) {
+    return { ok: false, message: builtInRefusal };
+  }
   const model_providers: Record<string, Record<string, TomlValue>> = {};
   if (isRecord(parsed.model_providers)) {
     for (const [providerId, rawProvider] of Object.entries(parsed.model_providers)) {
       if (!isRecord(rawProvider)) continue;
-      if (providerUsesCommandAuth(rawProvider)) {
+      const refusal = providerCredentialProgramRefusal(providerId, rawProvider);
+      if (refusal) {
         if (providerId === activeProviderId) {
-          return {
-            ok: false,
-            message:
-              "Your Codex model provider runs a local command to sign in, which Opensteer does not run for tasks a connected agent or chat started.",
-          };
+          return { ok: false, message: refusal };
         }
         continue;
       }
@@ -268,12 +297,6 @@ export function extractCodexModelConfig(parsed: Record<string, unknown>):
       }
       const capabilities = sanitizeSafeTomlObject(rawProvider.capabilities);
       if (capabilities) clean.capabilities = capabilities;
-      if (isRecord(rawProvider.aws)) {
-        const aws: Record<string, string> = {};
-        if (typeof rawProvider.aws.profile === "string") aws.profile = rawProvider.aws.profile;
-        if (typeof rawProvider.aws.region === "string") aws.region = rawProvider.aws.region;
-        if (Object.keys(aws).length > 0) clean.aws = aws;
-      }
       if (Object.keys(clean).length > 0) model_providers[providerId] = clean;
     }
   }

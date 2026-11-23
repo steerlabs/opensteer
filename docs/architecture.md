@@ -309,9 +309,10 @@ unavailable when `models.json` or `auth.json` contains a `"!"` shell command).
   through the link on both login and OAuth token refresh) and the reach-the-model settings from
   their `config.toml`, with `cli_auth_credentials_store = "file"` and `project_doc_max_bytes = 0`
   (`packages/harness-codex/src/own-configuration.engine.test.ts`). When the person stores their
-  Codex sign-in in the OS keyring (keyed by `CODEX_HOME` path) or has no `auth.json`,
-  `assertEngineMayRun` refuses others' tasks with code `forbidden` and tells them how to switch to a
-  file login.
+  Codex sign-in in the OS keyring (keyed by `CODEX_HOME` path), has no `auth.json`, or their active
+  provider runs a credential command or uses AWS/Bedrock credentials (`auth`, `aws.*`,
+  `amazon-bedrock`, `amazon-bedrock-runtime`), `assertEngineMayRun` refuses others' tasks with code
+  `forbidden` and background text returns `unavailable`.
 - **Cursor**, **Grok** and **Muse Code** run only the person's own tasks: each reads the person's
   own configuration with no way shown to start without it.
 - **OpenCode** and **Antigravity** run both and do not read the person's own configuration of

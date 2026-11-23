@@ -115,6 +115,27 @@ it("lets Codex run others' tasks only when an Opensteer home can share a file lo
       providerState: { kind: "ambient" },
     }),
   ).toThrow(/command/iu);
+
+  // Active AWS profile / Bedrock provider refuses so no ~/.aws credential_process or SSO helper runs.
+  const withAwsProfile = await makeCodexHome({
+    auth: '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-stub"}',
+    config: [
+      'model_provider = "bedrock"',
+      "[model_providers.bedrock]",
+      'base_url = "https://bedrock.invalid/v1"',
+      "[model_providers.bedrock.aws]",
+      'profile = "corp"',
+      'region = "us-east-1"',
+    ].join("\n"),
+  });
+  expect(() =>
+    assertEngineMayRun("codex", {
+      environment: { CODEX_HOME: withAwsProfile.codexHome },
+      personalContext: true,
+      personLineage: false,
+      providerState: { kind: "ambient" },
+    }),
+  ).toThrow(/AWS|credential/iu);
 });
 
 it("refuses Pi on others' tasks when models.json or auth.json contains a ! shell command", async () => {

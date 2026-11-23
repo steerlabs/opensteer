@@ -154,3 +154,59 @@ it("refuses malformed config.toml, keyring store, ephemeral store, and active aw
     message: expect.stringContaining("command"),
   });
 });
+
+it("refuses active AWS/Bedrock providers (including aws.profile, aws.region and built-in bedrock) and never copies aws tables", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opensteer-codex-aws-"));
+  temporaryDirectories.push(root);
+  const codexHome = join(root, ".codex");
+  await mkdir(codexHome, { recursive: true });
+  await writeFile(join(codexHome, "auth.json"), '{"OPENAI_API_KEY":"k"}');
+
+  // Active provider with aws.profile / aws.region can invoke ~/.aws/config credential_process or SSO helpers.
+  await writeFile(
+    join(codexHome, "config.toml"),
+    [
+      'model_provider = "bedrock"',
+      "[model_providers.bedrock]",
+      'base_url = "https://bedrock.invalid/v1"',
+      "[model_providers.bedrock.aws]",
+      'profile = "corp-sso"',
+      'region = "us-east-1"',
+    ].join("\n"),
+  );
+  expect(checkCodexOthersHome({ environment: { CODEX_HOME: codexHome } })).toMatchObject({
+    ok: false,
+    message: expect.stringMatching(/AWS|credential/iu),
+  });
+
+  // Built-in amazon-bedrock / amazon-bedrock-runtime providers invoke the AWS SDK credential chain even with no [model_providers.*] table.
+  for (const builtIn of ["amazon-bedrock", "amazon-bedrock-runtime"]) {
+    await writeFile(join(codexHome, "config.toml"), `model_provider = "${builtIn}"\n`);
+    expect(checkCodexOthersHome({ environment: { CODEX_HOME: codexHome } })).toMatchObject({
+      ok: false,
+      message: expect.stringMatching(/AWS|credential/iu),
+    });
+  }
+
+  // Inactive AWS provider is dropped completely (never carries aws.profile or aws.region into the others' config.toml).
+  const extracted = extractCodexModelConfig(
+    parseCodexConfigToml(
+      [
+        'model_provider = "corp"',
+        "[model_providers.corp]",
+        'base_url = "https://corp.invalid/v1"',
+        "[model_providers.unused-bedrock]",
+        'base_url = "https://bedrock.invalid/v1"',
+        "[model_providers.unused-bedrock.aws]",
+        'profile = "corp-sso"',
+        'region = "us-east-1"',
+      ].join("\n"),
+    ),
+  );
+  expect(extracted.ok).toBe(true);
+  if (!extracted.ok) return;
+  const serialized = serializeCodexOthersConfigToml(extracted.modelConfig);
+  expect(serialized).not.toContain("unused-bedrock");
+  expect(serialized).not.toContain("corp-sso");
+  expect(serialized).not.toContain("aws");
+});
