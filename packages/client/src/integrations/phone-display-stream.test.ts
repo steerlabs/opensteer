@@ -954,6 +954,7 @@ describe("phone display words", () => {
     [state("live"), null, false],
     [state("protected", "paused"), "paused", false],
     [state("protected", "opensteer-app"), "opensteer-app", false],
+    [state("protected", "target-unavailable"), "target-unavailable", false],
     [state("protected", "session-ended"), "ended", false],
     [state("protected"), "protected", false],
     [state("screen-off"), "screen-off", false],

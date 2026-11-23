@@ -2434,6 +2434,138 @@ describe("phone display Host sockets", () => {
     expect(stops()).toHaveLength(1);
     expect(await phone.closed).toBe(1000);
   });
+  it("fences pre-shield frames across zero viewers, resumes modern producers, and recycles legacy ones", async () => {
+    vi.useFakeTimers();
+    const f = await fixture();
+    const first = await f.viewer();
+    const phone = await f.phone();
+    await f.state("live", 1);
+    phone.socket.send(f.frame(1, true, 1));
+    await until(() => first.media().length === 1);
+
+    // Last viewer leaves: Host sends empty demand, drops & ACKs 0-viewer frames, keeps the
+    // generation fence intact, and reports "warming" (never a synthetic privacy shield).
+    first.socket.close();
+    await first.closed;
+    await until(() => f.serverViewers.every((socket) => socket.readyState === WebSocket.CLOSED));
+    phone.socket.send(f.frame(2, false, 1));
+    await until(() => phone.json().length === 2);
+
+    // Rejoin before a delayed privacy shield arrives: an in-flight gen-1 keyframe must be dropped.
+    const rejoined = await f.viewer();
+    await until(() => rejoined.json().some((m) => m.type === "display.state"));
+    expect(rejoined.json()[0]).toMatchObject({
+      type: "display.state",
+      state: "warming",
+      generation: 1,
+    });
+    phone.socket.send(f.frame(3, true, 1));
+    await until(() => phone.json().length === 3);
+    expect(rejoined.media()).toEqual([]);
+    expect(rejoined.json().some((m) => m.type === "display.state" && m.state === "protected")).toBe(
+      false,
+    );
+
+    // Delayed gen-2 privacy shield arrives, then gen-3 resume delivers media cleanly.
+    await f.state("protected", 2, "locked-screen");
+    await until(() =>
+      rejoined.json().some((m) => m.type === "display.state" && m.reason === "locked-screen"),
+    );
+    phone.socket.send(f.frame(4, true, 3));
+    await until(() => rejoined.media().length === 1);
+    expect(rejoined.media()[0]?.header).toMatchObject({ generation: 3, sequence: 4, key: true });
+
+    // Modern demand-pausing producer: protected/paused gen 4 -> gen 5 keyframe -> live.
+    rejoined.socket.close();
+    await rejoined.closed;
+    await until(() => f.serverViewers.every((socket) => socket.readyState === WebSocket.CLOSED));
+    await f.state("protected", 4, "paused");
+    const third = await f.viewer();
+    await until(() => third.json().some((m) => m.type === "display.state"));
+    expect(third.json()[0]).toMatchObject({
+      type: "display.state",
+      state: "protected",
+      reason: "paused",
+      generation: 4,
+    });
+    phone.socket.send(f.frame(5, true, 5));
+    await until(() => third.media().length === 1);
+    expect(third.media()[0]?.header).toMatchObject({ generation: 5, sequence: 5, key: true });
+
+    // Legacy producer that ignores demand and never bumps past gen 5: Host cleanly recycles
+    // the stream with 1013 at the resume deadline so the viewer opens a fresh stream instead of wedging.
+    third.socket.close();
+    await third.closed;
+    await until(() => f.serverViewers.every((socket) => socket.readyState === WebSocket.CLOSED));
+    const fourth = await f.viewer();
+    await until(() => fourth.json().some((m) => m.type === "display.state"));
+    expect(fourth.json()[0]).toMatchObject({
+      type: "display.state",
+      state: "warming",
+      generation: 5,
+    });
+    f.advance(2_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await fourth.closed).toBe(1013);
+  });
+  it("services coalesced refresh while a rejoining viewer is waiting in warming", async () => {
+    vi.useFakeTimers();
+    const f = await fixture();
+    const first = await f.viewer();
+    await f.phone();
+    await f.state("live", 1);
+
+    // Join a second viewer before any cached frame exists so the 500ms refresh coalescing window starts.
+    const second = await f.viewer();
+    const refreshes = () => f.sent.filter((m) => m.type === "host.integrations.display.refresh");
+    expect(refreshes()).toHaveLength(1);
+    first.socket.close();
+    second.socket.close();
+    await Promise.all([first.closed, second.closed]);
+    await until(() => f.serverViewers.every((socket) => socket.readyState === WebSocket.CLOSED));
+
+    // Rejoin 100ms later (inside the 500ms coalescing window) while the stream is warming.
+    f.advance(100);
+    await vi.advanceTimersByTimeAsync(100);
+    const rejoined = await f.viewer();
+    await until(() => rejoined.json().some((m) => m.type === "display.state"));
+    expect(rejoined.json()[0]).toMatchObject({ state: "warming", generation: 1 });
+    expect(refreshes()).toHaveLength(1);
+
+    // Sweep must deliver the pending refresh at the 500ms coalescing boundary even in warming.
+    f.advance(400);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(refreshes()).toHaveLength(2);
+  });
+  it("preserves a phone-declared privacy shield across zero viewers and keeps withholding its generation", async () => {
+    const f = await fixture();
+    const first = await f.viewer();
+    const phone = await f.phone();
+    await f.state("live", 1);
+    phone.socket.send(f.frame(1, true, 1));
+    await until(() => first.media().length === 1);
+    await f.state("protected", 1, "locked-screen");
+    first.socket.close();
+    await first.closed;
+    await until(() => f.serverViewers.every((socket) => socket.readyState === WebSocket.CLOSED));
+
+    const rejoined = await f.viewer();
+    await until(() => rejoined.json().some((m) => m.type === "display.state"));
+    expect(rejoined.json()[0]).toMatchObject({
+      type: "display.state",
+      state: "protected",
+      reason: "locked-screen",
+      generation: 1,
+    });
+    // Late frames from the withheld generation 1 must still be dropped.
+    phone.socket.send(f.frame(2, true, 1));
+    await until(() => phone.json().length === 2);
+    expect(rejoined.media()).toEqual([]);
+    // Only generation 2 resumes media delivery.
+    phone.socket.send(f.frame(3, true, 2));
+    await until(() => rejoined.media().length === 1);
+    expect(rejoined.media()[0]?.header).toMatchObject({ generation: 2, sequence: 3, key: true });
+  });
   it.each(["protected", "generation", "session"] as const)(
     "does not renew dropped input after %s",
     async (cause) => {

@@ -958,11 +958,12 @@ it("claims iPhone display media once and fences input by slot, generation and li
       f.options(),
     ),
   ).rejects.toMatchObject({ code: "no-session" });
-  const { attachmentToken } = await f.connection.request(
+  const { attachmentToken, demandActive } = await f.connection.request(
     "iphone.display.start",
     { ...ref, ...profile },
     f.options(),
   );
+  expect(demandActive).toBe(true);
   expect(f.calls.mock.calls.find(([method]) => method === "display.start")?.[1]).toEqual({
     bindingToken: expect.any(String),
     nativeEpoch: 1,
@@ -1016,8 +1017,60 @@ it("claims iPhone display media once and fences input by slot, generation and li
     },
   ]);
   await expect(
+    f.connection.request("iphone.display.demand", { ...ref, active: false }, f.options()),
+  ).resolves.toEqual({});
+  await expect(
+    f.connection.request(
+      "iphone.display.demand",
+      { ...ref, maxFps: 24, active: true },
+      f.options(),
+    ),
+  ).resolves.toEqual({});
+  expect(
+    f.calls.mock.calls
+      .filter(([method]) => method === "display.demand")
+      .map(([, params]) => params),
+  ).toEqual([
+    {
+      bindingToken: expect.any(String),
+      nativeEpoch: 1,
+      streamId: ref.streamId,
+      active: false,
+    },
+    {
+      bindingToken: expect.any(String),
+      nativeEpoch: 1,
+      streamId: ref.streamId,
+      maxFps: 24,
+      active: true,
+    },
+  ]);
+  await expect(
     f.connection.request("iphone.display.power", { ...ref, action: "lock" }, f.options()),
   ).resolves.toEqual({ outcome: "dispatched" });
+  // An older native bridge that did not advertise displayDemandActive must never receive `active`.
+  f.native.displayDemandActive = false;
+  const legacyCallsBefore = f.calls.mock.calls.filter(([m]) => m === "display.demand").length;
+  await expect(
+    f.connection.request("iphone.display.demand", { ...ref, active: false }, f.options()),
+  ).resolves.toEqual({});
+  expect(f.calls.mock.calls.filter(([m]) => m === "display.demand")).toHaveLength(
+    legacyCallsBefore,
+  );
+  await expect(
+    f.connection.request(
+      "iphone.display.demand",
+      { ...ref, maxFps: 15, active: true },
+      f.options(),
+    ),
+  ).resolves.toEqual({});
+  expect(f.calls.mock.calls.filter(([m]) => m === "display.demand").at(-1)?.[1]).toEqual({
+    bindingToken: expect.any(String),
+    nativeEpoch: 1,
+    streamId: ref.streamId,
+    maxFps: 15,
+  });
+  f.native.displayDemandActive = true;
   f.native.roster = {
     revision: f.native.roster.revision + 1,
     candidates: f.native.roster.candidates.map((candidate) => ({ ...candidate, nativeEpoch: 2 })),

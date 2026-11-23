@@ -953,7 +953,10 @@ export class IphoneService {
         this.#mediaTokens.set(attachmentToken, entry);
         entry.claimTimer = setTimeout(cancel, displayDataTicketTtlMs);
         entry.claimTimer.unref();
-        return { attachmentToken };
+        return {
+          attachmentToken,
+          ...(native.displayDemandActive ? { demandActive: true as const } : {}),
+        };
       } catch (error) {
         void this.#stopDisplay(entry);
         throw error;
@@ -980,11 +983,14 @@ export class IphoneService {
     };
     switch (method) {
       case "iphone.display.demand": {
-        const { maxLongSide, maxFps } = iphoneRunnerParams[method].parse(params);
+        const { active, maxLongSide, maxFps } = iphoneRunnerParams[method].parse(params);
+        const includeActive = active !== undefined && native.displayDemandActive === true;
+        if (!includeActive && maxLongSide === undefined && maxFps === undefined) return {};
         return native.request(
           "display.demand",
           {
             ...ref,
+            ...(includeActive ? { active } : {}),
             ...(maxLongSide === undefined ? {} : { maxLongSide }),
             ...(maxFps === undefined ? {} : { maxFps }),
           },

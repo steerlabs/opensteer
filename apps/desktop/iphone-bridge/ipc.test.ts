@@ -127,7 +127,7 @@ it("accepts additive display methods, media states and action variants", () => {
   const request = { kind: "request", protocolVersion: 1, id: 3, timeoutMs: 1000 };
   for (const [method, fields] of Object.entries({
     start: { maxLongSide: 1280, maxFps: 30 },
-    demand: { maxFps: 20 },
+    demand: { maxFps: 20, active: true },
     refresh: {},
     stop: {},
     input: { events: [{ kind: "pointer", phase: "down", x: 0.5, y: 0.2, t: 1 }] },
@@ -142,6 +142,20 @@ it("accepts additive display methods, media states and action variants", () => {
       }).success,
     ).toBe(true);
   }
+  expect(
+    iphoneNativeRequestSchema.safeParse({
+      ...request,
+      method: "display.demand",
+      params: { ...ref, active: false },
+    }).success,
+  ).toBe(true);
+  expect(
+    iphoneNativeRequestSchema.safeParse({
+      ...request,
+      method: "display.demand",
+      params: { ...ref, active: null },
+    }).success,
+  ).toBe(false);
   expect(
     iphoneNativeRequestSchema.safeParse({
       ...request,
