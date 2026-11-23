@@ -1297,7 +1297,7 @@ class PlaywrightContextHandle implements BrowserContext {
   closeTarget: ((targetId: string) => Promise<void>) | undefined;
   /** Whether the browser behind this context still answers its own debugger. */
   browserAlive: (() => Promise<boolean>) | undefined;
-  beforeCreatePage: (() => Promise<void>) | undefined;
+  beforeCreatePage: (() => Promise<() => void>) | undefined;
 
   readonly authenticator: PasskeyAuthenticator | undefined;
   readonly providerConfig: BrowserPagePolicyConfig;
@@ -2138,8 +2138,21 @@ class PlaywrightContextHandle implements BrowserContext {
     readonly own?: (page: BrowserPage) => void;
     readonly signal?: AbortSignal;
   }): Promise<BrowserPage> {
+    // TS13: admitted under memory pressure, one at a time; the turn ends once the page exists.
+    const done = await this.beforeCreatePage?.().catch(() => undefined);
+    try {
+      return await this.createAdmittedPage(options);
+    } finally {
+      done?.();
+    }
+  }
+
+  private async createAdmittedPage(options?: {
+    readonly restore?: unknown;
+    readonly own?: (page: BrowserPage) => void;
+    readonly signal?: AbortSignal;
+  }): Promise<BrowserPage> {
     const signal = options?.signal;
-    await this.beforeCreatePage?.().catch(() => undefined);
     if (signal?.aborted) throw notWanted();
     const discardRestore = parseChromiumDiscardRestore(options?.restore);
     if (discardRestore) {

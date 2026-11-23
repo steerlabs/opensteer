@@ -302,12 +302,28 @@ describe("BrowserRuntime", () => {
           creationOrigin === "person"
             ? ["live", "live"]
             : [
-                activity === "activation" || activity === "native" || activity === "host-activation"
+                activity === "activation" ||
+                activity === "native" ||
+                activity === "host-activation" ||
+                activity === "watch"
                   ? "live"
                   : "suspended",
                 "suspended",
               ],
         );
+        if (activity === "watch") {
+          // TS16: a tab a person saw stays awake ten minutes, as in desktop Chrome; a Watch never
+          // made it the person's, so it sleeps then.
+          expect([...sink.tabs.rows.values()].map((row) => row.state)).toEqual([
+            "live",
+            "suspended",
+          ]);
+          await vi.advanceTimersByTimeAsync(10 * 60_000);
+          expect([...sink.tabs.rows.values()].map((row) => row.state)).toEqual([
+            "suspended",
+            "suspended",
+          ]);
+        }
       } finally {
         await runtime.shutdown();
         vi.useRealTimers();

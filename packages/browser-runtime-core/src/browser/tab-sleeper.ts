@@ -128,6 +128,8 @@ export class TabSleeper {
   private pendingAsyncPressurePass = false;
   /** An open over the threshold asked for a pass: it runs past a backoff, never past a settle. */
   private openAsked = false;
+  /** TS13: the turn of the last open admitted over the threshold; it ends once its page exists. */
+  private openTurn: Promise<void> = Promise.resolve();
   /**
    * TS8: sessions whose look for the tab helper ended over the threshold. The next pass sleeps
    * their tabs through any backoff, once; only a reclaim still settling holds it.
@@ -373,12 +375,14 @@ export class TabSleeper {
     young = false,
     /** The last resort under pressure: a tab a live agent is bound to may sleep (TS12). */
     lastResort = false,
+    /** As if the session's look for the tab helper had ended (TS13). */
+    afterLook = false,
   ): SleepBlocker | null {
     const session = this.sessions.get(id);
     const state = session?.hostState;
     if (!session || !state || state.keepAwake) return "host-state";
     if (session.ledger.closing) return "closing";
-    if (this.lookOf(session)) return "tab-helper";
+    if (!afterLook && this.lookOf(session)) return "tab-helper";
     if (state.viewed.includes(record.id)) return "viewed";
     if (state.pinned.includes(record.id)) return "pinned";
     const external = session.blocked(record.id);
@@ -494,13 +498,31 @@ export class TabSleeper {
    * timer: same reading, same thresholds. Over the start threshold, the open waits (bounded) for
    * the pass that sheds other tabs, so a burst is paced by sleeping rather than by the kernel.
    */
-  async beforePageOpen(): Promise<void> {
-    if (!this.options.memoryPressure || !this.usesLinuxMemoryPressure() || this.closed) return;
+  async beforePageOpen(): Promise<() => void> {
+    const nothing = () => undefined;
+    if (!this.options.memoryPressure || !this.usesLinuxMemoryPressure() || this.closed)
+      return nothing;
+    // TS13: over the threshold, opens go one at a time: each waits, within its own bound, for the
+    // open before it to have made its page, then reads memory afresh.
+    let done = nothing;
+    if (this.releasing) {
+      const previous = this.openTurn;
+      const turn = Promise.withResolvers<void>();
+      this.openTurn = turn.promise;
+      done = () => turn.resolve();
+      await withTimeout(previous, openPressureWaitMs, {
+        timeoutError: () => new Error("The open before this one did not finish."),
+      }).catch(() => undefined);
+    }
     try {
       await this.admitOpen(this.options.memoryPressure);
+    } catch (error) {
+      done();
+      throw error;
     } finally {
       this.lastOpenAt = Date.now();
     }
+    return done;
   }
 
   /**
@@ -630,12 +652,22 @@ export class TabSleeper {
     return look;
   }
 
-  /** A pending look of any session, for an open over the threshold to wait on. */
-  private pendingLook(): Promise<void> | null {
-    const looks = [...this.sessions.values()]
-      .map((session) => this.lookOf(session))
-      .filter((look): look is Promise<void> => look !== null);
+  /**
+   * A pending look of a session with a tab that could sleep once it ends, for an open over the
+   * threshold to wait on (TS13): a context whose every tab is protected sheds nothing for it.
+   */
+  private pendingLook(now = Date.now()): Promise<void> | null {
+    const looks = [...this.sessions]
+      .filter(([id, session]) => this.lookOf(session) && this.sheddableAfterLook(id, session, now))
+      .map(([, session]) => this.lookOf(session)!);
     return looks.length ? Promise.race(looks) : null;
+  }
+  private sheddableAfterLook(id: string, session: HeldSession, now: number): boolean {
+    const links = this.openerLinks(session);
+    for (const record of session.ledger.policyRecords())
+      if (record.live && this.blocked(id, record, now, links, true, false, true) === null)
+        return true;
+    return false;
   }
 
   /** Whether some page may sleep right now, whatever a backoff or a settle holds back. */
@@ -866,6 +898,11 @@ export class TabSleeper {
       // Whether this pass's candidates were weighed over the threshold (a reading can land later
       // in the pass): a bound tab is never the last resort of a pass that skipped the others.
       const releasingAtStart = this.releasing;
+      // TS13: while a context with tabs to spare is still looking for its helper, a ready context
+      // gives up to pressure only its least valuable class: an agent's leftover no person used.
+      const looking = this.pendingLook() !== null;
+      const spared = (session: HeldSession, record: TabRecord) =>
+        looking && this.category(session, record) > 0;
       candidates.sort(
         (a, b) =>
           Number(this.declined.has(a.record)) - Number(this.declined.has(b.record)) ||
@@ -882,6 +919,7 @@ export class TabSleeper {
           : this.rendererUsage !== null;
         if (measuredPressure && deadline > Date.now()) {
           if (!this.releasing || Date.now() < holdUntil(session)) continue;
+          if (spared(session, record)) continue;
           // In single-step Electron renderer mode, finish pending sleeps before deciding the next one.
           if (!pressureDriven && pending.size) await Promise.all(pending);
           if (this.closed) break;
@@ -942,6 +980,7 @@ export class TabSleeper {
               ({ id, session, record }) =>
                 this.sessions.get(id) === session &&
                 now >= holdUntil(session) &&
+                !spared(session, record) &&
                 (this.nextProbe.get(record) ?? 0) <= now &&
                 this.blocked(id, record, now) === reason &&
                 this.blocked(id, record, now, undefined, true, bound) === null,

@@ -178,9 +178,11 @@ export interface BrowserContext {
   releaseRestore?(restore: unknown): Promise<boolean> | boolean;
   /**
    * Set by the runtime where it reads memory pressure: awaited before `createPage` makes a page,
-   * so a burst of opens sheds sleeping-eligible tabs first. It never rejects.
+   * so a burst of opens sheds sleeping-eligible tabs first. It never rejects. What it returns is
+   * called once the page exists or its creation failed: over the threshold, opens go one at a
+   * time (TS13).
    */
-  beforeCreatePage?: (() => Promise<void>) | undefined;
+  beforeCreatePage?: (() => Promise<() => void>) | undefined;
   /**
    * The one handoff of native pages to the runtime: called synchronously as
    * each page handle comes to exist, before any asynchronous work, with the

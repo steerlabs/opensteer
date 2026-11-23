@@ -698,6 +698,107 @@ describe("TabSleeper", () => {
     }
   });
 
+  it("lets opens over the threshold through one at a time, each once the open before it has made its page (TS13)", async () => {
+    const limit = 2 * 1024 ** 3;
+    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ memoryPressure: () => Promise.resolve(pressure) });
+    try {
+      // Nothing can sleep: the opens are paced only by each other.
+      f.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [],
+        viewed: [],
+        pinned: [f.record.id],
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const admitted: number[] = [];
+      const turns: (() => void)[] = [];
+      for (const index of [0, 1, 2])
+        void f.sleeper.beforePageOpen().then((done) => {
+          admitted.push(index);
+          turns.push(done);
+        });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(admitted).toEqual([0]);
+      turns[0]!();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(admitted).toEqual([0, 1]);
+      turns[1]!();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(admitted).toEqual([0, 1, 2]);
+      // An open whose page never comes holds the next one only within the open's own bound.
+      void f.sleeper.beforePageOpen().then(() => admitted.push(3));
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(admitted).toEqual([0, 1, 2]);
+      await vi.advanceTimersByTimeAsync(1_100);
+      expect(admitted).toEqual([0, 1, 2, 3]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("holds an open only for a look whose context has a tab to spare, and meanwhile a ready context gives up only an agent's leftover (TS13)", async () => {
+    const limit = 2 * 1024 ** 3;
+    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ memoryPressure: () => Promise.resolve(pressure) });
+    const otherLedger = new SurfaceLedger(
+      new FakeContext([new FakePage({ url: "https://looking.test/" })]),
+    );
+    await otherLedger.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const otherTab = [...otherLedger.policyRecords()][0]!;
+    try {
+      const look = Promise.withResolvers<void>();
+      let pending = true;
+      void look.promise.then(() => {
+        pending = false;
+      });
+      f.sleeper.add("other", {
+        ledger: otherLedger,
+        restoreVersion: 1,
+        blocked: () => null,
+        sleepReady: () => (pending ? look.promise : null),
+      });
+      // The looking context's only tab is pinned: it will shed nothing, so no open waits for it.
+      f.sleeper.setSessionState("other", {
+        runs: 0,
+        personUsed: [],
+        viewed: [],
+        pinned: [otherTab.id],
+      });
+      // The ready context: its tab is the person's, and pinned for now.
+      f.record.personUsed = true;
+      f.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [],
+        viewed: [],
+        pinned: [f.record.id],
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      let opened = false;
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(opened).toBe(true);
+      // Now the looking context has a tab to spare once its look ends; the ready context's
+      // person tab, no longer pinned, is not given up meanwhile, but an agent's leftover is.
+      f.sleeper.setSessionState("other", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      const leftover = await f.ledger.openSurface({ origin: "agent", activate: false });
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(f.ledger.stateOf(leftover.id)).toBe("suspended");
+      expect(f.ledger.stateOf(f.record.id)).toBe("live");
+      look.resolve();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(otherLedger.stateOf(otherTab.id)).toBe("suspended");
+    } finally {
+      await otherLedger.close();
+      await f.close();
+    }
+  });
+
   it("sleeps a context that becomes ready under pressure at once, through a backoff after ineffective reclaims, and only that once (TS8)", async () => {
     const limit = 2 * 1024 ** 3;
     const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
@@ -1063,7 +1164,11 @@ describe("TabSleeper", () => {
       // recently used one that is not in use.
       state([pinnedTab, f.record.id], [viewedTab]);
       let opened = false;
-      void f.sleeper.beforePageOpen().then(() => (opened = true));
+      // Each open's turn ends once its page exists (TS13).
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
       await vi.advanceTimersByTimeAsync(50);
       const suspended = () => ids.filter((id) => f.ledger.stateOf(id) === "suspended");
       expect(suspended()).toEqual([freeTab]);
