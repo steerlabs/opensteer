@@ -343,6 +343,8 @@ export interface BrowserSessionRecord {
   readonly profileId: BrowserProfileId | null;
   readonly runtimeId: string;
   readonly state: HostedBrowserSessionState;
+  /** W15: Stop never got its replaced browser's word; kept closing honestly (Rule 4). */
+  readonly closeUnconfirmed?: true;
   readonly updatedAt: Date;
 }
 
@@ -6884,7 +6886,14 @@ export class BrowserService {
         ...(slot.failedStarts ? { failures: slot.failedStarts } : {}),
         ...(pages.length ? { pages } : {}),
         ...(notReady ? { notReady } : {}),
-        ...(unconfirmedClosings.length ? { unconfirmedClosings } : {}),
+        ...(unconfirmedClosings.length
+          ? {
+              unconfirmedClosings: unconfirmedClosings.map(({ sessionId, surfaceIds }) => ({
+                sessionId,
+                surfaceIds: [...surfaceIds],
+              })),
+            }
+          : {}),
       },
     ];
   }

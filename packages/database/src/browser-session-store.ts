@@ -101,8 +101,8 @@ export interface BrowserSessionWithAttachmentCountRecord extends BrowserSessionR
   readonly activeAttachmentCount: number;
 }
 
-export function ownedBrowserSession<TB extends "browserProfiles" | "browserSessions">(
-  expression: ExpressionBuilder<DatabaseSchema, TB>,
+export function ownedBrowserSession(
+  expression: ExpressionBuilder<DatabaseSchema, "browserProfiles" | "browserSessions">,
   ownerId: UserId,
 ) {
   return expression.and([

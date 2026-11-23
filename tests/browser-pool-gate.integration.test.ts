@@ -2991,7 +2991,14 @@ for (const revoke of ["device-off", "grant-narrowed", "disconnect"] as const)
           kind: "computer",
           ownerKind: "user",
           ownerUserId: j.task.userId,
-          accessPolicy: { browser: true, apps: true, files: true },
+          accessPolicy: {
+            reach: "owner",
+            commands: true,
+            forwarding: true,
+            shares: [],
+            browser: true,
+            apps: true,
+          },
           accessPolicyRevision: 1,
         })
         .where("id", "=", deviceId)
@@ -3065,7 +3072,14 @@ for (const revoke of ["device-off", "grant-narrowed", "disconnect"] as const)
               ownerId: j!.task.userId,
               allowDeployment: true,
               expectedRevision: 1,
-              policy: { browser: false, apps: true, files: true },
+              policy: {
+                reach: "owner",
+                commands: true,
+                forwarding: true,
+                shares: [],
+                browser: false,
+                apps: true,
+              },
               idempotency: { key: `x1-off-${revoke}`, requestedBy: j!.task.userId },
             });
             expect(updated.outcome).toBe("updated");
@@ -3074,13 +3088,13 @@ for (const revoke of ["device-off", "grant-narrowed", "disconnect"] as const)
         } else if (revoke === "grant-narrowed") {
           const updated = await connections.update(j.task.userId, {
             connectionId: connection.id,
-            expectedRevision: connection.grantRevision,
+            expectedRevision: connection.grantRevision!,
             grant: { scope: "selected", tasks: false, resources: [] },
           });
           expect(updated.narrowed).toBe(true);
         } else {
           const revoked = await connections.revoke(j.task.userId, connection.id);
-          expect(revoked?.revokedAt).not.toBeNull();
+          expect(revoked).toBe(true);
         }
 
         resume.allow();
@@ -3308,7 +3322,7 @@ it("re-checks authority after #holdForAgent waits in the profile queue on a pers
         // Narrow the grant while #holdForAgent is waiting in the profile queue.
         const updated = await connections.update(task.userId, {
           connectionId: connection.id,
-          expectedRevision: connection.grantRevision,
+          expectedRevision: connection.grantRevision!,
           grant: { scope: "selected", tasks: false, resources: [] },
         });
         expect(updated.narrowed).toBe(true);
@@ -3535,9 +3549,14 @@ it("bounds controller.apply(stop) in #drainStep with callTimeoutMs and signal, k
     const drainService = new BrowserService({
       deploymentId: j.task.deploymentId,
       hostOrigin: new URL("http://127.0.0.1"),
+      onSessionsChanged: () => {},
       personal: true,
       pooledRunner: j.task.runnerId,
       repository: personalBrowserRepository(j.store),
+      signer: new BrowserAttachTicketSigner({
+        keyId: "test-drain",
+        privateKey: generateKeyPairSync("ed25519").privateKey,
+      }),
     });
     const stopCalled = Promise.withResolvers<void>();
     const releaseStop = Promise.withResolvers<void>();
@@ -3672,9 +3691,9 @@ it("never forgets a retired target while a closing session still has an active b
       vi.spyOn(drain, "setAdopter").mockImplementation((adopter) => {
         setAdopterOriginal({
           ...adopter,
-          hasClosing: async (target) => {
+          ending: async (target) => {
             closingChecks++;
-            return adopter.hasClosing(target);
+            return (await adopter.ending?.(target)) ?? [];
           },
         });
       });
@@ -3741,7 +3760,7 @@ it("marks an unconfirmed-closing replaced-browser session closeUnconfirmed, sort
       placementKey: `runner:${j.task.runnerId}`,
       runnerId: j.task.runnerId,
       runtimeId: nextSlot.runtimeId,
-      origin: "person",
+      origin: "agent",
       profileId: null,
       pooled: true,
     });
@@ -3754,7 +3773,27 @@ it("marks an unconfirmed-closing replaced-browser session closeUnconfirmed, sort
       personal: true,
       pooledRunner: j.task.runnerId,
       repository: personalBrowserRepository(j.store),
+      signer: new BrowserAttachTicketSigner({
+        keyId: "test-x2",
+        privateKey: generateKeyPairSync("ed25519").privateKey,
+      }),
     });
+    const nextRuntimeState = {
+      fence: {
+        slot: nextSlot.slotId,
+        term: nextSlot.term,
+        instance: nextSlot.instanceId,
+        epoch: nextSlot.epoch,
+      },
+      revision: 1,
+      phase: "running" as const,
+      intent: null,
+      cancelled: false,
+      retired: null,
+      blockers: [],
+      adoption: null,
+      sessions: [],
+    };
     const nextCoordinator = new BrowserPoolCoordinator({
       database: j.database,
       runnerId: j.task.runnerId,
@@ -3762,18 +3801,9 @@ it("marks an unconfirmed-closing replaced-browser session closeUnconfirmed, sort
       slotId: nextSlot.slotId,
       term: nextSlot.term,
       runtime: {
-        poolState: async () => ({
-          phase: "running",
-          fence: {
-            slot: nextSlot.slotId,
-            term: nextSlot.term,
-            instance: nextSlot.instanceId,
-            epoch: nextSlot.epoch,
-          },
-          sessions: [],
-        }),
-        controlPool: async () => ({ ok: true }),
-        endSession: async () => ({ kind: "gone" }),
+        poolState: async () => nextRuntimeState,
+        controlPool: async () => nextRuntimeState,
+        endSession: async () => ({ outcome: "ended", state: nextRuntimeState }),
       },
       controller: {
         status: async () => ({
@@ -3879,7 +3909,7 @@ it("enforces authority on dismissBrowserPoolUnconfirmedSession: outside grant is
       placementKey: `runner:${j.task.runnerId}`,
       runnerId: j.task.runnerId,
       runtimeId: oldSlot.runtimeId,
-      origin: "person",
+      origin: "agent",
       profileId: profileA.id,
       pooled: true,
     });
@@ -3908,7 +3938,7 @@ it("enforces authority on dismissBrowserPoolUnconfirmedSession: outside grant is
       userId: j.task.userId,
       label: "Read-only grant",
       clientName: "Read-only agent",
-      accessMode: "read-only",
+      accessMode: "approval-required",
       grant: {
         scope: "selected",
         tasks: false,

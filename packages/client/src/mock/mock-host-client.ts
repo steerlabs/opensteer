@@ -4401,18 +4401,7 @@ export class MockHostClient implements HostClient {
 
   /** W15: removes an unconfirmed-closing session from the preview snapshot. */
   readonly dismissBrowserSession = async (sessionId: string): Promise<void> => {
-    const snapshot = this.#state.getSnapshot();
-    const browserPools = snapshot.browserPools?.map((pool) => {
-      if (!pool.unconfirmedClosings?.some((entry) => entry.sessionId === sessionId)) return pool;
-      const remaining = pool.unconfirmedClosings.filter((entry) => entry.sessionId !== sessionId);
-      const { unconfirmedClosings: _dropped, ...rest } = pool;
-      return remaining.length ? { ...rest, unconfirmedClosings: remaining } : rest;
-    });
-    this.#state.updatePlaces({
-      ...snapshot,
-      browserSessions: snapshot.browserSessions.filter((session) => session.id !== sessionId),
-      ...(browserPools ? { browserPools } : {}),
-    });
+    await this.#state.dismissBrowserSession(sessionId);
   };
 
   /** A navigation can stay loading after the restored page has painted. */
@@ -11152,6 +11141,20 @@ class MockHostState {
             }
           : session,
       ),
+    });
+  }
+
+  async dismissBrowserSession(sessionId: string): Promise<void> {
+    const browserPools = this.snapshot.browserPools?.map((pool) => {
+      if (!pool.unconfirmedClosings?.some((entry) => entry.sessionId === sessionId)) return pool;
+      const remaining = pool.unconfirmedClosings.filter((entry) => entry.sessionId !== sessionId);
+      const { unconfirmedClosings: _dropped, ...rest } = pool;
+      return remaining.length ? { ...rest, unconfirmedClosings: remaining } : rest;
+    });
+    this.update({
+      ...this.snapshot,
+      browserSessions: this.snapshot.browserSessions.filter((session) => session.id !== sessionId),
+      ...(browserPools ? { browserPools } : {}),
     });
   }
 
