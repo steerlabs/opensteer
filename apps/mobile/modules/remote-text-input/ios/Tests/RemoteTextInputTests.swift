@@ -756,6 +756,13 @@ import UIKit
     XCTAssertEqual(field.view.text, pasted)
     XCTAssertEqual(field.view.selectedRange, NSRange(location: pasted.utf16.count, length: 0))
   }
+  func testAnAnswerWithBooleanOffsetsIsIgnored() {
+    XCTAssertNil(RemoteInputTextView.integer(true))
+    XCTAssertNil(RemoteInputTextView.integer(false))
+    let field = Field(settled: "hello")
+    field.view.respond(["id": 0, "set": ["value": "bad", "selectionStart": false, "selectionEnd": true] as [String: Any]])
+    XCTAssertEqual(field.view.text, "hello")
+  }
   // CS2: an answer is applied as the edit it is. A paste's answer inserts the pasted text where it
   // went, so a keystroke and a caret move still waiting are carried over it, not over a cleared
   // field. The move is two back from the person's caret, which ends after "Py".

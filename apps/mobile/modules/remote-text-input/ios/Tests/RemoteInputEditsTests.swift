@@ -194,4 +194,18 @@ import XCTest
     field.answerAll()
     XCTAssertEqual(field.string, "abc")
   }
+
+  func testBridgeNumberDecodingRejectsBooleansAndFractionsAndAcceptsDoubles() {
+    XCTAssertEqual(RemoteInputNumber.integer(5), 5)
+    XCTAssertEqual(RemoteInputNumber.integer(5.0), 5)
+    XCTAssertEqual(RemoteInputNumber.integer(NSNumber(value: 0.0)), 0)
+    XCTAssertNil(RemoteInputNumber.integer(true))
+    XCTAssertNil(RemoteInputNumber.integer(false))
+    XCTAssertNil(RemoteInputNumber.integer(NSNumber(value: true)))
+    XCTAssertNil(RemoteInputNumber.integer(NSNumber(value: false)))
+    XCTAssertNil(RemoteInputNumber.integer(1.5))
+    XCTAssertNil(RemoteInputNumber.integer(Double.nan))
+    XCTAssertNil(RemoteInputNumber.integer(Double.infinity))
+    XCTAssertNil(RemoteInputNumber.integer("5"))
+  }
 }

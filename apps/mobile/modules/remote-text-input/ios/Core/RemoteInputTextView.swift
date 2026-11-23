@@ -225,10 +225,7 @@ import UniformTypeIdentifiers
   /// W1: a whole number from the bridge, which hands JavaScript's numbers over as Double (a
   /// test's as Int). Read with `as? Int`, a Double is nothing, and the answer was dropped whole.
   static func integer(_ value: Any?) -> Int? {
-    guard let number = value as? NSNumber else { return nil }
-    let double = number.doubleValue
-    guard double.isFinite, double == double.rounded(), abs(double) < 9_007_199_254_740_992 else { return nil }
-    return number.intValue
+    RemoteInputNumber.integer(value)
   }
   private func apply(_ instruction: [String: Any]) {
     guard markedTextRange == nil, let state = instruction["set"] as? [String: Any],
