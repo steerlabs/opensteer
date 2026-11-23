@@ -584,7 +584,9 @@ it.skipIf(Boolean(reportPath))(
           try {
             if (activeAttaches === 1) {
               firstEntered.resolve();
-              await withTimeout(releaseFirst.promise, 250).catch(() => undefined);
+              await withTimeout(releaseFirst.promise, 250, {
+                timeoutError: () => new Error("attach overlap wait elapsed"),
+              }).catch(() => undefined);
             } else {
               overlapped = true;
               releaseFirst.resolve();

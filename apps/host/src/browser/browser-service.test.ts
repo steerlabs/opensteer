@@ -10557,8 +10557,9 @@ describe("work under a connection's authority never uses the clipboard or change
     expect(resC).toBeDefined();
 
     // Dynamic lock-order check: acquiring a profile lane from inside withRunnerAdmission throws immediately.
+    const personRecord = (await repository.getBrowserSessionForOwner(person.session.id, ownerId))!;
     await expect(
-      service.withRunnerAdmission(person.session.runnerId, () =>
+      service.withRunnerAdmission(personRecord.runnerId, () =>
         service.openAgentSession({
           ownerId,
           sessionId: person.session.id,
