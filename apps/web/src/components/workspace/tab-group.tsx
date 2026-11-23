@@ -255,7 +255,16 @@ function TabGroupEditor({
           item={{ icon: "close", label: "Close group" }}
           onChoose={() => {
             onClose();
-            closeGroup(tabIds);
+            // The store keeps a group its tabs left; closing the group itself takes it away too.
+            closeGroup(
+              tabIds,
+              () =>
+                void act(
+                  hostClient,
+                  { label: "close this group", done: "closed", happened: "this group closed" },
+                  () => hostClient.deleteTabGroup(group.groupId),
+                ).catch(failed),
+            );
           }}
         />
       </div>

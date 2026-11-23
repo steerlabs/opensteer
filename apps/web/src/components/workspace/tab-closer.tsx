@@ -29,7 +29,8 @@ import { actionLine } from "../use-action.js";
  * said on that tab's row, whichever control asked: never a toast.
  */
 interface TabCloser {
-  close(tabIds: readonly TabId[]): void;
+  /** `closed` runs once every one of these tabs has closed, and not when any stayed. */
+  close(tabIds: readonly TabId[], closed?: () => void): void;
   outcome(tabId: TabId): ClientAction<TabId, void> | null;
   subscribe(tabId: TabId, listener: () => void): () => void;
 }
@@ -46,9 +47,9 @@ export function useTabCloser(): (place: Pick<PlaceItem, "key">) => void {
   return useCallback((place) => closer.close([place.key]), [closer]);
 }
 
-export function useTabGroupCloser(): (tabIds: readonly TabId[]) => void {
+export function useTabGroupCloser(): (tabIds: readonly TabId[], closed?: () => void) => void {
   const closer = useCloser();
-  return useCallback((tabIds) => closer.close(tabIds), [closer]);
+  return useCallback((tabIds, closed) => closer.close(tabIds, closed), [closer]);
 }
 
 const idle = { key: "", running: false, outcome: null, issue: null } as const;
@@ -129,7 +130,7 @@ function createTabCloser(hostClient: HostClient): TabCloser & { dispose(): void 
     }
   };
   return {
-    close(tabIds) {
+    close(tabIds, closed) {
       if (!tabIds.length) return;
       const ids = [...new Set(tabIds)];
       let batch: ReturnType<HostClient["closeTabs"]> | undefined;
@@ -168,7 +169,7 @@ function createTabCloser(hostClient: HostClient): TabCloser & { dispose(): void 
         action.dispose();
       }
       publish();
-      for (const { tabId, action } of rows) {
+      const runs = rows.map(({ tabId, action }) => {
         // Held only while it has something to say: closed or dismissed lets it go.
         const settle = () => {
           const state = action.getSnapshot();
@@ -178,8 +179,15 @@ function createTabCloser(hostClient: HostClient): TabCloser & { dispose(): void 
           publish();
         };
         action.subscribe(settle);
-        void action.run(tabId).then(settle);
-      }
+        return action.run(tabId).then((outcome) => {
+          settle();
+          return outcome;
+        });
+      });
+      if (closed)
+        void Promise.all(runs).then((outcomes) => {
+          if (outcomes.every((outcome) => outcome.kind === "confirmed")) closed();
+        });
     },
     outcome: (tabId) => latest.get(tabId) ?? null,
     subscribe(tabId, listener) {

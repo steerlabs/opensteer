@@ -158,6 +158,35 @@ describe("one tab list", () => {
     expect([title.selectionStart, title.selectionEnd]).toEqual([0, title.value.length]);
   });
 
+  it("Close group closes its tabs and the group with them, leaving no empty header", async () => {
+    await mount("/");
+    const group = groupId();
+    const members = strip().entries.find(
+      (entry) => entry.kind === "group" && entry.group.groupId === group,
+    );
+    if (members?.kind !== "group") throw new Error("The mock lists no group");
+    await act(async () => {
+      element(`[data-tab-group-id="${group}"]`).dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+      );
+    });
+    const close = await until("The group's menu never offered Close group", () => {
+      const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((node) =>
+        node.textContent?.includes("Close group"),
+      );
+      expect(item).toBeDefined();
+      return item!;
+    });
+    await click(close);
+    await until("Close group left its group behind", () => {
+      expect(document.querySelector(`[data-tab-group-id="${group}"]`)).toBeNull();
+      expect(
+        strip().entries.some((entry) => entry.kind === "group" && entry.group.groupId === group),
+      ).toBe(false);
+    });
+    for (const tabId of members.tabIds) expect(strip().ordered).not.toContain(tabId);
+  });
+
   it("a group's menu renames and ungroups it, keeping every tab where it was", async () => {
     await mount("/");
     const order = strip().ordered;
