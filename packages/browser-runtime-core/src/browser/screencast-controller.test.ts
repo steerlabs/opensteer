@@ -1101,6 +1101,143 @@ describe("the follow view, on a page whose frames never fit", async () => {
 });
 
 /*
+ * Re-check 9, R7: three sequences, each with its own test. Chromium gone while a start it never
+ * answers holds a caller on the follow view; a dialog opening while Chromium sizes the view for a
+ * start; and a picture the viewers could not take (a crop they did not show) followed by the
+ * viewers saying they can.
+ */
+describe("the follow view, in re-check 9's sequences (R7)", async () => {
+  const { ScreencastController } = await import("./screencast-controller.js");
+  const { LatestFrameStream } = await import("../stream/latest-frame-stream.js");
+  const { FakeCdpSession, jpeg } = await import("../test-support/fakes.js");
+  const settle = async () => {
+    for (let turn = 0; turn < 6; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  function stage(page: Record<string, unknown>, size = { height: 600, width: 800 }) {
+    const cdp = new FakeCdpSession();
+    const surface = {
+      active: true,
+      documentId: "a",
+      geometryRevision: 1,
+      id: "tab",
+      loading: false,
+    };
+    const binding = { cdp, page, surface };
+    const listeners = new Set<(event: unknown) => void>();
+    let dialog = false;
+    const delivered: Array<{ header: { capture?: unknown } }> = [];
+    const errors: string[] = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({
+        sendFrame: async (sent) => void delivered.push(sent as never),
+      }),
+      ledger: {
+        active: () => binding,
+        binding: () => binding,
+        dialogOf: () => null,
+        dialogOpen: () => dialog,
+        recordPageScale: () => undefined,
+        subscribe: (listener: (event: unknown) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+        viewportOf: () => size,
+        withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      } as never,
+      onDialogChanged: () => undefined,
+      onError: (error) => errors.push(error.reason ?? error.message),
+    });
+    return {
+      cdp,
+      delivered,
+      errors,
+      follow,
+      openDialog: () => {
+        dialog = true;
+        for (const listener of listeners) listener({ surfaceId: "tab", type: "dialog-event" });
+        for (const listener of listeners)
+          listener({ change: "updated", surface: { ...surface }, type: "changed" });
+      },
+      starts: () => cdp.sent.filter(({ method }) => method === "Page.startScreencast").length,
+    };
+  }
+
+  it("lets a caller waiting on it go when Chromium is gone with a start it never answered", async () => {
+    const view = stage({ settleRendering: async () => undefined });
+    view.cdp.responses.set("Page.startScreencast", () => new Promise(() => undefined));
+    await view.follow.start();
+    let settled = false;
+    void view.follow.setStreaming(true).finally(() => {
+      settled = true;
+    });
+    await settle();
+    expect(view.starts()).toBe(1);
+    expect(settled).toBe(false);
+    view.follow.abort();
+    await settle();
+    expect(settled).toBe(true);
+  });
+
+  it("sends no start when a dialog opened while Chromium sized the view for it", async () => {
+    const view = stage({ settleRendering: async () => undefined });
+    const sized = Promise.withResolvers<void>();
+    let sizing = false;
+    view.cdp.responses.set("Emulation.setVisibleSize", async () => {
+      sizing = true;
+      await sized.promise;
+      return {};
+    });
+    await view.follow.start();
+    void view.follow.setStreaming(true).catch(() => undefined);
+    await settle();
+    expect(sizing).toBe(true);
+    view.openDialog();
+    await settle();
+    sized.resolve();
+    await settle();
+    expect(view.starts()).toBe(0);
+    await view.follow.close();
+  });
+
+  it("pictures a cropped page once the viewers can show its region, after its frame was dropped", async () => {
+    const region = { height: 300, width: 400 };
+    const view = stage({
+      applyGeometry: async () => undefined,
+      capture: {
+        read: () => ({ ...region, rasterScale: 1, revision: 1 }),
+        subscribe: () => () => undefined,
+      },
+      settleRendering: async () => undefined,
+    });
+    let frameId = 0;
+    // A still page: each start's one frame, of the capture's region.
+    view.cdp.responses.set("Page.startScreencast", () => {
+      setImmediate(() =>
+        view.cdp.emit("Page.screencastFrame", {
+          data: jpeg(region.width, region.height).toString("base64"),
+          metadata: { deviceHeight: region.height, deviceWidth: region.width },
+          sessionId: ++frameId,
+        }),
+      );
+      return {};
+    });
+    await view.follow.start();
+    await view.follow.setStreaming(true, false);
+    await settle();
+    // The viewers do not show a region: the frame is dropped, and they are told why.
+    expect(view.delivered).toHaveLength(0);
+    expect(view.errors).toEqual(["browser-capture-region-unsupported"]);
+    await view.follow.setStreaming(true, true);
+    await settle();
+    expect(view.delivered).toHaveLength(1);
+    expect(view.delivered[0]?.header.capture).toEqual({ ...region, revision: 1 });
+    await view.follow.close();
+  });
+});
+
+/*
  * Re-check 9, R1: the state of a bound tab has one writer, the pure `after` in screencast-plan.ts.
  * The controller turns what happened into an event and stores what `after` returns; it never sets
  * a field of that state itself.

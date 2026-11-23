@@ -41,11 +41,6 @@ export { screencastRaster } from "./screencast-plan.js";
 
 const paintRetryInitialMs = 1_000;
 const paintRetryMaxMs = 16_000;
-/**
- * How long a start whose only frame was of another size waits for its own (F30): a page whose view
- * is not at that size sends no other, and is repaired then.
- */
-const ownFrameWaitMs = 1_000;
 /** Steps one pass may take before it is quiet: more is a loop between steps, and it stops. */
 const passStepLimit = 24;
 
@@ -79,7 +74,11 @@ interface Bound {
   /** The last wait recorded, so each is recorded once. */
   waiting: string | null;
   paintTimer: ReturnType<typeof setTimeout> | null;
-  ownFrameTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * The time the plan gives the running cast for a picture, and how long it is: one timer serves
+   * the first frame and a start's own frame after one of another size, at the plan's length.
+   */
+  firstFrameTimer: { readonly timer: ReturnType<typeof setTimeout>; readonly ms: number } | null;
   readonly unbind: () => void;
 }
 
@@ -390,7 +389,7 @@ export class ScreencastController {
       if (bound && facts.tab?.binding === bound.binding) this.apply(bound, { kind: "observed" });
       const step = nextStep(facts, bound?.binding ?? null, bound?.state ?? null);
       this.keepRendering(facts);
-      this.keepTimers(facts);
+      this.keepTimers(step);
       if (step.kind === "idle" || step.kind === "wait") {
         this.rest(step);
         continue;
@@ -474,7 +473,7 @@ export class ScreencastController {
         this.stopCast(bound, step.why, false);
         return;
       case "restart":
-        this.stopCast(bound, step.why, true);
+        this.stopCast(bound, step.why, step.retry);
         return;
       case "restamp":
         this.apply(bound, {
@@ -488,16 +487,22 @@ export class ScreencastController {
         await this.untilChanged(this.beginStart(bound));
         return;
       case "repair":
-        this.beginRepair(bound);
+        this.beginRepair(bound, step);
         return;
       case "fail": {
         const told = bound.state.told;
-        this.stopCast(bound, step.why, false, told.state === "running" ? told.key : undefined);
+        this.stopCast(
+          bound,
+          step.why,
+          false,
+          told.state === "running" ? { key: told.key, why: step.why } : undefined,
+        );
         this.diagnose({ stage: "cast-failed", reason: step.why });
+        // The code is the one the clients know; the text says what is true of this cast.
         this.onError?.(
           new BrowserRuntimeError(
             "internal",
-            "The browser capture does not match its declared region.",
+            `The picture of the page was given up: ${step.why}.`,
             { reason: "browser-capture-mismatch" },
           ),
         );
@@ -551,9 +556,9 @@ export class ScreencastController {
       cdp: binding.cdp,
       held: null,
       heldDocument: null,
+      firstFrameTimer: null,
       id: binding.surface.id,
       inFlight: null,
-      ownFrameTimer: null,
       page: binding.page,
       pageScale: 1,
       paintDelay: paintRetryInitialMs,
@@ -582,8 +587,8 @@ export class ScreencastController {
     bound.releaseRendering = null;
     if (bound.paintTimer) clearTimeout(bound.paintTimer);
     bound.paintTimer = null;
-    if (bound.ownFrameTimer) clearTimeout(bound.ownFrameTimer);
-    bound.ownFrameTimer = null;
+    if (bound.firstFrameTimer) clearTimeout(bound.firstFrameTimer.timer);
+    bound.firstFrameTimer = null;
     bound.unbind();
   }
 
@@ -599,13 +604,18 @@ export class ScreencastController {
    * nothing else, and Chromium takes a session's commands in order), and the session is stopping
    * until the stop is answered.
    */
-  private stopCast(bound: Bound, why: string, restart: boolean, failedFor?: CastKey): void {
+  private stopCast(
+    bound: Bound,
+    why: string,
+    retry: boolean,
+    failed?: { readonly key: CastKey; readonly why: string },
+  ): void {
     const told = bound.state.told;
     bound.inFlight?.abort();
     bound.inFlight = null;
     if (told.state === "sent" || told.state === "running") this.sendStop(bound, why);
     this.dropHeld(bound);
-    this.apply(bound, { kind: "stopped", restart, ...(failedFor ? { failedFor } : {}) });
+    this.apply(bound, { kind: "stopped", retry, ...(failed ? { failed } : {}) });
     bound.startWhy = why;
   }
 
@@ -645,10 +655,11 @@ export class ScreencastController {
   }
 
   /**
-   * The timers follow the state: a paint backoff while one is recorded, and the time a start's own
-   * frame is given while it is awaited and the page can draw (not under a dialog or a hold).
+   * The timers follow the plan: a paint backoff while one is recorded, and the time the plan gives
+   * the running cast for a picture while its step waits on one. Any other step (a hold, a pause, a
+   * stop, another tab) clears that timer; it only says the time is up, and `after` decides.
    */
-  private keepTimers(facts: CastFacts): void {
+  private keepTimers(step: Step): void {
     const bound = this.bound;
     if (!bound) return;
     const state = bound.state;
@@ -666,23 +677,25 @@ export class ScreencastController {
       clearTimeout(bound.paintTimer);
       bound.paintTimer = null;
     }
-    const awaiting =
-      state.told.state === "running" &&
-      state.otherSize &&
-      !state.shown &&
-      wanted(facts).kind === "cast";
-    if (awaiting && !bound.ownFrameTimer) {
+    const ms = step.kind === "wait" ? step.timer : undefined;
+    if (bound.firstFrameTimer && bound.firstFrameTimer.ms !== ms) {
+      clearTimeout(bound.firstFrameTimer.timer);
+      bound.firstFrameTimer = null;
+    }
+    if (ms !== undefined && !bound.firstFrameTimer) {
       const timer = setTimeout(() => {
-        if (bound.ownFrameTimer !== timer) return;
-        bound.ownFrameTimer = null;
-        if (this.bound === bound) this.apply(bound, { kind: "own-frame-timer" });
+        if (bound.firstFrameTimer?.timer !== timer) return;
+        bound.firstFrameTimer = null;
+        if (this.bound === bound) {
+          const before = bound.state.trouble;
+          this.apply(bound, { kind: "first-frame-timeout" });
+          if (bound.state.trouble !== before)
+            this.diagnose({ stage: "cast-first-frame-timeout", durationMs: ms });
+        }
         this.requestPass();
-      }, ownFrameWaitMs);
+      }, ms);
       timer.unref();
-      bound.ownFrameTimer = timer;
-    } else if (!awaiting && bound.ownFrameTimer) {
-      clearTimeout(bound.ownFrameTimer);
-      bound.ownFrameTimer = null;
+      bound.firstFrameTimer = { ms, timer };
     }
   }
 
@@ -845,16 +858,13 @@ export class ScreencastController {
   }
 
   /** Stops the cast and asks the page to draw its surface again; the pass then starts it. */
-  private beginRepair(bound: Bound): void {
-    const state = bound.state;
-    // A frame that did not fit counts against the cast; a view a closed tab may have moved does not.
-    const byFrame = state.misfit;
-    const why = state.redraw && !byFrame ? "a tab closed" : "raster-mismatch";
-    const told = state.told;
+  private beginRepair(bound: Bound, step: Extract<Step, { kind: "repair" }>): void {
+    const why = step.why;
+    const told = bound.state.told;
     bound.inFlight?.abort();
     if (told.state === "sent" || told.state === "running") this.sendStop(bound, why);
     this.dropHeld(bound);
-    this.apply(bound, { byFrame, kind: "repair-begun" });
+    this.apply(bound, { kind: "repair-begun", retry: step.retry });
     bound.startWhy = why;
     const abort = new AbortController();
     bound.inFlight = abort;

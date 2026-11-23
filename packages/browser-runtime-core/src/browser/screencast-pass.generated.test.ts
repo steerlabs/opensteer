@@ -6,14 +6,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  * and the page do, and of what Chromium does (answers early and late, refusals, frames before and
  * after the answer, frames that do not fit, a renderer gone on the same session, a session lost),
  * against the real follow view. At every quiet point:
- * 1. a cast that is wanted has a picture delivered for it, or the follow view waits on a fact it
- *    names and that is true of this tab now;
+ * 1. a cast that is wanted has a picture delivered for it, or every wait names a fact true of the
+ *    world, or a timer is armed for that tab: no wait may last for ever;
  * 2. no cast runs, or is being started, for a tab that is not wanted;
  * 3. every frame was acknowledged once, but the one held for a start still with Chromium;
  * 4. no start reached a page while the follow view knew it could not take one;
  * 5. the pass is not running, and never ran into its step limit;
  * 6. every picture delivered is of the cast running on its tab, and of the tab's document now;
- * 7. the starts Chromium took since a tab's last picture, for one cast, stay within the bound.
+ * 7. the starts Chromium took since a tab's last picture, or since the last thing that happened
+ *    outside it (a person's act, a document, a tab closing beside it), stay within the bound: a
+ *    restart or repair for a new fact is a change and does not count, so it cannot become a loop.
  * The stand-in is Chromium and the desktop app's hub together: it takes a session's commands in
  * order, and on the desktop says when it ended a session's casts.
  */
@@ -60,8 +62,6 @@ class Chromium {
   doubleAck = false;
   /** The facts when the follow view's last refused start was sent. */
   lastRefusal: RefusalFacts | null = null;
-  /** The last start's frame before its answer was of another size. */
-  otherSizeBefore = false;
   /** Frames Chromium has painted and not yet sent: on their way. */
   framesDue = 0;
   private chain: Promise<unknown> = Promise.resolve();
@@ -70,6 +70,8 @@ class Chromium {
   answerLate = false;
   frameBefore = false;
   framesFit = true;
+  /** It answers its starts and paints none of them (R10): a page still under load. */
+  silent = false;
   private readonly world: World;
   private readonly id: Id;
   constructor(world: World, id: Id) {
@@ -130,11 +132,15 @@ class Chromium {
         (later ? setImmediate : queueMicrotask)(() => due(frameFit));
       };
       const fit = this.framesFit;
-      // The start's frame is of another size, before its answer or after: on the desktop its own
-      // follows it, or the follow view repairs the view once the time it gives it is up.
-      this.otherSizeBefore = !fit && this.world.engine === "desktop";
       // Chromium casts from when it takes the start; its answer may reach the follow view later.
       this.casting = true;
+      // Chromium answers, and no frame of the start ever comes.
+      if (this.silent) {
+        if (this.answerLate) await new Promise<void>((resolve) => this.lateAnswers.push(resolve));
+        return {};
+      }
+      // The start's frame is of another size, before its answer or after: on the desktop its own
+      // follows it, or the follow view repairs the view once the time it gives it is up.
       if (before) this.frame(fit, true);
       if (this.answerLate) await new Promise<void>((resolve) => this.lateAnswers.push(resolve));
       // A frame of another size before the answer is what the page last drew: on a page sized
@@ -226,8 +232,13 @@ interface TabWorld {
   paintTimedOut: boolean;
   /** Each showing of the tab: turned to, streamed again, a new session. */
   epoch: number;
-  /** Starts Chromium took since its last picture, for one cast. */
+  /** Starts Chromium took since its last picture. */
   startsSincePicture: number;
+  /**
+   * Things that happened outside the follow view since the tab's last picture, each of which may
+   * call for a cast of its own: a change can wait behind a hold and land after a later one.
+   */
+  eventsSincePicture: number;
   readonly captureListeners: Set<() => void>;
   readonly navigationListeners: Set<() => void>;
 }
@@ -275,6 +286,7 @@ class World {
       paintTimedOut: false,
       size: { height: 600, width: 800 },
       stallPaint: false,
+      eventsSincePicture: 0,
       startsSincePicture: 0,
       unpainted: opening,
     });
@@ -314,9 +326,9 @@ class World {
     if (this.port && tab.navigation.pending && tab.navigation.blankDocument)
       this.violations.push(`a start reached ${id} before its first document committed`);
   }
-  /** A new showing, or a new cast wanted: the count of starts since a picture begins again. */
+  /** A new showing, or a new cast wanted: one more cast's starts are allowed until a picture. */
   afresh(id: Id) {
-    this.tabs[id].startsSincePicture = 0;
+    this.tabs[id].eventsSincePicture += 1;
   }
   /** Which cast the follow view should picture now on a tab, as a key. */
   castOf(id: Id) {
@@ -359,7 +371,10 @@ class World {
               },
             }
           : {}),
-        invalidateSurface: async () => undefined,
+        // The page drawn again: a Chromium that painted nothing may paint the next start.
+        invalidateSurface: async () => {
+          if (tab.chromium.silent && this.chance(0.5)) tab.chromium.silent = false;
+        },
         settleRendering: async () => {
           if (tab.stallPaint) {
             tab.stallPaint = false;
@@ -419,6 +434,7 @@ class World {
             `${tab.id} was shown a picture of document ${painted.document}, not of ${tab.documentId}`,
           );
         tab.startsSincePicture = 0;
+        tab.eventsSincePicture = 0;
       },
     };
   }
@@ -670,6 +686,20 @@ function actions(
         tab.chromium.answerLate = pick.chance(0.3);
         tab.chromium.frameBefore = pick.chance(0.5);
         tab.chromium.framesFit = pick.chance(0.8);
+        tab.chromium.silent = pick.chance(0.15);
+      },
+    },
+    {
+      name: "a tab closes beside it",
+      run: () => {
+        // Another tab of the window closes: headless Chrome may show this one at the window's size
+        // again. An event from outside: the starts it causes count from it.
+        world.afresh(world.active);
+        world.emit({
+          change: "closed",
+          surface: { active: false, documentId: "C0", geometryRevision: 1, id: "C", url: "" },
+          type: "changed",
+        });
       },
     },
     {
@@ -749,6 +779,8 @@ interface Internals {
     readonly cdp: Chromium;
     readonly held: unknown;
     readonly waiting: string | null;
+    readonly firstFrameTimer?: unknown;
+    readonly paintTimer: unknown;
     readonly state: {
       readonly told: { state: string; key?: unknown };
       readonly shown: boolean;
@@ -776,7 +808,10 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
       told.state === "running" && fits(told.key as never, want.key) === "same" && bound.state.shown;
     const why = bound.waiting ?? "";
     const holding = chromium.lateAnswers.length > 0;
+    // The plan gave the wait a time, and it is running for this tab: the wait ends with it.
+    const timed = bound.firstFrameTimer !== undefined && bound.firstFrameTimer !== null;
     const named =
+      timed ||
       // Chromium takes a session's commands in order: one it holds the answer to holds the next.
       ((why === "a start is with Chromium" ||
         why === "a start is being prepared" ||
@@ -784,9 +819,9 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
         holding) ||
       // A frame Chromium has painted is on its way.
       (why === "its first frame" && chromium.framesDue > 0) ||
+      // It loads: its first frame comes as it paints, and the time for it is given once it ends.
       (why === "its document's first frame, as it loads" &&
-        (tab.loading || tab.navigation.pending) &&
-        tab.unpainted) ||
+        (tab.loading || (world.port && tab.navigation.pending))) ||
       (why === "its first document has not committed" &&
         world.port &&
         tab.navigation.pending &&
@@ -794,11 +829,8 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
       // A refusal waits rightly while the page takes no command, or is about to say it can.
       (why.startsWith("refused") &&
         (!chromium.attached || tab.loading || (world.port && tab.navigation.pending))) ||
-      (why === "the page did not paint" && tab.paintTimedOut && vi.getTimerCount() > 0) ||
-      (why === "its own frame, after one of another size" &&
-        chromium.otherSizeBefore &&
-        vi.getTimerCount() > 0) ||
-      (why === "its frames never fit this page" &&
+      (why === "the page did not paint" && tab.paintTimedOut && bound.paintTimer !== null) ||
+      (why.startsWith("its cast was given up") &&
         world.errorsFor.get(tab.id) === world.castOf(tab.id));
     if (!pictured && !named)
       broken.push(
@@ -816,11 +848,13 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
     const heldId = held ? Number((held as { sessionId: number }).sessionId) : null;
     const left = unacked.filter((frame) => frame !== heldId);
     if (left.length > 0) broken.push(`frames ${left.join(", ")} of ${id} were never acked`);
-    // One start, and as many restarts and repairs as the bound gives with no picture.
-    const limit = 1 + (world.engine === "desktop" ? 1 : 3);
-    if (world.tabs[id].startsSincePicture > limit)
+    // For each thing that happened outside it, one start and as many retries as the bound gives
+    // with no picture: with no new event, no more.
+    const perEvent = 1 + (world.engine === "desktop" ? 1 : 3);
+    const { eventsSincePicture, startsSincePicture } = world.tabs[id];
+    if (startsSincePicture > perEvent * (1 + eventsSincePicture))
       broken.push(
-        `${id} was started ${world.tabs[id].startsSincePicture} times for one cast with no picture`,
+        `${id} was started ${startsSincePicture} times with no picture, after ${eventsSincePicture} events`,
       );
   }
   return broken;

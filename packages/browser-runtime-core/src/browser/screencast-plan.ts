@@ -104,29 +104,59 @@ export interface PaintWait {
   readonly geometryRevision: number;
 }
 
+/**
+ * What came of the running cast short of a picture, the worst kept: each is answered in its own
+ * way, and a cast given up says which it was.
+ */
+export type Trouble =
+  /**
+   * A frame of another size came with the start and none fitting since: on a page sized natively
+   * the start's own frame follows it (F30), and the follow view gives it a shorter time.
+   */
+  | "other-size"
+  /** No picture came in the time the cast was given (R10). */
+  | "no-picture"
+  /** A frame of the cast was not shown because the facts did not fit it then. */
+  | "set-aside"
+  /** A frame of the cast had another size or shape than the region it was cast for. */
+  | "misfit";
+
+const troubleRank: Record<Trouble, number> = {
+  misfit: 3,
+  "no-picture": 1,
+  "other-size": 0,
+  "set-aside": 2,
+};
+
+function worse(left: Trouble | null, right: Trouble): Trouble {
+  return left !== null && troubleRank[left] > troubleRank[right] ? left : right;
+}
+
+/** What a cast given up says it was given up for, by what came of it. */
+const givenUpFor: Record<Exclude<Trouble, "other-size">, string> = {
+  misfit: "its frames do not fit the region it is cast for",
+  "no-picture": "no picture arrived",
+  "set-aside": "its frames were set aside each time",
+};
+
 export interface TabCastState {
   readonly told: Told;
   /** A picture was delivered for the running cast since its answer, or since its document. */
   readonly shown: boolean;
-  /** A frame of the running cast was not shown because the facts did not fit it then. */
-  readonly setAside: boolean;
-  /** A frame of the cast had another size or shape than the region it was cast for. */
-  readonly misfit: boolean;
+  readonly trouble: Trouble | null;
   /** The page's view may no longer be at the size it is cast at (a tab closed beside it). */
   readonly redraw: boolean;
-  /** The page is asked to draw its surface again before the next start. */
-  readonly repairing: boolean;
   /**
-   * A frame of another size came with the start and none fitting since: on a page sized natively
-   * the start's own frame follows it (F30), and the follow view gives it a time.
+   * The page is asked to draw its surface again before the next start: a retry, which counts once
+   * it is drawn, or a change (a tab closed beside it), which does not.
    */
-  readonly otherSize: boolean;
+  readonly repairing: "retry" | "change" | null;
   readonly refusal: Refusal | null;
-  /** Restarts and repairs of this cast since a picture was last delivered. */
+  /** Retries of this cast, on the same facts, since a picture was last delivered. */
   readonly unpictured: number;
   readonly paint: PaintWait | null;
-  /** The cast whose frames never fitted: none is started for it again until it changes. */
-  readonly failedFor: CastKey | null;
+  /** The cast given up, and why: none is started for it again until it changes. */
+  readonly failed: { readonly key: CastKey; readonly why: string } | null;
   /** The cast the last start asked for: a start for another one counts afresh. */
   readonly lastKey: CastKey | null;
 }
@@ -134,20 +164,26 @@ export interface TabCastState {
 /** A tab bound anew; its session's stop may still be with Chromium. */
 export function initialTabCastState(stopping: boolean): TabCastState {
   return {
-    failedFor: null,
+    failed: null,
     lastKey: null,
-    misfit: false,
-    otherSize: false,
     paint: null,
     redraw: false,
     refusal: null,
-    repairing: false,
-    setAside: false,
+    repairing: null,
     shown: false,
     told: stopping ? { state: "stopping" } : { state: "none" },
+    trouble: null,
     unpictured: 0,
   };
 }
+
+/**
+ * The time a running cast is given for its first picture, counted from Chromium's answer (R10):
+ * three seconds, then six, then twelve as it is retried with none; one second after a frame of
+ * another size came with the start, as its own follows at once if it comes at all.
+ */
+export const firstFrameWaitMs = 3_000;
+export const otherSizeWaitMs = 1_000;
 
 /**
  * How many restarts or repairs a cast gets with no picture delivered before it is given up: one
@@ -168,13 +204,17 @@ export type Step =
       readonly document: string | null;
     }
   | { readonly kind: "start" }
-  | { readonly kind: "restart"; readonly why: string }
+  /** `retry`: on the same facts, with no picture; otherwise for a change in them. */
+  | { readonly kind: "restart"; readonly why: string; readonly retry: boolean }
   /** Stop, ask the page to draw its surface again, then start. */
-  | { readonly kind: "repair" }
-  /** Its frames never fit: stop, say so, and start nothing for this cast again. */
+  | { readonly kind: "repair"; readonly why: string; readonly retry: boolean }
+  /** No picture came of it: stop, say so, and start nothing for this cast again. */
   | { readonly kind: "fail"; readonly why: string }
-  /** Nothing to do until the named fact changes. */
-  | { readonly kind: "wait"; readonly why: string }
+  /**
+   * Nothing to do until the named fact changes, or, with `timer`, until that many milliseconds
+   * pass with no picture: then the follow view says so (`first-frame-timeout`).
+   */
+  | { readonly kind: "wait"; readonly why: string; readonly timer?: number }
   | { readonly kind: "idle" };
 
 /** What a frame is, judged against what was told and the facts. */
@@ -206,21 +246,21 @@ export type CastEvent =
   | { readonly kind: "not-sent" }
   | { readonly kind: "paint-timed-out"; readonly paint: PaintWait | null }
   | { readonly kind: "paint-backoff-ended" }
-  /** A stop step: a restart, a pause, a leaving, or a cast given up. */
+  /** A stop step: a restart (`retry` when on the same facts), a pause, a leaving, or a give-up. */
   | {
       readonly kind: "stopped";
-      readonly restart: boolean;
-      readonly failedFor?: CastKey;
+      readonly retry: boolean;
+      readonly failed?: { readonly key: CastKey; readonly why: string };
     }
-  | { readonly kind: "repair-begun"; readonly byFrame: boolean }
+  | { readonly kind: "repair-begun"; readonly retry: boolean }
   | { readonly kind: "repair-drawn" }
   /** A stop on the session was answered; `remaining` are still with Chromium. */
   | { readonly kind: "stop-answered"; readonly remaining: number }
   /** The engine ended the session's casts itself (a renderer gone, a debugger detached). */
   | { readonly kind: "casts-ended" }
   | { readonly kind: "frame"; readonly verdict: FrameVerdict }
-  /** The time a start's own frame was given, after one of another size, is up. */
-  | { readonly kind: "own-frame-timer" }
+  /** The time the plan gave the running cast for a picture (`wait` with a timer) is up. */
+  | { readonly kind: "first-frame-timeout" }
   | { readonly kind: "resumed" }
   | { readonly kind: "tab-closed-beside"; readonly native: boolean }
   | {
@@ -393,27 +433,33 @@ export function nextStep(facts: CastFacts, bound: string | null, state: TabCastS
     const fit = fits(told.key, key);
     if (fit === "new-document")
       return { document: key.document, geometryRevision: key.geometryRevision, kind: "restamp" };
-    if (!fit) return { kind: "restart", why: difference(told.key, key) };
-    if (state.redraw) return { kind: "repair" };
+    if (!fit) return { kind: "restart", retry: false, why: difference(told.key, key) };
+    if (state.redraw) return { kind: "repair", retry: false, why: "a tab closed" };
     if (state.shown) return { kind: "idle" };
-    if (state.misfit) {
-      if (state.unpictured >= limit)
-        return { kind: "fail", why: "its frames do not fit the region it is cast for" };
-      return { kind: "repair" };
+    const trouble = state.trouble;
+    if (trouble !== null && trouble !== "other-size") {
+      if (state.unpictured >= limit) return { kind: "fail", why: givenUpFor[trouble] };
+      return trouble === "set-aside"
+        ? { kind: "restart", retry: true, why: "its frame was set aside" }
+        : { kind: "repair", retry: true, why: givenUpFor[trouble] };
     }
-    if (state.setAside) {
-      if (state.unpictured >= limit)
-        return { kind: "fail", why: "its frames were set aside each time" };
-      return { kind: "restart", why: "its frame was set aside" };
-    }
-    if (state.otherSize) return { kind: "wait", why: "its own frame, after one of another size" };
+    if (trouble === "other-size")
+      return {
+        kind: "wait",
+        timer: otherSizeWaitMs,
+        why: "its own frame, after one of another size",
+      };
     // A document still loading, or still with the browser side, sends its first frame as it paints.
     if (tab.loading || tab.navigation?.pending)
       return { kind: "wait", why: "its document's first frame, as it loads" };
-    return { kind: "wait", why: "its first frame" };
+    return {
+      kind: "wait",
+      timer: firstFrameWaitMs * 2 ** Math.min(state.unpictured, 2),
+      why: "its first frame",
+    };
   }
-  if (state.failedFor !== null && sameCast(state.failedFor, key))
-    return { kind: "wait", why: "its frames never fit this page" };
+  if (state.failed !== null && sameCast(state.failed.key, key))
+    return { kind: "wait", why: `its cast was given up: ${state.failed.why}` };
   const paint = state.paint;
   if (
     paint &&
@@ -485,22 +531,21 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
         next = { ...next, refusal: null };
       const want = wanted(facts);
       // A cast given up is tried again, with fresh counts, once what it would picture changed.
-      if (next.failedFor && want.kind === "cast" && !sameCast(next.failedFor, want.key))
-        next = { ...next, failedFor: null, unpictured: 0 };
+      if (next.failed && want.kind === "cast" && !sameCast(next.failed.key, want.key))
+        next = { ...next, failed: null, unpictured: 0 };
       return next;
     }
     case "start-begun":
       return { ...state, told: { state: "preparing" } };
     case "sent": {
+      // A start for another cast is a change, not a retry: its count begins afresh (R6).
       const another = !state.lastKey || fits(state.lastKey, event.key) !== "same";
       return {
         ...state,
         lastKey: event.key,
-        misfit: false,
-        otherSize: false,
-        setAside: false,
         shown: false,
         told: { key: event.key, state: "sent" },
+        trouble: null,
         unpictured: another ? 0 : state.unpictured,
       };
     }
@@ -523,57 +568,54 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
     case "stopped":
       return {
         ...state,
-        ...(event.failedFor ? { failedFor: event.failedFor } : {}),
-        misfit: false,
-        otherSize: false,
-        setAside: false,
+        ...(event.failed ? { failed: event.failed } : {}),
         shown: false,
         told: stoppedFrom(told),
-        // Every restart with no picture delivered counts against the cast.
-        unpictured: event.restart && !state.shown ? state.unpictured + 1 : state.unpictured,
+        trouble: null,
+        // R2: a retry on the same facts with no picture counts against the cast. A restart for a
+        // new fact (another key) is a change, not a retry, and does not; its start counts afresh.
+        unpictured: event.retry && !state.shown ? state.unpictured + 1 : state.unpictured,
       };
     case "repair-begun":
       return {
         ...state,
-        misfit: false,
-        otherSize: false,
         redraw: false,
-        repairing: true,
-        setAside: false,
+        repairing: event.retry ? "retry" : "change",
         shown: false,
         told: stoppedFrom(told),
-        // A repair asked for by a frame that did not fit counts; one a closed tab asked for
-        // (`redraw`), with every frame fitting, does not.
-        unpictured: event.byFrame ? state.unpictured + 1 : state.unpictured,
+        trouble: null,
       };
     case "repair-drawn":
-      return { ...state, repairing: false };
+      // R2 and R10: a repair counts only once the page is drawn again, and only as a retry; one
+      // a tab closed beside it asked for (`redraw`, armed once per such event) is a change.
+      return {
+        ...state,
+        repairing: null,
+        unpictured: state.repairing === "retry" ? state.unpictured + 1 : state.unpictured,
+      };
     case "stop-answered":
       return told.state === "stopping" && event.remaining === 0
         ? { ...state, told: { state: "none" } }
         : state;
     case "casts-ended":
       return told.state === "sent" || told.state === "running" || told.state === "stopping"
-        ? { ...state, otherSize: false, shown: false, told: { state: "none" } }
+        ? { ...state, shown: false, told: { state: "none" }, trouble: null }
         : state;
     case "frame":
       switch (event.verdict) {
         case "other-size-with-start":
-          return { ...state, otherSize: true };
+          return { ...state, trouble: worse(state.trouble, "other-size") };
         case "misfit-with-start":
-          return { ...state, misfit: true };
+          return { ...state, trouble: worse(state.trouble, "misfit") };
         case "set-aside":
-          return { ...state, setAside: true };
+          return { ...state, trouble: worse(state.trouble, "set-aside") };
         case "misfit":
-          return { ...state, misfit: true, shown: false };
+          return { ...state, shown: false, trouble: worse(state.trouble, "misfit") };
         case "show":
         case "restamp-show": {
           const want = wanted(facts);
           return {
             ...state,
-            misfit: false,
-            otherSize: false,
-            setAside: false,
             shown: true,
             told:
               event.verdict === "restamp-show" && told.state === "running" && want.kind === "cast"
@@ -586,6 +628,7 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
                     state: "running",
                   }
                 : told,
+            trouble: null,
             unpictured: 0,
           };
         }
@@ -594,16 +637,16 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
           return state;
       }
       return state;
-    case "own-frame-timer": {
-      // While nothing is wanted cast (a dialog, a capture let go) the time is not up: the page
-      // cannot draw then.
-      const want = wanted(facts);
-      return told.state === "running" && !state.shown && state.otherSize && want.kind === "cast"
-        ? { ...state, misfit: true, otherSize: false }
+    case "first-frame-timeout": {
+      // The time is up only if the plan still gives one now: not for a tab not wanted, under a
+      // hold, loading, or since pictured.
+      const step = nextStep(facts, facts.tab?.binding ?? null, state);
+      return step.kind === "wait" && step.timer !== undefined
+        ? { ...state, trouble: "no-picture" }
         : state;
     }
     case "resumed":
-      return { ...state, failedFor: null, refusal: null, unpictured: 0 };
+      return { ...state, failed: null, refusal: null, unpictured: 0 };
     case "tab-closed-beside":
       return told.state === "running" && !event.native
         ? { ...state, redraw: true, shown: false }

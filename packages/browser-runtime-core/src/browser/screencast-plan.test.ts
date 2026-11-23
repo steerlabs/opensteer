@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   after,
   canTakeStart,
+  firstFrameWaitMs,
   fits,
   frameVerdict,
   initialTabCastState,
   nextStep,
+  otherSizeWaitMs,
   pictureLimit,
   refusalReleased,
   sameCast,
@@ -18,6 +20,7 @@ import {
   type TabCastState,
   type TabFacts,
   type Told,
+  type Trouble,
 } from "./screencast-plan.js";
 
 /*
@@ -217,31 +220,29 @@ const wants: Array<[string, CastFacts]> = [
   ["native", native],
 ];
 const states: TabCastState[] = [];
+const troubles: Array<Trouble | null> = [null, "other-size", "no-picture", "set-aside", "misfit"];
 for (const told of tolds)
   for (const shown of [false, true])
-    for (const setAside of [false, true])
-      for (const misfit of [false, true])
-        for (const redraw of [false, true])
-          for (const repairing of [false, true])
-            for (const otherSize of [false, true])
-              for (const unpictured of [0, 1, 3])
-                for (const paint of [null, { captureRevision: null, geometryRevision: 1, size }])
-                  for (const recorded of [null, refusal()])
-                    for (const failedFor of [null, key])
-                      states.push({
-                        ...initialTabCastState(false),
-                        failedFor,
-                        misfit,
-                        otherSize,
-                        paint,
-                        redraw,
-                        refusal: recorded,
-                        repairing,
-                        setAside,
-                        shown,
-                        told,
-                        unpictured,
-                      });
+    for (const trouble of troubles)
+      for (const redraw of [false, true])
+        // A retry and a change are one to the next step: both wait for the page to be drawn.
+        for (const repairing of [null, "retry"] as const)
+          for (const unpictured of [0, 1, 2, 3])
+            for (const paint of [null, { captureRevision: null, geometryRevision: 1, size }])
+              for (const recorded of [null, refusal()])
+                for (const failed of [null, { key, why: "no picture arrived" }])
+                  states.push({
+                    ...initialTabCastState(false),
+                    failed,
+                    paint,
+                    redraw,
+                    refusal: recorded,
+                    repairing,
+                    shown,
+                    told,
+                    trouble,
+                    unpictured,
+                  });
 
 describe("the next step", () => {
   it("binds the tab in view first, and is idle with nothing bound", () => {
@@ -289,8 +290,8 @@ describe("the next step", () => {
               true,
             );
             expect(canTakeStart(now.tab!, state.refusal).ok, at).toBe(true);
-            if (want.kind === "cast" && state.failedFor)
-              expect(sameCast(state.failedFor, want.key), at).toBe(false);
+            if (want.kind === "cast" && state.failed)
+              expect(sameCast(state.failed.key, want.key), at).toBe(false);
             // A paint wait holds only the picture it timed out for.
             expect(
               state.paint === null ||
@@ -302,33 +303,49 @@ describe("the next step", () => {
             break;
           }
           case "restart":
-            expect(
-              told.state === "running" &&
-                (fit === false || (state.setAside && state.unpictured < limit)),
-              at,
-            ).toBe(true);
+            // A restart for another cast is a change; one for a frame set aside, a retry.
+            expect(told.state === "running", at).toBe(true);
+            if (step.retry)
+              expect(
+                fit === "same" && state.trouble === "set-aside" && state.unpictured < limit,
+                at,
+              ).toBe(true);
+            else expect(fit, at).toBe(false);
             break;
           case "restamp":
             expect(fit, at).toBe("new-document");
             break;
           case "repair":
             expect(told.state === "running" && fit === "same", at).toBe(true);
-            expect(state.redraw || (state.misfit && state.unpictured < limit), at).toBe(true);
+            // A repair a closed tab asked for is a change; one for a frame that did not fit, or
+            // for no picture in its time, a retry.
+            if (step.retry)
+              expect(
+                !state.redraw &&
+                  (state.trouble === "misfit" || state.trouble === "no-picture") &&
+                  state.unpictured < limit,
+                at,
+              ).toBe(true);
+            else expect(state.redraw, at).toBe(true);
             break;
           case "fail":
             expect(told.state === "running" && fit === "same" && !state.shown, at).toBe(true);
-            expect(state.misfit || state.setAside, at).toBe(true);
+            expect(["misfit", "set-aside", "no-picture"], at).toContain(state.trouble);
             expect(state.unpictured >= limit, at).toBe(true);
+            // It says what came of the cast: no picture, when none came in its time.
+            if (state.trouble === "no-picture") expect(step.why, at).toBe("no picture arrived");
             break;
           case "wait":
-            // A wait is for a named fact; a running cast whose frame was set aside or did not fit
-            // never waits for its first frame.
+            // A wait is for a named fact, or the plan gives it a time: a running cast waiting for
+            // its first frame, or its own after one of another size, always has one (R10).
             expect(step.why.length, at).toBeGreaterThan(0);
-            if (step.why === "its first frame")
-              expect(
-                !state.setAside && !state.misfit && !state.redraw && !state.otherSize,
-                at,
-              ).toBe(true);
+            if (step.why === "its first frame") {
+              expect(state.trouble === null && !state.redraw && !state.shown, at).toBe(true);
+              expect(step.timer, at).toBe(firstFrameWaitMs * 2 ** Math.min(state.unpictured, 2));
+            } else if (step.why === "its own frame, after one of another size") {
+              expect(state.trouble, at).toBe("other-size");
+              expect(step.timer, at).toBe(otherSizeWaitMs);
+            } else expect(step.timer, at).toBeUndefined();
             if (want.kind === "none") throw new Error(`waits while nothing is wanted: ${at}`);
             break;
         }
@@ -349,7 +366,7 @@ describe("the next step", () => {
       lastKey: key,
       told: { key, state: "running" },
     };
-    let state: TabCastState = { ...running, setAside: true };
+    let state: TabCastState = { ...running, trouble: "set-aside" };
     const seen: string[] = [];
     for (let round = 0; round < 6; round += 1) {
       const step = nextStep(base, "tab#1", state);
@@ -357,7 +374,7 @@ describe("the next step", () => {
       if (step.kind === "fail") break;
       expect(step.kind).toBe("restart");
       // The restart, its start for the same cast, its answer, and its frame set aside again.
-      state = after(state, { kind: "stopped", restart: true }, base);
+      state = after(state, { kind: "stopped", retry: true }, base);
       state = after(state, { kind: "stop-answered", remaining: 0 }, base);
       state = after(state, { key, kind: "sent" }, base);
       state = after(state, { kind: "answered" }, base);
@@ -421,11 +438,11 @@ describe("the state after each event", () => {
     { kind: "not-sent" },
     { kind: "paint-timed-out", paint: { captureRevision: null, geometryRevision: 1, size } },
     { kind: "paint-backoff-ended" },
-    { kind: "stopped", restart: false },
-    { kind: "stopped", restart: true },
-    { failedFor: key, kind: "stopped", restart: false },
-    { byFrame: true, kind: "repair-begun" },
-    { byFrame: false, kind: "repair-begun" },
+    { kind: "stopped", retry: false },
+    { kind: "stopped", retry: true },
+    { failed: { key, why: "no picture arrived" }, kind: "stopped", retry: false },
+    { kind: "repair-begun", retry: true },
+    { kind: "repair-begun", retry: false },
     { kind: "repair-drawn" },
     { kind: "stop-answered", remaining: 0 },
     { kind: "stop-answered", remaining: 1 },
@@ -434,7 +451,7 @@ describe("the state after each event", () => {
     { kind: "frame", verdict: "set-aside" },
     { kind: "frame", verdict: "misfit" },
     { kind: "frame", verdict: "other-size-with-start" },
-    { kind: "own-frame-timer" },
+    { kind: "first-frame-timeout" },
     { kind: "resumed" },
     { kind: "tab-closed-beside", native: false },
     { document: "b", geometryRevision: 2, kind: "restamped" },
@@ -473,18 +490,24 @@ describe("the state after each event", () => {
     expect(cases).toBeGreaterThan(10_000);
   });
 
-  it("counts every restart and frame-caused repair with no picture, and counts afresh for another cast or a resume", () => {
+  it("counts every retry with no picture, a repair once it is drawn, and counts afresh for another cast or a resume", () => {
     const running: TabCastState = {
       ...initialTabCastState(false),
       lastKey: key,
       told: { key, state: "running" },
     };
-    expect(after(running, { kind: "stopped", restart: true }, base).unpictured).toBe(1);
+    expect(after(running, { kind: "stopped", retry: true }, base).unpictured).toBe(1);
+    expect(after(running, { kind: "stopped", retry: false }, base).unpictured).toBe(0);
     expect(
-      after({ ...running, shown: true }, { kind: "stopped", restart: true }, base).unpictured,
+      after({ ...running, shown: true }, { kind: "stopped", retry: true }, base).unpictured,
     ).toBe(0);
-    expect(after(running, { byFrame: true, kind: "repair-begun" }, base).unpictured).toBe(1);
-    expect(after(running, { byFrame: false, kind: "repair-begun" }, base).unpictured).toBe(0);
+    // R10: a repair counts once the page is drawn again, not as it is asked for; R2: one a closed
+    // tab asked for is a change and never counts.
+    const retried = after(running, { kind: "repair-begun", retry: true }, base);
+    expect(retried.unpictured).toBe(0);
+    expect(after(retried, { kind: "repair-drawn" }, base).unpictured).toBe(1);
+    const changed = after(running, { kind: "repair-begun", retry: false }, base);
+    expect(after(changed, { kind: "repair-drawn" }, base).unpictured).toBe(0);
     const counted = { ...running, unpictured: 2 };
     expect(after(counted, { key, kind: "sent" }, base).unpictured).toBe(2);
     expect(after(counted, { key: otherKey, kind: "sent" }, base).unpictured).toBe(0);
@@ -494,33 +517,60 @@ describe("the state after each event", () => {
   it("tries a cast given up again, counted afresh, when its size, capture, raster or document changes", () => {
     const failed: TabCastState = {
       ...initialTabCastState(false),
-      failedFor: key,
+      failed: { key, why: "no picture arrived" },
       unpictured: 3,
     };
-    expect(after(failed, { kind: "observed" }, facts({}, { geometryRevision: 9 })).failedFor).toBe(
-      key,
-    );
+    expect(
+      after(failed, { kind: "observed" }, facts({}, { geometryRevision: 9 })).failed?.key,
+    ).toBe(key);
     const navigated = after(
       failed,
       { kind: "observed" },
       facts({}, { document: "b", geometryRevision: 2 }),
     );
-    expect(navigated).toMatchObject({ failedFor: null, unpictured: 0 });
+    expect(navigated).toMatchObject({ failed: null, unpictured: 0 });
   });
 
-  it("gives a start's own frame its time only while the page can draw", () => {
-    const awaiting: TabCastState = {
+  it("gives a running cast's first picture its time only while the plan still gives one (R10)", () => {
+    const running: TabCastState = {
       ...initialTabCastState(false),
-      otherSize: true,
+      lastKey: key,
       told: { key, state: "running" },
     };
-    expect(after(awaiting, { kind: "own-frame-timer" }, base)).toMatchObject({
-      misfit: true,
-      otherSize: false,
-    });
-    expect(after(awaiting, { kind: "own-frame-timer" }, facts({}, { dialogOpen: true }))).toBe(
-      awaiting,
+    const otherSize: TabCastState = { ...running, trouble: "other-size" };
+    for (const awaiting of [running, otherSize]) {
+      expect(after(awaiting, { kind: "first-frame-timeout" }, base).trouble).toBe("no-picture");
+      // Not under a hold, not once pictured, not for a pause.
+      expect(
+        after(awaiting, { kind: "first-frame-timeout" }, facts({}, { dialogOpen: true })),
+      ).toBe(awaiting);
+      expect(after(awaiting, { kind: "first-frame-timeout" }, facts({ streaming: false }))).toBe(
+        awaiting,
+      );
+      const shown = { ...awaiting, shown: true };
+      expect(after(shown, { kind: "first-frame-timeout" }, base)).toBe(shown);
+    }
+    // Not while its document loads, which sends its first frame as it paints: the start's own
+    // frame after one of another size is given its time all the same, as before.
+    expect(after(running, { kind: "first-frame-timeout" }, facts({}, { loading: true }))).toBe(
+      running,
     );
+    // Three seconds, then six, then twelve as it is retried; given up at the bound, saying so.
+    const steps = [0, 1, 2, 3].map((unpictured) =>
+      nextStep(base, "tab#1", { ...running, unpictured }),
+    );
+    expect(steps.slice(0, 3).map((step) => (step.kind === "wait" ? step.timer : null))).toEqual([
+      3_000, 6_000, 12_000,
+    ]);
+    expect(nextStep(base, "tab#1", { ...running, trouble: "no-picture", unpictured: 3 })).toEqual({
+      kind: "fail",
+      why: "no picture arrived",
+    });
+    expect(nextStep(base, "tab#1", { ...running, trouble: "no-picture" })).toEqual({
+      kind: "repair",
+      retry: true,
+      why: "no picture arrived",
+    });
   });
 
   it("finds a session's stop still with Chromium when the tab is bound again", () => {
