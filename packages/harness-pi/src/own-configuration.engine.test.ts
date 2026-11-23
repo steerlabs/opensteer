@@ -307,3 +307,193 @@ it("still reads the person's own configuration in their own task, as Pi did befo
   expect(run.projectPrefixRan).toBe(false);
   expect(run.body).toContain("PERSON-SYSTEM-MD-MARKER");
 }, 120_000);
+
+it("refuses others' tasks and background text before spawning Pi when models.json contains a ! credential command", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "opensteer-pi-bang-")));
+  cleanups.push(() => rm(root, { force: true, maxRetries: 20, recursive: true, retryDelay: 100 }));
+  const home = join(root, "home");
+  const agentDirectory = join(home, ".pi", "agent");
+  const project = join(root, "agent-home");
+  const state = join(root, "state");
+  const bangRan = join(root, "bang-command-ran");
+  await mkdir(agentDirectory, { recursive: true });
+  await mkdir(project, { recursive: true });
+  await mkdir(state, { recursive: true });
+
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      if (!request.url?.includes("chat/completions")) {
+        response.writeHead(404);
+        response.end("{}");
+        return;
+      }
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write(
+        `data: ${JSON.stringify({
+          choices: [
+            { delta: { content: "done", role: "assistant" }, finish_reason: null, index: 0 },
+          ],
+          id: "stub_0",
+          object: "chat.completion.chunk",
+          usage: { completion_tokens: 1, prompt_tokens: 1, total_tokens: 2 },
+        })}\n\n`,
+      );
+      response.write(
+        `data: ${JSON.stringify({
+          choices: [{ delta: {}, finish_reason: "stop", index: 0 }],
+          id: "stub_0",
+          object: "chat.completion.chunk",
+          usage: { completion_tokens: 1, prompt_tokens: 1, total_tokens: 2 },
+        })}\n\n`,
+      );
+      response.end("data: [DONE]\n\n");
+    });
+  });
+  await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  cleanups.push(
+    () =>
+      new Promise<void>((resolveClose) => {
+        server.close(() => resolveClose());
+        server.closeAllConnections();
+      }),
+  );
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("No stub address");
+
+  await writeFile(
+    join(agentDirectory, "models.json"),
+    JSON.stringify({
+      providers: {
+        openai: {
+          api: "openai-completions",
+          apiKey: `!sh -c 'touch "${bangRan}" && printf local-stub'`,
+          baseUrl: `http://127.0.0.1:${address.port}/v1`,
+          models: [{ id: "stub-model", name: "stub-model" }],
+        },
+      },
+    }),
+  );
+  await writeFile(join(agentDirectory, "auth.json"), "{}");
+
+  const driver = new PiHarnessDriver({
+    connectMcpServer: async () => ({
+      callTool: async () => ({ content: [], isError: false }),
+      close: async () => undefined,
+      listTools: async () => [],
+    }),
+    executable: packagedPiExecutable(),
+    nodeExecutable: process.execPath,
+  });
+  const instanceId = createId("harnessInstance");
+  const adapter = await driver.create({ config: {}, instanceId, sourceId: "openai" });
+  cleanups.push(() => adapter.close());
+  const makeContext = async (own: boolean): Promise<HarnessSessionContext> => {
+    const threadId = createId("thread");
+    const threadStateDirectory = join(state, "threads", threadId);
+    await mkdir(threadStateDirectory, { recursive: true });
+    return {
+      accessMode: "approval-required",
+      agentTools: {
+        instructions: "",
+        skills: [],
+        token: "local-stub",
+        tools: [],
+        toolsRevision: "own-configuration",
+        url: "http://127.0.0.1:9/internal/v1/mcp",
+      },
+      commandEnvironment: {},
+      environment: {
+        HOME: home,
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        PI_OFFLINE: "1",
+        PI_TELEMETRY: "0",
+        TMPDIR: state,
+      },
+      environmentId: createId("environment"),
+      harnessInstanceId: instanceId,
+      history: [],
+      historyWindow: { byteCount: 2, hasEarlier: false, itemCount: 0 },
+      instructions: "OPENSTEER-INSTRUCTIONS-MARKER",
+      machineAccessNotice: "No other computers are reachable.",
+      machineAccessPlatform: undefined,
+      machineAccessRelaySocket: undefined,
+      modelSelection: ModelSelectionSchema.parse({
+        modelId: "stub-model",
+        options: {},
+        providerId: "openai",
+      }),
+      personalContext: true,
+      personLineage: own,
+      platformGuide: "",
+      providerState: {
+        continuationKey: root,
+        kind: "ambient",
+        privateStateRoot: state,
+        providerHomeDirectory: undefined,
+        store: { directory: agentDirectory, id: "own-configuration" },
+      },
+      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
+      signal: AbortSignal.timeout(120_000),
+      skills: { skills: [] },
+      threadId,
+      threadStateDirectory,
+      workspacePath: project,
+      wrapProcessLaunch: (launch) => launch,
+      writableRoots: [project],
+    };
+  };
+
+  // Others' task: refused before Pi starts; the ! command never runs.
+  const othersContext = await makeContext(false);
+  await expect(adapter.startSession(othersContext)).rejects.toMatchObject({
+    code: "forbidden",
+    message:
+      'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
+  });
+  expect(
+    await adapter.generateText!({
+      context: { ...othersContext, scratchDirectory: othersContext.threadStateDirectory },
+      modelSelection: othersContext.modelSelection,
+      prompt: "Name it",
+      signal: AbortSignal.timeout(30_000),
+    }),
+  ).toEqual({ ok: false, failure: "unavailable" });
+  expect(await exists(bangRan)).toBe(false);
+
+  // Non-vacuous control: the person's own task DOES run the ! command on real Pi.
+  const ownContext = await makeContext(true);
+  const session = await adapter.startSession(ownContext);
+  const events: HarnessEvent[] = [];
+  const observing = (async () => {
+    for await (const event of session.events) events.push(event);
+  })();
+  try {
+    await session.execute({
+      context: {
+        assignment: null,
+        startedAt: "2026-11-23T00:00:00.000Z",
+        threadState: { previousAssignment: null, previousRun: null },
+      },
+      environment: {},
+      inputs: [
+        {
+          author: { displayName: "Person", kind: "human", principalId: "person" },
+          content: [{ text: "Say done.", type: "text" }],
+          createdAt: new Date().toISOString(),
+          kind: "input",
+          messageId: createId("message"),
+        },
+      ],
+      reports: { messages: [], omittedCount: 0, throughSequence: null },
+      requestedBy: createId("user"),
+      runId: createId("run"),
+      signal: AbortSignal.timeout(120_000),
+    });
+  } finally {
+    await session.stop();
+    await observing;
+  }
+  expect(events.find((event) => event.type === "run.failed")).toBeUndefined();
+  expect(await exists(bangRan)).toBe(true);
+}, 120_000);

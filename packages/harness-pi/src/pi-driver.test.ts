@@ -2373,6 +2373,59 @@ describe("pi Thread naming", () => {
       await fixture.adapter.close();
     }
   });
+
+  it("refuses others' tasks and background text without spawning Pi when models.json or auth.json has a ! command", async () => {
+    const fixture = await setup({ scenario: "title" });
+    const ambientHome = await temporaryDirectory();
+    const ambientAgentDir = join(ambientHome, ".pi", "agent");
+    await mkdir(ambientAgentDir, { recursive: true });
+    await writeFile(
+      join(ambientAgentDir, "models.json"),
+      JSON.stringify({ providers: { corp: { apiKey: "!echo secret" } } }),
+    );
+    let spawned = false;
+    const ambientContext: HarnessSessionContext = {
+      ...fixture.context,
+      environment: { ...fixture.context.environment, HOME: ambientHome },
+      personalContext: true,
+      personLineage: false,
+      providerState: {
+        ...fixture.context.providerState,
+        kind: "ambient",
+        providerHomeDirectory: undefined,
+      },
+      wrapProcessLaunch: (launch: HarnessProcessLaunch) => {
+        spawned = true;
+        return launch;
+      },
+    };
+    try {
+      await expect(
+        piAgentDirectoryForOthersTasks({ HOME: ambientHome }, join(ambientHome, "others-dir")),
+      ).rejects.toThrow(
+        'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
+      );
+      await expect(fixture.adapter.startSession(ambientContext)).rejects.toMatchObject({
+        code: "forbidden",
+        message:
+          'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
+      });
+      expect(
+        await fixture.adapter.generateText!({
+          context: {
+            ...ambientContext,
+            scratchDirectory: ambientContext.threadStateDirectory,
+          },
+          modelSelection: ambientContext.modelSelection,
+          prompt: "Name it",
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toEqual({ ok: false, failure: "unavailable" });
+      expect(spawned).toBe(false);
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
 });
 
 it("delivers distinct full names for two plugins and a loose review skill", async () => {

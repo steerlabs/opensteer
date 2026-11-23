@@ -116,3 +116,111 @@ it("lets Codex run others' tasks only when an Opensteer home can share a file lo
     }),
   ).toThrow(/command/iu);
 });
+
+it("refuses Pi on others' tasks when models.json or auth.json contains a ! shell command", async () => {
+  const makePiHome = async (files: { readonly auth?: string; readonly models?: string }) => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-pi-check-"));
+    temporaryDirectories.push(root);
+    const agentDir = join(root, ".pi", "agent");
+    await mkdir(agentDir, { recursive: true });
+    if (files.auth !== undefined) await writeFile(join(agentDir, "auth.json"), files.auth);
+    if (files.models !== undefined) await writeFile(join(agentDir, "models.json"), files.models);
+    return { agentDir, root };
+  };
+
+  const clean = await makePiHome({
+    auth: JSON.stringify({ openai: { key: "sk-stub", type: "api_key" } }),
+    models: JSON.stringify({
+      providers: { openai: { apiKey: "sk-stub", headers: { "X-Team": "eng" } } },
+    }),
+  });
+  expect(() =>
+    assertEngineMayRun("pi", {
+      environment: { HOME: clean.root },
+      personalContext: true,
+      personLineage: false,
+      providerState: { kind: "ambient" },
+    }),
+  ).not.toThrow();
+
+  const withModelsCommand = await makePiHome({
+    models: JSON.stringify({
+      providers: {
+        corp: { apiKey: "!op read op://vault/key", baseUrl: "https://corp.invalid/v1" },
+      },
+    }),
+  });
+  const expectedSentence =
+    'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.';
+  expect(() =>
+    assertEngineMayRun("pi", {
+      environment: { HOME: withModelsCommand.root },
+      personalContext: true,
+      personLineage: false,
+      providerState: { kind: "ambient" },
+    }),
+  ).toThrow(expectedSentence);
+  // Own tasks still run with the person's Pi configuration.
+  expect(() =>
+    assertEngineMayRun("pi", {
+      environment: { HOME: withModelsCommand.root },
+      personalContext: true,
+      personLineage: true,
+      providerState: { kind: "ambient" },
+    }),
+  ).not.toThrow();
+
+  const withHeaderCommand = await makePiHome({
+    models: JSON.stringify({
+      providers: {
+        corp: {
+          apiKey: "literal",
+          headers: { Authorization: "!get-bearer-token" },
+        },
+      },
+    }),
+  });
+  expect(() =>
+    assertEngineMayRun("pi", {
+      environment: { PI_CODING_AGENT_DIR: withHeaderCommand.agentDir },
+      personalContext: true,
+      personLineage: false,
+      providerState: { kind: "ambient" },
+    }),
+  ).toThrow(expectedSentence);
+
+  const withAuthCommand = await makePiHome({
+    auth: JSON.stringify({
+      openai: { key: "!security find-generic-password -w", type: "api_key" },
+    }),
+  });
+  expect(() =>
+    assertEngineMayRun("pi", {
+      environment: { HOME: withAuthCommand.root },
+      personalContext: true,
+      personLineage: false,
+      providerState: { kind: "ambient" },
+    }),
+  ).toThrow(expectedSentence);
+
+  // Isolated Pi profiles already own their agent folder.
+  expect(() =>
+    assertEngineMayRun("pi", {
+      environment: { HOME: withAuthCommand.root },
+      personalContext: true,
+      personLineage: false,
+      providerState: { kind: "isolated" },
+    }),
+  ).not.toThrow();
+
+  // Unreadable/malformed JSON fails closed.
+  const withBrokenJson = await makePiHome({ models: "{not-json" });
+  expect(() =>
+    assertEngineMayRun("pi", {
+      environment: { HOME: withBrokenJson.root },
+      personalContext: true,
+      personLineage: false,
+      providerState: { kind: "ambient" },
+    }),
+  ).toThrow(/models\.json/u);
+});

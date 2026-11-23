@@ -1,5 +1,6 @@
 import { harnessCatalogEntry, OpensteerError } from "@opensteer/core";
 import { checkCodexOthersHome } from "./codex-config.js";
+import { checkPiOthersHome } from "./pi-config.js";
 
 /**
  * Whose configuration an engine starts with for one Run.
@@ -47,8 +48,6 @@ export function engineConfiguration(context: {
 const enginesShownWithoutThePersonsConfiguration: ReadonlySet<string> = new Set([
   // packages/harness-claude/src/own-configuration.engine.test.ts
   "claude",
-  // packages/harness-pi/src/own-configuration.engine.test.ts
-  "pi",
   // A Runner-owned home, its project configuration switched off.
   "opencode",
   // A Runner-owned `GEMINI_HOME`.
@@ -72,6 +71,13 @@ export function assertEngineMayRun(
   if (engineConfiguration(context) === "own") return;
   if (driverKind === "codex") {
     const check = checkCodexOthersHome(context);
+    if (!check.ok) {
+      throw new OpensteerError({ code: "forbidden", message: check.message });
+    }
+    return;
+  }
+  if (driverKind === "pi") {
+    const check = checkPiOthersHome(context);
     if (!check.ok) {
       throw new OpensteerError({ code: "forbidden", message: check.message });
     }

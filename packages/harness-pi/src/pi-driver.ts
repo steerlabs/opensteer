@@ -90,6 +90,8 @@ import {
   type HarnessSessionContext,
   type HarnessSteerInput,
   type ResolvedAttachment,
+  assertEngineMayRun,
+  checkPiOthersHome,
   engineConfiguration,
 } from "@opensteer/harness";
 import { z } from "zod";
@@ -513,6 +515,13 @@ class PiHarnessAdapter implements HarnessAdapter {
   }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
     if (context.runtimeBoundary.kind !== "native-user")
       return { ok: false, failure: "unavailable" };
+    if (context.providerState.kind !== "isolated") {
+      const piCheck = checkPiOthersHome({
+        environment: context.environment,
+        providerState: context.providerState,
+      });
+      if (!piCheck.ok) return { ok: false, failure: "unavailable" };
+    }
     return backgroundTextResult(signal, async () => {
       const processEnvironment = await piProcessEnvironment(
         context.environment,
@@ -569,6 +578,7 @@ class PiHarnessAdapter implements HarnessAdapter {
 
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
+    assertEngineMayRun("pi", context);
     assertFreshProviderSessionContext(context);
     // Pi names the session file, so the reference only exists once the process
     // has answered `get_state`.
@@ -580,6 +590,7 @@ class PiHarnessAdapter implements HarnessAdapter {
     context: HarnessSessionContext,
   ): Promise<HarnessSession> {
     this.#sessions.assertOpen();
+    assertEngineMayRun("pi", context);
     const reference = validateProviderReference(providerSessionReference);
     return this.#sessions.open(reference, () => this.#open(context, { reference, type: "resume" }));
   }
@@ -2092,6 +2103,10 @@ export async function piAgentDirectoryForOthersTasks(
   environment: Readonly<Record<string, string>>,
   directory: string,
 ): Promise<string> {
+  const check = checkPiOthersHome({ environment, providerState: { kind: "ambient" } });
+  if (!check.ok) {
+    throw new OpensteerError({ code: "forbidden", message: check.message });
+  }
   const theirs =
     environment.PI_CODING_AGENT_DIR?.trim() || join(environment.HOME ?? homedir(), ".pi", "agent");
   await rm(directory, { force: true, recursive: true });

@@ -12,6 +12,7 @@ export * from "./initial-context.js";
 export * from "./installed-engine.js";
 export * from "./engine-installation.js";
 export * from "./codex-config.js";
+export * from "./pi-config.js";
 export * from "./engine-configuration.js";
 export * from "./native-images.js";
 export * from "./labels.js";

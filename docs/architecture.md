@@ -285,19 +285,23 @@ and one sentence, for example: "Cursor starts with your own Cursor settings, so 
 you started yourself that no connected agent or chat has written to." The Home offers every engine
 to every task and does not refuse by engine itself, so the Runner refuses. Background text (task
 naming and Auto-mode review) always starts without the person's configuration on every engine,
-using the Opensteer-owned home on Codex (refusing as unavailable when no file login is present) and
-the others'-tasks folder on Pi.
+using the Opensteer-owned home on Codex (refusing as unavailable when no file login is present or
+the active provider runs a credential program) and the others'-tasks folder on Pi (refusing as
+unavailable when `models.json` or `auth.json` contains a `"!"` shell command).
 
 - **Claude Code** runs both. Its own task gets the person's settings, instructions, auto-memory,
   plugins, tools and MCP servers. Another's task loads no settings source, no auto-memory, no user
   plugins, only Opensteer's MCP server, and no web tools (`WebSearch`, `WebFetch`), and gates shell
   commands through Opensteer's hook (`packages/harness-claude/src/own-configuration.engine.test.ts`).
-- **Pi** runs both. Another's task starts with an agent folder of Opensteer's that links only the
-  person's `auth.json` and `models.json` (when present) and with an empty system prompt, so their
-  settings, command prefix, `SYSTEM.md`, `APPEND_SYSTEM.md`, `AGENTS.md`, prompts and the project's
-  `.pi` stay out, Pi keeps its own prompt, and the driver's extension enforces Supervised mode;
-  linking `models.json` preserves custom provider sign-in, including any `!`-prefixed credential
-  command the person put there (`packages/harness-pi/src/own-configuration.engine.test.ts`).
+- **Pi** runs both when its `models.json` and `auth.json` contain no `"!"`-prefixed shell command
+  values (or on an isolated profile). Another's task starts with an agent folder of Opensteer's
+  that links only the person's `auth.json` and `models.json` (when present) and with an empty
+  system prompt, so their settings, command prefix, `SYSTEM.md`, `APPEND_SYSTEM.md`, `AGENTS.md`,
+  prompts and the project's `.pi` stay out, Pi keeps its own prompt, and the driver's extension
+  enforces Supervised mode. If either file contains a `"!"` value (which Pi executes as a shell
+  command to fetch a credential) or cannot be parsed, `assertEngineMayRun` refuses others' tasks
+  with code `forbidden` and background text returns `unavailable` before spawning Pi
+  (`packages/harness-pi/src/own-configuration.engine.test.ts`).
 - **Codex** runs both when the person's sign-in is in a file (`auth.json`, Codex's default) or on
   an isolated profile. Its own task runs from the person's Codex home with their rules, `notify`,
   instructions and MCP servers. Another's task runs from an Opensteer-owned `CODEX_HOME` that holds
