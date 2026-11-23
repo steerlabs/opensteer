@@ -1461,7 +1461,7 @@ describe("mobile pages", () => {
     );
     await settle();
     expect(container.textContent).toContain("Waking this tab…");
-    expect(container.textContent).toContain(firstPage.url);
+    expect(container.textContent?.replace(/[\u2060\u200B]/gu, "")).toContain(firstPage.url);
     expect(container.textContent).not.toContain("Opening…");
   });
 

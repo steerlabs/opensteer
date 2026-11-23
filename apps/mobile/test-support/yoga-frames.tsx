@@ -696,10 +696,11 @@ export function inside(inner: Rect, outer: Rect): boolean {
  * inside a text are part of it), the shortest that holds them.
  */
 export function textElement(container: Element, words: string): Element {
+  const needle = drawnText(words);
   const boxes = [...container.querySelectorAll('[data-rn="Text"]')].filter(
     (element) =>
       element.parentElement?.closest('[data-rn="Text"]') === null &&
-      drawnText(element.textContent ?? "").includes(words),
+      drawnText(element.textContent ?? "").includes(needle),
   );
   const found = boxes.sort(
     (a, b) => drawnText(a.textContent ?? "").length - drawnText(b.textContent ?? "").length,
