@@ -82,4 +82,60 @@ describeStore("the page-bind gate", (it) => {
       await app.close();
     }
   });
+
+  it("refuses binding once the Run's task is removed", async ({ storeFixture }) => {
+    const f = await storeFixture.startRunFixture("page-bind-removed-task");
+    const { database, store } = storeFixture;
+    await database
+      .updateTable("threads")
+      .set({ accessMode: "full-access" })
+      .where("id", "=", f.threadId)
+      .execute();
+    await database
+      .updateTable("runs")
+      .set({ accessMode: "full-access" })
+      .where("id", "=", f.run.id)
+      .execute();
+    const claims = {
+      runId: f.run.id,
+      requestedBy: f.userId,
+      threadId: f.threadId,
+      environmentId: f.environmentId,
+    } as RunToolScope;
+    const binding = {
+      tabId: BrowserSurfaceIdSchema.parse("tab"),
+      sessionId: createBrowserSessionId(),
+      backend: "cdp" as const,
+      reloaded: false,
+    };
+    const pages = { requireOpenPage: vi.fn(async () => binding) };
+    const app = Fastify();
+    registerAgentPageBindingRoute(
+      app,
+      { authenticate: async () => claims, reauthorize: async () => claims },
+      pages,
+      { authenticate: async () => ({ kind: "run" }) as RunCaller },
+      (scope) => runBrowserCapability(store, scope),
+    );
+    const bind = () =>
+      app.inject({
+        method: "POST",
+        url: "/internal/v1/browser-agent/pages/bind",
+        headers: { authorization: "Bearer run-token-123456789012345" },
+        payload: { tabId: "tab" },
+      });
+    try {
+      expect((await bind()).json()).toEqual(binding);
+      await database
+        .updateTable("threads")
+        .set({ removedAt: new Date() })
+        .where("id", "=", f.threadId)
+        .execute();
+      const refused = await bind();
+      expect(refused.statusCode).toBe(403);
+      expect(pages.requireOpenPage).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
 });

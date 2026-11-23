@@ -1,11 +1,15 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { WorkHomeMarkerSchema } from "@opensteer/control-plane-protocol";
 import { createId } from "@opensteer/core";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
-import { expect } from "vitest";
+import pg from "pg";
+import { expect, vi } from "vitest";
+import { AgentConnectionStore } from "./agent-connection-store.js";
 import { OpensteerStore } from "./store.js";
 import { describeStore, pendingEvent } from "./store.integration.test-support.js";
+import { WorkHomeStore } from "./work-home.js";
 
 // Classification remains held back: expiry itself must refuse renewal, events
 // and tools. An ordinary refused event must not consume its Runner ordinal;
@@ -165,5 +169,262 @@ describeStore("execution lease clock", (it) => {
       ) + "\n",
     );
     console.info(`Expired execution authority evidence: ${directory}`);
+  });
+
+  it("checks native personal Run authority in one statement and enforces grant, owner, runner, delegation, connection and Work Home refusals", async ({
+    storeFixture: { startRunFixture, store, database },
+  }) => {
+    const f = await startRunFixture("single-statement-grant-authority");
+    const grant = await database
+      .selectFrom("grants")
+      .select("id")
+      .where("runId", "=", f.run.id)
+      .executeTakeFirstOrThrow();
+    const authority = {
+      bindingGeneration: f.bindingGeneration,
+      environmentId: f.environmentId,
+      grantId: grant.id,
+      requestedBy: f.userId,
+      runId: f.run.id,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      threadId: f.threadId,
+    };
+
+    const sqlStatements: string[] = [];
+    const prototype: { query(...args: unknown[]): unknown } = pg.Client.prototype;
+    const originalQuery = prototype.query;
+    const spy = vi.spyOn(prototype, "query").mockImplementation(function (
+      this: pg.Client,
+      ...args: unknown[]
+    ) {
+      const first = args[0];
+      sqlStatements.push(
+        typeof first === "string"
+          ? first
+          : first && typeof first === "object" && "text" in first && typeof first.text === "string"
+            ? first.text
+            : "<unknown>",
+      );
+      return Reflect.apply(originalQuery, this, args);
+    });
+    try {
+      await expect(store.assertActiveGrant(authority)).resolves.toEqual({
+        agentConnectionId: null,
+        taskOriginConnectionId: null,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sqlStatements).toHaveLength(1);
+    expect(
+      sqlStatements.some((statement) => /work_home_policy|organization/u.test(statement)),
+    ).toBe(false);
+
+    // Wrong grantId and revoked grant both refuse with "Run tool authority has ended".
+    await expect(
+      store.assertActiveGrant({ ...authority, grantId: createId("grant") }),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Run tool authority has ended",
+    });
+    await database
+      .updateTable("grants")
+      .set({ status: "revoked" })
+      .where("id", "=", grant.id)
+      .execute();
+    await expect(store.assertActiveGrant(authority)).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Run tool authority has ended",
+    });
+    await database
+      .updateTable("grants")
+      .set({ status: "active" })
+      .where("id", "=", grant.id)
+      .execute();
+
+    // Ambiguous active grants sharing the same Run and binding generation refuse when grantId is omitted.
+    const { grantId: _omittedGrantId, ...withoutGrantId } = authority;
+    await expect(store.assertActiveGrant(withoutGrantId)).resolves.toEqual({
+      agentConnectionId: null,
+      taskOriginConnectionId: null,
+    });
+    const duplicateGrantId = createId("grant");
+    const existingGrant = await database
+      .selectFrom("grants")
+      .select(["attemptId"])
+      .where("id", "=", grant.id)
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto("grants")
+      .values({
+        id: duplicateGrantId,
+        runId: f.run.id,
+        attemptId: existingGrant.attemptId,
+        bindingGeneration: authority.bindingGeneration,
+        runnerId: f.runnerId,
+        runnerBootId: `rbt_${crypto.randomUUID()}`,
+        status: "active",
+      })
+      .execute();
+    await expect(store.assertActiveGrant(withoutGrantId)).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Run tool authority has ended",
+    });
+    await database.deleteFrom("grants").where("id", "=", duplicateGrantId).execute();
+
+    // Disabled owner refuses binding.
+    await database
+      .updateTable("users")
+      .set({ disabledAt: new Date() })
+      .where("id", "=", f.userId)
+      .execute();
+    await expect(store.assertActiveGrant(authority)).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Execution capability came from a stale or invalid binding",
+    });
+    await database
+      .updateTable("users")
+      .set({ disabledAt: null })
+      .where("id", "=", f.userId)
+      .execute();
+
+    // Revoked runner refuses binding.
+    await database
+      .updateTable("runners")
+      .set({ revokedAt: new Date() })
+      .where("id", "=", f.runnerId)
+      .execute();
+    await expect(store.assertActiveGrant(authority)).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Execution capability came from a stale or invalid binding",
+    });
+    await database
+      .updateTable("runners")
+      .set({ revokedAt: null })
+      .where("id", "=", f.runnerId)
+      .execute();
+
+    // Cancelled delegation ancestor refuses tool authority.
+    const assignmentId = createId("delegation");
+    const parent = await startRunFixture("single-statement-grant-parent");
+    await database
+      .insertInto("delegations")
+      .values({
+        id: assignmentId,
+        childRunId: f.run.id,
+        childThreadId: f.threadId,
+        initialInputMessageId: f.turn.message.id,
+        objective: "Delegated work",
+        origin: "run",
+        parentAssignmentId: null,
+        parentRunId: parent.run.id,
+        parentThreadId: parent.threadId,
+        parentOccurrenceId: null,
+        parentWatchActivationId: null,
+        status: "cancelled",
+        revision: 1,
+        resultStatus: "pending",
+        resultText: null,
+        finishedAt: null,
+        completedAt: null,
+        replyTarget: null,
+        resultAttemptedAt: null,
+        resultMessageId: null,
+        resultReason: null,
+      })
+      .execute();
+    await database.updateTable("runs").set({ assignmentId }).where("id", "=", f.run.id).execute();
+    await expect(store.assertActiveGrant(authority)).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Run tool authority has ended",
+    });
+    await database
+      .updateTable("runs")
+      .set({ assignmentId: null })
+      .where("id", "=", f.run.id)
+      .execute();
+
+    // Connected-agent Run enforces live connection and grant revision / mode.
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: f.userId,
+      label: "Connected Agent",
+      clientName: "Connected Agent",
+      accessMode: "auto",
+      resource: "https://example.test/mcp",
+      expiresAt: new Date(Date.now() + 60 * 60 * 1_000),
+    });
+    await database
+      .updateTable("agentConnections")
+      .set({ tokenHash: "hash-for-live-connection" })
+      .where("id", "=", connection.id)
+      .execute();
+    await database
+      .updateTable("runs")
+      .set({
+        connectionId: connection.id,
+        admittedGrantRevision: connection.grantRevision,
+        admittedAccessMode: "auto",
+      })
+      .where("id", "=", f.run.id)
+      .execute();
+    await expect(store.assertActiveGrant(authority)).resolves.toEqual({
+      agentConnectionId: connection.id,
+      taskOriginConnectionId: null,
+    });
+    await database
+      .updateTable("agentConnections")
+      .set({ cleanupMinimumGrantRevision: (connection.grantRevision ?? 1) + 1 })
+      .where("id", "=", connection.id)
+      .execute();
+    await expect(store.assertActiveGrant(authority)).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Execution capability came from a stale or invalid binding",
+    });
+    await database
+      .updateTable("agentConnections")
+      .set({ cleanupMinimumGrantRevision: null, revokedAt: new Date() })
+      .where("id", "=", connection.id)
+      .execute();
+    await expect(store.assertActiveGrant(authority)).rejects.toMatchObject({
+      code: "forbidden",
+      message:
+        "This connected agent's access ended. The person can reconnect it from Connected agents.",
+    });
+    await database
+      .updateTable("runs")
+      .set({ connectionId: null, admittedGrantRevision: null, admittedAccessMode: null })
+      .where("id", "=", f.run.id)
+      .execute();
+
+    // Work Home offboarding refuses authority once the database is marked as a Work Home.
+    const deployment = await database
+      .selectFrom("deployments")
+      .select("id")
+      .where("singletonKey", "=", "primary")
+      .executeTakeFirstOrThrow();
+    const workHome = new WorkHomeStore(database);
+    await workHome.initialize(
+      WorkHomeMarkerSchema.parse({
+        organizationId: "org_00000000-0000-4000-8000-000000000001",
+        assignmentId: "was_00000000-0000-4000-8000-000000000001",
+        organizationName: "Test Org",
+      }),
+      deployment.id,
+    );
+    await expect(store.assertActiveGrant(authority)).resolves.toEqual({
+      agentConnectionId: null,
+      taskOriginConnectionId: null,
+    });
+    await database
+      .updateTable("workHomePolicy")
+      .set({ state: "offboarding" })
+      .where("singleton", "=", true)
+      .execute();
+    await expect(store.assertActiveGrant(authority)).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Execution capability came from a stale or invalid binding",
+    });
   });
 });

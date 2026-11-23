@@ -67,9 +67,12 @@ function fixture(grant?: AgentGrant) {
     total: 0,
     nextCursor: null,
   }));
+  const settingsHandler = vi.fn(async (_call: ToolCall<"browser_profile_update">) => ({
+    ok: true as const,
+  }));
   const service = new OpensteerMcpService({
     callers,
-    handlers: { computer_apps: handler },
+    handlers: { computer_apps: handler, browser_profile_update: settingsHandler },
     store: {
       getThreadForOwner: async () => thread,
       threadOrigins: async () => new Map(),
@@ -158,12 +161,17 @@ function fixture(grant?: AgentGrant) {
     caller,
     service,
     handler,
+    settingsHandler,
     activity,
     saved,
     call,
     stop: () => {
       live = false;
       changed?.();
+    },
+    /** A task access-mode edit committed: the next authentication sees the lowered mode. */
+    setAccessMode: (next: Thread["accessMode"]) => {
+      caller = { ...caller, accessMode: next, thread: { ...caller.thread, accessMode: next } };
     },
     /** A grant edit committed: the next authentication sees the new revision. */
     regrant: (next: AgentGrant) => {
@@ -367,3 +375,33 @@ it.each([
     expect(f.handler).toHaveBeenCalledTimes(1);
   },
 );
+
+it("re-authenticates a native Run after activity.start so a mode lowered during that await refuses settings tools", async () => {
+  const f = fixture();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const baseStart = f.activity.start.getMockImplementation()!;
+  f.activity.start.mockImplementationOnce(async (...args) => {
+    entered.resolve();
+    await release.promise;
+    return baseStart(...args);
+  });
+  const pending = f.call({
+    callId: crypto.randomUUID(),
+    name: "browser_profile_update",
+    input: { profileId: createId("browserProfile"), name: "Renamed" },
+  });
+  await withTimeout(entered.promise, 1_000, {
+    timeoutError: () => new Error("activity.start did not begin"),
+  });
+  f.setAccessMode("approval-required");
+  release.resolve();
+  const response = (await pending).json();
+  expect(response).toMatchObject({
+    isError: true,
+    structuredContent: {
+      error: { code: "access_denied", message: "Changing settings requires full-access" },
+    },
+  });
+  expect(f.settingsHandler).not.toHaveBeenCalled();
+});
