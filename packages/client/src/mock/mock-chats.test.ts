@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { mutationIdempotencyKey } from "../host/index.js";
+import { defaultThreadPlacement } from "../host/thread-placement.js";
 import { MockHostClient } from "./mock-host-client.js";
 import { mockConnectedAgents } from "./mock-connected-agents.js";
 
@@ -225,6 +226,140 @@ describe("the chats preview", () => {
         message:
           "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging.",
       });
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("cleans outside names at every MockHostClient entrance matching the Home", async () => {
+    const dirty = "Work\u202E\n👩\u200D💻 می\u200Cخواهم";
+    const cleaned = "Work 👩\u200D💻 می\u200Cخواهم";
+    const client = new MockHostClient({
+      latencyMs: 0,
+      ...mockConnectedAgents("chats-empty"),
+      messagingProvider: {
+        inspect: () => ({
+          ready: true,
+          capabilities: [],
+          issues: [],
+          identity: {
+            connectionDisplayName: dirty,
+            accountDisplayName: dirty,
+            externalAccountId: "T-DIRTY",
+            externalIdentityId: "U-DIRTY",
+            handle: dirty,
+            metadata: {},
+          },
+        }),
+      },
+    });
+    try {
+      const snapshot = client.getSnapshot();
+      const placement = defaultThreadPlacement(snapshot.environments, snapshot.harnesses)!;
+      const created = await client.createThread({
+        accessMode: "approval-required",
+        environmentId: placement.environmentId,
+        harnessInstanceId: placement.harnessInstanceId,
+        modelSelection: placement.modelSelection,
+        title: dirty,
+      });
+      expect(created.title).toBe(cleaned);
+
+      const renamed = await client.renameThread(created.id, `Next\u202E\n${cleaned}`);
+      expect(renamed.title).toBe(`Next ${cleaned}`);
+
+      const profileResult = await client.dispatch({
+        type: "browser.profile.create",
+        idempotencyKey: mutationIdempotencyKey("dirty-profile"),
+        input: { name: dirty },
+      });
+      if (profileResult.type !== "browser.profile.create") throw new Error("Profile mismatch");
+      expect(profileResult.profile.name).toBe(cleaned);
+
+      const channel = await client.dispatch({
+        type: "channel.connection.create",
+        provider: "slack",
+        credentials: { botToken: "xoxb-test", appToken: "xapp-test" },
+        routingMode: "dedicated",
+        idempotencyKey: mutationIdempotencyKey("dirty-channel"),
+      });
+      if (channel.type !== "channel.connection.create") throw new Error("Channel mismatch");
+      expect(channel.connection.displayName).toBe(cleaned);
+      expect(channel.account.displayName).toBe(cleaned);
+      expect(channel.account.handle).toBe(cleaned);
+
+      const machine = snapshot.machines[0]!;
+      await client.dispatch({
+        type: "machine.rename",
+        machineId: machine.id,
+        name: dirty,
+        idempotencyKey: mutationIdempotencyKey("dirty-machine"),
+      });
+      expect(client.getSnapshot().machines.find(({ id }) => id === machine.id)?.name).toBe(cleaned);
+
+      const localEnroll = await client.dispatch({
+        type: "runner.enrollment.createLocal",
+        allowedModules: ["browser"],
+        name: dirty,
+        idempotencyKey: mutationIdempotencyKey("dirty-local"),
+      });
+      if (localEnroll.type !== "runner.enrollment.createLocal") throw new Error("Local mismatch");
+      expect(
+        client.getSnapshot().machines.find(({ id }) => id === localEnroll.enrollmentId)?.name,
+      ).toBe(cleaned);
+
+      const phoneEnroll = await client.dispatch({
+        type: "runner.enrollment.createPhone",
+        name: dirty,
+        profile: "iphone",
+        idempotencyKey: mutationIdempotencyKey("dirty-phone"),
+      });
+      if (phoneEnroll.type !== "runner.enrollment.createPhone") throw new Error("Phone mismatch");
+      expect(
+        client.getSnapshot().machines.find(({ id }) => id === phoneEnroll.enrollmentId)?.name,
+      ).toBe(cleaned);
+
+      const renamedHarness = await client.dispatch({
+        type: "harness.rename",
+        environmentId: placement.environmentId,
+        harnessInstanceId: placement.harnessInstanceId,
+        name: dirty,
+        idempotencyKey: mutationIdempotencyKey("dirty-harness"),
+      });
+      if (renamedHarness.type !== "harness.rename") throw new Error("Harness mismatch");
+      expect(renamedHarness.harness.name).toBe(cleaned);
+
+      const trigCreated = await client.dispatch({
+        type: "trigger.create",
+        idempotencyKey: mutationIdempotencyKey("dirty-trig-cmd"),
+        input: {
+          anchorThreadId: created.id,
+          name: dirty,
+          program: {
+            language: "javascript",
+            source: "export default async () => null",
+            toolContractVersion: 5,
+          },
+          source: {
+            kind: "schedule",
+            schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+          },
+        },
+      });
+      if (trigCreated.type !== "trigger.create") throw new Error("Trigger mismatch");
+      expect(trigCreated.trigger.name).toBe(cleaned);
+
+      const trigUpdated = await client.dispatch({
+        type: "trigger.update",
+        idempotencyKey: mutationIdempotencyKey("dirty-trig-upd"),
+        triggerId: trigCreated.trigger.id,
+        input: {
+          expectedRevisionId: trigCreated.revision.id,
+          name: `Updated\u202E\n${cleaned}`,
+        },
+      });
+      if (trigUpdated.type !== "trigger.update") throw new Error("Trigger update mismatch");
+      expect(trigUpdated.trigger.name).toBe(`Updated ${cleaned}`);
     } finally {
       client.dispose();
     }

@@ -5228,7 +5228,7 @@ export class MockHostClient implements HostClient {
     const result = await this.dispatch({
       type: "thread.create",
       ...input,
-      title: input.title?.trim() || "New task",
+      title: (input.title ? outsideName(input.title, 240) : "") || "New task",
       idempotencyKey: input.idempotencyKey ?? crypto.randomUUID(),
     });
     if (result.type !== "thread.create") throw new Error("Thread result mismatch.");
@@ -5241,7 +5241,7 @@ export class MockHostClient implements HostClient {
     const result = await this.dispatch({
       type: "thread.rename",
       threadId,
-      title: ThreadTitleSchema.parse(title),
+      title: outsideName(ThreadTitleSchema.parse(title), 240) || "Task",
       idempotencyKey: `mock-thread-rename:${crypto.randomUUID()}`,
     });
     if (result.type !== "thread.rename") throw new Error("Thread command mismatch.");
@@ -5980,7 +5980,10 @@ class MockHostState {
     };
     switch (command.type) {
       case "app.rename":
-        return { type: command.type, app: put({ ...app, name: command.name, updatedAt: at }) };
+        return {
+          type: command.type,
+          app: put({ ...app, name: outsideName(command.name, 160) || "App", updatedAt: at }),
+        };
       case "app.start":
       case "app.stop": {
         if (!app.server)
@@ -9127,7 +9130,7 @@ class MockHostState {
         candidate.id === harnessInstanceId && candidate.environmentId === environmentId,
     );
     if (!current) throw new Error("AI engine not found.");
-    const harness = { ...current, name };
+    const harness = { ...current, name: outsideName(name, 120) || current.name };
     this.update({
       ...this.snapshot,
       harnesses: this.snapshot.harnesses.map((candidate) =>
@@ -9298,7 +9301,7 @@ class MockHostState {
       currentRevisionId: revision.id,
       id: triggerId,
       kind: input.source.kind,
-      name: input.name,
+      name: outsideName(input.name, 160) || "Automation",
       nextFireAt: triggerNextFireAt(input.source, now),
       pauseReason: null,
       status: "active",
@@ -9373,7 +9376,10 @@ class MockHostState {
         ? {}
         : { consecutiveFailures: 0 }),
       currentRevisionId: revision.id,
-      name: input.name ?? record.trigger.name,
+      name:
+        input.name === undefined
+          ? record.trigger.name
+          : outsideName(input.name, 160) || record.trigger.name,
       nextFireAt:
         input.source === undefined
           ? record.trigger.nextFireAt
@@ -10836,6 +10842,7 @@ class MockHostState {
     access?: import("@opensteer/protocol").DeviceInitialAccess,
     preparedIdentity?: import("@opensteer/protocol").DevicePreparedIdentity,
   ) {
+    const cleanedName = outsideName(name, 120) || "Computer";
     const expiresAt = new Date(this.now().getTime() + 10 * 60_000).toISOString();
     const enrollmentId = `ren_${crypto.randomUUID()}`;
     if (preparedIdentity) this.preparedLocalRunners.set(enrollmentId, preparedIdentity.runnerId);
@@ -10879,7 +10886,7 @@ class MockHostState {
             messaging: { checkedAt: null, detail: null, readiness: "unavailable" },
             shell: { checkedAt: null, detail: null, readiness: "unavailable" },
           },
-          name,
+          name: cleanedName,
           ownership: "mine",
 
           revocable: false,
@@ -11008,10 +11015,11 @@ class MockHostState {
   }
 
   async renameMachine(machineId: string, name: string): Promise<void> {
+    const cleanedName = outsideName(name, 120) || "Computer";
     this.update({
       ...this.snapshot,
       machines: this.snapshot.machines.map((machine) =>
-        machine.id === machineId ? { ...machine, name } : machine,
+        machine.id === machineId ? { ...machine, name: cleanedName } : machine,
       ),
     });
   }
@@ -11053,10 +11061,11 @@ class MockHostState {
     idempotencyKey: string,
     access?: import("@opensteer/protocol").DeviceInitialAccess,
   ) {
+    const cleanedName = outsideName(name, 120) || "Computer";
     const existing = this.phoneEnrollments.get(idempotencyKey);
     if (existing) {
       if (
-        existing.name !== name ||
+        existing.name !== cleanedName ||
         existing.profile !== (profile ?? null) ||
         JSON.stringify(existing.access) !== JSON.stringify(access)
       )
@@ -11103,7 +11112,7 @@ class MockHostState {
             browser: { checkedAt: null, detail: null, readiness: "unavailable" },
             integrations: { checkedAt: null, detail: null, readiness: "unavailable" },
           },
-          name,
+          name: cleanedName,
           ownership: "mine",
 
           revocable: false,
@@ -11118,7 +11127,12 @@ class MockHostState {
       pairing: mockAgentPhonePairingTarget,
       token: `mock-phone-runner-enrollment-token-${enrollmentId}`,
     };
-    this.phoneEnrollments.set(idempotencyKey, { name, profile: profile ?? null, result, access });
+    this.phoneEnrollments.set(idempotencyKey, {
+      name: cleanedName,
+      profile: profile ?? null,
+      result,
+      access,
+    });
     return result;
   }
 
@@ -11416,7 +11430,7 @@ class MockHostState {
       capabilities: [...inspection.capabilities],
       connectionMethod: "bring-your-own",
       createdAt: now,
-      displayName: identity.connectionDisplayName,
+      displayName: outsideName(identity.connectionDisplayName, 160) || manifest.label,
       externalIdentityId: identity.externalIdentityId,
       externalTenantId: identity.externalAccountId,
       id: connectionId,
@@ -11431,9 +11445,12 @@ class MockHostState {
     const account = {
       connectionId,
       createdAt: now,
-      displayName: identity.accountDisplayName,
+      displayName:
+        outsideName(identity.accountDisplayName, 160) ||
+        outsideName(identity.externalAccountId, 160) ||
+        "Account",
       externalAccountId: identity.externalAccountId,
-      handle: identity.handle,
+      handle: identity.handle ? outsideName(identity.handle, 160) || null : null,
       id: `cha_${crypto.randomUUID()}`,
       metadata: identity.metadata,
       provider: manifest.provider,
@@ -11773,7 +11790,11 @@ class MockHostState {
         status: 409,
         message: "Choose a computer for this browser profile.",
       });
-    const profile = { homeRunnerId: home, id: createId("browserProfile"), name };
+    const profile = {
+      homeRunnerId: home,
+      id: createId("browserProfile"),
+      name: outsideName(name, 120) || "Browser profile",
+    };
     this.update({ ...this.snapshot, browserProfiles: [...this.snapshot.browserProfiles, profile] });
     return profile;
   }
@@ -11831,7 +11852,9 @@ class MockHostState {
     const thread = this.snapshot.threads.find((thread) => thread.id === threadId);
     if (!thread) throw new Error("Task not found.");
     this.#provisionalTitles.delete(threadId);
-    this.publishThreadName(thread, { title: ThreadTitleSchema.parse(title) });
+    this.publishThreadName(thread, {
+      title: outsideName(ThreadTitleSchema.parse(title), 240) || "Task",
+    });
     return this.snapshot.threads.find((thread) => thread.id === threadId)!;
   }
   setThreadIcon(threadId: string, icon: IconName | null): ThreadSummary {
@@ -11870,7 +11893,7 @@ class MockHostState {
     if (last?.data.tabId === tabId) return;
     const event = PlaceEnteredEventViewSchema.parse({
       createdAt: this.now().toISOString(),
-      data: { tabId, title: data.title, site: data.site },
+      data: { tabId, title: outsideName(data.title, 1024), site: data.site },
       environmentId: thread.environmentId,
       eventId: createId("event"),
       runId,
@@ -12013,7 +12036,7 @@ class MockHostState {
       pendingRequests: 0,
       purpose: "task",
       status: "idle",
-      title: input.title?.trim() || "New task",
+      title: (input.title ? outsideName(input.title, 240) : "") || "New task",
       icon: null,
       color: this.allocateMarkColor("thread"),
       unread: false,
