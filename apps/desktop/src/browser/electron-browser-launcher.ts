@@ -3127,7 +3127,7 @@ class ElectronDebuggerHub {
     await this.#serializeOwnership(async () => {
       await this.#leaveCast(channel, generation).catch(() => undefined);
       // A cast it stopped and might have asked for again: it will not now.
-      for (const cast of [...this.#casts])
+      for (const cast of this.#casts)
         if (cast.parked?.by === channel)
           await this.#endCast(cast, generation).catch(() => undefined);
       this.#handed.delete(channel);
@@ -3524,7 +3524,7 @@ class ElectronDebuggerHub {
 
   /** Every cast someone other than `channel` parked ends: someone's needs have changed. */
   async #endParkedCasts(generation: number, keep?: ElectronCdpChannel): Promise<void> {
-    for (const cast of [...this.#casts])
+    for (const cast of this.#casts)
       if (cast.parked && cast.parked.by !== keep) await this.#endCast(cast, generation);
   }
 
