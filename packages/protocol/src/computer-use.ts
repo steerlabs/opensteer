@@ -591,7 +591,7 @@ export type MachineComputerUse = z.infer<typeof MachineComputerUseSchema>;
  * Unix socket framed by a 4-byte big-endian length. The Swift side reads these
  * names and fields as its own contract, so this file decides them.
  */
-export const computerUseHelperProtocolVersion = 10;
+export const computerUseHelperProtocolVersion = 11;
 export const computerUseHelperMaxFrameBytes = 4 * 1_024 * 1_024;
 
 export const ComputerUseHelperMethodSchema = z.enum([
@@ -628,6 +628,7 @@ export const ComputerUseHelperMethodSchema = z.enum([
   "imessage.account",
   "imessage.poll",
   "imessage.send",
+  "helper.exit",
 ]);
 export type ComputerUseHelperMethod = z.infer<typeof ComputerUseHelperMethodSchema>;
 
@@ -667,6 +668,14 @@ export const ComputerUseHelloResultSchema = z.strictObject({
     .object({ windowLocation: z.boolean(), windowGroups: z.boolean().optional() })
     .optional(),
 });
+
+/**
+ * `helper.exit`, which this app sends as it quits: the helper ends this
+ * connection as if it had dropped, then exits unless another Opensteer app on
+ * this Mac still holds a connection to it. Desktop main's own business, like
+ * `hello`: no Runner can send it. New in protocol 11.
+ */
+export const ComputerUseHelperExitResultSchema = z.strictObject({ exiting: z.boolean() });
 
 export const ComputerUsePermissionsResultSchema = z.strictObject({
   /** Desktop bridge advertisement derived from its authenticated helper handshake. */
@@ -1166,6 +1175,7 @@ export const computerUseHelperResults = {
   "session.bindExisting": ComputerUseBindResultSchema,
   "session.observe": ComputerUseObservationResultSchema,
   "session.open": ComputerUseSessionOpenResultSchema,
+  "helper.exit": ComputerUseHelperExitResultSchema,
 } satisfies Readonly<Record<ComputerUseHelperMethod, z.ZodType>>;
 
 export const ComputerUseHelperResponseSchema = z.strictObject({
@@ -1237,8 +1247,8 @@ function helperFrameFits(value: unknown): boolean {
 /**
  * The bridge protocol: the Runner's `integrations` handler to desktop main,
  * over a loopback WebSocket minted per slot. It carries the helper's methods
- * minus the handshake, which is desktop main's business with the helper and
- * never a Runner's.
+ * minus the handshake and `helper.exit`, which are desktop main's business
+ * with the helper and never a Runner's.
  *
  * Authentication is `Authorization: Bearer <token>` on the upgrade. The token
  * is minted per slot and never enters the Runner's environment: desktop main
@@ -1260,7 +1270,7 @@ export const ComputerUseBridgeTokenSchema = z.string().min(32).max(4_096);
  */
 
 export const ComputerUseBridgeMethodSchema = z.enum([
-  ...ComputerUseHelperMethodSchema.exclude(["hello"]).options,
+  ...ComputerUseHelperMethodSchema.exclude(["hello", "helper.exit"]).options,
   "passwords.control",
   "passwords.capabilities",
   ...iphoneRunnerMethodSchema.options,

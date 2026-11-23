@@ -89,6 +89,21 @@ function outOfTime(): ComputerUseHelperFailure {
   return new ComputerUseHelperFailure("failed", computerUseOutOfTimeSentence);
 }
 
+/** No helper holds the socket, so there is nothing to ask; it is never launched for this. */
+class HelperNotRunning extends Error {
+  constructor() {
+    super("The Computer use helper is not running.");
+    this.name = "HelperNotRunning";
+  }
+}
+
+/**
+ * What asking the helper to exit came to: it is going, it stays because
+ * another Opensteer app on this Mac still holds a connection to it, or there
+ * was no helper running to ask.
+ */
+export type ComputerUseHelperExit = "exiting" | "staying" | "not-running";
+
 /** A helper that cannot speak this app's protocol, said for whichever side is older. */
 function incompatibleHelper(helperProtocolVersion: number): ComputerUseHelperFailure {
   return new ComputerUseHelperFailure(
@@ -476,6 +491,32 @@ export class ComputerUseHelperClient {
     }
   }
 
+  /**
+   * Asks the helper to exit because this app is quitting. It ends this
+   * connection's sessions exactly as a dropped connection does, and exits
+   * unless another Opensteer app still holds a connection to it.
+   *
+   * It never launches a helper to ask it: with nothing on the socket there is
+   * nothing to stop. The caller bounds the wait; this method adds none of its
+   * own beyond `deadline`.
+   */
+  async requestExit(deadline: number): Promise<ComputerUseHelperExit> {
+    if (this.#closed) return "not-running";
+    let connection: HelperConnection;
+    try {
+      connection = await this.#connect(deadline, false);
+    } catch (error) {
+      if (error instanceof HelperNotRunning) return "not-running";
+      throw error;
+    }
+    const answer = await untilComputerUseDeadline(
+      this.#send(connection, "helper.exit", {}, { at: deadline }),
+      deadline,
+      this.#now,
+    );
+    return (answer as ComputerUseHelperResult<"helper.exit">).exiting ? "exiting" : "staying";
+  }
+
   /** The permissions the last handshake reported, without asking again. */
   async handshake(deadline: number = this.#defaultDeadline()): Promise<{
     readonly helperVersion: string;
@@ -518,7 +559,8 @@ export class ComputerUseHelperClient {
     await Promise.all(Array.from(sockets, (socket) => destroySignedHelperSocket(socket)));
   }
 
-  async #connect(deadline: number): Promise<HelperConnection> {
+  /** `launch` false never starts a helper: an absent one is `HelperNotRunning`. */
+  async #connect(deadline: number, launch = true): Promise<HelperConnection> {
     if (deadline - this.#now() <= 0) throw outOfTime();
     let attempt = this.#connection;
     if (attempt) {
@@ -527,7 +569,7 @@ export class ComputerUseHelperClient {
       }
     } else {
       const due = { at: deadline };
-      const established = this.#establish(due);
+      const established = this.#establish(due, launch);
       attempt = established;
       this.#connection = established;
       this.#establishing = due;
@@ -554,7 +596,7 @@ export class ComputerUseHelperClient {
     throw outOfTime();
   }
 
-  async #establish(due: ComputerUseDeadline): Promise<HelperConnection> {
+  async #establish(due: ComputerUseDeadline, launch: boolean): Promise<HelperConnection> {
     const generation = this.#generation;
     const backoff = reconnectBackoffMs[Math.min(this.#attempt, reconnectBackoffMs.length - 1)] ?? 0;
     if (backoff > 0) await delay(Math.max(0, Math.min(backoff, due.at - this.#now())));
@@ -566,6 +608,9 @@ export class ComputerUseHelperClient {
         this.#requireGeneration(generation);
         this.#requireTime(due);
         const fresh = this.#launchFresh;
+        // Whatever holds the socket after an unverifiable replacement is not
+        // a helper to talk to, and nothing is launched just to stop it.
+        if (fresh && !launch) throw new HelperNotRunning();
         if (fresh) {
           // The socket belongs to a process this app could not verify. The
           // new instance binds the path again on start, and polling before it
@@ -577,6 +622,7 @@ export class ComputerUseHelperClient {
             return null;
           });
           if (existing) return existing;
+          if (!launch) throw new HelperNotRunning();
         }
         await this.#launchHelper(fresh);
         this.#requireGeneration(generation);

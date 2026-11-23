@@ -11,9 +11,10 @@ import Foundation
 /// `session.open` and `hello` answer at once while an app is not answering.
 @MainActor
 public final class HelperRuntime {
-  public nonisolated static let protocolVersion = 10
-  /// Protocol 10 addresses windows explicitly and separates observation from input.
-  public nonisolated static let minProtocolVersion = 10
+  public nonisolated static let protocolVersion = 11
+  /// Protocol 11 adds `helper.exit`, which the desktop sends as it quits. The
+  /// app and its helper are one release, so no earlier protocol is served.
+  public nonisolated static let minProtocolVersion = 11
   /// No session and no connection for this long and the helper quits; the
   /// desktop relaunches it on demand.
   static let processIdleTimeout: TimeInterval = 15 * 60
@@ -36,7 +37,7 @@ public final class HelperRuntime {
     "display.resolve", "display.start", "display.demand", "display.refresh", "display.stop",
     "display.attach", "display.input-reset", "display.input",
     "view.open", "view.activate", "view.renew", "view.close",
-    "permissions.get", "session.open", "session.close",
+    "permissions.get", "session.open", "session.close", "helper.exit",
     "data.status", "data.request", "data.invoke",
     "imessage.account", "imessage.poll", "imessage.send",
   ]
@@ -81,10 +82,17 @@ public final class HelperRuntime {
   /// ScreenCaptureKit reads the Screen Recording grant at process start, so the
   /// first time it is granted the helper has to be restarted to use it.
   private var quitOnceIdleReason: String?
+  /// A desktop quit and asked this process to go; it does once nothing else
+  /// uses it (`helper.exit`). Another desktop connecting cancels it.
+  private var exitRequested = false
+  private var exiting = false
   private var lastPermissions: PermissionsState?
 
   private let permissions: @Sendable () -> PermissionsState
   private let appRunning: @Sendable (String, String) -> Bool
+  /// How this process ends when the desktop that quit asked it to. Tests
+  /// replace it, so asking a test's runtime to exit never ends the test.
+  private let terminate: @MainActor () -> Void
 
   public convenience init(
     helperVersion: String, peerRequirement: PeerRequirementMode,
@@ -107,10 +115,12 @@ public final class HelperRuntime {
     permissions: @escaping @Sendable () -> PermissionsState,
     appRunning: @escaping @Sendable (String, String) -> Bool = {
       AppProcess.anyInstanceRunning(bundleId: $0, path: $1)
-    }
+    },
+    terminate: @escaping @MainActor () -> Void = { NSApplication.shared.terminate(nil) }
   ) {
     self.permissions = permissions
     self.appRunning = appRunning
+    self.terminate = terminate
     self.helperVersion = helperVersion
     self.peerRequirement = peerRequirement
     self.catalog = catalog
@@ -386,6 +396,7 @@ public final class HelperRuntime {
     guard !closedConnectionIDs.contains(connection.id) else { return }
     connections[connection.id] = connection
     idleSince = nil
+    exitRequested = false
   }
 
   private func perform(
@@ -511,6 +522,8 @@ public final class HelperRuntime {
         params: try envelope.decodeParams(Wire.SessionOpenParams.self, method: method),
         connection: connection
       )
+    case "helper.exit":
+      return requestExit(connection: connection)
     case "session.close":
       let params = try envelope.decodeParams(Wire.SessionParams.self, method: method)
       try closeRequestedSession(params.sessionId, connection: connection)
@@ -532,6 +545,7 @@ public final class HelperRuntime {
       appCallsInFlight += 1
       defer {
         appCallsInFlight -= 1
+        if exitRequested { DispatchQueue.main.async { [weak self] in self?.exitIfUnused() } }
         if quitOnceIdleReason != nil {
           DispatchQueue.main.async { [weak self] in self?.restartIfGrantPending() }
         }
@@ -549,6 +563,7 @@ public final class HelperRuntime {
       appCallsInFlight += 1
       defer {
         appCallsInFlight -= 1
+        if exitRequested { DispatchQueue.main.async { [weak self] in self?.exitIfUnused() } }
         if quitOnceIdleReason != nil {
           // After this call's answer has been written.
           DispatchQueue.main.async { [weak self] in self?.restartIfGrantPending() }
@@ -567,6 +582,7 @@ public final class HelperRuntime {
       appCallsInFlight += 1
       defer {
         appCallsInFlight -= 1
+        if exitRequested { DispatchQueue.main.async { [weak self] in self?.exitIfUnused() } }
         if quitOnceIdleReason != nil {
           DispatchQueue.main.async { [weak self] in self?.restartIfGrantPending() }
         }
@@ -669,6 +685,47 @@ public final class HelperRuntime {
     server?.stop()
     server = nil
     NSApplication.shared.terminate(nil)
+  }
+
+  // MARK: - Exit
+
+  /// The desktop is quitting. Its connection ends here exactly as a dropped
+  /// one does, sessions and all; the process then goes too, unless another
+  /// Opensteer app on this Mac still holds a connection to it (one installed
+  /// helper serves Stable and Beta).
+  func requestExit(connection: IPCConnection) -> Wire.HelperExitResult {
+    Log.lifecycle.notice("The desktop is quitting; ending its connection.")
+    connectionClosed(connection)
+    guard connections.isEmpty, registry.sessions.isEmpty else {
+      Log.lifecycle.notice("Another desktop still uses this helper; staying.")
+      return Wire.HelperExitResult(exiting: false)
+    }
+    exitRequested = true
+    // After the answer to this request has been written.
+    DispatchQueue.main.async { [weak self] in self?.exitIfUnused() }
+    return Wire.HelperExitResult(exiting: true)
+  }
+
+  /// Exits once an app call under way has ended and the serial lane has run
+  /// out: closing the sessions cancelled that work between actions, and the
+  /// action in hand finishes rather than being cut off by the process ending.
+  func exitIfUnused() {
+    guard exitRequested, !exiting, connections.isEmpty, registry.sessions.isEmpty,
+      appCallsInFlight == 0
+    else { return }
+    let runtime = self
+    executor.enqueue {
+      await MainActor.run {
+        guard runtime.exitRequested, !runtime.exiting, runtime.connections.isEmpty,
+          runtime.registry.sessions.isEmpty, runtime.appCallsInFlight == 0
+        else { return }
+        runtime.exiting = true
+        Log.lifecycle.notice("Quitting: the desktop quit.")
+        runtime.server?.stop()
+        runtime.server = nil
+        runtime.terminate()
+      }
+    }
   }
 
   // MARK: - Sessions
@@ -1338,6 +1395,7 @@ public final class HelperRuntime {
 
     // A pending restart does not wait for the connections to go away.
     restartIfGrantPending()
+    exitIfUnused()
 
     if registry.sessions.isEmpty, connections.isEmpty {
       let since = idleSince ?? Date()

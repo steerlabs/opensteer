@@ -97,8 +97,8 @@ describe.runIf(process.platform === "darwin")("ComputerUseHelperClient", () => {
       const harness = await helperHarness({
         hello: {
           helperVersion: "test",
-          minProtocolVersion: 10,
-          protocolVersion: 10,
+          minProtocolVersion: 11,
+          protocolVersion: 11,
           routes: { windowLocation: true, windowGroups: true },
           permissions: { accessibility: "granted", screenRecording: "granted" },
           ...(version === undefined ? {} : { ownerInputVersion: version }),
@@ -142,8 +142,8 @@ describe.runIf(process.platform === "darwin")("ComputerUseHelperClient", () => {
     async (videoProfile) => {
       const hello: Record<string, unknown> = {
         helperVersion: "test",
-        minProtocolVersion: 10,
-        protocolVersion: 10,
+        minProtocolVersion: 11,
+        protocolVersion: 11,
         permissions: { accessibility: "granted", screenRecording: "granted" },
         ...(videoProfile === undefined ? {} : { videoProfile }),
       };
@@ -167,7 +167,7 @@ describe.runIf(process.platform === "darwin")("ComputerUseHelperClient", () => {
       expect(
         h.received.filter((f) => (f as { method?: string }).method === "hello").at(-1),
       ).toMatchObject({
-        params: { protocolVersion: 10, ownerViewVersion: 3, clientVersion: "9.9.9" },
+        params: { protocolVersion: 11, ownerViewVersion: 3, clientVersion: "9.9.9" },
       });
       expect(
         (
@@ -225,7 +225,7 @@ describe.runIf(process.platform === "darwin")("ComputerUseHelperClient", () => {
     const harness = await helperHarness({
       hello: {
         helperVersion: "9",
-        minProtocolVersion: 10,
+        minProtocolVersion: 11,
         routes: { windowLocation: true, windowGroups: true },
         permissions: { accessibility: "denied", screenRecording: "denied" },
         protocolVersion: computerUseHelperProtocolVersion - 1,
@@ -269,7 +269,7 @@ describe.runIf(process.platform === "darwin")("ComputerUseHelperClient", () => {
     const harness = await helperHarness({
       hello: {
         helperVersion: "42",
-        minProtocolVersion: 10,
+        minProtocolVersion: 11,
         routes: { windowLocation: true, windowGroups: true },
         permissions: { accessibility: "granted", screenRecording: "granted" },
         protocolVersion: computerUseHelperProtocolVersion + 3,
@@ -741,7 +741,7 @@ async function helperHarness(
   let lifecycleLockHeldAtSocketReadiness = Promise.resolve(false);
   const hello = options.hello ?? {
     helperVersion: "1",
-    minProtocolVersion: 10,
+    minProtocolVersion: 11,
     routes: { windowLocation: true, windowGroups: true },
     permissions: { accessibility: "denied", screenRecording: "denied" },
     protocolVersion: computerUseHelperProtocolVersion,

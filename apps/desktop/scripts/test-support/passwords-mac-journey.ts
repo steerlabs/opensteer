@@ -623,10 +623,33 @@ export async function runPasswordsMacJourney(): Promise<void> {
     });
     await evidence.run("receiver-restart", async () => {
       client!.close();
+      // What quitting the app runs (`computerUseShutdownStep`): the helper is
+      // asked to exit, and none of the helpers serving this app — including one
+      // already running when the journey began — remains within a few
+      // seconds, without anything here stopping it.
+      const serving = await helperPids();
+      assert(serving.length > 0, "a helper serves this app before it quits");
+      const quitting = performance.now();
       await service!.stop();
-      for (const pid of (await helperPids()).filter((pid) => !helperBefore.includes(pid)))
-        process.kill(pid, "SIGTERM");
-      await until(async () => (await helperPids()).every((pid) => helperBefore.includes(pid)));
+      const exitDeadline = Date.now() + 5_000;
+      let remaining = (await helperPids()).filter((pid) => serving.includes(pid));
+      while (remaining.length > 0 && Date.now() < exitDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        remaining = (await helperPids()).filter((pid) => serving.includes(pid));
+      }
+      await evidence.write("helper-exit-on-quit.json", {
+        serving,
+        exitOutcomes: traffic.filter(
+          (entry) =>
+            typeof entry === "object" &&
+            entry !== null &&
+            "event" in entry &&
+            entry.event === "desktop.computer-use.helper-exit",
+        ),
+        remaining,
+        seconds: (performance.now() - quitting) / 1_000,
+      });
+      assert.deepEqual(remaining, [], "no helper of this app remains after it quits");
       service = new ComputerUseService({
         appBundleId: "com.opensteer.passwords-acceptance",
         appVersion: "1",

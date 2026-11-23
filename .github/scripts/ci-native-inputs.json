@@ -50,6 +50,7 @@
     "apps/desktop/scripts/codesign-requirement.test.ts",
     "apps/desktop/scripts/signing-input.cjs",
     "apps/desktop/src/app/app-protocol.ts",
+    "apps/desktop/src/app/desktop-shutdown.ts",
     "apps/desktop/src/app/electron-window.ts",
     "apps/desktop/src/app/media-permissions.ts",
     "apps/desktop/src/app/navigation-policy.ts",
