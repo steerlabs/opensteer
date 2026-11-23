@@ -3465,7 +3465,7 @@ export class BrowserController {
         ended.throwIfAborted();
         // Access may have changed while this waited, as `send` would recheck.
         this.cdpRouter.admitPageCommand(this.claims.sessionId, admitted);
-        return bounded(this.lookAt(page, cdp, geometry, request));
+        return bounded(this.lookAt(page, cdp, geometry, request, ended));
       }),
     ).finally(() => page.offClose(closed));
   }
@@ -3475,9 +3475,11 @@ export class BrowserController {
     cdp: CdpSession,
     geometry: PageGeometry | null,
     { clip, format, quality }: z.infer<typeof screenshotParameters>,
+    signal?: AbortSignal,
   ): Promise<ViewportCapture> {
     if (!geometry)
       throw new BrowserRuntimeError("conflict", "The page has no size yet.", { retryable: true });
+    signal?.throwIfAborted();
     const viewport = async () => {
       const { cssVisualViewport } = visualViewportMetricsSchema.parse(
         await cdp.send("Page.getLayoutMetrics"),
@@ -3485,14 +3487,19 @@ export class BrowserController {
       return { ...cssVisualViewport, pageScale: cssVisualViewport.scale * cssVisualViewport.zoom };
     };
     const { pageScale, pageX, pageY } = await viewport();
-    const capture = await page.captureViewport({
-      format,
-      layout: pageViewport(geometry),
-      pageScale,
-      ...(quality === undefined ? {} : { quality }),
-      // CDP's clip is in document coordinates.
-      ...(clip ? { clip: { ...clip, x: clip.x - pageX, y: clip.y - pageY } } : {}),
-    });
+    signal?.throwIfAborted();
+    const capture = await page.captureViewport(
+      {
+        format,
+        layout: pageViewport(geometry),
+        pageScale,
+        ...(quality === undefined ? {} : { quality }),
+        // CDP's clip is in document coordinates.
+        ...(clip ? { clip: { ...clip, x: clip.x - pageX, y: clip.y - pageY } } : {}),
+      },
+      signal,
+    );
+    signal?.throwIfAborted();
     // Pixels from a document with another scale would put every click in the wrong place.
     if ((await viewport()).pageScale !== pageScale)
       throw new BrowserRuntimeError("conflict", "The page changed during the screenshot.", {

@@ -1244,10 +1244,12 @@ export class PasswordSignInService {
 
   #wait(operation: Operation, timeoutMs: number, terminalOnly = false): Promise<void> {
     const answered = () => operation.settlement !== null || operation.cancelConfirmed;
-    if (answered() || (!terminalOnly && operation.need)) return Promise.resolve();
+    const ready = () =>
+      answered() || (!terminalOnly && (operation.need !== null || operation.requestId !== null));
+    if (ready()) return Promise.resolve();
     return new Promise((resolve) => {
       const done = () => {
-        if (terminalOnly && !answered()) return;
+        if (!ready()) return;
         clearTimeout(timer);
         operation.waiters.delete(done);
         resolve();

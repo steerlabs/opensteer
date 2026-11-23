@@ -74,6 +74,36 @@ describe("Passwords wait authority", () => {
     });
   }
 
+  it("ignores a non-approval login.needs(null) event while waiting for login.result", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const first = h.start();
+    await vi.advanceTimersByTimeAsync(1);
+    // Older desktop authorities could emit login.needs(null) right before login.result.
+    h.event({ kind: "needs", need: null });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(
+      h.hub.sendPasswordSignIn.mock.calls.some(([, command]) => command.type === "login.cancel"),
+    ).toBe(false);
+    h.event({
+      kind: "result",
+      outcome: {
+        kind: "authorized",
+        account: "a•••",
+        loginRef: h.loginRef(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    });
+    expect(await first).toMatchObject({
+      status: "ready",
+      account: "a•••",
+      loginRef: h.loginRef(),
+    });
+    expect(
+      h.hub.sendPasswordSignIn.mock.calls.some(([, command]) => command.type === "login.cancel"),
+    ).toBe(false);
+  });
+
   it("expires a terminal no-Request identity even when no cancellation was sent", async () => {
     vi.useFakeTimers();
     const h = harness();

@@ -1,7 +1,7 @@
 import { heldThread, taskCanBeDone, taskMark, threadMark } from "@opensteer/client/host";
 import { TaskIconEditor } from "../task-icon-editor.js";
 import { ThreadTitleEditor } from "../thread-title-editor.js";
-import { useHostSelector, useThreadTranscript } from "@opensteer/client/react";
+import { useHostSelector, useThreadTranscriptSelector } from "@opensteer/client/react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   assignmentPresentation,
@@ -87,7 +87,7 @@ export function ConversationHeader({
     [threadId],
   );
   const family = useHostSelector(hostClient, selectFamily, sameTaskFamilyGlance);
-  const { runQueue } = useThreadTranscript(hostClient, threadId);
+  const runQueue = useThreadTranscriptSelector(hostClient, threadId, selectTranscriptRunQueue);
   const selectRunId = useCallback(
     (snapshot: HostSnapshot) => {
       const thread = snapshot.threads.find(({ id }) => id === threadId);
@@ -324,6 +324,10 @@ function sameRequester(left: RequesterLink | null, right: RequesterLink | null):
  * Stop stops it, its run ended and its queue paused, and from there it can be
  * resumed or moved to Done.
  */
+const selectTranscriptRunQueue = (
+  view: import("@opensteer/client/react").ThreadTranscriptSnapshot,
+) => view.runQueue;
+
 function TaskActions({
   onConfirming,
   onDone,
@@ -342,7 +346,7 @@ function TaskActions({
 }) {
   const { hostClient, reportActionError, setTaskDone, snapshot } = useShell();
   const { review, ask, dismiss } = useActionReview(hostClient);
-  const { runQueue } = useThreadTranscript(hostClient, threadId);
+  const runQueue = useThreadTranscriptSelector(hostClient, threadId, selectTranscriptRunQueue);
   useEffect(() => {
     onConfirming(review !== null);
   }, [onConfirming, review]);

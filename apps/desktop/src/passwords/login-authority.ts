@@ -138,12 +138,18 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
     const authority = new AbortController();
     let settled = false;
     let approving = false;
+    let needShown = false;
     let state: PasswordSignInCard = { stage: "gone" };
     let unsubscribeLifetime = () => {};
+    const clearNeed = () => {
+      if (!needShown) return;
+      needShown = false;
+      needs(null);
+    };
     const finish = (outcome: EndedOutcome) => {
       if (settled) return;
       settled = true;
-      needs(null);
+      clearNeed();
       resolve({ kind: "ended", outcome });
     };
     const cancelled = () => {
@@ -191,7 +197,7 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
       operation.committed = !prepared;
       state = { stage: "authorized" };
       settled = true;
-      needs(null);
+      clearNeed();
       resolve({ kind: "authorized", account, authority: authority.signal });
     };
     const unavailable = (reason: "busy" | "passwords-off" | "not-set-up") =>
@@ -301,6 +307,7 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
               accounts: decision.accounts,
               permissionVersion: 6 as const,
             };
+            needShown = true;
             needs("approval");
           }
         }

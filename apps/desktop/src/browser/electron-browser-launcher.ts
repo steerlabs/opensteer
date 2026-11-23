@@ -1222,6 +1222,8 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   #paintedSurfaceRevision = -1;
   #metricsSurfaceRevision = 0;
   #renderingDemand = false;
+  #activeSurfaceCopies = 0;
+  #stalledSurfaceCopies = 0;
   #controlDown = false;
   #contextMenuTrigger: "person" | "agent" | null = null;
   #contextMenuCandidate: "person" | "agent" | null = null;
@@ -1469,6 +1471,8 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     });
     view.webContents.once("destroyed", () => {
       this.#cancelPaint();
+      this.#activeSurfaceCopies = 0;
+      this.#stalledSurfaceCopies = 0;
       this.#passkeyInput.clear();
       this.#humanInput.clear();
       this.#invalidateCursor();
@@ -1844,7 +1848,17 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     if (this.#protection.downloading()) return "download";
     if (this.#webContents.isCurrentlyAudible() || this.#mediaPlaying) return "media";
     if (this.#fullscreen) return "fullscreen";
-    if (this.#webContents.isBeingCaptured()) return "capturing";
+    if (this.#webContents.isBeingCaptured()) {
+      // A timed-out internal capturePage copy can leave Chromium's native capturer
+      // count elevated until the renderer closes; do not let a wedged internal copy
+      // block TabSleeper forever when no active copy, paint wait, or screencast holds it.
+      const wedgedInternalCapture =
+        this.#stalledSurfaceCopies > 0 &&
+        this.#activeSurfaceCopies === 0 &&
+        this.#paintWaiters.size === 0 &&
+        !this.#hub.isScreencasting();
+      if (!wedgedInternalCapture) return "capturing";
+    }
     return null;
   }
 
@@ -2097,18 +2111,17 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
    * scale, whatever device scale factor a page emulates, cropped from the
    * top left when the view is smaller than the page.
    */
-  async captureViewport({
-    clip,
-    format,
-    layout,
-    pageScale,
-    quality,
-  }: ViewportCaptureRequest): Promise<ViewportCapture> {
-    const cdp = await this.cdp();
+  async captureViewport(
+    { clip, format, layout, pageScale, quality }: ViewportCaptureRequest,
+    signal?: AbortSignal,
+  ): Promise<ViewportCapture> {
+    signal?.throwIfAborted();
+    const cdp = await raceAbort(this.cdp(), signal);
     const release = cdp.retainRendering?.();
     try {
-      await this.#drawnFrame(cdp);
-      const image = await this.#surfaceImage();
+      await this.#drawnFrame(cdp, signal);
+      const image = await this.#surfaceImage(signal);
+      signal?.throwIfAborted();
       const bounds = this.view.getBounds();
       const visible = {
         height: Math.round(bounds.height / pageScale),
@@ -2128,7 +2141,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         })
         .resize({ ...plan.output, quality: "better" });
       return {
-        data: await this.#encode(cdp, picture, format, quality),
+        data: await this.#encode(cdp, picture, format, quality, signal),
         ...(crop.right || crop.bottom
           ? {
               cropped: {
@@ -2147,14 +2160,18 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   }
 
   /** A world page scripts and agents never reach. */
-  async #inFrameWorld(cdp: CdpSession, expression: string): Promise<unknown> {
+  async #inFrameWorld(cdp: CdpSession, expression: string, signal?: AbortSignal): Promise<unknown> {
     for (let attempt = 0; ; attempt++) {
+      signal?.throwIfAborted();
       try {
         this.#frameWorld ??= z.object({ executionContextId: z.number().int() }).parse(
-          await cdp.send("Page.createIsolatedWorld", {
-            frameId: await this.targetId(),
-            worldName: "opensteer-frame",
-          }),
+          await raceAbort(
+            cdp.send("Page.createIsolatedWorld", {
+              frameId: await raceAbort(this.targetId(), signal),
+              worldName: "opensteer-frame",
+            }),
+            signal,
+          ),
         ).executionContextId;
         const { exceptionDetails, result } = z
           .object({
@@ -2162,16 +2179,20 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
             result: z.object({ value: z.unknown().optional() }),
           })
           .parse(
-            await cdp.send("Runtime.evaluate", {
-              awaitPromise: true,
-              contextId: this.#frameWorld,
-              expression,
-              returnByValue: true,
-            }),
+            await raceAbort(
+              cdp.send("Runtime.evaluate", {
+                awaitPromise: true,
+                contextId: this.#frameWorld,
+                expression,
+                returnByValue: true,
+              }),
+              signal,
+            ),
           );
         if (exceptionDetails) throw new Error("The page could not run a capture step.");
         return result.value;
       } catch (error) {
+        if (signal?.aborted) throw error;
         // A navigation takes the world with it.
         this.#frameWorld = null;
         if (attempt > 0) throw error;
@@ -2180,19 +2201,54 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   }
 
   /** `capturePage` copies the last frame drawn, which can predate the page's latest change. */
-  async #drawnFrame(cdp: CdpSession): Promise<void> {
+  async #drawnFrame(cdp: CdpSession, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     const frames =
       "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))";
     // A page that draws nothing has nothing newer to show.
-    await withTimeout(this.#inFrameWorld(cdp, frames), 1_000, {
-      timeoutError: () => new Error("No frame."),
-    }).catch(() => undefined);
+    try {
+      await withTimeout(this.#inFrameWorld(cdp, frames, signal), 1_000, {
+        ...(signal ? { signal } : {}),
+        timeoutError: () => new Error("No frame."),
+      });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+    }
   }
 
-  async #surfaceImage(): Promise<NativeImage> {
-    const copy = () => this.#webContents.capturePage(undefined, { stayHidden: true });
+  async #surfaceImage(signal?: AbortSignal): Promise<NativeImage> {
+    const copy = async (): Promise<NativeImage> => {
+      signal?.throwIfAborted();
+      this.#activeSurfaceCopies += 1;
+      let rawSettled = false;
+      let handedToStalled = false;
+      const raw = this.#webContents.capturePage(undefined, { stayHidden: true });
+      const markSettled = () => {
+        rawSettled = true;
+      };
+      void raw.then(markSettled, markSettled);
+      try {
+        return await raceAbort(raw, signal);
+      } catch (error) {
+        if (signal?.aborted && !rawSettled) {
+          handedToStalled = true;
+          this.#stalledSurfaceCopies += 1;
+          const finishStalled = () => {
+            this.#stalledSurfaceCopies = Math.max(0, this.#stalledSurfaceCopies - 1);
+          };
+          void raw.then(finishStalled, finishStalled);
+        }
+        throw error;
+      } finally {
+        this.#activeSurfaceCopies = Math.max(0, this.#activeSurfaceCopies - 1);
+        if (!handedToStalled) void raw.catch(() => undefined);
+      }
+    };
     // Chromium fails one copy while a navigation swaps the surface.
-    const image = await copy().catch(copy);
+    const image = await copy().catch((error) => {
+      if (signal?.aborted) throw error;
+      return copy();
+    });
     if (image.isEmpty()) throw new Error("The page has no picture yet.");
     return image;
   }
@@ -2202,7 +2258,9 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     image: NativeImage,
     format: ViewportCaptureRequest["format"],
     quality: number | undefined,
+    signal?: AbortSignal,
   ): Promise<string> {
+    signal?.throwIfAborted();
     if (format === "jpeg") return image.toJPEG(quality ?? 80).toString("base64");
     const data = image.toPNG().toString("base64");
     if (format === "png") return data;
@@ -2216,6 +2274,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
           format,
           ...(quality === undefined ? {} : { quality }),
         }),
+        signal,
       ),
     );
   }
@@ -2580,6 +2639,10 @@ class ElectronDebuggerHub {
     return this.#crashed;
   }
 
+  isScreencasting(): boolean {
+    return this.#screencastOwners.size > 0;
+  }
+
   /** Only the fresh page's provider bootstrap may dispatch this initial batch. */
   bootstrapPlatform(install: (channel: ElectronCdpChannel) => void): ElectronCdpChannel {
     if (this.#channels.size || this.#attachment || this.#ownershipPending || this.#closed)
@@ -2741,36 +2804,53 @@ class ElectronDebuggerHub {
         if (generation !== this.#rendererGeneration)
           throw new Error("Electron CDP renderer changed before command dispatch.");
         if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
-        if (
-          method === "Input.dispatchMouseEvent" &&
-          parameters?.type === "mouseWheel" &&
-          typeof parameters.deltaX === "number" &&
-          typeof parameters.deltaY === "number"
-        ) {
-          const { cssVisualViewport } = z
-            .object({
-              cssVisualViewport: z.object({
-                zoom: z.number().positive(),
-                scale: z.number().positive(),
-              }),
-            })
-            .parse(await send("Page.getLayoutMetrics"));
-          // Chromium divides native wheel deltas by the emulated/native DPR ratio
-          // and visual page scale. CDP pointer anchors already use CSS coordinates.
-          const density =
-            this.#deviceScaleFactor === null ? 1 : this.#deviceScaleFactor / this.#displayScale();
-          const scale = density * cssVisualViewport.zoom * cssVisualViewport.scale;
-          parameters = {
-            ...parameters,
-            deltaX: parameters.deltaX * scale,
-            deltaY: parameters.deltaY * scale,
-          };
+        const release = this.retainRendering(channel);
+        try {
+          if (
+            method === "Input.dispatchMouseEvent" &&
+            parameters?.type === "mouseWheel" &&
+            typeof parameters.deltaX === "number" &&
+            typeof parameters.deltaY === "number"
+          ) {
+            const { cssVisualViewport } = z
+              .object({
+                cssVisualViewport: z.object({
+                  zoom: z.number().positive(),
+                  scale: z.number().positive(),
+                }),
+              })
+              .parse(await send("Page.getLayoutMetrics"));
+            // Chromium divides native wheel deltas by the emulated/native DPR ratio
+            // and visual page scale. CDP pointer anchors already use CSS coordinates.
+            const density =
+              this.#deviceScaleFactor === null ? 1 : this.#deviceScaleFactor / this.#displayScale();
+            const scale = density * cssVisualViewport.zoom * cssVisualViewport.scale;
+            parameters = {
+              ...parameters,
+              deltaX: parameters.deltaX * scale,
+              deltaY: parameters.deltaY * scale,
+            };
+          }
+          if (generation !== this.#rendererGeneration)
+            throw new Error("Electron CDP renderer changed before command dispatch.");
+          if (this.#closed || !this.#channels.has(channel))
+            throw new Error("CDP channel is closed.");
+          return await send(method, parameters);
+        } finally {
+          release();
         }
-        if (generation !== this.#rendererGeneration)
-          throw new Error("Electron CDP renderer changed before command dispatch.");
-        if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
-        return send(method, parameters);
       });
+    }
+    if (
+      method === "Page.captureScreenshot" ||
+      method === "Page.printToPDF" ||
+      (channel.role === "agent" &&
+        (method === "Runtime.evaluate" ||
+          method === "Runtime.callFunctionOn" ||
+          method === "Runtime.awaitPromise"))
+    ) {
+      const release = this.retainRendering(channel);
+      return send(method, parameters).finally(release);
     }
     if (method === "Page.startScreencast") {
       return this.#serializeOwnership(async () => {
@@ -3104,10 +3184,9 @@ class ElectronDebuggerHub {
 
   #updateThrottling(): void {
     if (this.#closed || this.#webContents.isDestroyed()) return;
-    const demanded =
-      [...this.#channels].some((channel) => channel.role === "agent") ||
-      this.#screencastOwners.size > 0 ||
-      this.#renderingOwners.size > 0;
+    // Demand hidden compositing only for active visual operations (screencasts,
+    // screenshots, paint waits, or in-flight input), never for an idle agent CDP channel.
+    const demanded = this.#screencastOwners.size > 0 || this.#renderingOwners.size > 0;
     this.#setRenderingDemand(demanded);
   }
 
@@ -3492,4 +3571,28 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) {
+    void promise.catch(() => undefined);
+    return Promise.reject(signal.reason ?? new Error("Operation aborted."));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      reject(signal.reason ?? new Error("Operation aborted."));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }

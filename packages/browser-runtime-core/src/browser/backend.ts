@@ -98,7 +98,7 @@ export interface BrowserPage {
    * `Page.captureScreenshot` with a clip, or on a channel holding emulation:
    * Chromium then resizes the view for the capture and a person watches it shrink.
    */
-  captureViewport(request: ViewportCaptureRequest): Promise<ViewportCapture>;
+  captureViewport(request: ViewportCaptureRequest, signal?: AbortSignal): Promise<ViewportCapture>;
   /** Native bounds share the ledger's serialization and held-input release barrier. */
   bindGeometry?(
     serialize: (operation: () => Promise<void>) => Promise<void>,
