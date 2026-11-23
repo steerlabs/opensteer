@@ -67,7 +67,14 @@ import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js"
 import { SheetBarButton } from "../ui/sheet-bar.js";
 import { ActionLine } from "../ui/action-line.js";
 import { unreadyIssue } from "../ui/client-feedback.js";
-import { AppText, Notice, PrimaryButton, SecondaryButton, SwitchRow } from "../ui/primitives.js";
+import {
+  AppText,
+  DisplayTitle,
+  Notice,
+  PrimaryButton,
+  SecondaryButton,
+  SwitchRow,
+} from "../ui/primitives.js";
 import { useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { EngineMark } from "../thread/settings/engine-mark.js";
 import { ReasoningSlider } from "../thread/settings/reasoning-slider.js";
@@ -707,11 +714,11 @@ function ExecutionSwitchReviewPanel(props: {
   const [accessMode, setAccessMode] = useState(review.accessMode);
   return (
     <View style={styles.review}>
-      <AppText role="displaySmall">
+      <DisplayTitle size="small">
         {fresh
           ? `Start fresh with ${review.engineName}?`
           : `Use ${review.engineName} for this conversation?`}
-      </AppText>
+      </DisplayTitle>
       {review.startsFresh ? (
         <AppText role="secondary" tone="muted">
           Your messages stay here. {review.engineName} starts fresh, with recent messages, your

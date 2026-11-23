@@ -12,7 +12,14 @@ import {
 import { resetToDeployment } from "../navigation-ref.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
-import { AppText, Field, PrimaryButton, RowGroup, SecondaryButton } from "../ui/primitives.js";
+import {
+  AppText,
+  DisplayTitle,
+  Field,
+  PrimaryButton,
+  RowGroup,
+  SecondaryButton,
+} from "../ui/primitives.js";
 import { ActionLine } from "../ui/action-line.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { DeploymentDoorSymbol } from "./add-deployment.js";
@@ -78,9 +85,9 @@ export function AddServerScreen(): ReactNode {
           <View style={styles.headingMark}>
             <DeploymentDoorSymbol kind="server" size={22} />
           </View>
-          <AppText role="displaySmall" style={styles.headingText}>
+          <DisplayTitle size="small" style={styles.headingText}>
             Add a Home by address
-          </AppText>
+          </DisplayTitle>
         </View>
         {failure === null ? null : (
           <ActionLine

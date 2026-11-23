@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 import { space } from "../theme.js";
-import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
+import { AppText, DisplayTitle, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { useReadingColumn } from "../ui/screen.js";
 import type { RemovedViewProps } from "./removed-copy.js";
 
@@ -9,9 +9,9 @@ export function RemovedView(props: RemovedViewProps): ReactNode {
   const column = useReadingColumn();
   return (
     <View style={[styles.content, column]}>
-      <AppText role="displaySmall" style={styles.centred}>
+      <DisplayTitle size="small" style={styles.centred}>
         {props.title}
-      </AppText>
+      </DisplayTitle>
       <AppText role="body" style={styles.centred} tone="muted">
         {props.body}
       </AppText>

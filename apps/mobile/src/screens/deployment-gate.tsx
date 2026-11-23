@@ -17,7 +17,13 @@ import { ConnectionGate, type ConnectionGateButton } from "../ui/connection-gate
 import { ConnectionRouteGate } from "../ui/route-gate.js";
 import { useShellGate } from "../ui/shell-gate.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
-import { AppText, PrimaryButton, RowGroup, SecondaryButton } from "../ui/primitives.js";
+import {
+  AppText,
+  DisplayTitle,
+  PrimaryButton,
+  RowGroup,
+  SecondaryButton,
+} from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { deploymentRecoveryLabel, runDeploymentRecovery } from "./deployment-recovery.js";
 import { deploymentUpdateRows } from "./deployment-update.js";
@@ -127,7 +133,7 @@ export function DeploymentGate(props: {
           contentInsetAdjustmentBehavior="never"
         >
           {/* In a person's words, and back to the list by its own title. */}
-          <AppText role="displaySmall">This Home is no longer here</AppText>
+          <DisplayTitle size="small">This Home is no longer here</DisplayTitle>
           <AppText role="secondary" tone="muted">
             {`It isn’t in this phone’s list any more. You can add it again from ${deploymentsTitle}.`}
           </AppText>
@@ -165,7 +171,7 @@ export function DeploymentGate(props: {
     return (
       <Screen>
         <View style={[styles.content, column, top]}>
-          <AppText role="displaySmall">{row.name}</AppText>
+          <DisplayTitle size="small">{row.name}</DisplayTitle>
           <AppText role="secondary" tone="muted">
             {refused ?? deploymentStatusDetail(row)}
           </AppText>

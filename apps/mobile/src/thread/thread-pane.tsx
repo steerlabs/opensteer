@@ -87,7 +87,7 @@ import { useMobileClient } from "../ui/mobile-client-context.js";
 import { useAppForeground } from "../ui/foreground.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { enter, exit } from "../ui/motion.js";
-import { AppText } from "../ui/primitives.js";
+import { AppText, DisplayTitle } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { useContentInsets, usePaneInView } from "../ui/pane.js";
 import { useGutter, useReadingColumn } from "../ui/screen.js";
@@ -2006,9 +2006,9 @@ function EmptyThread(props: { readonly loading: boolean; readonly voice: boolean
     );
   return (
     <View style={styles.empty}>
-      <AppText role="displaySmall">
+      <DisplayTitle size="small">
         {props.voice ? "Say what you need done" : "What would you like to do?"}
-      </AppText>
+      </DisplayTitle>
       <AppText role="secondary" tone="muted">
         {props.voice
           ? "Talk to Opensteer and it starts the work, keeps you posted and asks when it needs you."

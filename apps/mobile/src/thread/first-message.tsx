@@ -48,17 +48,9 @@ import {
   type AttachmentDraftScope,
   type FirstMessageAttachmentDraftScope,
 } from "../platform/attachment-draft-files.js";
-import {
-  color,
-  controlFontScaleLimit,
-  displayFontScaleLimit,
-  radius,
-  space,
-  touchTarget,
-  type,
-} from "../theme.js";
+import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
 import { ComposerAction } from "../ui/composer-action.js";
-import { AppText } from "../ui/primitives.js";
+import { AppText, DisplayTitle } from "../ui/primitives.js";
 import { useContentInsets, usePaneInView } from "../ui/pane.js";
 import { useGutter, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
@@ -828,9 +820,7 @@ export function FirstMessageInvitation(props: {
 }): ReactNode {
   return (
     <View style={styles.invitation}>
-      <AppText maxFontSizeMultiplier={displayFontScaleLimit} role="displayLarge">
-        {props.title}
-      </AppText>
+      <DisplayTitle>{props.title}</DisplayTitle>
       <AppText role="secondary" tone="muted">
         {props.detail}
       </AppText>

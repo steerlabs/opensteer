@@ -28,6 +28,7 @@ import {
   color,
   material,
   controlFontScaleLimit,
+  displayFontScaleLimit,
   radius,
   space,
   touchTarget,
@@ -84,6 +85,28 @@ export function AppText(props: {
     >
       {props.children}
     </Text>
+  );
+}
+
+/**
+ * A screen's display title, the only way one is drawn (`tests/mobile-display-title.test.ts`): it
+ * grows only as far as `displayFontScaleLimit`, where its widest word fits the narrowest phone, so
+ * it never breaks inside a word, at any text size.
+ */
+export function DisplayTitle(props: {
+  readonly children: ReactNode;
+  /** The type scale's large display title (the default) or its small one. */
+  readonly size?: "large" | "small";
+  readonly style?: StyleProp<TextStyle>;
+}): ReactNode {
+  return (
+    <AppText
+      maxFontSizeMultiplier={displayFontScaleLimit}
+      role={props.size === "small" ? "displaySmall" : "displayLarge"}
+      style={props.style}
+    >
+      {props.children}
+    </AppText>
   );
 }
 

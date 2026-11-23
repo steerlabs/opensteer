@@ -3,8 +3,8 @@ import { useState, type ReactNode } from "react";
 import { ActivityIndicator, Modal, ScrollView, StyleSheet } from "react-native";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { ActionLine } from "../ui/action-line.js";
-import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
-import { color, displayFontScaleLimit, space } from "../theme.js";
+import { AppText, DisplayTitle, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
+import { color, space } from "../theme.js";
 
 /**
  * Visible above any selected computer: a link must never silently disappear. At the largest text
@@ -31,9 +31,7 @@ export function OpenComputer(): ReactNode {
       presentationStyle="pageSheet"
     >
       <ScrollView contentContainerStyle={styles.sheet} style={styles.scroll}>
-        <AppText maxFontSizeMultiplier={displayFontScaleLimit} role="displayLarge">
-          Open your computer
-        </AppText>
+        <DisplayTitle>Open your computer</DisplayTitle>
         {pending.status === "needs-sign-in" ? (
           <PrimaryButton
             label="Sign in"

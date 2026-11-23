@@ -7,7 +7,7 @@ import { useHostValue } from "../ui/mobile-client-context.js";
 import { useMobileNotifications, usePushRegistration } from "../ui/notifications-context.js";
 import { useFitSheetHeight } from "../ui/fit-sheet.js";
 import { useContentInsets } from "../ui/pane.js";
-import { AppText, PrimaryButton } from "../ui/primitives.js";
+import { AppText, DisplayTitle, PrimaryButton } from "../ui/primitives.js";
 import { useGutter } from "../ui/screen.js";
 
 const selectConnected = (snapshot: HostSnapshot): boolean => snapshot.connection === "connected";
@@ -74,13 +74,7 @@ export function NotificationsIntroScreen(): ReactNode {
     >
       <ScrollView contentContainerStyle={styles.words} style={styles.scroll}>
         <View style={styles.copy}>
-          <AppText
-            maxFontSizeMultiplier={displayFontScaleLimit}
-            role="displayLarge"
-            style={styles.centred}
-          >
-            Know when you’re needed
-          </AppText>
+          <DisplayTitle style={styles.centred}>Know when you’re needed</DisplayTitle>
           <AppText role="body" style={styles.centred} tone="soft">
             Get notified when an agent finishes or needs your answer.
           </AppText>

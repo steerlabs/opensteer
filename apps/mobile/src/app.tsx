@@ -112,7 +112,7 @@ import { iphoneApps } from "./platform/iphone-apps.js";
 import { AppLinksProvider, type AppLinks } from "./ui/app-links-context.js";
 import { MobileClientProvider, useMobileState } from "./ui/mobile-client-context.js";
 import { MobileNotificationsProvider } from "./ui/notifications-context.js";
-import { AppText, Notice } from "./ui/primitives.js";
+import { DisplayTitle, Notice } from "./ui/primitives.js";
 import { failureWords } from "./ui/client-feedback.js";
 import {
   subscribeToDraftPastes,
@@ -688,7 +688,7 @@ export function App(): ReactNode {
       <SafeAreaProvider>
         <StatusBar style="light" />
         <View style={styles.failure}>
-          <AppText role="displaySmall">Opensteer could not start</AppText>
+          <DisplayTitle size="small">Opensteer could not start</DisplayTitle>
           <Notice detail={startupFailure.detail} title={startupFailure.title} tone="neutral" />
         </View>
       </SafeAreaProvider>

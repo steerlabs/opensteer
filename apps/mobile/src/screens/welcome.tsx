@@ -4,6 +4,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from "reac
 import { color, space } from "../theme.js";
 import {
   AppText,
+  DisplayTitle,
   PrimaryButton,
   RowGroup,
   SecondaryButton,
@@ -56,9 +57,7 @@ export function Welcome(props: WelcomeProps): ReactNode {
       >
         <View style={styles.intro}>
           <Symbol name="laptopcomputer.and.iphone" size={40} tint={color.ember} />
-          <AppText role="displayLarge" style={styles.centred}>
-            {view.title}
-          </AppText>
+          <DisplayTitle style={styles.centred}>{view.title}</DisplayTitle>
           <AppText role="body" style={styles.centred} tone="soft">
             {view.sentence(thisPhoneNoun)}
           </AppText>

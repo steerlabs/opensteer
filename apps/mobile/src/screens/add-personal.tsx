@@ -13,7 +13,7 @@ import { resetToDeployment } from "../navigation-ref.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { ActionLine } from "../ui/action-line.js";
-import { AppText, Field, PrimaryButton, RowGroup } from "../ui/primitives.js";
+import { AppText, DisplayTitle, Field, PrimaryButton, RowGroup } from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { DeploymentDoorSymbol } from "./add-deployment.js";
 import { AddressSentence, AddressText } from "../ui/address-text.js";
@@ -233,9 +233,9 @@ function Heading(props: { readonly title: string }): ReactNode {
       <View style={styles.headingMark}>
         <DeploymentDoorSymbol kind="computer" size={22} />
       </View>
-      <AppText role="displaySmall" style={styles.headingText}>
+      <DisplayTitle size="small" style={styles.headingText}>
         {props.title}
-      </AppText>
+      </DisplayTitle>
     </View>
   );
 }
