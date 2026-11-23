@@ -383,13 +383,18 @@ describe("targeted tab mutations, single-tab reads, and projection batching", ()
       };
       return { tabIds: [created.id], layout: structuredClone(layout) };
     });
-    storeMock.close = vi.fn(
+    const closeMock = vi.fn(
       async (
         _owner: unknown,
         tabIds: string[],
         _key: string,
         authorize: (tx: unknown, all: TabRecord[], current: TabLayout) => Promise<void>,
-      ) => {
+      ): Promise<{
+        tabIds: string[];
+        layout: TabLayout;
+        replayed?: boolean;
+        currentLayout?: TabLayout;
+      }> => {
         await authorize(f.options.store.database, rows, layout);
         for (const id of tabIds) {
           const found = rows.find((item) => item.id === id && !item.closedAt);
@@ -405,6 +410,7 @@ describe("targeted tab mutations, single-tab reads, and projection batching", ()
         return { tabIds, layout: structuredClone(layout) };
       },
     );
+    storeMock.close = closeMock;
     storeMock.reopen = vi.fn(async (_owner: unknown, targetId?: string) => {
       const found = targetId ? closedRows.get(targetId) : [...closedRows.values()].at(-1);
       if (!found) throw new Error("missing closed row");
@@ -582,7 +588,7 @@ describe("targeted tab mutations, single-tab reads, and projection batching", ()
     };
     const closeOwnerViews = vi.spyOn(f.native, "closeOwnerViews");
     closeOwnerViews.mockClear();
-    (storeMock.close as ReturnType<typeof vi.fn>).mockImplementationOnce(
+    closeMock.mockImplementationOnce(
       async (
         _owner: unknown,
         _tabIds: string[],
