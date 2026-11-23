@@ -484,7 +484,6 @@ async function program(
         runnerBootId: "fixture-boot",
         runnerId: personal.runnerId,
         threadId: owner.thread.id,
-        toolContractVersion: 5,
       },
     };
   }
@@ -526,7 +525,6 @@ async function program(
       executionGeneration: activation.executionGeneration,
       revisionId: created.revision.id,
       triggerId: created.trigger.id,
-      toolContractVersion: 5,
     },
   };
 }

@@ -604,7 +604,6 @@ integration.sequential("automation failure notices", () => {
     await failManual(fixture, created.trigger.id, "second");
     await failManual(fixture, created.trigger.id, "third");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 3,
       status: "active",
     });
     // Additional failures while already failing do not spam another notice.
@@ -1394,10 +1393,10 @@ integration.sequential("automation failure notices", () => {
         stderrTail: "failed\n",
         stdoutTail: "",
       });
-    expect((await report(1)).autoPaused).toBe(false);
-    expect((await report(2)).autoPaused).toBe(false);
+    expect((await report(1)).activation.desired).toBe("active");
+    expect((await report(2)).activation.desired).toBe("active");
     expect(await storedNotices()).toEqual([]);
-    expect((await report(3)).autoPaused).toBe(false);
+    expect((await report(3)).activation.desired).toBe("active");
     await report(4);
     expect(await storedNotices()).toEqual([
       {

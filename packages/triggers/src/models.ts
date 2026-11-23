@@ -17,36 +17,7 @@ import { AutomationScriptSchema, AutomationScriptViewSchema } from "./script.js"
 
 export const TriggerStatusSchema = z.enum(["active", "paused", "archived"]);
 
-export const TRIGGER_PROGRAM_VERSION_REFUSAL =
-  "Programs require toolContractVersion 5. Use opensteer_task_send and opensteer_task_delegate; older tool names are unavailable.";
-
 export const TRIGGER_PROGRAM_UPDATE_REASON = "Needs an update: ask your agent";
-
-/**
- * A revision's program as stored. Programs written for an older tool contract
- * stay readable so the owner's agent can replace them; only version 5 runs.
- */
-export const StoredTriggerProgramSchema = z.strictObject({
-  language: z.enum(["javascript", "typescript"]),
-  source: z
-    .string()
-    .min(1)
-    .max(512 * 1_024),
-  toolContractVersion: z.number().int().positive(),
-});
-export type StoredTriggerProgram = z.infer<typeof StoredTriggerProgramSchema>;
-
-/** A program Opensteer can write and run. */
-export const TriggerProgramSchema = StoredTriggerProgramSchema.extend({
-  toolContractVersion: z.literal(5, { error: TRIGGER_PROGRAM_VERSION_REFUSAL }),
-});
-export type TriggerProgram = z.infer<typeof TriggerProgramSchema>;
-
-export function isExecutableTriggerProgram(
-  program: StoredTriggerProgram,
-): program is TriggerProgram {
-  return program.toolContractVersion === 5;
-}
 
 export const TriggerScheduleSchema = z.discriminatedUnion("kind", [
   z.strictObject({
@@ -92,7 +63,6 @@ export const MANAGED_MEMORY_WAKE_SKIPPED = "Opensteer skipped this memory pass w
 export const TriggerSchema = z.strictObject({
   systemRole: TriggerSystemRoleSchema.nullable().optional(),
   anchorThreadId: ThreadIdSchema,
-  consecutiveFailures: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   createdAt: IsoDateTimeSchema,
   createdBy: UserIdSchema,
   createdByThreadId: ThreadIdSchema.nullable().default(null),

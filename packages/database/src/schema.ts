@@ -1140,7 +1140,6 @@ interface TriggerTable {
   status: "active" | "paused" | "archived";
   currentRevisionId: TriggerRevisionId;
   nextFireAt: NullableTimestamp;
-  consecutiveFailures: number;
   pauseReason: string | null;
   pausedBy: Generated<AutomationPausedBy | null>;
   pausedByConnectionId: Generated<string | null>;

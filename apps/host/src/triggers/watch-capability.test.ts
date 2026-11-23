@@ -2,7 +2,7 @@ import { createId, OpensteerError } from "@opensteer/core";
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { SignedTokenService } from "../identity/host-keys.js";
-import { WatchControlTokenService } from "./watch-capability.js";
+import { WatchCapabilityScopeSchema, WatchControlTokenService } from "./watch-capability.js";
 describe("WatchControlTokenService", () => {
   it("issues a 24-hour activation scope without Runner boot authority and rechecks storage", async () => {
     let active = true;
@@ -30,7 +30,6 @@ describe("WatchControlTokenService", () => {
       executionGeneration: 4,
       revisionId: createId("triggerRevision"),
       triggerId: createId("trigger"),
-      toolContractVersion: 5,
     } as const;
     const issuedAt = Date.now();
     const issued = service.issue(scope);
@@ -46,5 +45,6 @@ describe("WatchControlTokenService", () => {
     await expect(service.authenticate(issued.token)).rejects.toMatchObject({
       code: "forbidden",
     });
+    expect("toolContractVersion" in WatchCapabilityScopeSchema.shape).toBe(false);
   });
 });

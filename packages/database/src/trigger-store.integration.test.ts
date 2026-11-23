@@ -936,7 +936,6 @@ integration.sequential("Trigger failure auto-pause", () => {
     await failManual(fixture, created.trigger.id, "third");
     const afterThird = await detail(created.trigger.id, fixture.userId);
     expect(afterThird.trigger).toMatchObject({
-      consecutiveFailures: 3,
       pauseReason: null,
       status: "active",
     });
@@ -949,11 +948,16 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect(row.failingSince).not.toBeNull();
     expect(row.failureNotifiedAt).not.toBeNull();
   });
-  it("resets the consecutive count when a success interrupts failures", async ({
-    storeFixture,
-  }) => {
-    const { createFixture, createScheduleTrigger, failManual, triggers, detail, succeedManual } =
-      storeFixture;
+  it("clears failingSince when a success interrupts failures", async ({ storeFixture }) => {
+    const {
+      createFixture,
+      createScheduleTrigger,
+      failManual,
+      triggers,
+      detail,
+      succeedManual,
+      database,
+    } = storeFixture;
     const fixture = await createFixture("success-reset");
     const created = await createScheduleTrigger(fixture, "success-reset");
     await failManual(fixture, created.trigger.id, "first");
@@ -967,18 +971,29 @@ integration.sequential("Trigger failure auto-pause", () => {
       occurrenceId: canceled.id,
       triggerId: created.trigger.id,
     });
-    expect((await detail(created.trigger.id, fixture.userId)).trigger.consecutiveFailures).toBe(1);
+    const readFailing = async () =>
+      (
+        await database
+          .selectFrom("triggers")
+          .select(["failingSince", "failureNotifiedAt"])
+          .where("id", "=", created.trigger.id)
+          .executeTakeFirstOrThrow()
+      ).failingSince;
+    expect(await readFailing()).not.toBeNull();
     await succeedManual(fixture, created.trigger.id, "success");
-    expect((await detail(created.trigger.id, fixture.userId)).trigger.consecutiveFailures).toBe(0);
+    expect(await readFailing()).toBeNull();
     await failManual(fixture, created.trigger.id, "second-series-1");
     await failManual(fixture, created.trigger.id, "second-series-2");
+    expect(await readFailing()).not.toBeNull();
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 2,
       status: "active",
     });
   });
-  it("does not count a failed occurrence pinned to a stale Revision", async ({ storeFixture }) => {
-    const { createFixture, createScheduleTrigger, triggers, complete, detail } = storeFixture;
+  it("does not mark failing for a failed occurrence pinned to a stale Revision", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createScheduleTrigger, triggers, complete, detail, database } =
+      storeFixture;
     const fixture = await createFixture("stale-revision");
     const created = await createScheduleTrigger(fixture, "stale-revision");
     const occurrence = await triggers.enqueueManual({
@@ -999,16 +1014,31 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     await complete(fixture, occurrence, "failed", "stale-failure");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 0,
       status: "active",
     });
+    expect(
+      (
+        await database
+          .selectFrom("triggers")
+          .select("failingSince")
+          .where("id", "=", created.trigger.id)
+          .executeTakeFirstOrThrow()
+      ).failingSince,
+    ).toBeNull();
   });
 
-  it("allows a manual run while paused and resets the count after success", async ({
+  it("allows a manual run while paused and clears failingSince after success", async ({
     storeFixture,
   }) => {
-    const { createFixture, createScheduleTrigger, failManual, succeedManual, triggers, detail } =
-      storeFixture;
+    const {
+      createFixture,
+      createScheduleTrigger,
+      failManual,
+      succeedManual,
+      triggers,
+      detail,
+      database,
+    } = storeFixture;
     const fixture = await createFixture("paused-manual");
     const created = await createScheduleTrigger(fixture, "paused-manual");
     await failManual(fixture, created.trigger.id, "first");
@@ -1020,10 +1050,18 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     await succeedManual(fixture, created.trigger.id, "repair-check");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 0,
       pauseReason: null,
       status: "paused",
     });
+    expect(
+      (
+        await database
+          .selectFrom("triggers")
+          .select("failingSince")
+          .where("id", "=", created.trigger.id)
+          .executeTakeFirstOrThrow()
+      ).failingSince,
+    ).toBeNull();
   });
   it("counts an in-flight failure without changing an already paused Trigger, and cancels pending firings on pause (Y12)", async ({
     storeFixture,
@@ -1094,7 +1132,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       runnerId: fixture.runnerId,
     });
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 1,
       pauseReason: null,
       status: "paused",
     });
@@ -1133,7 +1170,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       runnerId: fixture.runnerId,
     });
     expect((await detail(archived.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 1,
       pauseReason: null,
       status: "archived",
     });
@@ -1158,7 +1194,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       triggerId: created.trigger.id,
     });
     expect(resumed).toMatchObject({
-      consecutiveFailures: 0,
       pauseReason: null,
       status: "active",
     });
@@ -1184,8 +1219,8 @@ integration.sequential("Trigger failure auto-pause", () => {
     const { createFixture, createScheduleTrigger, database, triggers } = storeFixture;
     const fixture = await createFixture("program-repair-wake");
     const created = await createScheduleTrigger(fixture, "program-repair-wake");
-    // An older program version: the schedule keeps its future time but cannot run.
-    await sql`update trigger_revisions set program = jsonb_set(program, '{toolContractVersion}', '4')
+    // A legacy non-script revision: the schedule keeps its future time but cannot run.
+    await sql`update trigger_revisions set script = null, legacy_source = 'export default () => null;'
       where id = ${created.revision.id}`.execute(database);
     expect(await triggers.nextScheduleAt()).toBeNull();
     const reactions: string[] = [];
@@ -1216,8 +1251,10 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect(await triggers.nextScheduleAt()).toEqual(expect.any(Date));
     expect(reactions).toContain("triggerSchedulesChanged");
   });
-  it("resets failures on a program update but not a name-only update", async ({ storeFixture }) => {
-    const { createFixture, createScheduleTrigger, failManual, triggers } = storeFixture;
+  it("keeps failingSince on a name-only update and preserves revision history on updates", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createScheduleTrigger, failManual, triggers, database } = storeFixture;
     const fixture = await createFixture("revision-reset");
     const created = await createScheduleTrigger(fixture, "revision-reset");
     await failManual(fixture, created.trigger.id, "first");
@@ -1228,7 +1265,16 @@ integration.sequential("Trigger failure auto-pause", () => {
       ownerId: fixture.userId,
       triggerId: created.trigger.id,
     });
-    expect(renamed.trigger.consecutiveFailures).toBe(1);
+    expect(renamed.trigger.name).toBe("Renamed only");
+    expect(
+      (
+        await database
+          .selectFrom("triggers")
+          .select("failingSince")
+          .where("id", "=", created.trigger.id)
+          .executeTakeFirstOrThrow()
+      ).failingSince,
+    ).not.toBeNull();
     const repaired = await triggers.update({
       actorThreadId: null,
       expectedRevisionId: renamed.revision.id,
@@ -1240,7 +1286,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       },
       triggerId: created.trigger.id,
     });
-    expect(repaired.trigger.consecutiveFailures).toBe(0);
+    expect(repaired.revision.ordinal).toBe(3);
     await failManual(fixture, created.trigger.id, "after-program-update");
     const rescheduled = await triggers.update({
       actorThreadId: null,
@@ -1256,7 +1302,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       },
       triggerId: created.trigger.id,
     });
-    expect(rescheduled.trigger.consecutiveFailures).toBe(0);
+    expect(rescheduled.revision.ordinal).toBe(4);
   });
   it("keeps accepting webhooks across repeated failures and refuses them once paused (T9)", async ({
     storeFixture,
@@ -1362,11 +1408,19 @@ integration.sequential("Trigger failure auto-pause", () => {
     await complete(fixture, second, "failed", "second");
     await complete(fixture, stale, "succeeded", "stale-success");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 2,
       status: "active",
     });
+    expect(
+      (
+        await storeFixture.database
+          .selectFrom("triggers")
+          .select("failingSince")
+          .where("id", "=", created.trigger.id)
+          .executeTakeFirstOrThrow()
+      ).failingSince,
+    ).not.toBeNull();
   });
-  it("treats a repeated status as a no-op that keeps the reason and the count", async ({
+  it("treats a repeated status as a no-op that keeps the reason and failing state", async ({
     storeFixture,
   }) => {
     const { createFixture, createScheduleTrigger, failManual, triggers, database } = storeFixture;
@@ -1379,7 +1433,16 @@ integration.sequential("Trigger failure auto-pause", () => {
       status: "active",
       triggerId: created.trigger.id,
     });
-    expect(stillActive.consecutiveFailures).toBe(1);
+    expect(stillActive.status).toBe("active");
+    expect(
+      (
+        await database
+          .selectFrom("triggers")
+          .select("failingSince")
+          .where("id", "=", created.trigger.id)
+          .executeTakeFirstOrThrow()
+      ).failingSince,
+    ).not.toBeNull();
     await triggers.setStatus({
       actorThreadId: null,
       ownerId: fixture.userId,
@@ -1398,7 +1461,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       triggerId: created.trigger.id,
     });
     expect(stillPaused).toMatchObject({
-      consecutiveFailures: 1,
       pauseReason: "Paused because its task was marked done.",
       status: "paused",
     });
@@ -1453,13 +1515,12 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     await complete(fixture, third, "failed", "seq-2");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 3,
       pauseReason: null,
       status: "active",
     });
   });
   it("tracks failures independently for each Trigger", async ({ storeFixture }) => {
-    const { createFixture, createScheduleTrigger, failManual, detail } = storeFixture;
+    const { createFixture, createScheduleTrigger, failManual, detail, database } = storeFixture;
     const fixture = await createFixture("per-trigger");
     const failing = await createScheduleTrigger(fixture, "per-trigger-failing");
     const unaffected = await createScheduleTrigger(fixture, "per-trigger-unaffected");
@@ -1467,14 +1528,19 @@ integration.sequential("Trigger failure auto-pause", () => {
     await failManual(fixture, failing.trigger.id, "second");
     await failManual(fixture, failing.trigger.id, "third");
     expect((await detail(failing.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 3,
       status: "active",
     });
     expect((await detail(unaffected.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 0,
       pauseReason: null,
       status: "active",
     });
+    const rows = await database
+      .selectFrom("triggers")
+      .select(["id", "failingSince"])
+      .where("id", "in", [failing.trigger.id, unaffected.trigger.id])
+      .execute();
+    expect(rows.find((r) => r.id === failing.trigger.id)?.failingSince).not.toBeNull();
+    expect(rows.find((r) => r.id === unaffected.trigger.id)?.failingSince).toBeNull();
   });
   it("reads downstream Runs separately from the Trigger program outcome", async ({
     storeFixture,
@@ -2245,9 +2311,9 @@ integration.sequential("Trigger failure auto-pause", () => {
     await report(2, null, "backoff");
     const healthy = await report(2, new Date(Date.now() - 11 * 60_000), "running");
     expect(healthy.activation.consecutiveFailures).toBe(0);
-    expect((await report(3, null, "backoff")).autoPaused).toBe(false);
-    expect((await report(4, null, "backoff")).autoPaused).toBe(false);
-    expect((await report(5, null, "backoff")).autoPaused).toBe(false);
+    expect((await report(3, null, "backoff")).activation.desired).toBe("active");
+    expect((await report(4, null, "backoff")).activation.desired).toBe("active");
+    expect((await report(5, null, "backoff")).activation.desired).toBe("active");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
       pauseReason: null,
       status: "active",

@@ -28,7 +28,6 @@ describe("WatchService", () => {
       const fixture = watchFixture();
       const context = {
         ...fixture.context,
-        toolContractVersion: 5 as const,
       };
       const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
         async () => undefined,
@@ -74,9 +73,8 @@ describe("WatchService", () => {
     const applyWatchStatus = vi.fn(async () => ({
       activation: {
         ...fixture.context.activation,
-        desired: "stopped" as const,
+        desired: "active" as const,
       },
-      autoPaused: true,
     }));
     const onChanged = vi.fn();
     const service = new WatchService(
@@ -124,7 +122,7 @@ describe("WatchService", () => {
       }),
     );
     expect(onChanged).toHaveBeenCalledWith();
-    await vi.waitFor(() => expect(reconcileWatches).toHaveBeenCalledTimes(2));
+    expect(reconcileWatches).toHaveBeenCalledTimes(1);
     await service.close();
   });
   it("reconciles a desired Watch after a stopped report is replayed", async () => {
@@ -137,7 +135,6 @@ describe("WatchService", () => {
         reconcileWatches,
         applyWatchStatus: async () => ({
           activation: { ...fixture.context.activation, desired: "active" },
-          autoPaused: false,
         }),
       }),
     );
@@ -306,7 +303,6 @@ function options(
         overrides.applyWatchStatus ??
         (async () => ({
           activation: fixture.context.activation,
-          autoPaused: false,
         })),
       reconcileWatchesForRunner:
         overrides.reconcileWatchesForRunner ??
@@ -357,7 +353,6 @@ function watchFixture(): {
       triggerId,
       updatedAt: new Date().toISOString(),
     }),
-    toolContractVersion: 5,
     agentHome: { computerId: createId("runner"), path: "/tmp/watch-home" },
   };
   const descriptor = RunnerDescriptorSchema.parse({

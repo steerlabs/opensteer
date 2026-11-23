@@ -20,7 +20,6 @@ describe("WatchScriptService", () => {
       jti: crypto.randomUUID(),
       revisionId,
       triggerId,
-      toolContractVersion: 5,
     };
     const script = {
       interpreter: null,

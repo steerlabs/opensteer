@@ -154,9 +154,8 @@ export class WatchService {
     });
     this.#onChanged();
     if (
-      result.autoPaused ||
-      ((status.observed === "stopped" || status.observed === "expired") &&
-        result.activation.desired === "active")
+      (status.observed === "stopped" || status.observed === "expired") &&
+      result.activation.desired === "active"
     )
       this.changed(result.activation.environmentId);
   }
@@ -186,7 +185,6 @@ export class WatchService {
         executionGeneration: context.activation.executionGeneration,
         revisionId: context.activation.revisionId,
         triggerId: context.activation.triggerId,
-        toolContractVersion: context.toolContractVersion,
       };
       const mcp = this.#controlTokens.issue(scope);
       const hasBrowser = await this.#browser.hasBrowserProfiles(

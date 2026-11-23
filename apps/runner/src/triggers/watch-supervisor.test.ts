@@ -8,7 +8,7 @@ import {
   type RunnerCommand,
   type RunnerOperationalReport,
 } from "@opensteer/protocol";
-import { WATCH_AUTO_PAUSE_FAILURE_THRESHOLD } from "@opensteer/triggers";
+import { WATCH_CRASH_NOTICE_THRESHOLD } from "@opensteer/triggers";
 import { createServer } from "node:http";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -530,7 +530,7 @@ describe("WatchSupervisor", () => {
               (message) =>
                 message.type === "runner.watch-status" &&
                 message.observed === "backoff" &&
-                message.restartCount >= WATCH_AUTO_PAUSE_FAILURE_THRESHOLD,
+                message.restartCount >= WATCH_CRASH_NOTICE_THRESHOLD,
             ),
           ).toBe(true);
         },

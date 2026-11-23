@@ -1114,7 +1114,6 @@ integration.sequential("Run recovery acceptance", () => {
       .where("triggerId", "=", triggerId)
       .where("status", "=", "running")
       .executeTakeFirstOrThrow();
-    const failures = created.data.trigger.consecutiveFailures;
     await settledTriggerDispatches(current.active);
     await current.active.restartRunner();
     await waitFor(
@@ -1143,8 +1142,8 @@ integration.sequential("Run recovery acceptance", () => {
           .selectAll()
           .where("id", "=", triggerId)
           .executeTakeFirstOrThrow()
-      ).consecutiveFailures,
-    ).toBe(failures);
+      ).failingSince,
+    ).toBeNull();
     await writeFile(join(current.scratch, "next-tick"), "");
     await waitFor(
       async () =>

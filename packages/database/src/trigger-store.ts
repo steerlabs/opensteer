@@ -36,7 +36,7 @@ import {
   MAX_PENDING_TRIGGER_OCCURRENCES,
   RETAINED_OUTPUT_OCCURRENCES,
   TRIGGER_PROGRAM_UPDATE_REASON,
-  WATCH_AUTO_PAUSE_FAILURE_THRESHOLD,
+  WATCH_CRASH_NOTICE_THRESHOLD,
   WATCH_HEALTHY_WINDOW_MS,
   TriggerOccurrenceSchema,
   TriggerProgramEventSchema,
@@ -90,8 +90,6 @@ type TriggerRow = Selectable<DatabaseSchema["triggers"]>;
 type TriggerRevisionRow = Selectable<DatabaseSchema["triggerRevisions"]>;
 type TriggerOccurrenceRow = Selectable<TriggerOccurrenceTable>;
 type TriggerWatchActivationRow = Selectable<TriggerWatchActivationTable>;
-const maxPostgresInteger = 2_147_483_647;
-const currentProgramVersion = 5 as const;
 const executableProgram = sql<boolean>`trigger_revisions.script is not null`;
 const triggerAuthorityLossPauseReason =
   "Paused because its conversation could not run when it was due.";
@@ -153,7 +151,6 @@ export interface TriggerDispatchContext {
 export interface WatchActivationContext {
   readonly activation: TriggerWatchActivation;
   readonly connectionId?: string;
-  readonly toolContractVersion: typeof currentProgramVersion;
   readonly agentHome: import("@opensteer/core").ComputerFolder;
 }
 export interface ActiveWatchBindingInput {
@@ -440,7 +437,6 @@ export async function createTriggerInTransaction(
       ...(originConnectionId ? { originConnectionId } : {}),
       systemRole: managed?.systemRole ?? null,
       anchorThreadId: anchor.id,
-      consecutiveFailures: 0,
       createdAt: now,
       createdBy: input.createdBy,
       createdByThreadId: input.actorThreadId,
@@ -701,11 +697,6 @@ export class TriggerStore {
       const updated = await transaction
         .updateTable("triggers")
         .set({
-          ...(input.script === undefined && input.source === undefined
-            ? {}
-            : {
-                consecutiveFailures: 0,
-              }),
           ...(input.script !== undefined && trigger.pauseReason === TRIGGER_PROGRAM_UPDATE_REASON
             ? { pauseReason: null }
             : {}),
@@ -895,7 +886,6 @@ export class TriggerStore {
             .set({
               ...(input.status === "active"
                 ? {
-                    consecutiveFailures: 0,
                     failingSince: null,
                     failureNotifiedAt: null,
                     overrunNotifiedAt: null,
@@ -1398,7 +1388,6 @@ export class TriggerStore {
         activations.push({
           activation: watchActivationFromRow(updated),
           ...(updated.connectionId ? { connectionId: updated.connectionId } : {}),
-          toolContractVersion: currentProgramVersion,
           agentHome: (await personalSettings(transaction)).agentHome,
         });
       }
@@ -1537,7 +1526,6 @@ export class TriggerStore {
     readonly stdoutTail: string;
   }): Promise<{
     readonly activation: TriggerWatchActivation;
-    readonly autoPaused: boolean;
   }> {
     return commitPersonalMutation(this.#database, async (transaction) => {
       const identity = await transaction
@@ -1587,15 +1575,10 @@ export class TriggerStore {
         now.getTime() - input.healthySince.getTime() >= WATCH_HEALTHY_WINDOW_MS;
       if (recovered) {
         consecutiveFailures = 0;
-        if (
-          trigger.consecutiveFailures !== 0 ||
-          trigger.failingSince !== null ||
-          trigger.watchCrashNotifiedAt !== null
-        ) {
+        if (trigger.failingSince !== null || trigger.watchCrashNotifiedAt !== null) {
           await transaction
             .updateTable("triggers")
             .set({
-              consecutiveFailures: 0,
               failingSince: null,
               watchCrashNotifiedAt: null,
               updatedAt: now,
@@ -1614,13 +1597,12 @@ export class TriggerStore {
       const crashLooping =
         (activation.desired === "active" &&
           trigger.status === "active" &&
-          consecutiveFailures >= WATCH_AUTO_PAUSE_FAILURE_THRESHOLD) ||
+          consecutiveFailures >= WATCH_CRASH_NOTICE_THRESHOLD) ||
         containmentHalted;
       if (crashLooping) {
         await transaction
           .updateTable("triggers")
           .set({
-            consecutiveFailures,
             failingSince: trigger.failingSince ?? now,
             watchCrashNotifiedAt: trigger.watchCrashNotifiedAt ?? now,
             updatedAt: now,
@@ -1669,7 +1651,6 @@ export class TriggerStore {
         .executeTakeFirstOrThrow();
       return {
         activation: watchActivationFromRow(updated),
-        autoPaused: false,
       };
     });
   }
@@ -2503,12 +2484,7 @@ export class TriggerStore {
     readonly occurrenceId: TriggerOccurrenceId;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
-  }): Promise<
-    | (ActiveTriggerExecutionBindingInput & {
-        readonly toolContractVersion: typeof currentProgramVersion;
-      })
-    | null
-  > {
+  }): Promise<ActiveTriggerExecutionBindingInput | null> {
     const row = await this.#database
       .selectFrom("triggerOccurrences")
       .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
@@ -2541,17 +2517,14 @@ export class TriggerStore {
       }
       throw error;
     }
-    return { ...scope, toolContractVersion: currentProgramVersion };
+    return scope;
   }
   async activeWatchCapabilityScope(input: {
     readonly activationId: TriggerWatchActivationId;
     readonly executionGeneration: number;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
-  }): Promise<
-    | (ActiveWatchBindingInput & { readonly toolContractVersion: typeof currentProgramVersion })
-    | null
-  > {
+  }): Promise<ActiveWatchBindingInput | null> {
     const row = await this.#database
       .selectFrom("triggerWatchActivations")
       .select(["id", "triggerId", "revisionId", "environmentId", "anchorThreadId", "createdBy"])
@@ -2582,7 +2555,7 @@ export class TriggerStore {
       }
       throw error;
     }
-    return { ...scope, toolContractVersion: currentProgramVersion };
+    return scope;
   }
   async acceptExecution(input: {
     readonly commandId: CommandId;
@@ -2695,8 +2668,7 @@ export class TriggerStore {
       if (input.output.status === "succeeded") {
         const recovered =
           occurrence.revisionId === trigger.currentRevisionId &&
-          (trigger.consecutiveFailures !== 0 ||
-            trigger.failingSince !== null ||
+          (trigger.failingSince !== null ||
             trigger.failureNotifiedAt !== null ||
             trigger.overrunNotifiedAt !== null);
         const finished = await oneTimeTriggerFinished(transaction, trigger, now);
@@ -2706,7 +2678,6 @@ export class TriggerStore {
             .set({
               ...(recovered
                 ? {
-                    consecutiveFailures: 0,
                     failingSince: null,
                     failureNotifiedAt: null,
                     overrunNotifiedAt: null,
@@ -2729,14 +2700,12 @@ export class TriggerStore {
       ) {
         // T9: Never auto-pause after failures. Keep the automation active, stamp failingSince,
         // and emit a single 'started-failing' notice (or 'final-occurrence-failed' for one-shots).
-        const consecutiveFailures = Math.min(trigger.consecutiveFailures + 1, maxPostgresInteger);
         const final = await isFinalOccurrence(transaction, occurrence);
         const notifyStartedFailing =
           !final && trigger.status === "active" && trigger.failureNotifiedAt === null;
         await transaction
           .updateTable("triggers")
           .set({
-            consecutiveFailures,
             failingSince: trigger.failingSince ?? now,
             ...(notifyStartedFailing ? { failureNotifiedAt: now } : {}),
             updatedAt: now,
@@ -3936,7 +3905,6 @@ function triggerFromRow(row: TriggerRow, needsProgramUpdate = false): Trigger {
   return TriggerSchema.parse({
     systemRole: row.systemRole,
     anchorThreadId: row.anchorThreadId,
-    consecutiveFailures: row.consecutiveFailures,
     createdAt: row.createdAt.toISOString(),
     createdBy: row.createdBy,
     createdByThreadId: row.createdByThreadId,

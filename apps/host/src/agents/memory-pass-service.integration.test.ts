@@ -753,7 +753,6 @@ describeStore("managed memory passes", (it) => {
       },
     });
     expect((await detail(f, base.userId, light.id)).trigger).toMatchObject({
-      consecutiveFailures: 0,
       status: "paused",
     });
   });

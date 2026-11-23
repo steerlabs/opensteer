@@ -689,7 +689,6 @@ async function triggerCaller(
       runnerBootId,
       runnerId,
       threadId: anchor.id,
-      toolContractVersion: 5,
     },
   } satisfies AgentCaller;
 }

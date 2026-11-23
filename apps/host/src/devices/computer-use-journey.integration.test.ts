@@ -5532,7 +5532,6 @@ async function openGateway(
     runnerBootId: "boot",
     runnerId: run.agentRunnerId,
     threadId: run.threadId,
-    toolContractVersion: 5 as const,
   };
   const service = createIntegrationMcpFixture({
     platform,

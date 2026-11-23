@@ -1,5 +1,4 @@
 import { firstTriggerFireAt } from "@opensteer/triggers/schedule";
-import { WATCH_AUTO_PAUSE_REASON } from "@opensteer/triggers/limits";
 
 import { createId, RunSchema, type Run } from "@opensteer/core";
 import {
@@ -110,7 +109,6 @@ export function seedMockAutomations(input: {
   const record = (spec: {
     readonly activation?: (trigger: Trigger, revision: TriggerRevision) => TriggerWatchActivation;
     readonly anchor: ThreadSummary;
-    readonly consecutiveFailures?: number;
     readonly createdByThread?: ThreadSummary;
     readonly createdDaysAgo: number;
     readonly id?: string;
@@ -136,7 +134,6 @@ export function seedMockAutomations(input: {
     const status = spec.status ?? "active";
     const trigger = TriggerSchema.parse({
       anchorThreadId: spec.anchor.id,
-      consecutiveFailures: spec.consecutiveFailures ?? 0,
       createdAt,
       createdBy: input.userId,
       createdByThreadId: spec.createdByThread?.id ?? null,
@@ -190,7 +187,6 @@ export function seedMockAutomations(input: {
     }),
     record({
       anchor: anchorThread,
-      consecutiveFailures: 1,
       createdDaysAgo: 3,
       name: "Reminder: renew passport",
       occurrences: [
@@ -292,7 +288,7 @@ export function seedMockAutomations(input: {
       anchor: anchorThread,
       createdDaysAgo: 9,
       name: "Inbox watcher",
-      pauseReason: WATCH_AUTO_PAUSE_REASON,
+      pauseReason: "Paused after IMAP credentials expired.",
       script: watchScript,
       source: { kind: "watch" },
       status: "paused",

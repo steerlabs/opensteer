@@ -424,6 +424,15 @@ export class ProductToolsTestClient {
         input.taskId = input.anchorThreadId;
         delete input.anchorThreadId;
       }
+      if (
+        input.script &&
+        typeof input.script === "object" &&
+        "interpreter" in input.script &&
+        (input.script as { interpreter?: unknown }).interpreter === null
+      ) {
+        const { interpreter: _interpreter, ...rest } = input.script as Record<string, unknown>;
+        input.script = rest;
+      }
       if (input.action === "set_status") {
         input.action =
           input.status === "active" ? "resume" : input.status === "paused" ? "pause" : "archive";

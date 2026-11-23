@@ -1,61 +1,113 @@
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
-export const automationScriptsMigrationName = "0055_automation_scripts";
+export const automationsContractMigrationName = "0055_automations_contract";
 
 /**
- * Expand-only storage for script-based automations, first-class unknown firing outcomes,
- * who-paused provenance, wake/watch fuses, and per-automation write-only sealed secrets.
- *
- * Previous-release compatibility (Y8):
- * - `trigger_revisions` and `trigger_watch_activations` keep their exact column set because
- *   previous-release readers pass `selectAll()` rows into `z.strictObject` schemas; script
- *   payloads live in `trigger_revision_scripts` alongside a non-v5 stub in `program`, and
- *   watch crash notification state lives on `triggers` (whose reader picks columns explicitly).
- * - `trigger_occurrences.status` stays inside its 5 legacy values while `outcome` holds the
- *   6th value (`unknown`).
- * - Pausing legacy v5 programs lands only when the old runtime is removed (Y16).
+ * Moves pre-script automations storage directly onto the script-automation contract
+ * (AGENTS.md rule 6; T1–T14, Y1–Y16, AA3, AA6, AA7, AA9, AA13):
+ * - Replaces `trigger_revisions.program` with `script` (jsonb) and `legacy_source` (text),
+ *   pausing active user-authored legacy automations with "Needs an update: ask your agent"
+ *   and stopping their active watches while preserving memory passes and archived rows.
+ * - Widens `trigger_occurrences.status` to include `'unknown'` and adds `output_pruned_at`
+ *   and `webhook_body`.
+ * - Adds `paused_by` (`person`/`agent`/`connection`/`system`), `paused_by_connection_id`,
+ *   `paused_by_thread_id`, `paused_at`, `failing_since`, `failure_notified_at`,
+ *   `overrun_notified_at`, `watch_crash_notified_at`, and sealed secrets columns on `triggers`,
+ *   and drops retired `webhook_secret_hash` and `consecutive_failures`.
+ * - Drops the retired `watch_control_requests` ledger.
+ * - Adds `commands.frame_sent_at` and backfills already-dispatched `trigger.execute` rows so
+ *   in-flight firings settle to `unknown` after upgrade rather than rerunning.
  */
-export async function applyAutomationScripts(database: Kysely<DatabaseSchema>): Promise<void> {
+export async function applyAutomationsContract(database: Kysely<DatabaseSchema>): Promise<void> {
   await sql`
     alter table triggers
-      add column paused_by text check (paused_by in ('person', 'agent', 'system')),
+      add column paused_by text check (paused_by in ('person', 'agent', 'connection', 'system')),
+      add column paused_by_connection_id text,
       add column paused_by_thread_id text,
       add column paused_at timestamptz,
       add column failing_since timestamptz,
       add column failure_notified_at timestamptz,
       add column overrun_notified_at timestamptz,
       add column watch_crash_notified_at timestamptz,
-      add column wake_limit_per_hour integer check (wake_limit_per_hour >= 1),
       add column encrypted_secrets bytea,
       add column secrets_key_version integer check (secrets_key_version >= 1),
       add constraint triggers_secrets_envelope check (
         (encrypted_secrets is null) = (secrets_key_version is null)
+      ),
+      drop column if exists webhook_secret_hash,
+      drop column if exists consecutive_failures;
+
+    alter table trigger_revisions
+      add column script jsonb,
+      add column legacy_source text;
+
+    update trigger_revisions
+    set legacy_source = coalesce(program->>'source', program::text)
+    where script is null
+      and legacy_source is null
+      and program is not null;
+
+    alter table trigger_revisions
+      drop column if exists program,
+      add constraint trigger_revisions_script_or_legacy_check check (
+        (script is not null) <> (legacy_source is not null)
       );
 
-    create table trigger_revision_scripts (
-      revision_id text primary key references trigger_revisions(id) on delete cascade,
-      script jsonb not null
-    );
+    update triggers
+    set
+      status = 'paused',
+      next_fire_at = null,
+      pause_reason = 'Needs an update: ask your agent',
+      paused_by = 'system',
+      paused_by_connection_id = null,
+      paused_by_thread_id = null,
+      paused_at = now(),
+      updated_at = now()
+    where status = 'active'
+      and system_role is null
+      and exists (
+        select 1 from trigger_revisions
+        where trigger_revisions.id = triggers.current_revision_id
+          and trigger_revisions.script is null
+      );
+
+    update trigger_watch_activations
+    set
+      desired = 'stopped',
+      updated_at = now()
+    where desired = 'active'
+      and trigger_id in (
+        select triggers.id from triggers
+        join trigger_revisions on trigger_revisions.id = triggers.current_revision_id
+        where triggers.system_role is null
+          and trigger_revisions.script is null
+      );
+
+    do $$
+    declare
+      constraint_row record;
+    begin
+      for constraint_row in
+        select con.conname
+        from pg_constraint con
+        join pg_class cls on cls.oid = con.conrelid
+        join pg_namespace ns on ns.oid = cls.relnamespace
+        where ns.nspname = current_schema()
+          and cls.relname = 'trigger_occurrences'
+          and con.contype = 'c'
+          and pg_get_constraintdef(con.oid) like '%status%'
+      loop
+        execute format('alter table trigger_occurrences drop constraint %I', constraint_row.conname);
+      end loop;
+    end $$;
 
     alter table trigger_occurrences
-      add column outcome text check (
-        outcome in ('pending', 'running', 'succeeded', 'failed', 'canceled', 'unknown')
-      ),
       add column output_pruned_at timestamptz,
-      add column webhook_body bytea;
-
-    create table automation_wakes (
-      id text primary key,
-      trigger_id text not null references triggers(id) on delete cascade,
-      occurrence_id text references trigger_occurrences(id) on delete set null,
-      activation_id text references trigger_watch_activations(id) on delete set null,
-      tool_name text not null,
-      request_id text,
-      created_at timestamptz not null default now()
-    );
-    create index automation_wakes_trigger_created
-      on automation_wakes(trigger_id, created_at desc);
+      add column webhook_body bytea,
+      add constraint trigger_occurrences_status_check check (
+        status in ('pending', 'running', 'succeeded', 'failed', 'canceled', 'unknown')
+      );
 
     alter table automation_failure_notices
       drop constraint if exists automation_failure_notices_reason_check;
@@ -68,13 +120,11 @@ export async function applyAutomationScripts(database: Kysely<DatabaseSchema>): 
           'started-failing',
           'overran-schedule',
           'watch-crash-loop',
-          'wake-limit-reached',
           'outcome-unknown'
         )
       );
 
-    alter table execution_environments
-      add column max_active_watches integer check (max_active_watches >= 0);
+    drop table if exists watch_control_requests;
 
     alter table commands
       add column frame_sent_at timestamptz;

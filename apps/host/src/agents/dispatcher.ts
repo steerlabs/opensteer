@@ -932,7 +932,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
             threadId: context.anchorThread.id,
-            toolContractVersion: 5,
           });
           const [hasBrowser, secrets] = await Promise.all([
             this.#browser.hasBrowserProfiles(

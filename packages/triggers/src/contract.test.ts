@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { TriggerRevisionViewSchema } from "./models.js";
+import * as triggersExports from "./index.js";
+import { TriggerRevisionViewSchema, TriggerSchema } from "./models.js";
 import { AutomationScriptSchema } from "./script.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
@@ -64,5 +65,21 @@ describe("Automation skill and script guide", () => {
       "utf8",
     );
     expect(mockAutomations).not.toContain("observationId");
+  });
+
+  it("removes legacy v5 program schemas, auto-pause constants, and unused trigger consecutiveFailures (AA13)", () => {
+    for (const removed of [
+      "TRIGGER_AUTO_PAUSE_FAILURE_THRESHOLD",
+      "TRIGGER_AUTO_PAUSE_REASON",
+      "WATCH_AUTO_PAUSE_FAILURE_THRESHOLD",
+      "WATCH_AUTO_PAUSE_REASON",
+      "TRIGGER_PROGRAM_VERSION_REFUSAL",
+      "StoredTriggerProgramSchema",
+      "TriggerProgramSchema",
+      "isExecutableTriggerProgram",
+    ]) {
+      expect(removed in triggersExports, removed).toBe(false);
+    }
+    expect("consecutiveFailures" in TriggerSchema.shape).toBe(false);
   });
 });

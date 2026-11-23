@@ -117,7 +117,6 @@ describe("TriggerService", () => {
       }),
       trigger: TriggerSchema.parse({
         anchorThreadId,
-        consecutiveFailures: 0,
         createdAt: new Date().toISOString(),
         createdBy: ownerId,
         currentRevisionId: revisionId,
@@ -184,7 +183,6 @@ describe("TriggerService", () => {
     const rotateWebhookKey = vi.fn(async (input: { readonly webhookRouteKey: string }) =>
       TriggerSchema.parse({
         anchorThreadId: createId("thread"),
-        consecutiveFailures: 0,
         createdAt: new Date().toISOString(),
         createdBy: ownerId,
         currentRevisionId: createId("triggerRevision"),

@@ -253,7 +253,6 @@ function makeService(options: {
   ) => Promise<readonly ReturnType<typeof environment>[]>;
   manage?: (owner: typeof ownerId, input: TriggerControlInput) => Promise<unknown>;
   store?: Readonly<Record<string, unknown>>;
-  toolContractVersion?: 5;
 }) {
   const anchor = thread();
   const claims = {
@@ -269,7 +268,6 @@ function makeService(options: {
     runnerBootId: "boot-1",
     runnerId,
     threadId,
-    toolContractVersion: options.toolContractVersion ?? 5,
   };
   const listEnvironmentsForUser = vi.fn(
     options.listEnvironmentsForUser ?? (async () => [environment(environmentId)]),

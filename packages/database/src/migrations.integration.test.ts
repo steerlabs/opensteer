@@ -1534,174 +1534,13 @@ it("keeps a server's recorded home when the publishing computer can no longer be
   ]);
 });
 
-it("applies 0055_automation_scripts expand-only without breaking legacy v5 rows", async () => {
-  await migrateToLatest(database, migrationsBefore("0055_automation_scripts"));
-  const fixture = await seedPersonalFixture(database, "/tmp/automation-scripts-migration");
-  const task = await legacyTask(fixture, "Automation migration anchor");
+it("applies 0055_automations_contract in one migration from pre-script state and matches a fresh catalog", async () => {
+  await migrateToLatest(database, migrationsBefore("0055_automations_contract"));
+  const fixture = await seedPersonalFixture(database, "/tmp/automations-contract-migration");
+  const task = await legacyTask(fixture, "Automations contract anchor");
   const principalId =
     (await sql<{ id: string }>`select id from principals limit 1`.execute(database)).rows[0]?.id ??
     `usr:${fixture.userId}`;
-  const triggerId = `trg_${crypto.randomUUID()}`;
-  const legacyRevisionId = `trv_${crypto.randomUUID()}`;
-  const inFlightCmdId = `cmd_${crypto.randomUUID()}`;
-  const legacyProgram = {
-    language: "javascript",
-    source: "export default async function () { return { ok: true }; }",
-    toolContractVersion: 5,
-  };
-  await database.transaction().execute(async (tx) => {
-    await sql`insert into triggers(
-      id, anchor_thread_id, created_by, idempotency_key, request_fingerprint, name, kind, status,
-      current_revision_id, consecutive_failures
-    ) values (
-      ${triggerId}, ${task.id}, ${fixture.userId}, 'legacy-key', 'fp-1', 'Legacy v5',
-      'schedule', 'active', ${legacyRevisionId}, 0
-    )`.execute(tx);
-    await sql`insert into trigger_revisions(id, trigger_id, ordinal, source, program, created_by)
-      values (
-        ${legacyRevisionId}, ${triggerId}, 1,
-        ${JSON.stringify({ kind: "schedule", schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" } })}::jsonb,
-        ${JSON.stringify(legacyProgram)}::jsonb,
-        ${fixture.userId}
-      )`.execute(tx);
-    // AA3(a): an in-flight v5 firing dispatched before 0055 must get frame_sent_at backfilled so
-    // it settles to unknown after upgrade rather than returning to pending and failing.
-    await sql`insert into commands(
-      id, environment_id, thread_id, requested_by, actor_principal_id, authority_source,
-      idempotency_key, type, payload, status
-    ) values (
-      ${inFlightCmdId}, ${fixture.environmentId}, ${task.id}, ${fixture.userId}, ${principalId},
-      '{"kind":"person"}'::jsonb, 'in-flight-pre-0055', 'trigger.execute', '{}'::jsonb, 'dispatched'
-    )`.execute(tx);
-  });
-
-  await migrateToLatest(database, migrationsBefore("0056_pause_legacy_v5_automations"));
-
-  const backfilled = (
-    await sql<{ frameSentAt: Date | null }>`
-      select frame_sent_at as "frameSentAt" from commands where id = ${inFlightCmdId}
-    `.execute(database)
-  ).rows[0];
-  expect(backfilled?.frameSentAt).not.toBeNull();
-
-  // Legacy v5 automation stays untouched and active (Y16: pausing old programs lands when old runtime is removed).
-  const legacyTrigger = (
-    await sql<{ status: string; pausedBy: string | null; wakeLimitPerHour: number | null }>`
-      select status, paused_by, wake_limit_per_hour from triggers where id = ${triggerId}
-    `.execute(database)
-  ).rows[0];
-  expect(legacyTrigger).toEqual({ pausedBy: null, status: "active", wakeLimitPerHour: null });
-
-  // New script revision keeps non-null stub program in trigger_revisions (leaving its columns
-  // untouched so previous-release strict readers stay valid) and stores the script in
-  // trigger_revision_scripts (Y8).
-  const scriptRevisionId = `trv_${crypto.randomUUID()}`;
-  await sql`insert into trigger_revisions(id, trigger_id, ordinal, source, program, created_by)
-    values (
-      ${scriptRevisionId}, ${triggerId}, 2,
-      ${JSON.stringify({ kind: "webhook" })}::jsonb,
-      ${JSON.stringify({ language: "javascript", source: "console.log('hi')", toolContractVersion: 6 })}::jsonb,
-      ${fixture.userId}
-    )`.execute(database);
-  await sql`insert into trigger_revision_scripts(revision_id, script)
-    values (
-      ${scriptRevisionId},
-      ${JSON.stringify({ interpreter: null, text: "console.log('hi')" })}::jsonb
-    )`.execute(database);
-
-  // Outcome column allows 'unknown' while status remains within its 5 legacy values (Y8).
-  const commandId = `cmd_${crypto.randomUUID()}`;
-  const occurrenceId = `toc_${crypto.randomUUID()}`;
-  await sql`insert into commands(
-    id, environment_id, thread_id, requested_by, actor_principal_id, authority_source,
-    idempotency_key, type, payload, status, frame_sent_at
-  ) values (
-    ${commandId}, ${fixture.environmentId}, ${task.id}, ${fixture.userId}, ${principalId},
-    '{"kind":"person"}'::jsonb, 'occ-cmd-1', 'trigger.execute', '{}'::jsonb, 'dispatched', now()
-  )`.execute(database);
-  await sql`insert into trigger_occurrences(
-    id, trigger_id, revision_id, command_id, environment_id, source_key, event, status, outcome, stdout, stderr, webhook_body
-  ) values (
-    ${occurrenceId}, ${triggerId}, ${scriptRevisionId}, ${commandId}, ${fixture.environmentId},
-    'webhook:1', '{}'::jsonb, 'failed', 'unknown', '', '', ${Buffer.from("raw-bytes")}
-  )`.execute(database);
-  await expect(
-    sql`insert into trigger_occurrences(
-      id, trigger_id, revision_id, command_id, environment_id, source_key, event, status, outcome, stdout, stderr
-    ) values (
-      ${`toc_${crypto.randomUUID()}`}, ${triggerId}, ${scriptRevisionId}, ${commandId}, ${fixture.environmentId},
-      'webhook:2', '{}'::jsonb, 'failed', 'bogus', '', ''
-    )`.execute(database),
-  ).rejects.toThrow(/check constraint/u);
-
-  // Widened automation_failure_notices reason check accepts new reasons.
-  await sql`insert into automation_failure_notices(id, trigger_id, reason, detail)
-    values (${crypto.randomUUID()}, ${triggerId}, 'started-failing', 'exited 1')`.execute(database);
-  await sql`insert into automation_failure_notices(id, trigger_id, reason, detail)
-    values (${crypto.randomUUID()}, ${triggerId}, 'outcome-unknown', 'computer rebooted')`.execute(
-    database,
-  );
-
-  // Per-computer watch limit lives on execution_environments (Y14).
-  await sql`update execution_environments set max_active_watches = 48 where id = ${fixture.environmentId}`.execute(
-    database,
-  );
-  await expect(
-    sql`update execution_environments set max_active_watches = -1 where id = ${fixture.environmentId}`.execute(
-      database,
-    ),
-  ).rejects.toThrow(/check constraint/u);
-
-  // Secrets envelope constraint enforces paired encrypted_secrets and secrets_key_version.
-  await expect(
-    sql`update triggers set encrypted_secrets = ${Buffer.from("cipher")}, secrets_key_version = null where id = ${triggerId}`.execute(
-      database,
-    ),
-  ).rejects.toThrow(/check constraint/u);
-
-  // automation_wakes cascades cleanly if a trigger is deleted (and indexes trigger_id, created_at).
-  const wakeId = `awk_${crypto.randomUUID()}`;
-  await sql`insert into automation_wakes(id, trigger_id, occurrence_id, tool_name)
-    values (${wakeId}, ${triggerId}, ${occurrenceId}, 'opensteer_task_send')`.execute(database);
-  expect(
-    (await sql`select id from automation_wakes where trigger_id = ${triggerId}`.execute(database))
-      .rows,
-  ).toHaveLength(1);
-
-  // Fresh catalog matches upgraded catalog, and 0058 drops the removed T10 fuses cleanly.
-  await migrateToLatest(database);
-  expect(
-    (
-      await sql<{
-        exists: boolean;
-      }>`select to_regclass('public.automation_wakes') is not null as exists`.execute(database)
-    ).rows[0]?.exists,
-  ).toBe(false);
-  const droppedColumns = (
-    await sql<{ tableName: string; columnName: string }>`
-      select table_name, column_name from information_schema.columns
-      where table_schema = 'public'
-        and ((table_name = 'triggers' and column_name = 'wake_limit_per_hour')
-          or (table_name = 'execution_environments' and column_name = 'max_active_watches'))
-    `.execute(database)
-  ).rows;
-  expect(droppedColumns).toEqual([]);
-  await expect(
-    sql`insert into automation_failure_notices(id, trigger_id, reason, detail)
-      values (${crypto.randomUUID()}, ${triggerId}, 'wake-limit-reached', 'nope')`.execute(
-      database,
-    ),
-  ).rejects.toThrow(/check constraint/u);
-  const upgraded = await catalog();
-  await sql`drop schema public cascade;create schema public`.execute(database);
-  await migrateToLatest(database);
-  expect(await catalog()).toEqual(upgraded);
-});
-
-it("applies 0056_pause_legacy_v5_automations to pause legacy v5 rows while preserving script, memory-pass, and archived rows", async () => {
-  await migrateToLatest(database, migrationsBefore("0056_pause_legacy_v5_automations"));
-  const fixture = await seedPersonalFixture(database, "/tmp/pause-legacy-v5-migration");
-  const task = await legacyTask(fixture, "Legacy pause anchor");
 
   const legacyScheduleId = `trg_${crypto.randomUUID()}`;
   const legacyScheduleRevId = `trv_${crypto.randomUUID()}`;
@@ -1710,12 +1549,12 @@ it("applies 0056_pause_legacy_v5_automations to pause legacy v5 rows while prese
   const legacyWatchId = `trg_${crypto.randomUUID()}`;
   const legacyWatchRevId = `trv_${crypto.randomUUID()}`;
   const legacyWatchActId = `twa_${crypto.randomUUID()}`;
-  const scriptScheduleId = `trg_${crypto.randomUUID()}`;
-  const scriptScheduleRevId = `trv_${crypto.randomUUID()}`;
   const memoryPassId = `trg_${crypto.randomUUID()}`;
   const memoryPassRevId = `trv_${crypto.randomUUID()}`;
   const archivedLegacyId = `trg_${crypto.randomUUID()}`;
   const archivedLegacyRevId = `trv_${crypto.randomUUID()}`;
+  const inFlightCmdId = `cmd_${crypto.randomUUID()}`;
+  const inFlightOccId = `toc_${crypto.randomUUID()}`;
   const futureFireAt = new Date(Date.now() + 3_600_000);
   const legacyProgram = {
     language: "javascript",
@@ -1732,10 +1571,9 @@ it("applies 0056_pause_legacy_v5_automations to pause legacy v5 rows while prese
       id, anchor_thread_id, created_by, idempotency_key, request_fingerprint, name, kind, status,
       current_revision_id, consecutive_failures, next_fire_at
     ) values
-      (${legacyScheduleId}, ${task.id}, ${fixture.userId}, 'leg-sched', 'fp-1', 'Legacy schedule', 'schedule', 'active', ${legacyScheduleRevId}, 0, ${futureFireAt}),
+      (${legacyScheduleId}, ${task.id}, ${fixture.userId}, 'leg-sched', 'fp-1', 'Legacy schedule', 'schedule', 'active', ${legacyScheduleRevId}, 2, ${futureFireAt}),
       (${legacyWebhookId}, ${task.id}, ${fixture.userId}, 'leg-hook', 'fp-2', 'Legacy webhook', 'webhook', 'active', ${legacyWebhookRevId}, 0, null),
-      (${legacyWatchId}, ${task.id}, ${fixture.userId}, 'leg-watch', 'fp-3', 'Legacy watch', 'watch', 'active', ${legacyWatchRevId}, 0, null),
-      (${scriptScheduleId}, ${task.id}, ${fixture.userId}, 'scr-sched', 'fp-4', 'Script schedule', 'schedule', 'active', ${scriptScheduleRevId}, 0, ${futureFireAt}),
+      (${legacyWatchId}, ${task.id}, ${fixture.userId}, 'leg-watch', 'fp-3', 'Legacy watch', 'watch', 'active', ${legacyWatchRevId}, 1, null),
       (${archivedLegacyId}, ${task.id}, ${fixture.userId}, 'arch-leg', 'fp-6', 'Archived legacy', 'schedule', 'archived', ${archivedLegacyRevId}, 0, null)
     `.execute(tx);
     await sql`insert into triggers(
@@ -1749,12 +1587,8 @@ it("applies 0056_pause_legacy_v5_automations to pause legacy v5 rows while prese
       (${legacyScheduleRevId}, ${legacyScheduleId}, 1, ${JSON.stringify(scheduleSource)}::jsonb, ${JSON.stringify(legacyProgram)}::jsonb, ${fixture.userId}),
       (${legacyWebhookRevId}, ${legacyWebhookId}, 1, '{"kind":"webhook"}'::jsonb, ${JSON.stringify(legacyProgram)}::jsonb, ${fixture.userId}),
       (${legacyWatchRevId}, ${legacyWatchId}, 1, '{"kind":"watch"}'::jsonb, ${JSON.stringify(legacyProgram)}::jsonb, ${fixture.userId}),
-      (${scriptScheduleRevId}, ${scriptScheduleId}, 1, ${JSON.stringify(scheduleSource)}::jsonb, ${JSON.stringify({ language: "javascript", source: "console.log('ok')", toolContractVersion: 6 })}::jsonb, ${fixture.userId}),
       (${memoryPassRevId}, ${memoryPassId}, 1, ${JSON.stringify(scheduleSource)}::jsonb, ${JSON.stringify(legacyProgram)}::jsonb, ${fixture.userId}),
       (${archivedLegacyRevId}, ${archivedLegacyId}, 1, ${JSON.stringify(scheduleSource)}::jsonb, ${JSON.stringify(legacyProgram)}::jsonb, ${fixture.userId})
-    `.execute(tx);
-    await sql`insert into trigger_revision_scripts(revision_id, script)
-      values (${scriptScheduleRevId}, ${JSON.stringify({ interpreter: null, text: "console.log('ok')" })}::jsonb)
     `.execute(tx);
     await sql`insert into trigger_watch_activations(
       id, trigger_id, revision_id, anchor_thread_id, environment_id, created_by,
@@ -1763,9 +1597,31 @@ it("applies 0056_pause_legacy_v5_automations to pause legacy v5 rows while prese
       ${legacyWatchActId}, ${legacyWatchId}, ${legacyWatchRevId}, ${task.id}, ${fixture.environmentId}, ${fixture.userId},
       'active', 'running', 1, 0, 0, '', ''
     )`.execute(tx);
+    // AA3(a): an in-flight v5 firing dispatched before 0055 must get frame_sent_at backfilled so
+    // it settles to unknown after upgrade rather than returning to pending and failing.
+    await sql`insert into commands(
+      id, environment_id, thread_id, requested_by, actor_principal_id, authority_source,
+      idempotency_key, type, payload, status
+    ) values (
+      ${inFlightCmdId}, ${fixture.environmentId}, ${task.id}, ${fixture.userId}, ${principalId},
+      '{"kind":"person"}'::jsonb, 'in-flight-pre-0055', 'trigger.execute', '{}'::jsonb, 'dispatched'
+    )`.execute(tx);
+    await sql`insert into trigger_occurrences(
+      id, trigger_id, revision_id, command_id, environment_id, source_key, event, status, stdout, stderr
+    ) values (
+      ${inFlightOccId}, ${legacyScheduleId}, ${legacyScheduleRevId}, ${inFlightCmdId}, ${fixture.environmentId},
+      'schedule:in-flight', '{}'::jsonb, 'running', '', ''
+    )`.execute(tx);
   });
 
   await migrateToLatest(database);
+
+  const backfilled = (
+    await sql<{ frameSentAt: Date | null }>`
+      select frame_sent_at as "frameSentAt" from commands where id = ${inFlightCmdId}
+    `.execute(database)
+  ).rows[0];
+  expect(backfilled?.frameSentAt).not.toBeNull();
 
   const triggers = new Map(
     (
@@ -1799,9 +1655,6 @@ it("applies 0056_pause_legacy_v5_automations to pause legacy v5 rows while prese
   ).rows[0];
   expect(watchAct?.desired).toBe("stopped");
 
-  // Legacy source moves into trigger_revisions.legacy_source and script moves onto trigger_revisions.script
-  // while trigger_revision_scripts, trigger_revisions.program, and trigger_occurrences.outcome are dropped
-  // by 0057_automations_schema_contract (AGENTS.md rule 6; Y8 withdrawn).
   const legacyRev = (
     await sql<{
       script: unknown;
@@ -1815,40 +1668,68 @@ it("applies 0056_pause_legacy_v5_automations to pause legacy v5 rows while prese
     script: null,
   });
 
-  const scriptRev = (
-    await sql<{
-      script: unknown;
-      legacySource: string | null;
-    }>`select script, legacy_source from trigger_revisions where id = ${scriptScheduleRevId}`.execute(
-      database,
-    )
-  ).rows[0];
-  expect(scriptRev).toEqual({
-    legacySource: null,
-    script: { interpreter: null, text: "console.log('ok')" },
-  });
+  // Memory pass and archived legacy automation stay untouched.
+  expect(triggers.get(memoryPassId)?.status).toBe("active");
+  expect(triggers.get(archivedLegacyId)?.status).toBe("archived");
+  expect(triggers.get(archivedLegacyId)?.pauseReason).toBeNull();
 
-  // 0057 dropped trigger_revision_scripts, trigger_revisions.program, and trigger_occurrences.outcome.
-  const droppedTable = (
-    await sql<{ exists: boolean }>`
-      select to_regclass('public.trigger_revision_scripts') is not null as exists
+  // Status allows 'unknown' directly and rejects invalid statuses; webhook_body stores raw bytes.
+  await sql`update trigger_occurrences set status = 'unknown', webhook_body = ${Buffer.from("raw-bytes")} where id = ${inFlightOccId}`.execute(
+    database,
+  );
+  await expect(
+    sql`update trigger_occurrences set status = 'bogus' where id = ${inFlightOccId}`.execute(
+      database,
+    ),
+  ).rejects.toThrow(/check constraint/u);
+
+  // Secrets envelope constraint enforces paired encrypted_secrets and secrets_key_version.
+  await expect(
+    sql`update triggers set encrypted_secrets = ${Buffer.from("cipher")}, secrets_key_version = null where id = ${legacyScheduleId}`.execute(
+      database,
+    ),
+  ).rejects.toThrow(/check constraint/u);
+
+  // Notice reasons allow the new set and reject removed wake-limit-reached.
+  await sql`insert into automation_failure_notices(id, trigger_id, reason, detail)
+    values (${crypto.randomUUID()}, ${legacyScheduleId}, 'started-failing', 'exited 1')`.execute(
+    database,
+  );
+  await sql`insert into automation_failure_notices(id, trigger_id, reason, detail)
+    values (${crypto.randomUUID()}, ${legacyScheduleId}, 'outcome-unknown', 'computer rebooted')`.execute(
+    database,
+  );
+  await expect(
+    sql`insert into automation_failure_notices(id, trigger_id, reason, detail)
+      values (${crypto.randomUUID()}, ${legacyScheduleId}, 'wake-limit-reached', 'nope')`.execute(
+      database,
+    ),
+  ).rejects.toThrow(/check constraint/u);
+
+  // Retired tables and columns are absent.
+  const retiredTables = (
+    await sql<{ name: string }>`
+      select tablename as name from pg_tables
+      where schemaname = 'public'
+        and tablename in ('trigger_revision_scripts', 'automation_wakes', 'watch_control_requests')
     `.execute(database)
-  ).rows[0];
-  expect(droppedTable?.exists).toBe(false);
+  ).rows;
+  expect(retiredTables).toEqual([]);
   const removedColumns = (
     await sql<{ tableName: string; columnName: string }>`
       select table_name, column_name from information_schema.columns
       where table_schema = 'public'
         and ((table_name = 'trigger_revisions' and column_name = 'program')
-          or (table_name = 'trigger_occurrences' and column_name = 'outcome'))
+          or (table_name = 'trigger_occurrences' and column_name = 'outcome')
+          or (table_name = 'triggers' and column_name in ('wake_limit_per_hour', 'webhook_secret_hash', 'consecutive_failures'))
+          or (table_name = 'execution_environments' and column_name = 'max_active_watches'))
     `.execute(database)
   ).rows;
   expect(removedColumns).toEqual([]);
 
-  // Script-based automation, memory pass, and archived legacy automation stay untouched.
-  expect(triggers.get(scriptScheduleId)?.status).toBe("active");
-  expect(triggers.get(scriptScheduleId)?.nextFireAt).not.toBeNull();
-  expect(triggers.get(memoryPassId)?.status).toBe("active");
-  expect(triggers.get(archivedLegacyId)?.status).toBe("archived");
-  expect(triggers.get(archivedLegacyId)?.pauseReason).toBeNull();
+  // Fresh catalog matches upgraded catalog byte-for-byte.
+  const upgraded = await catalog();
+  await sql`drop schema public cascade;create schema public`.execute(database);
+  await migrateToLatest(database);
+  expect(await catalog()).toEqual(upgraded);
 });

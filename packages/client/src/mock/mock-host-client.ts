@@ -9063,7 +9063,6 @@ class MockHostState {
     const webhookRouteKey = input.source.kind === "webhook" ? `mock-webhook-${triggerId}` : null;
     const trigger = TriggerSchema.parse({
       anchorThreadId: thread.id,
-      consecutiveFailures: 0,
       createdAt: now.toISOString(),
       createdBy: mockUserId,
       createdByThreadId: null,
@@ -9096,8 +9095,8 @@ class MockHostState {
       ...(webhookRouteKey
         ? {
             webhook: {
-              secret: `mock-secret-${triggerId}`,
-              url: `${mockWebhookOrigin}/v1/trigger-webhooks/${webhookRouteKey}`,
+              scope: "public" as const,
+              url: `${mockWebhookOrigin}/hooks/v1/${webhookRouteKey}`,
             },
           }
         : {}),
@@ -9141,9 +9140,6 @@ class MockHostState {
     // one-time instant stays elapsed.
     const trigger = TriggerSchema.parse({
       ...record.trigger,
-      ...(input.script === undefined && input.source === undefined
-        ? {}
-        : { consecutiveFailures: 0 }),
       currentRevisionId: revision.id,
       name: input.name ?? record.trigger.name,
       nextFireAt:
@@ -9178,7 +9174,6 @@ class MockHostState {
     const now = this.now();
     const trigger = TriggerSchema.parse({
       ...record.trigger,
-      ...(status === "active" ? { consecutiveFailures: 0 } : {}),
       nextFireAt: status === "active" ? resumedFireAt(record.revision.source, now) : null,
       pauseReason: null,
       status,

@@ -325,7 +325,6 @@ describe("Watch CDP bridge", () => {
         runnerBootId: "boot-1",
         runnerId: createId("runner"),
         threadId: createId("thread"),
-        toolContractVersion: 5,
       })),
     } as unknown as TriggerControlTokenService);
     registerWatchCdpBridge(app, browser, {

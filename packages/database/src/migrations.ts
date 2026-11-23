@@ -46,25 +46,10 @@ import {
   bridgeConversionMigrationName,
 } from "./bridge-conversion-migration.js";
 import {
-  applyAutomationScripts,
-  automationScriptsMigrationName,
+  applyAutomationsContract,
+  automationsContractMigrationName,
 } from "./automation-scripts-migration.js";
-export { automationScriptsMigrationName } from "./automation-scripts-migration.js";
-import {
-  applyPauseLegacyV5Automations,
-  pauseLegacyV5AutomationsMigrationName,
-} from "./pause-legacy-v5-automations-migration.js";
-export { pauseLegacyV5AutomationsMigrationName } from "./pause-legacy-v5-automations-migration.js";
-import {
-  applySimplifyAutomationsSchema,
-  simplifyAutomationsSchemaMigrationName,
-} from "./simplify-automations-schema-migration.js";
-export { simplifyAutomationsSchemaMigrationName } from "./simplify-automations-schema-migration.js";
-import {
-  applyRemoveAutomationFuses,
-  removeAutomationFusesMigrationName,
-} from "./remove-automation-fuses-migration.js";
-export { removeAutomationFusesMigrationName } from "./remove-automation-fuses-migration.js";
+export { automationsContractMigrationName } from "./automation-scripts-migration.js";
 import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
@@ -701,10 +686,7 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
-              [automationScriptsMigrationName]: { up: applyAutomationScripts },
-              [pauseLegacyV5AutomationsMigrationName]: { up: applyPauseLegacyV5Automations },
-              [simplifyAutomationsSchemaMigrationName]: { up: applySimplifyAutomationsSchema },
-              [removeAutomationFusesMigrationName]: { up: applyRemoveAutomationFuses },
+              [automationsContractMigrationName]: { up: applyAutomationsContract },
             }
           : {}),
       };

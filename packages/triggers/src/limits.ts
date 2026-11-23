@@ -8,20 +8,11 @@
  */
 export const MAX_PENDING_TRIGGER_OCCURRENCES = 100;
 
-/** Consecutive current-Revision failures before an active Trigger is paused. */
-export const TRIGGER_AUTO_PAUSE_FAILURE_THRESHOLD = 3;
-
-/** Visible reason recorded when repeated program failures pause a Trigger. */
-export const TRIGGER_AUTO_PAUSE_REASON = `Paused after ${TRIGGER_AUTO_PAUSE_FAILURE_THRESHOLD} failed runs in a row.`;
-
 /** Running this long proves a watch revision recovered from its prior failures. */
 export const WATCH_HEALTHY_WINDOW_MS = 10 * 60 * 1_000;
 
 /** Unexpected exits of one watch revision before the Host tells the task. */
-export const WATCH_AUTO_PAUSE_FAILURE_THRESHOLD = 3;
-
-/** Visible reason recorded when repeated watch exits pause a Trigger. */
-export const WATCH_AUTO_PAUSE_REASON = `Paused after stopping unexpectedly ${WATCH_AUTO_PAUSE_FAILURE_THRESHOLD} times in a row.`;
+export const WATCH_CRASH_NOTICE_THRESHOLD = 3;
 
 /** Capability renewal cadence; signed capabilities retain the existing 24-hour ceiling. */
 export const WATCH_CAPABILITY_RENEWAL_MS = 6 * 60 * 60 * 1_000;
