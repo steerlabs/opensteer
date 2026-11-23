@@ -2309,18 +2309,15 @@ integration.sequential("Trigger failure auto-pause", () => {
         routeKey: hook.trigger.webhookRouteKey!,
       })
     ).occurrence;
-    const listedBefore = (await store.listPendingCommands()).map((c) => c.id);
-    expect(listedBefore).toContain(wh1.commandId);
-    expect(listedBefore).not.toContain(wh2.commandId);
-
-    await store.claimCommand(wh1.commandId, "fifo-dispatcher");
+    // AA2: One-firing-at-a-time and FIFO order are enforced at trigger claim, not listPendingCommands.
+    expect(await store.claimCommand(wh2.commandId, "fifo-dispatcher")).toBeNull();
+    expect(await store.claimCommand(wh1.commandId, "fifo-dispatcher")).not.toBeNull();
     const wh1Started = await triggers.startExecution({
       commandId: wh1.commandId,
       runnerBootId: "boot-fifo",
       runnerId: fixture.runnerId,
     });
-    const listedWhileRunning = (await store.listPendingCommands()).map((c) => c.id);
-    expect(listedWhileRunning).not.toContain(wh2.commandId);
+    expect(await store.claimCommand(wh2.commandId, "fifo-dispatcher")).toBeNull();
 
     await triggers.completeExecution({
       executionGeneration: wh1Started.executionGeneration,
@@ -2337,8 +2334,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       runnerBootId: "boot-fifo",
       runnerId: fixture.runnerId,
     });
-    const listedAfterFirst = (await store.listPendingCommands()).map((c) => c.id);
-    expect(listedAfterFirst).toContain(wh2.commandId);
+    expect(await store.claimCommand(wh2.commandId, "fifo-dispatcher")).not.toBeNull();
     await complete(fixture, wh2, "succeeded", "fifo-2");
 
     // 2. Schedule overrun skips enqueueing while running and emits one 'overran-schedule' notice (T8)

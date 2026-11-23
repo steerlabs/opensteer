@@ -166,8 +166,41 @@ async function claimObservedCommand(
   await lockLineageConnection(transaction, lineage);
   // A tick enqueued before its chat was paused, listed before the pause: held at its claim, as a
   // queued Run is, and listed again when the chat is back.
-  if (observed.type === "trigger.execute" && (await triggerCommandHeld(transaction, observed.id)))
-    return null;
+  // AA2 / Y11 / T10: Enforce one firing at a time (and FIFO webhook order) here at trigger claim,
+  // never on the shared listPendingCommands dispatch query.
+  if (observed.type === "trigger.execute") {
+    if (await triggerCommandHeld(transaction, observed.id)) return null;
+    const candidate = await transaction
+      .selectFrom("triggerOccurrences")
+      .select(["createdAt", "id", "triggerId"])
+      .where("commandId", "=", observed.id)
+      .executeTakeFirst();
+    if (candidate) {
+      await transaction
+        .selectFrom("triggers")
+        .select("id")
+        .where("id", "=", candidate.triggerId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      const blocker = await transaction
+        .selectFrom("triggerOccurrences")
+        .select("id")
+        .where("triggerId", "=", candidate.triggerId)
+        .where("id", "!=", candidate.id)
+        .where((eb) =>
+          eb.or([
+            eb("status", "=", "running"),
+            eb.and([
+              eb("status", "=", "pending"),
+              sql<boolean>`(created_at, id) < (${candidate.createdAt}, ${candidate.id})`,
+            ]),
+          ]),
+        )
+        .limit(1)
+        .executeTakeFirst();
+      if (blocker) return null;
+    }
+  }
   // Follow ./lock-order.ts: an ambiguous prior dispatch may requeue a command
   // just as the old Runner commits its terminal event.
   const run = observed.runId
@@ -1480,35 +1513,6 @@ export async function listPendingCommands(
                 .whereRef("candidate.id", "=", "commands.runId")
                 .whereRef("predecessor.runOrdinal", "<", "candidate.runOrdinal")
                 .where("predecessor.status", "in", nonTerminalRunStatuses),
-            ),
-          ),
-        ]),
-      )
-      // Y11 / T8: One firing at a time per automation, FIFO order for queued webhooks.
-      .where((expression) =>
-        expression.or([
-          expression("commands.type", "!=", "trigger.execute"),
-          expression.not(
-            expression.exists(
-              expression
-                .selectFrom("triggerOccurrences as candidate")
-                .innerJoin(
-                  "triggerOccurrences as blocker",
-                  "blocker.triggerId",
-                  "candidate.triggerId",
-                )
-                .select("blocker.id")
-                .whereRef("candidate.commandId", "=", "commands.id")
-                .whereRef("blocker.id", "!=", "candidate.id")
-                .where((eb) =>
-                  eb.or([
-                    eb("blocker.status", "=", "running"),
-                    eb.and([
-                      eb("blocker.status", "=", "pending"),
-                      sql<boolean>`(blocker.created_at, blocker.id) < (candidate.created_at, candidate.id)`,
-                    ]),
-                  ]),
-                ),
             ),
           ),
         ]),
