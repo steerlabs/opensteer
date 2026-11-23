@@ -329,60 +329,61 @@ export class PageEditingObserver {
 
   #scheduleRemoteSync(): void {
     if (this.#remoteSync) return;
-    const sync = (async () => {
-      while (!this.#closed && this.#started && this.#appliedRemote !== this.#remoteEditing) {
-        const target = this.#remoteEditing;
-        if (!this.#mapGeometry && this.#focusEmulated !== target) {
-          this.#focusEmulated = target;
-          await this.#cdp
-            .send("Emulation.setFocusEmulationEnabled", { enabled: target })
-            .catch(() => undefined);
-        }
-        if (this.#closed) break;
-        if (this.#script) {
-          const previous = this.#script;
-          this.#script = null;
-          await this.#cdp
-            .send("Page.removeScriptToEvaluateOnNewDocument", { identifier: previous })
-            .catch(() => undefined);
-          if (this.#closed) break;
-          const next = await this.#cdp
-            .send<{ identifier: string }>("Page.addScriptToEvaluateOnNewDocument", {
-              source: editingObserverSource(
-                this.#binding,
-                this.#person !== undefined,
-                this.#save !== undefined,
-                target,
-              ),
-              worldName: this.#world,
-              runImmediately: false,
-            })
-            .catch(() => null);
-          if (next) {
-            if (this.#closed)
-              void this.#cdp
-                .send("Page.removeScriptToEvaluateOnNewDocument", { identifier: next.identifier })
-                .catch(() => undefined);
-            else this.#script = next.identifier;
+    this.#remoteSync = (async () => {
+      try {
+        while (!this.#closed && this.#started && this.#appliedRemote !== this.#remoteEditing) {
+          const target = this.#remoteEditing;
+          if (!this.#mapGeometry && this.#focusEmulated !== target) {
+            this.#focusEmulated = target;
+            await this.#cdp
+              .send("Emulation.setFocusEmulationEnabled", { enabled: target })
+              .catch(() => undefined);
           }
+          if (this.#closed) break;
+          if (this.#script) {
+            const previous = this.#script;
+            this.#script = null;
+            await this.#cdp
+              .send("Page.removeScriptToEvaluateOnNewDocument", { identifier: previous })
+              .catch(() => undefined);
+            if (this.#closed) break;
+            const next = await this.#cdp
+              .send<{ identifier: string }>("Page.addScriptToEvaluateOnNewDocument", {
+                source: editingObserverSource(
+                  this.#binding,
+                  this.#person !== undefined,
+                  this.#save !== undefined,
+                  target,
+                ),
+                worldName: this.#world,
+                runImmediately: false,
+              })
+              .catch(() => null);
+            if (next) {
+              if (this.#closed)
+                void this.#cdp
+                  .send("Page.removeScriptToEvaluateOnNewDocument", { identifier: next.identifier })
+                  .catch(() => undefined);
+              else this.#script = next.identifier;
+            }
+          }
+          if (this.#closed) break;
+          for (const contextId of this.#contexts.keys())
+            void this.#cdp
+              .send("Runtime.evaluate", {
+                contextId,
+                expression: `globalThis.editingOwner?.setRemote(${target ? "true" : "false"})`,
+                silent: true,
+              })
+              .catch(() => undefined);
+          this.#appliedRemote = target;
         }
-        if (this.#closed) break;
-        for (const contextId of this.#contexts.keys())
-          void this.#cdp
-            .send("Runtime.evaluate", {
-              contextId,
-              expression: `globalThis.editingOwner?.setRemote(${target ? "true" : "false"})`,
-              silent: true,
-            })
-            .catch(() => undefined);
-        this.#appliedRemote = target;
+      } finally {
+        this.#remoteSync = null;
+        if (!this.#closed && this.#started && this.#appliedRemote !== this.#remoteEditing)
+          this.#scheduleRemoteSync();
       }
     })();
-    this.#remoteSync = sync.finally(() => {
-      if (this.#remoteSync === sync) this.#remoteSync = null;
-      if (!this.#closed && this.#started && this.#appliedRemote !== this.#remoteEditing)
-        this.#scheduleRemoteSync();
-    });
   }
 
   refresh(): void {
@@ -973,10 +974,13 @@ function editingObserverSource(
     }
     const position = element.selectionEnd;
     if (position === null) return null;
+    const style = getComputedStyle(element);
+    const properties = mirrorStyleProps.map(name => [name, style.getPropertyValue(name)]);
+    const styleKey = element.tagName + "|" + properties.map(([, propValue]) => propValue).join("|");
     const box = element.getBoundingClientRect();
     const value = element.value;
     const cacheKey = position + "|" + element.scrollLeft + "|" + element.scrollTop + "|" +
-      box.left + "|" + box.top + "|" + box.width + "|" + box.height + "|" + value;
+      box.left + "|" + box.top + "|" + box.width + "|" + box.height + "|" + styleKey + "|" + value;
     if (lastCaretEl === element && lastCaretKey === cacheKey && lastCaretRect) return lastCaretRect;
     // Removing even an unrelated node closes Blink's native typing command.
     // Keep the measurement tree and update CharacterData without replacing nodes.
@@ -988,11 +992,8 @@ function editingObserverSource(
       mirrorMarker.textContent = "​";
       mirror.append(mirrorPrefix, mirrorMarker, mirrorSuffix);
     }
-    const sizeKey = box.width + "x" + box.height;
-    if (mirrorStyledEl !== element || mirrorStyledSize !== sizeKey) {
-      const style = getComputedStyle(element);
-      // Copy only text-layout properties (27 vs ~380 computed styles) and cache per field/size.
-      const properties = mirrorStyleProps.map(name => [name, style.getPropertyValue(name)]);
+    if (mirrorStyledEl !== element || mirrorStyledSize !== styleKey) {
+      // Write only the 27 text-layout properties (vs ~380 computed styles) when field/styles change.
       for (const [name, propValue] of properties) mirror.style.setProperty(name, propValue);
       Object.assign(mirror.style, {
         position: "fixed",
@@ -1004,7 +1005,7 @@ function editingObserverSource(
         overflow: "hidden",
       });
       mirrorStyledEl = element;
-      mirrorStyledSize = sizeKey;
+      mirrorStyledSize = styleKey;
     }
     mirror.style.left = box.left + "px";
     mirror.style.top = box.top + "px";

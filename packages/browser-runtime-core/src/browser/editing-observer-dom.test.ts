@@ -230,5 +230,32 @@ it("reconciles remote editing toggles that arrive during start without leaking f
       "Page.addScriptToEvaluateOnNewDocument",
     ]),
   );
+
+  // Re-enabling remote editing after the first toggle settles must run cleanly.
+  observer.setRemoteEditing(true);
+  await vi.waitFor(() =>
+    expect(
+      cdp.sent
+        .filter((entry) => entry.method === "Emulation.setFocusEmulationEnabled")
+        .map((entry) => entry.parameters),
+    ).toEqual([{ enabled: true }, { enabled: false }, { enabled: true }]),
+  );
+  await vi.waitFor(() =>
+    expect(
+      cdp.sent
+        .filter(
+          (entry) =>
+            entry.method === "Page.addScriptToEvaluateOnNewDocument" ||
+            entry.method === "Page.removeScriptToEvaluateOnNewDocument",
+        )
+        .map((entry) => entry.method),
+    ).toEqual([
+      "Page.addScriptToEvaluateOnNewDocument",
+      "Page.removeScriptToEvaluateOnNewDocument",
+      "Page.addScriptToEvaluateOnNewDocument",
+      "Page.removeScriptToEvaluateOnNewDocument",
+      "Page.addScriptToEvaluateOnNewDocument",
+    ]),
+  );
   await observer.close();
 });
