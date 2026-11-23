@@ -1987,6 +1987,7 @@ export class BrowserController {
             );
           },
           message.producerId,
+          message.follows === true,
         );
         if (!applied) this.editingCounters.stale = (this.editingCounters.stale ?? 0) + 1;
         return;

@@ -99,6 +99,12 @@ export type EditingOperation =
        * phone screen (display.input) takes commands without it.
        */
       readonly contextId?: string | undefined;
+      /**
+       * CZ7: a move the client computed from the edit it sent just before (it puts the caret back
+       * where the person had it): it goes with that edit, refused when that edit was. A person's
+       * own move (a swipe, an arrow) carries nothing and is never taken with a refusal.
+       */
+      readonly follows?: true;
     }
   | { readonly kind: "compose"; readonly composition: EditingComposition }
   | { readonly kind: "edit"; readonly edit: EditingTextEdit }

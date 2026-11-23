@@ -668,6 +668,11 @@ const BaselineBrowserClientMessageSchema = z
        * none.
        */
       contextId: EditingContextIdSchema,
+      /**
+       * CZ7: a move computed from the edit this producer sent just before: refused when that
+       * edit was. A person's own move carries nothing.
+       */
+      follows: z.literal(true).optional(),
     }),
     /** Editing sessions only: the composition in progress, shown live in the page. */
     z.strictObject({

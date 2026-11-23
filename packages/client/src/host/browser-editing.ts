@@ -383,6 +383,7 @@ export class BrowserEditingStore {
           surfaceId,
           command: EditingCommandSchema.parse(operation.command),
           contextId,
+          ...(operation.follows ? { follows: true } : {}),
         });
         return;
       }

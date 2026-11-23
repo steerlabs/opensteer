@@ -130,7 +130,7 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
         kind: "edit",
         edit: { contextId: context.contextId, text: "b", before: "abb", after: "" },
       },
-      { kind: "command", command: "moveBackward", contextId: context.contextId },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
       { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
     ]);
   });
@@ -170,7 +170,7 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     // The restated "x" back in the composition's place, then the far caret to the native one.
     expect(result.operations.slice(-2)).toEqual([
       { kind: "edit", edit: { contextId: context.contextId, text: "x", before: "", after: "" } },
-      { kind: "command", command: "moveBackward", contextId: context.contextId },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
     ]);
   });
   // CR2: after a cancelled composition's restated text, the far caret is after it. A target
@@ -239,7 +239,7 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     ]);
     expect(result.operations.slice(-2)).toEqual([
       { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
-      { kind: "command", command: "moveBackward", contextId: context.contextId },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
     ]);
   });
   // The suppression's purpose: on a target without range edits a Backspace is sent as a command
@@ -291,7 +291,7 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     ]);
     expect(result.operations.slice(1)).toEqual([
       { kind: "edit", edit: { contextId: context.contextId, text: "c", before: "abc", after: "" } },
-      { kind: "command", command: "moveBackward", contextId: context.contextId },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
       { kind: "paste", items: [{ type: "text/plain", bytes }] },
     ]);
   });
@@ -648,8 +648,8 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       contextId: context.contextId,
     });
     expect(operations.slice(-2)).toEqual([
-      { kind: "command", command: "moveBackward", contextId: context.contextId },
-      { kind: "command", command: "moveBackward", contextId: context.contextId },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
     ]);
   });
   it.each([
@@ -800,8 +800,8 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       edit: { contextId: context.contextId, text: "aXbc", before: "", after: "" },
     });
     expect(operations.slice(-2)).toEqual([
-      { kind: "command", command: "moveBackward", contextId: context.contextId },
-      { kind: "command", command: "moveBackward", contextId: context.contextId },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
     ]);
     expect(operations.filter((operation) => operation.kind === "compose")).toHaveLength(1);
   });

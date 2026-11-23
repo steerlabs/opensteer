@@ -1658,7 +1658,10 @@ describe("a person's caret moves and selections in the native field", () => {
         !operation.edit.before &&
         !operation.edit.after) ||
       operation.kind === "paste" ||
-      (operation.kind === "command" && caretRelativeEditingCommands.has(operation.command));
+      // A move computed from an edit (CZ7) goes with it: part of a replacement, not the person's.
+      (operation.kind === "command" &&
+        operation.follows !== true &&
+        caretRelativeEditingCommands.has(operation.command));
     let failure: string | null = null;
     const said = (text: string) => JSON.stringify(escape(text));
     const describe = (operation: EditingOperation) =>

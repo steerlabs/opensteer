@@ -197,7 +197,12 @@ export class PageEditingObserver {
    * it (its moves under the same context) is refused too, until its next insertion, which lands
    * at the caret: a refusal takes with it what was computed from it.
    */
-  #refusedFrom: { contextId: string; producer: string | undefined } | null = null;
+  /**
+   * CZ7: each producer's last refused edit, by its context, until that producer's next edit that
+   * applies: the moves it computed from it go with it. One per producer: another viewer's
+   * refusal neither takes this one's moves nor releases them.
+   */
+  readonly #refusedFrom = new Map<string | undefined, string>();
   /** Remembers the context being replaced, for the same field. */
   #supersede(sameField: boolean): void {
     if (!sameField) {
@@ -371,7 +376,7 @@ export class PageEditingObserver {
       // other operation of another context is refused alone: it changed nothing the current
       // context's mirror holds, so the current context stays.
       if (!(insertion && this.#earlier.has(edit.contextId))) {
-        this.#refusedFrom = { contextId: edit.contextId, producer };
+        this.#refusedFrom.set(producer, edit.contextId);
         return false;
       }
     }
@@ -394,7 +399,7 @@ export class PageEditingObserver {
         })
         .catch(() => null);
       if (typeof open?.result?.value === "string" && open.result.value.length > 0) {
-        this.#refusedFrom = { contextId: edit.contextId, producer };
+        this.#refusedFrom.set(producer, edit.contextId);
         return this.#stale();
       }
       this.#composer = null;
@@ -432,7 +437,7 @@ export class PageEditingObserver {
             transportFailed: response === null,
           }),
         );
-      this.#refusedFrom = { contextId: edit.contextId, producer };
+      this.#refusedFrom.set(producer, edit.contextId);
       return this.#stale();
     }
     // CY4: the composer's commit of a composition the page ended itself (it rewrote the field and
@@ -457,11 +462,7 @@ export class PageEditingObserver {
       }
       admitted?.();
       // Applied: what this producer computes from here on is its own again.
-      if (
-        this.#refusedFrom?.contextId === edit.contextId &&
-        this.#refusedFrom.producer === producer
-      )
-        this.#refusedFrom = null;
+      if (this.#refusedFrom.get(producer) === edit.contextId) this.#refusedFrom.delete(producer);
       if (composition && "selectionStart" in edit) {
         await this.#cdp.send("Input.imeSetComposition", {
           text: edit.text,
@@ -529,8 +530,10 @@ export class PageEditingObserver {
     command: EditingCommand,
     action: () => Promise<unknown>,
     producer?: string,
+    follows = false,
   ): Promise<boolean> {
-    if (this.#activeChild) return this.#activeChild.command(contextId, command, action, producer);
+    if (this.#activeChild)
+      return this.#activeChild.command(contextId, command, action, producer, follows);
     const relative = caretRelativeEditingCommands.has(command);
     // CY6: admitted under its own context, and admitted again after every await, against focus
     // and context as they are then: anything moved, and it is refused alone.
@@ -541,11 +544,12 @@ export class PageEditingObserver {
       (contextId === this.#context.contextId ||
         (relative && this.#focused !== null && this.#earlier.has(contextId)));
     if (!admitted()) return false;
-    // A move computed from an edit the page refused goes with it (CY5); a Backspace is the person's.
+    // A move computed from an edit the page refused goes with it (CY5, CZ7): only one that says
+    // it follows that edit. The person's own moves, and a Backspace, are theirs.
     if (
+      follows &&
       caretMoveEditingCommands.has(command) &&
-      this.#refusedFrom?.contextId === contextId &&
-      this.#refusedFrom.producer === producer
+      this.#refusedFrom.get(producer) === contextId
     )
       return false;
     if (!focus) {

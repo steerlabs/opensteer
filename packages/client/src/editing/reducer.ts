@@ -449,7 +449,8 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
   const move = (from: number, to: number, text: string) => {
     const distance = countGraphemes(text.slice(Math.min(from, to), Math.max(from, to)));
     for (let count = 0; count < distance; count++)
-      emit({ kind: "command", command: to < from ? "moveBackward" : "moveForward" });
+      // CZ7: computed from the edit before it: it goes with that edit.
+      emit({ kind: "command", command: to < from ? "moveBackward" : "moveForward", follows: true });
   };
   const publishComposition = (transaction: Composition, proxy: EditingProxyState): Composition => {
     if (!transaction.contextId || !state.abilities.composition) return transaction;

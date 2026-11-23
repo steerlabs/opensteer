@@ -868,7 +868,7 @@ export class FarField {
   /** The field's earlier contexts: an insertion under one is still the person's (CV1). */
   readonly earlier = new Set<string>();
   /** CY5: an edit refused, by context and producer: its moves after it go with it. */
-  private refusedFrom: { contextId: string | null; producer: string | undefined } | null = null;
+  private readonly refusedFrom = new Map<string | undefined, string | null>();
   /** The context a refusal rotates to; several fields on one page give each a distinct one. */
   nextContextId = () =>
     `00000000-0000-4000-8000-${String(100000000000 + ++this.rotations).slice(-12)}`;
@@ -941,7 +941,7 @@ export class FarField {
       // anything else is refused alone, the field's context kept.
       if (!(insertion && this.earlier.has(context))) {
         this.refused.push(operation);
-        if (operation.kind !== "command") this.refusedFrom = { contextId: context, producer };
+        if (operation.kind !== "command") this.refusedFrom.set(producer, context);
         return true;
       }
     }
@@ -950,9 +950,10 @@ export class FarField {
     if (
       operation.kind === "command" &&
       caretMoveEditingCommands.has(operation.command) &&
+      operation.follows === true &&
       context !== null &&
-      this.refusedFrom?.contextId === context &&
-      this.refusedFrom.producer === producer
+      this.refusedFrom.has(producer) &&
+      this.refusedFrom.get(producer) === context
     ) {
       this.refused.push(operation);
       return true;
@@ -968,7 +969,7 @@ export class FarField {
       (operation.kind === "edit" || operation.kind === "compose") &&
       !insertion
     ) {
-      this.refusedFrom = { contextId: context, producer };
+      this.refusedFrom.set(producer, context);
       this.refuse(operation);
       return true;
     }
@@ -990,12 +991,12 @@ export class FarField {
             this.value.slice(this.caret, range.end) !== after)
         ) {
           this.mismatched.push(operation);
-          this.refusedFrom = { contextId: context, producer };
+          this.refusedFrom.set(producer, context);
           this.refuse(operation);
           return true;
         }
-        if (this.refusedFrom?.contextId === context && this.refusedFrom.producer === producer)
-          this.refusedFrom = null;
+        if (this.refusedFrom.has(producer) && this.refusedFrom.get(producer) === context)
+          this.refusedFrom.delete(producer);
         // CY4: what the field holds from a composition the page ended is applied; its composer's
         // commit adds only the rest (committedRemainder, the phone's rule for a change of context).
         if (

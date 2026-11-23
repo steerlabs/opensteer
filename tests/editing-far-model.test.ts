@@ -205,6 +205,7 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
             editingCommandParameters(operation.command, process.platform),
           ),
         producer,
+        operation.follows === true,
       );
     }
     return true;
@@ -833,9 +834,9 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
       }),
     ).toBe(false);
     for (let index = 0; index < 2; index++)
-      expect(await send({ kind: "command", command: "moveBackward", contextId: earlier })).toBe(
-        false,
-      );
+      expect(
+        await send({ kind: "command", command: "moveBackward", contextId: earlier, follows: true }),
+      ).toBe(false);
     expect(
       await send({ kind: "edit", edit: { contextId: earlier, text: "X", before: "", after: "" } }),
     ).toBe(true);
@@ -843,6 +844,53 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     // The person's own swipe afterwards moves as ever.
     expect(await send({ kind: "command", command: "moveBackward", contextId: earlier })).toBe(true);
     expect((await read(page, kind)).caret).toBe(5);
+  });
+
+  // CZ7: a refusal takes exactly what depended on it. The person's own swipe right after a
+  // refused autocorrect is theirs, and moves; another viewer's refusal neither takes a move of
+  // this one's nor releases this one's computed moves.
+  it("moves the person's own swipe after a refused replacement", async () => {
+    await seed(page, kind, "teh", 3);
+    await settle();
+    const earlier = observer.context.contextId!;
+    await seed(page, kind, "tZeh", 4);
+    await settle();
+    expect(
+      await send({
+        kind: "edit",
+        edit: { contextId: earlier, text: "the", before: "teh", after: "" },
+      }),
+    ).toBe(false);
+    expect(await send({ kind: "command", command: "moveBackward", contextId: earlier })).toBe(true);
+    expect((await read(page, kind)).caret).toBe(3);
+  });
+  it("keeps each viewer's refusal to itself", async () => {
+    await seed(page, kind, "abcd", 4);
+    await settle();
+    const earlier = observer.context.contextId!;
+    await seed(page, kind, "ab-cd", 5);
+    await settle();
+    const refused = {
+      kind: "edit",
+      edit: { contextId: earlier, text: "cd", before: "abcd", after: "" },
+    } as const;
+    expect(await send(refused, "A")).toBe(false);
+    // Viewer B's own refused edit, then an edit of B's that applies.
+    expect(await send(refused, "B")).toBe(false);
+    expect(
+      await send(
+        { kind: "edit", edit: { contextId: earlier, text: "Q", before: "", after: "" } },
+        "B",
+      ),
+    ).toBe(true);
+    // A's computed move still goes with A's refused edit.
+    expect(
+      await send(
+        { kind: "command", command: "moveBackward", contextId: earlier, follows: true },
+        "A",
+      ),
+    ).toBe(false);
+    expect(await read(page, kind)).toEqual({ value: "ab-cdQ", caret: 6, collapsed: true });
   });
 
   // CY5: only the moves computed from a refused edit go with it. A Backspace is always the
