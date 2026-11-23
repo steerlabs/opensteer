@@ -167,6 +167,59 @@ export interface ActiveTriggerExecutionBindingInput {
   readonly threadId: ThreadId;
 }
 
+interface TriggerBindingAuthorityRow {
+  readonly admittedAccessMode: ThreadAccessMode | null;
+  readonly admittedGrantRevision: number | null;
+  readonly anchorThreadId: ThreadId;
+  readonly createdBy: UserId;
+  readonly originConnectionId: string | null;
+  readonly threadDoneAt: Date | null;
+  readonly threadRemovedAt: Date | null;
+  readonly threadStatus: string;
+  readonly triggerStatus: string;
+}
+
+/**
+ * The ONE firing authority rule (Z6 / Rule 1), called by tool token auth, on-demand proxy
+ * token renewal (`activeFiringCapabilityScope`), and Runner firing attach (`attachRunnerFirings`):
+ * the automation must be active, its anchor task must not be done/archived/removed, its hosting
+ * environment must be available, and any originating connected agent must still be live, hold
+ * Tasks, and satisfy the admitted grant/mode floor.
+ */
+async function triggerBindingAuthorityHolds(
+  database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
+  row: TriggerBindingAuthorityRow,
+): Promise<boolean> {
+  if (
+    row.triggerStatus !== "active" ||
+    row.threadStatus === "archived" ||
+    row.threadDoneAt !== null ||
+    row.threadRemovedAt !== null
+  ) {
+    return false;
+  }
+  if (!(await admitThreadExecution(database, row.anchorThreadId, row.createdBy))) {
+    return false;
+  }
+  if (!row.originConnectionId) return true;
+  try {
+    const connection = await liveDelegatingConnection(
+      database,
+      row.createdBy,
+      row.originConnectionId,
+    );
+    return meetsConnectionFloor(connection, row.admittedGrantRevision, row.admittedAccessMode);
+  } catch (error) {
+    if (
+      error instanceof OpensteerError &&
+      (error.code === "forbidden" || error.code === "not_found")
+    ) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 /** Validates every fact carried by a Trigger execution capability. */
 export async function assertActiveTriggerExecutionBinding(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
@@ -175,10 +228,15 @@ export async function assertActiveTriggerExecutionBinding(
   const row = await database
     .selectFrom("triggerOccurrences")
     .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+    .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
     .select([
       "triggers.anchorThreadId",
       "triggers.createdBy",
       "triggers.originConnectionId",
+      "triggers.status as triggerStatus",
+      "threads.doneAt as threadDoneAt",
+      "threads.removedAt as threadRemovedAt",
+      "threads.status as threadStatus",
       "triggerOccurrences.admittedGrantRevision",
       "triggerOccurrences.admittedAccessMode",
     ])
@@ -191,16 +249,7 @@ export async function assertActiveTriggerExecutionBinding(
     .where("triggers.anchorThreadId", "=", input.threadId)
     .where("triggers.createdBy", "=", input.requestedBy)
     .executeTakeFirst();
-  if (
-    !row ||
-    !(await triggerExecutionAuthorityAvailable(database, row)) ||
-    (row.originConnectionId &&
-      !meetsConnectionFloor(
-        await liveDelegatingConnection(database, row.createdBy, row.originConnectionId),
-        row.admittedGrantRevision,
-        row.admittedAccessMode,
-      ))
-  ) {
+  if (!row || !(await triggerBindingAuthorityHolds(database, row))) {
     throw new OpensteerError({
       code: "forbidden",
       message: "Automation execution is no longer active",
@@ -216,6 +265,7 @@ export async function assertActiveWatchBinding(
   const row = await database
     .selectFrom("triggerWatchActivations")
     .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
+    .innerJoin("threads", "threads.id", "triggerWatchActivations.anchorThreadId")
     .innerJoin("triggerRevisions", "triggerRevisions.id", "triggerWatchActivations.revisionId")
     .select([
       "triggerWatchActivations.anchorThreadId",
@@ -224,6 +274,9 @@ export async function assertActiveWatchBinding(
       "triggerWatchActivations.admittedGrantRevision",
       "triggerWatchActivations.admittedAccessMode",
       "triggers.originConnectionId",
+      "threads.doneAt as threadDoneAt",
+      "threads.removedAt as threadRemovedAt",
+      "threads.status as threadStatus",
     ])
     .where("triggerWatchActivations.id", "=", input.activationId)
     .where("triggerWatchActivations.triggerId", "=", input.triggerId)
@@ -235,13 +288,17 @@ export async function assertActiveWatchBinding(
     .where("triggers.kind", "=", "watch")
     .where(executableProgram)
     .executeTakeFirst();
-  const admission = row
-    ? await admitLineageExecution(database, {
-        threadId: row.anchorThreadId,
-        userId: row.createdBy,
-        agentConnectionId: row.originConnectionId,
-      })
-    : null;
+  const admission =
+    row &&
+    row.threadStatus !== "archived" &&
+    row.threadDoneAt === null &&
+    row.threadRemovedAt === null
+      ? await admitLineageExecution(database, {
+          threadId: row.anchorThreadId,
+          userId: row.createdBy,
+          agentConnectionId: row.originConnectionId,
+        })
+      : null;
   if (
     !row ||
     row.anchorThreadId !== input.anchorThreadId ||
@@ -2264,7 +2321,10 @@ export class TriggerStore {
         const row = await transaction
           .selectFrom("triggerOccurrences")
           .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+          .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
           .select([
+            "triggerOccurrences.admittedAccessMode",
+            "triggerOccurrences.admittedGrantRevision",
             "triggerOccurrences.commandId",
             "triggerOccurrences.connectionId",
             "triggerOccurrences.contactLostAt",
@@ -2276,7 +2336,13 @@ export class TriggerStore {
             "triggerOccurrences.runnerId",
             "triggerOccurrences.status",
             "triggerOccurrences.terminalEvidenceAt",
+            "triggers.anchorThreadId",
+            "triggers.createdBy",
+            "triggers.originConnectionId",
             "triggers.status as triggerStatus",
+            "threads.doneAt as threadDoneAt",
+            "threads.removedAt as threadRemovedAt",
+            "threads.status as threadStatus",
           ])
           .where("triggerOccurrences.id", "=", firing.occurrenceId)
           .forNoKeyUpdate("triggerOccurrences")
@@ -2303,13 +2369,26 @@ export class TriggerStore {
           });
           continue;
         }
-        if (!firing.terminal && row.triggerStatus === "archived") {
-          results.push({
-            occurrenceId: firing.occurrenceId,
-            reason: "The automation was archived",
-            status: "revoked",
-          });
-          continue;
+        if (!firing.terminal) {
+          if (row.triggerStatus !== "active") {
+            results.push({
+              occurrenceId: firing.occurrenceId,
+              reason:
+                row.triggerStatus === "archived"
+                  ? "The automation was archived"
+                  : "The automation was paused",
+              status: "revoked",
+            });
+            continue;
+          }
+          if (!(await triggerBindingAuthorityHolds(transaction, row))) {
+            results.push({
+              occurrenceId: firing.occurrenceId,
+              reason: "Automation execution authority is no longer active",
+              status: "revoked",
+            });
+            continue;
+          }
         }
         if (!firing.terminal && row.outcome === "unknown") {
           restoredUnknownIds.push(row.id);
@@ -3069,17 +3148,6 @@ function triggerChatHeld(database: object) {
     where agent_connections.id = triggers.origin_connection_id
       and agent_connections.bridge_account_id is not null
       and ${connectionState(database)} = 'waiting')`;
-}
-async function triggerExecutionAuthorityAvailable(
-  database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
-  trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy" | "originConnectionId">,
-): Promise<boolean> {
-  const admission = await admitLineageExecution(database, {
-    threadId: trigger.anchorThreadId,
-    userId: trigger.createdBy,
-    agentConnectionId: trigger.originConnectionId,
-  });
-  return admission !== null;
 }
 /** A claim's answer for a schedule whose chat is waiting: nothing created, nothing moved. */
 const held = Symbol("held");

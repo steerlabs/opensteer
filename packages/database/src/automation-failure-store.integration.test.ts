@@ -804,6 +804,256 @@ integration.sequential("automation failure notices", () => {
     expect(await notices.listDue()).toEqual([]);
   });
 
+  it("refuses token renewal, tool binding, and reattach when paused, removed, task stopped, disconnected, or grant narrowed mid-run (Z6)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createCronTrigger, database, start, triggers } = storeFixture;
+    const fixture = await createFixture("z6-renewal-authority");
+    const assertRefusedEverywhere = async (
+      started: { readonly id: TriggerOccurrence["id"]; readonly executionGeneration: number },
+      runnerBootId: string,
+    ) => {
+      expect(
+        await triggers.activeFiringCapabilityScope({
+          executionGeneration: started.executionGeneration,
+          occurrenceId: started.id,
+          runnerBootId,
+          runnerId: fixture.runnerId,
+        }),
+      ).toBeNull();
+      await expect(
+        triggers.assertActiveExecutionBinding({
+          environmentId: fixture.environmentId,
+          executionGeneration: started.executionGeneration,
+          occurrenceId: started.id,
+          requestedBy: fixture.userId,
+          runnerBootId,
+          runnerId: fixture.runnerId,
+          threadId: fixture.threadId,
+        }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      const attached = await triggers.attachRunnerFirings({
+        dispatchingOccurrenceIds: [],
+        firings: [
+          {
+            environmentId: fixture.environmentId,
+            executionGeneration: started.executionGeneration,
+            occurrenceId: started.id,
+            terminal: false,
+          },
+        ],
+        runnerBootId,
+        runnerId: fixture.runnerId,
+      });
+      expect(attached.results).toEqual([
+        expect.objectContaining({ occurrenceId: started.id, status: "revoked" }),
+      ]);
+      // Simulate the Runner stopping the revoked firing and reporting cancellation.
+      await triggers.completeExecution({
+        executionGeneration: started.executionGeneration,
+        output: {
+          completedAt: new Date().toISOString(),
+          error: "Revoked on attach",
+          exitCode: null,
+          occurrenceId: started.id,
+          result: null,
+          status: "canceled",
+          stderr: "",
+          stdout: "",
+        },
+        runnerBootId,
+        runnerId: fixture.runnerId,
+        verifiedContainment: true,
+      });
+    };
+
+    // 1. Paused mid-run
+    const pausedTrigger = await createCronTrigger(fixture, "z6-paused");
+    const pausedRun = await start(
+      fixture,
+      await triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: pausedTrigger.trigger.id,
+      }),
+      "boot-z6-1",
+    );
+    expect(
+      await triggers.activeFiringCapabilityScope({
+        executionGeneration: pausedRun.executionGeneration,
+        occurrenceId: pausedRun.id,
+        runnerBootId: "boot-z6-1",
+        runnerId: fixture.runnerId,
+      }),
+    ).not.toBeNull();
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "paused",
+      triggerId: pausedTrigger.trigger.id,
+    });
+    await assertRefusedEverywhere(pausedRun, "boot-z6-1");
+
+    // 2. Removed (archived) mid-run
+    const archivedTrigger = await createCronTrigger(fixture, "z6-archived");
+    const archivedRun = await start(
+      fixture,
+      await triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: archivedTrigger.trigger.id,
+      }),
+      "boot-z6-2",
+    );
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "archived",
+      triggerId: archivedTrigger.trigger.id,
+    });
+    await assertRefusedEverywhere(archivedRun, "boot-z6-2");
+
+    // 3. Connected agent disconnected mid-run
+    const conn1 = `mcn_${randomUUID()}`;
+    await database
+      .insertInto("agentConnections")
+      .values({
+        accessMode: "full-access",
+        clientFingerprint: null,
+        clientName: "z6-agent-1",
+        consentVersion: 2,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 86_400_000),
+        grant: jsonValue({ scope: "everything" }),
+        id: conn1,
+        label: "Z6 Agent 1",
+        lastUsedAt: null,
+        resource: "https://example.test/mcp",
+        revokedAt: null,
+        tokenHash: `hash_${randomUUID()}`,
+        userId: fixture.userId,
+      })
+      .execute();
+    const conn1Trigger = await triggers.create({
+      actorConnectionId: conn1,
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "z6-conn1",
+      name: "Z6 Disconnected",
+      program: {
+        language: "javascript",
+        source: "export default async () => null",
+        toolContractVersion: 5,
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const conn1Run = await start(
+      fixture,
+      await triggers.enqueueManual({
+        actorConnectionId: conn1,
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: conn1Trigger.trigger.id,
+      }),
+      "boot-z6-3",
+    );
+    expect(
+      await triggers.activeFiringCapabilityScope({
+        executionGeneration: conn1Run.executionGeneration,
+        occurrenceId: conn1Run.id,
+        runnerBootId: "boot-z6-3",
+        runnerId: fixture.runnerId,
+      }),
+    ).not.toBeNull();
+    await database
+      .updateTable("agentConnections")
+      .set({ revokedAt: new Date() })
+      .where("id", "=", conn1)
+      .execute();
+    await assertRefusedEverywhere(conn1Run, "boot-z6-3");
+
+    // 4. Connected agent grant narrowed mid-run
+    const conn2 = `mcn_${randomUUID()}`;
+    await database
+      .insertInto("agentConnections")
+      .values({
+        accessMode: "full-access",
+        clientFingerprint: null,
+        clientName: "z6-agent-2",
+        consentVersion: 2,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 86_400_000),
+        grant: jsonValue({ scope: "everything" }),
+        id: conn2,
+        label: "Z6 Agent 2",
+        lastUsedAt: null,
+        resource: "https://example.test/mcp",
+        revokedAt: null,
+        tokenHash: `hash_${randomUUID()}`,
+        userId: fixture.userId,
+      })
+      .execute();
+    const conn2Trigger = await triggers.create({
+      actorConnectionId: conn2,
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "z6-conn2",
+      name: "Z6 Narrowed",
+      program: {
+        language: "javascript",
+        source: "export default async () => null",
+        toolContractVersion: 5,
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const conn2Run = await start(
+      fixture,
+      await triggers.enqueueManual({
+        actorConnectionId: conn2,
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: conn2Trigger.trigger.id,
+      }),
+      "boot-z6-4",
+    );
+    await database
+      .updateTable("agentConnections")
+      .set({
+        cleanupMinimumGrantRevision: 2,
+        grant: jsonValue({ resources: [], scope: "selected", tasks: true }),
+        grantRevision: 2,
+      })
+      .where("id", "=", conn2)
+      .execute();
+    await assertRefusedEverywhere(conn2Run, "boot-z6-4");
+
+    // 5. Anchor task stopped (marked done) mid-run
+    const doneTrigger = await createCronTrigger(fixture, "z6-task-done");
+    const doneRun = await start(
+      fixture,
+      await triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: doneTrigger.trigger.id,
+      }),
+      "boot-z6-5",
+    );
+    await database
+      .updateTable("threads")
+      .set({ doneAt: new Date() })
+      .where("id", "=", fixture.threadId)
+      .execute();
+    await assertRefusedEverywhere(doneRun, "boot-z6-5");
+  });
+
   it("handles dispatch racing attach in both orders and isolates a week-gone computer's firing to its own automation", async ({
     storeFixture,
   }) => {

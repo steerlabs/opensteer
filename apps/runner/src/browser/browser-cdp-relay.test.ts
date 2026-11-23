@@ -1418,3 +1418,41 @@ it("relays tool content and caller deadlines with the current Run token, and abo
     await new Promise<void>((resolve) => http.close(() => resolve()));
   }
 });
+
+it("awaits async upstream token providers for browser-only renewals (Z6 / Finding 17)", async () => {
+  const tokens: string[] = [];
+  const http = createServer((request, response) => {
+    tokens.push(request.headers.authorization ?? "");
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
+  });
+  http.listen(0, "127.0.0.1");
+  await once(http, "listening");
+  const address = http.address();
+  if (!address || typeof address === "string") throw new Error("Relay fixture did not bind");
+  let generation = 0;
+  const relay = new BrowserCdpRelay({
+    url: `http://127.0.0.1:${address.port}/internal/v1/browser-cdp`,
+    token: async () => `renewed-browser-token-${++generation}`,
+    transport: developmentTransport,
+  });
+  try {
+    const base = (await relay.start()).replace(/^ws/u, "http");
+    const first = await fetch(`${base}/agent/pages/bind`, {
+      body: JSON.stringify({ pageId: "p1" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(first.status).toBe(200);
+    const second = await fetch(`${base}/agent/pages/bind`, {
+      body: JSON.stringify({ pageId: "p1" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(second.status).toBe(200);
+    expect(tokens).toEqual(["Bearer renewed-browser-token-1", "Bearer renewed-browser-token-2"]);
+  } finally {
+    await relay.close();
+    http.closeAllConnections();
+    await new Promise<void>((resolve) => http.close(() => resolve()));
+  }
+});

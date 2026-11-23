@@ -30,6 +30,7 @@ export interface ProgramEndpointSet {
  */
 export async function startProgramEndpoints(input: {
   readonly capabilities: () => ProgramCapabilities;
+  readonly resolveBrowserToken?: () => string | Promise<string>;
   readonly resolveMcpToken?: () => string | Promise<string>;
   readonly transport: Pick<RunnerConfig, "mode">;
 }): Promise<ProgramEndpointSet> {
@@ -46,7 +47,7 @@ export async function startProgramEndpoints(input: {
   const relay = initial.browserCdp
     ? new BrowserCdpRelay({
         url: initial.browserCdp.url,
-        token: () => input.capabilities().browserCdp?.token ?? "",
+        token: input.resolveBrowserToken ?? (() => input.capabilities().browserCdp?.token ?? ""),
         transport: input.transport,
       })
     : undefined;

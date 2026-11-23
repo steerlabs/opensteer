@@ -2700,7 +2700,30 @@ export class RunnerRuntime {
       let currentMcpToken = context.mcp.token;
       let currentBrowserToken = context.browserCdp?.token ?? null;
       let tokenIssuedAt = Date.now();
-      let pendingTokenRenewal: Promise<string> | undefined;
+      let pendingTokenRenewal: Promise<void> | undefined;
+      const ensureFreshTokens = async (): Promise<void> => {
+        if (Date.now() - tokenIssuedAt < 11 * 60 * 60_000 || !active.sink.renewProxyToken) {
+          return;
+        }
+        pendingTokenRenewal ??= active.sink
+          .renewProxyToken({
+            executionGeneration: context.executionGeneration,
+            kind: "firing",
+            occurrenceId: context.occurrenceId,
+          })
+          .then((answer) => {
+            if (answer?.mcp) {
+              currentMcpToken = answer.mcp.token;
+              currentBrowserToken = answer.browserCdp?.token ?? null;
+              tokenIssuedAt = Date.now();
+            }
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            pendingTokenRenewal = undefined;
+          });
+        await pendingTokenRenewal;
+      };
       endpoints = await startProgramEndpoints({
         capabilities: () => ({
           browserCdp:
@@ -2709,29 +2732,13 @@ export class RunnerRuntime {
               : null,
           mcp: { token: currentMcpToken, url: context.mcp.url },
         }),
+        resolveBrowserToken: async () => {
+          await ensureFreshTokens();
+          return currentBrowserToken ?? "";
+        },
         resolveMcpToken: async () => {
-          if (Date.now() - tokenIssuedAt < 11 * 60 * 60_000 || !active.sink.renewProxyToken) {
-            return currentMcpToken;
-          }
-          pendingTokenRenewal ??= active.sink
-            .renewProxyToken({
-              executionGeneration: context.executionGeneration,
-              kind: "firing",
-              occurrenceId: context.occurrenceId,
-            })
-            .then((answer) => {
-              if (answer?.mcp) {
-                currentMcpToken = answer.mcp.token;
-                currentBrowserToken = answer.browserCdp?.token ?? null;
-                tokenIssuedAt = Date.now();
-              }
-              return currentMcpToken;
-            })
-            .catch(() => currentMcpToken)
-            .finally(() => {
-              pendingTokenRenewal = undefined;
-            });
-          return pendingTokenRenewal;
+          await ensureFreshTokens();
+          return currentMcpToken;
         },
         transport: { mode: this.#mode },
       });
