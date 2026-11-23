@@ -864,8 +864,9 @@ integration("Warm engines", () => {
       const capture = await captured(captureFile);
       const conversation = await codexThreadOf(active, threadId);
       const closedAt = capture.findIndex((line) => line.fakeThreadClosed === conversation);
+      // The conversation's own turns; a title is written in a conversation of its own.
       const turnStarts = capture.flatMap((line, index) =>
-        line.method === "turn/start" ? [index] : [],
+        line.method === "turn/start" && line.params?.threadId === conversation ? [index] : [],
       );
       expect(closedAt).toBeGreaterThan(-1);
       expect(turnStarts).toHaveLength(2);

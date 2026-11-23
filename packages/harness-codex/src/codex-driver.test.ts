@@ -3205,6 +3205,8 @@ describe("one Codex app-server per account", () => {
       const observer = observe(stopping.events);
       void stopping.execute(fixture.turn("Write at length"));
       await observer.waitFor("assistant.delta");
+      // As the Runner stops a Run: it asks for the interrupt, then stops the session.
+      void stopping.interrupt();
       await stopping.stop();
       await observer.done;
       expect(normalizedTypes(observer.events)).toContain("run.interrupted");
@@ -3212,10 +3214,27 @@ describe("one Codex app-server per account", () => {
       // What ended the wait: Codex said the conversation closed. The server lives on.
       const captured = await fixture.capture();
       expect(captured).toContainEqual({ fakeThreadClosed: stopping.providerSessionReference });
+      const framesFor = (threadId: string, method: string) =>
+        captured.filter(
+          (message) =>
+            message.method === method && (message.params as JsonRecord).threadId === threadId,
+        );
+      // One interrupt frame for the stopped turn, no second.
+      expect(framesFor(stopping.providerSessionReference, "turn/interrupt")).toHaveLength(1);
       const pids = await runServerPids(fixture);
       expect(pids).toHaveLength(1);
       expect(processAlive(pids[0]!)).toBe(true);
+      // The other task's conversation on the same server is untouched: no frame
+      // stopped or unloaded it, and its next turn runs to its end there.
+      expect(framesFor(other.providerSessionReference, "turn/interrupt")).toHaveLength(0);
+      expect(framesFor(other.providerSessionReference, "thread/unsubscribe")).toHaveLength(0);
+      expect(captured).not.toContainEqual({ fakeThreadClosed: other.providerSessionReference });
       expect(other.usable).toBe(true);
+      await writeFile(neverReleased, "");
+      const otherObserver = observe(other.events);
+      await other.execute(fixture.turn("Write at length too"));
+      await otherObserver.waitFor("run.completed");
+      expect(await runServerPids(fixture)).toEqual(pids);
       await other.stop();
     } finally {
       await fixture.adapter.close();

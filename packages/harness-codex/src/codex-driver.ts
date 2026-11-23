@@ -1975,8 +1975,10 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     const closeTimeoutMs = Math.min(codexThreadCloseMaxMs, this.#config.requestTimeoutMs);
     const client = server.client;
     const root = this.#codexThreadId;
-    // The Run's own end does not stop a turn Codex still runs for it.
-    if (active?.providerTurnId && active.providerTurnOpen && root) {
+    // The Run's own end does not stop a turn Codex still runs for it. A turn
+    // whose interrupt was already asked for is not asked again: its
+    // conversation's close is what ends it now.
+    if (active?.providerTurnId && active.providerTurnOpen && root && !active.interruptPromise) {
       await Promise.allSettled([
         ...[...active.childTurns].map(([threadId, turnId]) =>
           client.request("turn/interrupt", { threadId, turnId }, closeTimeoutMs),
