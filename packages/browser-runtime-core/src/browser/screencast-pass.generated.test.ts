@@ -990,11 +990,31 @@ function actions(
 }
 
 async function turns(count: number, stop?: () => boolean) {
-  for (let turn = 0; turn < count && !stop?.(); turn += 1)
+  for (let turn = 0; turn < count; turn += 1) {
+    if (stop?.()) return;
     await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+function isQuiet(world: World, internals: Internals): boolean {
+  return (
+    !internals.passing &&
+    !internals.dirty &&
+    !internals.bound?.inFlight &&
+    world.tabs.A.chromium.framesDue === 0 &&
+    world.tabs.B.chromium.framesDue === 0
+  );
+}
+
+async function settle(world: World, internals: Internals, maxTurns: number) {
+  for (let turn = 0; turn < maxTurns; turn += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (turn >= 1 && isQuiet(world, internals)) return;
+  }
 }
 
 interface Internals {
+  readonly dirty: boolean;
   readonly passing: boolean;
   readonly sessionStates: WeakMap<Chromium, SessionCastState>;
   readonly stopTimers?: Map<object, unknown>;
@@ -1002,6 +1022,7 @@ interface Internals {
     readonly id: Id;
     readonly cdp: Chromium;
     readonly held: { readonly parameters?: unknown } | null;
+    readonly inFlight: unknown;
     readonly waiting: string | null;
     readonly firstFrameTimer: { readonly ms: number } | null;
     readonly paintTimer: unknown;
@@ -1115,7 +1136,7 @@ async function timedWaitEndsByItsLimit(
     const paintBefore = bound.state.paint;
     const failedBefore = bound.state.failed;
     vi.advanceTimersByTime(limitMs + 1);
-    await turns(4);
+    await settle(world, internals, 4);
     const nowBound = internals.bound;
     const progressed =
       !nowBound ||
@@ -1140,7 +1161,7 @@ async function timedWaitEndsByItsLimit(
     const castBefore = chromium.cast;
     const stopsBefore = chromium.stopsSent;
     vi.advanceTimersByTime(stopAnswerWaitMs + 1);
-    await turns(4);
+    await settle(world, internals, 4);
     const afterSessionState = world.sessionState(world.active);
     const nowBound = internals.bound;
     const progressed =
@@ -1356,22 +1377,29 @@ async function run(seed: number, engine: "desktop" | "linux", length: number) {
     (action) => !without || !new RegExp(without, "u").test(action.name),
   );
   const trace: string[] = [];
+  const internals = follow as unknown as Internals;
   await follow.start();
   world.streaming = true;
   await follow.setStreaming(true).catch(() => undefined);
-  await turns(6);
+  await settle(world, internals, 6);
   for (let step = 0; step < length; step += 1) {
     const action = pick.pick(list);
     trace.push(action.name);
-    let actionDone = false;
-    const ran = await Promise.race([
-      Promise.resolve(action.run()).then(() => {
-        actionDone = true;
-        return true;
-      }),
-      turns(200, () => actionDone).then(() => false),
-    ]);
-    await turns(6);
+    const result = action.run();
+    let ran = true;
+    if (result !== undefined) {
+      let actionDone = false;
+      ran = await Promise.race([
+        Promise.resolve(result).then(() => {
+          actionDone = true;
+          return true;
+        }),
+        Promise.resolve()
+          .then(() => turns(200, () => actionDone))
+          .then(() => false),
+      ]);
+    }
+    await settle(world, internals, 6);
     if (!ran) world.violations.push(`"${action.name}" did not return`);
     world.releaseRefusals();
     let broken = [...world.violations.splice(0), ...check(world, follow)];
