@@ -58,6 +58,7 @@ export interface HttpHostApiClientOptions {
    */
   readonly pacedUploads?: boolean;
   readonly assertResponseCurrent?: (response: Response) => void;
+  readonly isResponseCurrent?: (source: Response | HostTransportError) => boolean;
   readonly onSignedOut?: () => void;
   readonly onAuthenticationRequired: (method: keyof typeof hostApi) => void;
   readonly onVersionMismatch?: () => void;
@@ -284,7 +285,7 @@ async function request<Name extends keyof typeof hostApi>(
     // turn a sign-in prompt into a transport error.
     if (response.status === 401) {
       authenticationRequired = true;
-      options.onAuthenticationRequired(name);
+      if (options.isResponseCurrent?.(response) !== false) options.onAuthenticationRequired(name);
     }
     deadline.reset(response.body ? stallTimeoutMs : bufferedHostResponseTimeoutMs(maximumBytes));
     const bytes = await deadline.wait(
@@ -329,7 +330,12 @@ async function request<Name extends keyof typeof hostApi>(
       parsed.success &&
       (!authenticationRequired || (!parsed.data.ok && parsed.data.error.code === "unauthorized"))
     ) {
-      if (name === "auth.signOut" && parsed.data.ok) options.onSignedOut?.();
+      if (
+        name === "auth.signOut" &&
+        parsed.data.ok &&
+        options.isResponseCurrent?.(response) !== false
+      )
+        options.onSignedOut?.();
       if (
         !parsed.data.ok &&
         ["unsupported-version", "api-version-mismatch"].includes(parsed.data.error.reason ?? "")
@@ -370,7 +376,11 @@ async function request<Name extends keyof typeof hostApi>(
       authenticationRequired ||
       (error instanceof HostTransportError && error.failure.code === "unauthorized")
     ) {
-      if (!authenticationRequired) options.onAuthenticationRequired(name);
+      if (
+        !authenticationRequired &&
+        (!(error instanceof HostTransportError) || options.isResponseCurrent?.(error) !== false)
+      )
+        options.onAuthenticationRequired(name);
       return authenticationRefusal(
         error instanceof HostTransportError && error.failure.code === "unauthorized"
           ? error.failure.reason

@@ -3624,6 +3624,7 @@ describe("MobileClient and this iPhone's apps", () => {
       });
       const binding = vi.fn(async () => undefined);
       const afterLeave = vi.fn();
+      const phoneSessionId = createId("authSession");
       const port = testPort({
         held: false,
         realCredentials: true,
@@ -3633,7 +3634,7 @@ describe("MobileClient and this iPhone's apps", () => {
             ...snapshot(),
             devicesAvailable: true,
             session: "authenticated",
-            sessionId: "ses_phone",
+            sessionId: phoneSessionId,
           }));
           host.bindDeviceSession = binding;
           Object.defineProperty(host, "rpc", {
@@ -3651,7 +3652,7 @@ describe("MobileClient and this iPhone's apps", () => {
                   }
                   return {
                     ok: true,
-                    data: { sessions: [{ id: "ses_phone", current: true, deviceId: null }] },
+                    data: { sessions: [{ id: phoneSessionId, current: true, deviceId: null }] },
                   };
                 };
               },
