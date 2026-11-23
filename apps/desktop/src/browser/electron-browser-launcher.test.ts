@@ -3269,6 +3269,92 @@ describe("Electron debugger teardown", () => {
     expect(orders).toHaveLength(24);
   });
 
+  // The walker's run 3 on e67033f5f, follow-agent-screencast-alongside: the person returned to a
+  // still tab within the second the hub kept a stopped cast for, and was pictured again only ten
+  // seconds later. A still page sends a frame when a cast starts and none after; the person's
+  // return must be that start.
+  it("pictures a still tab again when the person returns to it at once", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const hub = await hubPage("84");
+    const channel = await hub.page.cdp();
+    const shown = { height: 900, width: 1_400 };
+    const frameOf = (id: number) => ({
+      data: jpeg(shown.width, shown.height).toString("base64"),
+      metadata: {
+        deviceHeight: shown.height,
+        deviceWidth: shown.width,
+        offsetTop: 0,
+        pageScaleFactor: 1,
+        scrollOffsetX: 0,
+        scrollOffsetY: 0,
+      },
+      sessionId: id,
+    });
+    // A still page: Chromium sends one frame when a start is answered, and no other.
+    const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+    let starts = 0;
+    hub.contents.debugger.sendCommand.mockImplementation(
+      (method: string, parameters?: Record<string, unknown>, session?: string) => {
+        const answered = answer(method, parameters, session);
+        if (method !== "Page.startScreencast") return answered;
+        const id = (starts += 1);
+        return Promise.resolve(answered).then((result) => {
+          setTimeout(() => hub.deliver("Page.screencastFrame", frameOf(id)), 1);
+          return result;
+        });
+      },
+    );
+    const surface = {
+      active: true,
+      documentId: "a",
+      geometryRevision: 1,
+      id: "tab-a",
+      loading: false,
+    };
+    const capture = { ...shown, rasterScale: 1, revision: 1 };
+    const binding = {
+      cdp: channel,
+      page: {
+        applyGeometry: async () => undefined,
+        capture: { read: () => capture, subscribe: () => () => undefined },
+        invalidateSurface: async () => undefined,
+        settleRendering: async () => undefined,
+      },
+      surface,
+    };
+    const ledger = {
+      active: () => binding,
+      binding: () => binding,
+      dialogOf: () => null,
+      dialogOpen: () => false,
+      recordPageScale: () => undefined,
+      subscribe: () => () => undefined,
+      use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      viewportOf: () => shown,
+      withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+    };
+    const delivered: unknown[] = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+      ledger: ledger as never,
+      onDialogChanged: () => undefined,
+    });
+    await follow.start();
+    await follow.setStreaming(true);
+    await vi.waitFor(() => expect(delivered).toHaveLength(1));
+    // The person turns away, and back straight after.
+    await follow.setStreaming(false);
+    await follow.setStreaming(true);
+    await vi.waitFor(() => expect(delivered).toHaveLength(2));
+    await follow.close();
+    await hub.browser.close();
+  });
+
   // F30, the first half of the hypothesis for follow-never-shown-tab's four starts: a tab never
   // shown sends, before its start's answer is handled, a first frame at the size it last drew,
   // which 6a0311f0b made the hub hand on; the real follow view, sized as the Electron page sizes
