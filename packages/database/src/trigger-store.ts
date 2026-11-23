@@ -1592,19 +1592,17 @@ export class TriggerStore {
             .execute();
         }
       }
-      // Y10 / T8: Never auto-pause a crash-looping watch; emit one 'watch-crash-loop' notice
-      // while the supervisor continues retrying with exponential backoff.
+      // Y10 / T8 / AB3: Never auto-pause a crash-looping watch; emit one notice
+      // ('watch-halted' when containment could not be verified, or 'watch-crash-loop' while retrying).
       const containmentHalted =
         activation.desired === "active" &&
         trigger.status === "active" &&
-        input.observed === "backoff" &&
-        Boolean(input.lastError?.includes("containment"));
+        input.observed === "halted";
       const crashLooping =
-        (activation.desired === "active" &&
-          trigger.status === "active" &&
-          consecutiveFailures >= WATCH_CRASH_NOTICE_THRESHOLD) ||
-        containmentHalted;
-      if (crashLooping) {
+        activation.desired === "active" &&
+        trigger.status === "active" &&
+        consecutiveFailures >= WATCH_CRASH_NOTICE_THRESHOLD;
+      if (containmentHalted || crashLooping) {
         await transaction
           .updateTable("triggers")
           .set({
@@ -1622,7 +1620,7 @@ export class TriggerStore {
           await recordAutomationFailure(transaction, {
             activationId: activation.id,
             detail: `${exitPrefix}${rawDetail}`,
-            reason: "watch-crash-loop",
+            reason: containmentHalted ? "watch-halted" : "watch-crash-loop",
             triggerId: trigger.id,
           });
         }

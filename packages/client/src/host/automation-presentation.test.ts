@@ -194,6 +194,21 @@ describe("placing automations", () => {
       problem: "It ended without saying whether its effect happened (exit 3).",
     });
   });
+
+  it("places a halted watch in attention with pause-and-resume instructions (AB3)", () => {
+    const haltedWatch = automation({
+      source: { kind: "watch" },
+      watch: {
+        lastError: "Watch stopped restarting because prior process containment could not be verified.",
+        observed: "halted",
+      },
+    });
+    expect(placeAutomation(haltedWatch, now)).toEqual({
+      group: "attention",
+      problem:
+        "Stopped and will not restart until you pause and resume it — check its computer for leftover processes.",
+    });
+  });
 });
 
 describe("the next run", () => {

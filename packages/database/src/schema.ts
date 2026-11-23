@@ -1185,7 +1185,7 @@ export interface TriggerWatchActivationTable {
   anchorThreadId: ThreadId;
   createdBy: UserId;
   desired: "active" | "stopped";
-  observed: "starting" | "running" | "backoff" | "expired" | "stopped";
+  observed: "starting" | "running" | "backoff" | "halted" | "expired" | "stopped";
   executionGeneration: ColumnType<string, number | string, number | string>;
   runnerId: RunnerId | null;
   runnerBootId: string | null;

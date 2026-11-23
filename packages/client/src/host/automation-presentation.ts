@@ -40,6 +40,7 @@ export type PlaceableAutomation = Pick<
 > & {
   readonly systemRole?: TriggerSummary["systemRole"];
   readonly waitingReason?: string | null | undefined;
+  readonly watch?: TriggerSummary["watch"] | undefined;
 };
 
 export interface AutomationPlacement {
@@ -71,6 +72,11 @@ export function placeAutomation(summary: PlaceableAutomation, now: number): Auto
   if (summary.latestOccurrence?.status === "running" && summary.latestOccurrence.contactLostAt) {
     return attention(
       `Running as far as Opensteer knows — contact lost ${formatMoment(summary.latestOccurrence.contactLostAt, now, true)}.`,
+    );
+  }
+  if (summary.watch?.observed === "halted") {
+    return attention(
+      "Stopped and will not restart until you pause and resume it — check its computer for leftover processes.",
     );
   }
   if (shape === "repeating") return { group: "repeating", problem: null };
@@ -307,6 +313,8 @@ export function watchState(observed: NonNullable<TriggerSummary["watch"]>["obser
       return { text: "Starting", tone: "muted" };
     case "backoff":
       return { text: "Restarting after it stopped", tone: "warn" };
+    case "halted":
+      return { text: "Stopped — needs attention", tone: "bad" };
     case "expired":
       return { text: "Waiting for its computer", tone: "warn" };
     case "stopped":

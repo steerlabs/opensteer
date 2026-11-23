@@ -61,7 +61,7 @@ interface ActiveWatch {
   lastError: string | null;
   lastExitCode: number | null;
   leaseTimer?: NodeJS.Timeout;
-  observed: "starting" | "running" | "backoff" | "expired" | "stopped";
+  observed: "starting" | "running" | "backoff" | "halted" | "expired" | "stopped";
   process: SupervisedProcess | undefined;
   renewingToken?: Promise<boolean>;
   restartCount: number;
@@ -388,7 +388,7 @@ export class WatchSupervisor {
         active.lastError = active.lastError
           ? `${active.lastError} (stopped restarting because prior process containment could not be verified)`
           : "Watch stopped restarting because prior process containment could not be verified.";
-        active.observed = "backoff";
+        active.observed = "halted";
         await this.#report(active);
         break;
       }

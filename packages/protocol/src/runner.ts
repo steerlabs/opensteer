@@ -1960,7 +1960,7 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     healthySince: IsoDateTimeSchema.nullable(),
     lastError: z.string().max(20_000).nullable(),
     lastExitCode: z.number().int().nullable(),
-    observed: z.enum(["starting", "running", "backoff", "expired", "stopped"]),
+    observed: z.enum(["starting", "running", "backoff", "halted", "expired", "stopped"]),
     restartCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     stderrTail: watchLogTailSchema,
     stdoutTail: watchLogTailSchema,

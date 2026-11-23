@@ -128,6 +128,9 @@ function noticeText(notice: PendingAutomationFailure): string {
   if (notice.reason === "overran-schedule") {
     return `${automation} was still running when its next scheduled run came due, so one waiting run was queued and further overlapping ticks collapse into it. It is still active.\n\nDetail: ${JSON.stringify(notice.detail)}`;
   }
+  if (notice.reason === "watch-halted") {
+    return `${automation} stopped and will not restart on its own because Opensteer could not verify that every process from its previous run ended. Check its computer for any leftover processes, then pause and resume the automation to start a fresh run.\n\nDetail: ${JSON.stringify(notice.detail)}`;
+  }
   if (notice.reason === "watch-crash-loop") {
     return `${automation} keeps stopping and restarting. It is still active and retrying with backoff.\n\nLatest exit and error: ${JSON.stringify(notice.detail)}`;
   }

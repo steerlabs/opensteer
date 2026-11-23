@@ -20,6 +20,7 @@ export type AutomationFailureReason =
   | "started-unknown"
   | "overran-schedule"
   | "watch-crash-loop"
+  | "watch-halted"
   | "outcome-unknown";
 
 /**

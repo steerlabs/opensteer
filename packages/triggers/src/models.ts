@@ -148,6 +148,7 @@ export const TriggerWatchObservedSchema = z.enum([
   "starting",
   "running",
   "backoff",
+  "halted",
   "expired",
   "stopped",
 ]);

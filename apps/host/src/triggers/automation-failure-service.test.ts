@@ -370,3 +370,55 @@ it("sends the outcome-unknown sentence for started-unknown without wording it as
     vi.useRealTimers();
   }
 });
+
+it("explains watch-halted truthfully and tells the reader to pause and resume (AB3)", async () => {
+  vi.useFakeTimers();
+  const threadId = createId("thread");
+  const notice: PendingAutomationFailure = {
+    anchorThreadId: threadId,
+    anchorThreadTitle: "Task",
+    attempts: 0,
+    createdBy: createId("user"),
+    detail: "exit 1: Watch stopped restarting because prior process containment could not be verified.",
+    destinationThreadId: threadId,
+    id: crypto.randomUUID(),
+    reason: "watch-halted",
+    triggerId: createId("trigger"),
+    triggerName: "Inbox watch",
+  };
+  let delivered = false;
+  const enqueueThreadInput = vi.fn<CommandService["enqueueThreadInput"]>(
+    async () =>
+      ({
+        disposition: "queued",
+        inputId: createId("message"),
+        runId: null,
+      }) as never,
+  );
+  const service = new AutomationFailureService({
+    commands: { enqueueThreadInput },
+    onError: () => undefined,
+    store: {
+      listDue: vi.fn(async () => (delivered ? [] : [notice])),
+      nextDeadline: async () => null,
+      retryLater: vi.fn(async () => undefined),
+      settle: vi.fn(async () => {
+        delivered = true;
+      }),
+    },
+  });
+  try {
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(enqueueThreadInput).toHaveBeenCalledOnce();
+    const text = enqueueThreadInput.mock.calls[0]?.[0]?.content
+      .map((part) => ("text" in part ? part.text : ""))
+      .join("");
+    expect(text).toContain("will not restart on its own");
+    expect(text).toContain("pause and resume");
+    expect(text).not.toContain("retrying with backoff");
+  } finally {
+    await service.close();
+    vi.useRealTimers();
+  }
+});

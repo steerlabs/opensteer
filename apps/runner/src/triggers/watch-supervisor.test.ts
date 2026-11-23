@@ -455,9 +455,7 @@ describe("WatchSupervisor", () => {
         expect(
           fixture.messages.some(
             (message) =>
-              message.type === "runner.watch-status" &&
-              message.observed === "backoff" &&
-              message.lastError?.includes("containment"),
+              message.type === "runner.watch-status" && message.observed === "halted",
           ),
         ).toBe(true);
       });

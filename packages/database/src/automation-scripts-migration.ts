@@ -109,6 +109,29 @@ export async function applyAutomationsContract(database: Kysely<DatabaseSchema>)
         status in ('pending', 'running', 'succeeded', 'failed', 'canceled', 'unknown')
       );
 
+    do $$
+    declare
+      constraint_row record;
+    begin
+      for constraint_row in
+        select con.conname
+        from pg_constraint con
+        join pg_class cls on cls.oid = con.conrelid
+        join pg_namespace ns on ns.oid = cls.relnamespace
+        where ns.nspname = current_schema()
+          and cls.relname = 'trigger_watch_activations'
+          and con.contype = 'c'
+          and pg_get_constraintdef(con.oid) like '%observed%'
+      loop
+        execute format('alter table trigger_watch_activations drop constraint %I', constraint_row.conname);
+      end loop;
+    end $$;
+
+    alter table trigger_watch_activations
+      add constraint trigger_watch_activations_observed_check check (
+        observed in ('starting', 'running', 'backoff', 'halted', 'expired', 'stopped')
+      );
+
     alter table automation_failure_notices
       drop constraint if exists automation_failure_notices_reason_check;
     alter table automation_failure_notices
@@ -121,6 +144,7 @@ export async function applyAutomationsContract(database: Kysely<DatabaseSchema>)
           'started-unknown',
           'overran-schedule',
           'watch-crash-loop',
+          'watch-halted',
           'outcome-unknown'
         )
       );
