@@ -10,6 +10,7 @@ import {
   installBrowserPoolSlot,
   listBrowserPoolDocumentLosses,
   readBrowserPoolSlot,
+  retireBrowserPoolTarget,
   settleBrowserPoolRelay,
   browserPoolRelayDeadlineMs,
   pruneBrowserPoolBookkeeping,
@@ -2669,6 +2670,258 @@ it("reports the pooled browser's phase, a fresh start's reason and the pages not
     ]);
     await home.service.poolNoticeSeen(j.task.userId, tabId, noticeId!);
     expect(await report()).not.toHaveProperty("pages");
+  } finally {
+    await j.close();
+  }
+});
+
+/** A store with a running pooled slot and one session admitted on it, ready. */
+async function pooledStore(key: string) {
+  const fixture = await createStoreFixture();
+  const task = await fixture.createRunFixture(key);
+  const target: BrowserPoolTargetIdentity = {
+    runnerId: task.runnerId,
+    runtimeId: "pool-runtime",
+    slotId: `slot-${key}`,
+    term: 1,
+    instanceId: randomUUID(),
+    epoch: 1,
+  };
+  await installBrowserPoolSlot(fixture.database, target);
+  const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+  await personalBrowserRepository(fixture.store).createBrowserSession({
+    ownerId: task.userId,
+    id: sessionId,
+    origin: "agent",
+    placementKey: "pool-test",
+    profileId: null,
+    runnerId: task.runnerId,
+    runtimeId: target.runtimeId,
+    pooled: true,
+  });
+  await fixture.store.transitionBrowserSession({ sessionId, state: "ready" });
+  const state = async () =>
+    (
+      await fixture.database
+        .selectFrom("browserSessions")
+        .select("state")
+        .where("id", "=", sessionId)
+        .executeTakeFirstOrThrow()
+    ).state;
+  return { fixture, task, target, sessionId, state };
+}
+
+it("refuses, in the statement itself, to close a pooled session as unpooled: with its slot, and without it", async () => {
+  const s = await pooledStore("unpooled-refusal");
+  try {
+    await expect(
+      s.fixture.store.closeUnpooledBrowserSession({ sessionId: s.sessionId }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await s.state()).toBe("ready");
+    // Its target replaced: no slot row, the binding still says whose it is.
+    await retireBrowserPoolTarget(s.fixture.database, s.task.runnerId);
+    await expect(
+      s.fixture.store.closeUnpooledBrowserSession({ sessionId: s.sessionId }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await s.state()).toBe("ready");
+  } finally {
+    await s.fixture.close();
+  }
+});
+
+it("keeps a pooled session a Stop left closing through a Home restart with no slot row: it is not failed (W14)", async () => {
+  const s = await pooledStore("restart-closing");
+  try {
+    await s.fixture.store.transitionBrowserSession({ sessionId: s.sessionId, state: "closing" });
+    // Mid-swap, or after a release: no slot row.
+    await retireBrowserPoolTarget(s.fixture.database, s.task.runnerId);
+    await s.fixture.store.failActiveBrowserSessions(undefined, s.task.runnerId);
+    expect(await s.state()).toBe("closing");
+  } finally {
+    await s.fixture.close();
+  }
+});
+
+it("creates no unbound session on a pooled computer: an unpooled create on its runner is refused (W11)", async () => {
+  const s = await pooledStore("unbound-create");
+  try {
+    for (const slot of ["with its slot", "between targets"]) {
+      if (slot === "between targets")
+        await retireBrowserPoolTarget(s.fixture.database, s.task.runnerId);
+      const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+      await expect(
+        personalBrowserRepository(s.fixture.store).createBrowserSession({
+          ownerId: s.task.userId,
+          id: sessionId,
+          origin: "agent",
+          placementKey: "pool-test",
+          profileId: null,
+          runnerId: s.task.runnerId,
+          runtimeId: s.target.runtimeId,
+          onPooledComputer: true,
+        }),
+      ).rejects.toThrow("between states");
+      expect(
+        await s.fixture.database
+          .selectFrom("browserSessions")
+          .select("id")
+          .where("id", "=", sessionId)
+          .execute(),
+      ).toEqual([]);
+    }
+  } finally {
+    await s.fixture.close();
+  }
+});
+
+it("refuses a tab open on a pooled computer with no coordinator here, before any row (W11), and stops a pooled session as closing (W17)", async () => {
+  const j = await journey("no-coordinator");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("no-coordinator"));
+    await j.draft();
+    // Between two targets: the coordinator is retired, and no other is adopted yet.
+    await home.service.retirePool(j.task.runnerId, "browser-replaced");
+    await retireBrowserPoolTarget(j.database, j.task.runnerId);
+    const before = await j.database.selectFrom("browserSessions").select("id").execute();
+    // Refused (the open says it could not open the page), with no row written.
+    await expect(
+      home.service.openTab(j.task.userId, j.command("no-coordinator-second")),
+    ).rejects.toThrow();
+    expect(await j.database.selectFrom("browserSessions").select("id").execute()).toEqual(before);
+    // The retirement ended the open session with its note; a session left closing by a Stop is
+    // the case #stopRecord must keep: closing, never closed without evidence.
+    const s = await pooledStoreOn(j);
+    await home.service.stop(j.task.userId, s);
+    expect((await j.row(s))?.state).toBe("closing");
+    void sessionId;
+  } finally {
+    await j.close();
+  }
+});
+
+/** A pooled session bound to the journey's slot, ready, with no broker (its row only). */
+async function pooledStoreOn(j: Awaited<ReturnType<typeof journey>>) {
+  const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+  await j.database
+    .insertInto("browserSessions")
+    .values({
+      tabGroupId: sessionId,
+      closedAt: null,
+      runnerId: j.task.runnerId,
+      id: sessionId,
+      origin: "person",
+      opener: { kind: "person", userId: j.task.userId },
+      placementKey: "pool-test",
+      profileId: null,
+      runtimeId: "pool-runtime",
+      state: "ready",
+    })
+    .execute();
+  await bindBrowserPoolSession(j.database, {
+    sessionId,
+    runnerId: j.task.runnerId,
+    slotId: `slot-no-coordinator`,
+    term: 1,
+  });
+  return sessionId;
+}
+
+it("lets a person watch while the proxy's one repair parks and wakes the guest: a viewer is not a command (W10)", async () => {
+  const j = await journey("viewer-repair", { statusEveryMs: 50 });
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("viewer-repair"));
+    await j.draft();
+    const watching = j.viewer(home, sessionId, "watch");
+    await watching.attaching;
+    // Attached through the service's own door: a viewer, not a command in flight.
+    expect(home.coordinator.gate.commands).toBe(0);
+    expect(home.coordinator.gate.viewers).toBe(1);
+    const shown: string[] = [];
+    j.controller.observe({ proxy: "down" });
+    await until(() => {
+      const report = home.coordinator.report();
+      if (report) shown.push(report.proxyDown ? "paused" : report.phase);
+      expect(j.controller.effects).toEqual(["start", "pause", "resume"]);
+    });
+    // While it ran the person was told the browser was waking, never that browsing was paused.
+    expect(shown).not.toContain("paused");
+    expect(shown).toContain("waking");
+    // The park retires the guest's channels, the viewer's with them: a client attaches again to
+    // the woken browser, as after any park.
+  } finally {
+    await j.close();
+  }
+});
+
+it("never writes a pooled row the runtime ended on its own while the Home detaches its channels for a restart (W17)", async () => {
+  const j = await journey("detach-frame", { channelDeadlineMs: 1_500 });
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("detach-frame"),
+    );
+    await j.draft();
+    const emit = EventEmitter.prototype.emit;
+    const held: { connection: TestRuntimeConnection; args: unknown[] }[] = [];
+    let release = false;
+    const frames = vi.spyOn(TestRuntimeConnection.prototype, "emit").mockImplementation(function (
+      this: TestRuntimeConnection,
+      event,
+      ...args
+    ) {
+      const [data, binary] = args as [Buffer, boolean];
+      if (
+        !release &&
+        event === "message" &&
+        !binary &&
+        /"state":"clos(ing|ed)"/u.test(data.toString())
+      ) {
+        held.push({ connection: this, args: [event, ...args] });
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    });
+    const detach = HostedBrowserBroker.prototype.detachPooled;
+    const detaching = vi
+      .spyOn(HostedBrowserBroker.prototype, "detachPooled")
+      .mockImplementation(function (this: HostedBrowserBroker, reason: string, signal) {
+        // The frames arrive first, still queued behind the broker's frame tail as it detaches.
+        release = true;
+        for (const frame of held.splice(0))
+          emit.call(frame.connection, ...(frame.args as [string, ...unknown[]]));
+        return detach.call(this, reason, signal);
+      });
+    try {
+      const fence = j.guest.poolState()!.fence!;
+      void j.guest
+        .endPoolSession(
+          j.signer.issue({
+            access: "read-write",
+            creationOrigin: "person",
+            actor: "person",
+            identity: { kind: "fresh" },
+            pool: { ...fence, end: true },
+            runtimeId: "pool-runtime",
+            sessionId,
+            subject: j.task.userId,
+          }),
+        )
+        .catch(() => undefined);
+      await until(() => expect(held.length).toBeGreaterThan(0));
+      // A restart detaches every channel of the runtime, then starts a fresh guest.
+      await home.coordinator.restart();
+    } finally {
+      detaching.mockRestore();
+      frames.mockRestore();
+    }
+    // The person never stopped it: it ended as a loss with its note, never closing or closed.
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("failed"));
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
+      { sessionId },
+    ]);
   } finally {
     await j.close();
   }

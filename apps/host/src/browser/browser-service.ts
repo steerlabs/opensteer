@@ -437,6 +437,7 @@ export interface BrowserSessionRepository {
     readonly profileId: BrowserProfileId | null;
     readonly runtimeId: string;
     readonly pooled?: true;
+    readonly onPooledComputer?: true;
   }): Promise<BrowserSessionRecord>;
   countBrowserSessionAttachments(sessionId: BrowserSessionId): Promise<number>;
   /** One consistent read of a session's open tabs and Run eligibility; null if it is gone. */
@@ -810,6 +811,8 @@ interface BrowserServiceOptions {
    * that Runner's sessions for the coordinator to reattach or end with their notes.
    */
   readonly pooledRunner?: RunnerId;
+  /** New sessions' ids (a random one each by default); a search derives them from its seed. */
+  readonly newSessionId?: () => BrowserSessionId;
 }
 
 /**
@@ -1007,6 +1010,7 @@ export class BrowserService {
   /** Held here by Runner, so a Runner that is away or removed still has its coordinator. */
   readonly #pools: Map<RunnerId, BrowserPoolCoordinator>;
   readonly #pooledRunner: RunnerId | undefined;
+  readonly #newSessionId: () => BrowserSessionId;
   readonly #poolWaiters = new Map<BrowserSessionId, Set<AbortController>>();
   readonly #poolAgentWaiters = new Map<string, Set<AbortController>>();
   readonly #closing = new AbortController();
@@ -1016,7 +1020,9 @@ export class BrowserService {
 
   constructor(options: BrowserServiceOptions) {
     this.#pools = new Map(options.pools ?? []);
-    this.#pooledRunner = options.pooledRunner;
+    this.#newSessionId = options.newSessionId ?? createBrowserSessionId;
+    // A Home given a pool is a pooled computer, its coordinator here or not later (W11).
+    this.#pooledRunner = options.pooledRunner ?? [...(options.pools?.keys() ?? [])][0];
     // A personal Home has one pooled Cloud Computer at most: the startup sweep keeps its rows.
     if (this.#pools.size > 1) throw new Error("A Home serves at most one pooled browser.");
     this.#requireAgentAccess = options.requireAgentAccess ?? (async () => {});
@@ -1159,6 +1165,23 @@ export class BrowserService {
   }
 
   /**
+   * W8: a replaced target that still holds Stops waiting for its word. Its coordinator, in drain
+   * mode, asks it until none waits (each ended by evidence about that target), then goes. Only its
+   * end requests and status reads are sent; it serves nothing.
+   */
+  drainPool(runnerId: RunnerId, coordinator: BrowserPoolCoordinator): Promise<void> {
+    if (this.#closed) throw unavailable("The Host browser service is shutting down.");
+    this.#draining.add(coordinator);
+    coordinator.setAdopter(this.#poolAdopter(runnerId, true));
+    const drained = coordinator.drain();
+    void drained.finally(() => this.#draining.delete(coordinator)).catch(() => undefined);
+    return drained;
+  }
+
+  /** Replaced targets being drained (W8). */
+  readonly #draining = new Set<BrowserPoolCoordinator>();
+
+  /**
    * A different target replaces this one: everything in flight on it ends (each with its
    * outcome or its note), and the coordinator goes. The next one is adopted on its own.
    */
@@ -1193,8 +1216,8 @@ export class BrowserService {
    * The Home's per-session part of a pooled adoption; one session's failure is its own. Only a
    * pooled target's coordinator calls it, so no ordinary Home reaches any of it.
    */
-  #poolAdopter(runnerId: RunnerId): BrowserPoolAdopter {
-    if (!this.#pools.has(runnerId))
+  #poolAdopter(runnerId: RunnerId, draining = false): BrowserPoolAdopter {
+    if (!draining && !this.#pools.has(runnerId))
       throw new Error("Only the pooled target adopts retained sessions.");
     return {
       inventory: () =>
@@ -1225,9 +1248,8 @@ export class BrowserService {
         // One with a broker is being stopped through it.
         return closing.filter((sessionId) => !this.#brokers.has(sessionId));
       },
-      endTicket: async ({ sessionId, fence, signal }) => {
+      endTicket: async ({ sessionId, fence, runtimeId, signal }) => {
         if (this.#closed || !(this.#repository instanceof OpensteerStore)) return undefined;
-        const runtimeId = this.#pools.get(runnerId)?.runtimeId;
         const owner = await readBrowserPoolOwner(this.#repository.database);
         const record = owner
           ? await this.#repository.getBrowserSessionForOwner(sessionId, owner)
@@ -1256,7 +1278,7 @@ export class BrowserService {
           subject: owner!,
         });
       },
-      ended: async (sessionId, target) => {
+      ended: async (sessionId, target, evidence = { kind: "runtime-ended" }) => {
         // Only a row still closing: another path that ended it has its own evidence.
         const owner =
           this.#repository instanceof OpensteerStore
@@ -1270,7 +1292,7 @@ export class BrowserService {
           from: ["closing"],
           sessionId,
           state: "closed",
-          evidence: { kind: "runtime-ended" },
+          evidence,
           target,
         });
       },
@@ -1938,9 +1960,14 @@ export class BrowserService {
     return (
       isTerminal(record.state) ||
       (record.state === "closing" &&
-        this.#pools.size > 0 &&
-        this.#pool(record.runnerId) !== undefined)
+        ((this.#pools.size > 0 && this.#pool(record.runnerId) !== undefined) ||
+          this.#isPooledRunner(record.runnerId)))
     );
+  }
+
+  /** The pooled computer's runner, with or without its coordinator here now. */
+  #isPooledRunner(runnerId: RunnerId): boolean {
+    return this.#pooledRunner !== undefined && runnerId === this.#pooledRunner;
   }
 
   async readTabIcon(
@@ -2393,7 +2420,7 @@ export class BrowserService {
               opening = {
                 ownerId,
                 placement,
-                sessionId: createBrowserSessionId(),
+                sessionId: this.#newSessionId(),
                 ...(agent
                   ? {
                       origin: "agent" as const,
@@ -4181,7 +4208,7 @@ export class BrowserService {
             profileId: row.profileId,
           });
         signal?.throwIfAborted();
-        const sessionId = createBrowserSessionId();
+        const sessionId = this.#newSessionId();
         this.#workspacePageGenerations.set(`${sessionId}:${row.id}`, row.generation);
         const dormant = (await tabs.snapshot(ownerId)).rows
           .filter(
@@ -6532,9 +6559,15 @@ export class BrowserService {
     const peers = this.#authConsumers.get(options.authSessionId) ?? new Set<BrowserConsumerPeer>();
     peers.add(peer);
     this.#authConsumers.set(options.authSessionId, peers);
+    // The reservation only wakes a parked browser for this viewer: it is released once the viewer
+    // is attached, and the viewer is then counted as one (W10), which never holds the repair.
     let pooledViewer: BrowserPoolReservation | undefined;
+    let viewing: (() => void) | undefined;
+    let detached = false;
     const detachAuth = () => {
+      detached = true;
       pooledViewer?.release();
+      viewing?.();
       peers.delete(peer);
       if (peers.size === 0) this.#authConsumers.delete(options.authSessionId);
     };
@@ -6583,7 +6616,7 @@ export class BrowserService {
       // personal inventory; the outlet rereads it on a clock rather than per frame.
       const stillVisible = async () =>
         Boolean(await this.#repository.getBrowserSessionForOwner(sessionId, ownerId));
-      return await broker.attach(
+      const attached = await broker.attach(
         peer,
         options.mode,
         stillVisible,
@@ -6599,6 +6632,12 @@ export class BrowserService {
           autofill: options.autofill,
         },
       );
+      if (pooledViewer && !detached) {
+        viewing = this.#pool(persisted.runnerId)?.gate.viewing();
+        pooledViewer.release();
+        pooledViewer = undefined;
+      }
+      return attached;
     } catch (error) {
       detachAuth();
       throw error;
@@ -6776,6 +6815,9 @@ export class BrowserService {
       for (const peer of peers) peer.close(1001, "Host browser service closing");
     }
     this.#authConsumers.clear();
+    // A drain is the next Home's to go on with, from the retired target's record (W8).
+    for (const coordinator of this.#draining) coordinator.close();
+    this.#draining.clear();
     this.#closePromise = (async () => {
       await this.#runPlaces.close();
       await Promise.allSettled(this.#sessionOperations.values());
@@ -6876,7 +6918,8 @@ export class BrowserService {
       }
       // A pooled one with no channel here may still be held by its guest: it is stopped, and ends
       // with the runtime's answer. Any other is a row with no browser behind it.
-      if (this.#pool(existing.runnerId)) await this.#stopRecord(existing);
+      if (this.#pool(existing.runnerId) || this.#isPooledRunner(existing.runnerId))
+        await this.#stopRecord(existing);
       else
         await this.#transitionBrowserSession({
           from: ["starting", "ready", "closing"],
@@ -6926,6 +6969,11 @@ export class BrowserService {
           : "The selected Browser Runtime is not connected.",
       );
     const pooled = this.#pool(placement.runnerId);
+    // On a pooled computer a session is created bound to its target, or not at all (W11): with
+    // no coordinator here (before its target is adopted, between two targets) it is refused
+    // before any row is written.
+    if (!pooled && this.#isPooledRunner(placement.runnerId))
+      throw new BrowserPoolAdmissionClosed("The pooled browser is between states. Try again.");
     let poolBudget = input.operationBudget as BrowserTabOpenBudget | undefined;
     if (pooled && poolStart) {
       if (input.agentBindingId) {
@@ -6959,7 +7007,7 @@ export class BrowserService {
       throw unavailable("The pooled browser has no start reservation.");
 
     const admit = async () => {
-      const sessionId = input.sessionId ?? createBrowserSessionId();
+      const sessionId = input.sessionId ?? this.#newSessionId();
       const localIdentity =
         profile && this.#localProfiles
           ? await this.#localProfiles.identity(profile.id, placement.runnerId, target)
@@ -7000,6 +7048,7 @@ export class BrowserService {
         runtimeId: target.runtimeId,
         ownerId: input.ownerId,
         ...(pooled ? { pooled: true } : {}),
+        ...(this.#pooledRunner !== undefined ? { onPooledComputer: true as const } : {}),
       });
       if (input.initialSurfaceId && this.#workspaceTabs) {
         const row = await this.#workspaceTabs.get(input.ownerId, input.initialSurfaceId);

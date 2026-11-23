@@ -738,6 +738,7 @@ export class OpensteerStore {
     readonly profileId: BrowserProfileId | null;
     readonly runtimeId: string;
     readonly pooled?: true;
+    readonly onPooledComputer?: true;
   }): Promise<BrowserSessionRecord> {
     return browserSessionStore.createBrowserSession(this.#database, input);
   }

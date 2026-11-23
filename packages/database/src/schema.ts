@@ -2249,6 +2249,17 @@ export interface DatabaseSchema {
   credentialVaultCanaries: CredentialVaultCanaryTable;
   browserProfiles: BrowserProfileTable;
   browserProfileDeletions: BrowserProfileDeletionTable;
+  /** W8: a replaced target the Home goes on asking for the end of the Stops it held. */
+  browserPoolRetiredTargets: {
+    slotId: string;
+    term: number;
+    runnerId: RunnerId;
+    runtimeId: string;
+    instanceId: string;
+    epoch: number;
+    target: JsonColumn<Readonly<Record<string, unknown>>>;
+    retiredAt: Generated<Timestamp>;
+  };
   /** W1: the target (slot and term) each pooled session belongs to. */
   browserPoolSessions: {
     sessionId: BrowserSessionId;

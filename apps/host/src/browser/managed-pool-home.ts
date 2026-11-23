@@ -7,7 +7,12 @@
 import type { KeyObject } from "node:crypto";
 import type { Kysely } from "kysely";
 import type { RunnerId } from "@opensteer/core";
-import { retireBrowserPoolTarget, type DatabaseSchema } from "@opensteer/database";
+import {
+  listBrowserPoolRetiredTargets,
+  retireBrowserPoolTarget,
+  type BrowserPoolRetiredTarget,
+  type DatabaseSchema,
+} from "@opensteer/database";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { BrowserPoolCoordinator } from "./browser-pool-coordinator.js";
 import type { BrowserService } from "./browser-service.js";
@@ -38,6 +43,8 @@ export function managedBrowserPoolCoordinator(input: {
   readonly keys: ManagedBrowserPoolHomeKeys;
   readonly onSuspect: (reason?: "over") => void;
   readonly onError?: (error: unknown) => void;
+  /** W8: only drain this replaced target, of the fence its slot had. */
+  readonly drain?: { readonly instanceId: string; readonly epoch: number };
 }): BrowserPoolCoordinator {
   const parts = managedBrowserPool(input.target, input.keys);
   return new BrowserPoolCoordinator({
@@ -50,6 +57,7 @@ export function managedBrowserPoolCoordinator(input: {
     controller: parts.controller,
     onSuspect: input.onSuspect,
     ...(input.onError ? { onError: input.onError } : {}),
+    ...(input.drain ? { drain: input.drain } : {}),
   });
 }
 
@@ -64,7 +72,7 @@ export async function startManagedBrowserPool(input: {
   readonly cloudComputerId: string;
   readonly runnerId: RunnerId;
   readonly hostKey: KeyObject;
-  readonly browser: Pick<BrowserService, "adoptPool" | "retirePool">;
+  readonly browser: Pick<BrowserService, "adoptPool" | "retirePool" | "drainPool">;
   readonly account:
     ManagedBrowserPoolAccount | { readonly controlApiOrigin: URL; readonly hostCredential: string };
   readonly onError?: (error: unknown) => void;
@@ -72,6 +80,31 @@ export async function startManagedBrowserPool(input: {
   const keys = await loadOrCreateManagedBrowserPoolKeys(input.dataDirectory);
   const record = databaseManagedBrowserPoolTargetRecord(input.database, input.cloudComputerId);
   let current: string | undefined;
+  let currentTarget: ManagedBrowserPoolTarget | undefined;
+  /** Replaced targets being drained now, by slot and term. */
+  const draining = new Set<string>();
+  // W8: each replaced target a Stop still waits on is asked until it has answered for each.
+  const drainRetired = async () => {
+    for (const retired of await listBrowserPoolRetiredTargets(input.database, input.runnerId)) {
+      const key = `${retired.slotId}:${retired.term}`;
+      if (draining.has(key)) continue;
+      draining.add(key);
+      void input.browser
+        .drainPool(input.runnerId, drainCoordinator(retired))
+        .catch((error: unknown) => input.onError?.(error))
+        .finally(() => draining.delete(key));
+    }
+  };
+  const drainCoordinator = (retired: BrowserPoolRetiredTarget) =>
+    managedBrowserPoolCoordinator({
+      database: input.database,
+      runnerId: input.runnerId,
+      target: retired.target as unknown as ManagedBrowserPoolTarget,
+      keys,
+      onSuspect: () => {},
+      ...(input.onError ? { onError: input.onError } : {}),
+      drain: { instanceId: retired.instanceId, epoch: retired.epoch },
+    });
   // One target change at a time: the old coordinator retires before the new one is adopted.
   let changing: Promise<void> = Promise.resolve();
   const choose = (target: ManagedBrowserPoolTarget) => {
@@ -79,12 +112,17 @@ export async function startManagedBrowserPool(input: {
       // Canonical: a target read back from the database has its keys in another order.
       const key = canonicalJson(target);
       if (key === current) return;
-      if (current !== undefined) {
+      if (current !== undefined && currentTarget) {
         await input.browser.retirePool(input.runnerId, "browser-replaced");
-        // Nothing of the old target is ever sent to the new one.
-        await retireBrowserPoolTarget(input.database, input.runnerId);
+        // Nothing of the old target is ever sent to the new one. A Stop it held that its own
+        // runtime has not ended yet keeps the old target recorded, and asked (W8).
+        await retireBrowserPoolTarget(input.database, input.runnerId, {
+          target: currentTarget as unknown as Readonly<Record<string, unknown>>,
+        });
+        await drainRetired();
       }
       current = key;
+      currentTarget = target;
       await input.browser.adoptPool(
         input.runnerId,
         managedBrowserPoolCoordinator({
@@ -115,6 +153,8 @@ export async function startManagedBrowserPool(input: {
     onTarget: choose,
     ...(input.onError ? { onError: input.onError } : {}),
   });
+  // Replaced targets a Stop still waits on, from before this Home started (W8).
+  await drainRetired();
   const stored = await record.read();
   if (stored?.status === "ready" && stored.target)
     await choose(stored.target as unknown as ManagedBrowserPoolTarget);

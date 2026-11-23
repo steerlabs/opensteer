@@ -739,3 +739,73 @@ it("refuses a standard CDP attach of a session whose end the Home asked, though 
     await f.runtime.shutdown();
   }
 });
+
+it("says a pooled session closed at a host's quiesce only once its pages are confirmed gone (W17)", async () => {
+  const f = await fixture();
+  try {
+    await f.install();
+    const sink = new FakeSink();
+    // Whether its page was gone when each `closed` status was sent.
+    const closedSaid: boolean[] = [];
+    sink.sendServerImplementation = async (message) => {
+      if (message.type === "browser.status" && message.state === "closed")
+        closedSaid.push(f.page.isClosed());
+    };
+    await f.open(sink);
+    // The page's close is taken and never happens: past the bound a page close is waited for.
+    vi.spyOn(f.page, "close").mockImplementation(async () => {
+      f.page.closeCount += 1;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const runtime = f.runtime as unknown as {
+      hosts: Map<string, unknown>;
+      quiesceHost(host: unknown, reason: string): Promise<void>;
+    };
+    const quiesced = runtime.quiesceHost([...runtime.hosts.values()][0], "session-ended");
+    void quiesced.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(60_000);
+    // Never "closed" while its page is still open: the guest's word must be true.
+    expect(closedSaid.filter((pageGone) => !pageGone)).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    await f.runtime.shutdown().catch(() => undefined);
+  }
+});
+
+it("can refuse an install only in a runtime that already held an instance: a fresh guest's runtime installs at once", async () => {
+  // A fresh guest: its runtime has never held a fence, so an install has no live page to end.
+  const fresh = await fixture();
+  try {
+    const first = fresh.issue({ kind: "install", fence: fresh.fence() });
+    await expect(first.apply()).resolves.toMatchObject({ phase: "running" });
+  } finally {
+    await fresh.runtime.shutdown();
+  }
+  // A runtime that already held an instance (the loopback guest standing for a new one): the
+  // install must end that instance's pages first, and a page that will not close fails it.
+  const shared = await fixture();
+  try {
+    await shared.install();
+    await shared.open();
+    vi.spyOn(shared.page, "close").mockImplementation(async () => {
+      shared.page.closeCount += 1;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const next = shared.issue({
+      kind: "install",
+      fence: { ...shared.fence(), instance: randomUUID() },
+    });
+    const installing = next.apply();
+    void installing.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await expect(installing).rejects.toThrow();
+    // Its sequence is spent: the same signed install is superseded. Only this shared runtime
+    // reaches that; the coordinator's fresh start always meets a fresh guest's runtime.
+    await expect(shared.signed(next.control)).rejects.toThrow("superseded");
+  } finally {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    await shared.runtime.shutdown().catch(() => undefined);
+  }
+});

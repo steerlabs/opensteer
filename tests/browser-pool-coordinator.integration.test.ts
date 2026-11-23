@@ -839,6 +839,44 @@ it.skipIf(poolControllerKind() === "fake")(
   },
 );
 
+it("keeps a repair decided for one instance off the fresh guest that replaced it (W13)", async () => {
+  const f = await poolFixture("repair-leftover", { freshGuests: true });
+  try {
+    let reads = 0;
+    const physical: BrowserPoolPhysicalController = {
+      status: (slot, term) => {
+        reads++;
+        return f.controller.status(slot, term);
+      },
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      // A fresh start brings the slot's proxy back, as the host's own start does.
+      apply: async (call) => {
+        const result = await f.controller.apply(call);
+        if (call.kind === "start" && result.applied) f.controller.observe({ proxy: "up" as never });
+        return result;
+      },
+    };
+    const home = f.home(undefined, physical, { statusEveryMs: 50 });
+    await home.recover();
+    // A command in flight holds the guest, so the repair decided for its instance waits.
+    const command = await home.gate.reserve(AbortSignal.timeout(10_000));
+    f.controller.observe({ proxy: "down" });
+    await vi.waitFor(() => expect(home.report()).toMatchObject({ phase: "waking" }));
+    // The person restarts the browser: a fresh guest, whose proxy serves.
+    const restarting = home.restart();
+    command.release();
+    await restarting;
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    // Read after read, the fresh guest is never parked for the old instance's repair.
+    const before = reads;
+    await vi.waitFor(() => expect(reads).toBeGreaterThan(before + 5));
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    expect(home.report()).toBeUndefined();
+  } finally {
+    await f.close();
+  }
+});
+
 /** The fixture's controller, counting the host's status reads: the loop's turns, with no clock. */
 function countingStatus(f: Awaited<ReturnType<typeof poolFixture>>) {
   const counted = { reads: 0 };
@@ -864,7 +902,9 @@ it("reports a running browser whose egress proxy is down, repairs it once by a p
     const resume = Promise.withResolvers<void>();
     f.controller.hold("resume", () => resume.promise);
     f.controller.observe({ proxy: "down" });
-    await vi.waitFor(() => expect(home.report()).toMatchObject({ proxyDown: true }));
+    // While the repair runs the person is shown it waking, never "paused" first (W10).
+    await vi.waitFor(() => expect(home.report()).toMatchObject({ phase: "waking" }));
+    expect(home.report()?.proxyDown).toBeUndefined();
     // Nothing holds it: the Home parks it and wakes it again by itself, which is what brings a
     // proxy back. (It used to park and wait for demand to wake: a person watching would have
     // been shown a parked browser.)
@@ -918,7 +958,7 @@ it("waits for a command in flight before it repairs a guest whose egress proxy i
     // A command in flight: a reservation taken with demand, ended by its own bound.
     const command = await home.gate.reserve(AbortSignal.timeout(10_000));
     f.controller.observe({ proxy: "down" });
-    await vi.waitFor(() => expect(home.report()).toMatchObject({ proxyDown: true }));
+    await vi.waitFor(() => expect(home.report()).toMatchObject({ phase: "waking" }));
     const reads = counted.reads;
     await vi.waitFor(() => expect(counted.reads).toBeGreaterThan(reads + 5));
     // Turn after turn, nothing was paused under it.

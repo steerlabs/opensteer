@@ -38,6 +38,7 @@ export class BrowserPoolGate {
   #active = 0;
   /** Of the active reservations, the ones taken with demand: a command in flight. */
   #commands = 0;
+  #viewers = 0;
   /** The park preparing is a repair: a send with no demand waits instead of vetoing it. */
   #repairing = false;
   readonly #commandsIdle: (() => void)[] = [];
@@ -106,6 +107,26 @@ export class BrowserPoolGate {
     return this.#commands;
   }
 
+  /**
+   * People watching now. A viewer is not a command (W10): it holds an ordinary park off (an idle
+   * park never takes a browser from under a watching person), never the proxy's repair, which
+   * brings back what the person is looking at.
+   */
+  get viewers(): number {
+    return this.#viewers;
+  }
+
+  /** A viewer attached: held until the returned release. */
+  viewing(): () => void {
+    this.#viewers++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#viewers--;
+    };
+  }
+
   /** Resolves once no command is in flight. */
   commandsIdle(): Promise<void> {
     if (this.#commands === 0) return Promise.resolve();
@@ -138,7 +159,7 @@ export class BrowserPoolGate {
    * for the wake, as it does after D. Sends already admitted finish at the retire's quiesce.
    */
   beginPark(repair = false): boolean {
-    if (!this.admits || (repair ? this.#commands : this.#active)) return false;
+    if (!this.admits || (repair ? this.#commands : this.#active || this.#viewers)) return false;
     this.#demanded = false;
     this.#preparing = true;
     this.#repairing = repair;

@@ -935,6 +935,33 @@ export async function listBrowserPoolSessionTabs(
   return tabs;
 }
 
+/** A replaced target whose Stops wait for its word (W8): the Home goes on asking it. */
+export type BrowserPoolRetiredTarget = Selectable<DatabaseSchema["browserPoolRetiredTargets"]>;
+
+export function listBrowserPoolRetiredTargets(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+): Promise<readonly BrowserPoolRetiredTarget[]> {
+  return database
+    .selectFrom("browserPoolRetiredTargets")
+    .selectAll()
+    .where("runnerId", "=", runnerId)
+    .orderBy("retiredAt")
+    .execute(databaseOperationOptions());
+}
+
+/** A replaced target none of whose Stops waits any more: the Home stops asking it. */
+export async function forgetBrowserPoolRetiredTarget(
+  database: Kysely<DatabaseSchema>,
+  target: BrowserPoolSessionTarget,
+): Promise<void> {
+  await database
+    .deleteFrom("browserPoolRetiredTargets")
+    .where("slotId", "=", target.slotId)
+    .where("term", "=", target.term)
+    .execute(databaseOperationOptions());
+}
+
 /** Every session of a pooled runtime that is not yet terminal. */
 export async function listBrowserPoolRuntimeSessions(
   database: Kysely<DatabaseSchema>,
@@ -1260,15 +1287,45 @@ export async function recordBrowserPoolTargetAnswer(
 export async function retireBrowserPoolTarget(
   database: Kysely<DatabaseSchema>,
   runnerId: RunnerId,
+  /**
+   * The target as the Home's account gave it (W8): kept, with the slot's fence, while a Stop it
+   * held waits for its word, so a Home (this one, or one after a restart) goes on asking it.
+   */
+  retired?: { readonly target: Readonly<Record<string, unknown>> },
 ): Promise<void> {
   await commitPersonalMutation(
     database,
     async (tx, mutation) => {
       mutation.bumpResource("browser-placement");
-      await tx
+      const slot = await tx
         .deleteFrom("browserPoolSlots")
         .where("runnerId", "=", runnerId)
-        .execute(databaseOperationOptions());
+        .returningAll()
+        .executeTakeFirst(databaseOperationOptions());
+      if (slot && retired) {
+        const waiting = await tx
+          .selectFrom("browserSessions")
+          .select("id")
+          .where("runnerId", "=", runnerId)
+          .where("state", "=", "closing")
+          .where(ownedBy(slot))
+          .limit(1)
+          .executeTakeFirst(databaseOperationOptions());
+        if (waiting)
+          await tx
+            .insertInto("browserPoolRetiredTargets")
+            .values({
+              slotId: slot.slotId,
+              term: slot.term,
+              runnerId,
+              runtimeId: slot.runtimeId,
+              instanceId: slot.instanceId,
+              epoch: slot.epoch,
+              target: retired.target,
+            })
+            .onConflict((conflict) => conflict.columns(["slotId", "term"]).doNothing())
+            .execute(databaseOperationOptions());
+      }
       const open = await tx
         .selectFrom("browserPoolControllerCalls")
         .select("id")

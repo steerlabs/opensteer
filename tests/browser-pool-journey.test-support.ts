@@ -153,6 +153,8 @@ export async function journey(
     readonly profile?: boolean;
     readonly runtimeFault?: ConstructorParameters<typeof BrowserPoolCoordinator>[0]["runtimeFault"];
     readonly channelDeadlineMs?: number;
+    /** How often a running guest's status is read (60 s by default). */
+    readonly statusEveryMs?: number;
     /** The guest's page probe during a retire; a retire waits for it. */
     readonly probePage?: (page: unknown, phase: "active" | "frozen") => Promise<readonly string[]>;
   } = {},
@@ -294,6 +296,7 @@ export async function journey(
       },
       ...(options.runtimeFault ? { runtimeFault: options.runtimeFault } : {}),
       ...(options.channelDeadlineMs ? { channelDeadlineMs: options.channelDeadlineMs } : {}),
+      ...(options.statusEveryMs ? { statusEveryMs: options.statusEveryMs } : {}),
     });
     const service = new BrowserService({
       deploymentId: task.deploymentId,

@@ -7,6 +7,7 @@
 (globalThis as { opensteerPoolController?: string }).opensteerPoolController = "agent";
 
 import { createPublicKey, generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,6 +40,7 @@ import {
   FakePage,
 } from "../packages/browser-runtime-core/src/test-support/fakes.js";
 import {
+  listBrowserPoolRetiredTargets,
   readBrowserPoolSlot,
   retireBrowserPoolTarget,
   TabStore,
@@ -76,15 +78,19 @@ const stepBoundMs = 30_000;
 const settleBoundMs = 30_000;
 /** A session without a channel ends after this, on both sides (short, so schedules reach it). */
 const channelDeadlineMs = 1_500;
-/** The causes a fresh start may have in this world; any other is a finding. */
-const discardsExpected = new Set([
-  "guest-restarted",
-  "guest-changed",
-  "end-unconfirmed",
-  // The host lost the saved state (a refused resume on an agent that consumed it first, or a
-  // guest it stopped): a cold start, said as what it is.
-  "live-state-unavailable",
-]);
+/**
+ * The causes a fresh start may have, each with the steps that can cause it (W16): a fresh start
+ * for any other cause, or for one no such step came before, is a finding.
+ */
+const discardCauses: Readonly<Record<string, readonly Action[]>> = {
+  // The runtime process restarted inside its guest, or the host stopped the guest.
+  "guest-restarted": ["restart-runtime", "host-stops-guest"],
+  "guest-changed": ["restart-runtime", "host-stops-guest"],
+  // A stopped session's page would not close at a wake.
+  "end-unconfirmed": ["fail-page-close", "fail-page-close-always"],
+  // The host lost the saved state (a guest it stopped, a refusal that took it): a cold start.
+  "live-state-unavailable": ["host-stops-guest", "proxy-refuses", "restart-runtime"],
+};
 
 const egressAnswer = {
   upstreamUrl: "https://upstream.example:8443",
@@ -114,20 +120,146 @@ interface Target {
   readonly guests: Guest[];
   /** Its host fenced the Home's term, or deleted the slot: a new target is needed. */
   over: boolean;
+  /** The starts its host has applied that the world has followed (a new guest each). */
+  starts: number;
   /**
-   * Its host signed that the guest is gone (a deleted slot is answered so, with the host's key).
-   * A fenced term is not: the host refuses the old Home's calls as not its own, which the Home
-   * cannot tell from any other unauthenticated answer (unknown).
+   * Its host fenced this Home's term: it refuses the Home's calls as not its own, which the Home
+   * cannot tell from any other unauthenticated answer. It can never answer this Home again.
    */
-  goneSigned: boolean;
-  /**
-   * Retired by a swap: whether, as it was retired, evidence about a Stop it held could still come
-   * (its host had signed the guest gone, or answered with its guest running).
-   */
-  retired?: { readonly reachable: boolean };
+  fenced: boolean;
 }
 
-async function world(key: string) {
+/**
+ * W7: what happened, in order, at every seam the search controls, and a replay that forces that
+ * order. Each event is a stable name (the seam, the target, an occurrence count): a step's start
+ * and end, each controller call and its answer, each runtime call and its answer, each channel
+ * the Home opens, and each choice a step made (which session it stopped). Recording, events are
+ * written down as they happen; replaying, each seam waits until its event is the next one the
+ * trace expects. If the run leaves the trace (its next event does not come within
+ * `divergeAfterMs`), the replay says where and runs free from there.
+ *
+ * Not under this control, and bounded instead: the coordinator's own timers (its backoffs and
+ * its status reads) and PostgreSQL's commit order are not seams; they are seen only through the
+ * calls they lead to, which are. The runtime's frames to the Home (a status, a closing) travel on
+ * an in-process channel the trace does not order.
+ */
+class Sequencer {
+  readonly events: string[] = [];
+  readonly choices: number[] = [];
+  /** What happened that is not ordered (a channel opened): written down, never waited for. */
+  readonly notes: string[] = [];
+  diverged: string | undefined;
+  readonly #expected: readonly string[] | undefined;
+  readonly #choices: readonly number[] | undefined;
+  #next = 0;
+  #choice = 0;
+  readonly #counts = new Map<string, number>();
+  constructor(replay?: {
+    readonly events: readonly string[];
+    readonly choices: readonly number[];
+  }) {
+    this.#expected = replay?.events;
+    this.#choices = replay?.choices;
+  }
+
+  get replaying(): boolean {
+    return this.#expected !== undefined && this.diverged === undefined;
+  }
+
+  /** The event `name` happens now; replaying, only once it is the trace's next. */
+  async at(name: string): Promise<void> {
+    const count = (this.#counts.get(name) ?? 0) + 1;
+    this.#counts.set(name, count);
+    const event = `${name}#${count}`;
+    const turn = () => !this.replaying || this.#expected![this.#next] === event;
+    if (!turn())
+      await vi.waitUntil(turn, { timeout: divergeAfterMs, interval: 5 }).catch(() => undefined);
+    if (!turn())
+      this.diverged ??= `left the trace at event ${this.#next} (${
+        this.#expected![this.#next] ?? "its end"
+      }) with ${event}`;
+    if (this.replaying) this.#next++;
+    this.events.push(event);
+  }
+
+  /** A call at a seam: its start and its answer (or its failure) are both events. */
+  async call<T>(name: string, work: () => Promise<T>): Promise<T> {
+    await this.at(`${name}:call`);
+    try {
+      return await work();
+    } finally {
+      await this.at(`${name}:answer`);
+    }
+  }
+
+  /** A choice among `count` things: the trace's, replaying; the random one, recording. */
+  choose(count: number, random: () => number): number {
+    const recorded = this.replaying ? this.#choices?.[this.#choice] : undefined;
+    this.#choice++;
+    const index =
+      recorded !== undefined && recorded < count ? recorded : Math.floor(random() * count);
+    this.choices.push(index);
+    return index;
+  }
+}
+
+/** Worlds made in this process: each one's key, with its seed, names its rows. */
+let worlds = 0;
+
+/** How long a replay waits for the trace's next event with nothing moving before it runs free. */
+const divergeAfterMs = 5_000;
+
+interface SearchTrace {
+  readonly seed: number;
+  readonly steps: readonly Step[];
+  readonly events: readonly string[];
+  readonly choices: readonly number[];
+  readonly violations?: readonly string[];
+}
+
+/** This world's page-close faults (W16): its own pages only, never a prototype shared by all. */
+interface CloseFaults {
+  /** The next page close does not take. */
+  next: boolean;
+  /** No page close takes, call after call, until it heals. */
+  always: boolean;
+}
+
+/** A context whose pages, the first and every one it opens, close as the world's faults say. */
+class SearchContext extends FakeContext {
+  readonly #faults: CloseFaults;
+  constructor(pages: FakePage[], faults: CloseFaults) {
+    super(pages);
+    this.#faults = faults;
+    for (const page of pages) this.#govern(page);
+  }
+
+  override async createPage(options: Parameters<FakeContext["createPage"]>[0] = {}) {
+    return this.#govern((await super.createPage(options)) as FakePage);
+  }
+
+  #govern(page: FakePage): FakePage {
+    const close = page.close.bind(page);
+    const faults = this.#faults;
+    page.close = async () => {
+      if (faults.always || faults.next) {
+        faults.next = false;
+        page.closeCount += 1;
+        return;
+      }
+      return close();
+    };
+    return page;
+  }
+}
+
+async function world(key: string, sequencer: Sequencer, seed: number) {
+  const closeFaults: CloseFaults = { next: false, always: false };
+  const ids = random(seed ^ 0x2545f491);
+  const hex = (count: number) =>
+    Array.from({ length: count }, () => Math.floor(ids.next() * 16).toString(16)).join("");
+  const seededUuid = () =>
+    `${hex(8)}-${hex(4)}-4${hex(3)}-${"89ab"[Math.floor(ids.next() * 4)]}${hex(3)}-${hex(12)}`;
   const fixture = await createStoreFixture();
   cleanup.push(() => fixture.close());
   const task = await fixture.startRunFixture(key);
@@ -150,7 +282,9 @@ async function world(key: string) {
     const index = ++generation;
     const runtime = new BrowserRuntime({
       runtimeId: "pool-runtime",
-      launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([new FakePage()]))),
+      launcher: new FakeLauncher(
+        new FakeLaunchedBrowser(new SearchContext([new FakePage()], closeFaults)),
+      ),
       sessionFilesRoot: join(root, `guest-${index}-sessions`),
       ticketVerifier: await Ed25519AttachTicketVerifier.create({
         pooled: true,
@@ -231,7 +365,8 @@ async function world(key: string) {
       controlKey,
       answers: "signed",
       over: false,
-      goneSigned: false,
+      fenced: false,
+      starts: 0,
       guests: [],
       guest: undefined as unknown as Guest,
       client: new BrowserPoolAgentClient({
@@ -275,28 +410,49 @@ async function world(key: string) {
     if (target === current) dropChannels();
     await endGuest(old);
   };
-  const physical = (target: Target): BrowserPoolPhysicalController => ({
-    status: (slot, term) => target.client.status(slot, term),
-    result: (slot, term, id) => target.client.result(slot, term, id),
-    apply: async (call) => {
-      const starts = effects(target).filter((effect) => effect === "start").length;
-      const result = await target.client.apply(call);
-      if (effects(target).filter((effect) => effect === "start").length > starts) {
-        await replaceGuest(target);
-        target.guest.state = "running";
-      } else if (result.applied && call.kind === "pause") target.guest.state = "paused";
-      else if (result.applied && call.kind === "resume") target.guest.state = "running";
-      else if (result.applied && call.kind === "stop") await endGuest(target.guest);
-      else if (
-        !result.applied &&
-        result.status.phase === "stopped" &&
-        target.guest.state !== "stopped"
-      )
-        // A refused start or resume that left no guest (the host says so, signed).
-        await endGuest(target.guest);
-      return result;
-    },
-  });
+  /**
+   * The guest as its host has it, after any call (W16): a start the host applied is a new guest
+   * (however the Home learned of it, by its answer or by reading its result later), and the
+   * guest runs, sleeps or is gone as the host says. The world follows the host, never a reply.
+   */
+  const follow = async (target: Target) => {
+    const starts = effects(target).filter((effect) => effect === "start").length;
+    if (starts > target.starts) {
+      target.starts = starts;
+      await replaceGuest(target);
+      target.guest.state = "running";
+    }
+    if (target.over) return;
+    const phase = (
+      await target.agent.agent.status(target.slotId, target.term).catch(() => undefined)
+    )?.phase;
+    if (phase === "running") target.guest.state = "running";
+    else if (phase === "paused") target.guest.state = "paused";
+    else if (phase === "stopped" && target.guest.state !== "stopped") await endGuest(target.guest);
+  };
+  const physical = (target: Target): BrowserPoolPhysicalController => {
+    const followed = async <T>(work: () => Promise<T>) => {
+      try {
+        return await work();
+      } finally {
+        await follow(target);
+      }
+    };
+    return {
+      status: (slot, term) =>
+        sequencer.call(`host:${target.n}:status`, () =>
+          followed(() => target.client.status(slot, term)),
+        ),
+      result: (slot, term, id) =>
+        sequencer.call(`host:${target.n}:result`, () =>
+          followed(() => target.client.result(slot, term, id)),
+        ),
+      apply: (call) =>
+        sequencer.call(`host:${target.n}:${call.kind}`, () =>
+          followed(() => target.client.apply(call)),
+        ),
+    };
+  };
   // The runtime's controls go through the host's relay: a paused or stopped guest, or a host
   // that does not answer, answers nothing (a relay refusal, unknown to the Home).
   const channel = (target: Target): BrowserPoolRuntimeChannel => {
@@ -305,28 +461,46 @@ async function world(key: string) {
         ? call()
         : Promise.reject(Object.assign(new Error("parked"), { name: "PoolRelayRefused" }));
     return {
-      poolState: async () =>
-        target.answers !== "signed"
-          ? Promise.reject(Object.assign(new Error("parked"), { name: "PoolRelayRefused" }))
-          : target.guest.state === "running"
-            ? (target.guest.runtime.poolState() ?? null)
-            : null,
+      poolState: () =>
+        sequencer.call(`runtime:${target.n}:state`, async () =>
+          target.answers !== "signed"
+            ? Promise.reject(Object.assign(new Error("parked"), { name: "PoolRelayRefused" }))
+            : target.guest.state === "running"
+              ? (target.guest.runtime.poolState() ?? null)
+              : null,
+        ),
       controlPool: (control, signature) =>
-        relayed(() => target.guest.runtime.controlPool(control, signature)),
-      endSession: (ticket) => relayed(() => target.guest.runtime.endPoolSession(ticket)),
+        sequencer.call(`runtime:${target.n}:${control.kind}`, () =>
+          relayed(() => target.guest.runtime.controlPool(control, signature)),
+        ),
+      endSession: (ticket) =>
+        sequencer.call(`runtime:${target.n}:end`, () =>
+          relayed(() => target.guest.runtime.endPoolSession(ticket)),
+        ),
     };
   };
 
   // ---- The Home -------------------------------------------------------------------------------
   const connect = (ticket: string) => {
+    // Opening a channel is synchronous here: it is recorded, and never waited for.
+    sequencer.notes.push(`channel:${current.n}`);
     const connection = new TestRuntimeConnection(current.guest.bridge, ticket);
     connections.push(connection);
     return connection;
   };
   const tabs = new TabStore(database);
   const errors: number[] = [];
-  const newCoordinator = (target: Target) =>
-    new BrowserPoolCoordinator({
+  /** Every coordinator this world made: each is closed with it, none outlives its world (W16). */
+  const coordinators: BrowserPoolCoordinator[] = [];
+  cleanup.push(async () => {
+    for (const coordinator of coordinators) coordinator.close();
+  });
+  const newCoordinator = (
+    target: Target,
+    drain?: { readonly instanceId: string; readonly epoch: number },
+  ) => {
+    const coordinator = new BrowserPoolCoordinator({
+      ...(drain ? { drain } : {}),
       database,
       runnerId: task.runnerId,
       runtimeId: "pool-runtime",
@@ -347,8 +521,24 @@ async function world(key: string) {
       statusEveryMs: 200,
       onError: () => errors.push(Date.now()),
       onDiscard: (reason) => discards.push(reason),
+      // Each wait between the loop's turns ends as a recorded event, in the trace's order (W16).
+      aroundWait: (kind, wait) => sequencer.call(`wait:${target.n}:${kind}`, wait),
     });
+    coordinators.push(coordinator);
+    return coordinator;
+  };
   type Home = { service: BrowserService; coordinator: BrowserPoolCoordinator };
+  /**
+   * A target change and a Home restart one at a time, as the Home's target chooser runs them:
+   * the Home's stored target decides which target a starting Home adopts, never a change half
+   * made beside it.
+   */
+  let changing: Promise<unknown> = Promise.resolve();
+  const change = <T>(work: () => Promise<T>): Promise<T> => {
+    const run = changing.then(work);
+    changing = run.catch(() => undefined);
+    return run;
+  };
   let home: Home;
   /** As a pooled Home starts: the service first, its coordinator adopted once it has a target. */
   const startHome = async () => {
@@ -361,6 +551,8 @@ async function world(key: string) {
       tabPlaces: { write: async () => false, notice: () => {} },
       repository: personalBrowserRepository(store),
       signer,
+      // Ids from the seed (W16): the order rows are taken in is the schedule's.
+      newSessionId: () => BrowserSessionIdSchema.parse(`bsn_${seededUuid()}`),
       onError: () => {},
       onSessionsChanged: () => {},
       targetResolver: {
@@ -392,6 +584,21 @@ async function world(key: string) {
     home = { service, coordinator: newCoordinator(current) };
     await service.initialize();
     await service.adoptPool(task.runnerId, home.coordinator);
+    // Replaced targets a Stop still waits on are drained, from their records (W8).
+    await drainRetired(service);
+  };
+  /** As the Home's target chooser does: every recorded replaced target is asked (W8). */
+  const drainRetired = async (service: BrowserService) => {
+    for (const retired of await listBrowserPoolRetiredTargets(database, task.runnerId)) {
+      const target = all.find(({ slotId }) => slotId === retired.slotId);
+      if (!target) continue;
+      void service
+        .drainPool(
+          task.runnerId,
+          newCoordinator(target, { instanceId: retired.instanceId, epoch: retired.epoch }),
+        )
+        .catch(() => undefined);
+    }
   };
   await startHome();
   cleanup.push(async () => {
@@ -409,36 +616,41 @@ async function world(key: string) {
   return {
     task,
     database,
+    closeFaults,
     discards,
     errors,
     row,
     rows,
     /**
-     * Closing rows a Stop left on a target retired while its own runtime could not be asked: no
-     * evidence about them can come (unknown), so they stay closing. Every other closing row.
+     * W8: a closing row names what it waits for, the target its binding names (the target whose
+     * word ends it). It may stay closing only while that target really cannot answer this Home in
+     * this world (its host unreachable, answering unsigned, or fenced): `unknown`. A closing row
+     * that names nothing, or a target that can answer, is `open`: a fault at rest.
      */
     closingRows: async () => {
       const closing = (await rows()).filter(({ state }) => state === "closing");
       if (!closing.length) return { open: [], unknown: [] };
-      const bound = await database
-        .selectFrom("browserPoolSessions")
-        .select(["sessionId", "slotId"])
-        .where(
-          "sessionId",
-          "in",
-          closing.map(({ id }) => id),
-        )
-        .execute();
-      const unknown = new Set(
-        bound
-          .filter(({ slotId }) =>
-            all.some((target) => target.slotId === slotId && target.retired?.reachable === false),
-          )
-          .map(({ sessionId }) => sessionId as string),
+      const bound = new Map(
+        (
+          await database
+            .selectFrom("browserPoolSessions")
+            .select(["sessionId", "slotId", "term"])
+            .where(
+              "sessionId",
+              "in",
+              closing.map(({ id }) => id),
+            )
+            .execute()
+        ).map((binding) => [binding.sessionId as string, binding]),
       );
+      const cannotAnswer = (id: string) => {
+        const binding = bound.get(id);
+        const target = binding && all.find(({ slotId }) => slotId === binding.slotId);
+        return !!target && (target.answers !== "signed" || target.fenced);
+      };
       return {
-        open: closing.filter(({ id }) => !unknown.has(id)),
-        unknown: closing.filter(({ id }) => unknown.has(id)),
+        open: closing.filter(({ id }) => !cannotAnswer(id)),
+        unknown: closing.filter(({ id }) => cannotAnswer(id)),
       };
     },
     signer,
@@ -460,35 +672,31 @@ async function world(key: string) {
       current.answers = mode;
     },
     home: () => home,
-    restartHome: async () => {
-      home.coordinator.close();
-      await home.service.close();
-      // The Home's link to the Runner ends with it (1001 to each channel, as the relay does).
-      dropChannels(1001);
-      await startHome();
-    },
+    restartHome: () =>
+      change(async () => {
+        home.coordinator.close();
+        await home.service.close();
+        // The Home's link to the Runner ends with it (1001 to each channel, as the relay does).
+        dropChannels(1001);
+        await startHome();
+      }),
     /**
      * The account places a different target, on another host: the old coordinator retires,
      * the old target is forgotten, and the new one is adopted. The old host answers as it did.
      */
-    /** `closesWork`: whether page closes take (none is failing call after call). */
-    swap: async (closesWork: () => boolean) => {
-      const old = current;
-      const reachable = () =>
-        old.goneSigned ||
-        (old.answers === "signed" && old.guest.state === "running" && closesWork());
-      const before = reachable();
-      const next = await newTarget();
-      all.push(next);
-      await home.service.retirePool(task.runnerId, "browser-replaced");
-      await retireBrowserPoolTarget(database, task.runnerId);
-      // Evidence about its Stops could come only if, all through its retirement, its host had
-      // signed the guest gone, or answered with its guest running and its pages able to close.
-      old.retired = { reachable: before && reachable() };
-      current = next;
-      home = { service: home.service, coordinator: newCoordinator(next) };
-      await home.service.adoptPool(task.runnerId, home.coordinator);
-    },
+    swap: () =>
+      change(async () => {
+        const old = current;
+        const next = await newTarget();
+        all.push(next);
+        await home.service.retirePool(task.runnerId, "browser-replaced");
+        // As the Home's target chooser does: the old target is kept while a Stop waits on it.
+        await retireBrowserPoolTarget(database, task.runnerId, { target: { n: old.n } });
+        await drainRetired(home.service);
+        current = next;
+        home = { service: home.service, coordinator: newCoordinator(next) };
+        await home.service.adoptPool(task.runnerId, home.coordinator);
+      }),
     /** A newer term for the slot: the host fences this Home, and ends the guest. */
     fence: async () => {
       const target = current;
@@ -498,6 +706,7 @@ async function world(key: string) {
         homeKey: homeKeyPair().spki,
       });
       target.over = true;
+      target.fenced = true;
       await endGuest(target.guest);
     },
     /** The provisioner deletes the slot: the host ends the guest and says so, signed. */
@@ -505,7 +714,6 @@ async function world(key: string) {
       const target = current;
       await target.agent.agent.deleteSlot(target.slotId);
       target.over = true;
-      target.goneSigned = true;
       await endGuest(target.guest);
     },
     /** The host stops the running guest by itself (a Home silent for long, say). */
@@ -591,17 +799,41 @@ async function schedule(
   seed: number,
   /** A number of random steps, or the exact steps of a named case. */
   steps: number | readonly Step[],
-): Promise<string[]> {
+  /** A trace to replay (W7): its events' order is forced at every seam. */
+  replay?: SearchTrace,
+): Promise<{ violations: string[]; trace: SearchTrace; diverged?: string }> {
+  // Steps come from the seed alone; a step's own choices from a second stream, so whether a
+  // choice was made (it depends on what is open) never moves the steps that follow.
   const rng = random(seed);
+  const choicesRng = random(seed ^ 0x5bd1e995);
+  const sequencer = new Sequencer(replay);
   const count = typeof steps === "number" ? steps : steps.length;
-  const w = await world(`search-${seed}-${randomUUID().slice(0, 8)}`);
+  const w = await world(`search-${seed}-${++worlds}`, sequencer, seed);
   const violations: string[] = [];
   const log: string[] = [];
   /**
    * Every session seen: whether the person asked to stop it, whether that Stop returned, and
    * whether its runtime ended it on its own.
    */
-  const opened = new Map<string, { stopAsked: boolean; stopped: boolean; served: boolean }>();
+  const opened = new Map<
+    string,
+    { stopAsked: boolean; stopped: boolean; served: boolean; stoppedAt?: number }
+  >();
+  /** The faults this schedule has injected so far. */
+  const injected = new Set<Action>();
+  /** The last step after which a target's guest could be gone (a swap, a removal, ...). */
+  let targetEndedAt = -1;
+  const done = () => ({
+    violations,
+    trace: {
+      seed,
+      steps: log.filter((step) => step !== "rest") as Step[],
+      events: sequencer.events,
+      choices: sequencer.choices,
+      ...(violations.length ? { violations } : {}),
+    },
+    ...(sequencer.diverged ? { diverged: sequencer.diverged } : {}),
+  });
   const say = (message: string) => {
     const line = `${message} (after: ${log.join(", ")})`;
     if (!violations.includes(line)) violations.push(line);
@@ -648,7 +880,8 @@ async function schedule(
     if (report?.proxyDown && slot?.phase !== "running")
       say(`proxy down shown while the slot is ${slot?.phase ?? "gone"}`);
     for (const reason of w.discards.splice(0))
-      if (!discardsExpected.has(reason)) say(`a fresh start for ${reason}`);
+      if (!(discardCauses[reason] ?? []).some((cause) => injected.has(cause)))
+        say(`a fresh start for ${reason}`);
   };
   /** `served`: its open answered, so it had a page (one whose open never answered may not). */
   const track = (sessionId: string, served: boolean) => {
@@ -674,7 +907,7 @@ async function schedule(
   const stop = async () => {
     const candidates = live();
     if (!candidates.length) return;
-    const [sessionId, entry] = rng.pick(candidates);
+    const [sessionId, entry] = candidates[sequencer.choose(candidates.length, choicesRng.next)]!;
     entry.stopAsked = true;
     const service = w.home().service;
     await bounded(
@@ -687,18 +920,20 @@ async function schedule(
             () => false,
           );
         if (!stopped) return;
-        entry.stopped = true;
         // "The person asked to stop" is durable before the Stop returns.
         const state = (await w.row(sessionId))?.state;
         if (state === "ready" || state === "starting")
           say(`stopped session ${sessionId} still ${state} after its Stop returned`);
+        // A Stop never writes failed: a failed row had ended before it (a loss), and that Stop
+        // stopped nothing.
+        if (state === "failed") return;
+        entry.stopped = true;
+        entry.stoppedAt = log.length;
       },
       true,
     );
   };
-  let failingCloses: ReturnType<typeof vi.spyOn> | undefined;
-  /** No page close is made to fail call after call (a single failure is retried by the runtime). */
-  const closesWork = () => failingCloses === undefined;
+
   const run = async (action: Action, index: number) => {
     const home = w.home();
     switch (action) {
@@ -734,24 +969,14 @@ async function schedule(
         return;
       case "fail-page-close":
         // The next page close does not take: the page stays.
-        if (!failingCloses)
-          vi.spyOn(FakePage.prototype, "close").mockImplementationOnce(async function (
-            this: FakePage,
-          ) {
-            this.closeCount += 1;
-          });
+        w.closeFaults.next = true;
         return;
       case "fail-page-close-always":
         // Every page close fails until it heals (a page that will not close, call after call).
-        failingCloses ??= vi.spyOn(FakePage.prototype, "close").mockImplementation(async function (
-          this: FakePage,
-        ) {
-          this.closeCount += 1;
-        });
+        w.closeFaults.always = true;
         return;
       case "heal-page-close":
-        failingCloses?.mockRestore();
-        failingCloses = undefined;
+        w.closeFaults.always = false;
         return;
       case "restart-home":
         return bounded("restart-home", () => w.restartHome(), true);
@@ -774,7 +999,7 @@ async function schedule(
         const fence = guest.state === "running" ? guest.runtime.poolState()?.fence : undefined;
         const candidates = live();
         if (!fence || !candidates.length) return;
-        const [sessionId] = rng.pick(candidates);
+        const [sessionId] = candidates[sequencer.choose(candidates.length, choicesRng.next)]!;
         return bounded("browser-ends", () =>
           guest.runtime
             .endPoolSession(
@@ -795,7 +1020,7 @@ async function schedule(
       case "host-stops-guest":
         return w.hostStops();
       case "swap":
-        return bounded("swap", () => w.swap(closesWork), true);
+        return bounded("swap", () => w.swap(), true);
       case "fence":
         if (!w.current().over) await w.fence().catch(() => undefined);
         return;
@@ -823,7 +1048,17 @@ async function schedule(
         : steps[index]!;
     const { action, overlap } = parse(step);
     log.push(step);
-    const work = run(action, index).then(() => undefined);
+    injected.add(action);
+    if (
+      ["swap", "release", "slot-deleted", "fence", "host-stops-guest", "restart-runtime"].includes(
+        action,
+      )
+    )
+      targetEndedAt = log.length;
+    await sequencer.at(`step:${index}:${action}:start`);
+    const work = run(action, index).then(async () => {
+      await sequencer.at(`step:${index}:${action}:end`);
+    });
     if (overlap !== undefined && !inflight) {
       // Overlaps the next step, which starts this many turns later.
       for (let turns = 0; turns < overlap; turns++) await turn();
@@ -834,22 +1069,21 @@ async function schedule(
     if (inflight) await inflight;
     inflight = undefined;
     await checkStep();
-    if (stuck) return violations;
+    if (stuck) return done();
   }
   if (inflight) await inflight;
   await checkStep();
-  if (stuck) return violations;
+  if (stuck) return done();
 
   // At rest: faults stop, and what was asked is finished. A target that is over is replaced by
   // the account, as it would be.
   w.answer("signed");
   w.proxyHeals();
-  failingCloses?.mockRestore();
-  failingCloses = undefined;
-  vi.restoreAllMocks();
+  w.closeFaults.next = false;
+  w.closeFaults.always = false;
   log.push("rest");
-  if (!released && w.current().over) await bounded("swap", () => w.swap(closesWork), true);
-  if (stuck) return violations;
+  if (!released && w.current().over) await bounded("swap", () => w.swap(), true);
+  if (stuck) return done();
   // An open that never answered within its bound may still have made a session: it is tracked.
   for (const { id } of await w.rows()) track(id, false);
   const settled = await vi
@@ -858,12 +1092,14 @@ async function schedule(
         await checkClosed();
         expect((await w.closingRows()).open).toEqual([]);
         const slot = await w.slot();
-        // A release of a fenced target waits for a word its host will never sign for this
-        // Home (unknown): its slot stays releasing, its calls unsettled.
-        const fenced = w.current().over && !w.current().goneSigned;
-        if (released && !fenced) expect(slot).toBeUndefined();
+        // Released, the slot is gone; or, while its host cannot answer this Home (fenced, or
+        // answering unsigned), releasing, its calls unsettled: unknown, never anything else (W16).
+        const current = w.current();
+        const cannotAnswer = current.fenced || current.answers !== "signed";
+        if (released && !(cannotAnswer && slot?.phase === "releasing"))
+          expect(slot).toBeUndefined();
         if (!released) expect(["running", "parked"]).toContain(slot?.phase);
-        if (!(released && fenced)) expect(await w.unsettledCalls()).toBe(0);
+        if (!(released && cannotAnswer && slot)) expect(await w.unsettledCalls()).toBe(0);
       },
       { timeout: settleBoundMs, interval: 100 },
     )
@@ -886,6 +1122,10 @@ async function schedule(
     // A session the person stopped never serves again.
     if (entry.stopped && (state === "ready" || state === "starting"))
       say(`stopped session ${sessionId} is ${state} at rest`);
+    // A Stop's end is closed (or closing, unknown); failed only when its guest could be gone by
+    // something after the Stop (W16).
+    if (entry.stopped && state === "failed" && (entry.stoppedAt ?? 0) > targetEndedAt)
+      say(`stopped session ${sessionId} failed with nothing after its Stop to end its guest`);
     if (entry.stopAsked) continue;
     // A session the person did not stop never ends closing or closed: it ends with a note.
     if (state === "closed" || state === "closing")
@@ -909,7 +1149,7 @@ async function schedule(
       break;
     }
   }
-  return violations;
+  return done();
 }
 
 /**
@@ -920,6 +1160,8 @@ const named: readonly {
   readonly name: string;
   readonly seed: number;
   readonly steps: readonly Step[];
+  /** A trace in browser-pool-search-traces/ to replay instead (W7). */
+  readonly trace?: string;
 }[] = [
   {
     // A Home restart waited for the pool's recovery while the host answered unsigned.
@@ -1356,25 +1598,512 @@ const named: readonly {
       "fail-page-close",
     ],
   },
+  {
+    // W12 (by hand): a Stop whose end its runtime has not answered yet (its page will not close)
+    // when the target is replaced: the replaced target is asked until it answers.
+    name: "a swap while a Stop waits on a page that will not close yet (W12, by hand)",
+    seed: 9012,
+    steps: ["open", "fail-page-close-always", "stop", "swap", "heal-page-close"],
+  },
+  {
+    // W12 (by hand): a swap while the guest is parked, a Stop racing it.
+    name: "a swap while parked, a Stop racing it (W12, by hand)",
+    seed: 9013,
+    steps: ["open", "park", "swap&0", "stop"],
+  },
+  {
+    // The 30000 run: a replaced target's runtime restarted inside its guest, so no runtime under its fence could end a Stop it held: the drain now stops that guest (W12).
+    name: "a schedule of the 30000 run (seed 30020)",
+    seed: 30020,
+    trace: "seed-30020.json",
+    steps: [
+      "proxy-refuses",
+      "proxy-heals",
+      "browser-ends&3",
+      "open",
+      "drop-channel&2",
+      "open",
+      "park-stop",
+      "open&2",
+      "wake",
+      "wake",
+      "park",
+      "stop",
+      "fail-page-close",
+      "stop&0",
+      "proxy-down",
+      "fail-page-close",
+      "host-back",
+      "open",
+      "swap&0",
+      "restart-runtime",
+    ],
+  },
+  {
+    // The 30000 run: the search's own, before W16 (held on the final code three times, with and without the drain): kept so it cannot come back.
+    name: "a schedule of the 30000 run (seed 30052)",
+    seed: 30052,
+    steps: [
+      "stop",
+      "drop-channel&1",
+      "open",
+      "open",
+      "park",
+      "open&1",
+      "open",
+      "open&3",
+      "proxy-refuses&2",
+      "swap",
+      "restart-runtime",
+      "open",
+      "park-stop&1",
+      "restart-home",
+      "restart-home",
+      "stop",
+      "proxy-refuses&2",
+      "proxy-refuses",
+      "stop&1",
+      "slot-deleted",
+    ],
+  },
+  {
+    // The 30000 run: the search's own, before W16 (held on the final code three times, with and without the drain): kept so it cannot come back.
+    name: "a schedule of the 30000 run (seed 30106)",
+    seed: 30106,
+    steps: [
+      "restart-runtime",
+      "open-two",
+      "proxy-down",
+      "heal-page-close",
+      "swap&1",
+      "stop",
+      "proxy-heals",
+      "park",
+      "wake&3",
+      "open",
+      "park-stop",
+      "park",
+      "browser-ends",
+      "open",
+      "open&2",
+      "stop",
+      "host-stops-guest",
+      "host-unsigned",
+      "host-unreachable",
+      "fail-page-close",
+    ],
+  },
+  {
+    // The 30000 run: a target over by its deleted slot, replaced at rest, its Stop never asked again: the drain (W12).
+    name: "a schedule of the 30000 run (seed 30115)",
+    seed: 30115,
+    steps: [
+      "stop",
+      "wake&1",
+      "open-two&1",
+      "proxy-refuses&2",
+      "stop",
+      "host-back",
+      "restart-home",
+      "stop",
+      "host-unreachable",
+      "heal-page-close&1",
+      "host-back",
+      "host-unreachable",
+      "stop",
+      "open-two",
+      "slot-deleted",
+      "park-stop",
+      "proxy-heals&0",
+      "fail-page-close-always",
+      "stop&2",
+      "proxy-refuses",
+    ],
+  },
+  {
+    // The 30000 run: the search's own: it modelled the guest from call answers, not from its host (W16).
+    name: "a schedule of the 30000 run (seed 30155)",
+    seed: 30155,
+    trace: "seed-30155.json",
+    steps: [
+      "open",
+      "host-back",
+      "open",
+      "proxy-heals&3",
+      "park-stop&2",
+      "proxy-refuses&1",
+      "restart-home",
+      "restart-runtime&2",
+      "restart-runtime",
+      "wake",
+      "park",
+      "host-unsigned",
+      "fail-page-close-always",
+      "open",
+      "stop&3",
+      "wake",
+      "park-stop",
+      "stop",
+      "browser-ends",
+      "browser-ends",
+    ],
+  },
+  {
+    // The 30000 run: the search's own, before W16 (held on the final code three times, with and without the drain): kept so it cannot come back.
+    name: "a schedule of the 30000 run (seed 30189)",
+    seed: 30189,
+    steps: [
+      "browser-ends",
+      "open-two",
+      "host-unsigned",
+      "park",
+      "fail-page-close&2",
+      "open&2",
+      "heal-page-close",
+      "park",
+      "stop",
+      "park",
+      "park&3",
+      "open-two",
+      "stop",
+      "restart-home&2",
+      "open&3",
+      "proxy-down",
+      "stop&3",
+      "browser-ends",
+      "slot-deleted",
+      "stop",
+    ],
+  },
+  {
+    // The 30000 run: the search's own, before W16 (held on the final code three times, with and without the drain): kept so it cannot come back.
+    name: "a schedule of the 30000 run (seed 30238)",
+    seed: 30238,
+    steps: [
+      "open-two",
+      "park&3",
+      "host-unreachable",
+      "wake&3",
+      "slot-deleted",
+      "stop",
+      "wake",
+      "stop&2",
+      "open-two",
+      "stop",
+      "open",
+      "open-two&2",
+      "fail-page-close-always",
+      "swap",
+      "open",
+      "host-unreachable",
+      "wake&3",
+      "host-unsigned",
+      "swap",
+      "stop&1",
+    ],
+  },
+  {
+    // The 30000 run: the search's own: it modelled the guest from call answers, not from its host (W16).
+    name: "a schedule of the 30000 run (seed 30254)",
+    seed: 30254,
+    trace: "seed-30254.json",
+    steps: [
+      "fail-page-close",
+      "park-stop",
+      "open-two",
+      "restart-home&0",
+      "open&1",
+      "open",
+      "park-stop&0",
+      "restart-home",
+      "host-unsigned",
+      "open",
+      "heal-page-close",
+      "stop",
+      "drop-channel",
+      "restart-runtime&2",
+      "restart-runtime",
+      "stop",
+      "host-back",
+      "browser-ends",
+      "open",
+      "wake",
+    ],
+  },
+  {
+    // The 30000 run: a deleted slot's and a fenced term's Stops after a swap at rest: the drain (W12).
+    name: "a schedule of the 30000 run (seed 30262)",
+    seed: 30262,
+    steps: [
+      "open",
+      "browser-ends&3",
+      "slot-deleted&1",
+      "host-unreachable&1",
+      "park-stop",
+      "fail-page-close-always",
+      "fence&3",
+      "open",
+      "stop",
+      "wake&2",
+      "park",
+      "proxy-down&3",
+      "browser-ends",
+      "host-unreachable&2",
+      "fail-page-close&1",
+      "wake",
+      "fence&0",
+      "park-stop&3",
+      "open&2",
+      "fail-page-close&1",
+    ],
+  },
+  {
+    // The 30000 run: a deleted slot's Stop, replaced at rest: the drain (W12).
+    name: "a schedule of the 30000 run (seed 30320)",
+    seed: 30320,
+    steps: [
+      "drop-channel",
+      "open-two",
+      "drop-channel&2",
+      "host-unreachable",
+      "host-stops-guest&3",
+      "park-stop",
+      "fail-page-close&3",
+      "wake&0",
+      "slot-deleted&1",
+      "fail-page-close-always",
+      "drop-channel",
+      "wake&2",
+      "proxy-down&1",
+      "host-unsigned",
+      "stop&2",
+      "stop",
+      "drop-channel",
+      "proxy-refuses",
+      "fail-page-close-always",
+      "wake",
+    ],
+  },
+  {
+    // The 30000 run: the search's own, before W16 (held on the final code three times, with and without the drain): kept so it cannot come back.
+    name: "a schedule of the 30000 run (seed 30365)",
+    seed: 30365,
+    steps: [
+      "host-unreachable&1",
+      "wake&0",
+      "slot-deleted",
+      "browser-ends",
+      "swap",
+      "heal-page-close&0",
+      "wake&3",
+      "fail-page-close-always",
+      "restart-home",
+      "drop-channel&2",
+      "open",
+      "host-unreachable",
+      "open",
+      "open",
+      "browser-ends&3",
+      "stop",
+      "host-unreachable",
+      "slot-deleted",
+      "wake",
+      "swap",
+    ],
+  },
+  {
+    // The 30000 run: the search's own: a swap and a Home restart overlapped, which the Home's chooser never does (W16).
+    name: "a schedule of the 30000 run (seed 30384)",
+    seed: 30384,
+    trace: "seed-30384.json",
+    steps: [
+      "stop",
+      "proxy-heals",
+      "park",
+      "host-unsigned",
+      "heal-page-close",
+      "host-stops-guest&1",
+      "restart-home",
+      "restart-home&0",
+      "swap&1",
+      "proxy-heals",
+      "stop",
+      "open&3",
+      "fail-page-close-always",
+      "wake",
+      "wake&3",
+      "host-back",
+      "stop",
+      "wake",
+      "restart-runtime",
+      "fail-page-close&1",
+    ],
+  },
+  {
+    // The 30000 run: a deleted slot's Stop, replaced at rest: the drain (W12).
+    name: "a schedule of the 30000 run (seed 30424)",
+    seed: 30424,
+    steps: [
+      "open-two",
+      "stop&2",
+      "drop-channel",
+      "drop-channel",
+      "restart-home",
+      "host-unreachable",
+      "park",
+      "park-stop",
+      "stop&1",
+      "host-unsigned",
+      "open-two",
+      "restart-home",
+      "open",
+      "wake&1",
+      "host-unreachable",
+      "slot-deleted&2",
+      "open",
+      "stop",
+      "proxy-refuses",
+      "fail-page-close-always",
+    ],
+  },
+  {
+    // The 30000 run: as 30020: a replaced target's runtime not under its fence (W12).
+    name: "a schedule of the 30000 run (seed 30497)",
+    seed: 30497,
+    trace: "seed-30497.json",
+    steps: [
+      "open",
+      "fail-page-close",
+      "restart-runtime",
+      "stop",
+      "wake&2",
+      "swap",
+      "wake",
+      "browser-ends",
+      "proxy-refuses",
+      "open",
+      "fail-page-close-always&1",
+      "host-unreachable",
+      "open",
+      "open",
+      "park&2",
+      "open",
+      "slot-deleted&3",
+      "host-unsigned",
+      "open",
+      "proxy-refuses&0",
+    ],
+  },
+  {
+    // The 30000 run: as 30020: a replaced target's runtime not under its fence (W12).
+    name: "a schedule of the 30000 run (seed 30498)",
+    seed: 30498,
+    trace: "seed-30498.json",
+    steps: [
+      "open-two",
+      "restart-runtime&1",
+      "fail-page-close&1",
+      "fail-page-close&2",
+      "host-back&0",
+      "fail-page-close",
+      "stop",
+      "swap",
+      "proxy-refuses",
+      "host-unreachable",
+      "swap",
+      "host-stops-guest&0",
+      "park-stop&1",
+      "wake",
+      "wake&2",
+      "wake",
+      "stop",
+      "proxy-heals",
+      "open-two",
+      "proxy-down&0",
+    ],
+  },
 ];
+
+/** Where a schedule that broke an invariant leaves its trace (W7): a file to replay. */
+const traceDirectory =
+  process.env.OPENSTEER_POOL_SEARCH_TRACES ?? join(tmpdir(), "opensteer-pool-search-traces");
+/** Named cases' own traces, kept with the suite. */
+const namedTraces = join(import.meta.dirname, "browser-pool-search-traces");
+
+function keepTrace(trace: SearchTrace): string {
+  mkdirSync(traceDirectory, { recursive: true });
+  const path = join(traceDirectory, `seed-${trace.seed}-${randomUUID().slice(0, 8)}.json`);
+  writeFileSync(path, `${JSON.stringify(trace, null, 1)}\n`);
+  return path;
+}
+
+function readTrace(path: string): SearchTrace {
+  return JSON.parse(readFileSync(path, "utf8")) as SearchTrace;
+}
 
 const only = process.env.OPENSTEER_POOL_SEARCH_NAMED;
 it.each(only ? named.filter(({ seed }) => only.split(",").includes(String(seed))) : named)(
   "holds every invariant for $name",
   { timeout: 20 * stepBoundMs },
-  async ({ seed, steps }) => {
-    const violations = await schedule(seed, steps);
+  async ({ seed, steps, trace }) => {
+    // A case kept with its trace replays the order it failed in; the others run their steps.
+    const replay = trace ? readTrace(join(namedTraces, trace)) : undefined;
+    const outcome = await schedule(seed, replay?.steps ?? steps, replay);
     for (const step of cleanup.splice(0).reverse()) await step().catch(() => undefined);
-    expect(violations).toEqual([]);
+    if (outcome.violations.length) console.log(`trace: ${keepTrace(outcome.trace)}`);
+    expect(outcome.violations).toEqual([]);
   },
 );
+
+/**
+ * Replays one trace by hand: `OPENSTEER_POOL_SEARCH_REPLAY=<trace.json>`. It says whether the run
+ * kept to the trace, and what broke.
+ */
+const replayPath = process.env.OPENSTEER_POOL_SEARCH_REPLAY;
+it.skipIf(!replayPath)("replays a trace", { timeout: 40 * stepBoundMs }, async () => {
+  const replay = readTrace(replayPath!);
+  const outcome = await schedule(replay.seed, replay.steps, replay);
+  for (const step of cleanup.splice(0).reverse()) await step().catch(() => undefined);
+  console.log(
+    `pool search replay of seed ${replay.seed}: ${
+      outcome.diverged ? `diverged: ${outcome.diverged}` : "kept to the trace"
+    }; ${outcome.violations.length ? outcome.violations.join("; ") : "held"}; trace: ${keepTrace(
+      outcome.trace,
+    )}`,
+  );
+  expect(outcome.violations).toEqual([]);
+});
+
+/**
+ * Runs given schedules by hand, each `OPENSTEER_POOL_SEARCH_REPEAT` times (default 1), keeping the
+ * trace of every run that breaks an invariant: `OPENSTEER_POOL_SEARCH_SCHEDULE_FILE=<file>` holds
+ * `[{ "seed": n, "steps": [...] }]` (a long run's failing schedules, say).
+ */
+const scheduleFile = process.env.OPENSTEER_POOL_SEARCH_SCHEDULE_FILE;
+it.skipIf(!scheduleFile)("runs the schedules of a file", { timeout: 6 * 60 * 60_000 }, async () => {
+  const schedules = JSON.parse(readFileSync(scheduleFile!, "utf8")) as {
+    seed: number;
+    steps: Step[];
+  }[];
+  const repeat = Number(process.env.OPENSTEER_POOL_SEARCH_REPEAT ?? 1);
+  for (const { seed, steps } of schedules)
+    for (let run = 1; run <= repeat; run++) {
+      const { violations, trace } = await schedule(seed, steps);
+      for (const step of cleanup.splice(0).reverse()) await step().catch(() => undefined);
+      console.log(
+        `pool search file seed ${seed} run ${run}: ${
+          violations.length ? `${violations.join("; ")} trace: ${keepTrace(trace)}` : "held"
+        }`,
+      );
+    }
+});
 
 /**
  * Schedules the suite runs every time: modest, bounded by `stepBoundMs` per step, and fixed (seeds
  * 1 to 6), so a gate never fails for a reason unrelated to the change under test. The longer
  * exploration runs by hand from another first seed, for example
  * `OPENSTEER_POOL_SEARCH_NAMED=none OPENSTEER_POOL_SEARCH_SEED=1000 OPENSTEER_POOL_SEARCH_SCHEDULES=500
- * OPENSTEER_POOL_SEARCH_STEPS=20`.
+ * OPENSTEER_POOL_SEARCH_STEPS=20`. Each schedule that breaks an invariant leaves its trace.
  */
 const suiteSchedules = Number(process.env.OPENSTEER_POOL_SEARCH_SCHEDULES ?? 6);
 const suiteSteps = Number(process.env.OPENSTEER_POOL_SEARCH_STEPS ?? 14);
@@ -1386,9 +2115,13 @@ it(
   async () => {
     const found: string[] = [];
     for (let seed = firstSeed; seed < firstSeed + suiteSchedules; seed++) {
-      const violations = await schedule(seed, suiteSteps);
+      const { violations, trace } = await schedule(seed, suiteSteps);
+      const kept =
+        violations.length || process.env.OPENSTEER_POOL_SEARCH_KEEP
+          ? ` trace: ${keepTrace(trace)}`
+          : "";
       console.log(
-        `pool search seed ${seed}: ${violations.length ? violations.join("; ") : "held"}`,
+        `pool search seed ${seed}: ${violations.length ? violations.join("; ") : "held"}${kept}`,
       );
       found.push(...violations.map((violation) => `seed ${seed}: ${violation}`));
       for (const step of cleanup.splice(0).reverse()) await step().catch(() => undefined);

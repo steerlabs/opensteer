@@ -414,6 +414,8 @@ export async function createBrowserSession(
     readonly profileId: BrowserProfileId | null;
     readonly runtimeId: string;
     readonly pooled?: true;
+    /** The Home is a pooled computer's (W11): an unpooled create is refused on its runner. */
+    readonly onPooledComputer?: true;
   },
 ): Promise<BrowserSessionRecord> {
   const profileId = input.profileId;
@@ -421,6 +423,7 @@ export async function createBrowserSession(
     const pool = input.pooled
       ? await requireBrowserPoolAdmission(transaction, input.runnerId)
       : undefined;
+
     await assertPersonalOwner(transaction, input.ownerId);
     if (profileId !== null) {
       await lockBrowserProfile(transaction, profileId);
@@ -475,6 +478,30 @@ export async function createBrowserSession(
       }
     }
     mutation.bumpResource("browser-placement");
+    if (!pool && input.onPooledComputer) {
+      // On a pooled computer a session is created bound or not at all (W11): the statement that
+      // writes an unpooled row is the one that refuses it on a runner the pool knows (its slot,
+      // or any session bound to it). A Home that is not pooled writes as it always did.
+      const inserted = await sql<BrowserSessionRecord>`
+        insert into browser_sessions (
+          tab_group_id, closed_at, runner_id, id, origin, opener, placement_key, profile_id,
+          runtime_id, state
+        )
+        select ${input.tabGroupId ?? input.id}, null, ${input.runnerId}, ${input.id},
+          ${input.origin}, ${input.opener ? JSON.stringify(input.opener) : null}::jsonb,
+          ${input.placementKey}, ${input.profileId}, ${input.runtimeId}, 'starting'
+        where not exists (select 1 from browser_pool_slots where runner_id = ${input.runnerId})
+          and not exists (
+            select 1 from browser_pool_sessions where runner_id = ${input.runnerId}
+          )
+        returning created_at, runner_id, id, origin, opener, placement_key, profile_id,
+          runtime_id, state, updated_at
+      `.execute(transaction);
+      const row = inserted.rows[0];
+      if (!row)
+        throw new BrowserPoolAdmissionClosed("The pooled browser is between states. Try again.");
+      return row;
+    }
     const created = await transaction
       .insertInto("browserSessions")
       .values({
@@ -1749,7 +1776,16 @@ export async function failActiveBrowserSessions(
         .$if(placementKey !== undefined, (query) => query.where("placementKey", "=", placementKey!))
         .$if(pooledRunner !== undefined, (query) =>
           query.where(sql<boolean>`
-          not exists (
+          not (
+            -- A pooled session a Stop left closing ends only with evidence about its own target
+            -- (W14): known by its own binding, whether or not a slot row exists today (mid-swap,
+            -- after a release). A restart decides no outcome for it.
+            browser_sessions.state = 'closing'
+            and exists (
+              select 1 from browser_pool_sessions own where own.session_id = browser_sessions.id
+            )
+          )
+          and not exists (
             -- A pooled guest outlives the Home: its ready sessions are the pool's to reattach
             -- or end with their note, whatever the slot's phase, and a closing one ends only
             -- with the runtime's answer.
