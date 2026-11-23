@@ -132,6 +132,73 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
     };
     const fromChannel = await queued(anyone, channel, "queued-in-channel");
     const fromDirect = await queued(own.id, direct, "queued-in-dm", me.principalId as string);
+    // One whose outcome is unknown: it may have been acted on, and stays unknown.
+    const unknown = await queued(anyone, channel, "unknown-in-channel");
+    await database
+      .updateTable("threadInputs")
+      .set({ state: "unknown" })
+      .where("messageId", "=", unknown as never)
+      .execute();
+    // An earlier task of a direct-message conversation that ran without personal context: the
+    // person spoke in it, but the conversation was not theirs to read.
+    const { thread: earlierDm } = await create("earlier-unpersonal-dm");
+    const { thread: laterDm } = await create("later-unpersonal-dm");
+    const unpersonalDm = createChannelId("conversation");
+    await conversation(unpersonalDm, false, laterDm.id, "dm");
+    await queued(earlierDm.id, unpersonalDm, "earlier-dm-message", me.principalId as string);
+    // Automations the anyone task reached: one it made (anchored to the person's own task), one
+    // whose script it last wrote, and a task that second one sent work to.
+    const { TriggerStore } = await import("./trigger-store.js");
+    const triggers = new TriggerStore(database);
+    const automation = async (key: string) => {
+      const { thread: anchor } = await create(`${key}-anchor`);
+      return triggers.create({
+        actorThreadId: null,
+        anchorThreadId: anchor.id,
+        createdBy: fixture.userId,
+        idempotencyKey: key,
+        name: key,
+        program: {
+          toolContractVersion: 5,
+          language: "javascript",
+          source: "export default async () => null",
+        },
+        source: {
+          kind: "schedule",
+          schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+        },
+      });
+    };
+    const made = await automation("made-by-anyone");
+    await database
+      .updateTable("triggers")
+      .set({ createdByThreadId: anyone })
+      .where("id", "=", made.trigger.id)
+      .execute();
+    const rewritten = await automation("rewritten-by-anyone");
+    await database
+      .updateTable("triggerRevisions")
+      .set({ createdByThreadId: anyone })
+      .where("id", "=", rewritten.revision.id)
+      .execute();
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: rewritten.trigger.id,
+    });
+    const { thread: sentTo } = await create("sent-to-by-automation");
+    const sent = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: sentTo.id,
+      content: [{ type: "text", text: "From the automation" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "sent-by-automation",
+    });
+    await sql`update thread_inputs set authority_source = ${JSON.stringify({
+      kind: "trigger-occurrence",
+      occurrenceId: occurrence.id,
+    })}::jsonb where message_id = ${sent.message.id}`.execute(database);
 
     await migrateToLatest(database);
 
@@ -161,6 +228,30 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       bridgeAccountId: null,
       ended: true,
     });
+    // So does every task and automation it reached.
+    expect(await origin(earlierDm.id)).toBe(ended);
+    expect(await origin(sentTo.id)).toBe(ended);
+    for (const trigger of [made.trigger.id, rewritten.trigger.id])
+      expect(
+        (
+          await database
+            .selectFrom("triggers")
+            .select("originConnectionId")
+            .where("id", "=", trigger)
+            .executeTakeFirstOrThrow()
+        ).originConnectionId,
+        trigger,
+      ).toBe(ended);
+    // The ended row is removed: no list draws it, and its tasks still read it.
+    expect(
+      (
+        await database
+          .selectFrom("agentConnections")
+          .select("removedAt")
+          .where("id", "=", ended!)
+          .executeTakeFirstOrThrow()
+      ).removedAt,
+    ).not.toBeNull();
     // The person's own stays theirs, as it was.
     expect(await origin(own.id)).toBeNull();
     // Nothing of the routes is kept, and no chat was made from them.
@@ -184,11 +275,14 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       await database
         .selectFrom("threadInputs")
         .select(["messageId", "state"])
-        .where("messageId", "in", [fromChannel, fromDirect] as never)
+        .where("messageId", "in", [fromChannel, fromDirect, unknown] as never)
         .orderBy("messageId")
         .execute(),
     ).toEqual(
-      [fromChannel, fromDirect].sort().map((messageId) => ({ messageId, state: "cancelled" })),
+      [fromChannel, fromDirect, unknown].sort().map((messageId) => ({
+        messageId,
+        state: messageId === unknown ? "unknown" : "cancelled",
+      })),
     );
 
     // The task that ran without personal context takes no new work, and says why.
@@ -229,40 +323,86 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
     expect(chat).toMatchObject({ bridge: { accountId: configured.account.id, senders: "owner" } });
   });
 
-  it("keeps only the most recently used of several identities linked before the update", async ({
+  it("keeps the identity last used, after reading the person's own work against both", async ({
     storeFixture,
   }) => {
-    const { database } = storeFixture;
+    const { database, store } = storeFixture;
     const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("routes-me", {
       bridge: false,
     });
     const { upsertChannelIdentity } = await import("./channel-store.js");
     const { commitPersonalMutation } = await import("./personal-mutation.js");
-    const identity = async (externalUserId: string) =>
-      (
-        await commitPersonalMutation(database, (tx) =>
-          upsertChannelIdentity(tx, {
-            accountId: configured.account.id,
-            displayName: externalUserId,
-            externalUserId,
-          } as never),
-        )
-      ).id as string;
-    // What the release before chats allowed: the phone and the email address both "me".
+    const identity = (externalUserId: string) =>
+      commitPersonalMutation(database, (tx) =>
+        upsertChannelIdentity(tx, {
+          accountId: configured.account.id,
+          displayName: externalUserId,
+          externalUserId,
+        } as never),
+      );
+    // What the release before chats allowed: the phone and the email address both "me". The
+    // phone was linked first and used last; the email was linked last.
     await sql`drop index channel_identities_one_me`.execute(database);
     const phone = await identity("+14155550100");
     const email = await identity("owner@example.com");
-    for (const [id, at] of [
-      [phone, new Date(Date.now() - 60_000)],
-      [email, new Date()],
+    for (const [row, at] of [
+      [phone, new Date(Date.now() - 600_000)],
+      [email, new Date(Date.now() - 300_000)],
     ] as const)
       await database
         .updateTable("channelIdentities")
         .set({ status: "linked", linkedUserId: fixture.userId, updatedAt: at })
-        .where("id", "=", id as never)
+        .where("id", "=", row.id as never)
         .execute();
     await restoreRoutes(database);
+    const route = createChannelId("binding");
+    await sql`insert into channel_bindings (id, account_id, created_by, selector, execution_policy,
+        access_policy, revision, status)
+      values (${route}, ${configured.account.id}, ${fixture.userId}, '{}'::jsonb, '{}'::jsonb,
+        ${JSON.stringify(testChannelAccessPolicy("owner"))}::jsonb, 1, 'active')`.execute(database);
+    const direct = createChannelId("conversation");
+    // A task the person started from each identity, in their own direct messages.
+    const task = async (key: string, sender: string, at: Date) => {
+      const { thread } = await store.createThread({
+        createdBy: fixture.userId,
+        environmentId: fixture.environmentId,
+        harnessInstanceId: fixture.harnessInstance.id,
+        idempotencyKey: key,
+        modelSelection: testModelSelection,
+        title: key,
+      });
+      const input = await store.enqueueThreadInput({
+        requestedBy: fixture.userId,
+        threadId: thread.id,
+        content: [{ type: "text", text: key }],
+        source: { kind: "human" },
+        policy: "queue",
+        idempotencyKey: key,
+      });
+      await sql`update thread_inputs set authority_source = ${JSON.stringify({
+        kind: "channel-ingress",
+        conversationId: direct,
+      })}::jsonb, actor_principal_id = ${sender}, created_at = ${at}
+        where message_id = ${input.message.id}`.execute(database);
+      return thread.id;
+    };
+    const fromEmail = await task(
+      "from-email",
+      email.principalId as string,
+      new Date(Date.now() - 200_000),
+    );
+    const fromPhone = await task(
+      "from-phone",
+      phone.principalId as string,
+      new Date(Date.now() - 100_000),
+    );
+    await sql`insert into channel_conversations (id, account_id, provider, external_account_id,
+        binding_id, binding_revision, external_conversation_id, conversation_type,
+        active_thread_id, provider_state, personal_context)
+      values (${direct}, ${configured.account.id}, 'slack', 'T-routes-me', ${route}, 1, ${direct},
+        'dm', ${fromPhone}, '{}'::jsonb, true)`.execute(database);
     await migrateToLatest(database);
+    // The phone, used last, stays "me".
     expect(
       await database
         .selectFrom("channelIdentities")
@@ -270,6 +410,18 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
         .where("accountId", "=", configured.account.id)
         .where("status", "=", "linked")
         .execute(),
-    ).toEqual([{ externalUserId: "owner@example.com" }]);
+    ).toEqual([{ externalUserId: "+14155550100" }]);
+    // What the person said from either stays their own.
+    for (const id of [fromEmail, fromPhone])
+      expect(
+        (
+          await database
+            .selectFrom("threads")
+            .select("originConnectionId")
+            .where("id", "=", id)
+            .executeTakeFirstOrThrow()
+        ).originConnectionId,
+        id,
+      ).toBeNull();
   });
 });
