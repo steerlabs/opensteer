@@ -53,10 +53,10 @@ interface LoadedWatchScript {
 
 interface ActiveWatch {
   abort: AbortController;
-  capabilitiesPath: string;
   desired: WatchReconcileActivation;
   /** The script's stand-ins for the Host, from start until the watch stops or expires. */
   endpoints?: ProgramEndpointSet;
+  executionDirectory: string;
   healthySince: string | null;
   lastError: string | null;
   lastExitCode: number | null;
@@ -84,6 +84,8 @@ export interface WatchSupervisorOptions {
     launch: Parameters<ProgramLaunchPlanner>[0],
   ) => ReturnType<ProgramLaunchPlanner>;
   readonly privateStateDirectory: string;
+  /** Monotonic delay before restarting a crashed watch (default: 1s doubling up to 5m). */
+  readonly restartBackoffMs?: (restartCount: number) => number;
   readonly onStopped?: (
     report: Extract<
       RunnerOperationalReport,
@@ -104,6 +106,11 @@ const maximumScriptResponseBytes = 6 * 512 * 1_024 + 1_024;
 const maximumBackoffMs = 5 * 60_000;
 const scriptCacheDirectory = "script-cache-v1";
 
+/** Monotonically growing pause before restarting a crashed watch (1s, 2s, 4s, ..., capped at 5m). */
+export function watchRestartBackoffMs(restartCount: number): number {
+  return Math.min(maximumBackoffMs, 1_000 * 2 ** Math.min(Math.max(restartCount - 1, 0), 18));
+}
+
 export class WatchSupervisor {
   readonly #cliBinDirectory: string;
   readonly #cliScriptPath: string;
@@ -111,6 +118,7 @@ export class WatchSupervisor {
   readonly #nodeExecutable: string;
   readonly #planLaunch: WatchSupervisorOptions["planLaunch"];
   readonly #onStopped: WatchSupervisorOptions["onStopped"];
+  readonly #restartBackoffMs: (restartCount: number) => number;
   readonly #terminate: WatchSupervisorOptions["terminate"];
   readonly #transport: WatchSupervisorOptions["transport"];
   readonly #executionRoot: string;
@@ -131,6 +139,7 @@ export class WatchSupervisor {
     this.#environmentId = options.environmentId;
     this.#nodeExecutable = options.nodeExecutable;
     this.#planLaunch = options.planLaunch;
+    this.#restartBackoffMs = options.restartBackoffMs ?? watchRestartBackoffMs;
     this.#terminate = options.terminate;
     this.#onStopped = options.onStopped;
     this.#transport = options.transport;
@@ -161,18 +170,10 @@ export class WatchSupervisor {
     return applied;
   }
 
-  async connectionLost(sink: RunnerMessageSink): Promise<void> {
-    const stopped = this.#reconcileTail.then(async () => {
-      const active = [...this.#watches.entries()].filter(([, watch]) => watch.sink === sink);
-      await Promise.allSettled(
-        active.map(async ([activationId, watch]) => {
-          await this.#stop(watch, true);
-          this.#watches.delete(activationId);
-        }),
-      );
-    });
-    this.#reconcileTail = stopped.catch(() => undefined);
-    await stopped;
+  async connectionLost(_sink: RunnerMessageSink): Promise<void> {
+    // Always-running watches stay alive across Home disconnects and restarts (T12 / AA11);
+    // the next watch.reconcile refreshes their sink and stops any that are no longer desired.
+    await this.#reconcileTail;
   }
 
   async stopAttempt(
@@ -246,20 +247,19 @@ export class WatchSupervisor {
           continue;
         existing.desired = item;
         existing.sink = sink;
-        await this.#writeCapabilities(existing);
+        await this.#ensureEndpoints(existing);
         this.#armLease(existing);
         await this.#report(existing);
         continue;
       }
       const active: ActiveWatch = {
         abort: new AbortController(),
-        capabilitiesPath: join(
+        desired: item,
+        executionDirectory: join(
           this.#executionRoot,
           item.activationId,
           String(item.executionGeneration),
-          "capabilities.json",
         ),
-        desired: item,
         healthySince: null,
         lastError: null,
         lastExitCode: null,
@@ -271,7 +271,7 @@ export class WatchSupervisor {
         process: undefined,
       };
       this.#watches.set(item.activationId, active);
-      await this.#writeCapabilities(active);
+      await this.#ensureEndpoints(active);
       this.#armLease(active);
       active.task = this.#run(active);
     }
@@ -314,6 +314,7 @@ export class WatchSupervisor {
         await delay(WATCH_START_RETRY_MS, active.abort.signal).catch(() => undefined);
         continue;
       }
+      let containmentProven = true;
       try {
         const loaded = await this.#loadScript(active);
         const materialized = await this.#materialize(active, loaded.script);
@@ -332,7 +333,7 @@ export class WatchSupervisor {
         const launch = (
           await this.#planLaunch(active.desired.activationId, {
             environment,
-            privateDirectory: dirname(active.capabilitiesPath),
+            privateDirectory: active.executionDirectory,
             workspacePath: workspace.path,
           })
         )({ args, cwd: workspace.path, environment, executable });
@@ -373,20 +374,27 @@ export class WatchSupervisor {
           maximumLength: 20_000,
         });
       } finally {
-        // Contain any orphaned grandchildren before cleaning up or spawning the next restart (Y5).
-        await this.#terminate(active.desired.activationId).catch(() => undefined);
+        // Contain any orphaned grandchildren before cleaning up or spawning the next restart (Y5 / AA11).
+        const proof = await this.#terminate(active.desired.activationId).catch(
+          () => "unverifiable" as const,
+        );
+        containmentProven = proof === "proven";
         if (materializationRoot) {
           await rm(materializationRoot, { force: true, recursive: true }).catch(() => undefined);
         }
       }
       if (active.abort.signal.aborted) break;
+      if (!containmentProven) {
+        active.lastError = active.lastError
+          ? `${active.lastError} (stopped restarting because prior process containment could not be verified)`
+          : "Watch stopped restarting because prior process containment could not be verified.";
+        active.observed = "backoff";
+        await this.#report(active);
+        break;
+      }
       active.observed = "backoff";
       await this.#report(active);
-      const ceiling = Math.min(
-        maximumBackoffMs,
-        1_000 * 2 ** Math.min(Math.max(active.restartCount - 1, 0), 18),
-      );
-      await delay(Math.floor(Math.random() * (ceiling + 1)), active.abort.signal).catch(
+      await delay(this.#restartBackoffMs(active.restartCount), active.abort.signal).catch(
         () => undefined,
       );
     }
@@ -400,7 +408,7 @@ export class WatchSupervisor {
     readonly root: string;
     readonly scriptFile: string;
   }> {
-    const root = join(dirname(active.capabilitiesPath), `attempt-${randomUUID()}`);
+    const root = join(active.executionDirectory, `attempt-${randomUUID()}`);
     await securePrivateDirectory(root);
     const extension = scriptFileExtension(script.interpreter);
     const scriptFile = join(root, `script${extension}`);
@@ -505,29 +513,17 @@ export class WatchSupervisor {
   }
 
   /**
-   * The capabilities the script reads: its stand-ins, with the Host's
-   * expiries. The Host tokens behind them change on demand; what the
-   * script holds does not, and never works anywhere but here.
+   * Starts the script's in-memory Host stand-ins (never written to disk, AA11).
+   * The Host tokens behind them renew on demand; what the script holds stays in env only.
    */
-  async #writeCapabilities(active: ActiveWatch): Promise<void> {
+  async #ensureEndpoints(active: ActiveWatch): Promise<void> {
+    await securePrivateDirectory(active.executionDirectory);
     active.endpoints ??= await startProgramEndpoints({
       capabilities: () => active.desired.capabilities,
       resolveBrowserToken: () => this.#freshBrowserToken(active),
       resolveMcpToken: () => this.#freshMcpToken(active),
       transport: this.#transport,
     });
-    const { endpoints } = active.endpoints;
-    const { capabilities } = active.desired;
-    await replacePrivateFileAtomically(
-      active.capabilitiesPath,
-      JSON.stringify({
-        browserCdp:
-          endpoints.browserCdp && capabilities.browserCdp
-            ? { ...endpoints.browserCdp, expiresAt: capabilities.browserCdp.expiresAt }
-            : null,
-        mcp: { ...endpoints.mcp, expiresAt: capabilities.mcp.expiresAt },
-      }),
-    );
   }
 
   async #freshMcpToken(active: ActiveWatch): Promise<string> {
@@ -683,7 +679,6 @@ export class WatchSupervisor {
     }
     environment.OPENSTEER_ACTIVATION_ID = active.desired.activationId;
     environment.OPENSTEER_AUTOMATION_ID = active.desired.triggerId;
-    environment.OPENSTEER_CAPABILITIES_PATH = active.capabilitiesPath;
     environment.OPENSTEER_CLI = this.#cliScriptPath;
     environment.OPENSTEER_EVENT = eventFile;
     environment.OPENSTEER_EVENT_PATH = eventFile;

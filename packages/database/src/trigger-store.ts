@@ -1557,10 +1557,16 @@ export class TriggerStore {
       }
       // Y10 / T8: Never auto-pause a crash-looping watch; emit one 'watch-crash-loop' notice
       // while the supervisor continues retrying with exponential backoff.
-      const crashLooping =
+      const containmentHalted =
         activation.desired === "active" &&
         trigger.status === "active" &&
-        consecutiveFailures >= WATCH_AUTO_PAUSE_FAILURE_THRESHOLD;
+        input.observed === "backoff" &&
+        Boolean(input.lastError?.includes("containment"));
+      const crashLooping =
+        (activation.desired === "active" &&
+          trigger.status === "active" &&
+          consecutiveFailures >= WATCH_AUTO_PAUSE_FAILURE_THRESHOLD) ||
+        containmentHalted;
       if (crashLooping) {
         await transaction
           .updateTable("triggers")

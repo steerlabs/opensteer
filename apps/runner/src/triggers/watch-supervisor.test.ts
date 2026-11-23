@@ -16,7 +16,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RunnerMessageSink } from "../runtime/runtime.js";
 import type { AgentHomeAccess } from "../folders/agent-home.js";
-import { WatchSupervisor } from "./watch-supervisor.js";
+import { WatchSupervisor, watchRestartBackoffMs } from "./watch-supervisor.js";
 
 describe("WatchSupervisor", () => {
   const roots: string[] = [];
@@ -399,7 +399,7 @@ describe("WatchSupervisor", () => {
     }
   });
 
-  it("stops and drains a running watch when its Host connection is lost, then reconnects", async () => {
+  it("keeps a running watch alive across connectionLost and refreshes its sink on reconnect (AA11)", async () => {
     const fixture = await watchHarness('setInterval(() => console.log("tick"), 20);');
     try {
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
@@ -407,17 +407,84 @@ describe("WatchSupervisor", () => {
 
       await fixture.supervisor.connectionLost(fixture.sink);
 
-      expect(fixture.supervisor.activeActivationIds()).toEqual([]);
-      expect(fixture.messages.at(-1)).toMatchObject({
-        activationId: fixture.activationId,
-        observed: "stopped",
-      });
-
-      await fixture.supervisor.reconcile(fixture.command(2), fixture.sink);
-      expect(fixture.supervisor.activeActivationIds()).toEqual([]);
-      await fixture.supervisor.reconcile(fixture.command(3, 2), fixture.sink);
-      await vi.waitFor(() => expect(fixture.runningReports()).toHaveLength(2));
+      // Watch keeps running across Home disconnect / restart without stopping or restarting.
       expect(fixture.supervisor.activeActivationIds()).toEqual([fixture.activationId]);
+      expect(
+        fixture.messages.some(
+          (message) => message.type === "runner.watch-status" && message.observed === "stopped",
+        ),
+      ).toBe(false);
+
+      const reconnectedMessages: RunnerOperationalReport[] = [];
+      const reconnectedSink: RunnerMessageSink = {
+        async send(message) {
+          reconnectedMessages.push(message);
+        },
+      };
+      await fixture.supervisor.reconcile(fixture.command(2), reconnectedSink);
+      expect(fixture.supervisor.activeActivationIds()).toEqual([fixture.activationId]);
+      expect(
+        reconnectedMessages.some(
+          (message) => message.type === "runner.watch-status" && message.observed === "running",
+        ),
+      ).toBe(true);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("refuses to spawn a duplicate watch restart when containment between restarts is not proven (AA11)", async () => {
+    let terminateCalls = 0;
+    let runCount = 0;
+    const fixture = await watchHarness(
+      'console.log("started"); process.exit(1);',
+      async () => {
+        runCount += 1;
+        await mkdir(fixtureWorkspace, { recursive: true });
+        return { instructions: undefined, path: fixtureWorkspace };
+      },
+      async () => {
+        terminateCalls += 1;
+        return "unverifiable";
+      },
+    );
+    const fixtureWorkspace = fixture.workspace;
+    try {
+      await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
+      await vi.waitFor(() => {
+        expect(
+          fixture.messages.some(
+            (message) =>
+              message.type === "runner.watch-status" &&
+              message.observed === "backoff" &&
+              message.lastError?.includes("containment"),
+          ),
+        ).toBe(true);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(terminateCalls).toBe(1);
+      expect(runCount).toBe(1);
+    } finally {
+      // Allow close() to terminate cleanly.
+      await fixture.close().catch(() => undefined);
+    }
+  });
+
+  it("never writes capabilities.json to disk or sets OPENSTEER_CAPABILITIES_PATH (AA11)", async () => {
+    const fixture = await watchHarness(
+      'console.log("capEnv:" + String(process.env.OPENSTEER_CAPABILITIES_PATH ?? "unset")); setInterval(() => {}, 1000);',
+    );
+    try {
+      await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
+      let gen = 2;
+      await vi.waitFor(async () => {
+        await fixture.supervisor.reconcile(fixture.command(gen++), fixture.sink);
+        expect(
+          fixture.messages.findLast(
+            (message) => message.type === "runner.watch-status" && message.observed === "running",
+          ),
+        ).toMatchObject({ stdoutTail: expect.stringContaining("capEnv:unset") });
+      });
     } finally {
       await fixture.close();
     }
@@ -439,12 +506,21 @@ describe("WatchSupervisor", () => {
     }
   });
 
+  it("grows restart backoff monotonically without downward jitter (AA11)", () => {
+    const samples = [1, 2, 3, 4, 5, 10, 20].map((count) => watchRestartBackoffMs(count));
+    expect(samples).toEqual([1_000, 2_000, 4_000, 8_000, 16_000, 300_000, 300_000]);
+    for (let i = 1; i < samples.length; i += 1) {
+      expect(samples[i]!).toBeGreaterThanOrEqual(samples[i - 1]!);
+    }
+  });
+
   it.each([
     ["exits cleanly", "process.exit(0);"],
     ["throws", 'throw new Error("watch failed");'],
   ])("restarts a watch that %s and counts restarts", async (_name, source) => {
-    const random = vi.spyOn(Math, "random").mockReturnValue(0);
-    const fixture = await watchHarness(source);
+    const fixture = await watchHarness(source, undefined, undefined, {}, (count) =>
+      Math.min(50, 5 * 2 ** (count - 1)),
+    );
     try {
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
       await vi.waitFor(
@@ -461,7 +537,6 @@ describe("WatchSupervisor", () => {
         { timeout: 5_000 },
       );
     } finally {
-      random.mockRestore();
       await fixture.close();
     }
   });
@@ -543,6 +618,7 @@ async function watchHarness(
   terminate: import("./watch-supervisor.js").WatchSupervisorOptions["terminate"] = async () =>
     "proven",
   secrets: Readonly<Record<string, string>> = {},
+  restartBackoffMs?: (restartCount: number) => number,
 ): Promise<{
   readonly activationId: ReturnType<typeof createId<"triggerWatchActivation">>;
   readonly cachePath: string;
@@ -590,6 +666,7 @@ async function watchHarness(
     nodeExecutable: process.execPath,
     planLaunch: async () => (launch) => launch,
     privateStateDirectory: join(root, "private"),
+    ...(restartBackoffMs ? { restartBackoffMs } : {}),
     terminate,
     transport: { mode: "development" },
     agentHome,
