@@ -190,6 +190,12 @@ export interface TabRecord {
    * person is told, as after a browser restart. Cleared when the tab next sleeps.
    */
   reopenedAt?: number;
+  /**
+   * Z4: a wake began and its page has not been seen to finish loading. Set when the wake begins,
+   * before any caller can give up; ended by the tab's next finished load at its address (its
+   * woken document, or one it navigated to since), a sleep, or the tab's close.
+   */
+  wakeLoad?: true;
 }
 
 export interface LivePage {
@@ -612,6 +618,7 @@ export class SurfaceLedger {
         bytes: engine == null ? 0 : Buffer.byteLength(JSON.stringify(engine)),
       };
       delete record.reopenedAt;
+      delete record.wakeLoad;
       // Only a tab that can wake as itself keeps its place in a lineage (run 12); without the
       // helper a sleep closes the tab, and its closed target is kept nowhere (finding 10).
       this.detachLive(record, engine != null && live.page.sleepsAsItself?.() !== false);
@@ -653,6 +660,8 @@ export class SurfaceLedger {
   async wake(id: BrowserSurfaceId): Promise<SurfaceBinding> {
     const record = this.records.get(id);
     if (!record) throw new BrowserRuntimeError("not_found", "The browser tab closed.");
+    if (!record.live && (record.lease.state === "suspended" || record.lease.state === "sleeping"))
+      record.wakeLoad = true;
     await record.lease.resume(
       async () => {
         // No new page while an earlier one may live; asking again drives its cleanup.
@@ -782,8 +791,10 @@ export class SurfaceLedger {
           readyState === "complete" &&
           (href !== "about:blank" || record.url === "about:blank") &&
           record.live === live
-        )
+        ) {
+          delete record.wakeLoad;
           return "loaded";
+        }
       }
       await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, 100);
@@ -1077,6 +1088,11 @@ export class SurfaceLedger {
   }
 
   /** The JavaScript dialog open on one page, if any, until it is answered. */
+  /** Z4: whether a wake of this tab began and its page has not yet been seen to load. */
+  wakeUnfinished(surfaceId: BrowserSurfaceId): boolean {
+    return this.records.get(surfaceId)?.wakeLoad === true;
+  }
+
   dialogOf(surfaceId: BrowserSurfaceId): BrowserDialog | null {
     const dialog = this.liveRecord(surfaceId)?.live.dialog;
     if (!dialog || dialog.answering) return null;
@@ -2446,6 +2462,10 @@ export class SurfaceLedger {
     )
       return;
     record.live.loading = loading;
+    // Z4: a finished load at the tab's address ends its wake's wait (the blank page a fresh wake
+    // starts on is not it).
+    if (!loading && record.wakeLoad && !record.live.committedUrl.startsWith("about:blank"))
+      delete record.wakeLoad;
     if (!loading) {
       this.touch(record.id);
       void this.refreshNavigation(record).catch(() => undefined);

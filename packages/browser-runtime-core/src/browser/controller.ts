@@ -451,8 +451,6 @@ export class BrowserController {
       cancelled?: boolean;
     }
   >();
-  /** Z1: tabs a wake reloaded whose load nobody has yet seen finish. */
-  private readonly unfinishedWakes = new Set<BrowserSurfaceId>();
   private readonly cancelledScriptCommands = new WeakSet<BrowserClientMessage>();
   private readonly canceledGenerations = new Map<string, number>();
   private readonly hoverOwners = new Map<BrowserSurfaceId, { owner: string; cdp: CdpChannel }>();
@@ -3924,17 +3922,14 @@ export class BrowserController {
       const stopIfCancelled = () => {
         if (cancelled.signal.aborted) throw commandCancelled();
       };
-      for (const id of this.unfinishedWakes)
-        if (this.ledger.stateOf(id) === undefined) this.unfinishedWakes.delete(id);
       try {
         stopIfCancelled();
         const reloaded = this.ledger.stateOf(surfaceId) === "suspended";
         let binding = await untilAborted(this.ledger.wake(surfaceId), cancelled.signal);
         stopIfCancelled();
-        // Z1: the runtime remembers a wake whose load nobody has seen finish yet, so a retry waits
-        // for that same load, whatever the Home last heard of the tab.
-        if (reloaded) this.unfinishedWakes.add(surfaceId);
-        const unfinished = this.unfinishedWakes.has(surfaceId);
+        // Z1, Z4: a wake's unfinished load is the ledger's fact, set when the wake began and
+        // ended by the events that end it; a retry waits for that same load.
+        const unfinished = this.ledger.wakeUnfinished(surfaceId);
         if (reloaded) await this.drainTabs();
         stopIfCancelled();
         // TS11, V3: an agent acts on a woken page only once it has loaded, on every try (a retry
@@ -3945,8 +3940,6 @@ export class BrowserController {
             resumeLoadedMs,
             cancelled.signal,
           );
-          // A load seen to finish, or a tab asleep again (its next wake is a new one), ends it.
-          if (loaded !== "loading") this.unfinishedWakes.delete(surfaceId);
           if (loaded === "loading")
             throw new BrowserRuntimeError(
               "conflict",

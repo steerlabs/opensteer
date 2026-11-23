@@ -357,6 +357,17 @@ describe("BrowserController", () => {
       } as never);
       return reply(requestId);
     };
+    /** The woken page's main frame starts and stops loading, as Chromium reports it. */
+    const finishLoad = async () => {
+      const woken = ledger.binding(id)!.page as unknown as FakePage;
+      const frameId = await woken.targetId();
+      woken.cdpSession.emit("Page.frameNavigated", {
+        frame: { id: frameId, url: "https://example.test/", loaderId: "woken" },
+      });
+      woken.cdpSession.emit("Page.frameStartedLoading", { frameId });
+      woken.cdpSession.emit("Page.frameStoppedLoading", { frameId });
+      await flushMicrotasks();
+    };
     try {
       // First try wakes the sleeping tab: its page is still loading at the bound, and it is said.
       expect(await ledger.sleep(id, () => null)).toBe(true);
@@ -368,11 +379,17 @@ describe("BrowserController", () => {
       // Z1: the retry waits for that same load, though the tab is awake now: the runtime
       // remembers the wake, whatever anyone last heard of the tab. It is told the page reloaded.
       expect(ledger.stateOf(id)).toBe("live");
-      loaded.mockResolvedValueOnce("loaded");
+      expect(ledger.wakeUnfinished(id)).toBe(true);
+      // The woken page's load finishes while the retry waits, as its page says.
+      loaded.mockImplementationOnce(async () => {
+        await finishLoad();
+        return "loaded";
+      });
       expect(await resume()).toMatchObject({
         type: "cdp.result",
         result: { surfaceId: id, reloaded: true },
       });
+      expect(ledger.wakeUnfinished(id)).toBe(false);
       expect(loaded).toHaveBeenCalledTimes(2);
       // Once its load was seen, the awake tab is handed over as it is, with no wait.
       expect(await resume()).toMatchObject({
@@ -431,6 +448,101 @@ describe("BrowserController", () => {
       await ledger.close();
     }
   });
+
+  /*
+   * Z4: whether a wake's load is unfinished belongs to the ledger, set when the wake begins and
+   * ended by the events that end it. (A) a person's wake, its load seen to finish, then the tab
+   * navigated elsewhere: an agent's bind later waits for nothing and is told nothing reloaded.
+   * (B) an agent's wake cancelled during the wake: the next agent's bind still waits for that
+   * wake's load, and is told the page reloaded.
+   */
+  it.each(["a person's wake that loaded long ago", "an agent's wake cancelled under it"] as const)(
+    "decides an agent's load wait from the wake itself: %s (Z4)",
+    async (sequence) => {
+      const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+      await controller.start();
+      const id = ledger.snapshot()[0]!.id;
+      const reply = (requestId: string) =>
+        sink.messages.findLast(
+          (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+        );
+      const resume = (requestId: string, loaded: boolean) =>
+        controller.handle({
+          type: "cdp.command",
+          requestId,
+          replyBudget: { maxBytes: 4096, maxDepth: 8, maxEntries: 64 },
+          command: {
+            method: browserHostMethods.resumeTab,
+            parameters: { surfaceId: id, ...(loaded ? { loaded: true } : {}) },
+          },
+        });
+      const frame = async () => {
+        const woken = ledger.binding(id)!.page as unknown as FakePage;
+        return { woken, frameId: await woken.targetId() };
+      };
+      try {
+        expect(await ledger.sleep(id, () => null)).toBe(true);
+        const loaded = vi.spyOn(ledger, "documentLoaded");
+        if (sequence === "a person's wake that loaded long ago") {
+          await resume(randomUUID(), false);
+          const { woken, frameId } = await frame();
+          woken.cdpSession.emit("Page.frameNavigated", {
+            frame: { id: frameId, url: "https://example.test/", loaderId: "woken" },
+          });
+          woken.cdpSession.emit("Page.frameStartedLoading", { frameId });
+          woken.cdpSession.emit("Page.frameStoppedLoading", { frameId });
+          // Minutes later the person navigates it elsewhere; that page is still loading.
+          woken.cdpSession.emit("Page.frameNavigated", {
+            frame: { id: frameId, url: "https://example.test/other", loaderId: "other" },
+          });
+          woken.cdpSession.emit("Page.frameStartedLoading", { frameId });
+          await flushMicrotasks();
+          const requestId = randomUUID();
+          await resume(requestId, true);
+          expect(reply(requestId)).toMatchObject({
+            type: "cdp.result",
+            result: { surfaceId: id, reloaded: false },
+          });
+          expect(loaded).not.toHaveBeenCalled();
+          return;
+        }
+        const wake = ledger.wake.bind(ledger);
+        const held = Promise.withResolvers<void>();
+        const waking = vi.spyOn(ledger, "wake").mockImplementationOnce(async (surfaceId) => {
+          await held.promise;
+          return wake(surfaceId);
+        });
+        const first = randomUUID();
+        const answered = resume(first, true);
+        await vi.waitFor(() => expect(waking).toHaveBeenCalledOnce());
+        await controller.handle({
+          type: "cdp.command",
+          requestId: randomUUID(),
+          command: {
+            method: browserHostMethods.cancelScriptCommand,
+            parameters: { requestId: first },
+          },
+        });
+        await answered;
+        expect(reply(first)).toMatchObject({ error: { reason: "browser-command-cancelled" } });
+        held.resolve();
+        await vi.waitFor(() => expect(ledger.stateOf(id)).toBe("live"));
+        // The next agent's bind waits for that wake's load, and is told the page reloaded.
+        loaded.mockResolvedValueOnce("loaded");
+        const second = randomUUID();
+        await resume(second, true);
+        expect(loaded).toHaveBeenCalledOnce();
+        expect(reply(second)).toMatchObject({
+          type: "cdp.result",
+          result: { surfaceId: id, reloaded: true },
+        });
+      } finally {
+        await controller.close();
+        await ledger.closeOwnedPages();
+        await ledger.close();
+      }
+    },
+  );
 
   it("ends an agent's resume at once when its operation is cancelled during the wake, and starts no load wait after it (Z2)", async () => {
     const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
