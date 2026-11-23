@@ -282,6 +282,37 @@ final class HelperExitTests: XCTestCase {
     XCTAssertEqual(dropped.lastOverlayEnding, .connectionLost)
   }
 
+  /// A peer that closes its socket before the helper writes the `helper.exit`
+  /// answer must yield EPIPE on the write, never SIGPIPE (signal 13): the
+  /// helper still closes every session and exits in order.
+  @MainActor
+  func testPeerClosingBeforeExitWriteStillClosesSessionsAndExitsOrderly() async throws {
+    var exits = 0
+    let runtime = hostRuntime(
+      helperVersion: "test", peerRequirement: .sameUser, terminate: { exits += 1 })
+    defer { runtime.stop() }
+    let quitting = peer(1)
+    let session = HelperSession(sessionId: "task", connectionID: 1)
+    runtime.registry.insert(session)
+
+    // Close the peer's end deterministically BEFORE the helper handles
+    // `helper.exit` and writes its reply frame on the connection's write queue.
+    Darwin.close(quitting.remote)
+    await runtime.handle(connection: quitting.connection, frame: Self.exitFrame)
+    await settle(runtime)
+    // Wait for the connection's write queue to actually attempt the write onto
+    // the broken socket and observe EPIPE -> close().
+    let deadline = Date().addingTimeInterval(2)
+    while !quitting.connection.closedFlag && Date() < deadline {
+      try await Task.sleep(nanoseconds: 10_000_000)
+    }
+
+    XCTAssertTrue(quitting.connection.closedFlag)
+    XCTAssertTrue(runtime.registry.sessions.isEmpty)
+    XCTAssertEqual(session.cancellation.reason, .closed)
+    XCTAssertEqual(exits, 1)
+  }
+
   /// Answered at once, never behind a batch, so a quitting app is not kept.
   func testExitIsAnsweredOutsideTheSerialLane() {
     XCTAssertTrue(HelperRuntime.outOfBandMethods.contains("helper.exit"))

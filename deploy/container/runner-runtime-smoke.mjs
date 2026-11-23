@@ -227,6 +227,8 @@ export async function verifyCodexAppServerStop({ codexExecutable, runWorkspace, 
     codexExecutable,
     [
       "-c",
+      "features.apps=false",
+      "-c",
       'web_search="disabled"',
       "-c",
       "check_for_update_on_startup=false",

@@ -15,8 +15,8 @@
  */
 import { app, utilityProcess } from "electron";
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -27,7 +27,10 @@ import {
   nodeTrustSetting,
 } from "../../../deploy/container/opensteer-node-trust.mjs";
 import { readPersonalRuntimeRelease } from "../src/releases/personal-runtime-release.js";
-import { runSystemCaSmokeLifecycle } from "./system-ca-smoke-support.js";
+import {
+  generateSystemCaFixtureCertificates,
+  runSystemCaSmokeLifecycle,
+} from "./system-ca-smoke-support.js";
 
 const home = process.env.HOME ?? "";
 if (!(home === "/Users/admin" && process.env.OPENSTEER_SYSTEM_CA_E2E_ARTIFACT_DIR)) {
@@ -59,86 +62,17 @@ https.get(url, (response) => { response.resume(); done({ reached: response.statu
   .on("error", (error) => done({ reached: false, error: error.code ?? error.message }));
 `;
 
-function run(command: string, args: readonly string[]): string {
-  return execFileSync(command, [...args], { encoding: "utf8" });
-}
-
 function fixtureCertificates(): {
   readonly fingerprint: string;
   readonly key: string;
   readonly cert: string;
 } {
-  const config = path.join(work, "openssl.cnf");
-  writeFileSync(
-    config,
-    `[req]\ndistinguished_name=dn\nprompt=no\n[dn]\nCN=${commonName}\n[root]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n[leaf]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=IP:127.0.0.1,DNS:localhost\n`,
-  );
-  const rootKey = path.join(work, "root.key");
-  const leafKey = path.join(work, "leaf.key");
-  const leafCsr = path.join(work, "leaf.csr");
-  const leafPem = path.join(work, "leaf.pem");
-  run("/usr/bin/openssl", [
-    "req",
-    "-x509",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-keyout",
-    rootKey,
-    "-out",
+  return generateSystemCaFixtureCertificates({
+    commonName,
+    rootDer,
     rootPem,
-    "-days",
-    "2",
-    "-config",
-    config,
-    "-extensions",
-    "root",
-  ]);
-  run("/usr/bin/openssl", ["x509", "-in", rootPem, "-outform", "DER", "-out", rootDer]);
-  run("/usr/bin/openssl", [
-    "req",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-keyout",
-    leafKey,
-    "-out",
-    leafCsr,
-    "-subj",
-    "/CN=localhost",
-    "-config",
-    config,
-  ]);
-  run("/usr/bin/openssl", [
-    "x509",
-    "-req",
-    "-in",
-    leafCsr,
-    "-CA",
-    rootPem,
-    "-CAkey",
-    rootKey,
-    "-CAcreateserial",
-    "-out",
-    leafPem,
-    "-days",
-    "2",
-    "-extfile",
-    config,
-    "-extensions",
-    "leaf",
-  ]);
-  const fingerprint = run("/usr/bin/openssl", [
-    "x509",
-    "-in",
-    rootPem,
-    "-noout",
-    "-fingerprint",
-    "-sha256",
-  ])
-    .trim()
-    .split("=")[1]!;
-  return { cert: readFileSync(leafPem, "utf8"), fingerprint, key: readFileSync(leafKey, "utf8") };
+    workDir: work,
+  });
 }
 
 async function homeNode(

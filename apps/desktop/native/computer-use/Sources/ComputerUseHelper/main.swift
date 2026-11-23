@@ -3,6 +3,11 @@ import ComputerUseCore
 import Darwin
 import Foundation
 
+// A write to a peer socket or parent pipe that has already closed must return
+// EPIPE for the code to handle, never terminate the helper mid-shutdown via
+// SIGPIPE (signal 13).
+signal(SIGPIPE, SIG_IGN)
+
 /// `Opensteer Computer Use.app`.
 ///
 /// An `LSUIElement` accessory app: no Dock tile, no menu bar, nothing that can
@@ -13,7 +18,8 @@ import Foundation
 if CommandLine.arguments.dropFirst() == ["--verify-peer"] {
   let verified = HelperPeerVerifier.verifyInheritedSocket()
   if !verified {
-    FileHandle.standardError.write(Data("helper socket peer verification failed\n".utf8))
+    try? FileHandle.standardError.write(
+      contentsOf: Data("helper socket peer verification failed\n".utf8))
   }
   exit(verified ? EXIT_SUCCESS : EXIT_FAILURE)
 }
@@ -21,14 +27,16 @@ if CommandLine.arguments.dropFirst() == ["--verify-peer"] {
 // A fresh process's answer about Full Disk Access, for the running helper,
 // which macOS keeps answering as of its own launch.
 if CommandLine.arguments.dropFirst() == [FullDiskAccessProbes.argument] {
-  print(FullDiskAccessProbes().thisProcess().rawValue)
+  try? FileHandle.standardOutput.write(
+    contentsOf: Data("\(FullDiskAccessProbes().thisProcess().rawValue)\n".utf8))
   exit(EXIT_SUCCESS)
 }
 
 if CommandLine.arguments.dropFirst() == [HelperReplacement.argument] {
   let prepared = MainActor.assumeIsolated { HelperReplacement.prepare() }
   if !prepared {
-    FileHandle.standardError.write(Data("helper replacement preparation failed\n".utf8))
+    try? FileHandle.standardError.write(
+      contentsOf: Data("helper replacement preparation failed\n".utf8))
   }
   exit(prepared ? EXIT_SUCCESS : EXIT_FAILURE)
 }

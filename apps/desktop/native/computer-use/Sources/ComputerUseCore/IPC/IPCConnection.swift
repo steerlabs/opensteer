@@ -62,6 +62,10 @@ public final class IPCConnection: @unchecked Sendable {
     self.id = id
     self.peerProcessIdentifier = peerProcessIdentifier ?? Self.peerProcess(of: fileDescriptor)
     self.fileDescriptor = fileDescriptor
+    var noSigPipe: Int32 = 1
+    setsockopt(
+      fileDescriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe,
+      socklen_t(MemoryLayout<Int32>.size))
     self.onFrame = onFrame
     self.onClose = onClose
     readQueue = DispatchQueue(label: "com.opensteer.computer-use.connection.\(id).read")
