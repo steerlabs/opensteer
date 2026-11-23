@@ -77,10 +77,7 @@ export function networkCredentialSecrets(
     if (separator <= 0) continue;
     const userinfo = address.slice(0, separator);
     const colon = userinfo.indexOf(":");
-    if (colon < 0) {
-      addSecret(userinfo, 4);
-      continue;
-    }
+    if (colon < 0) continue;
     addSecret(userinfo);
     addSecret(userinfo.slice(colon + 1), 4);
   }
