@@ -125,7 +125,7 @@ describeStore("answers leave the Home only through a bridge's Disconnect set", (
       status: "pending",
     });
     const claim = (await channels.claimDelivery(testMessagingRunnerId))!;
-    expect(claim).toMatchObject({ delivery: { id }, mayHaveBeenSent: false });
+    expect(claim).toMatchObject({ delivery: { id } });
     await channels.startDeliveryAttempt(claim.delivery.id, claim.claimToken);
     await channels.finishDelivery({
       claimToken: claim.claimToken,

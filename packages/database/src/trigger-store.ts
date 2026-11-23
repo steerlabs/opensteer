@@ -73,7 +73,7 @@ import {
   sendEligible,
   type AgentConnectionAuthority,
 } from "./resource-access.js";
-import { admitLineageExecution, lineageExecutionStanding } from "./execution-authority.js";
+import { lineageExecutionStanding } from "./execution-authority.js";
 import { PrincipalIdSchema } from "@opensteer/channel-core";
 import type {
   DatabaseSchema,
@@ -240,32 +240,29 @@ export async function assertActiveWatchBinding(
     .where("triggers.kind", "=", "watch")
     .where(executableProgram)
     .executeTakeFirst();
-  const admission = row
-    ? await admitLineageExecution(database, {
-        threadId: row.anchorThreadId,
-        userId: row.createdBy,
-        agentConnectionId: row.originConnectionId,
-      })
-    : null;
+  const ended = () =>
+    new OpensteerError({ code: "forbidden", message: "Watch activation is no longer active" });
   if (
     !row ||
     row.anchorThreadId !== input.anchorThreadId ||
     row.createdBy !== input.createdBy ||
-    row.environmentId !== input.environmentId ||
+    row.environmentId !== input.environmentId
+  )
+    throw ended();
+  // Its lineage's standing, read once, as the execution binding reads it.
+  const connection = row.originConnectionId
+    ? await liveDelegatingConnection(database, row.createdBy, row.originConnectionId).catch(() => {
+        throw ended();
+      })
+    : null;
+  const admission = await admitThreadExecution(database, row.anchorThreadId, row.createdBy);
+  if (
     !admission ||
     admission.environmentId !== input.environmentId ||
-    (row.originConnectionId !== null &&
-      !meetsConnectionFloor(
-        await liveDelegatingConnection(database, row.createdBy, row.originConnectionId),
-        row.admittedGrantRevision,
-        row.admittedAccessMode,
-      ))
-  ) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Watch activation is no longer active",
-    });
-  }
+    (connection &&
+      !meetsConnectionFloor(connection, row.admittedGrantRevision, row.admittedAccessMode))
+  )
+    throw ended();
 }
 class TriggerOccurrenceSetChanged extends TransactionScopeChanged {}
 export async function createTriggerInTransaction(

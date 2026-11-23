@@ -13,6 +13,8 @@ const state = vi.hoisted(() => ({
   host: null as HostClient | null,
   page: null as NativeSettingsPageProps | null,
   pages: new Map<string, NativeSettingsPageProps>(),
+  /** The pages as given, before `readAsDrawn` takes out the marks the phone does not draw. */
+  given: new Map<string, NativeSettingsPageProps>(),
 }));
 vi.mock("react-native", () => ({
   Platform: {
@@ -34,9 +36,11 @@ vi.mock("./native-settings-page.js", () => ({
     const id = useId();
     state.page = readAsDrawn(props);
     state.pages.set(id, readAsDrawn(props));
+    state.given.set(id, props);
     useEffect(
       () => () => {
         state.pages.delete(id);
+        state.given.delete(id);
       },
       [id],
     );
@@ -256,6 +260,11 @@ it.each(["ios", "android"])(
     expect(chat.kind === "button" && chat.detail).toBe(
       "“#team” on Slack, through “Workshop” · Tasks · Supervised",
     );
+    // Each name in the line stands isolated from the words around it, as every phone sentence.
+    const given = [...state.given.values()]
+      .flatMap((page) => page.sections.flatMap((section) => section.rows))
+      .find((candidate) => candidate.label === "Slack · #team");
+    expect(given && "detail" in given ? given.detail : null).toContain("“\u2068#team\u2069”");
     if (chat.kind !== "button") throw new Error("Not a button");
     await act(async () => chat.onPress());
     expect(state.navigate).toHaveBeenCalledWith("ConnectedAgent", {

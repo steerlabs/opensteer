@@ -808,6 +808,151 @@ describeStore("a connected agent's authority at the send", (it) => {
     ).rejects.toMatchObject(refusal);
   });
 
+  it("holds a message steered into a paused chat's Run, and returns it to the task's queue if that Run ended meanwhile", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const { channels, configured, fixture, thread } = await chatWithTask(
+      storeFixture,
+      "steer-held",
+    );
+    const first = await store.enqueueThreadInput({
+      threadId: thread.id,
+      requestedBy: fixture.userId,
+      idempotencyKey: "steer-held-first",
+      content: [{ type: "text", text: "Start" }],
+      policy: "queue",
+      source: { kind: "human" },
+    });
+    if (!first.run) throw new Error("Expected a queued Run");
+    await startPersonalQueuedRunFixture(store, first.run.id);
+    const followUp = await store.enqueueThreadInput({
+      threadId: thread.id,
+      requestedBy: fixture.userId,
+      idempotencyKey: "steer-held-follow-up",
+      content: [{ type: "text", text: "One more thing" }],
+      policy: "queue",
+      source: { kind: "human" },
+    });
+    const steer = await store.steerThreadInput({
+      threadId: thread.id,
+      requestedBy: fixture.userId,
+      expectedRunId: first.run.id,
+      messageId: followUp.message.id,
+      idempotencyKey: "steer-held",
+    });
+    if (!steer.command) throw new Error("Expected a pending steer command");
+    const commandId = steer.command.id;
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+    // Paused: held, never failed, its message kept with it.
+    expect(await listed(storeFixture, commandId)).toBe(false);
+    expect(await store.claimCommand(commandId, "steer-held")).toBeNull();
+    const input = () =>
+      database
+        .selectFrom("threadInputs")
+        .select(["state", "policy"])
+        .where("messageId", "=", followUp.message.id)
+        .executeTakeFirstOrThrow();
+    expect((await input()).state).toBe("claimed");
+    // Meanwhile the Run it was for ends; the chat comes back.
+    await database
+      .updateTable("runs")
+      .set({ status: "interrupted", completedAt: new Date() })
+      .where("id", "=", first.run.id)
+      .execute();
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "connected");
+    const claimed = await store.claimCommand(commandId, "steer-held-2");
+    expect(claimed?.terminalFailure).toBeDefined();
+    expect(claimed?.terminalFailure).not.toMatch(/access ended/u);
+    await store.refuseSteer(commandId, claimed!.terminalFailure!);
+    expect(await input()).toEqual({ state: "pending", policy: "queue" });
+  });
+
+  it("refuses at once a person's message to a task whose chat has ended, in a chat's words, and holds it while the chat waits", async ({
+    storeFixture,
+  }) => {
+    const { store } = storeFixture;
+    const send = (thread: string, userId: string, key: string) =>
+      store.enqueueThreadInput({
+        requestedBy: userId as never,
+        threadId: thread as never,
+        content: [{ type: "text", text: key }],
+        source: { kind: "human" },
+        policy: "queue",
+        idempotencyKey: key,
+      });
+    // Paused: the message is the person's, held until the chat is back.
+    const paused = await chatWithTask(storeFixture, "person-paused");
+    await paused.channels.setConnectionStatus(
+      paused.configured.connection.id,
+      paused.fixture.userId,
+      "paused",
+    );
+    await expect(
+      send(paused.thread.id, paused.fixture.userId, "while-paused"),
+    ).resolves.toMatchObject({ disposition: "pending" });
+    // Ended: nothing more goes in, and the person reads why.
+    const ended = await chatWithTask(storeFixture, "person-ended");
+    expect(
+      await new AgentConnectionStore(storeFixture.database).revoke(
+        ended.fixture.userId,
+        ended.chat.id,
+      ),
+    ).toBe(true);
+    await expect(send(ended.thread.id, ended.fixture.userId, "after-end")).rejects.toMatchObject({
+      code: "forbidden",
+      message:
+        "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging.",
+    });
+  });
+
+  it("refuses at once a person's message to a task whose connected agent was disconnected, in its words", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const fixture = await storeFixture.createRunFixture("person-agent-ended");
+    const connections = new AgentConnectionStore(database);
+    const agent = await connections.create({
+      userId: fixture.userId,
+      label: "Test agent",
+      clientName: "Test agent",
+      accessMode: "full-access",
+      grant: { scope: "selected", tasks: true, resources: [] },
+      resource: "https://home.example/mcp",
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await connections.activate(agent.id, "person-agent-ended-hash");
+    const { thread } = await store.createThread({
+      authority: {
+        kind: "connection",
+        connectionId: agent.id,
+        userId: fixture.userId,
+        accessMode: "full-access",
+      },
+      createdBy: fixture.userId,
+      environmentId: fixture.environmentId,
+      harnessInstanceId: fixture.harnessInstance.id,
+      idempotencyKey: "person-agent-ended-task",
+      modelSelection: fixture.thread.modelSelection,
+      title: "The agent's task",
+    });
+    expect(await connections.revoke(fixture.userId, agent.id)).toBe(true);
+    await expect(
+      store.enqueueThreadInput({
+        requestedBy: fixture.userId,
+        threadId: thread.id,
+        content: [{ type: "text", text: "Go on" }],
+        source: { kind: "human" },
+        policy: "queue",
+        idempotencyKey: "person-agent-ended-send",
+      }),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+      message:
+        "This connected agent's access ended, so this task takes no new messages. Start a new task, or reconnect it from Connected agents.",
+    });
+  });
+
   it("refuses at once to resume, reschedule or edit an automation in a chat anyone can message", async ({
     storeFixture,
   }) => {

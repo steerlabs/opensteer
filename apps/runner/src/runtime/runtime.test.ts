@@ -4101,6 +4101,68 @@ describe("RunnerRuntime", () => {
     }
   });
 
+  it("scans no Agent home skills for a Run without personal context, before it or after it ends", async () => {
+    const temporaryRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "opensteer-skill-scan-none-test-")),
+    );
+    const workspacePath = join(temporaryRoot, "workspace");
+    const stateRoot = join(temporaryRoot, "private", "harness-state");
+    await writeWorkspaceSkill(workspacePath, "release-notes");
+    const driver = new FakeHarnessDriver("test-driver", () => new FakeHarnessSession());
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const runtime = runtimeWithLeaseGrants({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
+      nodeExecutable: process.execPath,
+      agentSkills: testAgentSkills,
+      bootId: "boot-skill-scan-none-test",
+      browserHarnessExecutable: testBrowserHarnessExecutable,
+      deploymentShape: testDeploymentShape,
+      environmentId,
+      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
+      harnesses: registry,
+      plugins: async () => ({
+        cleanup: async () => undefined,
+        digest: "none",
+        directories: [],
+        skills: [],
+      }),
+      logger: { error: () => undefined, info: () => undefined },
+      maxConcurrentRuns: 1,
+      dataDirectory: dirname(stateRoot),
+      privateStateDirectory: stateRoot,
+      projectContinuationIdentity,
+      agentHome: {
+        folder: async ({ path }: { readonly path: string }) => path,
+        prepare: async () => ({ instructions: undefined, path: workspacePath }),
+      },
+    });
+    const scans: unknown[] = [];
+    runtime.observeAgentHomeSkills(async (_generation, scan) => {
+      scans.push(scan);
+    });
+    try {
+      const base = executeCommand(environmentId);
+      const command = {
+        ...base,
+        agentHome: { ...base.agentHome!, path: workspacePath },
+        context: { ...base.context, personalContext: false },
+      };
+      await reconcile(registry, command);
+      await expect(
+        runtime.handleCommand(command, { send: async () => undefined }),
+      ).resolves.toEqual({ status: "accepted" });
+      await waitUntil(() => runtime.activeRunIds().length === 0);
+      expect(driver.context).toBeDefined();
+      // The Run had no Agent home, so nothing of it was read for the Home's skill catalog.
+      expect(scans).toEqual([]);
+    } finally {
+      await runtime.close();
+      await rm(temporaryRoot, { force: true, recursive: true });
+    }
+  });
+
   it.each([false, true])("resolves skill layers with disabled=%s", async (disabled) => {
     const temporaryRoot = await realpath(
       await mkdtemp(join(tmpdir(), "opensteer-skill-layer-test-")),

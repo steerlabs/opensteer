@@ -130,12 +130,12 @@ function forbidden(message: string): OpensteerError {
 }
 export const lineageEndedMessage =
   "This connected agent's access ended. The person can reconnect it from Connected agents.";
-/**
- * What a person reads in a task a chat ran before the update without their personal context
- * (0053 ties it to an ended row): it takes no new work, and the sentence says why.
- */
-export const chatEndedWithTheUpdate =
-  "This chat ended with the update, so this task takes no new messages. Start a new task, or add the chat again on Messaging.";
+/** What a person reads in a connected agent's task once its access has ended. */
+export const agentEndedForPersonMessage =
+  "This connected agent's access ended, so this task takes no new messages. Start a new task, or reconnect it from Connected agents.";
+/** What a chat's task says once its chat has ended: it takes no new work, and why. */
+export const chatEndedMessage =
+  "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging.";
 export const tasksWithdrawnMessage =
   "This connected agent may no longer ask your own agents to work.";
 /** The same refusal for a chat; it is recorded with the message the chat sent. */
@@ -242,11 +242,8 @@ export async function readConnectionRowStanding(
     return {
       row: undefined,
       waiting: read !== undefined && standingOf(read) === "waiting",
-      // The one row with a sender rule and no account: chats from before the update (0053).
-      endedWithTheUpdate:
-        read !== undefined &&
-        read.connection.bridgeAccountId === null &&
-        read.connection.bridgeSenders !== null,
+      // A chat is a connection with a sender rule; what it says when it has ended is a chat's.
+      chat: read !== undefined && read.connection.bridgeSenders !== null,
     };
   const row = read.connection;
   const access = grantTarget && agentGrantAccess(row.grant, grantTarget);
@@ -258,7 +255,7 @@ export async function readConnectionRowStanding(
   return {
     row: read.work ? { ...row, accessMode } : row,
     waiting: false,
-    endedWithTheUpdate: false,
+    chat: row.bridgeSenders !== null,
   };
 }
 
@@ -285,7 +282,7 @@ export async function liveAgentConnection(
     readonly cleanupMaximumMode: ThreadAccessMode | null;
   }
 > {
-  const { row, waiting, endedWithTheUpdate } = await readConnectionRowStanding(
+  const { row, waiting, chat } = await readConnectionRowStanding(
     database,
     ownerUserId,
     agentConnectionId,
@@ -295,7 +292,7 @@ export async function liveAgentConnection(
   if (!row)
     throw waiting
       ? new ConnectionWaiting()
-      : forbidden(endedWithTheUpdate ? chatEndedWithTheUpdate : lineageEndedMessage);
+      : forbidden(chat ? chatEndedMessage : lineageEndedMessage);
   const grant = AgentGrantSchema.parse(row.grant);
   return {
     agentConnectionId: row.id,
@@ -415,9 +412,11 @@ export function sendEligible(
 }
 
 /**
- * The person's own message to a task of a connection. They may type in any task of theirs; one
- * that a chat from before the update ran (0053) takes no new work, and says why in the sentence
- * that chat's tasks give (`chatEndedWithTheUpdate`). One read, only for a task a connection made.
+ * The person's own message to a task a connection made. They may type in any task of theirs while
+ * its connection is live; one that waits (a paused chat) holds the message until it is back; one
+ * that has ended takes no new work, and says so at once in its kind's words (a chat's, or a
+ * connected agent's), as a resume or a change of its automation is refused. One read, and only
+ * for a task a connection made: the person's own tasks read nothing here.
  */
 export async function assertPersonMayContinue(
   database: Kysely<DatabaseSchema>,
@@ -426,7 +425,8 @@ export async function assertPersonMayContinue(
 ): Promise<void> {
   if (taskOriginConnectionId === null) return;
   const standing = await readConnectionRowStanding(database, ownerUserId, taskOriginConnectionId);
-  if (standing.endedWithTheUpdate) throw forbidden(chatEndedWithTheUpdate);
+  if (standing.row || standing.waiting) return;
+  throw forbidden(standing.chat ? chatEndedMessage : agentEndedForPersonMessage);
 }
 
 /** The send rule against the connection as it stands now; refuses as an unknown task would. */
