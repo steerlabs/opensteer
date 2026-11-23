@@ -76,8 +76,12 @@ export class FiringInterruptLoop {
     return this.#waking;
   }
 
-  /** Immediately retries pending interrupts targeting a reconnected Runner. */
-  runnerAttached(runnerId: RunnerId, bootId: string): void {
+  /** Immediately retries pending interrupts targeting a reconnected Runner and tracks any paused firings observed during attach. */
+  runnerAttached(
+    runnerId: RunnerId,
+    bootId: string,
+    pausedRunningFirings: readonly RunningFiringRef[] = [],
+  ): void {
     if (this.#closed) return;
     for (const entry of this.#pending.values()) {
       if (entry.firing.runnerId !== runnerId) continue;
@@ -90,7 +94,7 @@ export class FiringInterruptLoop {
       this.#clearTimer(entry);
       if (!entry.inFlight) void this.#attempt(entry, true);
     }
-    void this.wake();
+    for (const firing of pausedRunningFirings) this.interrupt(firing);
   }
 
   /** Marks an occurrence settled once terminal evidence arrives in completeExecution. */

@@ -2583,7 +2583,11 @@ export async function createHostRuntime(
             runnerId: identity.runnerId,
           });
           if (attached.settledUnknownCount > 0) realtime.publishTriggersChanged();
-          firingInterrupts?.runnerAttached(identity.runnerId, identity.bootId);
+          firingInterrupts?.runnerAttached(
+            identity.runnerId,
+            identity.bootId,
+            attached.pausedRunningFirings,
+          );
           return attached.results;
         },
         onRenewProxyToken: async (identity, request) =>
@@ -3892,7 +3896,6 @@ export async function createHostRuntime(
     });
     wakeTriggerSchedules = () => triggerScheduleLoop.wake();
     triggerScheduleLoop.start();
-    void firingInterrupts?.wake();
     watchService.start();
     channels.start();
     await initializePersonal();
