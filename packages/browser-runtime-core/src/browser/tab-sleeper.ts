@@ -912,7 +912,7 @@ export class TabSleeper {
       for (const { id, session, record } of candidates) {
         if (pending.size >= concurrentSleeps) await Promise.race(pending);
         if (attempted >= sleepsPerPass || this.closed) break;
-        const deadline = this.deadline(session, record);
+        let deadline = this.deadline(session, record);
         const pressureDriven = this.usesLinuxMemoryPressure();
         const measuredPressure = pressureDriven
           ? this.memoryPressureState.known
@@ -923,6 +923,8 @@ export class TabSleeper {
           // In single-step Electron renderer mode, finish pending sleeps before deciding the next one.
           if (!pressureDriven && pending.size) await Promise.all(pending);
           if (this.closed) break;
+          // The Host's facts may have changed during that wait (finding 10).
+          deadline = this.deadline(session, record);
         }
         if (
           this.sessions.get(id) !== session ||

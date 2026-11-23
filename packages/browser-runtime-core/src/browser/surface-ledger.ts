@@ -581,8 +581,9 @@ export class SurfaceLedger {
         bytes: engine == null ? 0 : Buffer.byteLength(JSON.stringify(engine)),
       };
       delete record.reopenedAt;
-      // Only a tab that can wake as itself keeps its place in a lineage (run 12).
-      this.detachLive(record, engine != null);
+      // Only a tab that can wake as itself keeps its place in a lineage (run 12); without the
+      // helper a sleep closes the tab, and its closed target is kept nowhere (finding 10).
+      this.detachLive(record, engine != null && live.page.sleepsAsItself?.() !== false);
       record.lease.endSleep(true);
       this.pages.destroy(live.page, "slept");
       this.emit({ type: "changed", change: "updated", surface: this.toSurface(record) });
@@ -620,7 +621,6 @@ export class SurfaceLedger {
   async wake(id: BrowserSurfaceId): Promise<SurfaceBinding> {
     const record = this.records.get(id);
     if (!record) throw new BrowserRuntimeError("not_found", "The browser tab closed.");
-    let resumed = false;
     await record.lease.resume(async () => {
       // No new page while an earlier one may live; asking again drives its cleanup.
       if (!(await this.pages.tabSettled(this.session, id, "wake-failed", pageCloseWaitMs)))
@@ -670,7 +670,10 @@ export class SurfaceLedger {
             throw new BrowserRuntimeError("not_found", "The browser tab closed.");
           record.restore = null;
           record.usedAt = Date.now();
-          resumed = true;
+          // Announced inside the one resume every caller waits on, so each caller returns after
+          // the tab is announced live, however their continuations interleave (finding 10).
+          const woke = this.binding(id);
+          if (woke) this.emit({ type: "changed", change: "updated", surface: woke.surface });
         } catch (error) {
           // The tab lets go first, so the failed page's confirmation finds no binding.
           if (isLive(record)) this.detachLive(record);
@@ -699,7 +702,6 @@ export class SurfaceLedger {
     const binding = this.binding(id);
     if (!binding || record.lease.state === "closing")
       throw new BrowserRuntimeError("not_found", "The browser tab closed.");
-    if (resumed) this.emit({ type: "changed", change: "updated", surface: binding.surface });
     return binding;
   }
 

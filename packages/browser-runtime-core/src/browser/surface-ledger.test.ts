@@ -260,7 +260,23 @@ describe("SurfaceLedger", () => {
       expect(ledger.inventoryRevision).toBe(revision);
       expect(events.filter((e) => e.type === "changed" && e.change === "closed")).toEqual([]);
       const create = vi.spyOn(context, "createPage");
-      const [first, second] = await Promise.all([ledger.wake(before.id), ledger.wake(before.id)]);
+      // Each caller returns only after the tab is announced live (finding 10).
+      const announced = () =>
+        events.some(
+          (event) =>
+            event.type === "changed" &&
+            event.change === "updated" &&
+            event.surface.id === before.id &&
+            event.surface.state === "live",
+        );
+      const [first, second] = await Promise.all(
+        [ledger.wake(before.id), ledger.wake(before.id)].map((wake) =>
+          wake.then((binding) => {
+            expect(announced()).toBe(true);
+            return binding;
+          }),
+        ),
+      );
       expect(first).toEqual(second);
       expect(ledger.surfaceIdForTarget(oldTargetId)).toBeUndefined();
       expect(ledger.surfaceIdForTarget(first.targetId)).toBe(before.id);
@@ -279,6 +295,27 @@ describe("SurfaceLedger", () => {
     } finally {
       await ledger.closeOwnedPages();
       await ledger.close();
+    }
+  });
+
+  it("keeps no closed target in a sleeping lineage when the page's sleep cannot keep the tab as itself (finding 10)", async () => {
+    const page = new FakePage({ url: "https://no-helper.test/" });
+    Object.assign(page, {
+      captureRestore: async () => ({ kind: "chromium-discard", tokenId: "token", url: page.url() }),
+      sleepsAsItself: () => false,
+    });
+    const releaseTarget = vi.fn();
+    const ledger = new SurfaceLedger(new FakeContext([page]), { releaseTarget });
+    await ledger.start();
+    await flushMicrotasks();
+    const id = ledger.snapshot()[0]!.id;
+    try {
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      expect(releaseTarget).toHaveBeenCalledWith(await page.targetId());
+      expect(releaseTarget).not.toHaveBeenCalledWith(expect.anything(), true);
+    } finally {
+      await ledger.closeOwnedPages().catch(() => undefined);
+      await ledger.close().catch(() => undefined);
     }
   });
 

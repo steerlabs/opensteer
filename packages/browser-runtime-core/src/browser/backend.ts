@@ -131,6 +131,11 @@ export interface BrowserPage {
   readonly openedInBackground?: boolean;
   /** A wake could not bring its tab back: a fresh page the ledger navigates to the tab's address. */
   readonly openedFresh?: boolean;
+  /**
+   * False when this page's sleep cannot keep the tab as itself (no tab helper: it sleeps by
+   * closing and wakes at its address), so nothing of it is kept in a lineage while it sleeps.
+   */
+  sleepsAsItself?(): boolean;
   agentCdp(): Promise<CdpSession>;
   cdp(): Promise<CdpSession>;
   /** Asks the engine to end the page. Settling proves nothing; `onClose` does. */

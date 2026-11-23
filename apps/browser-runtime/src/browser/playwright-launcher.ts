@@ -2420,6 +2420,7 @@ async function documentMediaPlaying(frame: Frame): Promise<boolean | null> {
 
 class PlaywrightPageHandle implements BrowserPage {
   readonly captureRestore?: () => Promise<unknown | null>;
+  readonly sleepsAsItself: () => boolean;
   private pendingDiscard: {
     readonly tokenId: string;
     readonly targetId: string;
@@ -2475,6 +2476,8 @@ class PlaywrightPageHandle implements BrowserPage {
     if (contextHandle.lifecycleCandidate) {
       this.captureRestore = () => this.captureDiscardRestore();
     }
+    // Without the helper once the look has ended, a sleep closes the tab (finding 10).
+    this.sleepsAsItself = () => this.contextHandle.lifecycle !== undefined;
     page.on("request", (request) => {
       if (!["GET", "HEAD"].includes(request.method())) this.uploads.add(request);
       if (request.isNavigationRequest() && request.frame() === page.mainFrame())
