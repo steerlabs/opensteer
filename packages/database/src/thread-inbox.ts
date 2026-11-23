@@ -1484,7 +1484,8 @@ export async function cancelDisconnectedThreadInputInTransaction(
     .where("threadId", "=", thread.id)
     .forNoKeyUpdate()
     .executeTakeFirst();
-  if (!row || (row.state !== "pending" && row.state !== "awaiting-approval") || row.runId !== null)
+  const state: string | undefined = row?.state;
+  if (!row || (state !== "pending" && state !== "awaiting-approval") || row.runId !== null)
     return { revokedGrants: [] };
   const reserved = await transaction
     .selectFrom("runs")
@@ -1502,7 +1503,7 @@ export async function cancelDisconnectedThreadInputInTransaction(
       updatedAt: new Date(),
     })
     .where("messageId", "=", row.messageId)
-    .where("state", "in", ["pending", "awaiting-approval"])
+    .where(sql<boolean>`state in ('pending', 'awaiting-approval')`)
     .returningAll()
     .executeTakeFirst();
   if (!cancelled) return { revokedGrants: [] };

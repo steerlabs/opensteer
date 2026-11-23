@@ -162,9 +162,11 @@ describeStore("a name from outside enters the Home clean", (it) => {
       answers.push(await needsYouPage(database, { userId: asking.userId }));
       const decided = await notifications.decide({
         type: "requestChanged",
+        kind: "harness.approval",
         opened: true,
         status: "pending",
         requestId: askRequestId,
+        runId: asking.run.id,
         threadId: asking.threadId,
       });
       notificationCount += decided.length;

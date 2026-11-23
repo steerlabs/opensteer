@@ -22,6 +22,7 @@ import type { DatabaseSchema } from "./schema.js";
 import {
   describeStore,
   testChannelAccessPolicy,
+  testMessagingRunnerId,
   testModelSelection,
 } from "./store.integration.test-support.js";
 import { personTaskReader } from "./task-reader.js";
@@ -951,9 +952,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
     ).toBe(outsideName(rloWithWriting, 240));
 
     const dashboard = ChannelDashboardSchema.parse(
-      await channels.dashboard(fixture.userId, channelProviderCatalog, [
-        configured.connection.runnerId!,
-      ]),
+      await channels.dashboard(fixture.userId, channelProviderCatalog, [testMessagingRunnerId]),
     );
     const account = dashboard.accounts.find(({ id }) => id === configured.account.id)!;
     expect(account.displayName).toBe(outsideName(dirtyExternalId, 160));
@@ -1272,11 +1271,9 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       .set({ status: "archived" })
       .where("id", "=", archivedTask.id)
       .execute();
-    await database
-      .updateTable("threadInputs")
-      .set({ state: "awaiting-approval" })
-      .where("messageId", "=", approvalInput.message.id)
-      .execute();
+    await sql`update thread_inputs set state = 'awaiting-approval' where message_id = ${approvalInput.message.id}`.execute(
+      database,
+    );
 
     // Deactivate the active provider_sessions row on a separate pending task so
     // recoverThreadWorkQueues encounters an invalid selection before later pending tasks.

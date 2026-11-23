@@ -241,7 +241,7 @@ export interface ThreadSummary {
   /** A connected agent's own task: its session and connection, kept after the session ends. */
   externalWork?: import("@opensteer/protocol/personal-sync").PersonalTaskExternalWork | null;
   /** The chat or connected agent that started this task ended, so it takes no new messages. */
-  endedOrigin?: "chat" | "agent" | null;
+  endedOrigin?: "chat" | "agent" | null | undefined;
   id: string;
   inputQueuePaused: boolean;
   /** One of the person's tasks in navigation lists; see the Host's `Thread.listed`. */

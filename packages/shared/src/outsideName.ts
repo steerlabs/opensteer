@@ -1,8 +1,12 @@
 const breakOrTab = /\r\n|[\n\r\t\v\f\u0085\u2028\u2029]/gu;
 const controlOrFormat = /^[\p{Cc}\p{Cf}]$/u;
 const extendedPictographic = /^\p{Extended_Pictographic}$/u;
-const emojiJoinerModifier = /^[\uFE0F\u{1F3FB}-\u{1F3FF}]$/u;
 const letterOrMark = /^[\p{L}\p{M}]$/u;
+
+function isEmojiJoinerModifier(char: string): boolean {
+  const code = char.codePointAt(0);
+  return code === 0xfe0f || (code !== undefined && code >= 0x1f3fb && code <= 0x1f3ff);
+}
 const joinerScripts = [
   /^\p{scx=Arabic}$/u,
   /^\p{scx=Syriac}$/u,
@@ -34,7 +38,7 @@ function keepEmojiJoiner(chars: readonly string[], index: number): boolean {
   if (!prev || !next || !extendedPictographic.test(next)) return false;
   if (extendedPictographic.test(prev)) return true;
   const before = chars[index - 2];
-  return Boolean(before && emojiJoinerModifier.test(prev) && extendedPictographic.test(before));
+  return Boolean(before && isEmojiJoinerModifier(prev) && extendedPictographic.test(before));
 }
 
 function keepScriptJoiner(chars: readonly string[], index: number): boolean {
