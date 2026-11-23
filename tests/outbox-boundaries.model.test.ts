@@ -9,7 +9,9 @@ import {
   type ConsumedDraftRevision,
   type MessageRecordStorage,
   type PendingSendCommand,
+  type WebSocketClient,
 } from "../packages/client/src/host/index.js";
+import { MockPersonalHost } from "../packages/client/src/mock/mock-personal-host.js";
 import {
   controlledClientSession,
   MemoryPrivateFilesystem,
@@ -18,6 +20,7 @@ import {
   BrowserPageContentPartSchema,
   createId,
   ModelSelectionSchema,
+  type AuthSessionId,
 } from "../packages/core/src/index.js";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { insertDictationText } from "../packages/client/src/dictation/index.js";
@@ -223,7 +226,11 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
       ["replace-cookie", "refresh-view"],
     ],
     async (events) => {
-      let cookie = original.loginId;
+      const mockHost = new MockPersonalHost();
+      const originalSession = createId("authSession");
+      const replacementSession = createId("authSession");
+      let shellSession: AuthSessionId = originalSession;
+      let cookie: AuthSessionId = originalSession;
       const admissions: string[] = [];
       const accepted = new Set<string>();
       let hostCooperates = false;
@@ -233,11 +240,48 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
       const session = controlledClientSession();
       const secondWindow = controlledClientSession();
       const storage = createMessageOutboxStorage(disk().port);
-      session.change({ phase: "recovering" });
       const host = new HttpHostClient({
         baseUrl: "https://host.test",
+        capabilities: [],
+        reconnectBaseDelayMs: 0,
+        webSocketFactory: () => {
+          const socket = mockHost.connect();
+          const send = socket.send.bind(socket);
+          const deliver = socket.deliver.bind(socket);
+          socket.send = (data) => {
+            if (typeof data === "string") {
+              const frame = JSON.parse(data) as Record<string, unknown>;
+              if (frame.type === "client.attach") {
+                const { cursor: _ignored, ...rest } = frame;
+                return send(JSON.stringify(rest));
+              }
+            }
+            send(data);
+          };
+          socket.deliver = (frame) => {
+            if (
+              frame.type === "host.snapshot" &&
+              "subscriptionId" in frame &&
+              frame.subscriptionId === "shell"
+            ) {
+              const snapshot = frame.snapshot as Record<string, unknown>;
+              return deliver({
+                ...frame,
+                snapshot: {
+                  ...snapshot,
+                  session: {
+                    ...(snapshot.session as Record<string, unknown>),
+                    sessionId: shellSession,
+                  },
+                },
+              } as typeof frame);
+            }
+            deliver(frame);
+          };
+          return socket as unknown as WebSocketClient;
+        },
         fetch: async (url, init) => {
-          if (!String(url).endsWith("/commands.dispatch")) return Response.error();
+          if (!String(url).endsWith("/commands.dispatch")) return mockHost.fetch(url, init);
           await wire.promise;
           assert.equal(init?.credentials, "include");
           const headers = new Headers(init?.headers);
@@ -267,7 +311,25 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
           );
         },
       });
-      vi.spyOn(host.connection, "getSnapshot").mockImplementation(session.connection.getSnapshot);
+      const attach = async (nextSession: AuthSessionId, initial = false) => {
+        shellSession = nextSession;
+        const pending = initial
+          ? host.load()
+          : (mockHost.sockets.forEach((socket) => socket.close()), host.reauthenticate());
+        for (
+          let step = 0;
+          step < 10 && host.connection.getSnapshot().scope?.loginId !== nextSession;
+          step++
+        ) {
+          await vi.advanceTimersByTimeAsync(0);
+        }
+        await pending;
+      };
+      await attach(originalSession, true);
+      const originalScope = host.connection.getSnapshot().scope!;
+      const replacementScope = { ...originalScope, loginId: replacementSession };
+      session.change({ scope: originalScope, phase: "recovering" });
+      secondWindow.change({ scope: originalScope });
       const outbox = initializeMessageOutbox(host, {
         session,
         storage,
@@ -277,22 +339,23 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
         for (const event of events) {
           if (event === "enqueue") {
             // Window A recorded the old credential. B's sign-in arrives separately.
-            if (session.connection.getSnapshot().scope?.loginId === original.loginId) {
+            if (session.connection.getSnapshot().scope?.loginId === originalScope.loginId) {
               await outbox.enqueue(message("owned"));
               enqueued = true;
             }
           } else if (event === "replace-cookie") {
-            secondWindow.change({ scope: replacement });
-            cookie = secondWindow.connection.getSnapshot().scope!.loginId;
+            secondWindow.change({ scope: replacementScope });
+            cookie = replacementSession;
           } else if (event === "refresh-view") {
-            session.change({ scope: replacement });
+            await attach(replacementSession);
+            session.change({ scope: replacementScope });
           } else if (event === "admit") {
             wire.resolve();
             await create;
             await vi.advanceTimersByTimeAsync(0);
           } else {
             session.change({ phase: "ready", readyRevision: 2 });
-            if (session.connection.getSnapshot().scope?.loginId === original.loginId) {
+            if (session.connection.getSnapshot().scope?.loginId === originalScope.loginId) {
               create = host
                 .createThread(
                   {
@@ -301,7 +364,7 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
                     harnessInstanceId: createId("harnessInstance"),
                     idempotencyKey: "create-1",
                   },
-                  original,
+                  originalScope,
                 )
                 .catch(() => {});
             }
@@ -309,26 +372,28 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
           }
         }
         assert(
-          !admissions.includes(replacement.loginId),
+          !admissions.includes(replacementScope.loginId),
           "queued under the old login, admitted under the new cookie",
         );
-        assert.deepEqual(await storage.load(replacement), []);
-        const [held] = await storage.load(original);
+        assert.deepEqual(await storage.load(replacementScope), []);
+        const [held] = await storage.load(originalScope);
         if (enqueued) assert.equal(held?.localId, "owned");
         if (held && held.phase !== "rejected") {
           hostCooperates = true;
-          cookie = original.loginId;
-          session.change({ scope: original, phase: "ready", readyRevision: 3 });
+          cookie = originalSession;
+          await attach(originalSession);
+          session.change({ scope: originalScope, phase: "ready", readyRevision: 3 });
           await vi.advanceTimersByTimeAsync(100_000);
           assert.deepEqual([...accepted], ["owned"]);
           outbox.observe([{ id: createId("message"), clientSendKey: "owned" }]);
           await vi.advanceTimersByTimeAsync(0);
-          assert.deepEqual(await storage.load(original), []);
+          assert.deepEqual(await storage.load(originalScope), []);
         }
       } finally {
         wire.resolve();
         outbox.dispose();
         host.dispose();
+        mockHost.dispose();
       }
     },
   );
