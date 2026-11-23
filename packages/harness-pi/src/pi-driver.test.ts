@@ -2463,7 +2463,7 @@ describe("pi Thread naming", () => {
     try {
       // Turn 1 succeeds while auth.json is clean.
       await session.execute(fixture.turn("First turn"));
-      expect(observer.events.some((event) => event.type === "run.completed")).toBe(true);
+      await observer.waitFor("run.completed");
       const commandsAfterTurn1 = (await fixture.capture()).filter(
         (c) => c.type === "prompt",
       ).length;
@@ -2474,11 +2474,9 @@ describe("pi Thread naming", () => {
         join(ambientAgentDir, "auth.json"),
         JSON.stringify({ openai: { key: "!echo leaked", type: "api_key" } }),
       );
-      const countBeforeTurn2 = observer.events.length;
       await session.execute(fixture.turn("Second turn"));
-      const turn2Events = observer.events.slice(countBeforeTurn2);
-      const failed = turn2Events.find((event) => event.type === "run.failed");
-      expect(failed?.data).toMatchObject({
+      const failed = await observer.waitFor("run.failed");
+      expect(failed.data).toMatchObject({
         code: "forbidden",
         message: "This engine is not available for this task.",
         ownerMessage:
