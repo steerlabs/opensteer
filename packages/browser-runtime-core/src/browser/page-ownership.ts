@@ -217,10 +217,10 @@ export class PageOwnership {
   private readonly pages = new WeakMap<BrowserPage, NativePage>();
   private readonly held = new Set<NativePage>();
   private readonly creations = new Set<Creation>();
-  /** Adopted contexts: their handoff, pages still held, and whether the runtime let go of them. */
+  /** Adopted contexts: their handoff, pages still held, attached sessions, and whether released. */
   private readonly contexts = new Map<
     BrowserContext,
-    { unsubscribe: () => void; pages: number; released: boolean }
+    { unsubscribe: () => void; pages: number; released: boolean; sessions: Set<string> }
   >();
   private readonly ended = new Set<string>();
   private readonly lookups = new Set<() => void>();
@@ -248,21 +248,57 @@ export class PageOwnership {
   /** Takes every page `context` hands off, now and later; a popup belongs to its opener's session. */
   adopt(context: BrowserContext): void {
     if (this.contexts.has(context)) return;
-    const adopted: { unsubscribe: () => void; pages: number; released: boolean } = {
+    const adopted: {
+      unsubscribe: () => void;
+      pages: number;
+      released: boolean;
+      sessions: Set<string>;
+    } = {
       unsubscribe: () => undefined,
       pages: 0,
       released: false,
+      sessions: new Set(),
     };
     this.contexts.set(context, adopted);
-    adopted.unsubscribe = context.handOff((page, opener) => {
+    adopted.unsubscribe = context.handOff((page, opener, inferred = false) => {
       const entry = this.track(page);
       if (!entry.context && entry.state !== "absent") {
         entry.context = context;
         adopted.pages++;
       }
       const session = opener ? this.pages.get(opener)?.session : null;
-      if (entry.session === null && session) this.attribute(entry, session);
+      if (
+        entry.session === null &&
+        session &&
+        (!inferred || this.singleSessionIn(context, session))
+      )
+        this.attribute(entry, session);
     });
+  }
+
+  /** Records a session attached to `context` even while all its tabs are asleep. */
+  attachSession(context: BrowserContext, session: string): void {
+    this.adopt(context);
+    this.contexts.get(context)?.sessions.add(session);
+  }
+
+  /** Removes a detached session from `context`'s membership set. */
+  detachSession(context: BrowserContext, session: string): void {
+    this.contexts.get(context)?.sessions.delete(session);
+  }
+
+  private singleSessionIn(context: BrowserContext, session: string): boolean {
+    const adopted = this.contexts.get(context);
+    if (adopted) {
+      for (const attached of adopted.sessions) {
+        if (attached !== session) return false;
+      }
+    }
+    for (const entry of this.held) {
+      if (entry.context === context && entry.session !== null && entry.session !== session)
+        return false;
+    }
+    return true;
   }
 
   /** The context has ended: its handoff is dropped once none of its pages remain held. */
@@ -276,6 +312,7 @@ export class PageOwnership {
   /** The session ended: every page it holds, admitted or not, is asked to end. */
   endSession(session: string, reason: PageEndReason): Promise<void> {
     this.ended.add(session);
+    for (const adopted of this.contexts.values()) adopted.sessions.delete(session);
     for (const creation of this.creations)
       if (creation.session === session) creation.abandoned = true;
     const ending = [...this.held].filter((entry) => entry.session === session);
