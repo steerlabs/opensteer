@@ -21,8 +21,7 @@ export type BridgeSenderAdmission =
 
 /**
  * The one answer to "is this bridge live, and may this sender speak to it": read through the
- * connection's live row (grant, mode, revision and, on a work Home, the organization's policy,
- * in one statement), then who wrote, from the identities linked on its account. The ingress,
+ * connection's live row (grant, mode and revision, in one statement), then who wrote, from the identities linked on its account. The ingress,
  * the bridge's caller and the inbox all ask it; none keeps a query of its own. A message
  * admitted under one revision is refused under another.
  */

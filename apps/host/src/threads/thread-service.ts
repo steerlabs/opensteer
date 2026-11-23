@@ -533,9 +533,7 @@ export class ThreadService {
     const result = await this.options.commands.sendControl({
       ...command,
       requestedBy: actor.userId,
-      ...(actor.kind === "person"
-        ? { auditOwnerStop: true as const }
-        : { authority: threadCallerAuthority(actor) }),
+      ...(actor.kind === "person" ? {} : { authority: threadCallerAuthority(actor) }),
     });
     return {
       wasDuplicate: result.wasDuplicate,

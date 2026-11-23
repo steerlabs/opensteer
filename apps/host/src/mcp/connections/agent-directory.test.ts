@@ -9,15 +9,12 @@ import {
 } from "@opensteer/control-plane-protocol";
 import { createId } from "@opensteer/core";
 import type { AgentConnectionStore } from "@opensteer/database";
-import {
-  agentDirectoryKeyThumbprint,
-  isIdentityStillVerified,
-} from "@opensteer/database/agent-directory-verification";
+import { isIdentityStillVerified } from "@opensteer/database/agent-directory-verification";
 import { generateKeyPairSync } from "node:crypto";
 import { ConnectionOAuth } from "./connection-oauth.js";
 import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet, type JWK } from "jose";
 import { describe, expect, it, vi } from "vitest";
-import { AgentDirectoryCache, matchPlatform } from "./agent-directory.js";
+import { AgentDirectoryCache, matchDirectoryEntry } from "./agent-directory.js";
 
 const accountOrigin = "https://accounts.example.test";
 const baseNow = Date.parse("2026-11-20T12:00:00.000Z");
@@ -63,7 +60,6 @@ function sampleDocument(revision: number, nowMs = baseNow): AgentDirectoryDocume
         id: "errand",
         displayName: "Errand",
         origins: ["https://errand.example"],
-        embedsVia: ["agentpay"],
       },
     ],
   };
@@ -197,7 +193,7 @@ describe("AgentDirectoryCache", () => {
   it("refuses tokens with the wrong purpose or wrong typ header", async () => {
     const key = await makeAccountKey("key-1");
     const wrongPurpose = await signDirectory(sampleDocument(1), key, {
-      tokenUse: "opensteer-work-policy",
+      tokenUse: "opensteer-managed-home-claim",
     });
     const wrongTyp = await signDirectory(sampleDocument(1), key, { typ: "JWT" });
 
@@ -245,7 +241,7 @@ describe("AgentDirectoryCache", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(consent).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
-          identityAtConsent: expect.objectContaining({ kind: "platform", directoryRevision: 1 }),
+          identityAtConsent: expect.objectContaining({ kind: "verified", directoryRevision: 1 }),
         }),
       );
       await pending;
@@ -351,25 +347,25 @@ describe("AgentDirectoryCache", () => {
   });
 });
 
-describe("matchPlatform", () => {
+describe("matchDirectoryEntry", () => {
   const directory = sampleDocument(1);
 
   it("matches an exact HTTPS origin regardless of path or query", () => {
-    expect(matchPlatform(directory, "https://agentpay.example/oauth/callback?foo=1")?.id).toBe(
-      "agentpay",
-    );
-    expect(matchPlatform(directory, "https://eu.agentpay.example/cb")?.id).toBe("agentpay");
+    expect(
+      matchDirectoryEntry(directory, "https://agentpay.example/oauth/callback?foo=1")?.id,
+    ).toBe("agentpay");
+    expect(matchDirectoryEntry(directory, "https://eu.agentpay.example/cb")?.id).toBe("agentpay");
   });
 
   it("refuses different ports, schemes, subdomains, and loopback redirects", () => {
-    expect(matchPlatform(directory, "https://agentpay.example:8443/callback")).toBeNull();
-    expect(matchPlatform(directory, "http://agentpay.example/callback")).toBeNull();
-    expect(matchPlatform(directory, "https://evil.agentpay.example/callback")).toBeNull();
-    expect(matchPlatform(directory, "http://127.0.0.1:4310/callback")).toBeNull();
-    expect(matchPlatform(directory, "http://localhost:4310/callback")).toBeNull();
-    expect(matchPlatform(directory, "https://localhost/callback")).toBeNull();
-    expect(matchPlatform(directory, "http://[::1]:4310/callback")).toBeNull();
-    expect(matchPlatform(null, "https://agentpay.example/callback")).toBeNull();
+    expect(matchDirectoryEntry(directory, "https://agentpay.example:8443/callback")).toBeNull();
+    expect(matchDirectoryEntry(directory, "http://agentpay.example/callback")).toBeNull();
+    expect(matchDirectoryEntry(directory, "https://evil.agentpay.example/callback")).toBeNull();
+    expect(matchDirectoryEntry(directory, "http://127.0.0.1:4310/callback")).toBeNull();
+    expect(matchDirectoryEntry(directory, "http://localhost:4310/callback")).toBeNull();
+    expect(matchDirectoryEntry(directory, "https://localhost/callback")).toBeNull();
+    expect(matchDirectoryEntry(directory, "http://[::1]:4310/callback")).toBeNull();
+    expect(matchDirectoryEntry(null, "https://agentpay.example/callback")).toBeNull();
   });
 });
 
@@ -378,7 +374,7 @@ it.each(["https://localhost.", "https://app.localhost.", "https://[::ffff:7f00:1
   (origin) => {
     expect(AgentDirectoryOriginSchema.safeParse(origin).success).toBe(false);
     expect(
-      matchPlatform(
+      matchDirectoryEntry(
         {
           ...sampleDocument(1),
           entries: [{ id: "platform", displayName: "Platform", origins: [origin] }],
@@ -390,39 +386,25 @@ it.each(["https://localhost.", "https://app.localhost.", "https://[::ffff:7f00:1
 );
 
 describe("isIdentityStillVerified", () => {
-  it("detects when a platform, embedder, or pairing is withdrawn", async () => {
-    const key = { kty: "OKP", crv: "Ed25519", x: "a".repeat(43), kid: "initial" } as const;
-    const document = sampleDocument(2);
-    const baseDirectory = {
-      ...document,
-      entries: document.entries.map((entry) =>
-        entry.id === "errand" ? { ...entry, keys: { keys: [key] } } : entry,
-      ),
-    };
+  it("withdraws verification synchronously once the directory no longer lists the origin it was verified by", () => {
+    const directory = sampleDocument(2);
     const evidence: AgentConnectionIdentityAtConsent = {
-      kind: "platform-and-embedder",
-      platformOrigin: "https://agentpay.example",
-      platformDirectoryId: "agentpay",
-      platformName: "AgentPay",
-      embedderOrigin: "https://errand.example",
-      embedderDirectoryId: "errand",
-      embedderName: "Errand",
-      keyThumbprint: await agentDirectoryKeyThumbprint(key),
+      kind: "verified",
+      origin: "https://agentpay.example",
+      directoryId: "agentpay",
+      displayName: "AgentPay",
       directoryRevision: 2,
       recordedAt: new Date(baseNow).toISOString(),
     };
 
-    expect(await isIdentityStillVerified(evidence, baseDirectory)).toBe(true);
-    expect(await isIdentityStillVerified(evidence, null)).toBeNull();
+    expect(isIdentityStillVerified(evidence, directory)).toBe(true);
+    expect(isIdentityStillVerified(evidence, null)).toBeNull();
 
-    const unpaired: AgentDirectoryDocument = {
-      ...baseDirectory,
+    const withdrawn: AgentDirectoryDocument = {
+      ...directory,
       revision: 3,
-      entries: [
-        baseDirectory.entries[0]!,
-        { id: "errand", displayName: "Errand", origins: ["https://errand.example"] },
-      ],
+      entries: [{ ...directory.entries[0]!, origins: ["https://eu.agentpay.example"] }],
     };
-    expect(await isIdentityStillVerified(evidence, unpaired)).toBe(false);
+    expect(isIdentityStillVerified(evidence, withdrawn)).toBe(false);
   });
 });

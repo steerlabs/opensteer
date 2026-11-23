@@ -1003,7 +1003,7 @@ export function AppShell({
     return (
       <ShellContext value={shell}>
         <ThisDeviceProvider value={thisDevice}>
-          <SetUpThisMac bridge={localBridge} device={thisDevice} hostClient={shell.hostClient} />
+          <SetUpThisMac bridge={localBridge} device={thisDevice} />
         </ThisDeviceProvider>
       </ShellContext>
     );

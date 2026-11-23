@@ -282,7 +282,7 @@ export abstract class IntegrationPlatformStoreBase {
       .select("id")
       .where("id", "=", connectionId)
       .where("userId", "=", userId)
-      .where(liveConnection(this.database))
+      .where(liveConnection())
       .executeTakeFirst();
     if (!connection)
       throw new OpensteerError({ code: "forbidden", message: "Connection is unavailable" });

@@ -94,7 +94,7 @@ const label = (row: NativeSettingsRow) =>
   row.kind === "button" ? `${row.label} — ${row.detail ?? ""}` : row.label;
 
 it("leads with the Home, says where Opensteer lives, then lists every other Device", async () => {
-  await render({ kind: "mac", from: "exposure", organization: null }, async () => {
+  await render({ kind: "mac", from: "exposure" }, async () => {
     const home = section("home");
     expect(home?.title).toBe("Home");
     expect(home?.rows.map(label)).toEqual(["Mac mini — Home · Online"]);
@@ -123,12 +123,8 @@ it("leads with the Home, says where Opensteer lives, then lists every other Devi
   });
 });
 
-it("names a Cloud Computer Home and a work Home for what they are", async () => {
-  await render({ kind: "cloud", from: "account", organization: null }, async () => {
+it("names a Cloud Computer Home for what it is", async () => {
+  await render({ kind: "cloud", from: "account" }, async () => {
     expect(section("home")?.rows.map(label)).toEqual(["Cloud Computer — Home · Always on"]);
-  });
-  await render({ kind: "work", from: "account", organization: "Acme" }, async () => {
-    expect(section("home")?.rows.map(label)).toEqual(["Work Home — Home · Always on"]);
-    expect(section("home")?.footer?.text).toContain("your Acme work Home");
   });
 });

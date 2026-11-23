@@ -54,15 +54,6 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
   const busy = props.busy !== null;
   return (
     <>
-      {props.work === null ? null : (
-        <Text
-          color={color.muted}
-          modifiers={[padding(16, 8, 16, 0)]}
-          style={{ typography: "bodySmall" }}
-        >
-          {props.work}
-        </Text>
-      )}
       {props.mark === null ? null : (
         <Box modifiers={[padding(16, 8, 16, 0)]}>
           <RNHostView matchContents>

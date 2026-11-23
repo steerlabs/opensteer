@@ -1088,7 +1088,7 @@ export async function agentThreadPageForOwner(
   );
 }
 /** A task as the person reads it. Work reading a task reads it through `readTask`. */
-export async function getThreadForOwner(
+export function getThreadForOwner(
   database: Kysely<DatabaseSchema>,
   threadId: ThreadId,
   ownerId: UserId,
@@ -1665,8 +1665,8 @@ export async function updateThreadExecutionSelection(
             id: providerSessionId,
             leaseExpiresAt: null,
             leaseTokenHash: null,
-            // Whether it may use the person's personal context and own lineage, from its first
-            // row: never widen past the previous session or the task's own origin.
+            // Whether it may use the person's personal context or own lineage, from its first row:
+            // never widen from the prior session or from the task's lineage.
             personalContext:
               (selected?.personalContext ?? true) &&
               (await lineagePersonalContext(transaction, thread.originConnectionId)),

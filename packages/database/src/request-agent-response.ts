@@ -25,7 +25,6 @@ import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
 import { assertThreadCaller, type ThreadCallerAuthority } from "./thread-caller.js";
-import { isWorkHomeDatabase } from "./work-home-context.js";
 export const AgentRequestResponderSchema = z.object({
   expectedRevision: PersonalRevisionSchema,
   authority: z.object({
@@ -120,13 +119,6 @@ async function connectionRequestsQuery(
     .leftJoin("agentSessions", "agentSessions.id", "requests.originatingAgentSessionId")
     .selectAll("requests")
     .where("threads.createdBy", "=", authority.userId)
-    .$if(isWorkHomeDatabase(tx), (query) =>
-      query.where((eb) =>
-        eb.exists(
-          eb.selectFrom("workHomePolicy").select("singleton").where("state", "=", "active"),
-        ),
-      ),
-    )
     .where((eb) =>
       eb.exists(
         eb
@@ -159,7 +151,7 @@ async function connectionRequestsQuery(
               .selectFrom("agentConnections")
               .select("agentConnections.id")
               .whereRef("agentConnections.id", "=", "threads.originConnectionId")
-              .where(connectionState(tx), "!=", "ended"),
+              .where(connectionState(), "!=", "ended"),
           ),
         ]),
       ),

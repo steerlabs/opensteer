@@ -52,7 +52,6 @@ export function SetupStep(props: {
         ready === null ? (
           <Pinned
             busy={props.setup.busy}
-            disabled={props.setup.blocked}
             label={props.setup.continueLabel}
             onPress={props.setup.onContinue}
           />
@@ -71,13 +70,6 @@ function SetupForm(props: SetupFormProps): ReactNode {
     <NavigationStack>
       <Toolbar modifiers={[navigationTitle(props.title), navigationBarTitleDisplayMode("large")]}>
         <Form>
-          {props.work === null ? null : (
-            <Section>
-              <Text modifiers={[font({ textStyle: "body" }), foregroundStyle(color.textSoft)]}>
-                {props.work}
-              </Text>
-            </Section>
-          )}
           <Section>
             <Name busy={props.busy} name={props.name} onName={props.onName} />
           </Section>

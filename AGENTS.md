@@ -22,10 +22,11 @@ Stop or Disconnect.
 
 ## What you would get wrong here
 
-1. **One authority rule, one place.** Ownership ∩ organization policy ∩ grant ∩ task mode ∩
-   device switch ∩ target approval, resolved in `packages/database/src/resource-access.ts`
-   (`admitExecution`, `authorizeTarget`). Never decide authority anywhere else, never default to
-   `full-access`, and read a connection's grant and policy in the same statement.
+1. **One authority rule, one place.** Ownership ∩ grant ∩ task mode ∩ device switch ∩ target
+   approval, resolved in `packages/database/src/resource-access.ts` (`admitExecution`,
+   `authorizeTarget`). Never decide authority anywhere else, never default to `full-access`, and
+   read where a connection stands (its grant, mode and state) only through
+   `readConnectionStanding`, in one statement.
 2. **Direct tools of a connected agent go through `AgentSessionService.run()`**
    (`apps/host/src/agent-sessions/agent-session-service.ts`): one recorded operation, the witness
    re-checked before each command, the person asked when the mode says so.
@@ -44,8 +45,8 @@ Stop or Disconnect.
    `packages/protocol/src/personal-wire.test.ts` pins changes, update its baseline in the same
    commit and say why. From the first release on, wire changes that released apps read are
    additive and optional and migrations are expand-only.
-7. **Your own agents' hot paths stay as cheap as before**, and a personal Home runs no
-   organization query (`apps/host/src/runtime/personal-hot-paths.integration.test.ts`).
+7. **Your own agents' hot paths stay as cheap as before**
+   (`apps/host/src/runtime/personal-hot-paths.integration.test.ts`).
 8. **Words.** "connected agent", "your own agents", "Opensteer account", "device" in sentences.
    Never write that an agent cannot see a password or card: Opensteer fills it into the page and
    does not return it; an agent working in that page can read it.

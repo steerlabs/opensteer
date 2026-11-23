@@ -1,8 +1,6 @@
 import type { IphoneAppId } from "../platform/iphone-apps.js";
 import { addIphoneFailureText } from "../iphone-apps/model.js";
 import type { PhoneSetupDraft, PhoneSetupOutcome, PhoneSetupState } from "./phone-setup.js";
-import type { EffectiveWorkPolicy } from "@opensteer/control-plane-protocol";
-import { workEnrollNotice, workEnrollRefusal } from "@opensteer/client/host";
 
 export interface SetupSwitch {
   readonly key: "browser" | "notifications" | IphoneAppId;
@@ -12,21 +10,6 @@ export interface SetupSwitch {
   /** The OS said no after Continue: the switch reads off and offers Settings. */
   readonly denied: boolean;
   readonly disabled: boolean;
-}
-
-/**
- * What a phone joining a work Home is told before it joins: whose Home it is, or that its
- * organization keeps other devices out. Continue waits until the Home's policy is known.
- */
-export function joinWorkLine(policy: EffectiveWorkPolicy | null | undefined): {
-  readonly work: string | null;
-  readonly blocked: boolean;
-} {
-  const refusal = workEnrollRefusal(policy);
-  return {
-    work: workEnrollNotice(policy) ?? refusal,
-    blocked: policy === undefined || refusal !== null,
-  };
 }
 
 export interface SetupFormProps {
@@ -47,12 +30,6 @@ export interface SetupFormProps {
   readonly onNotNow: (() => void) | null;
   readonly onOpenSettings: () => void;
   readonly disclosure: string;
-  /**
-   * On a work Home, said before this phone joins: whose Home it is, or why its organization
-   * keeps it out (then `blocked`).
-   */
-  readonly work: string | null;
-  readonly blocked: boolean;
 }
 
 const appCopy: Readonly<Record<IphoneAppId, { readonly title: string; readonly detail: string }>> =

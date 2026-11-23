@@ -294,9 +294,9 @@ describe("who a connected agent is", () => {
     return container;
   }
 
-  it("names a verified pair, a self-given name as self-given, and an app on this computer", async () => {
+  it("names a verified agent, a self-given name as self-given, and an app on this computer", async () => {
     expect((await agentPage(6)).querySelector(".agent-who--verified")?.textContent).toContain(
-      "Verified: “Errand via AgentPay”",
+      "Verified: “AgentPay”",
     );
     act(() => page?.unmount());
     const grok = await agentPage(1);

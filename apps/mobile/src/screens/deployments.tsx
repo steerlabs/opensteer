@@ -87,7 +87,7 @@ import { DeploymentMenu } from "./deployment-menu.js";
 import { phoneLeaves } from "./device-page-model.js";
 import { useSetupScanner } from "./setup-scanner.js";
 import { Welcome } from "./welcome.js";
-import { useCloudComputerIds, useWorkBadges } from "./work-home.js";
+import { useCloudComputerIds } from "./cloud-computer-ids.js";
 import { deploymentsTitle } from "./deployments-title.js";
 
 const signedInStatuses: ReadonlySet<DeploymentStatus> = new Set<DeploymentStatus>([
@@ -108,8 +108,6 @@ export const DeploymentListRow = memo(function DeploymentListRow(props: {
   readonly onRemove: (row: DeploymentRow) => void;
   readonly onSignOut: (row: DeploymentRow) => void;
   readonly row: DeploymentRow;
-  /** "Work · {organization}" when an organization pays for and governs this Home. */
-  readonly work?: string | undefined;
   /** The Account says this Home is an Opensteer Cloud Computer. */
   readonly cloud?: boolean;
 }): ReactNode {
@@ -151,11 +149,6 @@ export const DeploymentListRow = memo(function DeploymentListRow(props: {
         <View style={styles.copy}>
           {/* A Home's name wraps: cut to "Mock…" at a large text size, two Homes read alike. */}
           <AppText role="title">{row.name}</AppText>
-          {props.work ? (
-            <AppText numberOfLines={1} role="caption" tone="muted">
-              {props.work}
-            </AppText>
-          ) : null}
           <View style={styles.statusLine}>
             <StatusDot
               live={row.status === "connecting" || row.status === "reconnecting"}
@@ -379,7 +372,6 @@ export function DeploymentsScreen(): ReactNode {
   const { account, directory, rows, selection } = useMobileState();
   const enrolledIn = useIphoneAppsState(useIphoneApps()).snapshot.enrollment?.deploymentId ?? null;
   const attention = useOtherComputersAttention(rows, selection.deploymentId);
-  const workBadges = useWorkBadges();
   const cloudIds = useCloudComputerIds();
   const switching = route.name === "DeploymentSwitcher";
   // The Settings page that sent a person here, said in one sentence above the list.
@@ -722,7 +714,6 @@ export function DeploymentsScreen(): ReactNode {
               onRemove={confirmRemove}
               onSignOut={confirmSignOut}
               row={row}
-              work={workBadges.get(row.deploymentId)}
               cloud={cloudIds.has(row.deploymentId)}
             />
           ))}

@@ -17,6 +17,7 @@ import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import { chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
 import type { LineageAttempt } from "./connection-disconnect.js";
 import { replayMigrations } from "./migration-replay.test-support.js";
+import { removePlatformVerificationMigrationName } from "./platform-verification-removal-migration.js";
 import { chatEndedMessage, lineagePersonalContext } from "./resource-access.js";
 import type { DatabaseSchema } from "./schema.js";
 import {
@@ -64,9 +65,17 @@ async function restoreRoutes(database: Kysely<DatabaseSchema>): Promise<void> {
       await sql.raw(part).execute(database);
 }
 
-/** Runs migration `0109_chat_routes_end_contract` once more, and only it. */
+/**
+ * Runs migration `0109_chat_routes_end_contract` once more, and after it the two that change the
+ * same rows (organizations removed, platform verification removed), as an update does: what these
+ * tests seed in the old shape is read back in today's.
+ */
 async function replayFromChatRoutesEnd(database: Kysely<DatabaseSchema>): Promise<void> {
-  await replayMigrations(database, chatRoutesEndMigrationName);
+  await replayMigrations(
+    database,
+    chatRoutesEndMigrationName,
+    removePlatformVerificationMigrationName,
+  );
 }
 
 describeStore("the update ends chat routes, and the work they ran keeps what it had", (it) => {
@@ -930,8 +939,8 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
     expect(cleanedFallback.label).toContain(persian);
     expect(cleanedFallback.label).toContain(england);
     expect(cleanedFallback.identityAtConsent).toMatchObject({
-      platformName: outsideName(rloWithWriting, 100),
-      embedderName: "Agent",
+      kind: "verified",
+      displayName: outsideName(rloWithWriting, 100),
     });
 
     const cleanedEmoji = listedAgents.find(({ id }) => id === emojiAgent.id)!;

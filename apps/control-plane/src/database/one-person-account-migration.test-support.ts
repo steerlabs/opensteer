@@ -1,7 +1,8 @@
 import { sql } from "kysely";
 import type { Migration } from "kysely/migration";
 
-export const organizationsMigration: Migration = {
+/** The organizations migration as it was before organizations were removed: a database at that shape. */
+export const organizationsMigrationBeforeRemoval: Migration = {
   async up(database) {
     await sql`
       create table public.organizations (
