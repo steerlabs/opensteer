@@ -3985,6 +3985,250 @@ describe("RunnerRuntime", () => {
       }
     });
 
+    it("waits for a warm shared engine's stop past grace before resuming after a warm-key change", async () => {
+      const stopSettled = deferred<void>();
+      let resumeCalls = 0;
+      let sessionIndex = 0;
+      const driver = new FakeHarnessDriver("test-driver", () => {
+        const index = ++sessionIndex;
+        const stream = new BoundedEventStream<HarnessEvent>({ maxBytes: 100_000, maxItems: 100 });
+        return {
+          providerSessionReference: "shared-warm-session",
+          engineProcess: "shared" as const,
+          events: stream,
+          usable: true,
+          async execute(): Promise<void> {
+            publish(stream, { data: { status: "running" }, type: "run.started" });
+            publish(stream, { data: { status: "completed" }, type: "run.completed" });
+          },
+          async interrupt(): Promise<void> {},
+          async resolveRequest(): Promise<void> {},
+          async releaseForReuse(): Promise<boolean> {
+            return true;
+          },
+          rebind(): void {},
+          async stop(): Promise<void> {
+            if (index === 1) await stopSettled.promise;
+            stream.close();
+          },
+        };
+      });
+      const create = driver.create.bind(driver);
+      driver.create = async (input) => {
+        const adapter = await create(input);
+        return {
+          ...adapter,
+          capabilities: {
+            ...adapter.capabilities,
+            sharedEngineProcess: true,
+            warmReuse: true,
+          },
+          resumeSession: async (reference, context) => {
+            resumeCalls += 1;
+            return adapter.resumeSession(reference, context);
+          },
+        };
+      };
+      const registry = new HarnessRegistry();
+      registry.registerDriver(driver);
+      const environmentId = createId("environment");
+      const runtime = runtimeWithLeaseGrants({
+        nativeFsHelperBinary: testNativeFsHelperBinary,
+        nodeExecutable: process.execPath,
+        agentSkills: testAgentSkills,
+        plugins: noPlugins,
+        bootId: "boot-test",
+        browserHarnessExecutable: testBrowserHarnessExecutable,
+        deploymentShape: testDeploymentShape,
+        environmentId,
+        harnesses: registry,
+        maxConcurrentRuns: 2,
+        dataDirectory: dirname(testPrivateStateRoot),
+        privateStateDirectory: testPrivateStateRoot,
+        projectContinuationIdentity,
+        agentHome: {
+          folder: async ({ path }: { readonly path: string }) => path,
+          prepare: async () => ({ instructions: undefined, path: "/runner/runs/test/workspace" }),
+        },
+        containment: new ExecutionContainment({
+          bootId: "boot-test",
+          dataDirectory: dirname(testPrivateStateRoot),
+          listProcesses: async () => [],
+        }),
+        stopTimings: { graceMs: 20, sharedEngineSettleMs: 10_000 },
+      });
+      const messages: RunnerOperationalReport[] = [];
+      const sink: RunnerMessageSink = {
+        send: async (message) => {
+          messages.push(message);
+        },
+      };
+      const first = executeCommand(environmentId);
+      await reconcile(registry, first);
+      try {
+        await runtime.handleCommand(first, sink);
+        await waitUntil(() => runtime.activeRunIds().length === 0);
+
+        // Changing accessMode changes the warm key, forcing the warm session to retire.
+        const second = RunnerCommandSchema.parse({
+          ...first,
+          commandId: createId("command"),
+          context: {
+            ...first.context,
+            accessMode: "approval-required",
+            providerSessionReference: "shared-warm-session",
+            runId: createId("run"),
+          },
+        }) as typeof first;
+        await runtime.handleCommand(second, sink);
+        // Past graceMs (20ms), session 1's stop has not settled yet: resumeSession must wait.
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        expect(resumeCalls).toBe(0);
+
+        stopSettled.resolve();
+        await waitUntil(() => resumeCalls === 1);
+        await waitUntil(() => runtime.activeRunIds().length === 0);
+      } finally {
+        stopSettled.resolve();
+        await runtime.close();
+      }
+    });
+
+    it("holds a stopped warm shared-engine thread once and does not release it when processes exit before session stop settles", async () => {
+      const stopSettled = deferred<void>();
+      let runCount = 0;
+      let containmentUnknown = false;
+      const interrupted = deferred<void>();
+      const driver = new FakeHarnessDriver("test-driver", () => {
+        const stream = new BoundedEventStream<HarnessEvent>({ maxBytes: 100_000, maxItems: 100 });
+        return {
+          providerSessionReference: "shared-warm-hold",
+          engineProcess: "shared" as const,
+          events: stream,
+          usable: true,
+          async execute(): Promise<void> {
+            runCount += 1;
+            publish(stream, { data: { status: "running" }, type: "run.started" });
+            if (runCount === 1) {
+              publish(stream, { data: { status: "completed" }, type: "run.completed" });
+              return;
+            }
+            await interrupted.promise;
+            publish(stream, { data: { status: "interrupted" }, type: "run.interrupted" });
+          },
+          async interrupt(): Promise<void> {
+            interrupted.resolve();
+          },
+          async resolveRequest(): Promise<void> {},
+          async releaseForReuse(): Promise<boolean> {
+            return true;
+          },
+          rebind(): void {},
+          async stop(): Promise<void> {
+            interrupted.resolve();
+            await stopSettled.promise;
+            stream.close();
+          },
+        };
+      });
+      const create = driver.create.bind(driver);
+      driver.create = async (input) => {
+        const adapter = await create(input);
+        return {
+          ...adapter,
+          capabilities: {
+            ...adapter.capabilities,
+            sharedEngineProcess: true,
+            warmReuse: true,
+          },
+        };
+      };
+      const registry = new HarnessRegistry();
+      registry.registerDriver(driver);
+      const environmentId = createId("environment");
+      const runtime = runtimeWithLeaseGrants({
+        nativeFsHelperBinary: testNativeFsHelperBinary,
+        nodeExecutable: process.execPath,
+        agentSkills: testAgentSkills,
+        plugins: noPlugins,
+        bootId: "boot-test",
+        browserHarnessExecutable: testBrowserHarnessExecutable,
+        deploymentShape: testDeploymentShape,
+        environmentId,
+        harnesses: registry,
+        maxConcurrentRuns: 2,
+        dataDirectory: dirname(testPrivateStateRoot),
+        privateStateDirectory: testPrivateStateRoot,
+        projectContinuationIdentity,
+        agentHome: {
+          folder: async ({ path }: { readonly path: string }) => path,
+          prepare: async () => ({ instructions: undefined, path: "/runner/runs/test/workspace" }),
+        },
+        containment: new ExecutionContainment({
+          bootId: "boot-test",
+          dataDirectory: dirname(testPrivateStateRoot),
+          listProcesses: async () => {
+            if (containmentUnknown) throw new Error("process scan temporarily unavailable");
+            return [];
+          },
+        }),
+        stopTimings: { graceMs: 20, sharedEngineSettleMs: 50 },
+      });
+      const messages: RunnerOperationalReport[] = [];
+      const sink: RunnerMessageSink = {
+        send: async (message) => {
+          messages.push(message);
+        },
+      };
+      const first = executeCommand(environmentId);
+      await reconcile(registry, first);
+      try {
+        await runtime.handleCommand(first, sink);
+        await waitUntil(() => runtime.activeRunIds().length === 0);
+
+        const second = RunnerCommandSchema.parse({
+          ...first,
+          commandId: createId("command"),
+          context: {
+            ...first.context,
+            providerSessionReference: "shared-warm-hold",
+            runId: createId("run"),
+          },
+        }) as typeof first;
+        await runtime.handleCommand(second, sink);
+        await waitUntil(() => runCount === 2);
+
+        // Both process containment AND session.stop() fail to settle within the bound.
+        containmentUnknown = true;
+        await runtime.handleCommand(stopOf(second), sink);
+        await waitUntil(() => runtime.activeRunIds().length === 0);
+
+        // Now processes become provably gone, while session.stop() is STILL pending.
+        containmentUnknown = false;
+        // Wait past uncontainedRetryMs (5_000 ms) so any duplicate timer would fire.
+        await new Promise((resolve) => setTimeout(resolve, 5_300));
+        expect(await runtime.handleCommand(nextTurn(second), sink)).toEqual({
+          status: "rejected",
+          error: {
+            code: "conflict",
+            message: "The Thread's previous Run is still stopping",
+            retryable: true,
+          },
+        });
+
+        // Once session.stop() finally settles, the hold releases cleanly.
+        stopSettled.resolve();
+        await vi.waitFor(async () =>
+          expect(await runtime.handleCommand(nextTurn(second), sink)).toEqual({
+            status: "accepted",
+          }),
+        );
+      } finally {
+        stopSettled.resolve();
+        await runtime.close();
+      }
+    }, 15_000);
+
     it("says the end is unverified and holds the task when the stop outlasts its bound", async () => {
       const stopped = deferred<void>();
       const f = sharedStopFixture({

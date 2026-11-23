@@ -449,11 +449,18 @@ export class RunnerRuntime {
   /** Engines kept running between a Thread's Runs. */
   readonly #warm: WarmEnginePool;
   /**
-   * Threads whose last execution left processes the Runner could not prove
-   * gone, with the containment scope of those processes. Nothing new starts on
-   * one until they are.
+   * Threads whose last execution left processes or a shared engine session the
+   * Runner could not prove ended. Nothing new starts on one until every pending
+   * scope and engine stop for it has settled.
    */
-  readonly #uncontainedThreads = new Map<ThreadId, string>();
+  readonly #uncontainedThreads = new Map<
+    ThreadId,
+    {
+      readonly scopes: Set<string>;
+      readonly engineStops: Set<{ readonly done: boolean }>;
+      readonly cancel: () => void;
+    }
+  >();
   /**
    * Runs that have ended but whose last events the Host has not acknowledged,
    * oldest first. They are kept for replay until it does, within
@@ -2071,8 +2078,9 @@ export class RunnerRuntime {
   }
 
   /**
-   * Keeps a Thread closed to new executions until the processes its last Run
-   * left behind are proven gone, retrying their termination meanwhile.
+   * Keeps a Thread closed to new executions until everything its last Run or
+   * retired warm engine left behind — Run-scoped processes and any shared
+   * engine stop — has settled. Each Thread is held once under one retry loop.
    */
   #holdUncontainedThread(
     threadId: ThreadId,
@@ -2080,30 +2088,99 @@ export class RunnerRuntime {
     executionId: string,
     engineStopping?: Promise<void>,
   ): void {
-    this.#uncontainedThreads.set(threadId, executionId);
     this.#logger?.error("A stopped Run left processes the Runner could not end", {
       ...(runId ? { runId } : {}),
       threadId,
     });
+    const existing = this.#uncontainedThreads.get(threadId);
+    const scopes = existing ? new Set(existing.scopes) : new Set<string>();
+    scopes.add(executionId);
+    const engineStops = existing
+      ? new Set(existing.engineStops)
+      : new Set<{ readonly done: boolean }>();
+    if (engineStopping) engineStops.add(settledFlag(engineStopping));
+    existing?.cancel();
+    let checking = false;
+    const hold = {
+      scopes,
+      engineStops,
+      cancel: () => clearInterval(retry),
+    };
+    this.#uncontainedThreads.set(threadId, hold);
     // A shared engine still stopping is the rest of what must be proven; its
     // stop settling is the late evidence, looked at as soon as it arrives.
-    const engineStopped = engineStopping ? settledFlag(engineStopping) : { done: true };
     const check = () => {
-      if (!engineStopped.done) return;
-      void this.#containment
-        .terminate(executionId)
-        .catch(() => "unknown" as const)
-        .then((termination) => {
-          if (termination !== "proven") return;
-          clearInterval(retry);
-          if (this.#uncontainedThreads.get(threadId) === executionId) {
-            this.#uncontainedThreads.delete(threadId);
-          }
-        });
+      if (checking || this.#uncontainedThreads.get(threadId) !== hold) return;
+      for (const stop of hold.engineStops) {
+        if (!stop.done) return;
+      }
+      checking = true;
+      void Promise.all(
+        [...hold.scopes].map(async (scope) => {
+          const termination = await this.#containment
+            .terminate(scope)
+            .catch(() => "unknown" as const);
+          if (termination === "proven") hold.scopes.delete(scope);
+        }),
+      ).finally(() => {
+        checking = false;
+        if (this.#uncontainedThreads.get(threadId) !== hold) return;
+        for (const stop of hold.engineStops) {
+          if (!stop.done) return;
+        }
+        if (hold.scopes.size > 0) return;
+        hold.cancel();
+        this.#uncontainedThreads.delete(threadId);
+      });
     };
     const retry = setInterval(check, uncontainedRetryMs);
     retry.unref?.();
     void engineStopping?.then(check);
+  }
+
+  /**
+   * Ends an engine session and every Run-scoped process under `scope`,
+   * answering proven or not proven on evidence:
+   * - for a shared engine: the session's stop settled and its Run-scoped processes are gone;
+   * - for a dedicated engine: its process scope is gone.
+   * Used by every path: Stop, Run end, warm retire, pool eviction and warm-key change.
+   */
+  async #endEngineSession(input: {
+    readonly scope: string;
+    readonly session?: HarnessSession | undefined;
+    readonly opening?: Promise<HarnessSession> | undefined;
+    readonly sharedEngineProcess?: boolean | undefined;
+    readonly abortLifetime?: (() => void) | undefined;
+  }): Promise<
+    | { readonly proven: true; readonly termination: "proven" }
+    | {
+        readonly proven: false;
+        readonly termination: Exclude<TerminationProof, "proven">;
+        readonly engineStopping?: Promise<void> | undefined;
+      }
+  > {
+    let asked: Promise<void> | undefined;
+    const termination = await this.#containment
+      .terminate(input.scope, async () => {
+        input.abortLifetime?.();
+        asked = input.session ? stopEvidence(input.session) : undefined;
+        if (asked) await settleBy(asked, Date.now() + this.#stopGraceMs);
+      })
+      .catch(() => "unknown" as const);
+    const pending = await this.#settleEngineStop(
+      input.session,
+      input.opening,
+      asked,
+      input.sharedEngineProcess === true,
+    );
+    if (termination === "proven" && !pending) {
+      return { proven: true, termination: "proven" };
+    }
+    return {
+      proven: false,
+      termination: pending ? "unknown" : termination === "proven" ? "unknown" : termination,
+      ...(pending ? { engineStopping: pending.stopping } : {}),
+    };
   }
 
   /**
@@ -3290,52 +3367,44 @@ export class RunnerRuntime {
       // Run's authority may stay lent while its engine's reuse is weighed.
       const machineAccessRelay = active.machineAccessRelay;
       delete active.machineAccessRelay;
-      await withinStopGrace(machineAccessRelay?.suspend());
+      if (machineAccessRelay) {
+        await settleBy(
+          machineAccessRelay.suspend().catch(() => undefined),
+          Date.now() + executionStopGraceMs,
+        );
+      }
       active.fileAbort.abort();
-      await withinStopGrace(Promise.allSettled(active.fileTasks));
-      await withinStopGrace(Promise.allSettled(active.steerTasks));
+      await settleBy(Promise.allSettled(active.fileTasks), Date.now() + executionStopGraceMs);
+      await settleBy(Promise.allSettled(active.steerTasks), Date.now() + executionStopGraceMs);
       // A refresh still on its way changes nothing once the execution is over.
       active.credentialLifetime.abort();
       // A warm engine the Run released waits for the Thread's next Run, on
       // proof that nothing of this Run lives on in it.
       const kept = warmEngine ? await this.#keepWarmEngine(active, warmEngine, terminal) : false;
       let termination: TerminationProof = "proven";
-      // The session's stop, asked for once and then waited for below.
-      const stop: { session?: Promise<void> | undefined } = {};
+      let engineStopping: Promise<void> | undefined;
       if (warmEngine && !kept) {
-        // Everything the engine held ends with it; an unproven end holds the Thread.
-        termination = await this.#retireWarmEngine(warmEngine, stop);
+        // Everything the engine held ends with it; an unproven end holds the Thread once below.
+        const ended = await this.#retireWarmEngine(warmEngine, { holdThread: false });
+        termination = ended.termination;
+        engineStopping = ended.proven ? undefined : ended.engineStopping;
       } else if (!kept) {
         // Whatever the engine left running ends with its Run, including what
         // it orphans as it stops. The Thread takes no new execution until all
         // of it is proven gone.
-        termination = await this.#containment
-          .terminate(active.containmentScope, () =>
-            withinStopGrace(
-              (stop.session = active.session && stopEvidence(active.session)),
-              this.#stopGraceMs,
-            ),
-          )
-          .catch(() => "unknown" as const);
+        const ended = await this.#endEngineSession({
+          opening,
+          scope: active.containmentScope,
+          session: active.session,
+          sharedEngineProcess,
+        });
+        termination = ended.termination;
+        engineStopping = ended.proven ? undefined : ended.engineStopping;
         await plugins?.cleanup().catch(() => undefined);
         await browserCdpRelay?.close().catch(() => undefined);
         await credentialProxy?.close().catch(() => undefined);
         await machineAccessSetup?.close().catch(() => undefined);
       }
-      // A shared engine's own work leaves no process in the Run's scope: the
-      // only evidence it ended is its session's stop settling. The processes
-      // were ended on time above; only the Run's end and its Thread wait.
-      const engineStopping = kept
-        ? undefined
-        : (
-            await this.#settleEngineStop(
-              warmEngine?.session ?? active.session,
-              opening,
-              stop.session,
-              sharedEngineProcess,
-            )
-          )?.stopping;
-      if (engineStopping) termination = "unknown";
       await this.#attachmentCache?.clear(context.threadId).catch(() => undefined);
       if (internalBinding) {
         this.#sessions.release({
@@ -3394,7 +3463,7 @@ export class RunnerRuntime {
         });
       this.#runs.delete(context.runId);
       this.#activityChanged();
-      if (termination === "unknown" && (!warmEngine || engineStopping)) {
+      if (termination === "unknown") {
         this.#holdUncontainedThread(
           context.threadId,
           context.runId,
@@ -3457,26 +3526,24 @@ export class RunnerRuntime {
     return true;
   }
 
-  /** Ends a warm engine and everything it held, proving its processes gone. */
+  /** Ends a warm engine and everything it held, proving its end on evidence. */
   async #retireWarmEngine(
     engine: WarmEngine,
-    stop: { session?: Promise<void> | undefined } = {},
-  ): Promise<TerminationProof> {
-    const termination = await this.#containment
-      .terminate(engine.scope, () => {
-        engine.lifetime.abort(new Error("Warm engine retired"));
-        stop.session = stopEvidence(engine.session);
-        return withinStopGrace(stop.session, this.#stopGraceMs);
-      })
-      .catch(() => "unknown" as const);
+    options?: { readonly holdThread?: boolean },
+  ): Promise<Awaited<ReturnType<RunnerRuntime["#endEngineSession"]>>> {
+    const ended = await this.#endEngineSession({
+      abortLifetime: () => engine.lifetime.abort(new Error("Warm engine retired")),
+      scope: engine.scope,
+      session: engine.session,
+    });
     await engine.plugins.cleanup().catch(() => undefined);
     await engine.browserCdpRelay.close().catch(() => undefined);
     await engine.credentialProxy.close().catch(() => undefined);
     await engine.machineAccess?.close().catch(() => undefined);
-    if (termination === "unknown") {
-      this.#holdUncontainedThread(engine.threadId, null, engine.scope);
+    if (!ended.proven && options?.holdThread !== false) {
+      this.#holdUncontainedThread(engine.threadId, null, engine.scope, ended.engineStopping);
     }
-    return termination;
+    return ended;
   }
 
   async #consumeHarnessEvents(
@@ -4144,22 +4211,6 @@ function settledFlag(work: Promise<unknown>): { readonly done: boolean } {
     () => (flag.done = true),
   );
   return flag;
-}
-
-async function withinStopGrace(
-  work: Promise<unknown> | undefined,
-  graceMs = executionStopGraceMs,
-): Promise<void> {
-  if (!work) return;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  await Promise.race([
-    work.catch(() => undefined),
-    new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, graceMs);
-      timer.unref?.();
-    }),
-  ]);
-  clearTimeout(timer);
 }
 
 /**
