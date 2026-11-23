@@ -270,14 +270,9 @@ export async function failNodeStop(
       .where("node.id", "=", payload.nodeId)
       .where("runs.id", "=", command.runId)
       .executeTakeFirstOrThrow();
-    await tx
-      .updateTable("executionNodes")
-      .set({
-        stopping: false,
-      })
-      .where("id", "=", node.id)
-      .execute();
-    await publishExecutionNode(tx, node.id);
+    // In the lock order's ranks: the Run (held above), its task (the node's publication writes the
+    // task's transcript), the command, then the node.
+    await lockThreadRow(tx, node.threadId);
     await tx
       .updateTable("commands")
       .set({
@@ -291,6 +286,14 @@ export async function failNodeStop(
       })
       .where("id", "=", commandId)
       .execute();
+    await tx
+      .updateTable("executionNodes")
+      .set({
+        stopping: false,
+      })
+      .where("id", "=", node.id)
+      .execute();
+    await publishExecutionNode(tx, node.id);
     return;
   });
 }
