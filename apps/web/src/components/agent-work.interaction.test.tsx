@@ -44,7 +44,7 @@ describe("a task a connected agent works itself", () => {
     expect(activity.textContent).toContain("Connected agent · https://claude.ai");
     expect(activity.textContent).toContain("Listed tabs in Travel on Studio Mac");
     expect(activity.textContent).toContain("Reading only");
-    expect(activity.textContent).toContain("Allowed by Auto");
+    expect(activity.textContent).toContain("Allowed by you");
     expect(activity.textContent).toContain("Uncertain");
     expect(activity.textContent).toContain("can’t say whether this happened");
     const dispatch = vi.spyOn(client, "dispatch");
