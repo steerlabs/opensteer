@@ -3339,6 +3339,9 @@ class ElectronDebuggerHub {
   ): Promise<unknown> {
     const generation = this.#rendererGeneration;
     const key = castKey(parameters);
+    // A channel closed while its start was queued does nothing: it joins nothing, resolves
+    // nothing and sends Chromium nothing, on every branch below.
+    this.#assertOpen(channel);
     // Nothing read before an await is used after it unless read again.
     const running = () =>
       [...this.#casts].find(
@@ -3455,6 +3458,14 @@ class ElectronDebuggerHub {
     } catch (error) {
       if (cast.run === run) cast.run = null;
       const lane = run.lane;
+      // A frame of this run that came before its start failed was handed to no one: Chromium
+      // waits for its ack, which it gets before the run is forgotten.
+      if (run.unhanded && lane && run.frameSession !== null && run.awaitingAck > 0)
+        void this.#command(
+          "Page.screencastFrameAck",
+          { sessionId: run.frameSession },
+          lane.id,
+        ).catch(() => undefined);
       run.lane = null;
       // A renderer change or the debugger's detach has ended every cast already.
       const interrupted = generation !== this.#rendererGeneration;

@@ -2254,6 +2254,80 @@ describe("Electron debugger teardown", () => {
       await hub.browser.close();
     });
 
+    // The re-check of 963f808d0..fb245664c, finding 2: a closed channel does nothing, on every
+    // branch of its start, though the start was queued while it was open.
+    it("does nothing for a closed channel's queued ask for the cast it already owns", async () => {
+      const hub = await hubPage("77");
+      ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const other = await hub.page.agentCdp();
+      const agentSaw = seen(agent);
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("view 1", 1));
+      // Another channel's start holds the queue; the agent asks again, then closes.
+      const start = hub.hold("Page.startScreencast");
+      const holding = other.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      const asking = agent.send("Page.startScreencast", view);
+      const releasing = agent.detach();
+      start.release();
+      start.replies[0]!.resolve({});
+      await holding;
+      await expect(asking).rejects.toThrow(/closed/u);
+      await releasing;
+      expect(agentSaw).toEqual(["view 1"]);
+      await hub.browser.close();
+    });
+
+    it("sends Chromium nothing for a closed sole owner's queued ask for new settings", async () => {
+      const hub = await hubPage("78");
+      ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", small);
+      const starts = hub.sent("Page.startScreencast").length;
+      // The person's restart holds the queue; the agent, alone in its cast, asks for new
+      // settings, then closes.
+      const start = hub.hold("Page.startScreencast");
+      const holding = person.send("Page.startScreencast", { ...view, maxWidth: 1_200 });
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      const asking = agent.send("Page.startScreencast", { ...small, maxWidth: 640 });
+      const releasing = agent.detach();
+      start.release();
+      start.replies[0]!.resolve({});
+      await holding;
+      await expect(asking).rejects.toThrow(/closed/u);
+      await releasing;
+      // The person's restart alone reached Chromium.
+      expect(hub.sent("Page.startScreencast")).toHaveLength(starts + 1);
+      await hub.browser.close();
+    });
+
+    it("acks a frame kept for a start that then fails", async () => {
+      const hub = await hubPage("79");
+      ownSessions(hub, { refuseStartIn: "cast-1" });
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      await person.send("Page.startScreencast", view);
+      const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+      hub.contents.debugger.sendCommand.mockImplementation(
+        (method: string, parameters?: Record<string, unknown>, session?: string) => {
+          // Chromium sends the cast's first frame, then refuses its start.
+          if (method === "Page.startScreencast" && session === "cast-1")
+            hub.deliver("Page.screencastFrame", frame("small 1", 1), "cast-1");
+          return answer(method, parameters, session);
+        },
+      );
+      await expect(agent.send("Page.startScreencast", small)).rejects.toThrow();
+      expect(hub.sent("Page.screencastFrameAck")).toEqual([
+        ["Page.screencastFrameAck", { sessionId: 1 }, "cast-1"],
+      ]);
+      await hub.browser.close();
+    });
+
     // Run on e7080ea31, follow-stale-dialog-answers: the second tab, answered, was pictured no
     // more. The smoke's order on that tab: opened and pictured, its cast started again in a new
     // size, then left before that start's first frame; a dialog opens there and is answered; its
