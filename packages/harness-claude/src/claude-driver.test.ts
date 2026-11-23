@@ -5289,6 +5289,31 @@ describe("how Claude Code reaches the network", () => {
     }
   });
 
+  it("scrubs a five-character token while keeping a plain proxy address visible", async () => {
+    const proxy = "http://proxy.corp:8080";
+    const token = "t0k3n";
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        yield initMessage(providerSessionId(parameters.options));
+        throw new Error(`connect to ${proxy} failed with token ${token}`);
+      }),
+    );
+    const fixture = await openSession(sdk, {
+      environment: { HTTPS_PROXY: proxy, REFRESH_TOKEN: token },
+    });
+    try {
+      const observer = observe(fixture.session.events);
+      await send(fixture.session, "Hello").catch(() => undefined);
+      await fixture.session.stop();
+      await observer.done;
+      const failure = observer.events.find((event) => event.type === "run.failed");
+      expect(failure?.data.message).toContain(`connect to ${proxy} failed with token [REDACTED]`);
+      expect(failure?.data.message).not.toContain(token);
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
   it("scrubs a configured proxy password printed separately in a Claude Code failure", async () => {
     const proxy = "http://alice:p@ss-word@proxy.invalid:8080";
     const sdk = new FakeSdk((parameters) =>

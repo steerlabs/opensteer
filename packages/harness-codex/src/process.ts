@@ -1,6 +1,6 @@
 import { supervisedExitCode } from "@opensteer/shared/processControl";
 import {
-  credentialNamePattern,
+  engineDiagnosticSecrets,
   networkCredentialSecrets,
   redactNetworkCredentials,
   safeMessage,
@@ -101,10 +101,7 @@ export class CodexStdioClient {
     this.#onRequestTimeout = options.onRequestTimeout;
     this.#redactions = options.redactions;
     this.#stderr = new ByteTail(options.config.maxStderrBytes);
-    this.#stderrSecrets = Object.entries(options.environment)
-      .filter(([name, value]) => credentialNamePattern.test(name) && value.length >= 4)
-      .map(([, value]) => value)
-      .sort((left, right) => right.length - left.length);
+    this.#stderrSecrets = engineDiagnosticSecrets(options.environment, 4);
     const launch = {
       args: [
         ...options.launch.arguments,

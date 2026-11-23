@@ -91,12 +91,13 @@ export function networkCredentialSecrets(
 
 export function engineDiagnosticSecrets(
   environment: Readonly<Record<string, string | undefined>>,
+  minimumLength = 8,
 ): readonly string[] {
   const namedValues = Object.entries(environment)
     .filter(
       (entry): entry is [string, string] =>
         typeof entry[1] === "string" &&
-        entry[1].length >= 8 &&
+        entry[1].length >= minimumLength &&
         !proxyAddressNameSet.has(entry[0]) &&
         credentialNamePattern.test(entry[0]),
     )

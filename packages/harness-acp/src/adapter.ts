@@ -1,6 +1,6 @@
 import { toolOutputWithImages } from "@opensteer/harness";
 import {
-  credentialNamePattern,
+  engineDiagnosticSecrets,
   networkCredentialSecrets,
   redactNetworkCredentials,
 } from "@opensteer/shared/safeMessage";
@@ -201,11 +201,9 @@ class AcpHarnessSession implements HarnessSession {
       maxItems: options.maxEventItems,
     });
     this.#stderrSecrets = [
-      context.agentTools.token,
-      ...Object.entries(context.environment)
-        .filter(([name]) => credentialNamePattern.test(name))
-        .map(([, value]) => value),
-    ].filter((value) => value.length >= 4);
+      ...(context.agentTools.token.length >= 4 ? [context.agentTools.token] : []),
+      ...engineDiagnosticSecrets(context.environment, 4),
+    ];
     this.events = this.#publisher.events;
     this.#client = dependencies.createClient({
       handlers: {

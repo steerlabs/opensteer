@@ -198,3 +198,9 @@ it("keeps proxy endpoints visible while scrubbing proxy passwords and other PROX
     ),
   ).toBe("connect to http://[REDACTED]@proxy.corp:8080 failed; [REDACTED]");
 });
+
+it("accepts a custom minimum value length for named credentials", () => {
+  const env = { API_TOKEN: "t0k3n" };
+  expect(engineDiagnosticSecrets(env)).toEqual([]);
+  expect(engineDiagnosticSecrets(env, 4)).toEqual(["t0k3n"]);
+});

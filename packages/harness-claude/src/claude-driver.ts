@@ -12,8 +12,7 @@ import { type ClaudeExecutableInspection } from "./executable.js";
 import { claudeSdkProcess } from "./sdk-process.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import {
-  credentialNamePattern,
-  networkCredentialSecrets,
+  engineDiagnosticSecrets,
   networkEnvironmentNames,
   redactNetworkCredentials,
 } from "@opensteer/shared/safeMessage";
@@ -4120,11 +4119,7 @@ function sanitizeErrorMessage(
   environment: Readonly<Record<string, string>>,
   maxBytes: number,
 ): string {
-  let sanitized = redactNetworkCredentials(message, networkCredentialSecrets(environment));
-  for (const [name, value] of Object.entries(environment)) {
-    if (!credentialNamePattern.test(name) || value.length < 4) continue;
-    sanitized = sanitized.split(value).join("[REDACTED]");
-  }
+  let sanitized = redactNetworkCredentials(message, engineDiagnosticSecrets(environment, 4));
   sanitized = sanitized.replace(/os_secret_[A-Za-z0-9_-]+/gu, "[OPAQUE_CREDENTIAL]");
   return clipUtf8(sanitized, maxBytes);
 }

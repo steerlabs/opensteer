@@ -1,6 +1,6 @@
 import { supervisedExitCode } from "@opensteer/shared/processControl";
 import {
-  credentialNamePattern,
+  engineDiagnosticSecrets,
   networkCredentialSecrets,
   redactNetworkCredentials,
   safeMessage,
@@ -91,10 +91,7 @@ export class PiRpcClient {
     this.#onEvent = options.onEvent;
     this.#onFailure = options.onFailure;
     this.#abortSignal = options.signal;
-    this.#secrets = Object.entries(options.environment)
-      .filter(([name, value]) => credentialNamePattern.test(name) && value.length >= 8)
-      .map(([, value]) => value)
-      .sort((left, right) => right.length - left.length);
+    this.#secrets = engineDiagnosticSecrets(options.environment);
     const launch = {
       args: [options.launch.executable, "--mode", "rpc", ...options.args],
       cwd: options.cwd,
