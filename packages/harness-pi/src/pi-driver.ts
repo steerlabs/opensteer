@@ -5,7 +5,6 @@ import { isRecord } from "@opensteer/shared/isRecord";
 import { readBoundedRegularFile } from "@opensteer/shared/privateFiles";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { mkdir, open as openFile, realpath, rm, stat, symlink } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   attachmentMaxBytes,
@@ -2237,8 +2236,8 @@ export async function piAgentDirectoryForOthersTasks(
   if (!check.ok) {
     throw new EngineUnavailableForTaskError(check.message);
   }
-  const theirs =
-    environment.PI_CODING_AGENT_DIR?.trim() || join(environment.HOME ?? homedir(), ".pi", "agent");
+  if (check.mode !== "ambient") return directory;
+  const theirs = check.sourceDirectory;
   await rm(directory, { force: true, recursive: true });
   await mkdir(directory, { mode: 0o700, recursive: true });
   // Keep `auth.json` symlinked so OAuth token refreshes write back through to
@@ -2251,7 +2250,7 @@ export async function piAgentDirectoryForOthersTasks(
   if (authExists) await symlink(authSource, join(directory, "auth.json"));
   // Write a checked private copy of `models.json` rather than symlinking it, so
   // a `!` command added later cannot execute on a running others' task.
-  if (check.mode === "ambient" && check.modelsJsonText !== undefined) {
+  if (check.modelsJsonText !== undefined) {
     await replacePrivateFileAtomically(join(directory, "models.json"), check.modelsJsonText);
   }
   return directory;

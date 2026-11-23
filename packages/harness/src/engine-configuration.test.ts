@@ -33,8 +33,10 @@ it("gives the engine's own configuration only to the person's own task with pers
 it("refuses a task that is not the person's own only on an engine not shown to start without their configuration", () => {
   const others = { personalContext: true, personLineage: false };
   const own = { personalContext: true, personLineage: true };
-  for (const engine of ["claude", "pi"])
-    expect(() => assertEngineMayRun(engine, others)).not.toThrow();
+  expect(() => assertEngineMayRun("claude", others)).not.toThrow();
+  expect(() =>
+    assertEngineMayRun("pi", { ...others, providerState: { kind: "isolated" } }),
+  ).not.toThrow();
   const captureError = (fn: () => void) => {
     try {
       fn();
@@ -43,6 +45,12 @@ it("refuses a task that is not the person's own only on an engine not shown to s
     }
     throw new Error("Expected refusal");
   };
+  // Ambient Pi with neither HOME nor PI_CODING_AGENT_DIR fails closed rather than falling back to os.homedir().
+  expect(captureError(() => assertEngineMayRun("pi", others))).toMatchObject({
+    code: "forbidden",
+    message: "This engine is not available for this task.",
+    ownerMessage: expect.stringMatching(/HOME|PI_CODING_AGENT_DIR/u),
+  });
   for (const [engine, label, expectedOwnerMessage] of [
     [
       "cursor",

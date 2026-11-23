@@ -2496,6 +2496,15 @@ describe("pi Thread naming", () => {
       await fixture.adapter.close();
     }
   });
+
+  it("refuses others' tasks when both HOME and PI_CODING_AGENT_DIR are absent instead of falling back to os.homedir()", async () => {
+    const targetDir = join(await temporaryDirectory(), "others-no-home");
+    await expect(piAgentDirectoryForOthersTasks({}, targetDir)).rejects.toMatchObject({
+      code: "forbidden",
+      message: "This engine is not available for this task.",
+      ownerMessage: expect.stringMatching(/HOME|PI_CODING_AGENT_DIR/u),
+    });
+  });
 });
 
 it("delivers distinct full names for two plugins and a loose review skill", async () => {

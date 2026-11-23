@@ -11,13 +11,16 @@ export type PiOthersHomeCheck =
   | {
       readonly ok: true;
       readonly mode: "ambient";
-      readonly sourceDirectory?: string;
+      readonly sourceDirectory: string;
       readonly modelsJsonText?: string;
     }
   | { readonly ok: false; readonly message: string };
 
 export const PI_SHELL_COMMAND_REFUSAL_MESSAGE =
   'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.';
+
+export const PI_MISSING_HOME_REFUSAL_MESSAGE =
+  "Opensteer could not locate your Pi configuration folder (HOME or PI_CODING_AGENT_DIR is unset), so Pi runs only tasks you started yourself.";
 
 /**
  * The person's ambient Pi agent directory from the process environment. Never
@@ -88,7 +91,9 @@ export function checkPiOthersAuthFile(context: {
 }): { readonly ok: true } | { readonly ok: false; readonly message: string } {
   if (context.providerState?.kind === "isolated") return { ok: true };
   const sourceDirectory = piAmbientAgentDirectory(context.environment);
-  if (!sourceDirectory) return { ok: true };
+  if (!sourceDirectory) {
+    return { ok: false, message: PI_MISSING_HOME_REFUSAL_MESSAGE };
+  }
   const result = checkPiConfigFile(sourceDirectory, "auth.json");
   return result.ok ? { ok: true } : result;
 }
@@ -102,7 +107,8 @@ export function checkPiOthersAuthFile(context: {
  * with `"!"` through `execSync` (shell command) when resolving `apiKey` or
  * `headers` in `models.json` or `key` in `auth.json`. Nothing of the person's
  * runs on an others' task, so Opensteer refuses before spawning Pi whenever
- * either file contains a `"!"` value or cannot be read and parsed.
+ * either file contains a `"!"` value, cannot be read and parsed, or the
+ * ambient Pi folder cannot be located from the environment.
  */
 export function checkPiOthersHome(context: {
   readonly environment?: Readonly<Record<string, string>>;
@@ -113,7 +119,7 @@ export function checkPiOthersHome(context: {
   }
   const sourceDirectory = piAmbientAgentDirectory(context.environment);
   if (!sourceDirectory) {
-    return { ok: true, mode: "ambient" };
+    return { ok: false, message: PI_MISSING_HOME_REFUSAL_MESSAGE };
   }
   const modelsCheck = checkPiConfigFile(sourceDirectory, "models.json");
   if (!modelsCheck.ok) return modelsCheck;
