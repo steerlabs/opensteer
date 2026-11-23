@@ -993,7 +993,9 @@ stat -f '%Su %u' /dev/console
             await run(
               [
                 ...ssh,
-                'rsync -a --exclude="*.app" --exclude="resources/" --exclude="connector-resources/" "$HOME/opensteer-job/artifacts/" "/Volumes/My Shared Files/artifacts/guest/"',
+                // A Runner's runtime-cache holds the engine binaries it unpacked (hundreds of MB
+                // per journey Home), never evidence; copying them ran the export past its bound.
+                'rsync -a --exclude="*.app" --exclude="resources/" --exclude="connector-resources/" --exclude="runtime-cache/" --exclude="node-compile-cache/" "$HOME/opensteer-job/artifacts/" "/Volumes/My Shared Files/artifacts/guest/"',
               ],
               { name: "export", timeout: 120, check: false },
             )
