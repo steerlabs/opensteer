@@ -44,7 +44,7 @@ describe("the Compose model", () => {
     expect({ x: second!.x, y: second!.y }).toEqual({ x: first!.x, y: first!.y });
   });
 
-  it("lines a Button's content up in a row (button/Button.kt:86)", async () => {
+  it("lines a Button's content up in a row (button/Button.kt:86, :174)", async () => {
     const at = await laid(
       <Button>
         <Box modifiers={[size(24, 24)]} />
@@ -55,6 +55,19 @@ describe("the Compose model", () => {
     const [label] = at.texts;
     expect(intersects(icon!, label!)).toBe(false);
     expect(label!.x).toBeGreaterThanOrEqual(icon!.x + icon!.width);
+  });
+
+  it("spaces a FlowRow's children and its lines each by its own arrangement (ComposeViews.kt:96-97)", async () => {
+    const at = await laid(
+      <FlowRow horizontalArrangement={{ spacedBy: 8 }} verticalArrangement={{ spacedBy: 20 }}>
+        <Box modifiers={[size(100, 30)]} />
+        <Box modifiers={[size(100, 30)]} />
+        <Box modifiers={[size(200, 30)]} />
+      </FlowRow>,
+    );
+    const [first, second, third] = at.sized;
+    expect(second!.x - (first!.x + first!.width)).toBe(8);
+    expect(third!.y - (first!.y + first!.height)).toBe(20);
   });
 
   it("takes another line in a FlowRow where the next child does not fit (ComposeViews.kt:95)", async () => {

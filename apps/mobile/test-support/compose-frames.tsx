@@ -14,7 +14,8 @@ import { useState, type ReactNode } from "react";
  * Each rule is the source's (`@expo/ui` 58.0.23, `android/src/main/java/expo/modules/ui/`):
  * - Column, Row, Box: Compose's own (`ComposeViews.kt`).
  * - Host: every child at the top left, over the others (`HostView.kt:312-316`, `placeRelative(0, 0)`).
- * - Button and TextButton: their content a Row (`button/Button.kt:86, 108`, `rowScope`).
+ * - Button and TextButton: their content a Row (`button/Button.kt:86` in ButtonContent, `:174`
+ *   in TextButtonContent, each `rowScope`).
  * - FlowRow: a Row that takes another line where the next child does not fit
  *   (`ComposeViews.kt:95`, Compose's `FlowRow`).
  * - A `ListItem` slot: its children handed to Material's slot as they are (`ListItemView.kt`,
@@ -40,12 +41,16 @@ interface Props {
 const attributes = (kind: string, props: Props) => {
   const sized = props.modifiers?.find((modifier) => modifier.kind === "size");
   const padded = props.modifiers?.find((modifier) => modifier.kind === "padding");
-  const spaced = props.verticalArrangement?.spacedBy ?? props.horizontalArrangement?.spacedBy;
+  // Two spacings, as FlowRow takes them (`ComposeViews.kt:96-97`): between children on a line
+  // (horizontal) and between lines (vertical). A Column's is its vertical; a Row's its horizontal.
+  const across = props.horizontalArrangement?.spacedBy;
+  const down = props.verticalArrangement?.spacedBy;
   return {
     "data-compose": kind,
     ...(sized ? { "data-size": `${sized.width},${sized.height}` } : {}),
     ...(padded ? { "data-padding": padded.edges.join(",") } : {}),
-    ...(spaced === undefined ? {} : { "data-spaced": String(spaced) }),
+    ...(across === undefined ? {} : { "data-spaced-across": String(across) }),
+    ...(down === undefined ? {} : { "data-spaced-down": String(down) }),
   };
 };
 const node =
@@ -152,7 +157,8 @@ export function composeFrames(
     const [ps, pt, pe, pb] = (element.getAttribute("data-padding") ?? "0,0,0,0")
       .split(",")
       .map(Number) as [number, number, number, number];
-    const spaced = Number(element.getAttribute("data-spaced") ?? 0);
+    const across = Number(element.getAttribute("data-spaced-across") ?? 0);
+    const down = Number(element.getAttribute("data-spaced-down") ?? 0);
     let w = 0;
     let h = 0;
     if (kind === "Text") {
@@ -193,7 +199,7 @@ export function composeFrames(
     } else if (kind === "Column") {
       let top = y + pt;
       for (const [index, child] of kids(element).entries()) {
-        if (index > 0) top += spaced;
+        if (index > 0) top += down;
         const [cw, ch] = place(child, x + ps, top, room - ps - pe);
         w = Math.max(w, cw);
         top += ch;
@@ -208,21 +214,21 @@ export function composeFrames(
       for (const child of kids(element)) {
         const [cw, ch] = measure(child, room - ps - pe);
         if (left > x + ps && left + cw > x + room - pe) {
-          top += line + spaced;
+          top += line + down;
           left = x + ps;
           line = 0;
         }
         place(child, left, top, x + room - pe - left);
-        left += cw + spaced;
+        left += cw + across;
         line = Math.max(line, ch);
-        w = Math.max(w, left - spaced - x);
+        w = Math.max(w, left - across - x);
       }
       w += pe;
       h = top + line - y + pb;
     } else if (kind === "Row") {
       let left = x + ps;
       for (const [index, child] of kids(element).entries()) {
-        if (index > 0) left += spaced;
+        if (index > 0) left += across;
         const [cw, ch] = place(child, left, y + pt, x + room - pe - left);
         left += cw;
         h = Math.max(h, ch);
