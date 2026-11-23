@@ -3766,6 +3766,133 @@ describe("Electron geometry lifecycle", () => {
     };
   }
 
+  // F32 (b), from the walker's run on fb245664c: after dialog B was answered no command reached
+  // the tab for five seconds. The real Electron page, placed and unplaced as the desktop does,
+  // with the real follow view on it: the tab pictured, left, its dialog opening, the person
+  // turning back to it under the dialog, the dialog answered. The cast starts again at once.
+  it("starts the cast again at once when a dialog on a tab turned back to is answered", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const { browser, page, native, view, host, drain, serialize } = await launch();
+    const debug = view.webContents.debugger;
+    const deliver = (method: string, parameters: unknown) => {
+      for (const [event, listener] of debug.on.mock.calls)
+        if (event === "message") (listener as (...a: unknown[]) => void)({}, method, parameters);
+    };
+    const starts = () =>
+      debug.sendCommand.mock.calls.filter(([method]) => method === "Page.startScreencast").length;
+    const stage = { x: 10, y: 20, width: 800, height: 600 };
+    try {
+      native.mount(host as unknown as BaseWindow, stage, vi.fn());
+      await drain();
+      const shown = { height: 600, width: 800 };
+      let dialogOpen = false;
+      const surface = {
+        active: true,
+        documentId: "b",
+        geometryRevision: 1,
+        id: "tab-b",
+        loading: false,
+      };
+      const channel = await page.cdp();
+      const asks: { at: number; method: string }[] = [];
+      const ask = channel.send.bind(channel);
+      channel.send = ((method: string, parameters?: Record<string, unknown>) => {
+        if (method === "Page.startScreencast" || method === "Page.stopScreencast")
+          asks.push({ at: performance.now(), method });
+        return ask(method, parameters);
+      }) as typeof channel.send;
+      const binding = { cdp: channel, page, surface };
+      const ledgerListeners = new Set<(event: unknown) => void>();
+      const ledger = {
+        active: () => binding,
+        binding: () => binding,
+        dialogOf: () => (dialogOpen ? { id: "dialog-b", surfaceId: "tab-b" } : null),
+        dialogOpen: () => dialogOpen,
+        recordPageScale: () => undefined,
+        subscribe: (listener: (event: unknown) => void) => {
+          ledgerListeners.add(listener);
+          return () => ledgerListeners.delete(listener);
+        },
+        use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+        viewportOf: () => shown,
+        withGeometry: <T>(_id: string, operation: () => Promise<T>) =>
+          new Promise<T>((resolve, reject) => {
+            void serialize(async () => {
+              await operation().then(resolve, reject);
+            });
+          }),
+      };
+      const delivered: unknown[] = [];
+      const follow = new ScreencastController({
+        frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+        ledger: ledger as never,
+        onDialogChanged: () => undefined,
+      });
+      const frameOf = (id: number) => ({
+        data: jpeg(shown.width, shown.height).toString("base64"),
+        metadata: {
+          deviceHeight: shown.height,
+          deviceWidth: shown.width,
+          offsetTop: 0,
+          pageScaleFactor: 1,
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
+        },
+        sessionId: id,
+      });
+      await follow.start();
+      await follow.setStreaming(true);
+      await vi.waitFor(() => expect(starts()).toBe(1));
+      deliver("Page.screencastFrame", frameOf(1));
+      await vi.waitFor(() => expect(delivered.length).toBeGreaterThan(0));
+      // The person turns to another tab: this one is unplaced and its picture paused.
+      await follow.setStreaming(false);
+      native.unmount();
+      await drain();
+      // Its dialog opens; the person turns back to it under the dialog.
+      dialogOpen = true;
+      deliver("Page.javascriptDialogOpening", {
+        defaultPrompt: "",
+        frameId: "target-1",
+        hasBrowserHandler: false,
+        message: "Allow destructive action B?",
+        type: "confirm",
+        url: "https://example.test/follow?dialog-b",
+      });
+      for (const listener of ledgerListeners)
+        listener({ dialog: { id: "dialog-b" }, surfaceId: "tab-b", type: "dialog" });
+      native.mount(host as unknown as BaseWindow, stage, vi.fn());
+      await follow.setStreaming(true);
+      const before = starts();
+      delivered.length = 0;
+      // The person answers it.
+      const answeredAt = performance.now();
+      dialogOpen = false;
+      deliver("Page.javascriptDialogClosed", { frameId: "target-1", result: false, userInput: "" });
+      for (const listener of ledgerListeners)
+        listener({ dialog: null, surfaceId: "tab-b", type: "dialog" });
+      // The follow view asks again at once, and the frame Chromium sends next reaches it: its cast
+      // either started again or never stopped (asked again within parkedCastMs).
+      const asked = asks.length;
+      await vi.waitFor(() => expect(asks.length).toBeGreaterThan(asked));
+      expect(asks.slice(asked).map(({ method }) => method)).toEqual(["Page.startScreencast"]);
+      expect(asks[asked]!.at - answeredAt).toBeLessThan(100);
+      await vi.waitFor(() => {
+        deliver("Page.screencastFrame", frameOf(starts()));
+        expect(delivered.length).toBeGreaterThan(0);
+      });
+      expect(starts() - before).toBeLessThanOrEqual(1);
+      await follow.close();
+    } finally {
+      await browser.close();
+    }
+  });
+
   it("keeps provider TLS domains in the existing hub ownership until the page releases", async () => {
     const { browser, page, view } = await launch(false, true);
     try {
