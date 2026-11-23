@@ -150,6 +150,7 @@ async function setUp(
     organize: unexpectedTabOperation,
     updateGroup: unexpectedTabOperation,
     deleteGroup: unexpectedTabOperation,
+    closeGroup: unexpectedTabOperation,
     get: unexpectedTabOperation,
     bootstrap: unexpectedTabOperation,
     requireOpenPage: unexpectedTabOperation,
