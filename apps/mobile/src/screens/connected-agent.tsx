@@ -27,7 +27,6 @@ import {
   useChromeTabGrantCatalog,
   useConnectedAgentLive,
   useConnectedAgents,
-  useWorkPolicy,
 } from "@opensteer/client/react";
 import { type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -75,7 +74,6 @@ export function ConnectedAgentController(props: {
   const chatHost = chatScreenHost(host);
   const live = useConnectedAgentLive(host, connectionId);
   const chromeTabs = useChromeTabGrantCatalog(host, true);
-  const workPolicy = useWorkPolicy(host);
   const [sheet, setSheet] = useState<{
     readonly which: AgentGrantSheet;
     readonly draft: AgentGrantDraft;
@@ -155,7 +153,6 @@ export function ConnectedAgentController(props: {
     apps,
     plugins,
     disabled: busy,
-    ...(workPolicy ? { workPolicy } : {}),
   };
   const current = draftFromGrant(detail.grant, chatShape);
   const save = async (next: {
@@ -247,7 +244,6 @@ export function ConnectedAgentController(props: {
           busy,
           conflict: agents.conflict === connection.id,
           context,
-          workPolicyRead: workPolicy !== undefined,
           current,
           detail,
           error: agents.error,
@@ -324,8 +320,6 @@ export function connectedAgentSections(props: {
   /** The task whose Stop is in flight. */
   readonly stopping?: string | null;
   readonly pending: "revoke" | "update" | "remove" | null;
-  /** Under a work Home's ceiling the choices wait for it, so none is offered and then refused. */
-  readonly workPolicyRead?: boolean;
 }): readonly NativeSettingsSection[] {
   const { detail } = props;
   const watchThreadId = detail.live?.threadId;
@@ -519,7 +513,7 @@ export function connectedAgentSections(props: {
       rows: [],
       footer: { text: agentWords("agent.legacy") },
     });
-  if (detail.editable && props.workPolicyRead !== false) {
+  if (detail.editable) {
     const grant = agentGrantSections({
       ...props.context,
       draft: props.current,
@@ -536,7 +530,6 @@ export function connectedAgentSections(props: {
         descriptions: detail.modeDescriptions,
         disabled: props.busy,
         onMode: props.onMode,
-        workPolicy: props.context.workPolicy,
       }),
     );
     if (props.note !== null)

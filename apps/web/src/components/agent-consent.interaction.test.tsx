@@ -4,12 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { createId } from "@opensteer/core";
 import { HostClientRequestError, type HostSnapshot } from "@opensteer/client/host";
-import {
-  MockHostClient,
-  mockConnectedAgents,
-  mockWorkPolicy,
-  type MockWorkHomeScene,
-} from "@opensteer/client/mock";
+import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import type { MachineSummary } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpAuthorization, McpAuthorizationLaunch } from "./mcp-authorization.js";
@@ -37,13 +32,11 @@ function consentHost(
     readonly homes?: readonly string[] | undefined;
     readonly macOnline?: boolean;
     readonly grants?: boolean;
-    readonly work?: MockWorkHomeScene;
   } = {},
 ) {
   const client = new MockHostClient({
     latencyMs: 0,
     grantsAvailable: options.grants ?? true,
-    ...(options.work ? { workPolicy: mockWorkPolicy(options.work) } : {}),
     connectionConsent: {
       requestId,
       clientName: "Grok",
@@ -564,80 +557,9 @@ describe("agent consent with grants", () => {
     expect(openExternalUrl).toHaveBeenCalledOnce();
   });
 
-  it("on a work Home, shows what its organization rules out as unavailable, with why", async () => {
-    host = consentHost({ work: "strict" });
-    const dispatch = vi.spyOn(host, "dispatch");
-    const { container } = await mount(host);
-    expect(container.querySelector(".agent-consent__work")?.textContent).toBe(
-      "Work · Northwind Logistics",
-    );
-    const reason = "Your organization doesn’t allow this";
-    const radio = (value: string) =>
-      container.querySelector<HTMLInputElement>(`input[type="radio"][value="${value}"]`)!;
-    // Choose leads; Everything stays in view, unavailable, saying why.
-    expect(radio("selected").checked).toBe(true);
-    expect(radio("everything").disabled).toBe(true);
-    expect(radio("everything").closest("label")?.textContent).toContain(reason);
-    const tasks = container.querySelector<HTMLInputElement>(
-      '[aria-labelledby="agent-grant-tasks"]',
-    )!;
-    expect(tasks.disabled).toBe(true);
-    expect(detail(container, "Tasks")).toBe(reason);
-    // The safety modes stop at the ceiling: Supervised, chosen; the rest unavailable.
-    expect(radio("approval-required")).toMatchObject({ checked: true, disabled: false });
-    for (const mode of ["auto-accept-edits", "auto", "full-access"]) {
-      expect(radio(mode).disabled).toBe(true);
-      expect(radio(mode).closest("label")?.textContent).toContain(reason);
-    }
-    await act(async () => radio("everything").click());
-    await act(async () => radio("full-access").click());
-    expect(radio("selected").checked).toBe(true);
-    expect(radio("approval-required").checked).toBe(true);
-    expect(dispatch).not.toHaveBeenCalled();
-  });
-
-  it("follows a new policy version while it is open, and Allow asks only for what it allows", async () => {
-    host = consentHost({ work: "open" });
-    const dispatch = vi.spyOn(host, "dispatch").mockImplementation(async (command) =>
-      command.type === "browser.profile.create"
-        ? ({
-            type: "browser.profile.create",
-            profile: { id: created, name: "Claude", homeRunnerId: cloudRunner },
-          } as never)
-        : ({ type: "connection.authorize", completionPath: "/oauth/done" } as never),
-    );
-    const { container } = await mount(host);
-    const radio = (value: string) =>
-      container.querySelector<HTMLInputElement>(`input[type="radio"][value="${value}"]`)!;
-    const tasks = () =>
-      container.querySelector<HTMLInputElement>('[aria-labelledby="agent-grant-tasks"]')!;
-    await act(async () => radio("auto").click());
-    await act(async () => tasks().click());
-    expect(radio("auto").checked).toBe(true);
-    expect(tasks().checked).toBe(true);
-
-    // The organization narrows its policy; the open screen follows with no reload.
-    await act(async () => host!.applyWorkPolicy(mockWorkPolicy("strict")));
-    const reason = "Your organization doesn’t allow this";
-    expect(radio("approval-required").checked).toBe(true);
-    expect(radio("auto")).toMatchObject({ checked: false, disabled: true });
-    expect(radio("auto").closest("label")?.textContent).toContain(reason);
-    expect(tasks()).toMatchObject({ checked: false, disabled: true });
-    expect(detail(container, "Tasks")).toBe(reason);
-
-    await act(async () => buttonNamed(container, "Allow").click());
-    const [authorize] = authorizeCalls(dispatch) as unknown as {
-      decision: { accessMode: string; grant: { tasks: boolean } };
-    }[];
-    expect(authorize!.decision.accessMode).toBe("approval-required");
-    expect(authorize!.decision.grant.tasks).toBe(false);
-  });
-
-  it("on a personal Home, offers every choice with no mark and no reason", async () => {
+  it("offers every choice, none of them ruled out", async () => {
     host = consentHost();
     const { container } = await mount(host);
-    expect(container.querySelector(".agent-consent__work")).toBeNull();
-    expect(container.textContent).not.toContain("Work ·");
     expect(container.textContent).not.toContain("doesn’t allow");
     expect(
       [...container.querySelectorAll<HTMLInputElement>('input[type="radio"]')].some(

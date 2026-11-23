@@ -23,7 +23,6 @@ import {
   useChromeTabGrantCatalog,
   useConnectedAgentLive,
   useConnectedAgents,
-  useWorkPolicy,
 } from "@opensteer/client/react";
 import { type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
 import { useShell } from "../../app-shell.js";
@@ -60,7 +59,6 @@ export function ConnectedAgentPage({
   const chatHost = chatScreenHost(client);
   const live = useConnectedAgentLive(client, connectionId);
   const chromeTabs = useChromeTabGrantCatalog(client, true);
-  const workPolicy = useWorkPolicy(client);
   const { snapshot } = shell;
   const connection = agents.connections?.find((row) => row.id === connectionId) ?? null;
   const [edit, setEdit] = useState<Edit | null>(null);
@@ -219,8 +217,7 @@ export function ConnectedAgentPage({
         </p>
       ) : null}
       {chat ? <ChatFactsSection client={client} facts={chat} live={connected} /> : null}
-      {/* Under a work Home's ceiling, the choices wait for it: none is offered and then refused. */}
-      {detail.editable && workPolicy !== undefined ? (
+      {detail.editable ? (
         <>
           <AgentGrantEditor
             chat={chatShape}
@@ -232,7 +229,6 @@ export function ConnectedAgentPage({
             draft={draft}
             home={agentHomeName(snapshot)}
             onChange={(next) => change({ draft: next })}
-            workPolicy={workPolicy ?? undefined}
           />
           <ConnectionModeChoices
             descriptions={detail.modeDescriptions}
@@ -240,7 +236,6 @@ export function ConnectedAgentPage({
             mode={mode}
             onChange={(next) => change({ mode: next })}
             showSettingsNote={draft.scope === "everything"}
-            workPolicy={workPolicy ?? undefined}
           />
           {dirty ? (
             <div className="form-actions">

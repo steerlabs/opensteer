@@ -6,7 +6,7 @@ import { createId } from "@opensteer/core";
 import type { AgentConnectionConsent } from "@opensteer/protocol";
 import { mockConnectedAgents } from "@opensteer/client/mock";
 import { HostClientRequestError, type HostSnapshot } from "@opensteer/client/host";
-import { MockHostClient, mockWorkPolicy, type MockWorkHomeScene } from "@opensteer/client/mock";
+import { MockHostClient } from "@opensteer/client/mock";
 import type { MachineSummary } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentAuthorizationFormProps } from "./agent-authorization-form.types.js";
@@ -99,13 +99,11 @@ function consentHost(
     readonly macOnline?: boolean;
     readonly consent?: Partial<AgentConnectionConsent>;
     readonly grants?: boolean;
-    readonly work?: MockWorkHomeScene;
   } = {},
 ) {
   const client = new MockHostClient({
     latencyMs: 0,
     grantsAvailable: options.grants ?? true,
-    ...(options.work ? { workPolicy: mockWorkPolicy(options.work) } : {}),
     connectionConsent: {
       requestId,
       clientName: "Grok",
@@ -624,55 +622,8 @@ describe("agent consent on the phone", () => {
     expect(state.openURL).toHaveBeenCalledOnce();
   });
 
-  it("on a work Home, shows what its organization rules out as unavailable, with why", async () => {
-    await open(consentHost({ work: "strict" }));
-    const reason = "Your organization doesn’t allow this";
-    expect(ready().work).toBe("Work · Northwind Logistics");
-    expect(row("scope", "selected")).toMatchObject({ selected: true, disabled: false });
-    expect(row("scope", "everything")).toMatchObject({ disabled: true, detail: reason });
-    expect(row("tasks", "tasks")).toMatchObject({ kind: "toggle", disabled: true, detail: reason });
-    expect(row("mode", "approval-required")).toMatchObject({ selected: true, disabled: false });
-    for (const mode of ["auto-accept-edits", "auto", "full-access"])
-      expect(row("mode", mode)).toMatchObject({ disabled: true, detail: reason });
-  });
-
-  it("follows a new policy version while it is open, and Allow asks only for what it allows", async () => {
-    const client = consentHost({ work: "open" });
-    const dispatch = vi.spyOn(client, "dispatch").mockImplementation(async (command) =>
-      command.type === "browser.profile.create"
-        ? ({
-            type: "browser.profile.create",
-            profile: { id: created, name: "Claude", homeRunnerId: cloudRunner },
-          } as never)
-        : ({ type: "connection.authorize", completionPath: "/oauth/done" } as never),
-    );
-    await open(client);
-    await press(row("mode", "auto"));
-    const tasks = row("tasks", "tasks");
-    if (tasks.kind !== "toggle") throw new Error("Tasks is a switch");
-    await act(async () => tasks.onChange(true));
-    expect(row("mode", "auto")).toMatchObject({ selected: true });
-    expect(row("tasks", "tasks")).toMatchObject({ value: true });
-
-    // The organization narrows its policy; the open screen follows with no reload.
-    await act(async () => client.applyWorkPolicy(mockWorkPolicy("strict")));
-    const reason = "Your organization doesn’t allow this";
-    expect(row("mode", "approval-required")).toMatchObject({ selected: true });
-    expect(row("mode", "auto")).toMatchObject({ selected: false, disabled: true, detail: reason });
-    expect(row("tasks", "tasks")).toMatchObject({ value: false, disabled: true, detail: reason });
-
-    await act(async () => ready().onAllow());
-    const authorize = dispatch.mock.calls
-      .map(([command]) => command)
-      .find((command) => command.type === "connection.authorize");
-    expect(authorize).toMatchObject({
-      decision: { accessMode: "approval-required", grant: { tasks: false } },
-    });
-  });
-
-  it("on a personal Home, offers every choice with no mark and no reason", async () => {
+  it("offers every choice, none of them ruled out", async () => {
     await open(consentHost());
-    expect(ready().work).toBeNull();
     for (const key of ["scope", "tasks", "mode"])
       for (const candidate of section(key).rows)
         expect("disabled" in candidate ? candidate.disabled : false).toBe(false);

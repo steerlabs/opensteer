@@ -50,8 +50,6 @@ import {
   type HostSnapshot,
   type PlaceItem,
   type TaskRow,
-  workHomeMark,
-  type WorkHomeMark,
 } from "@opensteer/client/host";
 import {
   useHostSelector,
@@ -65,7 +63,6 @@ import {
   useTabDeviceChoice,
   useTabFilterMatches,
   useVoiceValue,
-  useWorkPolicy,
 } from "@opensteer/client/react";
 import { LoadingRows } from "./loading-rows.js";
 import { useWindowedRows } from "./workspace/windowed-rows.js";
@@ -75,7 +72,6 @@ import { voiceRowKey } from "./voice-cursor.js";
 import { deploymentNameFrom } from "./deployment-name.js";
 import { useConnectionDot } from "./connection-shell.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
-import { workHomePath } from "./settings/work-home-path.js";
 import { Icon } from "./icon.js";
 import { Popover } from "./popover.js";
 import { createPortal } from "react-dom";
@@ -185,7 +181,6 @@ export function Sidebar({
     [hereId],
   );
   const homeId = useHostSelector(hostClient, selectHome);
-  const work = workHomeMark(useWorkPolicy(hostClient));
   const selectElsewhere = useCallback(
     (snapshot: HostSnapshot) => devicesElsewhere(snapshot.machines, homeId),
     [homeId],
@@ -965,7 +960,6 @@ export function Sidebar({
         onCloseMobile={onCloseMobile}
         onThisComputer={deployment?.onThisComputer === true}
         placeName={placeName}
-        work={work}
         workspace={workspace}
       />
     </nav>
@@ -1714,15 +1708,12 @@ function SidebarFooter({
   onCloseMobile,
   onThisComputer,
   placeName,
-  work,
   workspace,
 }: {
   readonly connection: ReturnType<typeof useConnectionDot>;
   readonly onCloseMobile: () => void;
   readonly onThisComputer: boolean;
   readonly placeName: string;
-  /** A work Home's quiet mark, said under its name; null on a personal Home. */
-  readonly work: WorkHomeMark | null;
   readonly workspace: WorkspaceState;
 }) {
   const navigate = useNavigate();
@@ -1751,9 +1742,6 @@ function SidebarFooter({
     { icon: "bolt", label: "Automations", onSelect: () => go("/automations", true) },
     { icon: "app", label: "Apps", onSelect: () => go("/apps", true) },
     { icon: "settings", label: "Settings", onSelect: () => go("/settings", false) },
-    ...(work
-      ? [{ icon: "shield" as const, label: work.seeTitle, onSelect: () => go(workHomePath, false) }]
-      : []),
   ];
   return (
     <div className="sidebar__footer">
@@ -1761,7 +1749,7 @@ function SidebarFooter({
         <button
           aria-expanded={open}
           aria-haspopup="menu"
-          aria-label={`${placeName}${work ? `, ${work.badge}` : ""}${connection.words ? `, ${connection.words}` : ""}.${signInEnded ? " Sign in again." : ""} ${places ? "Places and menu" : "Menu"}`}
+          aria-label={`${placeName}${connection.words ? `, ${connection.words}` : ""}.${signInEnded ? " Sign in again." : ""} ${places ? "Places and menu" : "Menu"}`}
           className="sidebar__place"
           onClick={() => setOpen((value) => !value)}
           ref={anchorRef}
@@ -1772,29 +1760,13 @@ function SidebarFooter({
             {signInEnded ? <span className="sidebar__place-alert" /> : null}
           </span>
           {/* The dot only: the pill over the main column says what is wrong. */}
-          {work ? (
-            <span className="sidebar__place-text">
-              <span className="sidebar__place-text sidebar__place-line">
-                <span
-                  aria-hidden
-                  className={`sidebar__status-dot sidebar__status-dot--${connection.tone}`}
-                />
-                <span className="sidebar__place-name">{placeName}</span>
-              </span>
-              <span className="work-badge work-badge--quiet">
-                <Icon name="users" />
-                {work.badge}
-              </span>
-            </span>
-          ) : (
-            <span className="sidebar__place-text sidebar__place-line">
-              <span
-                aria-hidden
-                className={`sidebar__status-dot sidebar__status-dot--${connection.tone}`}
-              />
-              <span className="sidebar__place-name">{placeName}</span>
-            </span>
-          )}
+          <span className="sidebar__place-text sidebar__place-line">
+            <span
+              aria-hidden
+              className={`sidebar__status-dot sidebar__status-dot--${connection.tone}`}
+            />
+            <span className="sidebar__place-name">{placeName}</span>
+          </span>
           <Icon className="sidebar__place-settings" name="chevron-down" />
         </button>
         <DesktopUpdateButton />

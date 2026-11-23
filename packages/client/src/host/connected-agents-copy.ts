@@ -188,10 +188,8 @@ export const connectedAgentsCopy = {
     "This is chosen when the chat is added and can’t be changed. To change it, disconnect this chat and add it again.",
   "chat.ended.you": "You disconnected it.",
   "chat.ended.unknown": "This chat has ended.",
-  "chat.ended.organization": "Your organization turned off tasks for chats.",
   "chat.ended.account": "Its messaging account was disconnected.",
   "chat.ended.computer": "The Mac it used was removed, or can no longer use Messages.",
-  "chat.ended.work-home": "Your work Home is closing.",
   "chat.ended.again": "To use it again, add the chat again on Messaging.",
   "chat.unknownReply":
     "1 reply may have been sent. Opensteer couldn’t confirm it arrived, so it won’t send it again.",

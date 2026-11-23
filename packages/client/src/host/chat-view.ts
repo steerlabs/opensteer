@@ -106,10 +106,8 @@ export function chatFacts(
 
 const endedWords = {
   you: "chat.ended.you",
-  organization: "chat.ended.organization",
   account: "chat.ended.account",
   computer: "chat.ended.computer",
-  "work-home": "chat.ended.work-home",
 } as const satisfies Record<NonNullable<NonNullable<AgentConnection["bridge"]>["endedBy"]>, string>;
 
 /** The chats that speak through one chat account, as the connected agents list holds them. */

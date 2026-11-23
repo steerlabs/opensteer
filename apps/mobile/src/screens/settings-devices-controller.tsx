@@ -1,15 +1,9 @@
-import { useUnreadableResources, useWorkPolicy } from "@opensteer/client/react";
+import { useUnreadableResources } from "@opensteer/client/react";
 import { SettingsComputerEnrollment } from "./settings-computer-enrollment.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import { AddDeviceGuide, addDeviceGuideSections } from "./add-device-guide.js";
-import {
-  unwrapRpcResult,
-  workDeviceLimit,
-  type HostClient,
-  type HostSnapshot,
-} from "@opensteer/client/host";
-import { deviceWords } from "@opensteer/client/computers";
+import { unwrapRpcResult, type HostClient, type HostSnapshot } from "@opensteer/client/host";
 import { pluginChangeAffects } from "@opensteer/client/plugins";
 import { connectDeviceDraftText } from "@opensteer/client/settings";
 import { useNavigation } from "@react-navigation/native";
@@ -96,11 +90,7 @@ export function DevicesSettingsController(): ReactNode {
   const waiting = useHostValue(host, selectWaitingThreads, "");
   const iphoneAppsAvailable = useHostValue(host, (value) => value.iphoneAppsAvailable, false);
   const devicesAvailable = useHostValue(host, selectDevicesAvailable, false);
-  // A work Home whose organization keeps other devices out says so where a device would be added.
-  const workPolicy = useWorkPolicy(host);
-  const addLimit = workDeviceLimit(workPolicy);
   const homeKind = usePhoneHome({
-    workOrganization: workPolicy?.organizationName ?? null,
     exposure: useHostValue(host, selectHomeExposure, undefined),
     homeKind: useHostValue(host, selectHomeKind, undefined),
     deploymentId: useHostValue(host, selectHomeDeploymentId, null),
@@ -108,14 +98,12 @@ export function DevicesSettingsController(): ReactNode {
   const deploymentName = rows.find((row) => row.deploymentId === deploymentId)?.name ?? "";
 
   useLayoutEffect(() => {
-    // Offered only once the Home's policy is known to allow it.
-    if (workPolicy === undefined || addLimit !== null) return;
     navigation.setOptions(
       headerActions({
         right: { icon: "plus", label: "Add a device", onPress: () => setAdding(true) },
       }),
     );
-  }, [navigation, workPolicy, addLimit]);
+  }, [navigation]);
 
   const here = useMemo((): PhoneHere => {
     if (deploymentId === null) return { state: "none" };
@@ -307,22 +295,6 @@ export function DevicesSettingsController(): ReactNode {
                 });
               },
             })),
-          },
-        ]),
-    ...(addLimit === null
-      ? []
-      : [
-          {
-            key: "add",
-            title: "",
-            rows: [
-              {
-                key: "add",
-                kind: "text" as const,
-                label: deviceWords("devices.add"),
-                detail: addLimit,
-              },
-            ],
           },
         ]),
   ];
