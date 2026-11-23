@@ -1328,7 +1328,7 @@ export class ProductToolHandlers {
           content: [{ type: "text", text: input.message }],
           policy: "queue",
           requireUnassigned: true,
-          source: messageSource(caller, input.observationId ?? requestId),
+          source: messageSource(caller, requestId),
           idempotencyKey: idempotencyKey(caller, requestId, "message"),
         },
         caller.kind === "connection"
@@ -1397,7 +1397,7 @@ export class ProductToolHandlers {
           harnessInstanceId: placement.harnessInstanceId,
           idempotencyKey: idempotencyKey(caller, requestId, "delegate"),
           modelSelection: placement.modelSelection,
-          origin: delegationOrigin(caller, input.observationId ?? requestId),
+          origin: delegationOrigin(caller, requestId),
           task: [{ text: input.message, type: "text" }, ...(input.places ?? [])],
           title: input.title ?? provisionalThreadTitle(input.message),
           titleSource: input.title === undefined ? "provisional" : "chosen",
@@ -1628,7 +1628,6 @@ export class ProductToolHandlers {
   async opensteer_task_send({ caller, input, operationKey }: ToolCall<"opensteer_task_send">) {
     const anchor = caller.kind === "connection" ? null : callerThread(caller);
     const requestId = operationId(caller, operationKey, "opensteer_task_send");
-    const observationId = input.observationId ?? requestId;
     const destination = ThreadIdSchema.parse(input.taskId);
     if (destination === anchor?.id && caller.kind === "run")
       throw badRequest("An agent cannot message its own active task");
@@ -1649,7 +1648,7 @@ export class ProductToolHandlers {
           policy: input.delivery,
           ...(input.freshContext !== undefined ? { freshContext: input.freshContext } : {}),
           requestedBy: caller.userId,
-          source: messageSource(caller, observationId),
+          source: messageSource(caller, requestId),
           threadId: thread.id,
           ...(memoryPass ? { memoryPass } : {}),
         },

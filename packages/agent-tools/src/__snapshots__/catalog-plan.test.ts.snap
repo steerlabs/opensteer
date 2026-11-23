@@ -2989,12 +2989,6 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
           ],
           "type": "object",
         },
-        "observationId": {
-          "description": "Watch observation identity; reuse for the same observation.",
-          "maxLength": 255,
-          "minLength": 1,
-          "type": "string",
-        },
         "operationKey": {
           "description": "Retry key for identical input; usually omit.",
           "maxLength": 128,
@@ -3355,12 +3349,6 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
             "providerId",
           ],
           "type": "object",
-        },
-        "observationId": {
-          "description": "Watch observation identity; reuse for the same observation.",
-          "maxLength": 255,
-          "minLength": 1,
-          "type": "string",
         },
         "operationKey": {
           "description": "Retry key for identical input; usually omit.",
@@ -3799,12 +3787,6 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
         },
         "message": {
           "maxLength": 262144,
-          "minLength": 1,
-          "type": "string",
-        },
-        "observationId": {
-          "description": "Watch observation identity; reuse for the same observation.",
-          "maxLength": 255,
           "minLength": 1,
           "type": "string",
         },

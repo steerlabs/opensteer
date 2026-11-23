@@ -806,7 +806,6 @@ integration.sequential("Trigger failure auto-pause", () => {
               createdBy: fixture.userId,
               environmentId: fixture.environmentId,
               executionGeneration: activation.executionGeneration,
-              observationId: "input-watch",
               requestFingerprint: "a".repeat(64),
               requestId: "input-watch",
               revisionId: created.revision.id,
@@ -2533,7 +2532,7 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect(settledRunning.status).toBe("unknown");
     expect(settledRunning.contactLostAt).not.toBeNull();
   });
-  it("deduplicates observations and enforces an activation-local rolling limit", async ({
+  it("admits live watch tool calls and deduplicates retries by idempotencyKey without an observation ledger (AA7)", async ({
     storeFixture,
   }) => {
     const { createFixture, createWatchTrigger, triggers, store, database } = storeFixture;
@@ -2551,24 +2550,19 @@ integration.sequential("Trigger failure auto-pause", () => {
       snapshot.activations.map(({ activation }) => [activation.triggerId, activation]),
     );
     const firstActivation = activations.get(first.trigger.id)!;
-    const request = (
-      activation: typeof firstActivation,
-      observationId: string,
-      requestId: string,
-    ) => ({
+    const request = (activation: typeof firstActivation, requestId: string) => ({
       action: "thread.message" as const,
       activationId: activation.id,
       anchorThreadId: fixture.threadId,
       createdBy: fixture.userId,
       environmentId: fixture.environmentId,
       executionGeneration: activation.executionGeneration,
-      observationId,
       requestFingerprint: "a".repeat(64),
       requestId,
       revisionId: activation.revisionId,
       triggerId: activation.triggerId,
     });
-    const firstRequest = request(firstActivation, "stable-1", "request-1");
+    const firstRequest = request(firstActivation, "request-1");
     const firstInput = await store.enqueueAdmittedThreadInput({
       admission: {
         kind: "watch",
@@ -2581,13 +2575,13 @@ integration.sequential("Trigger failure auto-pause", () => {
             type: "text",
           },
         ],
-        idempotencyKey: `watch:${firstActivation.id}:stable-1:message`,
+        idempotencyKey: `watch:${firstActivation.id}:op-1:message`,
         policy: "queue",
         requestedBy: fixture.userId,
         source: {
           activationId: firstActivation.id,
           kind: "watch",
-          observationId: "stable-1",
+          observationId: "op-1",
           revisionId: firstActivation.revisionId,
           triggerId: firstActivation.triggerId,
         },
@@ -2609,13 +2603,13 @@ integration.sequential("Trigger failure auto-pause", () => {
             type: "text",
           },
         ],
-        idempotencyKey: `watch:${firstActivation.id}:stable-1:message`,
+        idempotencyKey: `watch:${firstActivation.id}:op-1:message`,
         policy: "queue",
         requestedBy: fixture.userId,
         source: {
           activationId: firstActivation.id,
           kind: "watch",
-          observationId: "stable-1",
+          observationId: "op-1",
           revisionId: firstActivation.revisionId,
           triggerId: firstActivation.triggerId,
         },
@@ -2626,7 +2620,7 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect(duplicateInput.input.causalChainId).toBe(firstInput.input.causalChainId);
     const secondActivation = activations.get(second.trigger.id)!;
     await expect(
-      admitWatchControlRequest(database, request(secondActivation, "independent", "other-watch")),
+      admitWatchControlRequest(database, request(secondActivation, "other-watch")),
     ).resolves.toEqual({
       wasDuplicate: false,
     });

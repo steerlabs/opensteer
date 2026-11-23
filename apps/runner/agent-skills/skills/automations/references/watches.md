@@ -4,7 +4,7 @@ A watch works only when its activation is healthy and you observe its intended e
 
 Create an ongoing monitor with `ownTask: true`; record its criteria and asking task or email destination under `automations/<automation-id>/` before enabling it. Check in code first. Queue model checks with `freshContext: true`, carrying criteria, destination and state path in each wake; start child checks from the monitor's task. Send real finds to the asking task with `opensteer_task_send` queue or email through a connected integration; a `report` never notifies. Each background wake briefly says what happened.
 
-Write a normal script that stays alive, uses a stable `observationId`, and lets Opensteer stop it; test it in your shell, then register it:
+Write a normal script that stays alive, uses a stable `operationKey` when retrying the same event, and lets Opensteer stop it; test it in your shell, then register it:
 
 ```js
 import { execFileSync } from "node:child_process";
@@ -27,7 +27,7 @@ for await (const change of watch("./incoming")) {
       delivery: "queue",
       freshContext: true,
       message: `Check ${change.filename} for the configured incoming-file criteria. State: ${stateDir}/. Send real finds to the asking task recorded in ${stateDir}/destination.json. Briefly record what happened.`,
-      observationId: `folder:${nextCursor}`,
+      operationKey: `folder:${nextCursor}`,
       taskId,
     }),
   ]);
@@ -37,6 +37,6 @@ for await (const change of watch("./incoming")) {
 }
 ```
 
-Use durable observation identities for logical changes, including across activations when duplicate effects matter. Filesystem events are hints, not a durable queue; reconcile content if missing a change matters.
+Use durable `operationKey` values when retrying the same logical change so duplicate effects do not pile up. Filesystem events are hints, not a durable queue; reconcile content if missing a change matters.
 
 Watches call Opensteer through the `opensteer` CLI or MCP within their task's authority; see [running scripts](scripts.md).

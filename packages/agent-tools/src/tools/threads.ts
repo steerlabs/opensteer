@@ -130,13 +130,6 @@ export const opensteer_task_delegate = defineAgentTool({
       model: DelegationModelChoiceSchema.optional().describe(
         "New task model selectors/options from opensteer_ai_account_list.",
       ),
-      observationId: z
-        .string()
-        .trim()
-        .min(1)
-        .max(255)
-        .optional()
-        .describe("Watch observation identity; reuse for the same observation."),
       places: z
         .array(PlaceContentPartSchema)
         .max(63)
@@ -215,13 +208,6 @@ export const opensteer_task_send = defineAgentTool({
         .trim()
         .min(1)
         .max(256 * 1_024),
-      observationId: z
-        .string()
-        .trim()
-        .min(1)
-        .max(255)
-        .optional()
-        .describe("Watch observation identity; reuse for the same observation."),
       taskId: ThreadIdSchema,
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() })

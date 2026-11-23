@@ -60,7 +60,6 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
     ...requestBase,
     content: MessageContentSchema,
     delivery: ThreadInputPolicySchema,
-    observationId: z.string().trim().min(1).max(255).optional(),
     threadId: ThreadIdSchema,
     type: z.literal("thread.message"),
   }),

@@ -95,7 +95,6 @@ export interface WatchControlAdmissionInput {
   readonly createdBy: UserId;
   readonly environmentId: EnvironmentId;
   readonly executionGeneration: number;
-  readonly observationId: string;
   readonly requestFingerprint: string;
   readonly requestId: string;
   readonly revisionId: TriggerRevisionId;
@@ -375,43 +374,6 @@ export async function admitWatchControlRequestInTransaction(
     { ...input, requestedBy: input.createdBy },
     `watch:${input.activationId}`,
   );
-  const existing = await transaction
-    .selectFrom("watchControlRequests")
-    .selectAll()
-    .where("activationId", "=", input.activationId)
-    .where("observationId", "=", input.observationId)
-    .executeTakeFirst();
-  if (existing) {
-    if (
-      existing.action !== input.action ||
-      existing.requestFingerprint !== input.requestFingerprint
-    ) {
-      throw new OpensteerError({
-        code: "conflict",
-        details: {
-          observationId: input.observationId,
-        },
-        message: "Watch observation ID was already used with different input",
-      });
-    }
-    return {
-      wasDuplicate: true,
-    };
-  }
-  if (mode === "check")
-    return {
-      wasDuplicate: false,
-    };
-  await transaction
-    .insertInto("watchControlRequests")
-    .values({
-      action: input.action,
-      activationId: input.activationId,
-      observationId: input.observationId,
-      requestFingerprint: input.requestFingerprint,
-      requestId: input.requestId,
-    })
-    .executeTakeFirstOrThrow();
   return {
     wasDuplicate: false,
   };

@@ -142,7 +142,7 @@ const pluginArguments = z.strictObject({ path: z.string(), input: z.unknown().no
 
 export const connectionTaskCreateInput = z
   .strictObject(opensteer_task_create.input.shape)
-  .omit({ observationId: true, aiAccountId: true, model: true });
+  .omit({ aiAccountId: true, model: true });
 
 export function connectionToolInput(tool: AgentTool, grant: AgentGrant): z.ZodObject {
   let input: z.ZodObject = tool.input;
@@ -180,9 +180,6 @@ export function connectionToolInput(tool: AgentTool, grant: AgentGrant): z.ZodOb
       break;
     case "plugin_resume":
       input = tool.input.required({ taskId: true });
-      break;
-    case "opensteer_task_send":
-      input = z.strictObject(tool.input.shape).omit({ observationId: true });
       break;
     case "opensteer_task_create":
       input = connectionTaskCreateInput;

@@ -1061,15 +1061,6 @@ export interface DelegationTable {
   updatedAt: Timestamp;
 }
 
-export interface WatchControlRequestTable {
-  activationId: TriggerWatchActivationId;
-  action: "thread.delegate" | "thread.message";
-  observationId: string;
-  requestFingerprint: string;
-  requestId: string;
-  createdAt: Timestamp;
-}
-
 export interface RequestTable {
   revision: Generated<string>;
   id: RequestId;
@@ -2340,7 +2331,6 @@ export interface DatabaseSchema {
   triggers: TriggerTable;
   triggerRevisions: TriggerRevisionTable;
   triggerWatchActivations: TriggerWatchActivationTable;
-  watchControlRequests: WatchControlRequestTable;
   triggerOccurrences: TriggerOccurrenceTable;
   triggerOccurrenceAttempts: TriggerOccurrenceAttemptTable;
   providerSessions: ProviderSessionTable;

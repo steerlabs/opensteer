@@ -560,12 +560,9 @@ function assertThreadMutationAdmission(
     return;
   }
   const sourceMatches = message
-    ? input.source.kind === "watch" &&
-      input.source.activationId === admission.request.activationId &&
-      input.source.observationId === admission.request.observationId
+    ? input.source.kind === "watch" && input.source.activationId === admission.request.activationId
     : input.origin.kind === "watch" &&
       input.origin.activationId === admission.request.activationId &&
-      input.origin.observationId === admission.request.observationId &&
       input.origin.parentThreadId === admission.request.anchorThreadId;
   const userMatches =
     (message ? input.requestedBy : input.createdBy) === admission.request.createdBy;

@@ -11,6 +11,7 @@ export const removeAutomationFusesMigrationName = "0058_remove_automation_fuses_
 export async function applyRemoveAutomationFuses(database: Kysely<unknown>): Promise<void> {
   await sql`
     drop table if exists automation_wakes;
+    drop table if exists watch_control_requests;
     alter table triggers drop column if exists wake_limit_per_hour;
     alter table triggers drop column if exists webhook_secret_hash;
     alter table triggers drop constraint if exists triggers_paused_by_check;

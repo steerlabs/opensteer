@@ -5188,13 +5188,6 @@ async function delegationCallerIntentMatches(
         .executeTakeFirst();
       break;
     case "watch":
-      receipt = await database
-        .selectFrom("watchControlRequests")
-        .select("requestFingerprint")
-        .where("activationId", "=", input.origin.activationId)
-        .where("observationId", "=", input.origin.observationId)
-        .where("action", "=", "thread.delegate")
-        .executeTakeFirst();
       break;
   }
   return receipt?.requestFingerprint === intent.requestFingerprint;

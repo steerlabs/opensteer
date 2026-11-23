@@ -370,7 +370,7 @@ export async function createTriggerInTransaction(
     .where("idempotencyKey", "=", input.idempotencyKey)
     .executeTakeFirst();
   if (existing) {
-    await lockWatchCapacityForTrigger(transaction, existing.id);
+    await lockWatchAnchorPlacementForTrigger(transaction, existing.id);
     const trigger = await lockTriggerForMutation(
       transaction,
       {
@@ -404,7 +404,7 @@ export async function createTriggerInTransaction(
       .where("id", "=", anchorThreadId)
       .executeTakeFirst();
     if (!anchor) throw notFound();
-    await lockWatchCapacity(transaction, anchorThreadId);
+    await lockWatchAnchorPlacement(transaction, anchorThreadId);
   }
   const authority = await lockTriggerAuthorityThreads(
     transaction,
@@ -522,7 +522,7 @@ async function createOwnTask(
   await assertDelegationDepth(transaction, input.anchorThreadId);
   const idempotencyKey = `trigger-own-task:${fingerprint([input.createdBy, input.idempotencyKey])}`;
   await lockCommandIdempotency(transaction, input.createdBy, idempotencyKey);
-  if (source.kind === "watch") await lockWatchCapacity(transaction, input.anchorThreadId);
+  if (source.kind === "watch") await lockWatchAnchorPlacement(transaction, input.anchorThreadId);
   const created = await createThreadInTransaction(transaction, {
     accessMode: parent.accessMode,
     createdBy: input.createdBy,
@@ -614,7 +614,7 @@ export class TriggerStore {
     }
     return commitPersonalMutation(this.#database, async (transaction) => {
       input = (await admitTriggerActor(transaction, input.ownerId, input)).input;
-      await lockWatchCapacityForTrigger(transaction, input.triggerId);
+      await lockWatchAnchorPlacementForTrigger(transaction, input.triggerId);
       const trigger = await lockTriggerForMutation(transaction, input, "define");
       // Another lineage's script, or the person's, would run with authority this actor lacks.
       if (
@@ -793,7 +793,7 @@ export class TriggerStore {
               .execute()
           : [];
         const heldOccurrences = new Set(observedActive.map(({ id }) => id));
-        await lockWatchCapacityForTrigger(transaction, input.triggerId);
+        await lockWatchAnchorPlacementForTrigger(transaction, input.triggerId);
         const trigger = await lockTriggerForMutation(
           transaction,
           input,
@@ -3595,7 +3595,7 @@ function assertTriggerAccess(
 }
 
 /** The Deployment fence keeps anchor placement stable while capacity is reserved. */
-async function lockWatchCapacityForTrigger(
+async function lockWatchAnchorPlacementForTrigger(
   transaction: Transaction<DatabaseSchema>,
   triggerId: TriggerId,
 ): Promise<void> {
@@ -3606,9 +3606,9 @@ async function lockWatchCapacityForTrigger(
     .where("kind", "=", "watch")
     .executeTakeFirst();
   if (!observed) return;
-  await lockWatchCapacity(transaction, observed.anchorThreadId);
+  await lockWatchAnchorPlacement(transaction, observed.anchorThreadId);
 }
-async function lockWatchCapacity(
+async function lockWatchAnchorPlacement(
   transaction: Transaction<DatabaseSchema>,
   anchorThreadId: ThreadId,
 ): Promise<void> {
@@ -3947,7 +3947,7 @@ export function pauseLineageTrigger(
   triggerId: TriggerId,
 ): Promise<void> {
   return commitPersonalMutation(database, async (transaction) => {
-    await lockWatchCapacityForTrigger(transaction, triggerId);
+    await lockWatchAnchorPlacementForTrigger(transaction, triggerId);
     const trigger = await transaction
       .selectFrom("triggers")
       .selectAll()
