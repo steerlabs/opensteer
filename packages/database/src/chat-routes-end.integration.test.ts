@@ -700,7 +700,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
     ).toBeUndefined();
   });
 
-  it("cleans every stored name column and JSON place in 0053 with outsideName", async ({
+  it("cleans every stored name column and JSON place in 0109 with outsideName", async ({
     storeFixture,
   }) => {
     const { database, store } = storeFixture;
@@ -1356,5 +1356,1041 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
 
     // recoverThreadWorkQueues defers the invalid provider session rather than aborting.
     await expect(store.recoverThreadWorkQueues()).resolves.toBeUndefined();
+  });
+
+  it("cleans every stored column Sol's entrances cover while leaving already-clean rows byte-for-byte unchanged", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const fixture = await storeFixture.createRunFixture("sol-stored-names");
+    const deployment = await database
+      .selectFrom("deployments")
+      .select("id")
+      .executeTakeFirstOrThrow();
+    const england = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
+    const cleanKeep = `Clean 👩\u200D💻 می\u200Cخواهم ${england}`;
+    const dirty = `Dirty\u202E\n👩\u200D💻 می\u200Cخواهم ${england}`;
+    const expectedClean = `Dirty 👩\u200D💻 می\u200Cخواهم ${england}`;
+    const controlOnly = "\u202E\n\t";
+
+    // 1. runner_enrollments.name
+    const reDirty = `ren_${crypto.randomUUID()}`;
+    const reClean = `ren_${crypto.randomUUID()}`;
+    const reEmpty = `ren_${crypto.randomUUID()}`;
+    for (const [id, name] of [
+      [reDirty, dirty],
+      [reClean, cleanKeep],
+      [reEmpty, controlOnly],
+    ] as const) {
+      await sql`
+        insert into runner_enrollments (id, name, token_hash, allowed_modules, created_by,
+          owner_kind, owner_user_id, idempotency_key, request_fingerprint, runner_kind)
+        values (${id}, ${name}, ${`hash-${id}`}, '[]'::jsonb, ${fixture.userId},
+          'user', ${fixture.userId}, ${`idem-${id}`}, ${`fp-${id}`}, 'local')
+      `.execute(database);
+    }
+
+    // 2. runners.name + 3. devices.name + 4. execution_environments.name
+    const rDirty = `run_${crypto.randomUUID()}`;
+    const rClean = `run_${crypto.randomUUID()}`;
+    for (const [id, name] of [
+      [rDirty, dirty],
+      [rClean, cleanKeep],
+    ] as const) {
+      await sql`
+        insert into runners (id, owner_kind, owner_user_id, name, kind, public_key_pem,
+          public_key_fingerprint, enrollment_token_hash, capabilities, allowed_modules,
+          module_descriptors, connection_generation)
+        values (${id}, 'user', ${fixture.userId}, ${name}, 'local', ${`pem-${id}`},
+          ${`fp-${id}`}, ${`eth-${id}`}, '[]'::jsonb, '[]'::jsonb, '{}'::jsonb, 1)
+      `.execute(database);
+    }
+    const devDirty = `dev_${crypto.randomUUID()}`;
+    const devClean = `dev_${crypto.randomUUID()}`;
+    for (const [id, name] of [
+      [devDirty, dirty],
+      [devClean, cleanKeep],
+    ] as const) {
+      await sql`
+        insert into devices (id, deployment_id, owner_kind, owner_user_id, name, kind, access_policy)
+        values (${id}, ${deployment.id}, 'user', ${fixture.userId}, ${name}, 'computer', '{}'::jsonb)
+      `.execute(database);
+    }
+    const envDirty = `env_${crypto.randomUUID()}`;
+    const envClean = `env_${crypto.randomUUID()}`;
+    for (const [id, name, runnerId] of [
+      [envDirty, dirty, rDirty],
+      [envClean, cleanKeep, rClean],
+    ] as const) {
+      await sql`
+        insert into execution_environments (id, name, kind, runner_id, capabilities)
+        values (${id}, ${name}, 'local', ${runnerId}, '[]'::jsonb)
+      `.execute(database);
+    }
+
+    // 5. integration_connections.display_name (computer connections, with & without computer_app)
+    const connCompDirty = `con_${crypto.randomUUID()}`;
+    const connCompClean = `con_${crypto.randomUUID()}`;
+    const connAppDirty = `con_${crypto.randomUUID()}`;
+    const connAppClean = `con_${crypto.randomUUID()}`;
+    const appIdentity = { bundleId: "com.example.App", displayName: dirty, teamId: null };
+    for (const [id, displayName, computerApp, appKey, runnerId, defId] of [
+      [connCompDirty, dirty, null, null, rDirty, "def-comp-dirty"],
+      [connCompClean, cleanKeep, null, null, rClean, "def-comp-clean"],
+      [connAppDirty, dirty, appIdentity, "com.example.app.dirty", rDirty, "macos-app"],
+      [connAppClean, cleanKeep, appIdentity, "com.example.app.clean", rClean, "macos-app"],
+    ] as const) {
+      await sql`
+        insert into integration_connections (id, owner_user_id, provider, connection_kind,
+          connection_method, display_name, status, capabilities, integration_definition_id,
+          computer_app, computer_app_key, runner_id)
+        values (${id}, ${fixture.userId}, 'computer-app', 'computer', 'computer',
+          ${displayName}, 'connected', '[]'::jsonb, ${defId},
+          ${computerApp === null ? null : JSON.stringify(computerApp)}::jsonb,
+          ${appKey}, ${runnerId})
+      `.execute(database);
+    }
+
+    // 6. integration_installations (title + manifest device name), plugin_versions, integration_tools, integration_grants
+    const pluginDirty = `plg_${crypto.randomUUID()}`;
+    const pluginClean = `plg_${crypto.randomUUID()}`;
+    for (const [id, pkg] of [
+      [pluginDirty, "pkg-dirty"],
+      [pluginClean, "pkg-clean"],
+    ] as const) {
+      await sql`
+        insert into plugins (id, name, scope, source, installed_by)
+        values (${id}, ${pkg}, 'deployment', '{}'::jsonb, ${fixture.userId})
+      `.execute(database);
+    }
+    const pvDirty = `plv_${crypto.randomUUID()}`;
+    const pvClean = `plv_${crypto.randomUUID()}`;
+    const manifestDirty = {
+      name: "pkg-dirty",
+      keepKey: "untouched",
+      extensions: { "com.opensteer": { device: { kind: "other", name: dirty, extra: 1 } } },
+    };
+    const manifestClean = {
+      name: "pkg-clean",
+      keepKey: "untouched",
+      extensions: { "com.opensteer": { device: { kind: "other", name: cleanKeep, extra: 1 } } },
+    };
+    for (const [id, pluginId, manifest] of [
+      [pvDirty, pluginDirty, manifestDirty],
+      [pvClean, pluginClean, manifestClean],
+    ] as const) {
+      await sql`
+        insert into plugin_versions (id, plugin_id, digest, manifest)
+        values (${id}, ${pluginId}, ${`dig-${id}`}, ${JSON.stringify(manifest)}::jsonb)
+      `.execute(database);
+    }
+    const instDirty = `ins_${crypto.randomUUID()}`;
+    const instClean = `ins_${crypto.randomUUID()}`;
+    for (const [id, pluginId, title, manifest, pkg] of [
+      [instDirty, pluginDirty, dirty, manifestDirty, "pkg-dirty"],
+      [instClean, pluginClean, cleanKeep, manifestClean, "pkg-clean"],
+    ] as const) {
+      await sql`
+        insert into integration_installations (id, name, title, description, plugin_id,
+          source_kind, trust, manifest, provenance, status, revision, created_by, updated_by)
+        values (${id}, ${pkg}, ${title}, '', ${pluginId}, 'plugin', 'administrator-approved',
+          ${JSON.stringify(manifest)}::jsonb, '{}'::jsonb, 'active', 1, ${fixture.userId}, ${fixture.userId})
+      `.execute(database);
+    }
+    const srvId = `srv_${crypto.randomUUID()}`;
+    await sql`
+      insert into integration_servers (id, installation_id, name, transport, connection_requirement,
+        status, tool_generation)
+      values (${srvId}, ${instDirty}, 'srv-name', '{}'::jsonb, '{}'::jsonb, 'active', 1)
+    `.execute(database);
+    const toolDirty = `itl_${crypto.randomUUID()}`;
+    const toolClean = `itl_${crypto.randomUUID()}`;
+    for (const [id, title, annotations] of [
+      [toolDirty, dirty, { title: dirty, readOnlyHint: true }],
+      [toolClean, cleanKeep, { title: cleanKeep, readOnlyHint: true }],
+    ] as const) {
+      await sql`
+        insert into integration_tools (id, server_id, name, title, description, input_schema,
+          annotations, schema_digest, status)
+        values (${id}, ${srvId}, ${`machine\u200DName-${id}`}, ${title}, '', '{}'::jsonb,
+          ${JSON.stringify(annotations)}::jsonb, ${`sd-${id}`}, 'active')
+      `.execute(database);
+    }
+    const grantDirty = `igr_${crypto.randomUUID()}`;
+    const grantClean = `igr_${crypto.randomUUID()}`;
+    for (const [id, alias] of [
+      [grantDirty, dirty],
+      [grantClean, cleanKeep],
+    ] as const) {
+      await sql`
+        insert into integration_grants (id, owner_user_id, installation_id, connection_id,
+          alias, access, is_default, created_by, status)
+        values (${id}, ${fixture.userId}, ${instDirty}, ${connAppDirty},
+          ${alias}, 'read', false, ${fixture.userId}, 'active')
+      `.execute(database);
+    }
+
+    // 7. computer_app_setup_requests.server -> installationTitle
+    const setupDirty = `csr_${crypto.randomUUID()}`;
+    const setupClean = `csr_${crypto.randomUUID()}`;
+    for (const [id, installationTitle] of [
+      [setupDirty, dirty],
+      [setupClean, cleanKeep],
+    ] as const) {
+      await sql`
+        insert into computer_app_setup_requests (id, kind, deployment_id, owner_user_id,
+          runner_id, definition_id, definition_digest, access, server)
+        values (${id}, 'server', ${deployment.id}, ${fixture.userId}, ${devDirty},
+          'def-1', 'dig-1', 'read',
+          ${JSON.stringify({ installationTitle, name: "srv-name", serverId: srvId })}::jsonb)
+      `.execute(database);
+    }
+
+    // 8. requests.presentation (computer.app.access title & detail, harness.approval title)
+    const runFixture = await storeFixture.startRunFixture("sol-stored-run");
+    const reqAppDirty = `req_${crypto.randomUUID()}`;
+    const reqAppClean = `req_${crypto.randomUUID()}`;
+    const reqHarnDirty = `req_${crypto.randomUUID()}`;
+    const reqHarnClean = `req_${crypto.randomUUID()}`;
+    for (const [id, kind, presentation] of [
+      [
+        reqAppDirty,
+        "computer.app.access",
+        {
+          kind: "external",
+          title: dirty,
+          detail: dirty,
+          subject: { id: "sub-1", kind: "computer-app" },
+        },
+      ],
+      [
+        reqAppClean,
+        "computer.app.access",
+        {
+          kind: "external",
+          title: cleanKeep,
+          detail: cleanKeep,
+          subject: { id: "sub-2", kind: "computer-app" },
+        },
+      ],
+      [
+        reqHarnDirty,
+        "harness.approval",
+        {
+          kind: "choice",
+          title: dirty,
+          options: [{ id: "allow", label: "Allow", hint: "allow-once" }],
+        },
+      ],
+      [
+        reqHarnClean,
+        "harness.approval",
+        {
+          kind: "choice",
+          title: cleanKeep,
+          options: [{ id: "allow", label: "Allow", hint: "allow-once" }],
+        },
+      ],
+    ] as const) {
+      await sql`
+        insert into requests (id, originating_thread_id, originating_run_id, call_id, kind, mode,
+          required_actor, requested_by, status, presentation, payload)
+        values (${id}, ${runFixture.threadId}, ${runFixture.run.id}, ${`call-${id}`}, ${kind},
+          'durable', 'requester', ${runFixture.userId}, 'pending',
+          ${JSON.stringify(presentation)}::jsonb, ${JSON.stringify({ kind })}::jsonb)
+      `.execute(database);
+    }
+
+    // 9. tool_calls.integration -> computerApp -> app
+    const tcDirty = `tcl_${crypto.randomUUID()}`;
+    const tcClean = `tcl_${crypto.randomUUID()}`;
+    for (const [id, appName] of [
+      [tcDirty, dirty],
+      [tcClean, cleanKeep],
+    ] as const) {
+      await sql`
+        insert into tool_calls (id, thread_id, run_id, call_id, origin, tool, integration,
+          arguments, status, started_at)
+        values (${id}, ${runFixture.threadId}, ${runFixture.run.id}, ${`call-${id}`}, 'host-computer',
+          '{"name":"computer"}'::jsonb,
+          ${JSON.stringify({ kind: "computer-app", connectionId: connAppDirty, computerApp: { app: appName, bundleId: "com.example.App" } })}::jsonb,
+          '{}'::jsonb, 'open', now())
+      `.execute(database);
+    }
+
+    // 10. browser_profiles.name + personal_tabs (title, profile_name) + browser_history_entries.title + browser_session_uses.page_title
+    const bpDirty = await createBrowserProfile(database, {
+      homeRunnerId: null,
+      idempotencyKey: "sol-bp-dirty",
+      name: "seed-dirty",
+      ownerId: fixture.userId,
+    });
+    const bpClean = await createBrowserProfile(database, {
+      homeRunnerId: null,
+      idempotencyKey: "sol-bp-clean",
+      name: "seed-clean",
+      ownerId: fixture.userId,
+    });
+    const bpEmpty = await createBrowserProfile(database, {
+      homeRunnerId: null,
+      idempotencyKey: "sol-bp-empty",
+      name: "seed-empty",
+      ownerId: fixture.userId,
+    });
+    await sql`update browser_profiles set name = ${dirty} where id = ${bpDirty.id}`.execute(
+      database,
+    );
+    await sql`update browser_profiles set name = ${cleanKeep} where id = ${bpClean.id}`.execute(
+      database,
+    );
+    await sql`update browser_profiles set name = ${controlOnly} where id = ${bpEmpty.id}`.execute(
+      database,
+    );
+
+    const tabDirty = `tab_${crypto.randomUUID()}`;
+    const tabClean = `tab_${crypto.randomUUID()}`;
+    for (const [id, title, profileId, profileName] of [
+      [tabDirty, dirty, bpDirty.id, dirty],
+      [tabClean, cleanKeep, bpClean.id, cleanKeep],
+    ] as const) {
+      await sql`
+        insert into personal_tabs (id, owner_id, kind, computer_id, title, url, profile_id,
+          profile_name, opened_by)
+        values (${id}, ${fixture.userId}, 'page', ${devDirty}, ${title},
+          ${`https://example.com/${id}`}, ${profileId}, ${profileName}, '"person"'::jsonb)
+      `.execute(database);
+    }
+
+    const histUrlDirty = "https://example.com/hist-dirty";
+    const histUrlClean = "https://example.com/hist-clean";
+    await sql`
+      insert into browser_history_entries (profile_id, url, origin, title, typed_count, visit_count)
+      values (${bpDirty.id}, ${histUrlDirty}, 'https://example.com', ${dirty}, 0, 1),
+             (${bpClean.id}, ${histUrlClean}, 'https://example.com', ${cleanKeep}, 0, 1)
+    `.execute(database);
+
+    const bsnDirty = `bsn_${crypto.randomUUID()}`;
+    const bsnClean = `bsn_${crypto.randomUUID()}`;
+    for (const [id, profileId] of [
+      [bsnDirty, bpDirty.id],
+      [bsnClean, bpClean.id],
+    ] as const) {
+      await sql`
+        insert into browser_sessions (id, tab_group_id, origin, profile_id, placement_key,
+          runner_id, runtime_id, state)
+        values (${id}, ${id}, 'agent', ${profileId}, ${`pk-${id}`}, ${rDirty}, ${`rt-${id}`}, 'ready')
+      `.execute(database);
+    }
+    const bsuDirty = `bsu_${crypto.randomUUID()}`;
+    const bsuClean = `bsu_${crypto.randomUUID()}`;
+    for (const [id, sessionId, pageTitle] of [
+      [bsuDirty, bsnDirty, dirty],
+      [bsuClean, bsnClean, cleanKeep],
+    ] as const) {
+      await sql`
+        insert into browser_session_uses (id, session_id, thread_id, page_title, page_site)
+        values (${id}, ${sessionId}, ${runFixture.threadId}, ${pageTitle}, 'https://example.com')
+      `.execute(database);
+    }
+
+    // 11. runs.latest_place, threads.latest_place, threads.title (external worker), transcript_items (kind='place' body & view), triggers.name
+    const runCleanFixture = await storeFixture.startRunFixture("sol-stored-run-clean");
+    const extConnId = `mcn_${crypto.randomUUID()}`;
+    await sql`
+      insert into agent_connections (id, user_id, label, client_name, access_mode, resource,
+        created_at, expires_at, "grant", grant_revision, consent_version)
+      values (${extConnId}, ${runFixture.userId}, 'Clean agent', 'Clean agent', 'approval-required',
+        'opensteer:mcp', now(), now() + interval '1 day',
+        '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2)
+    `.execute(database);
+    const placeDirty = { tabId: tabDirty, title: dirty, site: "https://example.com" };
+    const placeClean = { tabId: tabClean, title: cleanKeep, site: "https://example.com" };
+    await sql`update runs set latest_place = ${JSON.stringify(placeDirty)}::jsonb where id = ${runFixture.run.id}`.execute(
+      database,
+    );
+    await sql`update runs set latest_place = ${JSON.stringify(placeClean)}::jsonb where id = ${runCleanFixture.run.id}`.execute(
+      database,
+    );
+    await sql`update threads set latest_place = ${JSON.stringify(placeDirty)}::jsonb, worker = 'external', origin_connection_id = ${extConnId}, title = ${controlOnly} where id = ${runFixture.threadId}`.execute(
+      database,
+    );
+    await sql`update threads set latest_place = ${JSON.stringify(placeClean)}::jsonb, worker = 'external', origin_connection_id = ${extConnId}, title = ${cleanKeep} where id = ${runCleanFixture.threadId}`.execute(
+      database,
+    );
+    const tiDirty = `tri_${crypto.randomUUID()}`;
+    const tiClean = `tri_${crypto.randomUUID()}`;
+    for (const [id, threadId, runId, place] of [
+      [tiDirty, runFixture.threadId, runFixture.run.id, placeDirty],
+      [tiClean, runCleanFixture.threadId, runCleanFixture.run.id, placeClean],
+    ] as const) {
+      await sql`
+        insert into transcript_items (id, thread_id, run_id, kind, position, revision, visible,
+          is_turn_start, created_at, body, view)
+        values (${id}, ${threadId}, ${runId}, 'place', 999999, 1, true, false, now(),
+          ${JSON.stringify(place)}::jsonb,
+          ${JSON.stringify({ title: place.title, preview: "https://example.com" })}::jsonb)
+      `.execute(database);
+    }
+
+    const triggers = new TriggerStore(database);
+    const trigDirty = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.thread.id,
+      createdBy: fixture.userId,
+      idempotencyKey: "sol-trig-dirty",
+      name: "seed-trig-dirty",
+      program: {
+        toolContractVersion: 5,
+        language: "javascript",
+        source: "export default async () => null",
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const trigClean = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.thread.id,
+      createdBy: fixture.userId,
+      idempotencyKey: "sol-trig-clean",
+      name: "seed-trig-clean",
+      program: {
+        toolContractVersion: 5,
+        language: "javascript",
+        source: "export default async () => null",
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    await sql`update triggers set name = ${dirty} where id = ${trigDirty.trigger.id}`.execute(
+      database,
+    );
+    await sql`update triggers set name = ${cleanKeep} where id = ${trigClean.trigger.id}`.execute(
+      database,
+    );
+
+    // Re-run 0109 directly on this populated database.
+    await restoreRoutes(database);
+    await sql`delete from kysely_migration where name >= ${chatRoutesEndMigrationName}`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+
+    const readOne = async <T>(query: ReturnType<typeof sql<T>>) =>
+      (await query.execute(database)).rows[0]!;
+
+    // Assert every forged row is cleaned and every already-clean row is byte-for-byte unchanged.
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select name as v from runner_enrollments where id = ${reDirty}`,
+        )
+      ).v,
+    ).toBe(expectedClean);
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select name as v from runner_enrollments where id = ${reClean}`,
+        )
+      ).v,
+    ).toBe(cleanKeep);
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select name as v from runner_enrollments where id = ${reEmpty}`,
+        )
+      ).v,
+    ).toBe("Computer");
+
+    expect(
+      (await readOne<{ v: string }>(sql`select name as v from runners where id = ${rDirty}`)).v,
+    ).toBe(expectedClean);
+    expect(
+      (await readOne<{ v: string }>(sql`select name as v from runners where id = ${rClean}`)).v,
+    ).toBe(cleanKeep);
+
+    expect(
+      (await readOne<{ v: string }>(sql`select name as v from devices where id = ${devDirty}`)).v,
+    ).toBe(expectedClean);
+    expect(
+      (await readOne<{ v: string }>(sql`select name as v from devices where id = ${devClean}`)).v,
+    ).toBe(cleanKeep);
+
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select name as v from execution_environments where id = ${envDirty}`,
+        )
+      ).v,
+    ).toBe(expectedClean);
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select name as v from execution_environments where id = ${envClean}`,
+        )
+      ).v,
+    ).toBe(cleanKeep);
+
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select display_name as v from integration_connections where id = ${connCompDirty}`,
+        )
+      ).v,
+    ).toBe(expectedClean);
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select display_name as v from integration_connections where id = ${connCompClean}`,
+        )
+      ).v,
+    ).toBe(cleanKeep);
+    const appConnRow = await readOne<{ v: string; app: unknown }>(
+      sql`select display_name as v, computer_app as app from integration_connections where id = ${connAppDirty}`,
+    );
+    expect(appConnRow.v).toBe(expectedClean);
+    // Reviewed Mac app identity JSON is compared for identity and must stay untouched.
+    expect(appConnRow.app).toEqual(appIdentity);
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select display_name as v from integration_connections where id = ${connAppClean}`,
+        )
+      ).v,
+    ).toBe(cleanKeep);
+
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select alias as v from integration_grants where id = ${grantDirty}`,
+        )
+      ).v,
+    ).toBe(expectedClean);
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select alias as v from integration_grants where id = ${grantClean}`,
+        )
+      ).v,
+    ).toBe(cleanKeep);
+
+    expect(
+      (
+        await readOne<{ v: unknown }>(
+          sql`select presentation as v from requests where id = ${reqAppDirty}`,
+        )
+      ).v,
+    ).toEqual({
+      kind: "external",
+      title: expectedClean,
+      detail: expectedClean,
+      subject: { id: "sub-1", kind: "computer-app" },
+    });
+    expect(
+      (
+        await readOne<{ v: unknown }>(
+          sql`select presentation as v from requests where id = ${reqAppClean}`,
+        )
+      ).v,
+    ).toEqual({
+      kind: "external",
+      title: cleanKeep,
+      detail: cleanKeep,
+      subject: { id: "sub-2", kind: "computer-app" },
+    });
+    expect(
+      (
+        await readOne<{ v: unknown }>(
+          sql`select presentation as v from requests where id = ${reqHarnDirty}`,
+        )
+      ).v,
+    ).toEqual({
+      kind: "choice",
+      title: expectedClean,
+      options: [{ id: "allow", label: "Allow", hint: "allow-once" }],
+    });
+    expect(
+      (
+        await readOne<{ v: unknown }>(
+          sql`select presentation as v from requests where id = ${reqHarnClean}`,
+        )
+      ).v,
+    ).toEqual({
+      kind: "choice",
+      title: cleanKeep,
+      options: [{ id: "allow", label: "Allow", hint: "allow-once" }],
+    });
+
+    expect(
+      (
+        await readOne<{ v: unknown }>(
+          sql`select integration as v from tool_calls where id = ${tcDirty}`,
+        )
+      ).v,
+    ).toEqual({
+      kind: "computer-app",
+      connectionId: connAppDirty,
+      computerApp: { app: expectedClean, bundleId: "com.example.App" },
+    });
+    expect(
+      (
+        await readOne<{ v: unknown }>(
+          sql`select integration as v from tool_calls where id = ${tcClean}`,
+        )
+      ).v,
+    ).toEqual({
+      kind: "computer-app",
+      connectionId: connAppDirty,
+      computerApp: { app: cleanKeep, bundleId: "com.example.App" },
+    });
+
+    expect(
+      await readOne<{ title: string; pn: string }>(
+        sql`select title, profile_name as pn from personal_tabs where id = ${tabDirty}`,
+      ),
+    ).toEqual({
+      title: expectedClean,
+      pn: expectedClean,
+    });
+    expect(
+      await readOne<{ title: string; pn: string }>(
+        sql`select title, profile_name as pn from personal_tabs where id = ${tabClean}`,
+      ),
+    ).toEqual({
+      title: cleanKeep,
+      pn: cleanKeep,
+    });
+
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select title as v from browser_history_entries where profile_id = ${bpDirty.id} and url = ${histUrlDirty}`,
+        )
+      ).v,
+    ).toBe(expectedClean);
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select title as v from browser_history_entries where profile_id = ${bpClean.id} and url = ${histUrlClean}`,
+        )
+      ).v,
+    ).toBe(cleanKeep);
+
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select page_title as v from browser_session_uses where id = ${bsuDirty}`,
+        )
+      ).v,
+    ).toBe(expectedClean);
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select page_title as v from browser_session_uses where id = ${bsuClean}`,
+        )
+      ).v,
+    ).toBe(cleanKeep);
+
+    expect(
+      (
+        await readOne<{ v: unknown }>(
+          sql`select latest_place as v from runs where id = ${runFixture.run.id}`,
+        )
+      ).v,
+    ).toEqual({
+      tabId: tabDirty,
+      title: expectedClean,
+      site: "https://example.com",
+    });
+    expect(
+      (
+        await readOne<{ v: unknown }>(
+          sql`select latest_place as v from runs where id = ${runCleanFixture.run.id}`,
+        )
+      ).v,
+    ).toEqual(placeClean);
+
+    expect(
+      await readOne<{ p: unknown; title: string }>(
+        sql`select latest_place as p, title from threads where id = ${runFixture.threadId}`,
+      ),
+    ).toEqual({
+      p: { tabId: tabDirty, title: expectedClean, site: "https://example.com" },
+      title: "Agent",
+    });
+    expect(
+      await readOne<{ p: unknown; title: string }>(
+        sql`select latest_place as p, title from threads where id = ${runCleanFixture.threadId}`,
+      ),
+    ).toEqual({
+      p: placeClean,
+      title: cleanKeep,
+    });
+
+    expect(
+      await readOne<{ b: unknown; v: unknown }>(
+        sql`select body as b, view as v from transcript_items where id = ${tiDirty}`,
+      ),
+    ).toEqual({
+      b: { tabId: tabDirty, title: expectedClean, site: "https://example.com" },
+      v: { title: expectedClean, preview: "https://example.com" },
+    });
+    expect(
+      await readOne<{ b: unknown; v: unknown }>(
+        sql`select body as b, view as v from transcript_items where id = ${tiClean}`,
+      ),
+    ).toEqual({
+      b: placeClean,
+      v: { title: cleanKeep, preview: "https://example.com" },
+    });
+
+    expect(
+      await readOne<{ title: string; manifest: unknown; name: string }>(
+        sql`select title, manifest, name from integration_installations where id = ${instDirty}`,
+      ),
+    ).toEqual({
+      title: expectedClean,
+      name: "pkg-dirty",
+      manifest: {
+        name: "pkg-dirty",
+        keepKey: "untouched",
+        extensions: {
+          "com.opensteer": { device: { kind: "other", name: expectedClean, extra: 1 } },
+        },
+      },
+    });
+    expect(
+      await readOne<{ title: string; manifest: unknown }>(
+        sql`select title, manifest from integration_installations where id = ${instClean}`,
+      ),
+    ).toEqual({
+      title: cleanKeep,
+      manifest: manifestClean,
+    });
+
+    expect(
+      (
+        await readOne<{ v: unknown }>(
+          sql`select manifest as v from plugin_versions where id = ${pvDirty}`,
+        )
+      ).v,
+    ).toEqual({
+      name: "pkg-dirty",
+      keepKey: "untouched",
+      extensions: { "com.opensteer": { device: { kind: "other", name: expectedClean, extra: 1 } } },
+    });
+    expect(
+      (
+        await readOne<{ v: unknown }>(
+          sql`select manifest as v from plugin_versions where id = ${pvClean}`,
+        )
+      ).v,
+    ).toEqual(manifestClean);
+
+    expect(
+      (
+        await readOne<{ v: unknown }>(
+          sql`select server as v from computer_app_setup_requests where id = ${setupDirty}`,
+        )
+      ).v,
+    ).toEqual({
+      installationTitle: expectedClean,
+      name: "srv-name",
+      serverId: srvId,
+    });
+    expect(
+      (
+        await readOne<{ v: unknown }>(
+          sql`select server as v from computer_app_setup_requests where id = ${setupClean}`,
+        )
+      ).v,
+    ).toEqual({
+      installationTitle: cleanKeep,
+      name: "srv-name",
+      serverId: srvId,
+    });
+
+    expect(
+      await readOne<{ name: string; title: string; annotations: unknown }>(
+        sql`select name, title, annotations from integration_tools where id = ${toolDirty}`,
+      ),
+    ).toEqual({
+      name: `machine\u200DName-${toolDirty}`,
+      title: expectedClean,
+      annotations: { title: expectedClean, readOnlyHint: true },
+    });
+    expect(
+      await readOne<{ name: string; title: string; annotations: unknown }>(
+        sql`select name, title, annotations from integration_tools where id = ${toolClean}`,
+      ),
+    ).toEqual({
+      name: `machine\u200DName-${toolClean}`,
+      title: cleanKeep,
+      annotations: { title: cleanKeep, readOnlyHint: true },
+    });
+
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select name as v from triggers where id = ${trigDirty.trigger.id}`,
+        )
+      ).v,
+    ).toBe(expectedClean);
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select name as v from triggers where id = ${trigClean.trigger.id}`,
+        )
+      ).v,
+    ).toBe(cleanKeep);
+
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select name as v from browser_profiles where id = ${bpDirty.id}`,
+        )
+      ).v,
+    ).toBe(expectedClean);
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select name as v from browser_profiles where id = ${bpClean.id}`,
+        )
+      ).v,
+    ).toBe(cleanKeep);
+    expect(
+      (
+        await readOne<{ v: string }>(
+          sql`select name as v from browser_profiles where id = ${bpEmpty.id}`,
+        )
+      ).v,
+    ).toBe("Browser profile");
+  });
+
+  it("never attributes a stranger's cancelled channel-ingress input to the person in 0109", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const bridge = await storeFixture.createBridgeFixture("y4-cancelled-stranger");
+    const { configured, fixture } = bridge;
+    const { upsertChannelIdentity } = await import("./channel-store.js");
+    const { commitPersonalMutation } = await import("./personal-mutation.js");
+    const me = await database
+      .selectFrom("channelIdentities")
+      .select(["id", "principalId"])
+      .where("accountId", "=", configured.account.id)
+      .where("linkedUserId", "=", fixture.userId)
+      .executeTakeFirstOrThrow();
+    const stranger = await commitPersonalMutation(database, (tx) =>
+      upsertChannelIdentity(tx, {
+        accountId: configured.account.id,
+        displayName: "Stranger",
+        externalUserId: "U-Y4-STRANGER",
+      }),
+    );
+    const { thread: ownThread } = await store.createThread({
+      createdBy: fixture.userId,
+      environmentId: fixture.environmentId,
+      harnessInstanceId: fixture.harnessInstance.id,
+      idempotencyKey: "y4-own-dm-thread",
+      modelSelection: testModelSelection,
+      title: "Personal DM task",
+    });
+    const ownInput = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: ownThread.id,
+      content: [{ type: "text", text: "My own DM" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "y4-own-dm-input",
+    });
+    const strangerInput = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: ownThread.id,
+      content: [{ type: "text", text: "Stranger cancelled message" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "y4-stranger-cancelled-input",
+    });
+
+    await restoreRoutes(database);
+    const route = `chb_${crypto.randomUUID()}`;
+    await sql`insert into channel_bindings (id, account_id, created_by, selector, execution_policy,
+        access_policy, revision, status)
+      values (${route}, ${configured.account.id}, ${fixture.userId}, '{}'::jsonb, '{}'::jsonb,
+        ${JSON.stringify(testChannelAccessPolicy("owner"))}::jsonb, 1, 'active')`.execute(database);
+    const dmConv = createChannelId("conversation");
+    await sql`insert into channel_conversations (id, account_id, provider, external_account_id,
+        binding_id, binding_revision, external_conversation_id, conversation_type,
+        active_thread_id, provider_state, personal_context)
+      values (${dmConv}, ${configured.account.id}, 'slack', 'T-y4-dm', ${route}, 1, ${dmConv},
+        'dm', ${ownThread.id}, '{}'::jsonb, true)`.execute(database);
+    await sql`update thread_inputs set
+      authority_source = ${JSON.stringify({ kind: "channel-ingress", conversationId: dmConv })}::jsonb,
+      actor_principal_id = ${me.principalId}
+      where message_id = ${ownInput.message.id}`.execute(database);
+    await sql`update thread_inputs set
+      authority_source = ${JSON.stringify({ kind: "channel-ingress", conversationId: dmConv })}::jsonb,
+      actor_principal_id = ${stranger.principalId},
+      state = 'cancelled',
+      cancel_reason = 'cancelled'
+      where message_id = ${strangerInput.message.id}`.execute(database);
+
+    await sql`delete from kysely_migration where name >= ${chatRoutesEndMigrationName}`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+
+    // The person's own task stays theirs and their own DM input becomes user-session.
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("originConnectionId")
+          .where("id", "=", ownThread.id)
+          .executeTakeFirstOrThrow()
+      ).originConnectionId,
+    ).toBeNull();
+    expect(
+      (
+        await database
+          .selectFrom("threadInputs")
+          .select(["state", "authoritySource"])
+          .where("messageId", "=", ownInput.message.id)
+          .executeTakeFirstOrThrow()
+      ).authoritySource,
+    ).toEqual({ kind: "user-session", userId: fixture.userId });
+
+    // The stranger's cancelled input stays cancelled and is NEVER attributed to user-session!
+    const strangerRow = await database
+      .selectFrom("threadInputs")
+      .select(["state", "authoritySource", "connectionId"])
+      .where("messageId", "=", strangerInput.message.id)
+      .executeTakeFirstOrThrow();
+    expect(strangerRow.state).toBe("cancelled");
+    expect(strangerRow.authoritySource).toMatchObject({ kind: "connection" });
+    expect(strangerRow.connectionId).not.toBeNull();
+    // Under 0114, the cancelled stranger input carries the ended chat's connection_id truthfully
+    // without tainting the person's own task lineage.
+    const { threadContextLineage } = await import("./run-personal-context.js");
+    expect(await threadContextLineage(database, ownThread.id, fixture.userId)).toEqual({
+      fromChat: false,
+      personLineage: true,
+      personalContext: true,
+    });
+  });
+
+  it("preserves integers above 2^53 and sibling keys in JSON paths, cleans across a >500-row batch boundary, and is a no-op on a second run", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const bridge = await storeFixture.createBridgeFixture("y5-json-batch-noop");
+    const { configured, fixture } = bridge;
+    const bigInt = "9007199254740993";
+
+    // 1. agent_connections.identity_at_consent with >2^53 integer + dirty clientName
+    const connId = `mcn_${crypto.randomUUID()}`;
+    await sql`
+      insert into agent_connections (id, user_id, label, client_name, access_mode, resource,
+        created_at, expires_at, "grant", grant_revision, consent_version, identity_at_consent)
+      values (${connId}, ${fixture.userId}, 'Clean', 'Clean', 'approval-required', 'opensteer:mcp',
+        now(), now() + interval '1 day', '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2,
+        ${`{"bigId":${bigInt},"clientName":"Bad\\u202E\\nAgent","platformName":"Clean","nested":{"keep":${bigInt}}}`}::jsonb)
+    `.execute(database);
+
+    // 2. channel_ingress_events.event with >2^53 integer + dirty actor & conversation names
+    const ingressId = createChannelId("ingress");
+    await sql`
+      insert into channel_ingress_events (id, account_id, provider_event_id, lane_key, event, status, next_attempt_at)
+      values (${ingressId}, ${configured.account.id}, 'evt-bigint', 'lane-bigint',
+        ${`{"providerSeq":${bigInt},"actor":{"displayName":"Bad\\u202E\\nSender","externalUserId":"U1"},"conversation":{"displayName":"Bad\\u202E\\nRoom","externalConversationId":"C1"}}`}::jsonb,
+        'adopted', now())
+    `.execute(database);
+
+    // 3. 510 dirty apps rows with identical timestamps across the 500-row batch boundary
+    const batchNow = new Date("2026-11-23T12:00:00.000Z");
+    const appIds: string[] = [];
+    for (let i = 0; i < 510; i++) {
+      appIds.push(`app_${String(i).padStart(4, "0")}_${crypto.randomUUID()}`);
+    }
+    await sql`
+      insert into apps (id, owner_id, computer_id, name, created_at, updated_at)
+      select u.id, ${fixture.userId}, ${fixture.runnerId}, ${"Dirty\u202E\nApp"}, ${batchNow}, ${batchNow}
+      from unnest(${appIds}::text[]) as u(id)
+    `.execute(database);
+
+    await restoreRoutes(database);
+    await sql`delete from kysely_migration where name >= ${chatRoutesEndMigrationName}`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+
+    // Raw JSONB text must keep 9007199254740993 exact (not 9007199254740992) while cleaning names.
+    const rawConn = (
+      await sql<{ readonly text: string; readonly clientName: string }>`
+        select identity_at_consent::text as text, identity_at_consent->>'clientName' as "clientName"
+        from agent_connections where id = ${connId}
+      `.execute(database)
+    ).rows[0]!;
+    expect(rawConn.clientName).toBe("Bad Agent");
+    expect(rawConn.text).toContain(bigInt);
+    expect(rawConn.text).not.toContain("9007199254740992");
+
+    const rawIngress = (
+      await sql<{ readonly text: string; readonly actor: string; readonly room: string }>`
+        select event::text as text,
+          event->'actor'->>'displayName' as actor,
+          event->'conversation'->>'displayName' as room
+        from channel_ingress_events where id = ${ingressId}
+      `.execute(database)
+    ).rows[0]!;
+    expect(rawIngress.actor).toBe("Bad Sender");
+    expect(rawIngress.room).toBe("Bad Room");
+    expect(rawIngress.text).toContain(bigInt);
+    expect(rawIngress.text).not.toContain("9007199254740992");
+
+    // All 510 rows across the 500-row batch boundary were cleaned.
+    const dirtyRemaining = (
+      await sql<{ readonly count: string }>`
+        select count(*)::text as count from apps
+        where id = any(${appIds}::text[]) and name <> 'Dirty App'
+      `.execute(database)
+    ).rows[0]!;
+    expect(dirtyRemaining.count).toBe("0");
+
+    // Second run on an already-clean database touches zero rows (xmin stays identical).
+    const beforeXmins = (
+      await sql<{
+        readonly connXmin: string;
+        readonly ingressXmin: string;
+        readonly appXmin: string;
+      }>`
+        select
+          (select xmin::text from agent_connections where id = ${connId}) as "connXmin",
+          (select xmin::text from channel_ingress_events where id = ${ingressId}) as "ingressXmin",
+          (select xmin::text from apps where id = ${appIds[0]!}) as "appXmin"
+      `.execute(database)
+    ).rows[0]!;
+    await restoreRoutes(database);
+    await sql`delete from kysely_migration where name >= ${chatRoutesEndMigrationName}`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+    const afterXmins = (
+      await sql<{
+        readonly connXmin: string;
+        readonly ingressXmin: string;
+        readonly appXmin: string;
+      }>`
+        select
+          (select xmin::text from agent_connections where id = ${connId}) as "connXmin",
+          (select xmin::text from channel_ingress_events where id = ${ingressId}) as "ingressXmin",
+          (select xmin::text from apps where id = ${appIds[0]!}) as "appXmin"
+      `.execute(database)
+    ).rows[0]!;
+    expect(afterXmins).toEqual(beforeXmins);
   });
 });

@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import {
   administrationCommand,
@@ -285,6 +286,7 @@ export async function renameDevice(
         throw new OpensteerError({ code: "not_found", message: "Device not found" });
       const self = await getDeviceSelfRunnerId(transaction, deviceId);
       if (self) return renameRunner(transaction, self, ownerId, trimmed, { allowDeployment: true });
+      const name = outsideName(trimmed, 120) || "Device";
       await transaction
         .selectFrom("devices")
         .select("id")
@@ -293,7 +295,7 @@ export async function renameDevice(
         .executeTakeFirstOrThrow();
       await transaction
         .updateTable("devices")
-        .set({ name: trimmed, updatedAt: new Date() })
+        .set({ name, updatedAt: new Date() })
         .where("id", "=", deviceId)
         .where("removedAt", "is", null)
         .execute();
@@ -307,7 +309,7 @@ export async function renameDevice(
         .execute();
       await transaction
         .updateTable("integrationConnections")
-        .set({ displayName: trimmed, updatedAt: new Date() })
+        .set({ displayName: name, updatedAt: new Date() })
         .where(computerConnectionDeviceId, "=", deviceId)
         .where("status", "!=", "revoked")
         .execute();

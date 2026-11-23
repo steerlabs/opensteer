@@ -207,7 +207,7 @@ describe("agent consent on the phone", () => {
         title: "An agent wants to connect",
         mark: null,
         label: "Grok Verified",
-        who: { heading: "It calls itself: Grok Verified" },
+        who: { heading: "It calls itself: “Grok Verified”" },
       });
       const choice = row("resources", sourceId);
       expect(choice).toMatchObject({
@@ -276,7 +276,7 @@ describe("agent consent on the phone", () => {
     expect(form.mark).toBeNull();
     // Grok named itself: the Home verified nothing, so no check and no logo.
     expect(form.who).toEqual({
-      heading: "It calls itself: Grok",
+      heading: "It calls itself: “Grok”",
       origins: [],
       verified: false,
       warning: "Only allow this if you started it yourself.",
@@ -583,7 +583,7 @@ describe("agent consent on the phone", () => {
     expect(ready()).toMatchObject({
       title: "An agent wants to connect",
       mark: null,
-      who: { heading: "It calls itself: Claude", verified: false },
+      who: { heading: "It calls itself: “Claude”", verified: false },
       notice: "This agent’s verification changed. Review it again.",
       error: null,
       label: "Mine",

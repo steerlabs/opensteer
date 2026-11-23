@@ -1292,7 +1292,7 @@ export async function createThreadInTransaction(
   // Work in a lineage without the person's personal context never has a personal session.
   await ensureSelectedProviderSession(transaction, thread, {
     personalContext: await lineagePersonalContext(transaction, originConnectionId),
-    ...(originConnectionId !== null ? { personLineage: false } : {}),
+    personLineage: originConnectionId === null,
   });
   if (purpose === "voice")
     await transaction

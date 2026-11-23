@@ -3,6 +3,7 @@ import { assignmentWasCancelled } from "./execution-authority.js";
 import { assertRequestRevision, refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
+import { assertRequestOriginMayContinue } from "./resource-access.js";
 import { failNodeStop } from "./node-control.js";
 import {
   assertThreadCaller,
@@ -897,7 +898,7 @@ export async function enqueueRunnerControlInTransaction(
   }
   const thread = await transaction
     .selectFrom("threads")
-    .select(["environmentId", "id", "purpose", "status"])
+    .select(["environmentId", "id", "originConnectionId", "purpose", "status"])
     .where("id", "=", input.threadId)
     .executeTakeFirst();
   if (!thread)
@@ -974,6 +975,12 @@ export async function enqueueRunnerControlInTransaction(
       throw new OpensteerError({
         code: "conflict",
         message: "This Run was stopped, so it no longer takes answers",
+      });
+    }
+    if (input.type === "request.respond") {
+      await assertRequestOriginMayContinue(transaction, run.requestedBy, {
+        connectionId: run.connectionId,
+        threadOriginConnectionId: thread.originConnectionId,
       });
     }
   }

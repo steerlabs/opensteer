@@ -1,7 +1,7 @@
 import type { AgentConnectionIdentityAtConsent } from "@opensteer/control-plane-protocol";
 import type { AgentConnectionIdentityPresentation } from "@opensteer/protocol";
-import { workWords } from "./agent-work-copy.js";
-import { plainSentence, sentenceWith, siteOrigin, type SentencePart } from "./sentence-parts.js";
+import { workSentence, workWords } from "./agent-work-copy.js";
+import { plainSentence, siteOrigin, type SentencePart } from "./sentence-parts.js";
 
 /**
  * Who a connected agent is, as far as the Home could prove at consent. The Home's own
@@ -178,14 +178,16 @@ export function agentConsentHeading(who: AgentWho): {
   readonly title: string;
   readonly mark: boolean;
   readonly claim: string | null;
+  readonly claimParts: readonly SentencePart[] | null;
 } {
-  return who.verified
-    ? { title: who.heading, mark: true, claim: null }
-    : {
-        title: workWords("who.consentHeading"),
-        mark: false,
-        claim: who.claim && workWords("who.claim", { name: who.claim }),
-      };
+  if (who.verified) return { title: who.heading, mark: true, claim: null, claimParts: null };
+  const claimParts = who.claim ? workSentence("who.claim", { name: { name: who.claim } }) : null;
+  return {
+    title: workWords("who.consentHeading"),
+    mark: false,
+    claim: claimParts ? plainSentence(claimParts) : null,
+    claimParts,
+  };
 }
 
 export function agentWhoOriginLine(origin: AgentWhoOrigin): string {
@@ -200,29 +202,30 @@ export function agentWhoOriginParts(origin: AgentWhoOrigin): readonly SentencePa
   const parsed = siteOrigin(origin.origin);
   const address = parsed === null ? { name: origin.origin } : { address: parsed };
   return origin.name
-    ? sentenceWith(
-        (slot) =>
-          workWords("who.namedOrigin", {
-            role: origin.roleLabel,
-            name: slot("name"),
-            origin: slot("origin"),
-          }),
+    ? workSentence(
+        "who.namedOrigin",
         { name: { name: origin.name }, origin: address },
+        { role: origin.roleLabel },
       )
-    : sentenceWith(
-        (slot) =>
-          workWords("who.redirectOrigin", { role: origin.roleLabel, origin: slot("origin") }),
-        { origin: address },
-      );
+    : workSentence("who.redirectOrigin", { origin: address }, { role: origin.roleLabel });
 }
 
 /**
- * The agent's name as every surface says it: "Verified: Claude", "Says it is Grok", or the
+ * The agent's name as parts: `Verified: “Claude”`, `Says it is “Grok”`, or the plain name of an
+ * app on this computer or one whose verification was withdrawn.
+ */
+export function agentWhoNameParts(who: AgentWho): readonly SentencePart[] {
+  if (who.verified) return workSentence("who.verifiedAs", { name: { name: who.heading } });
+  if (who.selfAsserted) return workSentence("who.saysItIs", { name: { name: who.heading } });
+  return [{ name: who.heading }];
+}
+
+/**
+ * The agent's name as every surface says it: "Verified: “Claude”", "Says it is “Grok”", or the
  * plain name of an app on this computer or one whose verification was withdrawn.
  */
 export function agentWhoName(who: AgentWho): string {
-  if (who.verified) return workWords("who.verifiedAs", { name: who.heading });
-  if (who.selfAsserted) return workWords("who.saysItIs", { name: who.heading });
+  if (who.verified || who.selfAsserted) return plainSentence(agentWhoNameParts(who));
   return who.heading;
 }
 

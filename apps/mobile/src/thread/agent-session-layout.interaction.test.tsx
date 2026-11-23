@@ -279,14 +279,14 @@ describe("what a person reads and presses in a connected agent's task", () => {
         }
         // The footer stands where a composer would: it says the agent's state whole and leaves
         // the task most of the screen.
-        const state = textElement(container, "Claude is working");
+        const state = textElement(container, "“\u2068Claude\u2069” is working");
         expect(frames.cut(state), "the agent's state is cut").toBe(false);
         const footer = container.querySelector('[data-testid="agent-session-footer"]')!;
         expect(frames.frame(footer).height, "the footer takes the task's room").toBeLessThanOrEqual(
           phone.window.height * 0.4,
         );
         // The agent's state and its Stop, above the screen's own bottom edge.
-        const stop = container.querySelector('[aria-label="Stop Claude"]');
+        const stop = container.querySelector('[aria-label="Stop “\u2068Claude\u2069”"]');
         if (!stop) throw new Error("No Stop");
         expectClear(container, frames, phone, stop, "Stop");
         expect(frames.frame(stop).y + frames.frame(stop).height).toBeLessThanOrEqual(

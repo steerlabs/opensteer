@@ -17,7 +17,7 @@ export async function applyBridgeConnections(database: Kysely<unknown>): Promise
       add column bridge_ended_by text check (bridge_ended_by in ('you', 'account', 'computer')),
       add constraint agent_connections_bridge check (
         -- A bridge says who may speak. A sender rule without an account is only the ended row
-        -- that ties the tasks chats ran before the update to "anyone" (0053).
+        -- that ties the tasks chats ran before the update to "anyone" (0109).
         (bridge_account_id is null or bridge_senders is not null)
         and (bridge_senders is null or bridge_account_id is not null or revoked_at is not null)
         and (bridge_account_id is not null or bridge_conversation_id is null)

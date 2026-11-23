@@ -373,6 +373,28 @@ export async function assertPersonMayContinue(
   throw forbidden(standing.chat ? chatEndedMessage : agentEndedForPersonMessage);
 }
 
+/**
+ * The one standing check for answering a Request (live, durable, or direct-operation): neither the
+ * Request's own connection nor its task's origin connection may have ended. Called in the
+ * transaction that records a decision, never in a post-effect receipt write. For the person's own
+ * tasks both ids are null and this runs no query.
+ */
+export async function assertRequestOriginMayContinue(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  origin: {
+    readonly connectionId: string | null;
+    readonly threadOriginConnectionId: string | null;
+  },
+): Promise<void> {
+  await assertPersonMayContinue(database, ownerUserId, origin.connectionId);
+  if (
+    origin.threadOriginConnectionId !== null &&
+    origin.threadOriginConnectionId !== origin.connectionId
+  )
+    await assertPersonMayContinue(database, ownerUserId, origin.threadOriginConnectionId);
+}
+
 /** The send rule against the connection as it stands now; refuses as an unknown task would. */
 export async function assertSendEligible(
   database: Kysely<DatabaseSchema>,

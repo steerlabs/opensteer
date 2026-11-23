@@ -52,7 +52,7 @@ function keepScriptJoiner(chars: readonly string[], index: number): boolean {
  * A name from outside Opensteer (a connected agent's own name, the label a person typed at
  * consent, a chat's conversation, account or sender name, a task title taken from a chat's
  * message) as the Home keeps and serves it: the one cleaner, run where the name enters the Home
- * and in `0053` for stored rows, so no answer carries it dirty and no client cleans it again.
+ * and in `0109` for stored rows, so no answer carries it dirty and no client cleans it again.
  *
  * Line and paragraph breaks and tabs become one space. A control or format character (Unicode Cc
  * and Cf) is removed unless it is part of how the name is written — three exceptions only:

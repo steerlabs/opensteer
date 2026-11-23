@@ -1133,7 +1133,7 @@ export class ProductToolHandlers {
     if (input.taskId) {
       const target = await this.#store.readTask(reader, input.taskId, caller.userId, {
         ...lineageOption(caller),
-        ...(caller.kind === "connection" ? { nativeOnly: true } : {}),
+        nativeOnly: caller.kind === "connection",
       });
       if (!target) throw forbidden("Task is unavailable");
     }

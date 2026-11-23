@@ -1,6 +1,6 @@
 import {
   agentSentence,
-  agentWords,
+  agentText,
   phoneSentence,
   type ExternalAgentGuide,
   type guideAddress,
@@ -44,7 +44,7 @@ export function ExternalAgentSetupSheet(props: {
                 <AddressStep address={props.address} onRemoteAccess={props.onRemoteAccess} />
               </Step>
               <Step number={2} title={guide.step} />
-              <Step number={3} title={agentWords("agents.add.step3", { name: guide.name })} />
+              <Step number={3} title={agentText("agents.add.step3", { name: guide.name })} />
             </>
           ) : (
             <View accessibilityLiveRegion="polite" style={styles.done}>

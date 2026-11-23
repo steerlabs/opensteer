@@ -6,6 +6,7 @@ import {
   agentSentence,
   agentText,
   agentWords,
+  workSentence,
   workWords,
   chatFacts,
   chatStopFoundRunEnded,
@@ -410,7 +411,9 @@ export function connectedAgentSections(props: {
                       label: who.verified
                         ? who.heading === agent
                           ? workWords("who.verified")
-                          : workWords("who.verifiedAs", { name: who.heading })
+                          : phoneSentence(
+                              workSentence("who.verifiedAs", { name: { name: who.heading } }),
+                            )
                         : who.heading,
                       ...(detail.row.identity.who.origins.length ? {} : { detail: who.detail }),
                     },

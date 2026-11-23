@@ -96,6 +96,7 @@ describe("Connected agents on the phone", () => {
     expect(lines("disconnected")).toEqual([
       ["Shop helper", "Check its last action"],
       ["Old notes agent", "Disconnected"],
+      ["Old search agent", "Expired"],
     ]);
     const grok = section("connected")!.rows[0] as Extract<NativeSettingsRow, { kind: "button" }>;
     expect(grok).toMatchObject({ opens: true });

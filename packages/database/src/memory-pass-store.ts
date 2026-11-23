@@ -245,10 +245,10 @@ export async function memoryPassWakeContext(
     (wakes.completed?.getTime() ?? (wakes.first?.getTime() ?? now) - firstPassWindow[role]) -
       commitOverlap,
   );
+  // A task that could not read the person's memory is never a source of it.
   const conversations = await changedTasksSubquery(transaction, since, {
     excludeSystemWorkers: true,
   })
-    // A task that could not read the person's memory is never a source of it.
     .where(lineageHasPersonalContext(sql.ref("threads.origin_connection_id")))
     .orderBy("newest", "desc")
     .limit(maxConversations + 1)

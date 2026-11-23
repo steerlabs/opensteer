@@ -488,6 +488,15 @@ export function mockConnectedAgents(
       lastUsedMinutes: 5 * 24 * 60,
       now,
     }),
+    agent({
+      n: 9,
+      label: "Old search agent",
+      origin: "https://search.example",
+      accessMode: "approval-required",
+      grant: { scope: "selected", tasks: false, resources: [] },
+      state: "expired",
+      now,
+    }),
   ];
   if (scene === "expired") return { connections };
   // Chats are listed beside an ordinary connected agent, as on a real Home.

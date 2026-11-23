@@ -1,7 +1,10 @@
+import { plainSentence, sentenceWith, type SentencePart } from "./sentence-parts.js";
+
 /**
  * Every word the person reads about a connected agent's own work: its task, its operations,
  * the tab it uses, the Request it opens, and who it is. Web and phone both read these.
- * `{name}` marks a value filled in by `workWords`.
+ * `{name}` marks a value filled in by `workSentence` (for outside names) or `workWords`
+ * (for Opensteer's own words and numbers).
  */
 export const agentWorkCopy = {
   "work.someAgent": "A connected agent",
@@ -61,9 +64,9 @@ export const agentWorkCopy = {
   "tab.chromeTitle": "Chrome · {title}",
   "tab.chromeDetail": "Shared from {device}",
   "tab.chromeUsedBy": "Used by {names}",
-  "tab.using": "{agent} is using this page for “{task}”",
+  "tab.using": "{agent} is using this page for {task}",
   "tab.usingNoTask": "{agent} is using this page",
-  "tab.shared": "You and {agent} are using this page, for “{task}”",
+  "tab.shared": "You and {agent} are using this page, for {task}",
   "tab.sharedNoTask": "You and {agent} are using this page",
   "tab.stopped": "Stopped by you",
   "tab.stop": "Stop",
@@ -111,11 +114,67 @@ export const agentWorkCopy = {
 
 export type AgentWorkCopyId = keyof typeof agentWorkCopy;
 
-export function workWords(
+type ForbiddenOutsideCopyKey = "agent" | "label" | "name" | "task";
+const forbiddenOutsideCopyKeys = new Set<string>(["agent", "label", "name", "task"]);
+
+export type SafeWorkCopyValues = Readonly<Record<string, string | number>> &
+  Partial<Record<ForbiddenOutsideCopyKey, never>>;
+
+function formatWorkCopy(
   id: AgentWorkCopyId,
   values: Readonly<Record<string, string | number>> = {},
 ): string {
   return agentWorkCopy[id].replace(/\{(\w+)\}/gu, (whole, key: string) =>
     Object.hasOwn(values, key) ? String(values[key]) : whole,
   );
+}
+
+/**
+ * One string from `agentWorkCopy` for Opensteer's own words and numbers. Outside-name keys
+ * (`agent`, `label`, `name`, `task`) are forbidden here: build those as parts with `workSentence`
+ * so every surface quotes and isolates them (`SentenceText`, `phoneSentence`, `isolatedPlainSentence`).
+ */
+export function workWords(id: AgentWorkCopyId, values: SafeWorkCopyValues = {}): string {
+  for (const key of Object.keys(values)) {
+    if (forbiddenOutsideCopyKeys.has(key)) {
+      throw new TypeError(
+        `workWords("${id}") forbids outside-name key "${key}"; use workSentence instead.`,
+      );
+    }
+  }
+  return formatWorkCopy(id, values);
+}
+
+/**
+ * A work-copy sentence with outside names as `SentencePart` slots (`{ name }` / `{ address }`)
+ * so web (`SentenceText`), mobile (`phoneSentence`), and plain-text surfaces quote and isolate
+ * outside names from Opensteer's own words.
+ */
+export function workSentence(
+  id: AgentWorkCopyId,
+  outside: Readonly<Record<string, SentencePart>>,
+  values: Readonly<Record<string, string | number>> = {},
+): readonly SentencePart[] {
+  const words: Record<string, string | number> = { ...values };
+  const parts: Record<string, { readonly name: string } | { readonly address: string }> = {};
+  for (const [key, part] of Object.entries(outside))
+    if (typeof part === "string") words[key] = part;
+    else parts[key] = part;
+  return sentenceWith(
+    (slot) =>
+      formatWorkCopy(id, {
+        ...words,
+        ...Object.fromEntries(Object.keys(parts).map((key) => [key, slot(key)])),
+      }),
+    parts,
+  );
+}
+
+/** The same as plain text: each name cleaned and quoted. */
+export function workText(
+  id: AgentWorkCopyId,
+  outside: Readonly<Record<string, SentencePart>>,
+  values: Readonly<Record<string, string | number>> = {},
+): string {
+  return plainSentence(workSentence(id, outside, values));
 }

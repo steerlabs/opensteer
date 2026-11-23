@@ -1,6 +1,6 @@
 import { expiredPersonalSignInRequests, nextPersonalRequestDeadline } from "./request-deadlines.js";
 import { liveConnection } from "./connection-liveness.js";
-import { assertPersonMayContinue } from "./resource-access.js";
+import { assertRequestOriginMayContinue } from "./resource-access.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import type {
   IntegrationConnectionSummary as LegacyIntegrationConnectionSummary,
@@ -3186,7 +3186,23 @@ export async function fulfilBrowserSignInRequestInTransaction(
     .where("id", "=", input.requestId)
     .executeTakeFirst();
   if (!matches(observed)) return null;
-  await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
+  // The sign-in already reached the browser: never refuse or roll back its receipt if the
+  // connection ended mid-delivery. Record the Request as fulfilled and enqueue a continuation
+  // only if its connection and task origin are still active.
+  const { origin } = await lockActiveDurableRequestAuthority(
+    transaction,
+    requestFromRow(observed),
+    {
+      checkConnection: false,
+    },
+  );
+  let mayContinue = true;
+  try {
+    await assertRequestOriginMayContinue(transaction, observed.requestedBy, origin);
+  } catch (error) {
+    if (error instanceof OpensteerError && error.code === "forbidden") mayContinue = false;
+    else throw error;
+  }
   await lockRequestThreads(transaction, [observed.originatingThreadId]);
   const row = await transaction
     .selectFrom("requests")
@@ -3218,7 +3234,7 @@ export async function fulfilBrowserSignInRequestInTransaction(
     .returningAll()
     .executeTakeFirstOrThrow();
   const resolved = requestFromRow(resolvedRow);
-  await enqueueContinuation(transaction, resolved, now);
+  if (mayContinue) await enqueueContinuation(transaction, resolved, now);
   await refreshRequestState(transaction, resolved.id);
   return {
     request: resolved,
@@ -3537,14 +3553,24 @@ async function lockRequestOrigin(
 export async function lockActiveDurableRequestAuthority(
   transaction: Transaction<DatabaseSchema>,
   request: Request,
-): Promise<void> {
+  options?: { readonly checkConnection?: boolean },
+): Promise<{
+  readonly origin: {
+    readonly connectionId: string | null;
+    readonly threadOriginConnectionId: string | null;
+  };
+}> {
   if (request.mode !== "durable") {
     throw new OpensteerError({
       code: "conflict",
       message: "Request is not durable",
     });
   }
-  if (request.originatingAgentSessionId && request.kind === "browser.password-sign-in") {
+  if (
+    options?.checkConnection !== false &&
+    request.originatingAgentSessionId &&
+    request.kind === "browser.password-sign-in"
+  ) {
     const live = await transaction
       .selectFrom("agentOperations")
       .innerJoin("agentSessions", "agentSessions.id", "agentOperations.sessionId")
@@ -3580,14 +3606,21 @@ export async function lockActiveDurableRequestAuthority(
     });
   }
   await requirePersonalOwner(transaction, request.requestedBy);
-  // A Request cannot be answered once the connection its task or origin belongs to has ended.
-  await assertPersonMayContinue(transaction, request.requestedBy, origin.connectionId);
-  if (origin.threadOriginConnectionId && origin.threadOriginConnectionId !== origin.connectionId)
-    await assertPersonMayContinue(
-      transaction,
-      request.requestedBy,
-      origin.threadOriginConnectionId,
-    );
+  // A Request cannot be answered once the connection its task or origin belongs to has ended;
+  // post-effect receipt recording passes `checkConnection: false` so already-delivered effects
+  // are never rolled back.
+  if (options?.checkConnection !== false) {
+    await assertRequestOriginMayContinue(transaction, request.requestedBy, {
+      connectionId: origin.connectionId,
+      threadOriginConnectionId: origin.threadOriginConnectionId,
+    });
+  }
+  return {
+    origin: {
+      connectionId: origin.connectionId,
+      threadOriginConnectionId: origin.threadOriginConnectionId,
+    },
+  };
 }
 function clampLimit(limit: number): number {
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) {

@@ -5782,7 +5782,7 @@ export async function delegateThreadInTransaction(
       ? {}
       : {
           personalContext: await lineagePersonalContext(transaction, childConnectionId),
-          ...(childConnectionId !== null ? { personLineage: false } : {}),
+          personLineage: childConnectionId === null,
         },
   );
   await transaction
