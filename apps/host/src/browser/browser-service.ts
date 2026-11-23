@@ -4146,6 +4146,7 @@ export class BrowserService {
       // V5: a pooled bind records the agent's tab like every other bind, so the tab is the
       // agent's (slept last) from the bind, not from its first input.
       await this.#recordAgentTabPlace(agent, session, row.id);
+      this.#noteBoundTab(session.id, row.id, agent.agentBindingId);
       return { tabId: row.id, sessionId: session.id, backend, reloaded: false };
     }
     const existing =
@@ -4212,6 +4213,7 @@ export class BrowserService {
       await this.pageTabs.admitted!(fresh);
       await this.admitAgentBrowser(agent, "read-write", [session]);
       await this.#recordAgentTabPlace(agent, session, row.id);
+      this.#noteBoundTab(session.id, row.id, agent.agentBindingId);
       return {
         tabId: row.id,
         sessionId: session.id,
@@ -6283,6 +6285,17 @@ export class BrowserService {
   }
 
   readonly #attachHolds = new Map<string, NodeJS.Timeout>();
+  /** V5: the tabs each binding was handed at its bind, per session, until the binding ends. */
+  readonly #boundTabs = new Map<BrowserSessionId, Map<BrowserSurfaceId, Set<string>>>();
+  #noteBoundTab(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId, binding: string): void {
+    const tabs = this.#boundTabs.get(sessionId) ?? new Map<BrowserSurfaceId, Set<string>>();
+    this.#boundTabs.set(sessionId, tabs);
+    const bindings = tabs.get(surfaceId) ?? new Set<string>();
+    tabs.set(surfaceId, bindings);
+    if (bindings.has(binding)) return;
+    bindings.add(binding);
+    this.#brokers.get(sessionId)?.refreshSessionState();
+  }
   /** V4: keeps a tab woken for an agent's connection awake until it attaches or the link ends. */
   #holdForAttach(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId, ttlMs: number): void {
     const key = `attach:${sessionId}:${surfaceId}`;
@@ -6382,6 +6395,11 @@ export class BrowserService {
       if (actor.sessionId === sessionId)
         for (const surfaceId of actor.surfaces.keys())
           agentTabs.add(BrowserSurfaceIdSchema.parse(surfaceId));
+    // V5: and every tab a live binding was handed at its bind, before the agent has an actor
+    // in this session (a connected agent's script, a pooled bind).
+    for (const [surfaceId, bindings] of this.#boundTabs.get(sessionId) ?? [])
+      if ([...bindings].some((binding) => !this.#endedBindings.has(binding)))
+        agentTabs.add(surfaceId);
     return {
       runs,
       pinned: [...pinned],
@@ -7806,6 +7824,16 @@ export class BrowserService {
       if (attachment.binding === agentBindingId) attachment.close();
     for (const actor of this.#actors.values())
       if (actor.binding === agentBindingId) this.#clearActor(actor);
+    for (const [sessionId, tabs] of this.#boundTabs) {
+      let changed = false;
+      for (const [surfaceId, bindings] of tabs)
+        if (bindings.delete(agentBindingId)) {
+          changed = true;
+          if (!bindings.size) tabs.delete(surfaceId);
+        }
+      if (!tabs.size) this.#boundTabs.delete(sessionId);
+      if (changed) this.#brokers.get(sessionId)?.refreshSessionState();
+    }
     const now = this.#activityClock.now();
     this.#endedBindings.delete(agentBindingId);
     this.#endedBindings.set(agentBindingId, now);
