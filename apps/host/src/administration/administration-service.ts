@@ -96,6 +96,18 @@ export type AdministrationCommand =
       }
     >
   | Parameters<typeof executeDeviceAdministration>[2];
+/**
+ * The commands this service runs for agents as well as the person: its own, the browser's site
+ * removal, a chat account's status and the device administration it hands on.
+ */
+export const agentAdministrationTypes: ReadonlySet<string> = new Set([
+  ...coreTypes,
+  "browser.site.remove",
+  "channel.connection.status.set",
+  "plugin.remove",
+  "integration.grant.revoke",
+  "integration.disconnect",
+]);
 export function isAdministrationCommand(
   command: HostApiCommand,
 ): command is CoreAdministrationCommand {

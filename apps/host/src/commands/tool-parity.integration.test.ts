@@ -17,6 +17,7 @@ import {
   type CommandRow,
 } from "@opensteer/protocol/command-table";
 import { OpensteerError } from "@opensteer/core";
+import { agentTools } from "@opensteer/agent-tools";
 import { CommandService } from "@opensteer/orchestration";
 import type { HostApiCommand } from "@opensteer/protocol";
 import expectedRows from "../../../../packages/protocol/src/command-table.rows.json" with { type: "json" };
@@ -1017,6 +1018,11 @@ it("records what today's tools let each caller do, and the door answers the same
       "a reason or an owed entry for a command that has a scenario",
     ).toEqual([]);
 
+    // After A5 removed a tool, what it did is the frozen record; the door is still held to it.
+    const offeredNames = new Set<string>(agentTools.map(({ name }) => name));
+    const frozen = existsSync(fixturePath)
+      ? (JSON.parse(readFileSync(fixturePath, "utf8")) as Record<string, Record<Caller, Outcome>>)
+      : {};
     const recorded: Record<string, Record<Caller, Outcome>> = {};
     const differences: string[] = [];
     const unfaithful: string[] = [];
@@ -1035,16 +1041,18 @@ it("records what today's tools let each caller do, and the door answers the same
         // sends one, the door answers the tool's own command instead.
         const built = scenario.command?.(caller);
         const answered = built ? await doorAnswer(caller, built) : undefined;
-        active = built ? { caller, type: built.type as string } : undefined;
+        const gone = !offeredNames.has(scenario.tool);
+        active = built && !gone ? { caller, type: built.type as string } : undefined;
         // A server offering this caller no tools at all has no tools/call: the tool is not there.
-        const result = await callers[caller].client
-          .callTool({ name: scenario.tool, arguments: args })
-          .catch((error: unknown) => {
-            if (error instanceof Error && "code" in error && error.code === -32601)
-              return { isError: true, structuredContent: { error: { code: "not_found" } } };
-            throw error;
-          })
-          .finally(() => undefined);
+        const result = gone
+          ? { isError: false, structuredContent: {} }
+          : await callers[caller].client
+              .callTool({ name: scenario.tool, arguments: args })
+              .catch((error: unknown) => {
+                if (error instanceof Error && "code" in error && error.code === -32601)
+                  return { isError: true, structuredContent: { error: { code: "not_found" } } };
+                throw error;
+              });
         const caught = active;
         active = undefined;
         if (caught?.captured && built) {
@@ -1072,15 +1080,19 @@ it("records what today's tools let each caller do, and the door answers the same
         const notOffered = JSON.stringify((result as { content?: unknown }).content ?? "").includes(
           "-32602",
         );
-        const tool: Outcome = !result.isError
-          ? pending
-            ? "asked"
-            : "allowed"
-          : notOffered
-            ? "refused:not_offered"
-            : error?.code === "not_found"
-              ? "not_found"
-              : `refused:${error?.code ?? "unknown"}`;
+        const frozenOutcome = gone ? frozen[scenario.name]?.[caller] : undefined;
+        if (gone && !frozenOutcome) throw new Error(`${scenario.name}: removed with no record`);
+        const tool: Outcome = frozenOutcome
+          ? frozenOutcome
+          : !result.isError
+            ? pending
+              ? "asked"
+              : "allowed"
+            : notOffered
+              ? "refused:not_offered"
+              : error?.code === "not_found"
+                ? "not_found"
+                : `refused:${error?.code ?? "unknown"}`;
         recorded[scenario.name]![caller] = tool;
         if (process.env.OPENSTEER_TOOL_PARITY_TRACE === "1" && result.isError)
           console.error("PARITY", scenario.name, caller, JSON.stringify(result).slice(0, 600));

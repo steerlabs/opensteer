@@ -2160,6 +2160,12 @@ const opensteerSteps = new Map<string, OpensteerStep>([
 
   ["opensteer_ai_account_list", said(["Looking up AI accounts", "Looked up AI accounts"], "list")],
   [
+    "opensteer_commands",
+    said(["Looking up what it can change", "Looked up what it can change"], "list"),
+  ],
+  ["opensteer_command", said(["Changing Opensteer", "Changed Opensteer"], "pencil")],
+  ["opensteer_state", said(["Reading Opensteer's settings", "Read Opensteer's settings"], "list")],
+  [
     "opensteer_ai_account_update",
     saidByAction(
       {

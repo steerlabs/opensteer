@@ -252,6 +252,8 @@ import {
 } from "../notifications/notification-publication-client.js";
 import { createHostServer } from "../server.js";
 import { CommandRequestExpiry, CommandRequestService } from "../commands/requests.js";
+import { agentCommandRegistry } from "../commands/agent-door.js";
+import { CommandTools } from "../mcp/handlers/commands.js";
 import { CommandRequestStore } from "@opensteer/database";
 import { EgressService } from "../server/egress-service.js";
 import { HostStaticDistribution } from "../server/static-distribution.js";
@@ -524,6 +526,8 @@ export async function createHostRuntime(
   let removeMutationHooks: (() => void) | undefined;
   let deadlines: RequestDeadlines | undefined;
   let stopCommandRequestExpiry: (() => void) | undefined;
+  // The agents' tools are built before the Home's command Requests; they read it when called.
+  let commandRequestsForTools: CommandRequestService | undefined;
   let executionLeaseLoop: DeadlineDrain | undefined;
   let finishLoop: DeadlineDrain | undefined;
   let connectionMaintenance: DeadlineDrain | undefined;
@@ -3278,6 +3282,13 @@ export async function createHostRuntime(
       store,
       handlers: agentToolHandlers({
         administration,
+        commands: new CommandTools({
+          database,
+          registry: agentCommandRegistry(administration.service),
+          requests: () => commandRequestsForTools,
+          sessions: agentSessions,
+          administration,
+        }),
         plugins: pluginTools,
         localServers: localServerRegistry,
         apps,
@@ -3500,12 +3511,12 @@ export async function createHostRuntime(
       reportMutationFailure(error),
     );
     stopCommandRequestExpiry = () => commandRequestExpiry.stop();
-    const commandRequests = new CommandRequestService({
+    const commandRequests = (commandRequestsForTools = new CommandRequestService({
       store: commandRequestStore,
       database: store.database,
       requests: store.requests,
       expiry: commandRequestExpiry,
-    });
+    }));
     // An approval cut off by a restart may have taken effect: it is unknown, never run again.
     // The same read says when the earliest open ask ends.
     commandRequestExpiry.arm((await commandRequestStore.recoverRunning()).nextExpiry);

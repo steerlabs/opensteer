@@ -38,7 +38,9 @@ import {
   opensteer_automation_list,
   opensteer_automation_create,
 } from "./triggers.js";
+import { commandTools } from "./commands.js";
 export const agentTools = [
+  ...commandTools,
   ...aiAccountTools,
   ...tabTools,
   ...appTools,

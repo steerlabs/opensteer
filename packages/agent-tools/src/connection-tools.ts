@@ -51,6 +51,7 @@ export function connectionHasChromeTabs(grant: AgentGrant) {
 }
 
 export const connectionDirectTools: ReadonlySet<string> = new Set([
+  "opensteer_command",
   "browser_use",
   "browser_connect",
   "computer_use",

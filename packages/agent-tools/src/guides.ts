@@ -152,6 +152,9 @@ export function connectionInstructionsFor(
     ...(names.has("ask_person")
       ? ["Use ask_person for help or a decision. Never ask for secrets in chat."]
       : []),
+    ...(names.has("opensteer_commands")
+      ? ["To change Opensteer itself, use opensteer_commands."]
+      : []),
   ].join("\n");
 }
 
