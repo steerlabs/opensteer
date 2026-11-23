@@ -10,18 +10,14 @@ interface SafeMessageOptions {
 
 export function safeMessage(error: unknown, options: SafeMessageOptions): string {
   const maximumLength = options.maximumLength ?? 2_000;
+  const secrets = options.secrets ?? networkCredentialSecrets(process.env);
   let message = error instanceof Error && error.message ? error.message : options.fallback;
-  if (options.secrets) message = redactNetworkCredentials(message, options.secrets);
+  message = redactNetworkCredentials(message, secrets);
   if (options.singleLine) message = message.replace(/[\r\n\0]+/gu, " ");
   for (const { pattern, replacement } of options.redactions ?? []) {
     message = message.replace(pattern, replacement);
   }
-  return (
-    message.slice(0, maximumLength) ||
-    (options.secrets
-      ? redactNetworkCredentials(options.fallback, options.secrets)
-      : options.fallback)
-  );
+  return message.slice(0, maximumLength) || redactNetworkCredentials(options.fallback, secrets);
 }
 
 /**
@@ -81,7 +77,10 @@ export function networkCredentialSecrets(
     if (separator <= 0) continue;
     const userinfo = address.slice(0, separator);
     const colon = userinfo.indexOf(":");
-    if (colon < 0) continue;
+    if (colon < 0) {
+      addSecret(userinfo, 4);
+      continue;
+    }
     addSecret(userinfo);
     addSecret(userinfo.slice(colon + 1), 4);
   }
@@ -114,7 +113,10 @@ export const urlCredentialRedaction = Object.freeze({
   replacement: "$1[REDACTED]@",
 });
 
-export function redactNetworkCredentials(text: string, secrets: readonly string[]): string {
+export function redactNetworkCredentials(
+  text: string,
+  secrets: readonly string[] = networkCredentialSecrets(process.env),
+): string {
   for (const secret of secrets) {
     if (secret) text = text.split(secret).join("[REDACTED]");
   }

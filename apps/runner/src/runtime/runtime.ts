@@ -631,11 +631,13 @@ export class RunnerRuntime {
       throw new Error("An isolated-service Linux Runner requires the Runner-owned harness sandbox");
     }
     this.#harnessSandbox = options.harnessSandbox;
-    this.#logger = options.logger;
     this.#safeMessageOptions =
       options.networkSecrets === undefined
         ? safeMessageOptions
         : { ...safeMessageOptions, secrets: options.networkSecrets };
+    this.#logger = options.logger
+      ? scrubbingLogger(options.logger, this.#safeMessageOptions.secrets)
+      : undefined;
     this.#maxConcurrentRuns = boundedPositiveInteger(
       options.maxConcurrentRuns,
       1,
@@ -1012,10 +1014,12 @@ export class RunnerRuntime {
             this.#privateStateDirectory,
             signal,
           );
+          const redactDetail = (detail: string) =>
+            redactNetworkCredentials(detail, this.#safeMessageOptions.secrets);
           if (result.status === "preparing") {
             return HarnessInstanceCatalogSchema.parse({
               connections: [],
-              detail: result.detail,
+              detail: redactDetail(result.detail),
               driverKind: definition.driverKind,
               harnessInstanceId: definition.id,
               models: [],
@@ -1028,7 +1032,7 @@ export class RunnerRuntime {
             if (result.status === "authentication-required") {
               return HarnessInstanceCatalogSchema.parse({
                 connections,
-                detail: result.detail,
+                detail: redactDetail(result.detail),
                 driverKind: definition.driverKind,
                 harnessInstanceId: definition.id,
                 models: [],
@@ -1038,7 +1042,7 @@ export class RunnerRuntime {
             }
             return HarnessInstanceCatalogSchema.parse({
               connections,
-              detail: result.detail,
+              detail: redactDetail(result.detail),
               driverKind: definition.driverKind,
               harnessInstanceId: definition.id,
               models: [],
@@ -1056,7 +1060,7 @@ export class RunnerRuntime {
               continuationKey: providerState.continuationKey,
               driverKind: definition.driverKind,
             }),
-            ...(result.detail ? { detail: result.detail } : {}),
+            ...(result.detail ? { detail: redactDetail(result.detail) } : {}),
             driverKind: definition.driverKind,
             harnessInstanceId: definition.id,
             models: result.models,
@@ -3457,7 +3461,10 @@ export class RunnerRuntime {
         // The logger names the line `message`; the reason is `detail`.
         this.#logger?.error("run.failed", {
           code: terminal.data.code,
-          detail: terminal.data.ownerMessage ?? terminal.data.message,
+          detail: redactNetworkCredentials(
+            terminal.data.ownerMessage ?? terminal.data.message,
+            this.#safeMessageOptions.secrets,
+          ),
           driverKind: context.harness.driverKind,
           harnessInstanceId: context.harnessInstanceId,
           runId: context.runId,
@@ -4470,6 +4477,26 @@ function failureEvent(message: string, code: string, ownerMessage?: string): Har
       status: "failed",
     },
     type: "run.failed",
+  };
+}
+
+function scrubbingLogger(logger: RunnerLogger, secrets: readonly string[]): RunnerLogger {
+  const scrubDetails = (
+    details: Readonly<Record<string, unknown>> | undefined,
+  ): Readonly<Record<string, unknown>> | undefined =>
+    details
+      ? Object.fromEntries(
+          Object.entries(details).map(([key, value]) => [
+            key,
+            typeof value === "string" ? redactNetworkCredentials(value, secrets) : value,
+          ]),
+        )
+      : undefined;
+  return {
+    error: (message, details) =>
+      logger.error(redactNetworkCredentials(message, secrets), scrubDetails(details)),
+    info: (message, details) =>
+      logger.info(redactNetworkCredentials(message, secrets), scrubDetails(details)),
   };
 }
 

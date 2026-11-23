@@ -3,6 +3,7 @@ import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFil
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { readBoundedRegularFile } from "@opensteer/shared/privateFiles";
+import { engineDiagnosticSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { mkdir, open as openFile, realpath, rm, stat, symlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -780,6 +781,7 @@ class PiHarnessSession implements HarnessSession {
       requestedBy: run.requestedBy,
       retry: new ProviderRetryTracker({
         publish: (event) => this.#publish(event),
+        secrets: engineDiagnosticSecrets(this.#context.environment),
         onBudgetExceeded: (record) => {
           if (active.terminal || active.interruptRequested) return;
           active.interruptRequested = true;
@@ -1738,12 +1740,13 @@ class PiHarnessSession implements HarnessSession {
     void this.#cancelPendingRequests("run-ended");
     try {
       this.#publishUsage(active);
+      const secrets = engineDiagnosticSecrets(this.#context.environment);
       this.#publish(
         runFailedEvent({
           code: piFailureCode(error),
-          message: error.message,
+          message: redactNetworkCredentials(error.message, secrets),
           ...(error instanceof EngineUnavailableForTaskError
-            ? { ownerMessage: error.ownerMessage }
+            ? { ownerMessage: redactNetworkCredentials(error.ownerMessage, secrets) }
             : {}),
           retryable: error.retryable,
         }),
