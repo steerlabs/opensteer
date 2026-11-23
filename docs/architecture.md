@@ -266,6 +266,8 @@ of attempts (`packages/database/src/connection-disconnect.ts`, driven by
 Runs and their handed-off generations, automation occurrences and their attempts, Watch
 activations, queued inputs, Requests, steering commands, active automations (paused), agent
 sessions and operations, plugin executions, standard CDP connections and shared Chrome tabs.
+Display streams are opened only by a person's own session (`computer-use-display-routes.ts` ->
+`DisplayStreamHub.attachViewer`), so they are not in any connection's Disconnect set.
 
 **Nothing leaves the Home before it is in the set.** A Run is recorded before its frame is built;
 a CDP attempt before the attach ticket goes to the browser runtime; a plugin execution before the
