@@ -272,3 +272,32 @@ it("renders an addressed message with the normal assistant renderer", () => {
   expect(html).toContain("Milestone passed.");
   expect(html).toContain('data-message-id="notice"');
 });
+
+it("renders a live provider retry notice in both conversation and activity views", () => {
+  const retryingRun = run({
+    status: "running",
+    retry: {
+      status: "retrying",
+      attempt: 2,
+      maxAttempts: 5,
+      retryDelayMs: 308_000,
+      message: "Selected model is at capacity.",
+    },
+  });
+  for (const conversation of [true, false]) {
+    const html = renderToStaticMarkup(
+      <MemoryRouter>
+        <AgentTranscript conversation={conversation} entries={[retryingRun]} />
+      </MemoryRouter>,
+    );
+    expect(html).toContain("Retrying (2/5)");
+    expect(html).toContain("Selected model is at capacity.");
+    expect(html).toContain("5m 8s retry delay");
+  }
+  const clearedHtml = renderToStaticMarkup(
+    <MemoryRouter>
+      <AgentTranscript conversation entries={[run({ status: "running" })]} />
+    </MemoryRouter>,
+  );
+  expect(clearedHtml).not.toContain("Retrying");
+});

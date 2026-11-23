@@ -19,9 +19,10 @@ import {
   readAgentThreadRecent,
   readAgentThreadActivity,
   encodeThreadHistoryCursor,
+  isThreadHistoryCursor,
   readAssignmentResult,
   readConnectionChildResult,
-  visibleConnectionRequestIds,
+  countPendingConnectionRequests,
   beginAssignmentResultWait,
   endAssignmentResultWait,
   withoutDatabaseOperationSignal,
@@ -31,6 +32,7 @@ import {
   reachableNode,
 } from "@opensteer/database";
 import { activityItem, messageItem, taskItem, boundedThreadItems } from "../thread-items.js";
+import { productToolOutput } from "../tool-output.js";
 import { stripRefs } from "@opensteer/shared/stripRefs";
 import { isDeepStrictEqual } from "node:util";
 import { ThreadService } from "../../threads/thread-service.js";
@@ -42,12 +44,15 @@ import { assertThreadCaller } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import {
+  answeredQuestionPreviewBytes,
   agentDelegationMaxDepth,
   causalChainMaxDelegations,
   causalChainMaxAutonomousRuns,
   catalogDefaultCandidate,
   catalogDefaultModelSelection,
   isPlaceContentPart,
+  personQuestionRecord,
+  personQuestionRecordWithin,
   zeroSequence,
   OpensteerError,
   refused,
@@ -74,7 +79,11 @@ import {
   type Thread,
   excludedBackgroundAccounts,
 } from "@opensteer/core";
-import type { BrowserUsageCredit, OpensteerStore } from "@opensteer/database";
+import type {
+  BrowserUsageCredit,
+  OpensteerStore,
+  ThreadCallerAuthority,
+} from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
 import { computerAppIdentityKey } from "@opensteer/protocol";
 
@@ -491,6 +500,7 @@ export class ProductToolHandlers {
       )
         throw forbidden("Parent task is unavailable");
     }
+    const connectionAuthority = connectionAuthorityForLineage(caller);
     const page = await this.#store.agentThreadPageForOwner({
       ...(parentThreadId ? { parentThreadId } : {}),
       ...(input.cursor ? { before: input.cursor } : {}),
@@ -500,6 +510,12 @@ export class ProductToolHandlers {
       ownerId: claims.requestedBy,
       ...(input.query ? { query: input.query } : {}),
       ...(input.changedSince ? { changedSince: new Date(input.changedSince) } : {}),
+      ...(input.done === undefined ? {} : { done: input.done }),
+      ...(input.hasPendingRequests === undefined
+        ? {}
+        : { hasPendingRequests: input.hasPendingRequests }),
+      ...(connectionAuthority ? { connectionAuthority } : {}),
+      ...(caller.kind === "connection" ? { omitPendingRequests: true } : {}),
       scope,
       ...(caller.kind === "connection" ? { nativeOnly: true } : {}),
       reader: callerReader(caller),
@@ -517,11 +533,19 @@ export class ProductToolHandlers {
         pendingRequests: summary.pendingRequests,
         status: summary.status,
         doneAt: summary.doneAt,
+        doneBy: summary.doneBy,
+        lastVisitedAt: summary.lastVisitedAt,
         title: summary.title,
         updatedAt: summary.updatedAt,
         ...(summary.newMessages === undefined
           ? {}
           : { newMessages: summary.newMessages, firstNewAt: summary.firstNewAt }),
+        ...(summary.questionsAnswered === undefined
+          ? {}
+          : { questionsAnswered: summary.questionsAnswered }),
+        ...(summary.questionsDismissed === undefined
+          ? {}
+          : { questionsDismissed: summary.questionsDismissed }),
       })),
       hasMore: page.window.hasMore,
       nextBefore: page.window.nextBefore,
@@ -555,10 +579,12 @@ export class ProductToolHandlers {
           );
     if (!thread) throw forbidden("task is unavailable to this user");
 
+    const connectionAuthority = connectionAuthorityForLineage(caller);
     const recent = await readAgentThreadRecent(this.#store.database, {
       threadId: thread.id,
       ownerId: caller.userId,
       runLimit: input.runLimit,
+      ...(connectionAuthority ? { connectionAuthority } : {}),
     });
     if (!recent) throw forbidden("task is unavailable to this user");
     const seen = new Set<string>();
@@ -571,17 +597,35 @@ export class ProductToolHandlers {
     const recentPlaces = (await this.#readableTabPlaces(caller, references))
       .slice(0, 10)
       .map(({ runId, tabId, title, site }) => ({ runId, tabId, title, site }));
+    const pendingRequests = boundedThreadItems(
+      (recent.pendingRequests ?? []).map((request) => agentRequest(request, "list")),
+      64 * 1024,
+    );
     const context = {
-      thread: { ...thread, link: formatReferenceLink(thread.id, thread.title) },
+      thread: {
+        ...thread,
+        ...(connectionAuthority && recent.pendingRequestCount !== undefined
+          ? { pendingRequests: recent.pendingRequestCount }
+          : {}),
+        link: formatReferenceLink(thread.id, thread.title),
+      },
       recentRuns: recent.runs.map(({ modelSelection, ...run }) => ({
         ...run,
         link: formatReferenceLink(run.runId, `Run · ${thread.title}`),
         modelId: modelSelection.modelId,
       })),
       recentPlaces,
+      ...(pendingRequests.length ? { pendingRequests } : {}),
     };
     if (input.itemId ? !MessageIdSchema.safeParse(input.itemId).success : input.view === "activity")
       return { ...context, ...(await this.#activity(caller, thread.id, input)) };
+    if (
+      !input.query &&
+      !input.aroundMessageId &&
+      !input.itemId &&
+      !(input.cursor && isThreadHistoryCursor(input.cursor))
+    )
+      return { ...context, ...(await this.#activity(caller, thread.id, input, undefined, true)) };
     let page;
     try {
       page = await this.#store.threadMessagePageForOwner({
@@ -637,8 +681,17 @@ export class ProductToolHandlers {
     const thread = await this.#store.readTask(callerReader(caller), node.threadId, caller.userId);
     if (!thread) throw missing();
     const { node: subagent, ...activity } = await this.#activity(caller, thread.id, input, node.id);
+    const pendingRequests = await this.#scopedPendingRequests(
+      caller,
+      thread.id,
+      thread.pendingRequests,
+    );
     return {
-      thread: { ...thread, link: formatReferenceLink(thread.id, thread.title) },
+      thread: {
+        ...thread,
+        pendingRequests,
+        link: formatReferenceLink(thread.id, thread.title),
+      },
       subagent,
       recentRuns: [],
       recentPlaces: [],
@@ -646,17 +699,31 @@ export class ProductToolHandlers {
     };
   }
 
+  async #scopedPendingRequests(caller: AgentCaller, threadId: ThreadId, fallback: number) {
+    if (caller.kind === "connection") return fallback;
+    const connectionAuthority = connectionAuthorityForLineage(caller);
+    if (!connectionAuthority) return fallback;
+    return countPendingConnectionRequests(this.#store.database, connectionAuthority, threadId);
+  }
+
   async #activity(
     caller: AgentCaller,
     threadId: Thread["id"],
     input: ToolCall<"opensteer_task_read">["input"],
     nodeId?: import("@opensteer/core").ExecutionNodeId,
+    messagesOnly?: boolean,
   ) {
+    const connectionAuthority = connectionAuthorityForLineage(caller);
     const page = await readAgentThreadActivity(this.#store.database, {
       threadId,
       ownerId: caller.userId,
       limit: input.itemId ? 1 : input.limit,
-      ...(nodeId ? { nodeId, messagesOnly: input.view !== "activity" && !input.itemId } : {}),
+      ...(connectionAuthority ? { connectionAuthority } : {}),
+      ...(nodeId
+        ? { nodeId, messagesOnly: input.view !== "activity" && !input.itemId }
+        : messagesOnly
+          ? { messagesOnly: true }
+          : {}),
       ...(input.cursor ? { before: input.cursor } : {}),
       ...(input.itemId ? { itemId: input.itemId } : {}),
     });
@@ -670,6 +737,7 @@ export class ProductToolHandlers {
       item.type === "tool.started" || item.type === "tool.completed"
         ? (item.integration?.computerApp?.runnerId ?? item.integration?.phone?.runnerId)
         : undefined;
+    const machineIds = page.items.flatMap((item) => machineOf(item) ?? []);
     const [places, owners, messages] = await Promise.all([
       this.#readableTabPlaces(
         caller,
@@ -677,22 +745,14 @@ export class ProductToolHandlers {
           item.type === "place.entered" ? [{ id: item.id, tabId: item.place.tabId }] : [],
         ),
       ),
-      this.#store.effectiveDeviceOwners(page.items.flatMap((item) => machineOf(item) ?? [])),
+      machineIds.length
+        ? this.#store.effectiveDeviceOwners(machineIds)
+        : Promise.resolve(new Map()),
       this.#readableMessages(
         caller,
         page.items.flatMap((item) => (item.type === "message" ? [item.message] : [])),
       ),
     ]);
-    // One read for every Request item, with the predicate that decides all a connection learns of.
-    const reader = threadCallerAuthority(caller);
-    const visibleRequests =
-      reader.kind === "connection"
-        ? await visibleConnectionRequestIds(
-            this.#store.database,
-            reader,
-            page.items.flatMap((item) => ("requestId" in item ? [item.requestId] : [])),
-          )
-        : undefined;
     const readablePlaces = new Set(places.map((place) => place.id));
     const readableMessages = new Map(messages.map((message) => [message.id, message]));
     const mapped = page.items.flatMap<{
@@ -710,12 +770,6 @@ export class ProductToolHandlers {
             ]
           : [];
       }
-      if (
-        caller.kind === "connection" &&
-        "requestId" in item &&
-        !visibleRequests?.has(item.requestId)
-      )
-        return [];
       const machineId = machineOf(item);
       if (machineId && owners.get(machineId)?.effectiveOwner !== caller.userId) return [];
       if (item.type === "place.entered" && !readablePlaces.has(item.id)) return [];
@@ -960,7 +1014,15 @@ export class ProductToolHandlers {
       reader: callerReader(caller),
     });
     if (!assignment) throw forbidden("delegation is unavailable");
-    return taskItem(summary, assignment.resultText);
+    const pendingRequests = await this.#scopedPendingRequests(
+      caller,
+      summary.workerThread.id,
+      summary.workerThread.pendingRequests,
+    );
+    return taskItem(
+      { ...summary, workerThread: { ...summary.workerThread, pendingRequests } },
+      assignment.resultText,
+    );
   }
   async opensteer_delegation_status({ caller, input }: ToolCall<"opensteer_delegation_status">) {
     const assignment = await this.#store.getAssignmentForOwner({
@@ -981,7 +1043,18 @@ export class ProductToolHandlers {
       assignmentId: input.delegationId,
       authority: threadCallerAuthority(caller),
     });
-    return taskItem(read.assignment, read.result);
+    const pendingRequests = await this.#scopedPendingRequests(
+      caller,
+      read.assignment.workerThread.id,
+      read.assignment.workerThread.pendingRequests,
+    );
+    return taskItem(
+      {
+        ...read.assignment,
+        workerThread: { ...read.assignment.workerThread, pendingRequests },
+      },
+      read.result,
+    );
   }
 
   async opensteer_request_answer({
@@ -996,6 +1069,8 @@ export class ProductToolHandlers {
       expectedRevision?: string;
       cursor?: string | undefined;
       limit: number;
+      status?: "pending" | "all";
+      taskId?: ThreadId | undefined;
     };
   }) {
     if (input.action === "respond") {
@@ -1036,7 +1111,7 @@ export class ProductToolHandlers {
         ),
         agentResponder,
       });
-      return { request: agentRequest((await this.#store.requests.get(request.id))!) };
+      return { request: agentRequest((await this.#store.requests.get(request.id))!, "full") };
     }
     if (input.action === "read") {
       const { request, revision } = await readAgentRequest(
@@ -1046,31 +1121,40 @@ export class ProductToolHandlers {
       );
       return {
         request: {
-          ...agentRequest(request),
+          ...agentRequest(request, "full"),
           revision,
           ...(requestIsAgentAnswerable(request) ? { presentation: request.presentation } : {}),
         },
       };
     }
-    if (caller.kind === "connection") {
-      const page = await this.#store.requests.connectionPage({
-        userId: caller.userId,
-        ...(callerLineage(caller)?.grant.scope === "selected"
-          ? { lineageConnectionId: callerLineage(caller)!.agentConnectionId }
-          : {}),
-        limit: input.limit,
-        ...(input.cursor ? { before: input.cursor } : {}),
+    const scope = callerListScope(caller);
+    const connectionAuthority = connectionAuthorityForLineage(caller);
+    const reader = callerReader(caller);
+    if (input.taskId) {
+      const target = await this.#store.readTask(reader, input.taskId, caller.userId, {
+        ...lineageOption(caller),
+        ...(caller.kind === "connection" ? { nativeOnly: true } : {}),
       });
-      return { ...page, requests: page.requests.map(agentRequest) };
+      if (!target) throw forbidden("Task is unavailable");
     }
-    const claims = callerContext(caller);
-
-    const page = await this.#store.requests.visiblePage({
+    const page = await this.#store.requests.agentPage({
+      ownerId: caller.userId,
+      scope,
+      scopeId: caller.kind === "connection" ? caller.key : callerThread(caller).id,
+      ...(connectionAuthority ? { connectionAuthority } : {}),
+      ...(input.taskId ? { originatingThreadId: input.taskId } : {}),
+      ...(input.status ? { status: input.status } : {}),
       ...(input.cursor ? { before: input.cursor } : {}),
       limit: input.limit,
-      originatingThreadId: claims.threadId,
     });
-    return { requests: page.requests.map(agentRequest), window: page.window };
+    const projected = page.requests.map((request) => agentRequest(request, "list"));
+    return {
+      requests: projected,
+      window: {
+        ...page.window,
+        byteCount: Buffer.byteLength(JSON.stringify(productToolOutput(projected)), "utf8"),
+      },
+    };
   }
 
   async opensteer_request_withdraw({ caller, input }: ToolCall<"opensteer_request_withdraw">) {
@@ -1081,7 +1165,7 @@ export class ProductToolHandlers {
       threadId: claims.threadId,
       withdrawnBy: claims.requestedBy,
     });
-    return { request: agentRequest(withdrawn.request) };
+    return { request: agentRequest(withdrawn.request, "full") };
   }
 
   async prepareDelegation({ caller, input }: DelegationCall) {
@@ -1268,7 +1352,11 @@ export class ProductToolHandlers {
         title: thread.title,
         objective: null,
         result: null,
-        pendingRequests: thread.pendingRequests,
+        pendingRequests: await this.#scopedPendingRequests(
+          caller,
+          thread.id,
+          thread.pendingRequests,
+        ),
         parentThreadId: null,
         environmentId: thread.environmentId,
         createdAt: thread.createdAt,
@@ -1747,6 +1835,7 @@ export class ProductToolHandlers {
     // result it is handed must not also return to it by itself.
     const own = input.taskId ? await this.#assignedTask(caller, input.taskId) : undefined;
     const authority = caller.kind === "connection" ? threadCallerAuthority(caller) : undefined;
+    const connectionAuthority = connectionAuthorityForLineage(caller);
     const assignmentId = input.delegationId ?? (input.afterMessageId ? undefined : own);
     const assignment = assignmentId
       ? await this.#store.getAssignmentForOwner({
@@ -1805,7 +1894,7 @@ export class ProductToolHandlers {
               userId: caller.userId,
               ...(!assignment && runId ? { runId } : {}),
               ...(assignment ? { assignmentId: assignment.id } : {}),
-              ...(authority?.kind === "connection" ? { connection: authority } : {}),
+              ...(connectionAuthority ? { connection: connectionAuthority } : {}),
               ...(input.afterMessageId ? { afterMessageId: input.afterMessageId } : {}),
               ...(!assignment && afterSequence ? { afterSequence } : {}),
             });
@@ -1884,9 +1973,25 @@ export class ProductToolHandlers {
       const items = boundedThreadItems(
         result.messages.map((message) => messageItem(message, 20_000)),
       );
+      const scopedTask = task
+        ? {
+            ...task,
+            assignment: {
+              ...task.assignment,
+              workerThread: {
+                ...task.assignment.workerThread,
+                pendingRequests: await this.#scopedPendingRequests(
+                  caller,
+                  task.assignment.workerThread.id,
+                  task.assignment.workerThread.pendingRequests,
+                ),
+              },
+            },
+          }
+        : undefined;
       return {
         status: result.status,
-        ...(task ? { task: taskItem(task.assignment, task.result) } : {}),
+        ...(scopedTask ? { task: taskItem(scopedTask.assignment, scopedTask.result) } : {}),
         ...(result.run
           ? {
               run: {
@@ -1996,7 +2101,16 @@ function conflict(message: string, retryable = false): OpensteerError {
   return new OpensteerError({ code: "conflict", message, retryable });
 }
 
-function agentRequest(request: Request) {
+const requestQuestionFullBytes = 16 * 1024;
+
+function agentRequest(request: Request, detail: "full" | "list" = "full") {
+  const rawQuestion = personQuestionRecord(request);
+  const question = rawQuestion
+    ? personQuestionRecordWithin(
+        rawQuestion,
+        detail === "full" ? requestQuestionFullBytes : answeredQuestionPreviewBytes,
+      )
+    : null;
   return {
     id: request.id,
     link: formatReferenceLink(request.id, requestTitleText(request.presentation)),
@@ -2006,6 +2120,8 @@ function agentRequest(request: Request) {
     reason: "reason" in request.payload ? request.payload.reason : null,
     originatingThreadId: request.originatingThreadId,
     createdAt: request.createdAt,
+    resolvedAt: request.resolvedAt,
+    ...(question ? { question } : {}),
     settlementProvenance: request.settlementProvenance
       ? toolRequestAnswerer(
           "kind" in request.settlementProvenance
@@ -2030,3 +2146,17 @@ function lineageOption(caller: AgentCaller): { readonly lineageConnectionId?: st
  * task only as its caller.
  */
 export type AgentToolStore = Omit<OpensteerStore, "getThreadForOwner">;
+
+/** Connection authority for any caller in a connected agent's lineage; undefined for native work. */
+function connectionAuthorityForLineage(
+  caller: AgentCaller,
+): Extract<ThreadCallerAuthority, { kind: "connection" }> | undefined {
+  const lineage = callerLineage(caller);
+  if (!lineage) return undefined;
+  return {
+    kind: "connection",
+    userId: caller.userId,
+    connectionId: lineage.agentConnectionId,
+    accessMode: caller.accessMode,
+  };
+}

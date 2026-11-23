@@ -13,19 +13,14 @@ import {
   type RequestId,
 } from "@opensteer/core";
 import { z } from "zod";
-import { sql, type Kysely, type Transaction } from "kysely";
+import { sql, type Kysely, type SelectQueryBuilder, type Transaction } from "kysely";
 import "./connection.js";
 import { assertRequestRevision, requestFromRow } from "./request-persistence.js";
-import {
-  bindingAgentConnectionId,
-  connectionTaskRequestScope,
-  liveAgentConnection,
-  sendEligible,
-} from "./resource-access.js";
+import { connectionTaskRequestScope } from "./resource-access.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { callerTaskReader, threadCallerLineageId } from "./thread-caller.js";
 import { readerSees } from "./task-reader.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
 import { assertThreadCaller, type ThreadCallerAuthority } from "./thread-caller.js";
@@ -95,11 +90,12 @@ export function assertAgentRequestAnswer(
     });
   assertRequestRevision({ revision }, responder.expectedRevision);
 }
-async function connectionRequests(
+async function connectionRequestsQuery(
   tx: Transaction<DatabaseSchema>,
   authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
+  options?: { readonly ownerVerified?: boolean },
 ) {
-  await requirePersonalOwner(tx, authority.userId);
+  if (!options?.ownerVerified) await requirePersonalOwner(tx, authority.userId);
   const scope = await connectionTaskRequestScope(tx, authority);
 
   return tx
@@ -122,6 +118,25 @@ async function connectionRequests(
     .leftJoin("agentSessions", "agentSessions.id", "requests.originatingAgentSessionId")
     .selectAll("requests")
     .where("threads.createdBy", "=", authority.userId)
+    .where((eb) =>
+      eb.exists(
+        eb
+          .selectFrom("personalSettings")
+          .innerJoin("users", "users.id", "personalSettings.ownerId")
+          .innerJoin(
+            "executionEnvironments",
+            "executionEnvironments.runnerId",
+            "personalSettings.agentHomeComputerId",
+          )
+          .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
+          .select("executionEnvironments.id")
+          .where("personalSettings.singletonKey", "=", "personal")
+          .where("personalSettings.ownerId", "=", authority.userId)
+          .where("users.disabledAt", "is", null)
+          .whereRef("executionEnvironments.id", "=", "threads.environmentId")
+          .where("runners.revokedAt", "is", null),
+      ),
+    )
     .$if(scope === "selected", (query) =>
       query.where("threads.originConnectionId", "=", authority.connectionId),
     )
@@ -165,14 +180,69 @@ async function connectionRequests(
     });
 }
 
+export async function connectionRequests(
+  tx: Transaction<DatabaseSchema>,
+  authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
+  options?: { readonly ownerVerified?: boolean },
+): Promise<SelectQueryBuilder<{ readonly requests: RequestRow }, "requests", RequestRow>> {
+  const scoped = await connectionRequestsQuery(tx, authority, options);
+  return tx.selectFrom(scoped.as("requests")).selectAll("requests");
+}
+
+export async function queryConnectionRequestPage(
+  tx: Transaction<DatabaseSchema>,
+  input: {
+    readonly authority: Extract<ThreadCallerAuthority, { kind: "connection" }>;
+    readonly lineageRootThreadId: Request["originatingThreadId"] | null;
+    readonly originatingThreadId?: Request["originatingThreadId"];
+    readonly status: "pending" | "all";
+    readonly anchor: { readonly createdAt: Date; readonly id: RequestId } | null;
+    readonly limit: number;
+  },
+): Promise<{ readonly rows: readonly RequestRow[]; readonly total: number }> {
+  const scoped = await connectionRequestsQuery(tx, input.authority);
+  const base = () => {
+    let query = scoped.clearSelect().where("threads.removedAt", "is", null);
+    if (input.lineageRootThreadId !== null)
+      query = query.where("threads.lineageRootThreadId", "=", input.lineageRootThreadId);
+    if (input.originatingThreadId)
+      query = query.where("requests.originatingThreadId", "=", input.originatingThreadId);
+    if (input.status === "pending") query = query.where("requests.status", "=", "pending");
+    return query;
+  };
+  let pageQuery = base()
+    .selectAll("requests")
+    .orderBy("requests.createdAt", "desc")
+    .orderBy("requests.id", "desc")
+    .limit(input.limit + 1);
+  if (input.anchor) {
+    const anchor = input.anchor;
+    pageQuery = pageQuery.where((expression) =>
+      expression.or([
+        expression("requests.createdAt", "<", anchor.createdAt),
+        expression.and([
+          expression("requests.createdAt", "=", anchor.createdAt),
+          expression("requests.id", "<", anchor.id),
+        ]),
+      ]),
+    );
+  }
+  const [rows, count] = await Promise.all([
+    pageQuery.execute(),
+    base()
+      .select(({ fn }) => fn.countAll<string>().as("count"))
+      .executeTakeFirstOrThrow(),
+  ]);
+  return { rows, total: Number(count.count) };
+}
+
 export async function readPendingConnectionRequest(
   tx: Transaction<DatabaseSchema>,
   authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
   threadId: Request["originatingThreadId"],
   assignmentId?: import("@opensteer/core").AssignmentId,
 ) {
-  if (!(await threadExecutionIsAvailableToUser(tx, threadId, authority.userId))) return undefined;
-  const query = await connectionRequests(tx, authority);
+  const query = await connectionRequestsQuery(tx, authority);
   return query
     .clearSelect()
     .select(["requests.id", "requests.kind"])
@@ -184,35 +254,20 @@ export async function readPendingConnectionRequest(
     .executeTakeFirst();
 }
 
-/**
- * Of `requestIds`, the ones this connection may know of: one read with the same origin predicate
- * as every other Request a connection is told about.
- */
-export function visibleConnectionRequestIds(
+export function countPendingConnectionRequests(
   database: Kysely<DatabaseSchema>,
   authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
-  requestIds: readonly RequestId[],
-): Promise<ReadonlySet<RequestId>> {
-  if (!requestIds.length) return Promise.resolve(new Set());
+  threadId: Request["originatingThreadId"],
+): Promise<number> {
   return withPersonalReadTransaction(database, async (tx) => {
-    const query = await connectionRequests(tx, authority);
-    const rows = await query
-      .clearSelect()
-      .select(["requests.id", "requests.originatingThreadId"])
-      .where("requests.id", "in", [...new Set(requestIds)])
-      .execute();
-    const available = new Map<string, boolean>();
-    for (const { originatingThreadId } of rows)
-      if (!available.has(originatingThreadId))
-        available.set(
-          originatingThreadId,
-          await threadExecutionIsAvailableToUser(tx, originatingThreadId, authority.userId),
-        );
-    return new Set(
-      rows
-        .filter(({ originatingThreadId }) => available.get(originatingThreadId))
-        .map(({ id }) => RequestIdSchema.parse(id)),
-    );
+    const visibleRequests = await connectionRequests(tx, authority);
+    const row = await tx
+      .selectFrom(visibleRequests.as("visible_requests"))
+      .select(sql<number>`count(*)::int`.as("count"))
+      .where("visible_requests.originatingThreadId", "=", threadId)
+      .where("visible_requests.status", "=", "pending")
+      .executeTakeFirstOrThrow();
+    return Number(row.count);
   });
 }
 
@@ -221,13 +276,9 @@ async function readConnectionRequest(
   authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
   requestId: RequestId,
 ) {
-  const query = await connectionRequests(tx, authority);
+  const query = await connectionRequestsQuery(tx, authority);
   const row = await query.where("requests.id", "=", requestId).executeTakeFirst();
-  if (
-    !row ||
-    !(await threadExecutionIsAvailableToUser(tx, row.originatingThreadId, authority.userId))
-  )
-    throw new OpensteerError({ code: "not_found", message: "Request is unavailable" });
+  if (!row) throw new OpensteerError({ code: "not_found", message: "Request is unavailable" });
   return { request: requestFromRow(row), revision: row.revision };
 }
 
@@ -236,16 +287,39 @@ export function readAgentRequest(
   authority: ThreadCallerAuthority,
   requestId: RequestId,
 ): Promise<{ readonly request: Request; readonly revision: string }> {
+  const parsedRequestId = RequestIdSchema.parse(requestId);
   return withPersonalReadTransaction(database, async (transaction) => {
     if (authority.kind === "connection")
-      return readConnectionRequest(transaction, authority, RequestIdSchema.parse(requestId));
+      return readConnectionRequest(transaction, authority, parsedRequestId);
+    if (authority.kind === "run" && authority.scope.requestedBy !== authority.userId)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Request is unavailable",
+      });
+    const reader = await threadCallerLineageId(transaction, authority);
+    if (reader) {
+      const read = await readConnectionRequest(
+        transaction,
+        {
+          kind: "connection",
+          userId: authority.userId,
+          connectionId: reader,
+          accessMode: authority.accessMode,
+        },
+        parsedRequestId,
+      );
+      await assertAgentRequestTarget(transaction, authority, read.request.originatingThreadId, {
+        readOnly: true,
+      });
+      return read;
+    }
     // A Request a memory pass's lineage may not read reads as one that does not exist.
     const taskReader = callerTaskReader(authority);
     const row = await transaction
       .selectFrom("requests")
       .innerJoin("threads", "threads.id", "requests.originatingThreadId")
       .selectAll("requests")
-      .where("requests.id", "=", RequestIdSchema.parse(requestId))
+      .where("requests.id", "=", parsedRequestId)
       .$if(taskReader.kind === "work", (query) =>
         query.where(readerSees(taskReader, sql.ref("threads.origin_connection_id"))),
       )
@@ -258,24 +332,6 @@ export function readAgentRequest(
     await assertAgentRequestTarget(transaction, authority, row.originatingThreadId, {
       readOnly: true,
     });
-    // The execution that asked, not only its task: a connection reads only Requests its own
-    // lineage made, or, with `everything`, the person's own.
-    const reader = await threadCallerLineageId(transaction, authority);
-    if (reader) {
-      const asker = row.originatingRunId
-        ? `run:${row.originatingRunId}`
-        : row.originatingOccurrenceId
-          ? `trigger:${row.originatingOccurrenceId}`
-          : row.originatingWatchActivationId
-            ? `watch:${row.originatingWatchActivationId}`
-            : row.originatingAgentSessionId
-              ? `session:${row.originatingAgentSessionId}`
-              : null;
-      const askerLineage = asker ? await bindingAgentConnectionId(transaction, asker) : null;
-      const connection = await liveAgentConnection(transaction, authority.userId, reader);
-      if (!sendEligible(connection, askerLineage))
-        throw new OpensteerError({ code: "forbidden", message: "Request is unavailable" });
-    }
     return { request: requestFromRow(row), revision: row.revision };
   }).catch((error: unknown) => {
     if (

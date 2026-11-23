@@ -27,6 +27,24 @@ it("offers only the runtime-authorized menu and dispatches the selected link act
   ).toEqual(["Cut", "Copy", "Paste", "Select All", "Copy Link Address", "Open Link in New Tab"]);
   act(() => container.querySelectorAll<HTMLButtonElement>("button")[5]!.click());
   expect(action).toHaveBeenCalledExactlyOnceWith("open-link");
+
+  // Non-http(s) links keep Copy Link Address without offering Open Link in New Tab.
+  act(() =>
+    root.render(
+      <StreamedContextMenu
+        left={40}
+        top={60}
+        editable={false}
+        selection={false}
+        linkUrl="javascript:void(0)"
+        onAction={action}
+        onDismiss={() => undefined}
+      />,
+    ),
+  );
+  expect(
+    [...container.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent),
+  ).toEqual(["Cut", "Copy", "Paste", "Select All", "Copy Link Address"]);
   act(() => root.unmount());
   container.remove();
 });

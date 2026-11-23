@@ -550,12 +550,25 @@ function taskFixtureResult(
   });
   if (name === "opensteer_task_list") {
     const since = typeof args.changedSince === "string" ? Date.parse(args.changedSince) : null;
+    const query = typeof args.query === "string" ? args.query.toLowerCase() : null;
     const tasks = testCase.tasks
       .flatMap(({ task, items }) => {
         if (args.parentTaskId && task.parentTaskId !== args.parentTaskId) return [];
+        if (typeof args.done === "boolean" && Boolean(task.doneAt) !== args.done) return [];
         if (
-          typeof args.query === "string" &&
-          !task.title?.toLowerCase().includes(args.query.toLowerCase())
+          typeof args.hasPendingRequests === "boolean" &&
+          task.pendingRequests > 0 !== args.hasPendingRequests
+        )
+          return [];
+        if (
+          query &&
+          !task.title?.toLowerCase().includes(query) &&
+          !items.some(
+            (item) =>
+              item.type === "message" &&
+              item.status === "published" &&
+              item.text?.toLowerCase().includes(query),
+          )
         )
           return [];
         const messages = items
@@ -566,42 +579,82 @@ function taskFixtureResult(
               (since === null || Date.parse(item.createdAt) > since),
           )
           .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-        if (since !== null && !messages.length) return [];
+        const settledQuestions = items.filter(
+          (item) =>
+            item.type === "request.resolved" &&
+            (item.status === "fulfilled" || item.status === "declined") &&
+            (since === null || Date.parse(item.createdAt) > since),
+        );
+        const doneChanged =
+          since !== null &&
+          task.doneAt !== null &&
+          Date.parse(task.doneAt) > since &&
+          task.doneBy !== "quiet";
+        if (since !== null && !messages.length && !settledQuestions.length && !doneChanged)
+          return [];
+        const questionsAnswered = settledQuestions.filter(
+          (item) => item.status === "fulfilled",
+        ).length;
+        const questionsDismissed = settledQuestions.filter(
+          (item) => item.status === "declined",
+        ).length;
+        const newestEventAt =
+          since !== null
+            ? Math.max(
+                ...messages.map((item) => Date.parse(item.createdAt)),
+                ...settledQuestions.map((item) => Date.parse(item.createdAt)),
+                ...(doneChanged && task.doneAt ? [Date.parse(task.doneAt)] : []),
+              )
+            : Date.parse(task.updatedAt);
         return [
           {
-            id: task.id,
-            link: task.link,
-            title: task.title,
-            status: task.status,
-            doneAt: task.doneAt,
-            parentTaskId: task.parentTaskId,
-            pendingRequests: task.pendingRequests,
-            delegationId: null,
-            taskStatus: null,
-            updatedAt: task.updatedAt,
-            ...(since !== null
-              ? {
-                  newMessages: messages.length,
-                  firstNewAt: messages.at(-1)!.createdAt,
-                }
-              : {}),
+            sortAt: newestEventAt,
+            entry: {
+              id: task.id,
+              link: task.link,
+              title: task.title,
+              status: task.status,
+              doneAt: task.doneAt,
+              doneBy: task.doneBy ?? null,
+              lastVisitedAt: task.lastVisitedAt ?? null,
+              parentTaskId: task.parentTaskId,
+              pendingRequests: task.pendingRequests,
+              delegationId: null,
+              taskStatus: null,
+              updatedAt: task.updatedAt,
+              ...(since !== null && messages.length
+                ? {
+                    newMessages: messages.length,
+                    firstNewAt: messages.at(-1)!.createdAt,
+                  }
+                : {}),
+              ...(since !== null && questionsAnswered > 0 ? { questionsAnswered } : {}),
+              ...(since !== null && questionsDismissed > 0 ? { questionsDismissed } : {}),
+            },
           },
         ];
       })
-      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+      .sort((a, b) => b.sortAt - a.sortAt)
+      .map(({ entry }) => entry);
     const result = page(tasks, typeof args.limit === "number" ? args.limit : 25);
     return { tasks: result.items, hasMore: result.hasMore, nextCursor: result.nextCursor };
   }
   if (name === "opensteer_task_read") {
     const history = testCase.tasks.find(({ task }) => task.id === (args.taskId ?? selfId));
     if (!history) return undefined;
+    const isQuery = typeof args.query === "string";
     const items = history.items
       .filter(
         (item) =>
-          (args.view === "activity" || (item.type === "message" && item.status === "published")) &&
-          (!args.itemId || args.itemId === item.itemId) &&
-          (typeof args.query !== "string" ||
-            item.text?.toLowerCase().includes(args.query.toLowerCase())),
+          (isQuery
+            ? item.type === "message" &&
+              item.status === "published" &&
+              item.text?.toLowerCase().includes((args.query as string).toLowerCase())
+            : args.view === "activity" ||
+              (item.type === "message" && item.status === "published") ||
+              (item.type === "request.resolved" &&
+                (item.status === "fulfilled" || item.status === "declined"))) &&
+          (!args.itemId || args.itemId === item.itemId),
       )
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
     const result = page(items, typeof args.limit === "number" ? args.limit : 20);

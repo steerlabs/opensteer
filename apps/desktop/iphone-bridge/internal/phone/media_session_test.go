@@ -23,11 +23,12 @@ func TestDisplayNegotiationWire(t *testing.T) {
 	service := display.NewWithConnection(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	id, err := service.StartVideoStream(ctx, display.VideoStreamRequest{ReceiverIP: "fd00::1", ReceiverPort: 12345, SenderIP: "fd00::2", DisplayID: 1})
+	offer := []byte("synthetic-offer")
+	id, _, err := service.StartVideoStreamWithOffer(ctx, display.VideoStreamRequest{ReceiverIP: "fd00::1", ReceiverPort: 12345, SenderIP: "fd00::2", DisplayID: 1}, offer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.StopMediaStream(ctx, id); err != nil {
+	if err := service.StopMediaStreamScoped(ctx, id, false); err != nil {
 		t.Fatal(err)
 	}
 	start, err := xpc.DecodeMessage(outgoing)
@@ -35,7 +36,7 @@ func TestDisplayNegotiationWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	input := start.Body["CoreDevice.input"].(map[string]interface{})
-	if input["receiverPort"] != uint64(12345) || input["negotiatorOffer"] == nil {
+	if input["receiverPort"] != uint64(12345) || !bytes.Equal(input["negotiatorOffer"].([]byte), offer) {
 		t.Fatal("missing media negotiation")
 	}
 	stop, err := xpc.DecodeMessage(outgoing)
@@ -43,8 +44,8 @@ func TestDisplayNegotiationWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	stopInput := stop.Body["CoreDevice.input"].(map[string]interface{})
-	if stopInput["stopAll"] != true {
-		t.Fatal("device requires stopAll=true")
+	if stopInput["stopAll"] != false {
+		t.Fatal("stream stop must be scoped")
 	}
 	options := stopInput["avcMediaStreamOptionClientSessionID"].(map[string]interface{})
 	if options["uuid"] != id {

@@ -31,18 +31,19 @@ and screenshot when available. A Mac-driven iPhone may return only live status (
 and `reason`), with no coordinates for input. The handle's `actions` and `navigation` update after
 an observation. Each action returns the phone's resulting observation or status.
 
-- A target is an element index from the tree, or `[x, y]` screenshot pixels. An iPhone's tree is
-  often empty: act by screenshot coordinates.
+- Use an element index shown in the current tree or `[x, y]` screenshot pixels. An iPhone shows
+  indices when element coordinates are qualified. Lines marked `ocr` come from recognized
+  screen text. Use screenshot coordinates when the tree has no indices.
 - Send only what the phone advertises: `p.actions` (`tap`, `longPress`, `swipe`, `drag`, `scroll`,
   `type(text, { into })`, `clear`, `wake`, `wait(ms)`, `navigate`, `launch`) and the buttons in
-  `p.navigation`. Android offers back, home, recents, notifications and quickSettings. An iPhone
-  offers Home and no Back: go back with the app's own on-screen control.
+  `p.navigation`. An iPhone can advertise Home, App Switcher, Notification Center, Control
+  Center, Lock and volume buttons. To go back on an iPhone, use the app's on-screen control.
 - `launch(appId)` takes an `appId` from `await p.installedApps({ query })` (or `computer_apps`
   with the phone's computerId). It is opaque: never guess a package name or bundle id.
-- When what you need is not advertised (an iPhone may lack `type`, `clear` or element indices),
-  tell the person what you can't do. Don't improvise around it, such as tapping keyboard keys one
-  by one.
-- A dark Android screen observes as empty: `await p.wake()`.
+- A Mac-driven iPhone supports typing and clearing when `p.actions` includes `type` and `clear`.
+  If typing is unavailable, tell the person and leave entry to them.
+- Use `await p.wake()` when the phone advertises `wake`, then observe again before targeting
+  anything on the screen.
 
 ## Locked
 
@@ -62,7 +63,8 @@ Check an approved iPhone again when the person says they unlocked or woke it. Us
 to decide whether to continue, try another authorized tool that meets the request, or ask the person
 for a step only they can take. An unreadable display state is uncertain even when the lock state is
 known. Repeating an unchanged check gives you the same information. A Mac-driven iPhone supports
-agent screenshots and control when ready. It does not offer a live video view for the person.
+agent screenshots and control when ready. The person can open a live view when the iPhone
+advertises display support.
 
 | Underlying device reason                                                                                   | Ask the person to                                                  |
 | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |

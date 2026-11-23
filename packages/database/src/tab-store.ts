@@ -58,10 +58,29 @@ export type TabAuthorization = (
   tx: TabTransaction,
   rows: readonly TabRecord[],
   layout: TabLayout,
+  replayedTabIds?: readonly TabId[],
 ) => Promise<void>;
 export interface TabMutation {
   tabIds: TabId[];
   layout: TabLayout;
+  replayed?: boolean;
+  currentLayout?: TabLayout;
+}
+const mutationMeta = new WeakMap<
+  TabMutation,
+  { readonly replayed: boolean; readonly currentLayout: TabLayout }
+>();
+/** Replay metadata kept out of enumerable receipt fields so concurrent replays remain deep-equal. */
+export function tabMutationMeta(mutation: TabMutation): {
+  readonly replayed: boolean;
+  readonly currentLayout?: TabLayout;
+} {
+  return (
+    mutationMeta.get(mutation) ?? {
+      replayed: mutation.replayed === true,
+      ...(mutation.currentLayout ? { currentLayout: mutation.currentLayout } : {}),
+    }
+  );
 }
 const resultSchema = z.object({ tabIds: z.array(TabIdSchema), layout: TabLayoutSchema });
 const replaySchema = z.object({ request: z.string(), result: resultSchema });
@@ -426,12 +445,24 @@ export class TabStore {
         .where("requestedBy", "=", ownerId)
         .where("idempotencyKey", "=", key)
         .executeTakeFirst(databaseOperationOptions());
-      await authorize?.(tx, state.rows, state.layout);
+      const parsedReplay = replay ? replaySchema.safeParse(replay.payload) : null;
+      const matchingReplay =
+        replay &&
+        replay.type === type &&
+        parsedReplay?.success &&
+        parsedReplay.data.request === request
+          ? parsedReplay.data.result
+          : null;
+      await authorize?.(tx, state.rows, state.layout, matchingReplay?.tabIds);
       if (replay) {
-        const payload = replaySchema.safeParse(replay.payload);
-        if (replay.type !== type || !payload.success || payload.data.request !== request)
+        if (!matchingReplay)
           failure("conflict", "This operation key was already used for another command.");
-        return payload.data.result;
+        const receipt: TabMutation = {
+          tabIds: matchingReplay.tabIds,
+          layout: matchingReplay.layout,
+        };
+        mutationMeta.set(receipt, { replayed: true, currentLayout: state.layout });
+        return receipt;
       }
       const before = JSON.stringify(state.layout.items);
       const tabIds = await action(tx, state);

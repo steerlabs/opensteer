@@ -417,6 +417,7 @@ export function itemView(row: Item): TranscriptItem {
     endedAt,
     replyMessageId,
     failure,
+    retry,
     usage,
     messageKind,
     messageAuthor,
@@ -493,6 +494,7 @@ export function itemView(row: Item): TranscriptItem {
         endedAt,
         replyMessageId,
         failure,
+        retry,
         usage,
       });
     case "tool":

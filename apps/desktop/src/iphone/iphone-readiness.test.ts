@@ -40,6 +40,9 @@ it.each(["read", "read-write"] as const)(
           };
         },
         onIphoneConnection: () => () => undefined,
+        openVideoAttachment: () => {
+          throw new Error("No media attachment expected during readiness tests.");
+        },
       },
     });
     cleanups.unshift(async () => {

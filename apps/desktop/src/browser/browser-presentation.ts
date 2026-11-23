@@ -66,6 +66,8 @@ interface PageSlot {
   followEpoch: number;
   disposed: boolean;
   paint: AbortController | null;
+  paintTimedOut: boolean;
+  ignoreMenuShortcuts: boolean | null;
 }
 interface Presentation {
   readonly id: DesktopBrowserPresentationId;
@@ -103,7 +105,6 @@ export class DesktopBrowserPresentationManager {
     DesktopHostTransport,
     | "observeBrowserSockets"
     | "closeSocketsForOwner"
-    | "openBrowserSurface"
     | "passkeyConsumerToken"
     | "viewerConsumerToken"
   >;
@@ -118,7 +119,6 @@ export class DesktopBrowserPresentationManager {
       DesktopHostTransport,
       | "observeBrowserSockets"
       | "closeSocketsForOwner"
-      | "openBrowserSurface"
       | "passkeyConsumerToken"
       | "viewerConsumerToken"
     >;
@@ -528,6 +528,8 @@ export class DesktopBrowserPresentationManager {
       followEpoch: 0,
       disposed: false,
       paint: null,
+      paintTimedOut: false,
+      ignoreMenuShortcuts: null,
       dispose: () => undefined,
     };
     presentation.pending = page;
@@ -545,6 +547,10 @@ export class DesktopBrowserPresentationManager {
         const first = !page.placement;
         page.placement = placement;
         if (first) this.#order(owner);
+        if (presentation.pending === page && page.paintTimedOut && !owner.current?.page) {
+          this.#promotePending(presentation, page);
+          return;
+        }
         if (presentation.page === page && owner.current === presentation)
           this.#placed(presentation, page);
       });
@@ -561,10 +567,31 @@ export class DesktopBrowserPresentationManager {
     }
   }
 
+  #promotePending(presentation: Presentation, page: PageSlot): void {
+    const owner = presentation.owner;
+    const oldPresentation = owner.current;
+    const oldPage = presentation.page;
+    presentation.pending = null;
+    presentation.page = page;
+    owner.current = presentation;
+    this.#passkeyChanged();
+    this.#order(owner);
+    this.#placed(presentation, page);
+    this.#emit(owner, {
+      type: "fullscreen",
+      presentationId: presentation.id,
+      revision: page.revision,
+      active: page.native.isFullscreen(),
+    });
+    if (oldPage && oldPage !== page) this.#disposePage(oldPage);
+    if (oldPresentation && oldPresentation !== presentation) this.#end(oldPresentation, "released");
+  }
+
   #paintPending(presentation: Presentation, page: PageSlot): void {
     const pending = () =>
       !page.disposed && this.#valid(presentation) && presentation.pending === page;
     if (!pending() || page.paint) return;
+    page.paintTimedOut = false;
     const paint = new AbortController();
     page.paint = paint;
     const owner = presentation.owner;
@@ -574,27 +601,20 @@ export class DesktopBrowserPresentationManager {
       .then(() => {
         page.paint = null;
         if (!pending()) return;
-        const oldPresentation = owner.current;
-        const oldPage = presentation.page;
-        presentation.pending = null;
-        presentation.page = page;
-        owner.current = presentation;
-        this.#passkeyChanged();
-        this.#order(owner);
-        this.#placed(presentation, page);
-        this.#emit(owner, {
-          type: "fullscreen",
-          presentationId: presentation.id,
-          revision: page.revision,
-          active: page.native.isFullscreen(),
-        });
-        if (oldPage && oldPage !== page) this.#disposePage(oldPage);
-        if (oldPresentation && oldPresentation !== presentation)
-          this.#end(oldPresentation, "released");
+        this.#promotePending(presentation, page);
       })
       .catch((error: unknown) => {
         page.paint = null;
-        if (!pending() || paint.signal.aborted || error instanceof BrowserPaintTimeoutError) return;
+        if (!pending() || paint.signal.aborted) return;
+        if (error instanceof BrowserPaintTimeoutError) {
+          page.paintTimedOut = true;
+          if (typeof page.native.view.webContents.invalidate === "function")
+            page.native.view.webContents.invalidate();
+          // Never strand a live tab behind the opaque appView when there is no
+          // incumbent page on screen (which leaves a blank stage until clicked).
+          if (!owner.current?.page && page.placement) this.#promotePending(presentation, page);
+          return;
+        }
         this.#onError(error);
         this.#end(presentation, "page-closed");
       });
@@ -652,7 +672,10 @@ export class DesktopBrowserPresentationManager {
     const autofillKeys = new AutofillKeys();
     const key = (event: Electron.Event, input: Input) => {
       const outstanding = page.native.inputOutstanding();
-      contents.setIgnoreMenuShortcuts(outstanding);
+      if (page.ignoreMenuShortcuts !== outstanding) {
+        page.ignoreMenuShortcuts = outstanding;
+        contents.setIgnoreMenuShortcuts(outstanding);
+      }
       const autofill = autofillKeys.decide(
         input,
         current() && !outstanding && !!presentation.owner.autofill?.shown,
@@ -733,37 +756,36 @@ export class DesktopBrowserPresentationManager {
           });
       }
       const open = (url: string) => {
-        if (!current()) return;
-        const connectionId = presentation.authority.sockets.values().next().value;
-        if (connectionId)
-          this.#transport.openBrowserSurface(presentation.owner.contents.id, connectionId, url);
+        if (!current() || !isOpenableTabUrl(url)) return;
+        page.native.openInNewTab(url, { background: true });
       };
-      if (params.linkURL)
-        items.push(
-          { label: "Open Link in New Tab", click: () => open(params.linkURL) },
-          {
-            label: "Copy Link Address",
-            click: () => {
-              if (current()) void clipboard.writeText(params.linkURL).catch(this.#onError);
-            },
+      if (params.linkURL) {
+        if (isOpenableTabUrl(params.linkURL))
+          items.push({ label: "Open Link in New Tab", click: () => open(params.linkURL) });
+        items.push({
+          label: "Copy Link Address",
+          click: () => {
+            if (current()) void clipboard.writeText(params.linkURL).catch(this.#onError);
           },
-        );
-      if (params.mediaType === "image")
-        items.push(
-          { label: "Open Image in New Tab", click: () => open(params.srcURL) },
-          {
-            label: "Copy Image",
-            click: () => {
-              if (current()) contents.copyImageAt(params.x, params.y);
-            },
+        });
+      }
+      if (params.mediaType === "image") {
+        if (isOpenableTabUrl(params.srcURL))
+          items.push({ label: "Open Image in New Tab", click: () => open(params.srcURL) });
+        items.push({
+          label: "Copy Image",
+          click: () => {
+            if (current()) contents.copyImageAt(params.x, params.y);
           },
-          {
+        });
+        if (params.srcURL)
+          items.push({
             label: "Copy Image Address",
             click: () => {
               if (current()) void clipboard.writeText(params.srcURL).catch(this.#onError);
             },
-          },
-        );
+          });
+      }
       if (!items.length)
         items.push(
           {
@@ -787,7 +809,10 @@ export class DesktopBrowserPresentationManager {
             },
           },
         );
-      Menu.buildFromTemplate(items).popup({ window: presentation.owner.window });
+      Menu.buildFromTemplate(items).popup({
+        window: presentation.owner.window,
+        ...(params.frame ? { frame: params.frame } : {}),
+      });
     };
     const mouse = (_event: Electron.Event, input: Electron.MouseInputEvent) => {
       if (current() && input.type === "mouseDown") this.#dismissAutofill(presentation);
@@ -1068,6 +1093,15 @@ export class DesktopBrowserPresentationManager {
   #emit(owner: Owner, event: DesktopBrowserPresentationEvent): void {
     if (!owner.contents.isDestroyed())
       owner.contents.send(desktopBridgeChannels.browserPresentationEvent, event);
+  }
+}
+
+function isOpenableTabUrl(value: string): boolean {
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
   }
 }
 

@@ -947,6 +947,7 @@ export async function createHostRuntime(
     // lost, so one of the two is bound after the other exists.
     let computerUse: ComputerUseService | undefined;
     let computerViews: ComputerViewService | undefined;
+    let nativeTabs: NativeTabTargets | undefined;
     let displayStreams: DisplayStreamHub | undefined;
     let pluginPackages: PluginPackageService | undefined;
     const deviceDrivers = new DeviceDriverResolver({
@@ -978,13 +979,19 @@ export async function createHostRuntime(
       onDeviceRemoved: (deviceId, removed) => {
         computerUse?.forgetDevice(deviceId, removed);
         computerViews?.forgetDevice(deviceId);
+        nativeTabs?.forgetComputer(deviceId);
         displayStreams?.forgetDevice(deviceId);
+        tabs?.changed();
+        announceResources("tab");
       },
       onDeviceInvalidated: (binding) => {
         computerUse?.forgetDriver(binding);
         computerViews?.forgetDriver(binding);
+        nativeTabs?.forgetComputer(binding.deviceId);
+        nativeTabs?.forgetComputer(binding.runnerId);
         displayStreams?.forgetDriver(binding);
         tabs?.changed();
+        announceResources("tab");
       },
       requireAgentAccess: async (runnerId) =>
         requireRunnerDeviceAccess(database, runnerId, "apps", runners.isRunnerConnected(runnerId), {
@@ -1005,13 +1012,21 @@ export async function createHostRuntime(
       onRunnerDetached: (runnerId, reason) => {
         if (reason === "device-restarting") displayStreams?.forgetRunner(runnerId, reason);
         computerViews?.forgetRunner(runnerId, reason === "device-restarting" ? reason : undefined);
+        nativeTabs?.forgetComputer(runnerId);
         if (reason !== "device-restarting") displayStreams?.forgetRunner(runnerId, reason);
         computerUse?.forgetRunner(runnerId);
+        tabs?.changed();
+        announceResources("tab");
       },
       onDisplayEvent: (runnerId, event) => displayStreams?.handlePhoneEvent(runnerId, event),
       onPluginDataRemoved: (runnerId, pluginId) =>
         integrationPlatformStore.plugins.confirmDataRemoval(runnerId, pluginId),
-      onRunnerAttached: (runnerId) => localServers.computerRunnerAttached(runnerId),
+      onRunnerAttached: (runnerId) => {
+        nativeTabs?.forgetComputer(runnerId);
+        tabs?.changed();
+        announceResources("tab");
+        localServers.computerRunnerAttached(runnerId);
+      },
     });
     computerUse = new ComputerUseService({
       deploymentId: deployment.id,
@@ -1555,7 +1570,9 @@ export async function createHostRuntime(
       connections: listConnections,
       owners: (ids) => store.effectiveDeviceOwners(ids.map((id) => DeviceIdSchema.parse(id))),
       changed: (ownerId, notice) => {
-        if (notice.type === "host.computer-view.removed")
+        if (notice.type === "host.computer-view.changed") {
+          nativeTabs?.observeView(notice.view);
+        } else if (notice.type === "host.computer-view.removed")
           app.log.info(
             {
               machineId: notice.machineId,
@@ -1573,7 +1590,7 @@ export async function createHostRuntime(
       ended: (viewId, generation, reason) =>
         displayStreams?.endOwnerView(viewId, generation, reason),
     });
-    const nativeTabs = new NativeTabTargets({
+    nativeTabs = new NativeTabTargets({
       views: computerViews,
       connections: listConnections,
       owns: async (owner, computer) =>
@@ -1585,6 +1602,10 @@ export async function createHostRuntime(
         computerApps.resolveWindow(computer, target, { timeoutMs: 10_000 }),
       users: (owner, computer, window) => computerUse!.nativeTargetUsers(owner, computer, window),
       phoneUnavailable: (computer) => computerApps.displayUnavailableReason(computer),
+      onWindowStateChanged: (ownerId, _computerId, windowId) => {
+        tabs?.windowChanged(ownerId, windowId);
+        announceResources("tab");
+      },
     });
     tabs = new TabService({
       store: tabStore,
@@ -2002,7 +2023,8 @@ export async function createHostRuntime(
         ?.revalidate()
         .catch((error: unknown) => reportComputerUseSweepError(error));
       realtime.broadcast({ type: "host.connections-changed" });
-      announceResources("machine");
+      tabs?.changed();
+      announceResources("machine", "tab");
       void channelService?.syncRuntimes();
       // A bridge whose computer app lost its approval ends: the cleanup worker revokes it now.
       connectionMaintenance?.wake();

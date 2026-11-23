@@ -2,6 +2,8 @@ import {
   backgroundModelWants,
   createId,
   HarnessIdSchema,
+  ModelIdSchema,
+  ModelProviderIdSchema,
   ModelSelectionSchema,
   type AgentHomeSettings,
   type EnvironmentId,
@@ -245,6 +247,185 @@ describe("automatic model resolution on the Host", () => {
       [harnesses[0]!.id, "claude-sonnet-5-5", true],
     ]);
     expect(candidates.at(-1)?.original).toBe(true);
+  });
+  it("applies provider-pool exhaustion only to matching providers and ignores informational buckets", async () => {
+    const { dependencies, harnesses } = world([
+      {
+        driverKind: "antigravity",
+        sourceId: "oauth-personal",
+        models: [
+          ["google", "gemini-4-neon"],
+          ["anthropic", "claude-opus-5-5"],
+        ],
+        connections: [
+          {
+            connectionSlot: "primary",
+            label: "Antigravity",
+            status: "connected",
+            usage: {
+              limitReached: false,
+              observedAt: "2026-11-01T00:00:00.000Z",
+              windows: [
+                {
+                  label: "Gemini 5h",
+                  providerIds: [ModelProviderIdSchema.parse("google")],
+                  resetsAt: null,
+                  usedPercent: 25,
+                },
+                {
+                  label: "Claude & GPT 5h",
+                  providerIds: [
+                    ModelProviderIdSchema.parse("anthropic"),
+                    ModelProviderIdSchema.parse("openai"),
+                  ],
+                  resetsAt: null,
+                  usedPercent: 100,
+                },
+                {
+                  label: "Unknown pool 5h",
+                  providerIds: [],
+                  resetsAt: null,
+                  usedPercent: 100,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ]);
+    const { candidates } = await resolveAutomaticModels(dependencies, {
+      userId,
+      wants: () => [
+        {
+          kind: "model" as const,
+          driverKind: HarnessIdSchema.parse("antigravity"),
+          providerId: ModelProviderIdSchema.parse("anthropic"),
+          modelId: ModelIdSchema.parse("claude-opus-5-5"),
+          effort: "medium" as const,
+        },
+        {
+          kind: "model" as const,
+          driverKind: HarnessIdSchema.parse("antigravity"),
+          providerId: ModelProviderIdSchema.parse("google"),
+          modelId: ModelIdSchema.parse("gemini-4-neon"),
+          effort: "medium" as const,
+        },
+      ],
+      canRun: anyAccount,
+    });
+    expect(
+      candidates.map((candidate) => [
+        candidate.harnessInstanceId,
+        candidate.storedModelSelection.providerId,
+        candidate.storedModelSelection.modelId,
+        candidate.usageLimited,
+      ]),
+    ).toEqual([
+      [harnesses[0]!.id, "google", "gemini-4-neon", false],
+      [harnesses[0]!.id, "anthropic", "claude-opus-5-5", true],
+    ]);
+  });
+  it("ignores disconnected slots and keeps account-wide limitReached independent of expired scoped pools", async () => {
+    const expiredReset = "2020-01-01T00:00:00.000Z";
+    const { dependencies } = world([
+      {
+        driverKind: "antigravity",
+        sourceId: "oauth-personal",
+        models: [
+          ["google", "gemini-4-neon"],
+          ["anthropic", "claude-opus-5-5"],
+        ],
+        connections: [
+          {
+            connectionSlot: "primary",
+            label: "Disconnected",
+            status: "authentication-required",
+            usage: {
+              limitReached: true,
+              observedAt: "2026-11-01T00:00:00.000Z",
+              windows: [],
+            },
+          },
+          {
+            connectionSlot: "google",
+            label: "Connected Google",
+            status: "connected",
+            usage: {
+              limitReached: false,
+              observedAt: "2026-11-01T00:00:00.000Z",
+              windows: [
+                {
+                  label: "Gemini 5h",
+                  providerIds: [ModelProviderIdSchema.parse("google")],
+                  resetsAt: null,
+                  usedPercent: 10,
+                },
+              ],
+            },
+          },
+        ],
+      },
+      {
+        driverKind: "antigravity",
+        sourceId: "oauth-personal",
+        isDefault: false,
+        models: [
+          ["google", "gemini-4-neon"],
+          ["anthropic", "claude-opus-5-5"],
+        ],
+        connections: [
+          {
+            connectionSlot: "primary",
+            label: "Account-wide block with expired scoped pool",
+            status: "connected",
+            usage: {
+              limitReached: true,
+              observedAt: "2026-11-01T00:00:00.000Z",
+              windows: [
+                {
+                  label: "Gemini 5h",
+                  providerIds: [ModelProviderIdSchema.parse("google")],
+                  resetsAt: expiredReset,
+                  usedPercent: 100,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ]);
+    const { candidates } = await resolveAutomaticModels(dependencies, {
+      userId,
+      wants: () => [
+        {
+          kind: "model" as const,
+          driverKind: HarnessIdSchema.parse("antigravity"),
+          providerId: ModelProviderIdSchema.parse("google"),
+          modelId: ModelIdSchema.parse("gemini-4-neon"),
+          effort: "medium" as const,
+        },
+        {
+          kind: "model" as const,
+          driverKind: HarnessIdSchema.parse("antigravity"),
+          providerId: ModelProviderIdSchema.parse("anthropic"),
+          modelId: ModelIdSchema.parse("claude-opus-5-5"),
+          effort: "medium" as const,
+        },
+      ],
+      canRun: anyAccount,
+    });
+    // Account 0 has no connected exhausted slot; Account 1's account-wide block applies to both Google and Anthropic.
+    expect(
+      candidates.map((candidate) => [
+        candidate.storedModelSelection.providerId,
+        candidate.usageLimited,
+      ]),
+    ).toEqual([
+      ["google", false],
+      ["anthropic", false],
+      ["google", true],
+      ["anthropic", true],
+    ]);
   });
   it("runs a memory pass only on the task's computer, on an engine that enforces its access mode", async () => {
     const resolve = async (offered: ReturnType<typeof world>) => {

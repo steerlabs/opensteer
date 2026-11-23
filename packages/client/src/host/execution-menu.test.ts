@@ -170,7 +170,13 @@ function connection(limitReached: boolean): ThreadPlacementOption["observedConne
       usage: {
         limitReached,
         observedAt: "2026-10-30T11:00:00Z",
-        windows: [{ label: "weekly", resetsAt: "2026-11-01T01:35:00Z", usedPercent: 100 }],
+        windows: [
+          {
+            label: "weekly",
+            resetsAt: "2026-11-01T01:35:00Z",
+            usedPercent: limitReached ? 100 : 40,
+          },
+        ],
       },
     },
   ];

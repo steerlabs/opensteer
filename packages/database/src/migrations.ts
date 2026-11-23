@@ -21,12 +21,18 @@ import {
   applyAnsweredQuestionRecords,
   applyBrowserSessionTabsIndex,
   applyInlineTranscriptMessages,
+  applyStoppedRunsNotNews,
+  applyThreadDoneBy,
+  applyRunProviderRetry,
   applyPersonalStateSchema,
   browserSessionTabsIndexMigrationName,
   applyDropDeviceAccessCount,
   applyTaskApprovalReceipts,
   dropDeviceAccessCountMigrationName,
   inlineTranscriptMessagesMigrationName,
+  stoppedRunsNotNewsMigrationName,
+  threadDoneByMigrationName,
+  runProviderRetryMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 import { agentGrantsMigrationName, applyAgentGrants } from "./agent-grants-migration.js";
@@ -322,7 +328,7 @@ create unique index plugins_owner_name on plugins(installed_by, name);
  * the Host stores each such package again under its current digest at startup.
  */
 export const pluginPackageFormatMigrationName = "0037_plugin_package_format";
-export const commandRequestsMigrationName = "0054_command_requests";
+export const commandRequestsMigrationName = "0112_command_requests";
 const PLUGIN_PACKAGE_FORMAT_SQL = `
 alter table plugin_versions add column package_format text;
 `;
@@ -620,9 +626,12 @@ export function migrationProvider(options?: {
               [dropDeviceAccessCountMigrationName]: { up: applyDropDeviceAccessCount },
               [browserSessionTabsIndexMigrationName]: { up: applyBrowserSessionTabsIndex },
               [inlineTranscriptMessagesMigrationName]: { up: applyInlineTranscriptMessages },
+              [stoppedRunsNotNewsMigrationName]: { up: applyStoppedRunsNotNews },
+              [threadDoneByMigrationName]: { up: applyThreadDoneBy },
+              [runProviderRetryMigrationName]: { up: applyRunProviderRetry },
               [agentGrantsMigrationName]: { up: applyAgentGrants },
               [agentSessionsMigrationName]: { up: applyAgentSessions },
-              "0046_chrome_live_tabs_source": {
+              "0102_chrome_live_tabs_source": {
                 async up(database: Kysely<unknown>) {
                   await sql`alter table browser_sources add column live_tabs_only boolean not null default false`.execute(
                     database,
@@ -630,7 +639,7 @@ export function migrationProvider(options?: {
                 },
               },
               [agentDirectoryMigrationName]: { up: applyAgentDirectoryVerification },
-              "0048_shared_chrome_grants": {
+              "0104_shared_chrome_grants": {
                 async up(database: Kysely<unknown>) {
                   await sql`
                     alter table browser_source_pairings add column device_id text;
@@ -641,7 +650,7 @@ export function migrationProvider(options?: {
               },
               [workHomeMigrationName]: { up: applyWorkHome },
               [browserPoolMigrationName]: { up: applyBrowserPool },
-              "0051_needs_you_counts_requests": {
+              "0107_needs_you_counts_requests": {
                 /**
                  * A Home that used teams counted its teammates' asks in Needs you, and those
                  * rows no longer list: the count is what the list shows, Requests alone. A

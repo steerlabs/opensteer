@@ -170,6 +170,7 @@ export interface TabRecord {
   agentActed: boolean;
   typed: boolean;
   usedAt: number;
+  lastPolicyTouchAt?: number;
   unrestorable: boolean;
   restore: { url: string; engine: unknown | null; bytes: number } | null;
 }
@@ -408,7 +409,7 @@ export class SurfaceLedger {
     if (this.closed) throw new BrowserRuntimeError("conflict", "The surface ledger is closed.");
     if (this.started) return;
     this.started = true;
-    this.pages.adopt(this.context);
+    this.pages.attachSession(this.context, this.session);
     this.context.onPage(this.onPage);
     const pages = this.rootPages ?? this.context.pages();
     for (const [index, page] of pages.entries())
@@ -468,9 +469,15 @@ export class SurfaceLedger {
   touch(id: BrowserSurfaceId, person = false): void {
     const record = this.records.get(id);
     if (!record) return;
-    record.usedAt = Date.now();
+    const now = Date.now();
+    const becamePerson = person && !record.personUsed;
+    const notify = becamePerson || now - (record.lastPolicyTouchAt ?? 0) >= 1_000;
+    record.usedAt = now;
     if (person) record.personUsed = true;
-    this.policyChanged();
+    if (notify) {
+      record.lastPolicyTouchAt = now;
+      this.policyChanged();
+    }
   }
   markPersonUsed(id: BrowserSurfaceId): void {
     const record = this.records.get(id);
@@ -1389,6 +1396,7 @@ export class SurfaceLedger {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.pages.detachSession(this.context, this.session);
     for (const record of this.records.values()) record.lease.close();
     this.emit({ type: "closed" });
     this.context.offPage(this.onPage);
@@ -1573,7 +1581,10 @@ export class SurfaceLedger {
           openerRecord.userActivitySequence > openerRecord.agentSequence;
         const forward =
           makeActive ||
-          (answersPerson && Date.now() < this.legacyPersonUntil && openerId === this.activeId);
+          (!page.openedInBackground &&
+            answersPerson &&
+            Date.now() < this.legacyPersonUntil &&
+            openerId === this.activeId);
         const follower = page.openedInBackground ? null : this.takeViewerInput(openerRecord);
         const previousTargetId = waking?.lastTargetId;
         const record: SurfaceRecord = Object.assign(
@@ -2285,23 +2296,28 @@ export class SurfaceLedger {
     const live = record.live;
     if (this.navigationVersion !== 1) return;
     const revision = ++live.navigationRevision;
-    const history = z
-      .object({
-        currentIndex: z.number().int().nonnegative(),
-        entries: z.array(z.object({ id: z.number().int() })),
-      })
-      .parse(await live.cdp.send("Page.getNavigationHistory"));
-    if (
-      this.closed ||
-      this.records.get(record.id) !== record ||
-      record.live !== live ||
-      revision !== live.navigationRevision
-    )
-      return;
-    const navigation = {
-      canGoBack: history.currentIndex > 0,
-      canGoForward: history.currentIndex + 1 < history.entries.length,
-    };
+    let navigation: { readonly canGoBack: boolean; readonly canGoForward: boolean };
+    if (live.page.navigationState) {
+      navigation = live.page.navigationState();
+    } else {
+      const history = z
+        .object({
+          currentIndex: z.number().int().nonnegative(),
+          entries: z.array(z.object({ id: z.number().int() })),
+        })
+        .parse(await live.cdp.send("Page.getNavigationHistory"));
+      if (
+        this.closed ||
+        this.records.get(record.id) !== record ||
+        record.live !== live ||
+        revision !== live.navigationRevision
+      )
+        return;
+      navigation = {
+        canGoBack: history.currentIndex > 0,
+        canGoForward: history.currentIndex + 1 < history.entries.length,
+      };
+    }
     if (
       record.live?.navigation?.canGoBack === navigation.canGoBack &&
       record.live?.navigation?.canGoForward === navigation.canGoForward

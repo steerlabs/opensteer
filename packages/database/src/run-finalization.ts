@@ -724,6 +724,7 @@ async function finalizeRunOutcome(
       runnerSafetyTerminal: input.source === "runner" && input.status !== "completed",
       ...(mutation ? { revision: mutation.sequence } : {}),
       failure: input.status === "failed" ? jsonValue(input.failure!) : null,
+      providerRetry: null,
       status: input.status,
     })
     .where("id", "=", run.id)
@@ -750,6 +751,7 @@ async function finalizeRunOutcome(
       .where("id", "=", run.id)
       .execute();
     if (
+      thread.doneAt === null &&
       !(await threadOrAssignmentHasPendingWork(transaction, {
         threadId: run.threadId,
       }))
@@ -762,20 +764,25 @@ async function finalizeRunOutcome(
         .execute();
       for (const trigger of triggers) await pauseTriggerInTransaction(transaction, trigger);
       const doneAt = input.completedAt;
-      await transaction
+      const updated = await transaction
         .updateTable("threads")
         .set({
           doneAt,
           doneReason: null,
+          doneBy: "agent",
           inputQueuePaused: false,
           inputQueuePausedBy: null,
         })
         .where("id", "=", run.threadId)
-        .execute();
-      thread.doneAt = doneAt;
-      thread.doneReason = null;
-      thread.inputQueuePaused = false;
-      if (!offline) await publishThreadSummary(transaction, run.threadId);
+        .where("doneAt", "is", null)
+        .executeTakeFirst();
+      if (updated.numUpdatedRows > 0n) {
+        thread.doneAt = doneAt;
+        thread.doneReason = null;
+        thread.doneBy = "agent";
+        thread.inputQueuePaused = false;
+        if (!offline) await publishThreadSummary(transaction, run.threadId);
+      }
     }
   }
 
