@@ -55,7 +55,7 @@ const { browser, origin } = web;
 try {
   const context = await browser.newContext({ viewport: { height: 900, width: 1280 } });
   context.setDefaultTimeout(5_000);
-  context.setDefaultNavigationTimeout(15_000);
+  context.setDefaultNavigationTimeout(10_000);
   const requests: { readonly url: string; readonly navigation: boolean; readonly page: string }[] =
     [];
   const pages = new Map<Page, string>();
@@ -582,15 +582,25 @@ function frameOf(request: Request): Frame | null {
 }
 
 async function waitForHost(page: Page): Promise<void> {
+  // `main.tsx` loads `./app.js` and `@opensteer/client/mock` via dynamic import after `page.goto()`
+  // settles, so wait for the app bundle to mount under the navigation timeout before timing the
+  // mock Host connection itself.
+  await page.waitForFunction(
+    () =>
+      Boolean(Reflect.get(window, "opensteerMock")) &&
+      (document.getElementById("root")?.childElementCount ?? 0) > 0,
+    undefined,
+    { timeout: 10_000 },
+  );
   try {
     await page.waitForFunction(
       () =>
         (Reflect.get(window, "opensteerMock") as MockHostClient)?.getSnapshot().connection ===
         "connected",
       undefined,
-      { timeout: 15_000 },
+      { timeout: 5_000 },
     );
   } catch (error) {
-    throw new Error("The mock Host did not connect within 15 seconds.", { cause: error });
+    throw new Error("The mock Host did not connect within 5 seconds.", { cause: error });
   }
 }
