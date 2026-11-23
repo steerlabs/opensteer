@@ -31,64 +31,11 @@ async function paginateById<Row extends { readonly id: string }>(
   }
 }
 
-function cleanIdentityAtConsent(value: unknown): {
-  readonly changed: boolean;
-  readonly value: unknown;
-} {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return { changed: false, value };
-  const record = value as Record<string, unknown>;
-  let changed = false;
-  const next: Record<string, unknown> = { ...record };
-  for (const [key, entry] of Object.entries(record)) {
-    if (!key.endsWith("Name") || typeof entry !== "string") continue;
-    const cleaned = outsideName(entry, 100) || "Agent";
-    if (cleaned !== entry) {
-      next[key] = cleaned;
-      changed = true;
-    }
-  }
-  return changed ? { changed: true, value: next } : { changed: false, value };
-}
-
-function cleanIngressEvent(value: unknown): { readonly changed: boolean; readonly value: unknown } {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return { changed: false, value };
-  const event = value as Record<string, unknown>;
-  let changed = false;
-  let actor = event.actor;
-  if (actor && typeof actor === "object" && !Array.isArray(actor)) {
-    const record = actor as Record<string, unknown>;
-    if (typeof record.displayName === "string") {
-      const fallback =
-        (typeof record.externalUserId === "string"
-          ? outsideName(record.externalUserId, 160)
-          : "") || "Someone";
-      const cleaned = outsideName(record.displayName, 160) || fallback;
-      if (cleaned !== record.displayName) {
-        actor = { ...record, displayName: cleaned };
-        changed = true;
-      }
-    }
-  }
-  let conversation = event.conversation;
-  if (conversation && typeof conversation === "object" && !Array.isArray(conversation)) {
-    const record = conversation as Record<string, unknown>;
-    if (typeof record.displayName === "string") {
-      const cleaned = outsideName(record.displayName, 240) || null;
-      if (cleaned !== record.displayName) {
-        conversation = { ...record, displayName: cleaned };
-        changed = true;
-      }
-    }
-  }
-  return changed
-    ? { changed: true, value: { ...event, actor, conversation } }
-    : { changed: false, value };
-}
-
 /**
  * Cleans every stored name column and JSON place through the one `outsideName` implementation,
  * batched by primary key inside the migration's transaction. Only rows whose value changes are
- * updated; an empty cleaned value takes the store's neutral fallback.
+ * updated; an empty cleaned value takes the store's neutral fallback. JSON updates patch only the
+ * target path via `jsonb_set` so sibling keys and integers above 2^53 stay untouched.
  */
 async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
   const after = (afterId: string | null) => (afterId === null ? sql`true` : sql`id > ${afterId}`);
@@ -102,18 +49,29 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
           readonly label: string;
           readonly clientName: string;
           readonly bridgeName: string | null;
-          readonly identity: unknown;
+          readonly idClientName: string | null;
+          readonly idPlatformName: string | null;
+          readonly idEmbedderName: string | null;
         }>`
           select id, label, client_name as "clientName",
-            bridge_conversation_name as "bridgeName", identity_at_consent as "identity"
+            bridge_conversation_name as "bridgeName",
+            case when jsonb_typeof(identity_at_consent->'clientName') = 'string'
+              then identity_at_consent->>'clientName' else null end as "idClientName",
+            case when jsonb_typeof(identity_at_consent->'platformName') = 'string'
+              then identity_at_consent->>'platformName' else null end as "idPlatformName",
+            case when jsonb_typeof(identity_at_consent->'embedderName') = 'string'
+              then identity_at_consent->>'embedderName' else null end as "idEmbedderName"
           from agent_connections
           where ${after(afterId)}
             and (${needsClean(sql`label`, 120)}
               or ${needsClean(sql`client_name`, 100)}
               or ${needsClean(sql`bridge_conversation_name`, 160)}
-              or ${needsClean(sql`identity_at_consent->>'clientName'`, 100)}
-              or ${needsClean(sql`identity_at_consent->>'platformName'`, 100)}
-              or ${needsClean(sql`identity_at_consent->>'embedderName'`, 100)})
+              or (jsonb_typeof(identity_at_consent->'clientName') = 'string'
+                and ${needsClean(sql`identity_at_consent->>'clientName'`, 100)})
+              or (jsonb_typeof(identity_at_consent->'platformName') = 'string'
+                and ${needsClean(sql`identity_at_consent->>'platformName'`, 100)})
+              or (jsonb_typeof(identity_at_consent->'embedderName') = 'string'
+                and ${needsClean(sql`identity_at_consent->>'embedderName'`, 100)}))
           order by id
           limit ${cleanBatchSize}
         `.execute(database)
@@ -123,40 +81,73 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
       const labels: string[] = [];
       const clientNames: string[] = [];
       const bridgeNames: (string | null)[] = [];
-      const identities: (string | null)[] = [];
+      const idClientNames: (string | null)[] = [];
+      const idClientChanged: boolean[] = [];
+      const idPlatformNames: (string | null)[] = [];
+      const idPlatformChanged: boolean[] = [];
+      const idEmbedderNames: (string | null)[] = [];
+      const idEmbedderChanged: boolean[] = [];
       for (const row of rows) {
         const clientName = outsideName(row.clientName, 100) || "Agent";
         const label = outsideName(row.label, 120) || clientName;
         const bridgeName =
           row.bridgeName === null ? null : outsideName(row.bridgeName, 160) || null;
-        const identity = cleanIdentityAtConsent(row.identity);
+        const nextIdClient =
+          row.idClientName === null ? null : outsideName(row.idClientName, 100) || "Agent";
+        const nextIdPlatform =
+          row.idPlatformName === null ? null : outsideName(row.idPlatformName, 100) || "Agent";
+        const nextIdEmbedder =
+          row.idEmbedderName === null ? null : outsideName(row.idEmbedderName, 100) || "Agent";
+        const clientIdDirty = nextIdClient !== row.idClientName;
+        const platformIdDirty = nextIdPlatform !== row.idPlatformName;
+        const embedderIdDirty = nextIdEmbedder !== row.idEmbedderName;
         if (
           clientName === row.clientName &&
           label === row.label &&
           bridgeName === row.bridgeName &&
-          !identity.changed
+          !clientIdDirty &&
+          !platformIdDirty &&
+          !embedderIdDirty
         )
           continue;
         ids.push(row.id);
         labels.push(label);
         clientNames.push(clientName);
         bridgeNames.push(bridgeName);
-        identities.push(identity.value === null ? null : JSON.stringify(identity.value));
+        idClientNames.push(nextIdClient);
+        idClientChanged.push(clientIdDirty);
+        idPlatformNames.push(nextIdPlatform);
+        idPlatformChanged.push(platformIdDirty);
+        idEmbedderNames.push(nextIdEmbedder);
+        idEmbedderChanged.push(embedderIdDirty);
       }
       if (ids.length === 0) return;
+      const withClient = sql`case when u.id_client_changed then jsonb_set(t.identity_at_consent, '{clientName}', to_jsonb(u.id_client_name)) else t.identity_at_consent end`;
+      const withPlatform = sql`case when u.id_platform_changed then jsonb_set((${withClient}), '{platformName}', to_jsonb(u.id_platform_name)) else (${withClient}) end`;
+      const withEmbedder = sql`case when u.id_embedder_changed then jsonb_set((${withPlatform}), '{embedderName}', to_jsonb(u.id_embedder_name)) else (${withPlatform}) end`;
       await sql`
         update agent_connections as t set
           label = u.label,
           client_name = u.client_name,
           bridge_conversation_name = u.bridge_conversation_name,
-          identity_at_consent = u.identity_at_consent::jsonb
+          identity_at_consent = (${withEmbedder})
         from unnest(
           ${ids}::text[],
           ${labels}::text[],
           ${clientNames}::text[],
           ${bridgeNames}::text[],
-          ${identities}::text[]
-        ) as u(id, label, client_name, bridge_conversation_name, identity_at_consent)
+          ${idClientNames}::text[],
+          ${idClientChanged}::boolean[],
+          ${idPlatformNames}::text[],
+          ${idPlatformChanged}::boolean[],
+          ${idEmbedderNames}::text[],
+          ${idEmbedderChanged}::boolean[]
+        ) as u(
+          id, label, client_name, bridge_conversation_name,
+          id_client_name, id_client_changed,
+          id_platform_name, id_platform_changed,
+          id_embedder_name, id_embedder_changed
+        )
         where t.id = u.id
       `.execute(database);
     },
@@ -549,29 +540,68 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
   await paginateById(
     async (afterId) =>
       (
-        await sql<{ readonly id: string; readonly event: unknown }>`
-          select id, event
+        await sql<{
+          readonly id: string;
+          readonly actorDisplayName: string | null;
+          readonly actorExternalUserId: string | null;
+          readonly conversationDisplayName: string | null;
+        }>`
+          select id,
+            case when jsonb_typeof(event->'actor'->'displayName') = 'string'
+              then event->'actor'->>'displayName' else null end as "actorDisplayName",
+            case when jsonb_typeof(event->'actor'->'externalUserId') = 'string'
+              then event->'actor'->>'externalUserId' else null end as "actorExternalUserId",
+            case when jsonb_typeof(event->'conversation'->'displayName') = 'string'
+              then event->'conversation'->>'displayName' else null end as "conversationDisplayName"
           from channel_ingress_events
           where ${after(afterId)}
-            and (${needsClean(sql`event->'actor'->>'displayName'`, 160)}
-              or ${needsClean(sql`event->'conversation'->>'displayName'`, 240)})
+            and ((jsonb_typeof(event->'actor'->'displayName') = 'string'
+                and ${needsClean(sql`event->'actor'->>'displayName'`, 160)})
+              or (jsonb_typeof(event->'conversation'->'displayName') = 'string'
+                and ${needsClean(sql`event->'conversation'->>'displayName'`, 240)}))
           order by id
           limit ${cleanBatchSize}
         `.execute(database)
       ).rows,
     async (rows) => {
       const ids: string[] = [];
-      const events: string[] = [];
+      const actorNames: (string | null)[] = [];
+      const actorChanged: boolean[] = [];
+      const convNames: (string | null)[] = [];
+      const convChanged: boolean[] = [];
       for (const row of rows) {
-        const cleaned = cleanIngressEvent(row.event);
-        if (!cleaned.changed) continue;
+        const actorFallback =
+          (row.actorExternalUserId !== null ? outsideName(row.actorExternalUserId, 160) : "") ||
+          "Someone";
+        const nextActor =
+          row.actorDisplayName === null
+            ? null
+            : outsideName(row.actorDisplayName, 160) || actorFallback;
+        const nextConv =
+          row.conversationDisplayName === null
+            ? null
+            : outsideName(row.conversationDisplayName, 240) || null;
+        const aDirty = nextActor !== row.actorDisplayName;
+        const cDirty = nextConv !== row.conversationDisplayName;
+        if (!aDirty && !cDirty) continue;
         ids.push(row.id);
-        events.push(JSON.stringify(cleaned.value));
+        actorNames.push(nextActor);
+        actorChanged.push(aDirty);
+        convNames.push(nextConv);
+        convChanged.push(cDirty);
       }
       if (ids.length === 0) return;
+      const withActor = sql`case when u.actor_changed then jsonb_set(t.event, '{actor,displayName}', to_jsonb(u.actor_name)) else t.event end`;
+      const withConv = sql`case when u.conv_changed then jsonb_set((${withActor}), '{conversation,displayName}', coalesce(to_jsonb(u.conv_name), 'null'::jsonb)) else (${withActor}) end`;
       await sql`
-        update channel_ingress_events as t set event = u.event::jsonb
-        from unnest(${ids}::text[], ${events}::text[]) as u(id, event)
+        update channel_ingress_events as t set event = (${withConv})
+        from unnest(
+          ${ids}::text[],
+          ${actorNames}::text[],
+          ${actorChanged}::boolean[],
+          ${convNames}::text[],
+          ${convChanged}::boolean[]
+        ) as u(id, actor_name, actor_changed, conv_name, conv_changed)
         where t.id = u.id
       `.execute(database);
     },
@@ -1365,9 +1395,30 @@ export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<voi
       select 'trigger', tr.id, tr.created_by from tainted join triggers tr on tr.id = tainted.id
       where tainted.kind = 'trigger' and tr.origin_connection_id is null;
 
+    -- A stranger's or non-personal cancelled channel-ingress input never ran (so it does not taint
+    -- a task that stayed the person's own), yet it still did not come from the person: keep it
+    -- cancelled and attribute it to the ended chat row, never to user-session.
+    create temporary table chat_routes_stranger_cancelled on commit drop as
+      select i.message_id, t.created_by
+      from thread_inputs i
+      join threads t on t.id = i.thread_id
+      left join channel_conversations c on c.id = i.authority_source->>'conversationId'
+      left join channel_identities identity on identity.principal_id = i.actor_principal_id
+      where i.authority_source->>'kind' = 'channel-ingress'
+        and i.state = 'cancelled'
+        and (c.id is null or c.conversation_type <> 'dm' or not c.personal_context
+          or identity.status is distinct from 'linked'
+          or identity.account_id is distinct from c.account_id
+          or identity.linked_user_id is distinct from t.created_by
+          or i.requested_by is distinct from t.created_by);
+
     create temporary table chat_routes_ended on commit drop as
       select owner.created_by as user_id, 'mcn_' || gen_random_uuid() as id
-      from (select distinct created_by from chat_routes_reached) owner;
+      from (
+        select created_by from chat_routes_reached
+        union
+        select created_by from chat_routes_stranger_cancelled
+      ) owner;
 
     -- Removing a connection hides it; it never stops or skips its Disconnect cleanup.
     alter table agent_connections drop constraint if exists agent_connections_cleanup;
@@ -1407,7 +1458,17 @@ export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<voi
         'kind', 'connection', 'connectionId', t.origin_connection_id, 'userId', i.requested_by),
       connection_id = t.origin_connection_id
     from threads t
-    where i.thread_id = t.id and t.origin_connection_id is not null
+    where i.thread_id = t.id
+      and t.origin_connection_id in (select id from chat_routes_ended)
+      and i.authority_source->>'kind' = 'channel-ingress';
+    update thread_inputs i set
+      authority_source = jsonb_build_object(
+        'kind', 'connection', 'connectionId', legacy.id, 'userId', i.requested_by),
+      connection_id = legacy.id,
+      reply_target = null
+    from chat_routes_stranger_cancelled sc
+    join chat_routes_ended legacy on legacy.user_id = sc.created_by
+    where i.message_id = sc.message_id
       and i.authority_source->>'kind' = 'channel-ingress';
     with rewritten_inputs as (
       update thread_inputs i set

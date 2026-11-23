@@ -63,7 +63,7 @@ async function restoreRoutes(database: Kysely<DatabaseSchema>): Promise<void> {
     )
       await sql.raw(part).execute(database);
   // Its migration has not run on this database yet.
-  await sql`delete from kysely_migration where name = ${chatRoutesEndMigrationName}`.execute(
+  await sql`delete from kysely_migration where name >= ${chatRoutesEndMigrationName}`.execute(
     database,
   );
 }
@@ -1774,7 +1774,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
 
     // Re-run 0109 directly on this populated database.
     await restoreRoutes(database);
-    await sql`delete from kysely_migration where name = ${chatRoutesEndMigrationName}`.execute(
+    await sql`delete from kysely_migration where name >= ${chatRoutesEndMigrationName}`.execute(
       database,
     );
     await migrateToLatest(database);
@@ -2168,5 +2168,229 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
         )
       ).v,
     ).toBe("Browser profile");
+  });
+
+  it("never attributes a stranger's cancelled channel-ingress input to the person in 0109", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const bridge = await storeFixture.createBridgeFixture("y4-cancelled-stranger");
+    const { configured, fixture } = bridge;
+    const { upsertChannelIdentity } = await import("./channel-store.js");
+    const { commitPersonalMutation } = await import("./personal-mutation.js");
+    const me = await database
+      .selectFrom("channelIdentities")
+      .select(["id", "principalId"])
+      .where("accountId", "=", configured.account.id)
+      .where("linkedUserId", "=", fixture.userId)
+      .executeTakeFirstOrThrow();
+    const stranger = await commitPersonalMutation(database, (tx) =>
+      upsertChannelIdentity(tx, {
+        accountId: configured.account.id,
+        displayName: "Stranger",
+        externalUserId: "U-Y4-STRANGER",
+      }),
+    );
+    const { thread: ownThread } = await store.createThread({
+      createdBy: fixture.userId,
+      environmentId: fixture.environmentId,
+      harnessInstanceId: fixture.harnessInstance.id,
+      idempotencyKey: "y4-own-dm-thread",
+      modelSelection: testModelSelection,
+      title: "Personal DM task",
+    });
+    const ownInput = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: ownThread.id,
+      content: [{ type: "text", text: "My own DM" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "y4-own-dm-input",
+    });
+    const strangerInput = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: ownThread.id,
+      content: [{ type: "text", text: "Stranger cancelled message" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "y4-stranger-cancelled-input",
+    });
+
+    await restoreRoutes(database);
+    const route = `chb_${crypto.randomUUID()}`;
+    await sql`insert into channel_bindings (id, account_id, created_by, selector, execution_policy,
+        access_policy, revision, status)
+      values (${route}, ${configured.account.id}, ${fixture.userId}, '{}'::jsonb, '{}'::jsonb,
+        ${JSON.stringify(testChannelAccessPolicy("owner"))}::jsonb, 1, 'active')`.execute(database);
+    const dmConv = createChannelId("conversation");
+    await sql`insert into channel_conversations (id, account_id, provider, external_account_id,
+        binding_id, binding_revision, external_conversation_id, conversation_type,
+        active_thread_id, provider_state, personal_context)
+      values (${dmConv}, ${configured.account.id}, 'slack', 'T-y4-dm', ${route}, 1, ${dmConv},
+        'dm', ${ownThread.id}, '{}'::jsonb, true)`.execute(database);
+    await sql`update thread_inputs set
+      authority_source = ${JSON.stringify({ kind: "channel-ingress", conversationId: dmConv })}::jsonb,
+      actor_principal_id = ${me.principalId}
+      where message_id = ${ownInput.message.id}`.execute(database);
+    await sql`update thread_inputs set
+      authority_source = ${JSON.stringify({ kind: "channel-ingress", conversationId: dmConv })}::jsonb,
+      actor_principal_id = ${stranger.principalId},
+      state = 'cancelled',
+      cancel_reason = 'cancelled'
+      where message_id = ${strangerInput.message.id}`.execute(database);
+
+    await sql`delete from kysely_migration where name >= ${chatRoutesEndMigrationName}`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+
+    // The person's own task stays theirs and their own DM input becomes user-session.
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("originConnectionId")
+          .where("id", "=", ownThread.id)
+          .executeTakeFirstOrThrow()
+      ).originConnectionId,
+    ).toBeNull();
+    expect(
+      (
+        await database
+          .selectFrom("threadInputs")
+          .select(["state", "authoritySource"])
+          .where("messageId", "=", ownInput.message.id)
+          .executeTakeFirstOrThrow()
+      ).authoritySource,
+    ).toEqual({ kind: "user-session", userId: fixture.userId });
+
+    // The stranger's cancelled input stays cancelled and is NEVER attributed to user-session!
+    const strangerRow = await database
+      .selectFrom("threadInputs")
+      .select(["state", "authoritySource", "connectionId"])
+      .where("messageId", "=", strangerInput.message.id)
+      .executeTakeFirstOrThrow();
+    expect(strangerRow.state).toBe("cancelled");
+    expect(strangerRow.authoritySource).toMatchObject({ kind: "connection" });
+    expect(strangerRow.connectionId).not.toBeNull();
+    // Under 0114, the cancelled stranger input carries the ended chat's connection_id truthfully
+    // without tainting the person's own task lineage.
+    const { threadContextLineage } = await import("./run-personal-context.js");
+    expect(await threadContextLineage(database, ownThread.id, fixture.userId)).toEqual({
+      fromChat: false,
+      personLineage: true,
+      personalContext: true,
+    });
+  });
+
+  it("preserves integers above 2^53 and sibling keys in JSON paths, cleans across a >500-row batch boundary, and is a no-op on a second run", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const bridge = await storeFixture.createBridgeFixture("y5-json-batch-noop");
+    const { configured, fixture } = bridge;
+    const bigInt = "9007199254740993";
+
+    // 1. agent_connections.identity_at_consent with >2^53 integer + dirty clientName
+    const connId = `mcn_${crypto.randomUUID()}`;
+    await sql`
+      insert into agent_connections (id, user_id, label, client_name, access_mode, resource,
+        created_at, expires_at, "grant", grant_revision, consent_version, identity_at_consent)
+      values (${connId}, ${fixture.userId}, 'Clean', 'Clean', 'approval-required', 'opensteer:mcp',
+        now(), now() + interval '1 day', '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2,
+        ${`{"bigId":${bigInt},"clientName":"Bad\\u202E\\nAgent","platformName":"Clean","nested":{"keep":${bigInt}}}`}::jsonb)
+    `.execute(database);
+
+    // 2. channel_ingress_events.event with >2^53 integer + dirty actor & conversation names
+    const ingressId = createChannelId("ingress");
+    await sql`
+      insert into channel_ingress_events (id, account_id, provider_event_id, lane_key, event, status, next_attempt_at)
+      values (${ingressId}, ${configured.account.id}, 'evt-bigint', 'lane-bigint',
+        ${`{"providerSeq":${bigInt},"actor":{"displayName":"Bad\\u202E\\nSender","externalUserId":"U1"},"conversation":{"displayName":"Bad\\u202E\\nRoom","externalConversationId":"C1"}}`}::jsonb,
+        'adopted', now())
+    `.execute(database);
+
+    // 3. 510 dirty apps rows with identical timestamps across the 500-row batch boundary
+    const batchNow = new Date("2026-11-23T12:00:00.000Z");
+    const appIds: string[] = [];
+    for (let i = 0; i < 510; i++) {
+      appIds.push(`app_${String(i).padStart(4, "0")}_${crypto.randomUUID()}`);
+    }
+    await sql`
+      insert into apps (id, owner_id, computer_id, name, created_at, updated_at)
+      select u.id, ${fixture.userId}, ${fixture.runnerId}, ${"Dirty\u202E\nApp"}, ${batchNow}, ${batchNow}
+      from unnest(${appIds}::text[]) as u(id)
+    `.execute(database);
+
+    await restoreRoutes(database);
+    await sql`delete from kysely_migration where name >= ${chatRoutesEndMigrationName}`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+
+    // Raw JSONB text must keep 9007199254740993 exact (not 9007199254740992) while cleaning names.
+    const rawConn = (
+      await sql<{ readonly text: string; readonly clientName: string }>`
+        select identity_at_consent::text as text, identity_at_consent->>'clientName' as "clientName"
+        from agent_connections where id = ${connId}
+      `.execute(database)
+    ).rows[0]!;
+    expect(rawConn.clientName).toBe("Bad Agent");
+    expect(rawConn.text).toContain(bigInt);
+    expect(rawConn.text).not.toContain("9007199254740992");
+
+    const rawIngress = (
+      await sql<{ readonly text: string; readonly actor: string; readonly room: string }>`
+        select event::text as text,
+          event->'actor'->>'displayName' as actor,
+          event->'conversation'->>'displayName' as room
+        from channel_ingress_events where id = ${ingressId}
+      `.execute(database)
+    ).rows[0]!;
+    expect(rawIngress.actor).toBe("Bad Sender");
+    expect(rawIngress.room).toBe("Bad Room");
+    expect(rawIngress.text).toContain(bigInt);
+    expect(rawIngress.text).not.toContain("9007199254740992");
+
+    // All 510 rows across the 500-row batch boundary were cleaned.
+    const dirtyRemaining = (
+      await sql<{ readonly count: string }>`
+        select count(*)::text as count from apps
+        where id = any(${appIds}::text[]) and name <> 'Dirty App'
+      `.execute(database)
+    ).rows[0]!;
+    expect(dirtyRemaining.count).toBe("0");
+
+    // Second run on an already-clean database touches zero rows (xmin stays identical).
+    const beforeXmins = (
+      await sql<{
+        readonly connXmin: string;
+        readonly ingressXmin: string;
+        readonly appXmin: string;
+      }>`
+        select
+          (select xmin::text from agent_connections where id = ${connId}) as "connXmin",
+          (select xmin::text from channel_ingress_events where id = ${ingressId}) as "ingressXmin",
+          (select xmin::text from apps where id = ${appIds[0]!}) as "appXmin"
+      `.execute(database)
+    ).rows[0]!;
+    await restoreRoutes(database);
+    await sql`delete from kysely_migration where name >= ${chatRoutesEndMigrationName}`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+    const afterXmins = (
+      await sql<{
+        readonly connXmin: string;
+        readonly ingressXmin: string;
+        readonly appXmin: string;
+      }>`
+        select
+          (select xmin::text from agent_connections where id = ${connId}) as "connXmin",
+          (select xmin::text from channel_ingress_events where id = ${ingressId}) as "ingressXmin",
+          (select xmin::text from apps where id = ${appIds[0]!}) as "appXmin"
+      `.execute(database)
+    ).rows[0]!;
+    expect(afterXmins).toEqual(beforeXmins);
   });
 });
