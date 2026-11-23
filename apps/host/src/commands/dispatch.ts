@@ -74,9 +74,7 @@ export interface AgentCommandDoor extends CommandDoor {
    * The grant the caller's lineage holds as the Home has it now, never as it was at sign-in:
    * `gone` once its connection works for no one. Null for your own agents.
    */
-  readonly scope: (
-    caller: AgentCaller,
-  ) => Promise<
+  readonly scope: (caller: AgentCaller) => Promise<
     | {
         readonly scope: "everything" | "selected";
         readonly grant: import("@opensteer/core").AgentGrant;
