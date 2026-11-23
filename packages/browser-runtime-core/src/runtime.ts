@@ -857,11 +857,16 @@ export class BrowserRuntime implements NativePresentationSource {
     let released = false;
     const native = { sessionId, surfaceId, consumerToken: null as string | null };
     this.nativePresentations.add(native);
+    session.controller.setNativePresented(surfaceId, true);
     session.ledger.touch(surfaceId, true);
     const release = () => {
       if (released) return;
       released = true;
       this.nativePresentations.delete(native);
+      const stillPresented = [...this.nativePresentations].some(
+        (entry) => entry.sessionId === sessionId && entry.surfaceId === surfaceId,
+      );
+      if (!stillPresented) session.controller.setNativePresented(surfaceId, false);
       this.sleeper.poke();
       unsubscribe();
       session.presentations.delete(closed);

@@ -420,7 +420,7 @@ it("retains a running origin across reconnect tickets and refreshes it on every 
   for (const change of [
     // Recovery can replace the session silently, and the running app's cookie dies with the old one.
     () => {
-      snapshot = { ...snapshot, sessionId: "recovered-session" };
+      snapshot = { ...snapshot, sessionId: createId("authSession") };
     },
     () => {
       snapshot = { ...snapshot, appVersions: { [appId]: 2 } };

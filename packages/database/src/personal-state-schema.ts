@@ -14,6 +14,7 @@ import type {
   RunAttemptId,
   RunId,
   RunFailure,
+  RunRetry,
   RunnerId,
   TabId,
   RunUsage,
@@ -34,6 +35,7 @@ import type { PersonalChange } from "@opensteer/protocol/personal-sync";
 import type { TranscriptMessageRefs } from "@opensteer/protocol/transcript";
 import { sql, type Generated, type Kysely } from "kysely";
 import type { DatabaseSchema, Timestamp } from "./schema.js";
+import { runNewsAt, unreadTaskSql } from "./personal-attention-store.js";
 
 export type PersonalScopeKey = "shell" | `thread:${string}` | `node:${string}`;
 /** `reset` rows are Host-only: a scope whose commit outgrew the feed is repaired by snapshot. */
@@ -136,6 +138,7 @@ export interface TranscriptPreview {
   readonly endedAt?: string;
   readonly replyMessageId?: MessageId;
   readonly failure?: RunFailure;
+  readonly retry?: RunRetry;
   readonly usage?: RunUsage;
   readonly messageKind?: Extract<MessageKind, "input" | "assistant" | "continuation">;
   readonly messageAuthor?: MessageAuthor;
@@ -694,6 +697,65 @@ export async function applyInlineTranscriptMessages(database: Kysely<DatabaseSch
     alter table client_changes add constraint client_changes_byte_count_check
       check (byte_count <= 524288);
   `.execute(database);
+}
+
+export const stoppedRunsNotNewsMigrationName = "0044_stopped_runs_are_not_news";
+/**
+ * A Run its owner stopped, or one that ended before it started, no longer makes its task unread.
+ * Earlier Hosts labelled every Stop the person's own (`user-session`), so first restore who really
+ * asked, from the idempotency key each writer gave it: a teammate's withdrawal
+ * (`team-cancel:<team>:<request>`) or an agent, automation, watch or connection, directly or by
+ * marking the task Done (`[task-done:]<caller kind>:<caller id>:…`). A person's own Stop keeps its
+ * label. Then recompute each task's latest news where it changes, the unread count from it, and
+ * start every client's sync over. `commands_execution_proof` already finds a Run's Stops.
+ */
+export async function applyStoppedRunsNotNews(database: Kysely<DatabaseSchema>) {
+  await sql`
+    update commands set authority_source=case
+        when legacy.team is not null then jsonb_build_object('kind','team-cancel',
+          'teamId',legacy.team[1],'requestId',legacy.team[2])
+        else jsonb_build_object('kind',case legacy.caller[1] when 'run' then 'thread-agent'
+            else legacy.caller[1] end,
+          case legacy.caller[1] when 'run' then 'runId' when 'trigger' then 'occurrenceId'
+            when 'watch' then 'activationId' else 'connectionId' end,legacy.caller[2],
+          'userId',commands.requested_by)
+      end
+    from (select id,regexp_match(idempotency_key,'^team-cancel:([^:]+):(.+)$') as team,
+        regexp_match(idempotency_key,'^(?:task-done:)?(run|trigger|watch|connection):([^:]+):') as caller
+      from commands where type='run.interrupt' and authority_source->>'kind'='user-session') legacy
+    where commands.id=legacy.id and (legacy.team is not null or legacy.caller is not null);
+    update threads set latest_run_completed_at=news.at
+    from (select source.id,(select ${runNewsAt("runs")} from runs
+        where runs.thread_id=source.id and runs.maintenance is null
+        order by runs.run_ordinal desc limit 1) as at
+      from threads source where source.latest_run_completed_at is not null) news
+    where threads.id=news.id and threads.latest_run_completed_at is distinct from news.at;
+    update client_sync_state set epoch=gen_random_uuid(),
+      unread_task_count=(select count(*) from threads where ${unreadTaskSql});
+  `.execute(database);
+}
+
+export const threadDoneByMigrationName = "0045_thread_done_by";
+/**
+ * Records who marked a task Done (`person`, `agent`, or `quiet`) so agent reads and memory wakes
+ * can tell a person closing a task apart from an agent finishing its own turn.
+ */
+export async function applyThreadDoneBy(database: Kysely<DatabaseSchema>) {
+  await sql`
+    alter table threads add column if not exists done_by text;
+    update threads set done_by = 'quiet'
+    where done_at is not null and done_reason = 'quiet' and done_by is null;
+  `.execute(database);
+}
+
+export const runProviderRetryMigrationName = "0046_run_provider_retry";
+/**
+ * Tracks a Run's live provider retry notice (`runs.provider_retry`) so tasks
+ * and transcripts show active retry status across reloads instead of silently
+ * staying on "Working".
+ */
+export async function applyRunProviderRetry(database: Kysely<DatabaseSchema>) {
+  await sql`alter table runs add column if not exists provider_retry jsonb`.execute(database);
 }
 
 export async function applyPersonalStateSchema(transaction: Kysely<DatabaseSchema>) {

@@ -1512,7 +1512,10 @@ export class BrowserService {
         },
         readSessionState: () => this.#sessionState(sessionId),
         onPageChanged: () => this.#announcePresence(sessionId),
-        onTabsChanged: () => this.#queueTabDescriptors(sessionId),
+        onTabsChanged: (structural) => {
+          if (structural) void this.#flushTabDescriptors(sessionId).catch(this.#onError);
+          else this.#queueTabDescriptors(sessionId);
+        },
         onRecordsChanged: (ids) => this.tabInventoryChanged(sessionId, ids),
         onActivity: (activity) => this.#runtimeActivity(sessionId, activity),
         cdpBoundary: target.cdpBoundary === true,
@@ -7428,8 +7431,9 @@ export class BrowserService {
                   },
                 }
               : {}),
-            onTabsChanged: () => {
-              this.#queueTabDescriptors(sessionId);
+            onTabsChanged: (structural) => {
+              if (structural) void this.#flushTabDescriptors(sessionId).catch(this.#onError);
+              else this.#queueTabDescriptors(sessionId);
               this.#shadows.get(sessionId)?.inventoryChanged();
             },
             onRecordsChanged: (ids) => this.tabInventoryChanged(sessionId, ids),
@@ -8542,7 +8546,7 @@ interface HostedBrowserBrokerOptions {
     readonly favicon: string;
   };
   readonly personTabGeneration?: (surfaceId: BrowserSurfaceId) => Promise<number | null>;
-  readonly onTabsChanged: () => void;
+  readonly onTabsChanged: (structural?: boolean) => void;
   readonly onRecordsChanged: (ids: readonly string[]) => void;
   readonly onActivity: (activity: BrowserRuntimeActivity) => void;
   /** The active page's title or site changed; called at most once per `pageNoticeDelayMs`. */
@@ -8725,7 +8729,7 @@ export class HostedBrowserBroker {
     this.#storedTabStateRevision = changes.stateRevision;
   }
   readonly #personTabGeneration: HostedBrowserBrokerOptions["personTabGeneration"];
-  readonly #onTabsChanged: () => void;
+  readonly #onTabsChanged: (structural?: boolean) => void;
   readonly #onRecordsChanged: (ids: readonly string[]) => void;
   readonly #onActivity: (activity: BrowserRuntimeActivity) => void;
   readonly #runtimeTargets = new Map<string, boolean>();
@@ -10149,6 +10153,7 @@ export class HostedBrowserBroker {
       this.#reconcileHistory(this.#surfaces);
       // A broker being stopped or detached never makes its row ready again: Stop or detach already
       // took it (X6).
+      let becameReady = false;
       if (!this.#runtimeReady && !this.#stopping && !this.#detaching) {
         let readyConfirmed = true;
         if (!this.#reconnecting) {
@@ -10157,16 +10162,30 @@ export class HostedBrowserBroker {
           readyConfirmed = updated?.state === undefined || updated.state === "ready";
         }
         if (readyConfirmed && !this.#stopping && !this.#detaching) {
+          becameReady = true;
           this.#reconnecting = false;
           this.#runtimeReady = true;
-          await this.#sendSessionState();
+          // #onState("ready") transitions the session and may schedule a deferred
+          // refreshSessionState() timer with a pool hold; flush it now so no stale
+          // 50 ms hold outlives the initial session.state send.
+          if (this.#sessionStateTimer) clearTimeout(this.#sessionStateTimer);
+          this.#sessionStateTimer = undefined;
+          const hold = this.#sessionStateHold;
+          this.#sessionStateHold = undefined;
+          try {
+            await this.#sendSessionState();
+          } finally {
+            hold?.release();
+          }
           const reconnectReady = this.#reconnectReady;
           this.#reconnectReady = null;
           reconnectReady?.resolve();
         }
       }
       this.#onRecordsChanged([...changes.added, ...changes.updated, ...changes.removed]);
-      this.#onTabsChanged();
+      this.#onTabsChanged(
+        changes.added.length > 0 || changes.removed.length > 0 || changes.structural,
+      );
       const page = this.page;
       if (previousPage?.title !== page?.title || previousPage?.url !== page?.url)
         this.#noticePage();
@@ -10186,9 +10205,10 @@ export class HostedBrowserBroker {
           this.#sendViewerSurface(consumer);
       }
       if (
-        previousActive !== active ||
-        changes.removed.length ||
-        changes.added.some((id) => this.#pendingPersonUse.has(BrowserSurfaceIdSchema.parse(id)))
+        !becameReady &&
+        (previousActive !== active ||
+          changes.removed.length ||
+          changes.added.some((id) => this.#pendingPersonUse.has(BrowserSurfaceIdSchema.parse(id))))
       )
         this.refreshSessionState();
       return stream.op === "end" && this.#runtimeReady && !this.#stopping && !this.#detaching;

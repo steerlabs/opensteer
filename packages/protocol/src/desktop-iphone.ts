@@ -46,6 +46,10 @@ export const DesktopIphoneSetupReasonSchema = z.enum([
   "wifi-pairing-required",
   "wifi-transport-unsupported",
   "wifi-identity-mismatch",
+  /** The person chose not to allow this Mac when the iPhone asked. */
+  "wifi-pairing-denied",
+  /** Wi‑Fi pairing over the cable didn’t finish; trying again can work. */
+  "wifi-pairing-failed",
 ]);
 export type DesktopIphoneSetupReason = z.infer<typeof DesktopIphoneSetupReasonSchema>;
 /**

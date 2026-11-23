@@ -33,6 +33,9 @@ func collectRemoteAX(ctx context.Context, dial ServiceDialer) (AXSnapshot, error
 	defer end()
 	stopDial := context.AfterFunc(ctx, end)
 	raw, err := dial.DialService(life, remoteAXService)
+	if err != nil {
+		raw, err = dial.DialService(life, legacyAXShim)
+	}
 	stopDial()
 	if err != nil {
 		return AXSnapshot{}, Classify(err, wire.AccessibilityUnavailable)

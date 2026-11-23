@@ -1,9 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import type { RunnerTransportPolicy } from "@opensteer/runner-client";
+import { WebSocket, WebSocketServer } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createId } from "@opensteer/core";
+import { ComputerViewIdSchema, createId } from "@opensteer/core";
+import type { z } from "zod";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { RunnerAuxiliaryFrameFence, DeviceScreenDriverAssignment } from "@opensteer/protocol";
 import {
+  DisplayStreamIdSchema,
+  encodeDisplayMediaFrame,
   IphoneScreenObservationResultSchema,
   IphoneScreenActResultSchema,
   ComputerUseSessionIdSchema,
@@ -16,6 +22,7 @@ import {
   type IphoneRunnerParams,
   type IphoneRunnerResult,
   type IphoneNativeObservation,
+  type iphoneNativeCapabilitiesSchema,
 } from "@opensteer/protocol/iphone-bridge";
 import { ComputerUseBridgeError } from "./computer-use-bridge-client.js";
 import {
@@ -91,7 +98,21 @@ function native(overrides: Partial<IphoneNativeObservation> = {}): IphoneNativeO
   };
 }
 
+const fullCapabilities = {
+  observe: null,
+  act: null,
+  launch: null,
+  installedApps: null,
+  text: null,
+  clear: null,
+  indexedTargets: null,
+  liveVideo: null,
+  wake: null,
+} satisfies z.infer<typeof iphoneNativeCapabilitiesSchema>;
+
 class Bridge implements IphoneScreenBridge {
+  capabilities?: z.infer<typeof iphoneNativeCapabilitiesSchema>;
+  openVideoAttachment = vi.fn<IphoneScreenBridge["openVideoAttachment"]>();
   readonly events = new Set<(event: IphoneRunnerEvent) => void>();
   readonly connections = new Set<(state: "connected" | "lost") => void>();
   readonly effects: IphoneRunnerParams<"iphone.perform">[] = [];
@@ -139,6 +160,7 @@ class Bridge implements IphoneScreenBridge {
               nativeEpoch: 1,
               ready: true,
               reason: null,
+              capabilities: this.capabilities,
             })),
           };
           break;
@@ -194,14 +216,16 @@ afterEach(async () => {
   for (const driver of drivers.splice(0)) await driver.shutdown();
   vi.useRealTimers();
 });
-function fixture() {
+function fixture(transport?: RunnerTransportPolicy) {
   const bridge = new Bridge();
+  if (transport) bridge.capabilities = fullCapabilities;
   let now = 1_800_000_000_000;
   const driver = new IphoneScreenDriver({ bridge, now: () => now });
   drivers.push(driver);
   const events: PhoneScreenDriverEvent[] = [];
   const connection = driver.connect({
     fence: { runnerId: createId("runner") } as RunnerAuxiliaryFrameFence,
+    ...(transport ? { transport } : {}),
     emit: async (event) => {
       events.push(event);
     },
@@ -867,4 +891,495 @@ describe("iPhone screen driver", () => {
     expect(result.tree).not.toContain("�");
     expect(iphoneCapabilityReason("future-native-reason")).toEqual({ kind: "runtime-failed" });
   });
+});
+
+it("uses only advertised typing, clearing, wake, double tap and qualified element targets", async () => {
+  const f = fixture();
+  f.bridge.capabilities = fullCapabilities;
+  const sample = native();
+  f.bridge.observation = native({
+    ...sample,
+    textReason: null,
+    clearReason: null,
+    coverage: { ...sample.coverage, coordinateSpace: "qualified" },
+    buttons: [
+      "home",
+      "recents",
+      "notifications",
+      "quickSettings",
+      "lock",
+      "volumeUp",
+      "volumeDown",
+      "action",
+      "siri",
+    ],
+    nodes: [
+      {
+        ...sample.nodes[0]!,
+        nodeId: "field",
+        role: "textField",
+        source: "ax",
+        editable: "yes",
+        secure: "no",
+      },
+      { ...sample.nodes[0]!, nodeId: "ocr-1", source: "ocr", role: "text", depth: 1 },
+      { ...sample.nodes[0]!, nodeId: "out-of-bounds", frame: { x: 99, y: 2, width: 3, height: 3 } },
+    ],
+  });
+  const context = f.context();
+  const { observation } = await f.observe(context, observeParams);
+  expect(observation.tree).toContain('[0] textField "Send \\"now\\"" (2,3 10×20) editable');
+  expect(observation.tree).toContain('[1] text "Send \\"now\\"" (2,3 10×20) ocr');
+  expect(observation.tree).not.toContain("[2]");
+  expect(f.events.at(-1)).toMatchObject({
+    actions: expect.arrayContaining(["type", "clear", "wake"]),
+    displayVersion: 1,
+    ownerViewVersion: 1,
+    inputVersion: 1,
+    powerVersion: 1,
+    navigationButtons: expect.arrayContaining([{ id: "quickSettings", label: "Control Center" }]),
+  });
+  const input = {
+    observationId: observation.observationId,
+    includeScreenshot: false,
+    actions: [
+      { type: "wake" as const },
+      { type: "tap" as const, count: 2 as const, target: { index: 1 } },
+      { type: "type" as const, target: { index: 0 }, text: "synthetic", submit: true },
+      { type: "clear" as const, target: { index: 0 } },
+      { type: "navigate" as const, to: "quickSettings" },
+    ],
+  };
+  expect((await f.connection.act(context, input)).error).toBeNull();
+  expect(f.bridge.effects.at(-1)?.actions).toEqual([
+    { kind: "wake" },
+    { kind: "tap", count: 2, target: { nodeId: "ocr-1" } },
+    { kind: "type", target: { nodeId: "field" }, text: "synthetic", submit: true },
+    { kind: "clear", target: { nodeId: "field" } },
+    { kind: "navigate", button: "quickSettings" },
+  ]);
+});
+
+async function listenForDisplay() {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Expected a bound loopback port.");
+  return { server, origin: `http://127.0.0.1:${address.port}` };
+}
+
+it("relays binary frames and ACKs, forwards owner input and power, and closes both sockets", async () => {
+  const host = await listenForDisplay();
+  const desktop = await listenForDisplay();
+  const f = fixture({ hostOrigin: new URL(host.origin), mode: "development" });
+  try {
+    const ref = {
+      deviceId: f.a.deviceId,
+      driverGeneration: 1,
+      streamId: DisplayStreamIdSchema.parse(`dsp_${randomUUID()}`),
+    };
+    const viewId = ComputerViewIdSchema.parse(`cvw_${randomUUID()}`);
+    const source = { kind: "owner-view" as const, viewId, generation: 1 };
+    const view = {
+      ...ref,
+      viewId,
+      generation: 1,
+      operation: "open" as const,
+      version: 1 as const,
+      target: { kind: "phone" as const, display: "main" },
+      type: "host.integrations.computer-view" as const,
+      leaseDurationMs: 10000,
+      timeoutMs: 5000,
+      requestId: RunnerAuxiliaryRequestIdSchema.parse("view-request"),
+    };
+    await expect(
+      f.connection.ownerView(view, new AbortController().signal, Date.now()),
+    ).resolves.toEqual({ viewId, generation: 1, state: "ready", captureTargetId: null });
+    const methods: [IphoneRunnerMethod, unknown][] = [];
+    for (const method of [
+      "iphone.display.start",
+      "iphone.display.demand",
+      "iphone.display.refresh",
+      "iphone.display.input",
+      "iphone.display.inputReset",
+      "iphone.display.power",
+      "iphone.display.stop",
+    ] as const) {
+      f.bridge.replies.set(method, async (params) => {
+        methods.push([method, params]);
+        if (method === "iphone.display.start") return { attachmentToken: "synthetic-token" };
+        if (method === "iphone.display.input" || method === "iphone.display.power")
+          return { outcome: "dispatched" };
+        return {};
+      });
+    }
+    f.bridge.openVideoAttachment.mockImplementation(() => new WebSocket(desktop.origin));
+    const hostConnected = once(host.server, "connection");
+    const desktopConnected = once(desktop.server, "connection");
+    const dataTicket = "synthetic.data.ticket";
+    f.connection.display({
+      ...ref,
+      type: "host.integrations.display.start",
+      display: "main",
+      revision: 1,
+      sources: [source],
+      inputSources: [source],
+      phoneOwnerControl: 1,
+      dataTicket,
+      maxFps: 30,
+      maxLongSide: 1280,
+    });
+    const [data, request] = await hostConnected;
+    const [media] = await desktopConnected;
+    expect(request.url).toBe("/internal/v1/computer-use/display");
+    expect(request.headers.authorization).toBe(`Bearer ${dataTicket}`);
+    expect(f.bridge.openVideoAttachment).toHaveBeenCalledExactlyOnceWith("synthetic-token");
+    const live = {
+      ...ref,
+      state: "live" as const,
+      width: 100,
+      height: 200,
+      rotation: 0 as const,
+      generation: 2,
+    };
+    for (const listener of f.bridge.events)
+      listener({ kind: "event", event: "iphone.displayState", params: live });
+    expect(f.events).toContainEqual({
+      ...live,
+      display: "main",
+      type: "runner.integrations.display.state",
+    });
+    const bytes = encodeDisplayMediaFrame(
+      {
+        streamId: ref.streamId,
+        generation: 2,
+        sequence: 0,
+        ptsUs: 0,
+        key: true,
+        codec: "avc1.64002a",
+        width: 100,
+        height: 200,
+      },
+      Uint8Array.from([0, 0, 0, 1, 0x67, 0, 0, 0, 1, 0x68, 0, 0, 0, 1, 0x65]),
+    );
+    const frame = once(data, "message");
+    media.send(bytes, { binary: true });
+    await expect(frame).resolves.toEqual([Buffer.from(bytes), true]);
+    const credit = once(media, "message");
+    const ack = JSON.stringify({ type: "display.ack", sequence: 0 });
+    data.send(ack);
+    await expect(credit).resolves.toEqual([Buffer.from(ack), false]);
+
+    f.connection.display({
+      ...ref,
+      display: "main",
+      type: "host.integrations.display.demand",
+      revision: 2,
+      sources: [source],
+      inputSources: [source],
+      maxLongSide: 960,
+    });
+    f.connection.display({ ...ref, display: "main", type: "host.integrations.display.refresh" });
+    const events = [{ kind: "pointer" as const, phase: "down" as const, x: 0.5, y: 0.5, t: 1 }];
+    f.connection.display({
+      ...ref,
+      source,
+      type: "host.integrations.display.input",
+      geometry: 2,
+      sequence: 0,
+      events,
+    });
+    await vi.waitFor(() =>
+      expect(f.events.at(-1)).toMatchObject({
+        type: "runner.integrations.display.input-result",
+        geometry: 2,
+        sequence: 0,
+        outcome: "dispatched",
+      }),
+    );
+    f.connection.display({ ...ref, source, type: "host.integrations.display.input-reset" });
+    f.connection.display({
+      ...ref,
+      source,
+      type: "host.integrations.display.power",
+      sequence: 1,
+      action: "wake",
+    });
+    f.connection.display({
+      ...ref,
+      source,
+      type: "host.integrations.display.power",
+      sequence: 2,
+      action: "lock",
+    });
+    await vi.waitFor(() =>
+      expect(f.events.slice(-3)).toMatchObject([
+        {
+          type: "runner.integrations.display.input-result",
+          geometry: 2,
+          sequence: 0,
+          outcome: "dispatched",
+        },
+        { type: "runner.integrations.display.power-result", sequence: 1, outcome: "dispatched" },
+        { type: "runner.integrations.display.power-result", sequence: 2, outcome: "dispatched" },
+      ]),
+    );
+    await vi.waitFor(() =>
+      expect(methods).toEqual([
+        ["iphone.display.start", { ...ref, maxFps: 30, maxLongSide: 1280 }],
+        ["iphone.display.demand", { ...ref, maxLongSide: 960 }],
+        ["iphone.display.refresh", ref],
+        ["iphone.display.input", { ...ref, geometry: 2, sequence: 0, events }],
+        ["iphone.display.inputReset", ref],
+        ["iphone.display.power", { ...ref, action: "wake" }],
+        ["iphone.display.power", { ...ref, action: "lock" }],
+      ]),
+    );
+    const closed = Promise.all([once(data, "close"), once(media, "close")]);
+    f.connection.display({ ...ref, display: "main", type: "host.integrations.display.stop" });
+    await closed;
+    expect(methods.at(-1)).toEqual(["iphone.display.stop", ref]);
+  } finally {
+    await f.driver.shutdown();
+    await Promise.all(
+      [host.server, desktop.server].map((server) => {
+        for (const client of server.clients) client.terminate();
+        return new Promise<void>((resolve) => server.close(() => resolve()));
+      }),
+    );
+  }
+});
+
+it("allows only wake on a hidden screen observation and leaves passcode entry to the person", async () => {
+  const f = fixture();
+  f.bridge.capabilities = fullCapabilities;
+  f.bridge.observation = native({
+    state: { lock: "locked", display: "off", rotation: 0, displayId: 0 },
+    textReason: null,
+    clearReason: null,
+  });
+  const context = f.context();
+  const { observation } = await f.observe(context, observeParams);
+  expect(observation).toMatchObject({
+    tree: "",
+    screenshot: null,
+    screenshotUnavailable: "screen-off",
+  });
+  expect(f.events.at(-1)).toMatchObject({ wake: true, actions: ["wake"] });
+  const act = (actions: Parameters<typeof f.connection.act>[1]["actions"]) =>
+    f.connection.act(context, {
+      observationId: observation.observationId,
+      includeScreenshot: false,
+      actions,
+    });
+  expect((await act([{ type: "type", text: "synthetic", submit: false }])).error?.code).toBe(
+    "permission-required",
+  );
+  expect((await act([{ type: "wake" }])).error).toBeNull();
+  expect(f.bridge.effects.map(({ actions }) => actions)).toEqual([[{ kind: "wake" }]]);
+});
+
+it("wakes a screen-off iPhone from a native screen status with a wakeToken and refuses non-wake input", async () => {
+  const f = fixture();
+  f.bridge.capabilities = fullCapabilities;
+  f.bridge.observation = native({ geometryRevision: 7, textReason: null, clearReason: null });
+  let wakes = 0;
+  f.bridge.replies.set("iphone.observe", async () => {
+    if (wakes === 0) {
+      return {
+        nativeEpoch: 1,
+        state: { lock: "unlocked", display: "off", rotation: 0, displayId: 0 },
+        reason: "wake-on-phone-required",
+        wakeToken: "wake-tok-1",
+        geometryRevision: 7,
+      };
+    }
+    return f.bridge.observation;
+  });
+  const context = f.context();
+  const { observation } = await f.observe(context, observeParams);
+  expect(observation).toMatchObject({
+    screen: "off",
+    locked: false,
+    screenshot: null,
+    screenshotUnavailable: "screen-off",
+    tree: "",
+  });
+  expect(f.events.at(-1)).toMatchObject({
+    availability: { state: "ready", reason: null },
+    wake: true,
+    lock: true,
+    powerVersion: 1,
+    inputVersion: 1,
+    actions: ["wake"],
+  });
+  expect(
+    (
+      await f.connection.act(context, {
+        observationId: observation.observationId,
+        includeScreenshot: false,
+        actions: [{ type: "tap", count: 1, target: { x: 1, y: 1 } }],
+      })
+    ).error?.code,
+  ).toBe("permission-required");
+  expect(f.bridge.effects).toHaveLength(0);
+  wakes = 1;
+  const woke = await f.connection.act(context, {
+    observationId: observation.observationId,
+    includeScreenshot: false,
+    actions: [{ type: "wake" }],
+  });
+  expect(woke.error).toBeNull();
+  expect(woke.observation?.screen).toBe("on");
+  expect(f.bridge.effects).toEqual([
+    expect.objectContaining({
+      observationToken: "wake-tok-1",
+      geometryRevision: 7,
+      actions: [{ kind: "wake" }],
+    }),
+  ]);
+});
+
+it("stops a late display start before opening either media socket", async () => {
+  const f = fixture({ hostOrigin: new URL("http://127.0.0.1:1"), mode: "development" });
+  const ref = {
+    deviceId: f.a.deviceId,
+    driverGeneration: 1,
+    streamId: DisplayStreamIdSchema.parse(`dsp_${randomUUID()}`),
+  };
+  const entered = deferred<void>();
+  const start = deferred<{ attachmentToken: string }>();
+  const stop = vi.fn(async () => ({}));
+  f.bridge.replies.set("iphone.display.start", async () => {
+    entered.resolve();
+    return start.promise;
+  });
+  f.bridge.replies.set("iphone.display.stop", stop);
+  f.connection.display({
+    ...ref,
+    type: "host.integrations.display.start",
+    display: "main",
+    revision: 1,
+    sources: [],
+    dataTicket: "synthetic.data.ticket",
+    maxFps: 30,
+    maxLongSide: 1280,
+  });
+  await startedWithin(entered.promise);
+  f.connection.display({ ...ref, display: "main", type: "host.integrations.display.stop" });
+  expect(stop).not.toHaveBeenCalled();
+  start.resolve({ attachmentToken: "late-token" });
+  await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
+  expect(f.bridge.openVideoAttachment).not.toHaveBeenCalled();
+});
+
+it("advertises live navigation and lock/wake controls before any agent observation", async () => {
+  const f = fixture();
+  f.bridge.capabilities = fullCapabilities;
+  for (const listener of f.bridge.events)
+    listener({
+      kind: "event",
+      event: "iphone.targetsChanged",
+      params: {
+        deviceId: f.a.deviceId,
+        driverGeneration: 1,
+        nativeEpoch: 2,
+        ready: true,
+        reason: null,
+        capabilities: fullCapabilities,
+      },
+    });
+  expect(f.events.at(-1)).toMatchObject({
+    availability: { state: "ready", reason: null },
+    displayVersion: 1,
+    ownerViewVersion: 1,
+    inputVersion: 1,
+    powerVersion: 1,
+    wake: true,
+    lock: true,
+    actions: expect.arrayContaining(["navigate", "tap", "type", "clear", "wake"]),
+    navigationButtons: expect.arrayContaining([
+      { id: "home", label: "Home" },
+      { id: "recents", label: "App Switcher" },
+      { id: "notifications", label: "Notification Center" },
+    ]),
+  });
+});
+
+it("does not fail a live display stream when a best-effort display.refresh request rejects", async () => {
+  const host = await listenForDisplay();
+  const desktop = await listenForDisplay();
+  const f = fixture({ hostOrigin: new URL(host.origin), mode: "development" });
+  try {
+    const ref = {
+      deviceId: f.a.deviceId,
+      driverGeneration: 1,
+      streamId: DisplayStreamIdSchema.parse(`dsp_${randomUUID()}`),
+    };
+    const source = {
+      kind: "owner-view" as const,
+      viewId: ComputerViewIdSchema.parse(`cvw_${randomUUID()}`),
+      generation: 1,
+    };
+    let refreshCalls = 0;
+    let demandCalls = 0;
+    f.bridge.replies.set("iphone.display.start", async () => ({
+      attachmentToken: "synthetic-token",
+    }));
+    f.bridge.replies.set("iphone.display.refresh", async () => {
+      refreshCalls++;
+      throw new Error("transient refresh error");
+    });
+    f.bridge.replies.set("iphone.display.demand", async () => {
+      demandCalls++;
+      return {};
+    });
+    f.bridge.replies.set("iphone.display.stop", async () => ({}));
+    f.bridge.openVideoAttachment.mockImplementation(() => new WebSocket(desktop.origin));
+    const hostConnected = once(host.server, "connection");
+    const desktopConnected = once(desktop.server, "connection");
+    f.connection.display({
+      ...ref,
+      type: "host.integrations.display.start",
+      display: "main",
+      revision: 1,
+      sources: [source],
+      inputSources: [source],
+      phoneOwnerControl: 1,
+      dataTicket: "synthetic.data.ticket",
+      maxFps: 30,
+      maxLongSide: 1280,
+    });
+    await Promise.all([hostConnected, desktopConnected]);
+    f.connection.display({ ...ref, display: "main", type: "host.integrations.display.refresh" });
+    f.connection.display({
+      ...ref,
+      display: "main",
+      type: "host.integrations.display.demand",
+      revision: 2,
+      sources: [source],
+      inputSources: [source],
+      maxLongSide: 960,
+    });
+    await vi.waitFor(() => {
+      expect(refreshCalls).toBe(1);
+      expect(demandCalls).toBe(1);
+    });
+    expect(
+      f.events.filter(
+        (event) =>
+          event.type === "runner.integrations.display.state" &&
+          event.state === "failed" &&
+          event.reason === "capture-failed",
+      ),
+    ).toEqual([]);
+  } finally {
+    await f.driver.shutdown();
+    await Promise.all(
+      [host.server, desktop.server].map((server) => {
+        for (const client of server.clients) client.terminate();
+        return new Promise<void>((resolve) => server.close(() => resolve()));
+      }),
+    );
+  }
 });

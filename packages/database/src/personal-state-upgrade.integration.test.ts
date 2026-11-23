@@ -14,6 +14,9 @@ import {
   dropDeviceAccessCountMigrationName,
   browserSessionTabsIndexMigrationName,
   inlineTranscriptMessagesMigrationName,
+  runProviderRetryMigrationName,
+  stoppedRunsNotNewsMigrationName,
+  threadDoneByMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 import { agentGrantsMigrationName } from "./agent-grants-migration.js";
@@ -95,14 +98,17 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         dropDeviceAccessCountMigrationName,
         browserSessionTabsIndexMigrationName,
         inlineTranscriptMessagesMigrationName,
+        stoppedRunsNotNewsMigrationName,
+        threadDoneByMigrationName,
+        runProviderRetryMigrationName,
         agentGrantsMigrationName,
         agentSessionsMigrationName,
-        "0046_chrome_live_tabs_source",
+        "0102_chrome_live_tabs_source",
         agentDirectoryMigrationName,
-        "0048_shared_chrome_grants",
+        "0104_shared_chrome_grants",
         workHomeMigrationName,
         browserPoolMigrationName,
-        "0051_needs_you_counts_requests",
+        "0107_needs_you_counts_requests",
         browserPoolSessionsMigrationName,
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });

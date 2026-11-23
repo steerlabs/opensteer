@@ -31,21 +31,36 @@ Opensteer patches:
   system usbmux socket, and explicit transfer of a service connection from setup
   to session lifetime. In-process service dialers return net.Conn; no localhost
   forwarder or kernel-tunnel fallback is retained.
-- A userspace TCP+UDP stack built with gVisor's public channel endpoint, restricted
-  to the negotiated IPv6 peer. Strict CDTunnel header/address/MTU/port validation;
-  stream packet framing retained from upstream; cancellation/EOF/corruption/write
-  failure closes both packet pumps and the stack.
+- A userspace TCP+UDP stack built with gVisor's public channel endpoint (512-packet
+  queue for RTP video burst headroom), restricted to the negotiated IPv6 peer. Strict
+  CDTunnel header/address/MTU/port validation; stream packet framing retained from
+  upstream; cancellation/EOF/corruption/write failure closes both packet pumps and the
+  stack.
 - The upstream rwcendpoint.go is deliberately excluded: its header acknowledges
   copying GPL tun2socks code. The channel-based packet pump in userspace.go is
   independently implemented against gVisor's Apache-2.0 public API.
 - Supplied-connection RSD constructor, expected-identity validation before host
   announcement, validated service maps/ports and propagated announcement errors.
 - Bounded HTTP/2 frame and stream input. Existing bounded XPC decoder retained.
-- A supplied-channel display constructor and typed CoreDevice errors. Stop uses
-  this client's UUID and upstream's required `stopAll=true`; EOF, closed-channel
-  and connection-reset responses after sending stop count as success. Explicit
-  rejection, malformed replies, send failure and cancellation remain errors.
-  The bridge does not start media streams for input.
+- A supplied-channel display constructor and typed CoreDevice errors (`coredevice.go`
+  formats structured NSError descriptions without leaking device-private fields).
+  `StartAudioStreamWithOffer` and `StartVideoStreamWithOffer` accept the bridge's
+  clean-room offer bytes on a shared `clientSessionID` with Apple's default media
+  sender ports (`50000` audio, `50001` video) and return the complete CoreDevice
+  output. The bridge starts the audio stream before video so iOS 27's display
+  negotiator initializes screen video rules, and stops streams by client session
+  UUID with `stopAll=false`. The legacy stop wrapper retains its original wire flag.
+  EOF, closed-channel and connection-reset responses after sending stop count
+  as success. Explicit rejection, malformed replies, send failure and
+  cancellation remain errors.
+- Removed upstream `ios/display/offer.go`, which originated in the GPL-3.0
+  pymobiledevice3 implementation ported in go-ios #845. The bridge's independent
+  `internal/media` implementation uses standard protobuf wire encoding and
+  binary property lists. Negotiation field numbers and values follow the
+  installed Apple CoreDevice framework and the independently reverse-engineered
+  [MIT idevice schema](https://github.com/jkcoxson/idevice/blob/2dca9a58a9a1dd02ec7d6213fcfd8fe861e74132/idevice/src/services/core_device/display_stream/media_negotiation.proto)
+  and [screen-sharing offer field layout](https://github.com/jkcoxson/idevice/blob/2dca9a58a9a1dd02ec7d6213fcfd8fe861e74132/idevice/src/services/core_device/display_stream/negotiation.rs).
+  The RTP and RTCP implementation follows RFCs 3550, 4585, 5104, 5761, 6184 and 7798. Tests use newly authored synthetic inputs.
 - Context-bound Apple TSS client without proxies or redirects and with a bounded
   response; safe personalization error types. No image-download implementation
   or convenience mount that unmounts another client's image is carried.
@@ -56,11 +71,19 @@ Opensteer patches:
   the same userspace stack. Peer Ed25519 proofs, physical identity, pairing states,
   listener ports, TLS version and handshake sizes are validated. No automatic
   re-pairing, kernel tunnel or exported network listener is retained.
+- Pair Setup is an explicit state machine (`ios/tunnel/remote_setup.go`). iOS 27 resets
+  the control stream (HTTP/2 `STREAM_CLOSED`) when `pairVerifyFailed` or Pair Setup M1
+  arrives before Pair Verify was opened, so a host without a record opens Verify with a
+  fresh ephemeral key and declines it first. M1, M3 and M5 carry the Mac's own name as
+  `sendingHost`, M5 names its model, `awaitingUserConsent` is reported to the caller,
+  and refusals, TLV errors and off-protocol answers are typed errors. HTTP/2 stream
+  resets keep the peer's error code. The sequence follows the MIT idevice
+  `remote_pairing` implementation at revision 2dca9a58a9a1dd02ec7d6213fcfd8fe861e74132.
 - RemotePairing JSON framing and IRK auth-tag matching follow the MIT idevice
   implementation at revision 2dca9a58a9a1dd02ec7d6213fcfd8fe861e74132.
   Its notice is retained in LICENSE.idevice and THIRD_PARTY_NOTICES.md.
 
-No pymobiledevice3 or other GPL source/tests were copied. Apple developer images
+The retained subset contains no source or tests copied from pymobiledevice3 or rPlayHub. Apple developer images
 are not distributed by this module. Dependencies resolve through go.mod/go.sum without vendoring.
 THIRD_PARTY_NOTICES.md lists every module linked into the bridge.
 
@@ -69,8 +92,11 @@ THIRD_PARTY_NOTICES.md lists every module linked into the bridge.
   bound per message; header fields Apple sizes freely (the auxiliary buffer capacity,
   flags, primitive types) are read, never required to match what the encoder writes.
   Compressed packets are refused because compression is negotiated off. The AX
-  archive subset resolves unknown classes as inert dictionaries, limits object
-  counts/depth/UID cycles, and encodes only primitives, arrays and dictionaries.
+  archive subset (`nskeyedarchiver/ax_archive.go`) resolves unknown classes as
+  inert dictionaries, memoizes decoded UID references to avoid exponential
+  re-traversal on shared iOS UIKit accessibility graphs, limits object
+  counts/depth/UID cycles (depth 256, 500k work units), and encodes only
+  primitives, arrays and dictionaries.
   There are no Objective-C factories, audit fallback or device fixtures.
 - PlistCodec.DecodeLimit lets installation-proxy consumers cap a chunk before
   allocating its body. Native screen endpoints remain in internal/phone.

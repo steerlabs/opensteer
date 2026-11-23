@@ -101,6 +101,7 @@ import { approveComputerAppAutomaticallyInTransaction } from "./computer-connect
 import { deviceAccessStates } from "./device-store.js";
 import { machineIsManagedBy } from "./machine-ownership.js";
 import { cancelPending } from "./request-cancellation.js";
+import { queryConnectionRequestPage } from "./request-agent-response.js";
 import {
   assertRequestRevision,
   refreshRequestState,
@@ -807,51 +808,6 @@ export class RequestStore {
       "repeatable read",
     );
   }
-
-  /** With `lineageConnectionId`, only Requests from tasks in that connection's lineage. */
-  async connectionPage(input: {
-    userId: UserId;
-    before?: string;
-    limit: number;
-    lineageConnectionId?: string;
-  }) {
-    const limit = clampLimit(input.limit);
-    const scope = input.lineageConnectionId
-      ? `connection:${input.userId}:${input.lineageConnectionId}`
-      : `connection:${input.userId}`;
-    const anchor = input.before ? decodeRequestCursor(input.before, scope) : null;
-    await requirePersonalOwner(this.#database, input.userId);
-    let query = this.#database
-      .selectFrom("requests")
-      .selectAll("requests")
-      .$if(input.lineageConnectionId !== undefined, (builder) =>
-        builder.where(({ exists, selectFrom }) =>
-          exists(
-            selectFrom("threads")
-              .select("threads.id")
-              .whereRef("threads.id", "=", "requests.originatingThreadId")
-              .where("threads.originConnectionId", "=", input.lineageConnectionId!),
-          ),
-        ),
-      );
-    const count = await query
-      .clearSelect()
-      .select(({ fn }) => fn.countAll<string>().as("count"))
-      .executeTakeFirstOrThrow();
-    if (anchor)
-      query = query.where((eb) =>
-        eb.or([
-          eb("createdAt", "<", anchor.createdAt),
-          eb.and([eb("createdAt", "=", anchor.createdAt), eb("id", "<", anchor.id)]),
-        ]),
-      );
-    const rows = await query
-      .orderBy("createdAt", "desc")
-      .orderBy("id", "desc")
-      .limit(limit + 1)
-      .execute();
-    return requestPage(rows, Number(count.count), limit, scope);
-  }
   async visiblePage(input: {
     readonly before?: string;
     readonly limit: number;
@@ -890,6 +846,96 @@ export class RequestStore {
       ]);
       return requestPage(rows, Number(count.count), limit, scope);
     });
+  }
+
+  async agentPage(input: {
+    readonly ownerId: UserId;
+    readonly scope: import("./thread-store.js").AgentThreadListScope;
+    readonly scopeId: string;
+    readonly connectionAuthority?: Extract<
+      import("./thread-caller.js").ThreadCallerAuthority,
+      { kind: "connection" }
+    >;
+    readonly originatingThreadId?: ThreadId;
+    readonly status?: "pending" | "all";
+    readonly before?: string;
+    readonly limit: number;
+  }): Promise<{
+    readonly requests: readonly Request[];
+    readonly window: DurableWindow;
+  }> {
+    const limit = clampLimit(input.limit);
+    const status = input.status ?? "all";
+    const cursorScope = `agent:${input.scopeId}:${input.originatingThreadId ?? "*"}:${status}`;
+    const anchor = input.before ? decodeRequestCursor(input.before, cursorScope) : null;
+    return withPersonalReadTransaction(
+      this.#database,
+      async (transaction) => {
+        await requirePersonalOwner(transaction, input.ownerId);
+        const lineageRootThreadId =
+          input.scope.kind === "lineage"
+            ? (
+                await transaction
+                  .selectFrom("threads")
+                  .select("lineageRootThreadId")
+                  .where("id", "=", input.scope.threadId)
+                  .executeTakeFirstOrThrow()
+              ).lineageRootThreadId
+            : null;
+        if (input.connectionAuthority) {
+          const { rows, total } = await queryConnectionRequestPage(transaction, {
+            authority: input.connectionAuthority,
+            lineageRootThreadId,
+            ...(input.originatingThreadId
+              ? { originatingThreadId: input.originatingThreadId }
+              : {}),
+            status,
+            anchor,
+            limit,
+          });
+          return requestPage(rows, total, limit, cursorScope);
+        }
+        const base = () => {
+          let query = transaction
+            .selectFrom("requests")
+            .innerJoin("threads", "threads.id", "requests.originatingThreadId")
+            .where("threads.createdBy", "=", input.ownerId)
+            .where("threads.removedAt", "is", null);
+          if (lineageRootThreadId !== null)
+            query = query.where("threads.lineageRootThreadId", "=", lineageRootThreadId);
+          if (input.scope.kind === "connection")
+            query = query.where("threads.originConnectionId", "=", input.scope.connectionId);
+          if (input.originatingThreadId)
+            query = query.where("requests.originatingThreadId", "=", input.originatingThreadId);
+          if (status === "pending") query = query.where("requests.status", "=", "pending");
+          return query;
+        };
+        let pageQuery = base()
+          .selectAll("requests")
+          .orderBy("requests.createdAt", "desc")
+          .orderBy("requests.id", "desc")
+          .limit(limit + 1);
+        if (anchor) {
+          pageQuery = pageQuery.where((expression) =>
+            expression.or([
+              expression("requests.createdAt", "<", anchor.createdAt),
+              expression.and([
+                expression("requests.createdAt", "=", anchor.createdAt),
+                expression("requests.id", "<", anchor.id),
+              ]),
+            ]),
+          );
+        }
+        const [rows, count] = await Promise.all([
+          pageQuery.execute(),
+          base()
+            .select(({ fn }) => fn.countAll<string>().as("count"))
+            .executeTakeFirstOrThrow(),
+        ]);
+        return requestPage(rows, Number(count.count), limit, cursorScope);
+      },
+      "repeatable read",
+    );
   }
 
   async requestComputerAppAccess(

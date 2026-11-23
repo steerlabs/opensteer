@@ -17,7 +17,8 @@ import { uncertainEarlierRun, type FinishIntent } from "./personal-state-schema.
 
 import { recordFinishedRunnerStatement } from "./personal-runner-receipts.js";
 import { storableText } from "./storable-json.js";
-import { publishRunQueue } from "./thread-status.js";
+import { publishTranscriptRun } from "./execution-changes.js";
+import { publishRunQueue, publishThreadSummary } from "./thread-status.js";
 
 type Tx = PersonalMutationTransaction;
 
@@ -198,7 +199,7 @@ export async function beginPersonalRunFinish(
 ) {
   const run = await tx
     .selectFrom("runs")
-    .select(["id", "threadId", "finishIntent", "bindingGeneration"])
+    .select(["id", "threadId", "finishIntent", "bindingGeneration", "providerRetry"])
     .where("id", "=", input.runId)
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
@@ -257,9 +258,13 @@ export async function beginPersonalRunFinish(
   };
   await tx
     .updateTable("runs")
-    .set({ finishIntent: intent, revision: mutation.sequence })
+    .set({ finishIntent: intent, providerRetry: null, revision: mutation.sequence })
     .where("id", "=", input.runId)
     .execute();
+  if (run.providerRetry !== null) {
+    await publishTranscriptRun(tx, mutation, input.runId);
+    await publishThreadSummary(tx, run.threadId);
+  }
   // A finish that spans commits is not a revocation: viewers keep their sockets and see it finish.
   mutation.react({
     type: "runLiveClosed",

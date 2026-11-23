@@ -439,11 +439,13 @@ describeStore("PostgreSQL store", (it) => {
         .where("id", "=", turn.run.id)
         .executeTakeFirstOrThrow();
       expect(stopped.status).toBe("interrupted");
+      expect(stopped.completedAt).not.toBeNull();
+      // The person stopped it, so its end is no news to them.
       await expect(read()).resolves.toMatchObject({
         status: "idle",
         inputQueuePaused: true,
         pendingRequests: 0,
-        latestRunCompletedAt: stopped.completedAt!.toISOString(),
+        latestRunCompletedAt: null,
       });
       await store.retryCommand(turn.command.id, new Error("Not dispatched"));
       const later = await store.enqueueThreadInput({

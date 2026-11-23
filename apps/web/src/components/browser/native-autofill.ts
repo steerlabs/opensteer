@@ -23,13 +23,12 @@ export function useNativeAutofill(
   const bridge = desktopBridge()?.browserPresentation;
   const { raised } = useNativeBrowserLayer();
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
-  const state = useSyncExternalStore<BrowserEditingState | null>(
+  const autofill = useSyncExternalStore<BrowserEditingState["autofill"]>(
     target?.subscribe ?? noSubscription,
-    target?.get ?? noState,
-    noState,
+    () => target?.get().autofill ?? null,
+    noAutofill,
   );
   useAutofillResultNotice(target);
-  const autofill = state?.autofill ?? null;
   const shown =
     !!placement &&
     !raised &&
@@ -121,6 +120,6 @@ export function useNativeAutofill(
 function noSubscription(): () => void {
   return () => undefined;
 }
-function noState(): null {
+function noAutofill(): null {
   return null;
 }

@@ -9,6 +9,7 @@ import { WebSocket } from "ws";
 import type { RunId } from "@opensteer/core";
 import {
   macWindowVideoParams,
+  displayMaxEnvelopeBytes,
   computerUseBridgePasswordsResults,
   type PasswordSignInAuthorityCommand,
   type PasswordSignInAuthorityEvent,
@@ -213,7 +214,7 @@ export class ComputerUseHandler {
     url.pathname += `/display/${encodeURIComponent(token)}`;
     return new WebSocket(url, {
       headers: { authorization: `Bearer ${this.#bridge.token}` },
-      maxPayload: 4 * 1_024 * 1_024,
+      maxPayload: displayMaxEnvelopeBytes,
       perMessageDeflate: false,
       followRedirects: false,
     });
@@ -827,7 +828,11 @@ export class ComputerUseHandler {
   }
 
   #receiveEvent(event: ComputerUseBridgeEvent): void {
-    if (event.event === "iphone.targetsChanged" || event.event === "iphone.sessionEnded") {
+    if (
+      event.event === "iphone.targetsChanged" ||
+      event.event === "iphone.sessionEnded" ||
+      event.event === "iphone.displayState"
+    ) {
       for (const listener of this.#iphoneEvents) listener(event);
       return;
     }

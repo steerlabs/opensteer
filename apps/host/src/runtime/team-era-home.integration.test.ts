@@ -141,7 +141,7 @@ it("keeps a Home that used teams working: its old rows read without error and ev
     await sql`drop table if exists browser_pool_sessions, browser_pool_retired_targets`.execute(
       store.database,
     );
-    await sql`delete from kysely_migration where name >= '0051_needs_you_counts_requests'`.execute(
+    await sql`delete from kysely_migration where name >= '0107_needs_you_counts_requests'`.execute(
       store.database,
     );
     await migrateToLatest(store.database);
@@ -205,6 +205,47 @@ it("keeps a Home that used teams working: its old rows read without error and ev
       afterSequence: SequenceSchema.parse("0"),
     });
     expect(JSON.stringify(waited)).not.toContain("team-member");
+
+    // Task-list message search, changedSince, and activity paging all omit retired teammate messages.
+    const searched = await store.agentThreadPageForOwner({
+      ownerId: host.ownerId,
+      scope: { kind: "personal" },
+      scopeId: own.threadId,
+      query: "teammate",
+    });
+    expect(searched.threads.map(({ id }) => id)).not.toContain(threadId);
+    const changed = await store.agentThreadPageForOwner({
+      ownerId: host.ownerId,
+      scope: { kind: "personal" },
+      scopeId: own.threadId,
+      changedSince: new Date(0),
+    });
+    expect(changed.threads.find(({ id }) => id === threadId)).toBeUndefined();
+    expect(changed.threads.find(({ id }) => id === own.threadId)?.newMessages).toBe(1);
+
+    await store.enqueueThreadInput({
+      requestedBy: host.ownerId,
+      threadId,
+      content: [{ type: "text", text: "Owner follow-up" }],
+      source: { kind: "human" },
+      policy: "report",
+      idempotencyKey: "team-era-owner-followup",
+    });
+    const messagesActivity = await readAgentThreadActivity(store.database, {
+      threadId,
+      ownerId: host.ownerId,
+      messagesOnly: true,
+      limit: 1,
+    });
+    expect(messagesActivity?.items).toHaveLength(1);
+    expect(messagesActivity?.hasMore).toBe(false);
+    const fullActivity = await readAgentThreadActivity(store.database, {
+      threadId,
+      ownerId: host.ownerId,
+      limit: 1,
+    });
+    expect(fullActivity?.items).toHaveLength(1);
+    expect(fullActivity?.hasMore).toBe(false);
   } finally {
     await host.close();
   }

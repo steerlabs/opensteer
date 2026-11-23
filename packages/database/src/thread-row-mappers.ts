@@ -63,6 +63,7 @@ type ThreadReadRow = {
   readonly askedAt: Date;
   readonly doneAt: Date | null;
   readonly doneReason?: Thread["doneReason"];
+  readonly doneBy?: Thread["doneBy"];
   readonly inputQueuePaused: boolean;
   readonly accessMode: ThreadAccessMode;
   readonly purpose: Thread["purpose"];
@@ -99,6 +100,7 @@ function threadValueFromRow(row: ThreadReadRow) {
     createdAt: row.createdAt.toISOString(),
     doneAt: row.doneAt?.toISOString() ?? null,
     doneReason: row.doneReason ?? null,
+    ...(row.doneBy === undefined ? {} : { doneBy: row.doneBy }),
     pendingRequests: row.pendingRequests,
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -217,6 +219,7 @@ export function runFromRow(row: {
   readonly causalChainId: CausalChainId;
   readonly environmentId: EnvironmentId;
   readonly failure: RunFailure | null;
+  readonly providerRetry?: import("@opensteer/core").RunRetry | null;
   readonly harnessInstanceId: HarnessInstanceId;
   readonly modelSelection: ModelSelection;
   readonly requestedBy: UserId;
@@ -251,6 +254,7 @@ export function runFromRow(row: {
     modelSelection: row.modelSelection,
     replyTarget: personalReplyTarget(row.replyTarget),
     requestedBy: row.requestedBy,
+    ...(row.providerRetry !== undefined ? { retry: row.providerRetry } : {}),
     runOrdinal: row.runOrdinal,
     startedAt: row.startedAt?.toISOString() ?? null,
     status: row.status,

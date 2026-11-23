@@ -4,7 +4,7 @@ import { sql, type Kysely } from "kysely";
  * Pool bookkeeping lives only in these tables. Ordinary rows are referenced by id without a
  * constraint, so an ordinary Home's writes never check them; pool code cleans them up.
  */
-export const browserPoolMigrationName = "0050_browser_pool";
+export const browserPoolMigrationName = "0106_browser_pool";
 
 export async function applyBrowserPool(database: Kysely<unknown>): Promise<void> {
   await sql`
@@ -100,7 +100,7 @@ export async function applyBrowserPool(database: Kysely<unknown>): Promise<void>
  * sessions. A replaced target is kept (W8) for as long as a Stop it held waits for its word. Pool bookkeeping, like the rest: no ordinary row changes. Expand-only: a pooled
  * session already open is bound to the slot its runner has now.
  */
-export const browserPoolSessionsMigrationName = "0052_browser_pool_sessions";
+export const browserPoolSessionsMigrationName = "0116_browser_pool_sessions";
 
 export async function applyBrowserPoolSessions(database: Kysely<unknown>): Promise<void> {
   await sql`

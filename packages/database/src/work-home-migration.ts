@@ -1,6 +1,6 @@
 import { sql, type Kysely } from "kysely";
 
-export const workHomeMigrationName = "0049_work_home";
+export const workHomeMigrationName = "0105_work_home";
 
 const auditTables = [
   ["agent_connections", "insert or update"],

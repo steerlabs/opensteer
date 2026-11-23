@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"testing"
 	"time"
 
@@ -230,4 +232,109 @@ func TestRemoteAXNoHierarchyIsUnavailableAndDisables(t *testing.T) {
 	if e := <-done; e != nil {
 		t.Fatal(e)
 	}
+}
+
+func hubFixtureRecord(id uint64, attributes map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"UIAccessibilitySnapshotKeyElement":    map[string]interface{}{"pid": uint64(77), "objectID": id},
+		"UIAccessibilitySnapshotKeyAttributes": attributes,
+	}
+}
+
+func TestDeviceHubFocusQueriesAndRedactsSecureRecord(t *testing.T) {
+	for _, secure := range []bool{false, true} {
+		client, server := net.Pipe()
+		_ = server.SetDeadline(time.Now().Add(time.Second))
+		t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+		dial := &fixtureDialer{conn: client}
+		done := make(chan error, 1)
+		go func() {
+			c := dtx.NewRawConnection(server)
+			done <- simulateHubFocus(c, secure)
+		}()
+		focus, err := readHubFocus(context.Background(), dial, AXFrame{Width: 390, Height: 844}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dial.service != deviceHubAXService || focus.ID != 2 || focus.Editable != "yes" {
+			t.Fatal("focused element facts missing")
+		}
+		if secure {
+			if focus.Secure != "yes" || focus.Value != nil {
+				t.Fatal("secure value escaped")
+			}
+		} else if focus.Secure != "no" || focus.Value == nil || *focus.Value != "fixture value" {
+			t.Fatal("readback mismatch")
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+func simulateHubFocus(c *dtx.RawConnection, secure bool) error {
+	read := func(selector string) (dtx.Message, error) {
+		m, err := c.Read()
+		if err == nil && (len(m.Payload) != 1 || m.Payload[0] != selector) {
+			err = fmt.Errorf("wrong selector for %s", selector)
+		}
+		return m, err
+	}
+	if _, err := read("_notifyOfPublishedCapabilities:"); err != nil {
+		return err
+	}
+	if _, err := read("clientNeedsAccessibility:"); err != nil {
+		return err
+	}
+	basic := uint64(1 << 18)
+	if secure {
+		basic |= 1 << 24
+	}
+	field := hubFixtureRecord(2, map[string]interface{}{"2004": basic})
+	token := map[string]interface{}{"pid": uint64(77), "objectID": uint64(1), "isApplicationElement": true}
+	responses := []struct {
+		request int
+		result  interface{}
+	}{
+		{6, map[string]interface{}{"pid": uint64(77), "objectID": uint64(2)}},
+		{1, token},
+		{2, hubFixtureRecord(1, map[string]interface{}{"3002": field})},
+	}
+	if !secure {
+		responses = append(responses, struct {
+			request int
+			result  interface{}
+		}{2, hubFixtureRecord(2, map[string]interface{}{"2004": basic, "2006": "fixture value"})})
+	}
+	for i, response := range responses {
+		m, err := read("processDataFromHost:")
+		if err != nil {
+			return err
+		}
+		req := hubResponse(m.Auxiliary.GetArguments()[0])
+		kind, _ := unsigned(req["requestType"])
+		if uint64(response.request) != kind {
+			return fmt.Errorf("wrong AX request type %d", kind)
+		}
+		if i == 2 || i == 3 {
+			params, _ := req["parameters"].(map[string]interface{})
+			options, _ := params["parameter"].(map[string]interface{})
+			if !reflect.DeepEqual(ids(options["attributes"]), map[int][]uint64{2: {3002, 2004}, 3: {2004, 2006}}[i]) {
+				return fmt.Errorf("unexpected focus attributes")
+			}
+		}
+		if err := c.Send(dtx.BuildAckMessage(m)); err != nil {
+			return err
+		}
+		body, err := axCall(11+i, "processDataFromRemoteDevice:", map[string]interface{}{
+			"associatedRequestType": response.request, "resultData": response.result, "error": 0,
+		})
+		if err != nil {
+			return err
+		}
+		if err := c.Send(body); err != nil {
+			return err
+		}
+	}
+	_, err := read("clientNeedsAccessibility:")
+	return err
 }
