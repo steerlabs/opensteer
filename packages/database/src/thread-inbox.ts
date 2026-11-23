@@ -4952,7 +4952,11 @@ export function readConnectionChildResult(
     )
       return undefined;
     return {
-      assignment: await assignmentSummaryInTransaction(transaction, row),
+      assignment: await assignmentSummaryInTransaction(transaction, row, {
+        connectionAuthority: authority,
+        ownerVerified: true,
+        scope,
+      }),
       result: row.resultText,
     };
   });
@@ -4964,6 +4968,7 @@ export function readAssignmentResult(
   input: {
     readonly assignmentId: AssignmentId;
     readonly authority: ThreadCallerAuthority;
+    readonly connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
     readonly signal?: AbortSignal;
   },
 ) {
@@ -5014,7 +5019,16 @@ export function readAssignmentResult(
         readOnly: true,
       });
       input.signal?.throwIfAborted();
-      return { assignment: await assignmentSummaryInTransaction(transaction, assignment), result };
+      return {
+        assignment: await assignmentSummaryInTransaction(
+          transaction,
+          assignment,
+          input.connectionAuthority
+            ? { connectionAuthority: input.connectionAuthority, ownerVerified: true }
+            : undefined,
+        ),
+        result,
+      };
     },
     (error) => error instanceof TransactionScopeChanged,
   );

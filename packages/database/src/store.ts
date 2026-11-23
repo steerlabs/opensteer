@@ -1373,7 +1373,11 @@ export class OpensteerStore {
   async getAssignmentForOwner(input: {
     readonly assignmentId: AssignmentId;
     readonly ownerId: UserId;
-  }): Promise<AssignmentView | null> {
+    readonly connectionAuthority?: Extract<
+      import("./thread-caller.js").ThreadCallerAuthority,
+      { kind: "connection" }
+    >;
+  }): Promise<(AssignmentView & { readonly pendingRequests?: number }) | null> {
     return threadStore.getAssignmentForOwner(this.#database, input);
   }
   async listThreadAssignmentsForOwner(input: {
@@ -1415,6 +1419,10 @@ export class OpensteerStore {
     ownerId: UserId,
     lineageConnectionId?: string,
     nativeOnly?: boolean,
+    connectionAuthority?: Extract<
+      import("./thread-caller.js").ThreadCallerAuthority,
+      { kind: "connection" }
+    >,
   ): Promise<Thread | null> {
     return threadStore.getThreadForOwner(
       this.#database,
@@ -1422,6 +1430,7 @@ export class OpensteerStore {
       ownerId,
       lineageConnectionId,
       nativeOnly,
+      connectionAuthority,
     );
   }
 

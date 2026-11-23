@@ -8,12 +8,15 @@ import {
   type TabId,
   type ThreadId,
 } from "@opensteer/core";
+import * as databaseModule from "@opensteer/database";
 import {
   AgentConnectionStore,
   TabStore,
   TriggerStore,
   beginAgentSession,
 } from "@opensteer/database";
+import pg from "pg";
+import { expect, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -21,7 +24,6 @@ import { describeStore, testModelSelection } from "@opensteer/database/test-supp
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
-import { expect } from "vitest";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type { TabActor } from "../tabs/ports.js";
 import { readableTabTasks, tabComputer, tabReadAuthority } from "../tabs/tab-authority.js";
@@ -1164,5 +1166,168 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       operationKey: "p2-delegation-status",
     });
     expect(delegation.pendingRequests).toBe(0);
+  });
+
+  it("computes scoped pendingRequests inside the read transaction without separate countPendingConnectionRequests queries", async ({
+    storeFixture,
+  }) => {
+    const countStatements = async (action: () => Promise<unknown>): Promise<number> => {
+      let count = 0;
+      const prototype: { query(...args: unknown[]): unknown } = pg.Client.prototype;
+      const query = prototype.query;
+      const spy = vi.spyOn(prototype, "query").mockImplementation(function (
+        this: pg.Client,
+        ...args: unknown[]
+      ) {
+        count += 1;
+        return Reflect.apply(query, this, args);
+      });
+      try {
+        await action();
+      } finally {
+        spy.mockRestore();
+      }
+      return count;
+    };
+
+    const f = await storeFixture.startRunFixture("p3-inline-scoped-counts");
+    const runScopes: Record<string, RunToolScope> = {};
+    const url = await serveMcp(storeFixture, { runScopes });
+    const agentA = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+    });
+    const agentB = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: tasksOnly,
+    });
+    const taskA = await createTask(agentA, f, "p3-lineage-parent");
+    const taskB = await createTask(agentB, f, "p3-foreign-parent");
+    const runA = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, taskA)).id,
+    );
+    const runB = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, taskB)).id,
+    );
+    runScopes["p3-run-a"] = fixtureRunScope({ ...f, ...runA, threadId: taskA });
+    const clientA = await runClient(url, "p3-run-a");
+    const callA = (name: string, arguments_: Record<string, unknown>) =>
+      clientA.callTool({ name, arguments: arguments_ });
+
+    // Child delegation of runA, settled so wait returns immediately.
+    const childA = await storeFixture.store.delegateThread({
+      accessMode: "full-access",
+      createdBy: f.userId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harnessInstance.id,
+      idempotencyKey: "p3-settled-child",
+      modelSelection: testModelSelection,
+      origin: { kind: "run", parentRunId: runA.runId, parentThreadId: taskA },
+      task: [{ type: "text", text: "Child work" }],
+      title: "Settled child",
+    });
+    await storeFixture.store.cancelAssignment({
+      assignmentId: childA.assignment.id,
+      requestedBy: f.userId,
+      idempotencyKey: "p3-settled-child-cancel",
+    });
+
+    // Foreign connection B's pending Request on taskB (readable by everything-grant runA,
+    // but B's Request must stay hidden so scoped pendingRequests is 0).
+    const nodeB = await subagent(storeFixture, runB.runId);
+    await storeFixture.store.requests.create({
+      callId: "p3-foreign-question",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: runB.runId,
+      originatingThreadId: taskB,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Foreign question",
+        fields: [{ id: "answer", prompt: "Ready?", secret: false, custom: true, multiSelect: false }],
+      },
+    });
+
+    // Warm each call once, check scoped pendingRequests === 0, then measure statements.
+    const warmSubagent = await callA("opensteer_subagent_read", { subagentId: nodeB });
+    expect(warmSubagent.isError, JSON.stringify(warmSubagent.content)).not.toBe(true);
+    expect(
+      (warmSubagent.structuredContent as { task: { pendingRequests: number } }).task
+        .pendingRequests,
+    ).toBe(0);
+
+    const warmDelegation = await callA("opensteer_delegation_status", {
+      delegationId: childA.assignment.id,
+    });
+    expect(warmDelegation.isError, JSON.stringify(warmDelegation.content)).not.toBe(true);
+    expect(
+      (warmDelegation.structuredContent as { pendingRequests: number }).pendingRequests,
+    ).toBe(0);
+
+    const warmWait = await callA("opensteer_task_wait", {
+      taskId: childA.thread.id,
+      timeoutMs: 5_000,
+    });
+    expect(warmWait.isError, JSON.stringify(warmWait.content)).not.toBe(true);
+    expect(
+      (warmWait.structuredContent as { status: string; task: { pendingRequests: number } }),
+    ).toMatchObject({ status: "settled", task: { pendingRequests: 0 } });
+
+    const counts = {
+      subagentRead: await countStatements(async () => {
+        const res = await callA("opensteer_subagent_read", { subagentId: nodeB });
+        expect(res.isError, JSON.stringify(res.content)).not.toBe(true);
+      }),
+      delegationStatus: await countStatements(async () => {
+        const res = await callA("opensteer_delegation_status", {
+          delegationId: childA.assignment.id,
+        });
+        expect(res.isError, JSON.stringify(res.content)).not.toBe(true);
+      }),
+      settledWait: await countStatements(async () => {
+        const res = await callA("opensteer_task_wait", {
+          taskId: childA.thread.id,
+          timeoutMs: 5_000,
+        });
+        expect(res.isError, JSON.stringify(res.content)).not.toBe(true);
+      }),
+    };
+    // Verify the inline scoped count inside getAssignmentForOwner (used by #task) and
+    // getThreadForOwner (used by #readSubagent and standalone create) directly too.
+    const authorityA = {
+      kind: "connection" as const,
+      userId: f.userId,
+      connectionId: agentA.id,
+      accessMode: "full-access" as const,
+    };
+    const scopedThreadB = await storeFixture.store.getThreadForOwner(
+      taskB,
+      f.userId,
+      undefined,
+      undefined,
+      authorityA,
+    );
+    expect(scopedThreadB?.pendingRequests).toBe(0);
+    const scopedAssignmentA = await storeFixture.store.getAssignmentForOwner({
+      assignmentId: childA.assignment.id,
+      ownerId: f.userId,
+      connectionAuthority: authorityA,
+    });
+    expect(scopedAssignmentA?.pendingRequests).toBe(0);
+    expect("countPendingConnectionRequests" in databaseModule).toBe(false);
+    // Before P3: subagentRead=28, delegationStatus=78, settledWait=239 (each had a separate
+    // 5-statement countPendingConnectionRequests transaction; folding drops 4 statements each).
+    expect(counts).toEqual({
+      subagentRead: 24,
+      delegationStatus: 74,
+      settledWait: 235,
+    });
   });
 });

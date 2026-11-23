@@ -13,7 +13,7 @@ import {
   type RequestId,
 } from "@opensteer/core";
 import { z } from "zod";
-import { sql, type Kysely, type SelectQueryBuilder, type Transaction } from "kysely";
+import type { Kysely, SelectQueryBuilder, Transaction } from "kysely";
 import "./connection.js";
 import { assertRequestRevision, requestFromRow } from "./request-persistence.js";
 import { connectionTaskRequestScope } from "./resource-access.js";
@@ -93,10 +93,13 @@ export function assertAgentRequestAnswer(
 async function connectionRequestsQuery(
   tx: Transaction<DatabaseSchema>,
   authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
-  options?: { readonly ownerVerified?: boolean },
+  options?: {
+    readonly ownerVerified?: boolean;
+    readonly scope?: "everything" | "selected";
+  },
 ) {
   if (!options?.ownerVerified) await requirePersonalOwner(tx, authority.userId);
-  const scope = await connectionTaskRequestScope(tx, authority);
+  const scope = options?.scope ?? (await connectionTaskRequestScope(tx, authority));
 
   return tx
     .selectFrom("requests")
@@ -165,7 +168,10 @@ async function connectionRequestsQuery(
 export async function connectionRequests(
   tx: Transaction<DatabaseSchema>,
   authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
-  options?: { readonly ownerVerified?: boolean },
+  options?: {
+    readonly ownerVerified?: boolean;
+    readonly scope?: "everything" | "selected";
+  },
 ): Promise<SelectQueryBuilder<{ readonly requests: RequestRow }, "requests", RequestRow>> {
   const scoped = await connectionRequestsQuery(tx, authority, options);
   return tx.selectFrom(scoped.as("requests")).selectAll("requests");
@@ -234,23 +240,6 @@ export async function readPendingConnectionRequest(
     .orderBy("requests.createdAt", "asc")
     .limit(1)
     .executeTakeFirst();
-}
-
-export function countPendingConnectionRequests(
-  database: Kysely<DatabaseSchema>,
-  authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
-  threadId: Request["originatingThreadId"],
-): Promise<number> {
-  return withPersonalReadTransaction(database, async (tx) => {
-    const visibleRequests = await connectionRequests(tx, authority);
-    const row = await tx
-      .selectFrom(visibleRequests.as("visible_requests"))
-      .select(sql<number>`count(*)::int`.as("count"))
-      .where("visible_requests.originatingThreadId", "=", threadId)
-      .where("visible_requests.status", "=", "pending")
-      .executeTakeFirstOrThrow();
-    return Number(row.count);
-  });
 }
 
 async function readConnectionRequest(

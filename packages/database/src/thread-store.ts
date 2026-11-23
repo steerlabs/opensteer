@@ -679,16 +679,29 @@ export async function getAssignmentForOwner(
   input: {
     readonly assignmentId: AssignmentId;
     readonly ownerId: UserId;
+    readonly connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
   },
-): Promise<AssignmentView | null> {
+): Promise<(AssignmentView & { readonly pendingRequests?: number }) | null> {
   return withPersonalReadTransaction(
     database,
     async (transaction) => {
       await requirePersonalOwner(transaction, input.ownerId);
+      const visibleRequests = input.connectionAuthority
+        ? await connectionRequests(transaction, input.connectionAuthority, { ownerVerified: true })
+        : undefined;
       const row = await transaction
         .selectFrom("delegations")
         .innerJoin("threads as workerThread", "workerThread.id", "delegations.childThreadId")
         .selectAll("delegations")
+        .$if(visibleRequests !== undefined, (query) =>
+          query.select(
+            sql<number>`(
+              select count(*)::int from (${visibleRequests!}) as visible_requests
+              where visible_requests.originating_thread_id = ${sql.ref("workerThread.id")}
+                and visible_requests.status = 'pending'
+            )`.as("pendingRequests"),
+          ),
+        )
         .where("delegations.id", "=", input.assignmentId)
         .executeTakeFirst();
       if (!row) return null;
@@ -697,7 +710,13 @@ export async function getAssignmentForOwner(
         .select("threads.id")
         .where("threads.id", "=", row.parentThreadId)
         .executeTakeFirst();
-      return parent ? assignmentFromRow(row) : null;
+      if (!parent) return null;
+      return {
+        ...assignmentFromRow(row),
+        ...(visibleRequests !== undefined
+          ? { pendingRequests: Number((row as { pendingRequests?: number }).pendingRequests ?? 0) }
+          : {}),
+      };
     },
     "repeatable read",
   );
@@ -1067,14 +1086,24 @@ export async function getThreadForOwner(
   ownerId: UserId,
   lineageConnectionId?: string,
   nativeOnly?: boolean,
+  connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>,
 ): Promise<Thread | null> {
   return withPersonalReadTransaction(database, async (tx) => {
     await requirePersonalOwner(tx, ownerId);
+    const visibleRequests = connectionAuthority
+      ? await connectionRequests(tx, connectionAuthority, { ownerVerified: true })
+      : undefined;
     const row = await tx
       .selectFrom("threads")
       .selectAll("threads")
       .select([
-        threadPendingRequestsSelection,
+        visibleRequests
+          ? sql<number>`(
+              select count(*)::int from (${visibleRequests}) as visible_requests
+              where visible_requests.originating_thread_id = threads.id
+                and visible_requests.status = 'pending'
+            )`.as("pendingRequests")
+          : threadPendingRequestsSelection,
         threadVisitSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
