@@ -510,7 +510,6 @@ describe("the preview Home answers as the Home does", () => {
             threadId: task.id as never,
             runId: runId as never,
             requestedBy: userId,
-            auditOwnerStop: true,
             idempotencyKey: createId("command"),
           });
           answer = { ok: true };

@@ -14,8 +14,6 @@ export const agentDirectoryMigration: Migration = {
         id text primary key check (id ~ '^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$'),
         display_name text not null check (char_length(display_name) between 1 and 100),
         origins jsonb not null,
-        keys jsonb,
-        embeds_via jsonb,
         created_at timestamptz not null default now(),
         updated_at timestamptz not null default now()
       )

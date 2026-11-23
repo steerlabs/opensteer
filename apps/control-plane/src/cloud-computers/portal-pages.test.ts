@@ -32,7 +32,7 @@ describe("Cloud Computer website pages", () => {
 
   it("links an offer to the checkout page and says when the last one was deleted", () => {
     const body = cloudComputerLandingBody({
-      state: { kind: "offer", plan, deleted: true, work: [] },
+      state: { kind: "offer", plan, deleted: true },
       refusal: null,
       notice: null,
     });
@@ -76,7 +76,6 @@ describe("Cloud Computer website pages", () => {
         kind: "computer",
         plan,
         openHref: null,
-        work: [],
         computer: { id, egress: "pending", status: "preparing" },
       },
       refusal: null,
@@ -94,7 +93,6 @@ describe("Cloud Computer website pages", () => {
         kind: "computer",
         plan,
         openHref: null,
-        work: [],
         computer: {
           id,
           egress: "assigned",
@@ -121,7 +119,6 @@ describe("Cloud Computer website pages", () => {
         kind: "computer",
         plan,
         openHref: null,
-        work: [],
         computer: {
           id,
           egress: "pending",
@@ -143,7 +140,6 @@ describe("Cloud Computer website pages", () => {
         kind: "computer",
         plan,
         openHref: null,
-        work: [],
         computer: {
           id,
           egress: "unavailable",

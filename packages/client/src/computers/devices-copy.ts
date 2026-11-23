@@ -7,7 +7,6 @@ export const devicesCopy = {
   "devices.title": "Devices",
   "devices.lead": "Your Opensteer lives on {home}. Agents reach your other devices through it.",
   "devices.lead.cloud": "your Cloud Computer",
-  "devices.lead.work": "your {organization} work Home",
   "devices.section.home": "Home",
   "devices.section.devices": "Devices",
   "devices.section.alsoSignedIn": "Also signed in",
@@ -16,7 +15,6 @@ export const devicesCopy = {
   "devices.home.mac": "Home · Online",
   "devices.home.server": "Home · Server · Online",
   "devices.home.cloud": "Home · Always on",
-  "devices.home.work": "Work Home",
   "devices.status.online": "Online",
   "devices.status.asleep": "Asleep · seen {time}",
   "devices.status.asleepNow": "Asleep",
@@ -65,9 +63,9 @@ export function deviceWords(
 
 /**
  * Why the Home's own device can't be removed, said of what it is: a Mac, a server, or a
- * Cloud Computer (a work Home is one too). Never "this Mac" for a Home that isn't one.
+ * Cloud Computer. Never "this Mac" for a Home that isn't one.
  */
-export function homeKeptWords(home: "this-mac" | "mac" | "server" | "cloud" | "work"): string {
+export function homeKeptWords(home: "this-mac" | "mac" | "server" | "cloud"): string {
   return deviceWords(homeKept[home]);
 }
 
@@ -76,5 +74,4 @@ const homeKept = {
   mac: "home.kept.mac",
   server: "home.kept.server",
   cloud: "home.kept.cloud",
-  work: "home.kept.cloud",
 } as const satisfies Record<string, DevicesCopyId>;

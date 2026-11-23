@@ -261,8 +261,7 @@ For a managed replacement, `restoreSnapshot` stages and verifies the snapshot
 before starting the restored identity. The Opensteer account claims the new generation for
 the same linked owner; enrolled services keep their restored credentials. The Opensteer
 account assigns a pre-registered S3 principal and a non-overlapping backup prefix; the
-operator must scope the principal's actual permissions to that prefix. A work Home's optional organization and
-assignment marker is passed to the Host as `OPENSTEER_MANAGED_HOME_WORK_JSON`.
+operator must scope the principal's actual permissions to that prefix.
 
 The root maintenance timer checks `GET /v1/cloud-computers/:id/egress` over
 HTTPS while a managed Home is waiting for an upstream, 15 seconds after the

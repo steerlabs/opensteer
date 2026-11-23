@@ -3,12 +3,10 @@ import {
   type CloudComputerListResponse,
   type CloudComputerPreparationStep,
   type CloudComputerView,
-  type WorkAssignmentId,
 } from "@opensteer/control-plane-protocol";
 import type {
   DesktopCloudComputerActInput,
   DesktopCloudComputerFailure,
-  DesktopWorkHome,
 } from "@opensteer/protocol/desktop";
 import type { CloudComputerAccount } from "../connections/account-cloud-computers.js";
 import {
@@ -16,9 +14,6 @@ import {
   cloudComputerReasonSentence,
   cloudComputerStepLabel,
   cloudWords,
-  orgWords,
-  workHomeStatusLabel,
-  workPolicyLines,
 } from "./cloud-computer-copy.js";
 
 export type CloudComputerPlan = CloudComputerListResponse["plan"];
@@ -185,79 +180,11 @@ function day(iso: string, locale: string | undefined): string {
   return new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(new Date(iso));
 }
 
-/* ------------------------------------------------------------------------- *
- * Work Homes: an organization pays for and governs them; the person owns them.
- * ------------------------------------------------------------------------- */
-
-/** One work Home as the person's Cloud Computer screen shows it: no billing or power. */
-export interface WorkHomeCard {
-  readonly assignmentId: WorkAssignmentId;
-  readonly organizationName: string;
-  readonly title: string;
-  readonly badge: string;
-  readonly status: CloudComputerStatusView;
-  readonly address: string | null;
-  readonly host: string | null;
-  readonly deploymentId: string | null;
-  readonly region: string | null;
-  readonly browserAddress: string | null;
-  readonly lastBackup: string | null;
-  readonly steps: readonly CloudComputerStepView[] | null;
-  readonly policy: ReturnType<typeof workPolicyLines>;
-  readonly policyTitle: string;
-  readonly managed: string;
-  /** Opens "What {organization} can see". */
-  readonly seeTitle: string;
-}
-
-export function workHomeCard(work: DesktopWorkHome, locale?: string): WorkHomeCard {
-  const { assignment, policy } = work.home;
-  const organization = assignment.organizationName;
-  const computer = work.computer ? cloudComputerDetail(work.computer, locale) : null;
-  const tone: CloudComputerTone = assignment.signInCut
-    ? "attention"
-    : assignment.homeStatus === "ready"
-      ? "good"
-      : assignment.homeStatus === "needs_attention"
-        ? "attention"
-        : "neutral";
-  const address = assignment.address ?? computer?.address ?? null;
-  return {
-    assignmentId: assignment.assignmentId,
-    organizationName: organization,
-    title: orgWords("org.work.title", { organization }),
-    badge: orgWords("org.work.badge", { organization }),
-    status: { label: workHomeStatusLabel(assignment), tone, reason: assignment.reason },
-    address,
-    host: address === null ? null : hostOf(address),
-    deploymentId: computer?.deploymentId ?? null,
-    region: computer?.region ?? null,
-    browserAddress: computer?.browserAddress ?? null,
-    lastBackup: computer?.lastBackup ?? null,
-    steps: assignment.homeStatus === "preparing" ? (computer?.steps ?? null) : null,
-    policy: workPolicyLines(policy),
-    policyTitle: orgWords("org.work.policy", { organization }),
-    managed: orgWords("org.work.managed", { organization }),
-    seeTitle: orgWords("org.work.see.title", { organization }),
-  };
-}
-
-/** The "Work · {organization}" badge for each work Home the Account has pinned, by Home. */
-export function workHomeBadges(cards: readonly WorkHomeCard[]): ReadonlyMap<string, WorkHomeCard> {
-  const badges = new Map<string, WorkHomeCard>();
-  for (const card of cards) if (card.deploymentId) badges.set(card.deploymentId, card);
-  return badges;
-}
-
-/** The person's one personal Cloud Computer: the newest that isn't deleted or work. */
+/** The person's one Cloud Computer: the newest that isn't deleted. */
 export function currentCloudComputer(
   computers: readonly CloudComputerView[],
-  work: readonly DesktopWorkHome[] = [],
 ): CloudComputerView | null {
-  const workIds = new Set(work.map(({ home }) => home.assignment.computerId));
-  return (
-    computers.find((computer) => computer.status !== "deleted" && !workIds.has(computer.id)) ?? null
-  );
+  return computers.find((computer) => computer.status !== "deleted") ?? null;
 }
 
 export function cloudComputerScreen(input: {
@@ -270,7 +197,7 @@ export function cloudComputerScreen(input: {
   if (read.kind === "loading") return { kind: "loading" };
   if (read.kind === "failed") return { kind: "failed", failure: read.failure };
   const plan = cloudComputerPlanView(read.data.plan, input.locale);
-  const current = currentCloudComputer(read.data.computers, read.work);
+  const current = currentCloudComputer(read.data.computers);
   if (current === null)
     return {
       kind: "offer",
@@ -350,8 +277,6 @@ export type CloudComputerReadState =
   | {
       readonly kind: "ready";
       readonly data: CloudComputerListResponse;
-      /** Work Homes organizations assigned this person; empty when none or unread. */
-      readonly work: readonly DesktopWorkHome[];
     }
   | { readonly kind: "failed"; readonly failure: DesktopCloudComputerFailure };
 
@@ -367,13 +292,8 @@ export interface CloudComputerSnapshot {
    * on checkout reads.
    */
   readonly checkoutFollowed: boolean;
-  /** Each work Home, beside the personal screen; none until a read succeeds. */
-  readonly work: readonly WorkHomeCard[];
   /** The Account's views, for saying which kind of Home a Deployment is; null until read. */
-  readonly views: {
-    readonly computers: readonly CloudComputerView[];
-    readonly work: readonly DesktopWorkHome[];
-  } | null;
+  readonly views: { readonly computers: readonly CloudComputerView[] } | null;
 }
 
 export type CloudComputerSchedule = (run: () => void, ms: number) => () => void;
@@ -447,7 +367,7 @@ export class CloudComputerClient {
     const result = await this.#account.read();
     if (generation !== this.#generation) return;
     this.#read = result.ok
-      ? { kind: "ready", data: result.data, work: result.work ?? [] }
+      ? { kind: "ready", data: result.data }
       : { kind: "failed", failure: result.failure };
     // The watch is over: checkout is no longer followed, and nothing waits on it.
     if (this.#checkoutOpenedAt !== null && !this.#following()) this.#checkoutOpenedAt = null;
@@ -505,9 +425,8 @@ export class CloudComputerClient {
 
   #watching(): boolean {
     if (this.#read.kind !== "ready") return false;
-    const current = currentCloudComputer(this.#read.data.computers, this.#read.work);
+    const current = currentCloudComputer(this.#read.data.computers);
     if (current?.status === "preparing") return true;
-    if (this.#read.work.some(({ home }) => home.assignment.homeStatus === "preparing")) return true;
     return current === null && this.#following();
   }
 
@@ -528,14 +447,7 @@ export class CloudComputerClient {
       pending: this.#pending,
       actionFailure: this.#actionFailure,
       checkoutFollowed: this.#following(),
-      work:
-        this.#read.kind === "ready"
-          ? this.#read.work.map((work) => workHomeCard(work, this.#locale))
-          : [],
-      views:
-        this.#read.kind === "ready"
-          ? { computers: this.#read.data.computers, work: this.#read.work }
-          : null,
+      views: this.#read.kind === "ready" ? { computers: this.#read.data.computers } : null,
     };
   }
 

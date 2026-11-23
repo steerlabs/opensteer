@@ -11,7 +11,6 @@ import {
 } from "@opensteer/core";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { classifyClientFailure } from "@opensteer/client/connections";
-import type { EffectiveWorkPolicy } from "@opensteer/control-plane-protocol";
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "./icon.js";
 import { SectionHeader, SettingsRow } from "./settings/primitives.js";
@@ -20,8 +19,6 @@ import {
   agentClaim,
   agentConsentHeading,
   workWords,
-  workHomeMark,
-  withinWorkPolicy,
   agentBrowserOptions,
   agentHomeName,
   agentWords,
@@ -40,7 +37,7 @@ import {
   type SentencePart,
   agentSentence,
 } from "@opensteer/client/host";
-import { useHostSelector, useWorkPolicy } from "@opensteer/client/react";
+import { useHostSelector } from "@opensteer/client/react";
 import { AgentGrantEditor, ConnectionModeChoices } from "./settings/agent-grant-editor.js";
 import { SentenceText } from "../ui/address-text.js";
 import { AgentMark } from "./settings/agent-mark.js";
@@ -90,8 +87,6 @@ export function McpAuthorization({
   });
   const home = agentHomeName({ machines, identityConfig });
   const [load, setLoad] = useState<Load>({ kind: "loading" });
-  // A work Home's ceiling is known before any choice is offered, so none is offered then refused.
-  const workPolicy = useWorkPolicy(client);
   const grantsAvailable = load.kind === "ready" && load.consent.grantsAvailable === true;
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -100,7 +95,7 @@ export function McpAuthorization({
   const [busy, setBusy] = useState<"allow" | "deny" | null>(null);
   const [allowed, setAllowed] = useState(false);
   const [label, setLabel] = useState("");
-  const [pickedMode, setMode] = useState<ThreadAccessMode>("approval-required");
+  const [mode, setMode] = useState<ThreadAccessMode>("approval-required");
   const [draft, setDraft] = useState<AgentGrantDraft | null>(null);
   // A retried approval reuses the profile the first attempt created.
   const createdProfile = useRef<string | null>(null);
@@ -140,14 +135,12 @@ export function McpAuthorization({
     };
   }, [attempt, client, requestId]);
   // The default waits for the Devices list, so a new profile lands where the Home keeps them.
-  const picked: AgentGrantDraft = draft ?? {
+  const chosen: AgentGrantDraft = draft ?? {
     scope: "selected",
     tasks: false,
     resources: [],
     newProfile: canCreate ? { homeRunnerId: defaultHome } : null,
   };
-  // A newer policy version can rule out what was picked; Allow asks only for what it allows.
-  const { draft: chosen, mode } = withinWorkPolicy({ draft: picked, mode: pickedMode }, workPolicy);
 
   async function decide(approve: boolean) {
     if (load.kind !== "ready" || busy) return;
@@ -240,9 +233,7 @@ export function McpAuthorization({
     <main className="page settings settings-layout">
       <div className="settings-content">
         <div className="settings-content__inner agent-consent">
-          {load.kind === "loading" || (load.kind === "ready" && workPolicy === undefined) ? (
-            <p role="status">{agentWords("consent.loading")}</p>
-          ) : null}
+          {load.kind === "loading" ? <p role="status">{agentWords("consent.loading")}</p> : null}
           {load.kind === "missing" ? (
             <p className="notice notice--error" role="alert">
               {agentWords("consent.missing")}
@@ -280,7 +271,7 @@ export function McpAuthorization({
               />
             </div>
           ) : null}
-          {load.kind === "ready" && !allowed && workPolicy !== undefined ? (
+          {load.kind === "ready" && !allowed ? (
             <ConsentForm
               busy={busy}
               changed={changed}
@@ -297,7 +288,6 @@ export function McpAuthorization({
                     }
                   : null
               }
-              workPolicy={workPolicy}
               label={label}
               mode={mode}
               onDecide={(approve) => void decide(approve)}
@@ -350,7 +340,6 @@ function ConsentForm({
   onDecide,
   onLabel,
   onMode,
-  workPolicy,
 }: {
   readonly busy: "allow" | "deny" | null;
   /** Its verification changed since the person last read it, and it was read again. */
@@ -369,10 +358,7 @@ function ConsentForm({
   readonly onDecide: (approve: boolean) => void;
   readonly onLabel: (label: string) => void;
   readonly onMode: (mode: ThreadAccessMode) => void;
-  /** The Home's work policy, or null on a personal Home. */
-  readonly workPolicy: EffectiveWorkPolicy | null;
 }) {
-  const work = workHomeMark(workPolicy);
   // Who asked, in the Home's words where it said; never a provider guessed from a domain.
   const identity = connectedAgentIdentity(
     {
@@ -389,14 +375,6 @@ function ConsentForm({
   const disabled = busy !== null;
   return (
     <>
-      {work ? (
-        <p className="agent-consent__work">
-          <span className="work-badge work-badge--quiet">
-            <Icon name="users" />
-            {work.badge}
-          </span>
-        </p>
-      ) : null}
       <div className="agent-consent__identity">
         {heading.mark ? (
           <AgentMark
@@ -436,14 +414,12 @@ function ConsentForm({
             draft={grants.draft}
             home={grants.home}
             onChange={grants.onDraft}
-            workPolicy={workPolicy ?? undefined}
           />
           <ConnectionModeChoices
             disabled={disabled}
             mode={mode}
             onChange={onMode}
             showSettingsNote={grants.draft.scope === "everything"}
-            workPolicy={workPolicy ?? undefined}
           />
         </>
       ) : (

@@ -1,5 +1,3 @@
-import { orgWords } from "./organization-copy.js";
-
 /**
  * The one table of words for what kind of Home a row is, read by the Opensteer website's
  * portal, the desktop and the phone, so a Home is called the same thing everywhere. A Home is
@@ -9,17 +7,15 @@ import { orgWords } from "./organization-copy.js";
  * - `mac`: a person's Mac elsewhere.
  * - `cloud`: an Opensteer Cloud Computer.
  * - `server`: a Linux server of the person's own.
- * - `work`: a Cloud Computer an organization owns; it also carries a badge.
  * - `unknown`: not known yet. It says no kind rather than a wrong one.
  */
-export type HomeKindWord = "this-mac" | "mac" | "cloud" | "server" | "work" | "unknown";
+export type HomeKindWord = "this-mac" | "mac" | "cloud" | "server" | "unknown";
 
 export const homeKindCopy = {
   "this-mac": "This Mac",
   mac: "Mac",
   cloud: "Cloud Computer",
   server: "Server",
-  work: "Cloud Computer",
   unknown: "",
 } as const satisfies Record<HomeKindWord, string>;
 
@@ -32,15 +28,6 @@ export const homesListTitle = "Your Opensteers";
  */
 export const homesChooserTitle = "Choose an Opensteer";
 
-export function homeKindWords(
-  kind: HomeKindWord,
-  input: { readonly organization?: string | null } = {},
-): { readonly label: string; readonly badge: string | null } {
-  return {
-    label: homeKindCopy[kind],
-    badge:
-      kind === "work" && input.organization
-        ? orgWords("org.work.badge", { organization: input.organization })
-        : null,
-  };
+export function homeKindWords(kind: HomeKindWord): { readonly label: string } {
+  return { label: homeKindCopy[kind] };
 }

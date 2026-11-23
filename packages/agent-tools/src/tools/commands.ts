@@ -88,7 +88,6 @@ export const stateAreas = [
   "engines",
   "requests",
   "activity",
-  "policy",
 ] as const;
 
 export type StateArea = (typeof stateAreas)[number];
@@ -96,7 +95,7 @@ export type StateArea = (typeof stateAreas)[number];
 /**
  * What a connection's grant lets it see of `opensteer_state`, the one function its listing, its
  * description and the Home's answer read (rule 5): no chats for any connection (they are other
- * connections), and for a selected grant no settings, engines or organization policy, and devices
+ * connections), and for a selected grant no settings or engines, and devices
  * only with a computer app it was given.
  */
 export function connectionStateAreas(
@@ -107,7 +106,7 @@ export function connectionStateAreas(
   return stateAreas.filter((area) => {
     if (area === "chats") return false;
     if (grant.scope === "everything") return true;
-    if (area === "settings" || area === "engines" || area === "policy") return false;
+    if (area === "settings" || area === "engines") return false;
     if (area === "devices")
       return grant.resources.some((resource) => resource.kind === "computer-app");
     return true;
@@ -123,7 +122,6 @@ const stateAreaWords: Readonly<Record<StateArea, string>> = {
   engines: "engines: AI engine accounts.",
   requests: "requests: what waits for the person.",
   activity: "activity: what agents did.",
-  policy: "policy: the organization's policy.",
 };
 const stateLead =
   "See what is set up in Opensteer now, as the person's apps show it, cut to what you may see.";
@@ -144,7 +142,7 @@ export const opensteer_state = defineAgentTool({
   name: "opensteer_state",
   title: "See what is set up",
   description:
-    "See what is set up in Opensteer now, as the person's apps show it, cut to what you may see. connections: connected agents (the other AI apps the person connected) and what each may use. devices: the person's devices and what each allows. chats: chat accounts and their chats. engines: AI engine accounts. requests: what waits for the person. activity: what agents did. settings and policy. Read here what another agent, a device or a chat can use. An area you cannot see is unavailable.",
+    "See what is set up in Opensteer now, as the person's apps show it, cut to what you may see. connections: connected agents (the other AI apps the person connected) and what each may use. devices: the person's devices and what each allows. chats: chat accounts and their chats. engines: AI engine accounts. requests: what waits for the person. activity: what agents did. settings. Read here what another agent, a device or a chat can use. An area you cannot see is unavailable.",
   input: z.strictObject({ area: z.enum(stateAreas) }),
   output: z.object({ area: z.string(), view: z.record(z.string(), z.unknown()) }),
   access: "read",

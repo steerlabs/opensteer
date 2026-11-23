@@ -26,8 +26,8 @@ export interface AgentDirectoryReader {
 }
 
 /**
- * Pure transition for directory mutations: validates entry schema, uniqueness, cross-entry
- * `embedsVia` integrity, and monotonic revision bump before anything touches storage.
+ * Pure transition for directory mutations: validates entry schema, uniqueness and a monotonic
+ * revision bump before anything touches storage.
  */
 export function applyAgentDirectoryChange(
   current: AgentDirectorySnapshot,
@@ -111,9 +111,10 @@ export function applyAgentDirectoryChange(
   });
   if (!validated.success) {
     const message = validated.error.issues[0]?.message ?? "Invalid agent directory state";
-    const isConflict =
-      message.startsWith("Duplicate ") || message.startsWith("Unknown platform entry");
-    throw new ControlPlaneError(isConflict ? "conflict" : "bad_request", message);
+    throw new ControlPlaneError(
+      message.startsWith("Duplicate ") ? "conflict" : "bad_request",
+      message,
+    );
   }
   if (maximumEnvelopeSize(validated.data) > maximumAgentDirectoryEnvelopeBytes) {
     throw new ControlPlaneError(
@@ -192,8 +193,6 @@ export class AgentDirectoryStore implements AgentDirectoryReader {
           id: entry.id,
           displayName: entry.displayName,
           origins: JSON.stringify(entry.origins),
-          keys: entry.keys ? JSON.stringify(entry.keys) : null,
-          embedsVia: entry.embedsVia ? JSON.stringify(entry.embedsVia) : null,
           createdAt: now,
           updatedAt: now,
         })
@@ -217,8 +216,6 @@ export class AgentDirectoryStore implements AgentDirectoryReader {
         .set({
           displayName: entry.displayName,
           origins: JSON.stringify(entry.origins),
-          keys: entry.keys ? JSON.stringify(entry.keys) : null,
-          embedsVia: entry.embedsVia ? JSON.stringify(entry.embedsVia) : null,
           updatedAt: now,
         })
         .where("id", "=", entry.id)
@@ -251,7 +248,7 @@ export class AgentDirectoryStore implements AgentDirectoryReader {
     }
     const rows = await tx
       .selectFrom("agentDirectoryEntries")
-      .select(["id", "displayName", "origins", "keys", "embedsVia"])
+      .select(["id", "displayName", "origins"])
       .orderBy("id")
       .execute();
     const entries = rows.map((row) =>
@@ -259,8 +256,6 @@ export class AgentDirectoryStore implements AgentDirectoryReader {
         id: row.id,
         displayName: row.displayName,
         origins: row.origins,
-        ...(row.keys ? { keys: row.keys } : {}),
-        ...(row.embedsVia ? { embedsVia: row.embedsVia } : {}),
       }),
     );
     return { revision: state.revision, entries };

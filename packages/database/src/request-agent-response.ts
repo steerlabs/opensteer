@@ -151,7 +151,7 @@ async function connectionRequestsQuery(
               .selectFrom("agentConnections")
               .select("agentConnections.id")
               .whereRef("agentConnections.id", "=", "threads.originConnectionId")
-              .where(connectionState(tx), "!=", "ended"),
+              .where(connectionState(), "!=", "ended"),
           ),
         ]),
       ),

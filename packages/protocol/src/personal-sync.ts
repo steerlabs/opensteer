@@ -20,10 +20,7 @@ import {
   UserIdSchema,
 } from "@opensteer/core";
 import { z } from "zod";
-import {
-  AgentConnectionIdentityAtConsentViewSchema,
-  EffectiveWorkPolicyViewSchema,
-} from "@opensteer/control-plane-protocol";
+import { AgentConnectionIdentityAtConsentViewSchema } from "@opensteer/control-plane-protocol";
 import {
   AuthenticatedUserViewSchema,
   PersonalCapabilitiesViewSchema,
@@ -313,7 +310,6 @@ const counts = z.object({
 });
 export const personalShellSettledTasks = 25;
 export const PersonalShellSnapshotSchema = z.object({
-  effectiveWorkPolicy: EffectiveWorkPolicyViewSchema.optional(),
   deploymentId: DeploymentIdSchema,
   viewerId: UserIdSchema,
   epoch: z.uuid(),

@@ -12,10 +12,7 @@ import { Link, NavLink, Outlet, useLocation, useOutletContext } from "react-rout
 import { selectedDeploymentFrom } from "../../desktop/desktop-deployment-selection.js";
 import { useConnectionPillSlot } from "../connection-shell.js";
 import { useMediaQuery } from "../../ui-utils.js";
-import { workHomeMark } from "@opensteer/client/host";
-import { useWorkPolicy } from "@opensteer/client/react";
 import { ShellContext, useShell } from "../app-shell.js";
-import { workHomePath } from "./work-home-path.js";
 import { Icon } from "../icon.js";
 import { PageTopbar } from "../page-header.js";
 import {
@@ -62,7 +59,6 @@ export function SettingsShell() {
   const openNavigation = useCallback(() => setNavigationOpen(true), []);
   const deployment = selectedDeploymentFrom(shell.deploymentAccess, shell.desktopDeployment);
   const identity = shell.snapshot.identityConfig;
-  const work = workHomeMark(useWorkPolicy(shell.hostClient));
   const kind = deployment?.kind ?? identity?.deployment.kind;
   const view = useMemo<SettingsView | null>(
     () =>
@@ -180,16 +176,6 @@ export function SettingsShell() {
               <SettingsNavigationLink key={id} item={settingsItem(id, view.kind)} />
             ),
           )}
-          {work ? (
-            <NavLink
-              className={({ isActive }) =>
-                `settings-navigation__link${isActive ? " is-active" : ""}`
-              }
-              to={workHomePath}
-            >
-              {work.navLabel}
-            </NavLink>
-          ) : null}
           <div
             aria-labelledby="settings-navigation-agents"
             className="settings-navigation__group"
@@ -212,12 +198,6 @@ export function SettingsShell() {
           >
             <span className="settings-navigation__connection-name">{view.name}</span>
             <span className="settings-navigation__connection-detail">{placeDetail}</span>
-            {work ? (
-              <span className="work-badge work-badge--quiet">
-                <Icon name="users" />
-                {work.badge}
-              </span>
-            ) : null}
           </Link>
         </div>
       </aside>

@@ -74,13 +74,9 @@ export const cloudComputerLifecycleMigration: Migration = {
         computer_id text unique references public.cloud_computers(id),
         checkout_key text unique,
         purge_computer_id text references public.cloud_computers(id),
-        reserved_organization_id text,
-        organization_reservation_request_id uuid,
         needs_rotation boolean not null default false,
         unique (endpoint, bucket, prefix),
         check (computer_id is null or checkout_key is null),
-        check (reserved_organization_id is null or (computer_id is null and checkout_key is null and not needs_rotation)),
-        check (organization_reservation_request_id is null or reserved_organization_id is not null),
         check (purge_computer_id is null or (computer_id is null and checkout_key is null and needs_rotation))
       )
     `.execute(database);

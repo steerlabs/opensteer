@@ -1,8 +1,6 @@
 import { useId, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
-import { workEnrollNotice, workEnrollRefusal, type HostClient } from "@opensteer/client/host";
-import { useWorkPolicy } from "@opensteer/client/react";
 import { Icon } from "../icon.js";
 import { SetupFooter, SetupFrame } from "../first-run/setup-frame.js";
 import { SetupList, SetupRow } from "../first-run/setup-list.js";
@@ -75,33 +73,22 @@ export function SetupGroup({
 export function SetUpThisMac({
   bridge,
   device,
-  hostClient,
 }: {
   readonly bridge: OpensteerDesktopBridge;
   readonly device: ThisDevice;
-  readonly hostClient: HostClient;
 }) {
   if (device.step === "macos") return <MacosStep bridge={bridge} device={device} />;
   if (device.step === "ready") return <ReadyStep bridge={bridge} device={device} />;
-  return <ChooseStep device={device} hostClient={hostClient} />;
+  return <ChooseStep device={device} />;
 }
 
-function ChooseStep({
-  device,
-  hostClient,
-}: {
-  readonly device: ThisDevice;
-  readonly hostClient: HostClient;
-}) {
+function ChooseStep({ device }: { readonly device: ThisDevice }) {
   const [name, setName] = useState(device.choice?.name ?? device.computerName);
   const [access, setAccess] = useState(
     device.choice?.access ?? { browser: true, apps: true, files: true },
   );
   const [notifications, setNotifications] = useState(device.choice?.notifications ?? true);
   const nameId = useId();
-  const policy = useWorkPolicy(hostClient);
-  const joining = workEnrollNotice(policy);
-  const limit = workEnrollRefusal(policy);
   const working = device.stage !== null;
   const trimmed = name.trim();
   const failure =
@@ -117,7 +104,7 @@ function ChooseStep({
           action={
             <button
               className="btn btn--primary"
-              disabled={working || trimmed.length === 0 || policy === undefined || limit !== null}
+              disabled={working || trimmed.length === 0}
               onClick={() => submit({ name: trimmed, access, notifications })}
               type="button"
             >
@@ -130,11 +117,6 @@ function ChooseStep({
       stepKey="device-choose"
       title={`Connect this Mac to ${device.opensteerName}`}
     >
-      {(joining ?? limit) ? (
-        <p className="notice" role="note">
-          {joining ?? limit}
-        </p>
-      ) : null}
       <label className="field" htmlFor={nameId}>
         <span className="field__label">Name</span>
         <input

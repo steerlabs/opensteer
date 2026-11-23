@@ -42,8 +42,6 @@ import {
   type CloudComputerReport,
   type CloudComputerView,
   type ManagedBrowserPoolRegistrationRequest,
-  type WorkAssignmentId,
-  type WorkHomeMarker,
   type ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
 import { BrowserPoolStore } from "./pool-store.js";
@@ -91,11 +89,6 @@ import type {
 type Database = Kysely<ControlPlaneDatabaseSchema>;
 type TransactionDb = Transaction<ControlPlaneDatabaseSchema>;
 type Computer = Selectable<CloudComputerTable>;
-interface OrganizationBilling {
-  applyEvent(tx: TransactionDb, event: StripeEvent): Promise<boolean>;
-  reconcile(onError: (error: unknown) => void): Promise<void>;
-}
-
 type Mutation =
   | "suspend"
   | "resume"
@@ -141,7 +134,6 @@ interface StoreOptions {
   readonly backupKeyVault?: BackupKeyVault;
   readonly purgeBackupStep?: BackupPurgeStep;
   readonly onBillingAttention?: (message: string) => void;
-  readonly organizations?: OrganizationBilling;
   /** Where Stripe's checkout and billing pages send the person back. */
   readonly returnUrl?: URL;
 }
@@ -181,7 +173,6 @@ export class CloudComputerStore {
       .selectFrom("cloudComputers")
       .select(["id", "generation", "accountId"])
       .where("oidcClientId", "=", clientId)
-      .where("workAssignmentId", "is", null)
       .where("state", "=", "active")
       .where("phase", "=", "ready")
       .where("restoreSnapshot", "is not", null)
@@ -203,7 +194,6 @@ export class CloudComputerStore {
       .where("generation", "=", target.generation)
       .where("oidcClientId", "=", clientId)
       .where("accountId", "=", target.accountId)
-      .where("workAssignmentId", "is", null)
       .where("state", "=", "active")
       .where("phase", "=", "ready")
       .where("restoreSnapshot", "is not", null)
@@ -310,7 +300,6 @@ export class CloudComputerStore {
             .select("id")
             .where("computerId", "is", null)
             .where("checkoutKey", "is", null)
-            .where("reservedOrganizationId", "is", null)
             .where("needsRotation", "=", false)
             .orderBy("id")
             .forNoKeyUpdate()
@@ -542,12 +531,6 @@ export class CloudComputerStore {
           .executeTakeFirst();
       }
       if (event.operation === "ignore") return;
-      if (await this.#options.organizations?.applyEvent(tx, event)) return;
-      if (
-        (event.operation === "completed" || event.operation === "expired") &&
-        event.checkout.metadata.organization_id
-      )
-        throw new ControlPlaneError("unavailable", "Organization billing is unavailable");
       if (event.operation === "billing") {
         await this.#refreshSubscription(tx, event.subscriptionId);
         return;
@@ -711,7 +694,6 @@ export class CloudComputerStore {
           .select("id")
           .where("computerId", "is", null)
           .where("checkoutKey", "is", null)
-          .where("reservedOrganizationId", "is", null)
           .where("needsRotation", "=", false)
           .orderBy("id")
           .executeTakeFirst());
@@ -738,7 +720,7 @@ export class CloudComputerStore {
         .where("needsRotation", "=", false)
         .where((eb) =>
           eb.or([
-            eb.and([eb("checkoutKey", "is", null), eb("reservedOrganizationId", "is", null)]),
+            eb("checkoutKey", "is", null),
             eb("checkoutKey", "=", checkoutKey(accountId, requestId)),
           ]),
         )
@@ -768,50 +750,11 @@ export class CloudComputerStore {
     return false;
   }
 
-  async createWorkComputer(tx: TransactionDb, id: CloudComputerId, assignmentId: WorkAssignmentId) {
-    this.#vault();
-    // Legacy personal billing columns stay populated for additive rollout. Work billing never reads them.
-    const reference = `work:${assignmentId}`;
-    await this.#createComputer(tx, {
-      id,
-      accountId: null,
-      workAssignmentId: assignmentId,
-      billing: "active",
-      stripeCheckoutId: reference,
-      stripeSubscriptionId: reference,
-      stripeCustomerId: reference,
-      stripePriceId: reference,
-      billingCurrency: "",
-    });
-    const assignment = await tx
-      .selectFrom("workAssignments")
-      .select("organizationId")
-      .where("id", "=", assignmentId)
-      .executeTakeFirstOrThrow();
-    const free = await freeBackupTargets(tx)
-      .where("organizationReservationRequestId", "is", null)
-      .where("reservedOrganizationId", "=", assignment.organizationId)
-      .select("id")
-      .orderBy("id")
-      .limit(1)
-      .forNoKeyUpdate()
-      .skipLocked()
-      .executeTakeFirst();
-    if (!free)
-      throw new ControlPlaneError("unavailable", "A Cloud Computer is not available right now");
-    await tx
-      .updateTable("cloudComputerBackupTargets")
-      .where("id", "=", free.id)
-      .set({ computerId: id, reservedOrganizationId: null })
-      .executeTakeFirst();
-  }
-
   async #createComputer(
     tx: TransactionDb,
     paid: {
       id: CloudComputerId;
-      accountId: ControlPlaneAccountId | null;
-      workAssignmentId?: WorkAssignmentId;
+      accountId: ControlPlaneAccountId;
       billing: BillingStatus;
       renewsAt?: Date | null;
       stripeCheckoutId: string;
@@ -834,7 +777,6 @@ export class CloudComputerStore {
         stripeSubscriptionId: paid.stripeSubscriptionId,
         stripePriceId: paid.stripePriceId,
         billingCurrency: paid.billingCurrency,
-        workAssignmentId: paid.workAssignmentId ?? null,
         backupKeyProject: config.backupKeyProject ?? null,
         generation: 1,
         state: paid.billing === "active" ? "active" : "suspended",
@@ -880,15 +822,14 @@ export class CloudComputerStore {
   }
 
   /**
-   * Brings a personal Cloud Computer's billing up to date with Stripe. A row whose deletion is
-   * requested has its subscription cancelled whatever else is open: a checkout keeps its own path.
+   * Brings a Cloud Computer's billing up to date with Stripe. A row whose deletion is requested
+   * has its subscription cancelled whatever else is open: a checkout keeps its own path.
    */
   async #refreshSubscription(tx: TransactionDb, id: string) {
     const row = await tx
       .selectFrom("cloudComputers")
       .selectAll()
       .where("stripeSubscriptionId", "=", id)
-      .where("workAssignmentId", "is", null)
       .forNoKeyUpdate()
       .executeTakeFirst();
     if (!row || row.tombstonedAt) return;
@@ -986,7 +927,6 @@ export class CloudComputerStore {
       .selectFrom("cloudComputers")
       .select("stripeSubscriptionId")
       .where("tombstonedAt", "is", null)
-      .where("workAssignmentId", "is", null)
       .where("state", "!=", "deleted")
       .where("deletionRequestedAt", "is", null)
       .execute();
@@ -996,18 +936,16 @@ export class CloudComputerStore {
           .transaction()
           .execute((tx) => this.#refreshSubscription(tx, row.stripeSubscriptionId)),
       );
-    // Deleted, not yet settled with Stripe. A work Home's billing is its organization's.
+    // Deleted, not yet settled with Stripe.
     const deleted = await this.#db
       .selectFrom("cloudComputers")
       .select("id")
       .where("deletionRequestedAt", "is not", null)
       .where("billingSettledAt", "is", null)
-      .where("workAssignmentId", "is", null)
       .orderBy("id")
       .execute();
     for (const row of deleted)
       await run(() => this.#settleDeletion(CloudComputerIdSchema.parse(row.id), onError));
-    await run(async () => this.#options.organizations?.reconcile(onError));
   }
 
   /**
@@ -1127,7 +1065,6 @@ export class CloudComputerStore {
           stripeSubscriptionId: subscription,
           accountId: metadata.account_id,
           requestId: metadata.request_id,
-          organizationId: metadata.organization_id,
         };
       }),
     };
@@ -1288,8 +1225,6 @@ export class CloudComputerStore {
 
   async bootComplete(id: CloudComputerId, input: CloudComputerBootCompleteRequest): Promise<void> {
     await this.#db.transaction().execute(async (tx) => {
-      const assignment = await lockWorkComputerAssignment(tx, id);
-      if (assignment && assignment.state !== "active") throw invalidBoot();
       const row = await tx
         .selectFrom("cloudComputers")
         .selectAll()
@@ -1643,23 +1578,18 @@ export class CloudComputerStore {
       // Locks in the declared order (owner, then OAuth client, then the Cloud
       // Computer), as Account deletion takes them: the client written below is
       // the owner's, and taking the computer first would wait on them reversed.
-      const owners = await tx
+      const locked = await tx
         .selectFrom("cloudComputers")
-        .leftJoin("workAssignments", "workAssignments.id", "cloudComputers.workAssignmentId")
-        .select(["cloudComputers.accountId", "workAssignments.assigneeAccountId"])
-        .where("cloudComputers.id", "=", id)
+        .select("accountId")
+        .where("id", "=", id)
         .executeTakeFirst();
-      const locked = [owners?.accountId, owners?.assigneeAccountId]
-        .filter((owner): owner is NonNullable<typeof owner> => !!owner)
-        .sort();
-      for (const owner of new Set(locked))
+      if (locked?.accountId)
         await tx
           .selectFrom("users")
           .select("id")
-          .where("id", "=", owner)
+          .where("id", "=", locked.accountId)
           .forKeyShare()
           .executeTakeFirst();
-      await lockWorkComputerAssignment(tx, id);
       await tx
         .selectFrom("oauthClients")
         .select("id")
@@ -1673,8 +1603,8 @@ export class CloudComputerStore {
         .executeTakeFirst();
       if (!validBoot(snapshot, id, input, this.#now()) || !snapshot.setupCodeDigest)
         throw invalidBoot();
-      const owner = await computerOwner(tx, snapshot, true);
-      if (!owner || !locked.includes(owner)) throw invalidBoot();
+      const owner = snapshot.accountId;
+      if (!owner || owner !== locked?.accountId) throw invalidBoot();
       const { managedHome, credentials } = await this.#prepareManagedHome(tx, snapshot, owner);
       const row = await tx
         .selectFrom("cloudComputers")
@@ -1699,7 +1629,6 @@ export class CloudComputerStore {
       const pooled = row.browserMode === "pool";
       const endpoint = pooled ? undefined : await this.#assignEgress(tx, id);
       const egress = endpoint ? this.#egressCredentials(endpoint) : undefined;
-      const marker = await workMarker(tx, row.workAssignmentId);
       const { cipher } = this.#options;
       const backup = await tx
         .selectFrom("cloudComputerBackupTargets")
@@ -1733,7 +1662,6 @@ export class CloudComputerStore {
       const { endpoint: backupEndpoint, bucket, prefix } = backup;
       return {
         managedHome,
-        ...(marker ? { work: marker } : {}),
         ipv6Enabled: row.ipv6Enabled,
         ...(row.restoreSnapshot ? { restoreSnapshot: row.restoreSnapshot } : {}),
         hostname: row.hostname,
@@ -1825,7 +1753,7 @@ export class CloudComputerStore {
         row.state !== "active" ||
         row.deletionRequestedAt ||
         !row.bootCompletedAt ||
-        !(await computerOwner(tx, row, true))
+        !row.accountId
       )
         throw new ControlPlaneError("conflict", "The Cloud Computer must be active and booted");
       const endpoint = await this.#assignEgress(tx, id);
@@ -1867,7 +1795,7 @@ export class CloudComputerStore {
       row.deletionRequestedAt ||
       row.state !== "active" ||
       row.oidcClientId !== credentials.data.clientId ||
-      !(await computerOwner(tx, row, true))
+      !row.accountId
     )
       throw unauthorized();
     return row;
@@ -2018,20 +1946,7 @@ export class CloudComputerStore {
         .where("tombstonedAt", "is", null)
         .where("deletionRequestedAt", "is", null)
         .where("deploymentId", "is not", null)
-        .where((eb) =>
-          eb.or([
-            eb("accountId", "is not", null),
-            eb(
-              "workAssignmentId",
-              "in",
-              eb
-                .selectFrom("workAssignments")
-                .select("workAssignments.id")
-                .where("state", "=", "active")
-                .where("assigneeAccountId", "is not", null),
-            ),
-          ]),
-        )
+        .where("accountId", "is not", null)
         .where((eb) => eb.or([eb("claimNextAt", "is", null), eb("claimNextAt", "<=", now)]))
         .orderBy("readinessStartedAt")
         .limit(1)
@@ -2039,7 +1954,7 @@ export class CloudComputerStore {
         .skipLocked()
         .executeTakeFirst();
       if (!row) return undefined;
-      const owner = await computerOwner(tx, row, true);
+      const owner = row.accountId;
       if (!owner) return undefined;
       await tx
         .updateTable("cloudComputers")
@@ -2071,14 +1986,13 @@ export class CloudComputerStore {
       .where((eb) => claimFence(eb, job))
       .where("state", "=", "active")
       .executeTakeFirst();
-    if (!computer || (await computerOwner(this.#db, computer, true)) !== job.accountId)
+    if (!computer || computer.accountId !== job.accountId)
       throw new CloudComputerClaimSupersededError();
     const owner = await this.#db
       .selectFrom("users")
       .select(["displayName", "email", "emailVerified"])
       .where("id", "=", job.accountId)
       .executeTakeFirst();
-    const work = await workMarker(this.#db, computer.workAssignmentId);
     const setupCode = await this.setupCodeForReadyHome(job.id, job.generation);
     if (!computer.sealedHostCredential || !owner || !setupCode)
       throw new CloudComputerClaimSupersededError();
@@ -2091,7 +2005,6 @@ export class CloudComputerStore {
       ),
       linkGeneration: managedHomeLinkGeneration(job),
       owner,
-      ...(work ? { work } : {}),
     };
   }
 
@@ -2129,7 +2042,6 @@ export class CloudComputerStore {
         .where("id", "=", job.accountId)
         .forKeyShare()
         .executeTakeFirst();
-      await lockWorkComputerAssignment(tx, job.id);
       const row = await tx
         .selectFrom("cloudComputers")
         .selectAll()
@@ -2144,7 +2056,7 @@ export class CloudComputerStore {
         row.deletionRequestedAt !== null ||
         row.hostKeyFingerprint !== job.hostKeyFingerprint ||
         row.deploymentId !== job.deploymentId ||
-        (await computerOwner(tx, row, true)) !== job.accountId ||
+        row.accountId !== job.accountId ||
         row.tombstonedAt !== null ||
         !row.sealedHostCredential
       )
@@ -2271,30 +2183,11 @@ export class CloudComputerStore {
     });
   }
 
-  async list(accountId?: ControlPlaneAccountId): Promise<CloudComputerView[]> {
-    let query = this.#db.selectFrom("cloudComputers").selectAll().orderBy("createdAt", "desc");
-    if (accountId) query = query.where("accountId", "=", accountId);
-    const rows = await query.execute();
-    return this.#views(rows);
-  }
-
   async listForAccount(accountId: ControlPlaneAccountId): Promise<CloudComputerView[]> {
     const rows = await this.#db
       .selectFrom("cloudComputers")
       .selectAll()
-      .where((eb) =>
-        eb.or([
-          eb("accountId", "=", accountId),
-          eb(
-            "workAssignmentId",
-            "in",
-            eb
-              .selectFrom("workAssignments")
-              .select("workAssignments.id")
-              .where("assigneeAccountId", "=", accountId),
-          ),
-        ]),
-      )
+      .where("accountId", "=", accountId)
       .orderBy("createdAt", "desc")
       .execute();
     return this.#views(rows);
@@ -2302,20 +2195,7 @@ export class CloudComputerStore {
 
   async show(id: CloudComputerId, accountId?: ControlPlaneAccountId): Promise<CloudComputerView> {
     let query = this.#db.selectFrom("cloudComputers").selectAll().where("id", "=", id);
-    if (accountId)
-      query = query.where((eb) =>
-        eb.or([
-          eb("accountId", "=", accountId),
-          eb(
-            "workAssignmentId",
-            "in",
-            eb
-              .selectFrom("workAssignments")
-              .select("workAssignments.id")
-              .where("assigneeAccountId", "=", accountId),
-          ),
-        ]),
-      );
+    if (accountId) query = query.where("accountId", "=", accountId);
     const row = await query.executeTakeFirst();
     if (!row) throw missing();
     return (await this.#views([row]))[0]!;
@@ -2343,8 +2223,7 @@ export class CloudComputerStore {
   async #operatorView(row: Computer) {
     return {
       id: row.id,
-      accountId: await computerOwner(this.#db, row, false),
-      workAssignmentId: row.workAssignmentId,
+      accountId: row.accountId,
       state: row.state,
       phase: row.phase,
       generation: row.generation,
@@ -2398,7 +2277,7 @@ export class CloudComputerStore {
         row.bootstrapReceiptAt ||
         row.deletionRequestedAt ||
         row.tombstonedAt ||
-        !(await computerOwner(tx, row, true))
+        !row.accountId
       )
         throw new ControlPlaneError("conflict", "The Cloud Computer has no eligible failed claim");
       const now = this.#now();
@@ -2431,11 +2310,7 @@ export class CloudComputerStore {
     const now = this.#now();
     return Promise.all(
       rows.map(async (row) => {
-        const status = view(row, assigned.get(row.id), this.#options.config, now);
-        const work = row.workAssignmentId
-          ? await workMarker(this.#db, row.workAssignmentId)
-          : undefined;
-        return work ? { ...status, work } : status;
+        return view(row, assigned.get(row.id), this.#options.config, now);
       }),
     );
   }
@@ -2461,29 +2336,11 @@ export class CloudComputerStore {
             .forNoKeyUpdate()
             .executeTakeFirst();
       }
-      const assignment = await lockWorkComputerAssignment(tx, id);
       const forgotten =
         action === "reissue" || action === "replace" ? await lockHomeReferences(tx, id) : undefined;
       const row = await lockedComputer(tx, id);
       if (forgotten && !sameHomeReferences(forgotten, row))
         throw new ControlPlaneError("conflict", "This Cloud Computer changed; try again");
-      if (
-        row.workAssignmentId &&
-        !(
-          action === "reissue" &&
-          !accountId &&
-          reason === undefined &&
-          assignment?.state === "active" &&
-          assignment.assigneeAccountId
-        )
-      ) {
-        if (accountId && (await computerOwner(tx, row, false)) !== accountId) throw missing();
-        throw new ControlPlaneError(
-          "forbidden",
-          "This Cloud Computer is managed by its organization",
-          { reason: "cloud-computer-work-managed" },
-        );
-      }
       if (accountId && row.accountId !== accountId) throw missing();
       if (row.state === "deleted") {
         if (action === "delete") return undefined;
@@ -2603,22 +2460,13 @@ export class CloudComputerStore {
             .where("computerId", "=", id)
             .set({ computerId: null, needsRotation: true })
             .executeTakeFirst();
-          let available = freeBackupTargets(tx)
-            .select("id")
-            .where("reservedOrganizationId", "is", null);
+          let available = freeBackupTargets(tx).select("id");
           if (staged) available = available.where("id", "=", staged.targetId);
           const candidate = await available.orderBy("id").limit(1).executeTakeFirst();
           const locked = candidate
             ? await tx
                 .selectFrom("cloudComputerBackupTargets")
-                .select([
-                  "id",
-                  "computerId",
-                  "checkoutKey",
-                  "reservedOrganizationId",
-                  "needsRotation",
-                  "purgeComputerId",
-                ])
+                .select(["id", "computerId", "checkoutKey", "needsRotation", "purgeComputerId"])
                 .where((eb) => eb.or([eb("computerId", "=", id), eb("id", "=", candidate.id)]))
                 .orderBy("id")
                 .forNoKeyUpdate()
@@ -2631,7 +2479,6 @@ export class CloudComputerStore {
               target.id === candidate?.id &&
               !target.computerId &&
               !target.checkoutKey &&
-              !target.reservedOrganizationId &&
               !target.needsRotation &&
               !target.purgeComputerId,
           );
@@ -2900,7 +2747,6 @@ export class CloudComputerStore {
         .where("id", "=", id)
         .where("computerId", "is", null)
         .where("checkoutKey", "is", null)
-        .where("reservedOrganizationId", "is", null)
         .where("purgeComputerId", "is", null)
         .where("needsRotation", "=", true)
         .where("principalFingerprint", "!=", fingerprint)
@@ -2955,8 +2801,6 @@ export class CloudComputerStore {
         "target.needsRotation",
         "target.checkoutKey",
         "target.purgeComputerId",
-        "target.reservedOrganizationId",
-        "target.organizationReservationRequestId",
         "attempt.accountId",
         "attempt.requestId",
         "attempt.stripeSessionId",
@@ -2982,7 +2826,6 @@ export class CloudComputerStore {
       .where("id", "=", id)
       .where("computerId", "is", null)
       .where("checkoutKey", "is", null)
-      .where("reservedOrganizationId", "is", null)
       .where("purgeComputerId", "is", null)
       .executeTakeFirst();
     if (result.numDeletedRows !== 1n)
@@ -3217,16 +3060,6 @@ export function managedHomeLinkGeneration(job: Pick<CloudComputerClaimJob, "id" 
     .digest("base64url");
 }
 
-/** The Account's listing and OIDC client for a Home that no longer exists. */
-async function lockWorkComputerAssignment(tx: TransactionDb, id: CloudComputerId) {
-  return tx
-    .selectFrom("workAssignments")
-    .select(["state", "assigneeAccountId"])
-    .where("cloudComputerId", "=", id)
-    .forShare()
-    .executeTakeFirst();
-}
-
 async function lockHomeReferences(tx: TransactionDb, id: CloudComputerId) {
   const row = await tx
     .selectFrom("cloudComputers")
@@ -3261,8 +3094,9 @@ function sameHomeReferences(
   return before.deploymentId === after.deploymentId && before.oidcClientId === after.oidcClientId;
 }
 
+/** The Account's listing and OIDC client for a Home that no longer exists. */
 async function forgetHome(tx: TransactionDb, row: Computer, client: boolean) {
-  const owner = await computerOwner(tx, row, false);
+  const owner = row.accountId;
   if (row.deploymentId && owner)
     await tx
       .deleteFrom("deployments")
@@ -3278,35 +3112,6 @@ async function forgetHome(tx: TransactionDb, row: Computer, client: boolean) {
       .executeTakeFirst();
     await tx.deleteFrom("oauthClients").where("clientId", "=", row.oidcClientId).executeTakeFirst();
   }
-}
-
-async function computerOwner(db: Database, row: Computer, active: boolean) {
-  if (!row.workAssignmentId) return row.accountId;
-  const assignment = await db
-    .selectFrom("workAssignments")
-    .select(["state", "assigneeAccountId"])
-    .where("id", "=", row.workAssignmentId)
-    .executeTakeFirst();
-  return assignment && (!active || assignment.state === "active")
-    ? assignment.assigneeAccountId
-    : null;
-}
-
-async function workMarker(
-  db: Database,
-  id: WorkAssignmentId | null,
-): Promise<WorkHomeMarker | undefined> {
-  if (!id) return;
-  return db
-    .selectFrom("workAssignments")
-    .innerJoin("organizations", "organizations.id", "workAssignments.organizationId")
-    .where("workAssignments.id", "=", id)
-    .select([
-      "organizations.id as organizationId",
-      "organizations.name as organizationName",
-      "workAssignments.id as assignmentId",
-    ])
-    .executeTakeFirst();
 }
 
 function newSecret() {
@@ -3481,13 +3286,6 @@ function view(
         status: "suspended",
         reason: cloudWords("cloud.reason.owner-suspended"),
         reasonCode: "cloud-computer-owner-suspended",
-      };
-    if (row.workAssignmentId && row.billingStatus === "active")
-      return {
-        ...base,
-        status: "suspended",
-        reason: "Your organization suspended this Cloud Computer.",
-        reasonCode: "cloud-computer-work-managed",
       };
     return {
       ...base,

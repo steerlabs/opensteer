@@ -167,7 +167,7 @@ const macKind = homeKindWords("mac").label;
 
 /**
  * What a row in the list of Homes calls its kind: "Cloud Computer" when the Account says it
- * is one (a work Home too), whatever its record alone would make of it; its record's kind
+ * is one, whatever its record alone would make of it; its record's kind
  * otherwise. The cloud symbol goes with the first.
  */
 export function listedKind(
@@ -180,8 +180,7 @@ export function listedKind(
 }
 
 /**
- * A Home on a person's own Mac, never a server, Cloud Computer or work Home reached at its
- * own address.
+ * A Home on a person's own Mac, never a server or Cloud Computer reached at its own address.
  */
 export function isMacHomeRow(row: Pick<DeploymentRow, "kindLabel">): boolean {
   return row.kindLabel === macKind;

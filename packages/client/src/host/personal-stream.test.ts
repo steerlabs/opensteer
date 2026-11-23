@@ -7,7 +7,6 @@ import {
 import type { PersonalResourceRevisions } from "@opensteer/protocol/resources";
 import type { TranscriptItem, TranscriptOrderCursor } from "@opensteer/protocol/transcript";
 import { MockPersonalHost, MockPersonalSocket } from "../mock/mock-personal-host.js";
-import { mockWorkPolicy } from "../mock/mock-work-home.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { HttpHostClient } from "./host-session-client.js";
 import type { ClientLifecycle } from "./lifecycle.js";
@@ -1132,51 +1131,6 @@ test("bounds explicitly loaded bodies", () => {
   for (let index = 0; index < 10; index++) bodies.put(String(index), big);
   expect(bodies.get("0", "1")).toBeUndefined();
   expect(bodies.get("9", "1")).toBe(big);
-});
-
-test("installs and refreshes work policy from the synced shell without a shell RPC", async () => {
-  const first = mockWorkPolicy("open");
-  const mock = new MockHostClient({ latencyMs: 0, workPolicy: first });
-  const host = new MockPersonalHost(mock);
-  const shellReads = vi.fn();
-  const client = new HttpHostClient({
-    baseUrl: "http://scoped-host",
-    capabilities: [],
-    fetch: (input, init) => {
-      if (new URL(String(input)).pathname.endsWith("/personal.shell.get")) shellReads();
-      return host.fetch(input, init);
-    },
-    webSocketFactory: host.connect,
-  });
-  try {
-    expect(client.getSnapshot().effectiveWorkPolicy).toBeUndefined();
-    await client.load();
-    expect(client.getSnapshot().effectiveWorkPolicy).toEqual(first);
-    const next = { ...mockWorkPolicy("strict"), appliedRevision: first.appliedRevision + 1 };
-    const socket = [...host.sockets][0]!;
-    const throughSequence = String(mock.getSnapshot().revision + 1);
-    const attach = socket.sent
-      .map((raw) => JSON.parse(raw) as ScopedClientMessage)
-      .findLast(
-        (frame) =>
-          frame.type === "client.attach" ||
-          (frame.type === "client.subscribe" && frame.scope.kind === "shell"),
-      );
-    if (!attach || !("generation" in attach)) throw new Error("Expected the shell subscription");
-    socket.deliver({
-      type: "host.snapshot",
-      subscriptionId: "shell",
-      scope: shellScope,
-      generation: attach.generation,
-      throughSequence,
-      snapshot: { ...mock.scopedShell(), effectiveWorkPolicy: next },
-    });
-    expect(client.getSnapshot().effectiveWorkPolicy).toEqual(next);
-    expect(shellReads).not.toHaveBeenCalled();
-  } finally {
-    client.dispose();
-    host.dispose();
-  }
 });
 
 test("carries a scoped task update into held rows and drops old task pages after a cursor reset", async () => {

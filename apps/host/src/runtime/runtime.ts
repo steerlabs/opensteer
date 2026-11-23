@@ -180,9 +180,6 @@ import type { FastifyInstance } from "fastify";
 import { sign, verify } from "node:crypto";
 import { resolve } from "node:path";
 
-import { AccountDirectoryClient } from "../access/account-directory-client.js";
-import { WorkHomeService } from "../organizations/work-home.js";
-import { WorkHomeStore } from "@opensteer/database";
 import { HostAuthorityPublisher } from "../access/host-authority-publisher.js";
 import { HostedOAuthBrokerClient } from "../access/hosted-oauth-broker-client.js";
 import { RemotePersonalAccountGrantVerifier } from "../access/personal-account-grant-verifier.js";
@@ -566,20 +563,6 @@ export async function createHostRuntime(
       hostInstanceId: hostInstance.hostInstanceId,
       deploymentShape: config.deploymentShape,
     });
-    const claimedWork = config.managedHome ? new WorkHomeStore(database) : undefined;
-    const storedMarker = await claimedWork?.claimedMarker();
-    const configuredMarker = config.managedHome?.work;
-    if (
-      storedMarker &&
-      configuredMarker &&
-      (storedMarker.assignmentId !== configuredMarker.assignmentId ||
-        storedMarker.organizationId !== configuredMarker.organizationId)
-    )
-      throw new Error("This database belongs to a different work assignment");
-    const workMarker = storedMarker ?? configuredMarker;
-    const workStore = workMarker ? claimedWork : undefined;
-    if (workStore && workMarker) await workStore.initialize(workMarker, deployment.id);
-    let workHome: WorkHomeService | undefined;
     const personalConfig = config.personal!;
     let initializedPersonal: Awaited<ReturnType<typeof initializePersonalState>> = null;
     let initializingPersonal:
@@ -913,10 +896,8 @@ export async function createHostRuntime(
             managed: {
               cloudComputerId: config.managedHome.cloudComputerId,
               generation: config.managedHome.generation,
-              ...(workMarker ? { work: workMarker } : {}),
             },
             verifier: accountGrantVerifier,
-            onClaimed: () => workHome?.wake(),
           })
         : undefined;
     let reportOwnerProfileError: (error: unknown) => void = () => {};
@@ -3314,7 +3295,6 @@ export async function createHostRuntime(
         commands: new CommandTools({
           database,
           reads: () => personReadHandlers,
-          policy: async () => (claimedWork ? claimedWork.applied() : null),
           registry: agentCommandRegistry(administration.service),
           requests: () => commandRequestsForTools,
           sessions: agentSessions,
@@ -3504,37 +3484,6 @@ export async function createHostRuntime(
     });
     const driveConnectionCleanups = () =>
       connectionEffects.driveCleanups().finally(() => connectionMaintenance?.wake());
-    if (config.managedHome && workMarker && workStore) {
-      const issuer = config.managedHome.accountOrigin;
-      workHome = new WorkHomeService({
-        issuer,
-        origin: config.canonicalOrigin.origin,
-        deploymentId: deployment.id,
-        assignmentId: workMarker.assignmentId,
-        key: keys.privateKey,
-        store: workStore,
-        ...(options.accountDirectoryFetch ? { jwksFetch: options.accountDirectoryFetch } : {}),
-        onApplied: driveConnectionCleanups,
-        onError: (error) => reportMutationFailure(error),
-        account: async () => {
-          const link = await database
-            .selectFrom("personalRemoteAccountLink")
-            .select("hostCredential")
-            .where("singletonKey", "=", "opensteer-account")
-            .where("state", "=", "active")
-            .where("issuer", "=", issuer.origin)
-            .executeTakeFirst();
-          if (!link) return null;
-          return new AccountDirectoryClient({
-            authorityEnvelope: discoveryEnvelope,
-            controlApiOrigin: issuer,
-            deployment,
-            hostCredential: link.hostCredential,
-            ...(options.accountDirectoryFetch ? { fetch: options.accountDirectoryFetch } : {}),
-          });
-        },
-      });
-    }
     const commandRequestStore = new CommandRequestStore(store.database, store.requests);
     const commandRequests = (commandRequestsForTools = new CommandRequestService({
       store: commandRequestStore,
@@ -3623,7 +3572,6 @@ export async function createHostRuntime(
           : {}),
         ...(personalAccount ? { personalAccountLink: { service: personalAccount } } : {}),
         ...(managedHomeClaim ? { managedHomeClaim } : {}),
-        ...(workHome && workStore ? { workHome: { service: workHome } } : {}),
         ownerProfile,
         realtime,
         runnerAuthenticator,
@@ -3660,20 +3608,10 @@ export async function createHostRuntime(
       app.addHook("onClose", async () => directory.close());
       await directory.start();
     }
-    if (workHome) {
-      workHome.start();
-      app.addHook("onClose", async () => workHome?.close());
-    }
-    if (workHome || directory) {
-      const policyRefreshTimer = setInterval(() => {
-        if (workHome) {
-          workHome.wake();
-          void workHome.flush(AbortSignal.timeout(10_000)).catch(reportMutationFailure);
-        }
-        void directory?.refresh();
-      }, 30_000);
-      policyRefreshTimer.unref();
-      app.addHook("onClose", async () => clearInterval(policyRefreshTimer));
+    if (directory) {
+      const directoryRefreshTimer = setInterval(() => void directory.refresh(), 30_000);
+      directoryRefreshTimer.unref();
+      app.addHook("onClose", async () => clearInterval(directoryRefreshTimer));
     }
     let recoveredAgentSessions = false;
     connectionMaintenance = new DeadlineDrain({
@@ -3684,7 +3622,6 @@ export async function createHostRuntime(
           recoveredAgentSessions = true;
         }
         await connectionEffects.driveCleanups();
-        await connectionStore.pruneEmbedderAssertionClaims();
         return connectionStore.nextMaintenance(new Date(Date.now() + 30_000));
       },
     });

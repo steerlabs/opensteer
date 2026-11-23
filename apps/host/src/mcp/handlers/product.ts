@@ -1129,8 +1129,9 @@ export class ProductToolHandlers {
     }
     const scope = callerListScope(caller);
     const connectionAuthority = connectionAuthorityForLineage(caller);
+    const reader = callerReader(caller);
     if (input.taskId) {
-      const target = await this.#store.readTask(callerReader(caller), input.taskId, caller.userId, {
+      const target = await this.#store.readTask(reader, input.taskId, caller.userId, {
         ...lineageOption(caller),
         nativeOnly: caller.kind === "connection",
       });
@@ -1138,6 +1139,7 @@ export class ProductToolHandlers {
     }
     const page = await this.#store.requests.agentPage({
       ownerId: caller.userId,
+      reader,
       scope,
       scopeId: caller.kind === "connection" ? caller.key : callerThread(caller).id,
       ...(connectionAuthority ? { connectionAuthority } : {}),

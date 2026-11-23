@@ -102,7 +102,7 @@ const iphoneAppTraits: Readonly<Record<IphoneAppId, IphoneAppTraits>> = {
     notAsked: null,
     read: {
       phrase:
-        "search your contacts' names, organizations, email addresses, phone numbers and birthdays",
+        "search your contacts' names, companies, email addresses, phone numbers and birthdays",
       summary: "Find people. Agents can't change contacts.",
     },
     readWrite: null,

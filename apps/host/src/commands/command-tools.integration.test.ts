@@ -272,7 +272,6 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
       "engines",
       "requests",
       "activity",
-      "policy",
     ]) {
       const read = await call(full, "opensteer_state", { area });
       expect(read.isError, `${area}: ${JSON.stringify(read.content)}`).not.toBe(true);

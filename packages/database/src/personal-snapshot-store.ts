@@ -1,5 +1,3 @@
-import { isWorkHomeDatabase } from "./work-home-context.js";
-import { WorkHomeStore } from "./work-home.js";
 import { AgentConnectionIdentityAtConsentSchema } from "@opensteer/control-plane-protocol";
 import type { ThreadId, UserId } from "@opensteer/core";
 import type { DurablePersonalResourceKind } from "@opensteer/protocol/resources";
@@ -81,10 +79,8 @@ export async function buildPersonalShellSnapshot(
     ...(selectedThreadId ? { selectedThreadId } : {}),
   });
   const attention = await readPendingAttention(tx);
-  const workPolicy = isWorkHomeDatabase(tx) ? await new WorkHomeStore(tx).applied() : undefined;
   const { pendingRequestCount, pendingRequestsRevision, needsYouCount, unreadTaskCount } = state;
   return PersonalShellSnapshotSchema.parse({
-    ...(workPolicy ? { effectiveWorkPolicy: workPolicy } : {}),
     deploymentId: state.deploymentId,
     viewerId,
     epoch: state.epoch,
