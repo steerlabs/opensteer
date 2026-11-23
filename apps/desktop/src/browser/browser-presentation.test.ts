@@ -632,7 +632,11 @@ it("promotes a pending page when placement arrives after a paint timeout with no
   f.native.waitForPaint = vi.fn(() => paint.promise);
   let deliverPlacement!: (placement: NativePlacement) => void;
   f.native.mount = vi.fn((_window, _stage, placed) => {
-    deliverPlacement = placed;
+    deliverPlacement = (placement) => {
+      // As the launcher does: the view joins the window at placement, then it reports.
+      f.window.contentView.addChildView(f.native.view);
+      placed(placement);
+    };
   });
   f.socket("admitted");
   await f.manager.present(f.sender, f.request);
