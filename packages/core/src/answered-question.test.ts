@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { answeredQuestion, answeredQuestionWithin } from "./answered-question.js";
+import {
+  answeredQuestion,
+  answeredQuestionWithin,
+  formatPersonQuestionRecord,
+  personQuestionRecord,
+  personQuestionRecordWithin,
+} from "./answered-question.js";
 import { createId } from "./ids.js";
 import { RequestSchema, type Request } from "./requests.js";
 import { utf8ByteLength } from "./tool-output.js";
@@ -146,5 +152,118 @@ describe("answered questions", () => {
     ]);
     expect(long.detail.startsWith(cut.detail!)).toBe(true);
     expect(cut.detail!.length).toBeGreaterThan(1_000);
+  });
+
+  it("extracts, bounds and formats pending and settled non-secret person.question records", () => {
+    const pending = personQuestionRecord(
+      question({ status: "pending", resolvedAt: null, resolvedBy: null, response: null }),
+    );
+    expect(pending).toEqual({
+      outcome: "pending",
+      detail: draft,
+      questions: [
+        {
+          prompt: "Send it from your main account?",
+          options: [{ label: "Yes, send it" }, { label: "No" }],
+        },
+        {
+          prompt: "Where should I log it?",
+          options: [{ label: "CRM" }, { label: "Notes" }],
+          multiSelect: true,
+        },
+      ],
+    });
+    expect(formatPersonQuestionRecord(pending!)).toContain(
+      "Question: Send it from your main account?\nOptions: Yes, send it | No",
+    );
+    expect(formatPersonQuestionRecord(pending!)).toContain("Status: pending");
+
+    const withDescriptions = personQuestionRecord(
+      question({
+        status: "declined",
+        presentation: {
+          kind: "form",
+          title: "Card payment",
+          detail: "Statement due Monday.",
+          fields: [
+            {
+              id: "action",
+              prompt: "How should I handle this?",
+              choices: [
+                {
+                  label: "Leave it alone",
+                  value: "leave",
+                  description: "Assume AutoPay covers it unless a failure arrives",
+                },
+                { label: "Check portal", value: "check" },
+              ],
+              custom: true,
+              multiSelect: false,
+              secret: false,
+            },
+          ],
+        },
+        response: { kind: "external", value: { decision: "declined" } },
+      }),
+    )!;
+    expect(withDescriptions).toEqual({
+      outcome: "dismissed",
+      detail: "Statement due Monday.",
+      answers: [
+        {
+          prompt: "How should I handle this?",
+          options: [
+            {
+              label: "Leave it alone",
+              description: "Assume AutoPay covers it unless a failure arrives",
+            },
+            { label: "Check portal" },
+          ],
+          answer: [],
+        },
+      ],
+    });
+    expect(formatPersonQuestionRecord(withDescriptions)).toContain(
+      "Options: Leave it alone — Assume AutoPay covers it unless a failure arrives | Check portal",
+    );
+    expect(formatPersonQuestionRecord(withDescriptions)).toContain(
+      "Dismissed by the person without answering.",
+    );
+
+    const longPending = {
+      ...pending!,
+      detail: "Long context. ".repeat(400),
+    };
+    const bounded = personQuestionRecordWithin(longPending, 2 * 1024);
+    expect(utf8ByteLength(JSON.stringify(bounded))).toBeLessThanOrEqual(2 * 1024);
+    expect(bounded.truncated).toBe(true);
+
+    // Secret-field questions and non-question Requests always return null.
+    expect(
+      personQuestionRecord(
+        question({ status: "pending", resolvedAt: null, resolvedBy: null, response: null }, true),
+      ),
+    ).toBeNull();
+    expect(
+      personQuestionRecord({
+        ...question({ status: "pending", resolvedAt: null, resolvedBy: null, response: null }),
+        kind: "browser.access",
+      }),
+    ).toBeNull();
+
+    const dismissed = personQuestionRecord(
+      question({
+        status: "declined",
+        response: { kind: "external", value: { decision: "declined" } },
+      }),
+    )!;
+    expect(formatPersonQuestionRecord(dismissed)).toContain(
+      "Dismissed by the person without answering.",
+    );
+
+    const fulfilled = personQuestionRecord(answered({ question_1: ["yes"], question_2: ["crm"] }))!;
+    expect(formatPersonQuestionRecord(fulfilled)).toContain(
+      "Question: Send it from your main account?\nOptions: Yes, send it | No\nAnswer: Yes, send it",
+    );
   });
 });

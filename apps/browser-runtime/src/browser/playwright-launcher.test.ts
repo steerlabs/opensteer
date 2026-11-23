@@ -19,6 +19,7 @@ import { describe, expect, it, vi } from "vitest";
 import { assertImportedCookies } from "./native-profile-storage.js";
 import { nativeProfileRequest } from "./native-profile.test-support.js";
 import {
+  chromiumLinkOpenDisposition,
   createChromiumChildEnvironment,
   PlaywrightChromiumLauncher,
 } from "./playwright-launcher.js";
@@ -1170,6 +1171,355 @@ describe("native Chromium profiles", () => {
       ),
     ).toThrow(/rejected/);
     expect(() => assertImportedCookies([{ ...cookie, expires: 1 }], [])).not.toThrow();
+  });
+  it("classifies Chromium OpenURLFromTab link-open gestures across platforms", () => {
+    // Bitmask: alt=1, control=2, meta=4, shift=8
+    expect(
+      chromiumLinkOpenDisposition(
+        "Input.dispatchMouseEvent",
+        { type: "mouseReleased", button: "left", modifiers: 4 },
+        "darwin",
+      ),
+    ).toBe("background-tab");
+    expect(
+      chromiumLinkOpenDisposition(
+        "Input.dispatchMouseEvent",
+        { type: "mouseReleased", button: "left", modifiers: 2 },
+        "darwin",
+      ),
+    ).toBeNull();
+    expect(
+      chromiumLinkOpenDisposition(
+        "Input.dispatchMouseEvent",
+        { type: "mouseReleased", button: "left", modifiers: 2 },
+        "linux",
+      ),
+    ).toBe("background-tab");
+    expect(
+      chromiumLinkOpenDisposition(
+        "Input.dispatchMouseEvent",
+        { type: "mouseReleased", button: "left", modifiers: 4 | 8 },
+        "darwin",
+      ),
+    ).toBe("foreground-tab");
+    expect(
+      chromiumLinkOpenDisposition(
+        "Input.dispatchMouseEvent",
+        { type: "mouseReleased", button: "middle", modifiers: 0 },
+        "linux",
+      ),
+    ).toBe("background-tab");
+    expect(
+      chromiumLinkOpenDisposition(
+        "Input.dispatchMouseEvent",
+        { type: "mouseReleased", button: "middle", modifiers: 8 },
+        "win32",
+      ),
+    ).toBe("foreground-tab");
+    expect(
+      chromiumLinkOpenDisposition(
+        "Input.dispatchMouseEvent",
+        { type: "mouseReleased", button: "left", modifiers: 8 },
+        "darwin",
+      ),
+    ).toBe("new-window");
+    expect(
+      chromiumLinkOpenDisposition(
+        "Input.dispatchMouseEvent",
+        { type: "mouseReleased", button: "left", modifiers: 1 },
+        "darwin",
+      ),
+    ).toBeNull();
+    expect(
+      chromiumLinkOpenDisposition(
+        "Input.dispatchMouseEvent",
+        { type: "mouseReleased", button: "left", modifiers: 1 | 4 },
+        "darwin",
+      ),
+    ).toBe("background-tab");
+    expect(
+      chromiumLinkOpenDisposition(
+        "Input.dispatchKeyEvent",
+        { type: "keyDown", key: "Enter", modifiers: 4 },
+        "darwin",
+      ),
+    ).toBe("background-tab");
+    expect(
+      chromiumLinkOpenDisposition(
+        "Input.dispatchKeyEvent",
+        { type: "rawKeyDown", key: "Enter", modifiers: 2 | 8 },
+        "linux",
+      ),
+    ).toBe("foreground-tab");
+    expect(
+      chromiumLinkOpenDisposition(
+        "Input.dispatchKeyEvent",
+        { type: "keyDown", key: "Enter", modifiers: 8 },
+        "linux",
+      ),
+    ).toBe("new-window");
+    expect(
+      chromiumLinkOpenDisposition(
+        "Input.dispatchKeyEvent",
+        { type: "keyDown", key: "Enter", modifiers: 0 },
+        "darwin",
+      ),
+    ).toBeNull();
+  });
+
+  it("attributes OpenURLFromTab pages to the clicking opener and leaves explicit createPage unattributed", async () => {
+    const f = await nativeCloseFixture();
+    const contextEvents = new EventEmitter();
+    const createMockPage = (url: string) => {
+      const events = new EventEmitter();
+      return Object.assign(events, {
+        url: () => url,
+        opener: async () => null,
+        isClosed: () => false,
+        close: vi.fn(async () => undefined),
+      });
+    };
+    const pages: Page[] = [];
+    f.context.on.mockImplementation((event: string, listener: (...args: unknown[]) => void) => {
+      contextEvents.on(event, listener);
+    });
+    f.context.pages = () => pages;
+    const cdpSession = Object.assign(new EventEmitter(), {
+      send: vi.fn(async (method: string) =>
+        method === "Target.getTargetInfo" ? { targetInfo: { canAccessOpener: false } } : {},
+      ),
+      detach: vi.fn().mockResolvedValue(undefined),
+    });
+    f.context.newCDPSession.mockResolvedValue(cdpSession);
+    f.context.newPage.mockImplementation(async () => {
+      const created = createMockPage("about:blank");
+      pages.push(created as unknown as Page);
+      contextEvents.emit("page", created);
+      return created;
+    });
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      const rootHandle = await launched.context.createPage();
+      await Promise.resolve();
+      const handOffs: Array<{ page: unknown; opener: unknown; background: boolean | undefined }> =
+        [];
+      const announced: unknown[] = [];
+      launched.context.handOff!((page, opener) => {
+        if (page !== rootHandle)
+          handOffs.push({ page, opener, background: page.openedInBackground });
+      });
+      launched.context.onPage((page) => announced.push(page));
+
+      const platformCdp = await rootHandle.cdp();
+      const primaryBit = process.platform === "darwin" ? 4 : 2;
+      await platformCdp.send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        button: "left",
+        modifiers: primaryBit,
+      });
+      await platformCdp.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        button: "left",
+        modifiers: primaryBit,
+      });
+
+      // An explicit createPage() while a pending gesture exists must NOT steal attribution.
+      const explicitHandle = await launched.context.createPage();
+      await vi.waitFor(() => expect(handOffs).toHaveLength(1));
+      expect(handOffs[0]).toEqual({ page: explicitHandle, opener: null, background: false });
+
+      // Now the OpenURLFromTab page arrives with its target URL and no page.on("popup").
+      const openedPage = createMockPage("https://example.test/tab");
+      pages.push(openedPage as unknown as Page);
+      contextEvents.emit("page", openedPage);
+      await Promise.resolve();
+
+      expect(handOffs[1]).toMatchObject({ opener: rootHandle, background: true });
+      expect(await (handOffs[1]!.page as { opener: () => Promise<unknown> }).opener()).toBe(
+        rootHandle,
+      );
+      expect(
+        await (handOffs[1]!.page as { hasOpenerAccess: () => Promise<boolean> }).hasOpenerAccess(),
+      ).toBe(false);
+      expect(announced.at(-1)).toBe(handOffs[1]!.page);
+    } finally {
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("never assigns cross-session ownership from unconfirmed gestures and resolves explicit createPage by identity", async () => {
+    const { PageOwnership } = await import("@opensteer/browser-runtime-core");
+    const f = await nativeCloseFixture();
+    const contextEvents = new EventEmitter();
+    const createMockPage = (url: string) => {
+      const events = new EventEmitter();
+      return Object.assign(events, {
+        url: () => url,
+        opener: async () => null,
+        isClosed: () => false,
+        close: vi.fn(async () => undefined),
+      });
+    };
+    const pages: Page[] = [];
+    f.context.on.mockImplementation((event: string, listener: (...args: unknown[]) => void) => {
+      contextEvents.on(event, listener);
+    });
+    f.context.pages = () => pages;
+    const cdpSession = Object.assign(new EventEmitter(), {
+      send: vi.fn(async (method: string) =>
+        method === "Target.getTargetInfo" ? { targetInfo: { canAccessOpener: false } } : {},
+      ),
+      detach: vi.fn().mockResolvedValue(undefined),
+    });
+    f.context.newCDPSession.mockResolvedValue(cdpSession);
+    let releaseSlowCreate: ((page: Page) => void) | null = null;
+    let slowNext = false;
+    f.context.newPage.mockImplementation(async () => {
+      if (slowNext) {
+        slowNext = false;
+        const created = createMockPage("about:blank") as unknown as Page;
+        pages.push(created);
+        contextEvents.emit("page", created);
+        return await new Promise<Page>((resolve) => {
+          releaseSlowCreate = resolve;
+        });
+      }
+      const created = createMockPage("about:blank");
+      pages.push(created as unknown as Page);
+      contextEvents.emit("page", created);
+      return created;
+    });
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      const ownership = new PageOwnership();
+      ownership.adopt(launched.context);
+      const pageA = await launched.context.createPage();
+      ownership.claim(pageA, "session-a");
+      const pageB = await launched.context.createPage();
+      ownership.claim(pageB, "session-b");
+      await Promise.resolve();
+
+      // 1. Plain-space primary+click in Session A must NOT steal an openerless target in a two-session context.
+      const primaryBit = process.platform === "darwin" ? 4 : 2;
+      const cdpA = await pageA.cdp();
+      await cdpA.send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        button: "left",
+        modifiers: primaryBit,
+      });
+      await cdpA.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        button: "left",
+        modifiers: primaryBit,
+      });
+      const sessionBTarget = createMockPage("https://session-b.test/target");
+      pages.push(sessionBTarget as unknown as Page);
+      contextEvents.emit("page", sessionBTarget);
+      await Promise.resolve();
+      const targetHandle = launched.context.pages().at(-1)!;
+      expect(ownership.sessionOf(targetHandle)).toBeNull();
+
+      // 2. Interleaved gestures across distinct openers (A and B) fail closed without guessing FIFO.
+      const cdpB = await pageB.cdp();
+      await cdpA.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        button: "left",
+        modifiers: primaryBit,
+      });
+      await cdpB.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        button: "left",
+        modifiers: primaryBit,
+      });
+      const ambiguousTarget = createMockPage("https://ambiguous.test/");
+      pages.push(ambiguousTarget as unknown as Page);
+      contextEvents.emit("page", ambiguousTarget);
+      await Promise.resolve();
+      const ambiguousHandle = launched.context.pages().at(-1)!;
+      expect(await ambiguousHandle.opener()).toBeNull();
+      expect(ownership.sessionOf(ambiguousHandle)).toBeNull();
+
+      // 3. Explicit createPage() in flight does not swallow a concurrent openerless about:blank child.
+      const singleOwnership = new PageOwnership();
+      const singleF = await nativeCloseFixture();
+      const singleEvents = new EventEmitter();
+      const singlePages: Page[] = [];
+      singleF.context.on.mockImplementation(
+        (event: string, listener: (...args: unknown[]) => void) => {
+          singleEvents.on(event, listener);
+        },
+      );
+      singleF.context.pages = () => singlePages;
+      singleF.context.newCDPSession.mockResolvedValue(cdpSession);
+      let resolveExplicit!: (page: Page) => void;
+      let holdExplicit = false;
+      singleF.context.newPage.mockImplementation(async () => {
+        const created = createMockPage("about:blank") as unknown as Page;
+        singlePages.push(created);
+        singleEvents.emit("page", created);
+        if (holdExplicit) {
+          holdExplicit = false;
+          return await new Promise<Page>((resolve) => {
+            resolveExplicit = () => resolve(created);
+          });
+        }
+        return created;
+      });
+      const singleLaunched = await singleF.launcher.launch(nativeProfileRequest(singleF.directory));
+      try {
+        singleOwnership.adopt(singleLaunched.context);
+        const opener = await singleLaunched.context.createPage();
+        singleOwnership.claim(opener, "only-session");
+        await Promise.resolve();
+        const openerCdp = await opener.cdp();
+        await openerCdp.send("Input.dispatchMouseEvent", {
+          type: "mouseReleased",
+          button: "left",
+          modifiers: primaryBit,
+        });
+        holdExplicit = true;
+        const explicitPromise = singleLaunched.context.createPage();
+        const blankChild = createMockPage("about:blank");
+        singlePages.push(blankChild as unknown as Page);
+        singleEvents.emit("page", blankChild);
+        resolveExplicit(undefined as never);
+        const explicitHandle = await explicitPromise;
+        await Promise.resolve();
+        await Promise.resolve();
+        const childHandle = singleLaunched.context.pages().at(-1)!;
+        expect(await explicitHandle.opener()).toBeNull();
+        expect(await childHandle.opener()).toBe(opener);
+        expect(singleOwnership.sessionOf(childHandle)).toBe("only-session");
+
+        // 4. Even when a second session has zero live pages (all tabs asleep),
+        // attaching that session to the context prevents inferred cross-session claims.
+        singleOwnership.attachSession(singleLaunched.context, "sleeping-session");
+        await openerCdp.send("Input.dispatchMouseEvent", {
+          type: "mouseReleased",
+          button: "left",
+          modifiers: primaryBit,
+        });
+        const sleeperTarget = createMockPage("https://sleeping-session.test/target");
+        singlePages.push(sleeperTarget as unknown as Page);
+        singleEvents.emit("page", sleeperTarget);
+        await Promise.resolve();
+        const sleeperHandle = singleLaunched.context.pages().at(-1)!;
+        expect(singleOwnership.sessionOf(sleeperHandle)).toBeNull();
+      } finally {
+        singleF.exit();
+        await singleLaunched.close();
+        await rm(singleF.directory, { recursive: true, force: true });
+      }
+      expect(releaseSlowCreate).toBeNull();
+    } finally {
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
   });
 });
 

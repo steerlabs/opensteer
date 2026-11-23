@@ -121,18 +121,21 @@ describe("native tab binding", () => {
     expect(bind).toHaveBeenCalledOnce();
   });
 
-  it("retains exact unavailable reasons without opening a viewing lease", async () => {
-    const queryWindow = vi.fn(async () => ({
-      windowId: null,
-      app: null,
-      title: null,
-      unavailableReason: "window-closed",
-    }));
+  it("projects window state without blocking on remote probes and retains exact unavailable reasons", async () => {
+    let now = 1_000;
+    const firstProbe = Promise.withResolvers<{
+      windowId: string | null;
+      app: typeof app | null;
+      title: string | null;
+      unavailableReason: string | null;
+    }>();
+    const queryWindow = vi.fn(() => firstProbe.promise);
     const views = {
       list: vi.fn(async () => []),
       openForTab: vi.fn(),
       closeTabViews: vi.fn(async () => undefined),
     };
+    const onWindowStateChanged = vi.fn();
     const targets = new NativeTabTargets({
       views,
       connections: async () => [connection],
@@ -141,22 +144,60 @@ describe("native tab binding", () => {
       queryWindow,
       users: () => [],
       phoneUnavailable: () => null,
+      now: () => now,
+      windowRefreshTtlMs: 30_000,
+      onWindowStateChanged,
     });
-    await expect(targets.windowState(ownerId, computerId, windowId)).resolves.toMatchObject({
+    // Never blocks on a hanging remote queryWindow, and deduplicates concurrent probes.
+    await expect(
+      Promise.all([
+        targets.windowState(ownerId, computerId, windowId, app),
+        targets.windowState(ownerId, computerId, windowId, app),
+      ]),
+    ).resolves.toEqual([
+      { state: "asleep", usedBy: [] },
+      { state: "asleep", usedBy: [] },
+    ]);
+    expect(queryWindow).toHaveBeenCalledTimes(1);
+    expect(onWindowStateChanged).not.toHaveBeenCalled();
+
+    // Once the background probe finishes with window-closed, it notifies and projects the exact reason.
+    firstProbe.resolve({
+      windowId: null,
+      app: null,
+      title: null,
+      unavailableReason: "window-closed",
+    });
+    await vi.waitFor(() => {
+      expect(onWindowStateChanged).toHaveBeenCalledWith(ownerId, computerId, windowId);
+    });
+    await expect(targets.windowState(ownerId, computerId, windowId, app)).resolves.toMatchObject({
       state: "unavailable",
       unavailableCode: "window-closed",
       unavailableReason: "Window closed",
     });
+    // Within TTL, no redundant remote probe is started.
+    expect(queryWindow).toHaveBeenCalledTimes(1);
+
+    // After TTL expires, background refresh updates to window-identity-lost without blocking reads.
+    now += 30_000;
     queryWindow.mockResolvedValueOnce({
       windowId: null,
       app: null,
       title: null,
       unavailableReason: "window-identity-lost",
     });
-    await expect(targets.windowState(ownerId, computerId, windowId)).resolves.toMatchObject({
+    await expect(targets.windowState(ownerId, computerId, windowId, app)).resolves.toMatchObject({
+      unavailableCode: "window-closed",
+    });
+    await vi.waitFor(() => {
+      expect(onWindowStateChanged).toHaveBeenCalledTimes(2);
+    });
+    await expect(targets.windowState(ownerId, computerId, windowId, app)).resolves.toMatchObject({
       unavailableCode: "window-identity-lost",
     });
     expect(views.openForTab).not.toHaveBeenCalled();
+
     const acquired = vi.fn<NativeTargetAcquiredHandler>(async () => tabId);
     const disconnect = targets.onTargetAcquired(acquired);
     expect(
@@ -182,6 +223,150 @@ describe("native tab binding", () => {
         key: "acquire2",
       }),
     ).rejects.toThrow("unavailable");
+  });
+
+  it("fences stale probes across forgetComputer, observes view changes, and enforces local app revocation", async () => {
+    let approved = true;
+    const staleProbe = Promise.withResolvers<{
+      windowId: string | null;
+      app: typeof app | null;
+      title: string | null;
+      unavailableReason: string | null;
+    }>();
+    const queryWindow = vi.fn(() => staleProbe.promise);
+    const onWindowStateChanged = vi.fn();
+    const targets = new NativeTabTargets({
+      views: {
+        list: async () => [],
+        openForTab: vi.fn(),
+        closeTabViews: async () => undefined,
+      },
+      connections: async () => (approved ? [connection] : []),
+      owns: async () => true,
+      connected: () => true,
+      queryWindow,
+      users: () => [],
+      phoneUnavailable: () => null,
+      onWindowStateChanged,
+    });
+
+    // Starts probe at generation 0.
+    await expect(targets.windowState(ownerId, computerId, windowId, app)).resolves.toEqual({
+      state: "asleep",
+      usedBy: [],
+    });
+    expect(queryWindow).toHaveBeenCalledTimes(1);
+
+    // Computer disconnects/reconnects: generation advances, stale probe result must be ignored.
+    targets.forgetComputer(computerId);
+    staleProbe.resolve({
+      windowId: null,
+      app: null,
+      title: null,
+      unavailableReason: "window-closed",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onWindowStateChanged).not.toHaveBeenCalled();
+
+    // Observing an unavailable view updates state immediately without waiting on queryWindow.
+    expect(
+      targets.observeView({
+        machineId: DeviceIdSchema.parse(computerId),
+        target: { kind: "app", app, windowId },
+        state: "unavailable",
+        unavailableReason: "window-closed",
+      } as unknown as import("@opensteer/protocol").ComputerView),
+    ).toBe(true);
+    await expect(targets.windowState(ownerId, computerId, windowId, app)).resolves.toMatchObject({
+      state: "unavailable",
+      unavailableCode: "window-closed",
+    });
+    expect(queryWindow).toHaveBeenCalledTimes(1);
+
+    // Observing a ready view restores live state immediately.
+    expect(
+      targets.observeView({
+        machineId: DeviceIdSchema.parse(computerId),
+        target: { kind: "app", app, windowId },
+        state: "ready",
+        unavailableReason: null,
+      } as unknown as import("@opensteer/protocol").ComputerView),
+    ).toBe(true);
+    await expect(targets.windowState(ownerId, computerId, windowId, app)).resolves.toEqual({
+      state: "asleep",
+      usedBy: [],
+    });
+
+    // Local app revocation takes effect synchronously without any remote probe.
+    approved = false;
+    await expect(targets.windowState(ownerId, computerId, windowId, app)).resolves.toMatchObject({
+      state: "unavailable",
+      unavailableCode: "access-denied",
+    });
+  });
+
+  it("keeps confirmed unavailable windows unavailable while tasks hold them and prevents stale probes from overwriting newer observations", async () => {
+    const staleProbe = Promise.withResolvers<{
+      windowId: string | null;
+      app: typeof app | null;
+      title: string | null;
+      unavailableReason: string | null;
+    }>();
+    const queryWindow = vi.fn(() => staleProbe.promise);
+    const onWindowStateChanged = vi.fn();
+    const targets = new NativeTabTargets({
+      views: {
+        list: async () => [],
+        openForTab: vi.fn(),
+        closeTabViews: async () => undefined,
+      },
+      connections: async () => [connection],
+      owns: async () => true,
+      connected: () => true,
+      queryWindow,
+      users: () => [{ taskId: claims.threadId }],
+      phoneUnavailable: () => null,
+      onWindowStateChanged,
+    });
+
+    // Starts background probe while a task holds the window.
+    await expect(targets.windowState(ownerId, computerId, windowId, app)).resolves.toEqual({
+      state: "open",
+      usedBy: [{ taskId: claims.threadId }],
+    });
+    expect(queryWindow).toHaveBeenCalledTimes(1);
+
+    // A ready owner view observes the window as live while the earlier probe is still pending.
+    targets.observeView({
+      machineId: DeviceIdSchema.parse(computerId),
+      target: { kind: "app", app, windowId },
+      state: "ready",
+      unavailableReason: null,
+    } as unknown as import("@opensteer/protocol").ComputerView);
+
+    // The earlier probe later fails; it must NOT overwrite the newer live observation.
+    staleProbe.reject(new Error("timed out"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onWindowStateChanged).not.toHaveBeenCalled();
+    await expect(targets.windowState(ownerId, computerId, windowId, app)).resolves.toEqual({
+      state: "open",
+      usedBy: [{ taskId: claims.threadId }],
+    });
+
+    // A confirmed window-closed observation must still project unavailable even while usedBy is non-empty.
+    targets.observeView({
+      machineId: DeviceIdSchema.parse(computerId),
+      target: { kind: "app", app, windowId },
+      state: "unavailable",
+      unavailableReason: "window-closed",
+    } as unknown as import("@opensteer/protocol").ComputerView);
+    await expect(targets.windowState(ownerId, computerId, windowId, app)).resolves.toMatchObject({
+      state: "unavailable",
+      unavailableCode: "window-closed",
+      unavailableReason: "Window closed",
+    });
   });
 });
 
@@ -217,3 +402,435 @@ it.each(["paused", "protected"] as const)(
     expect(await targets.phoneState(ownerId, computerId)).toMatchObject({ state: "open" });
   },
 );
+
+describe("NativeTabTargets.windowStates batching and observed cache bounding", () => {
+  it("batches owns, connections, and views.list once per computer across multiple window tabs", async () => {
+    const computerA = createId("runner");
+    const computerB = createId("runner");
+    const winA1 = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000011");
+    const winA2 = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000012");
+    const winB1 = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000013");
+    const tabA1 = TabIdSchema.parse("tab_batch_a1");
+    const tabA2 = TabIdSchema.parse("tab_batch_a2");
+    const tabB1 = TabIdSchema.parse("tab_batch_b1");
+    const connA = {
+      id: "conn-a",
+      definitionId: "macos-app",
+      computer: { runnerId: computerA, app, blockedAt: null },
+    } as unknown as IntegrationConnectionSummary;
+    const connB = {
+      id: "conn-b",
+      definitionId: "macos-app",
+      computer: { runnerId: computerB, app, blockedAt: null },
+    } as unknown as IntegrationConnectionSummary;
+    const owns = vi.fn(async () => true);
+    const connections = vi.fn(async () => [connA, connB]);
+    const listViews = vi.fn(async (_owner: unknown, targetComputer: unknown) =>
+      targetComputer === computerA
+        ? [
+            {
+              target: { kind: "app", app, windowId: winA1 },
+              state: "ready",
+              unavailableReason: null,
+            },
+          ]
+        : [],
+    );
+    const queryWindow = vi.fn(async () => ({
+      windowId: winA2,
+      app,
+      title: "Note",
+      unavailableReason: null,
+    }));
+    const targets = new NativeTabTargets({
+      views: {
+        list: listViews as unknown as ConstructorParameters<
+          typeof NativeTabTargets
+        >[0]["views"]["list"],
+        openForTab: vi.fn(),
+        closeTabViews: vi.fn(async () => undefined),
+      },
+      connections,
+      owns,
+      connected: (id) => id === computerA,
+      queryWindow,
+      users: () => [],
+      phoneUnavailable: () => null,
+    });
+
+    const states = await targets.windowStates(ownerId, [
+      { tabId: tabA1, computerId: computerA, windowId: winA1, app },
+      { tabId: tabA2, computerId: computerA, windowId: winA2, app },
+      { tabId: tabB1, computerId: computerB, windowId: winB1, app },
+    ]);
+
+    expect(owns).toHaveBeenCalledTimes(2);
+    expect(connections).toHaveBeenCalledTimes(1);
+    expect(listViews).toHaveBeenCalledTimes(1);
+    expect(listViews).toHaveBeenCalledWith(ownerId, computerA);
+    expect(states.get(tabA1)).toEqual({ state: "open", usedBy: [] });
+    expect(states.get(tabA2)).toEqual({ state: "asleep", usedBy: [] });
+    expect(states.get(tabB1)).toMatchObject({
+      state: "unavailable",
+      unavailableCode: "computer-offline",
+    });
+  });
+
+  it("caps observed window cache entries at maxObservedWindows", async () => {
+    const queryWindow = vi.fn(async () => ({
+      windowId: null,
+      app: null,
+      title: null,
+      unavailableReason: "window-closed",
+    }));
+    const targets = new NativeTabTargets({
+      views: {
+        list: async () => [],
+        openForTab: vi.fn(),
+        closeTabViews: async () => undefined,
+      },
+      connections: async () => [connection],
+      owns: async () => true,
+      connected: () => true,
+      queryWindow,
+      users: () => [],
+      phoneUnavailable: () => null,
+      maxObservedWindows: 2,
+    });
+    const w1 = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000101");
+    const w2 = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000102");
+    const w3 = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000103");
+    for (const w of [w1, w2, w3]) {
+      targets.observeView({
+        machineId: DeviceIdSchema.parse(computerId),
+        target: { kind: "app", app, windowId: w },
+        state: "unavailable",
+        unavailableReason: "window-closed",
+      } as unknown as import("@opensteer/protocol").ComputerView);
+    }
+    // w2 and w3 are retained in cache (unavailable immediately, no queryWindow).
+    await expect(targets.windowState(ownerId, computerId, w2, app)).resolves.toMatchObject({
+      state: "unavailable",
+      unavailableCode: "window-closed",
+    });
+    await expect(targets.windowState(ownerId, computerId, w3, app)).resolves.toMatchObject({
+      state: "unavailable",
+      unavailableCode: "window-closed",
+    });
+    expect(queryWindow).not.toHaveBeenCalled();
+    // w1 was evicted by the cap, so reading it falls back to asleep and triggers a background probe.
+    await expect(targets.windowState(ownerId, computerId, w1, app)).resolves.toEqual({
+      state: "asleep",
+      usedBy: [],
+    });
+    expect(queryWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes LRU order on read and bounds concurrent window probes per computer", async () => {
+    const resolvers: Array<
+      (value: {
+        windowId: string | null;
+        app: typeof app | null;
+        title: string | null;
+        unavailableReason: string | null;
+      }) => void
+    > = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const queryWindow = vi.fn(
+      () =>
+        new Promise<{
+          windowId: string | null;
+          app: typeof app | null;
+          title: string | null;
+          unavailableReason: string | null;
+        }>((resolve) => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          resolvers.push((value) => {
+            inFlight -= 1;
+            resolve(value);
+          });
+        }),
+    );
+    const listViews = vi.fn(async () => []);
+    const targets = new NativeTabTargets({
+      views: {
+        list: listViews,
+        openForTab: vi.fn(),
+        closeTabViews: async () => undefined,
+      },
+      connections: async () => [connection],
+      owns: async () => true,
+      connected: () => true,
+      queryWindow,
+      users: () => [],
+      phoneUnavailable: () => null,
+      maxObservedWindows: 2,
+      maxConcurrentWindowProbesPerComputer: 2,
+    });
+
+    // LRU touch on read keeps w1 cached over w2 when w3 is inserted.
+    const w1 = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000201");
+    const w2 = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000202");
+    const w3 = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000203");
+    for (const w of [w1, w2]) {
+      targets.observeView({
+        machineId: DeviceIdSchema.parse(computerId),
+        target: { kind: "app", app, windowId: w },
+        state: "unavailable",
+        unavailableReason: "window-closed",
+      } as unknown as import("@opensteer/protocol").ComputerView);
+    }
+    // Read w1 to move it to MRU before observing w3.
+    await expect(targets.windowState(ownerId, computerId, w1, app)).resolves.toMatchObject({
+      unavailableCode: "window-closed",
+    });
+    targets.observeView({
+      machineId: DeviceIdSchema.parse(computerId),
+      target: { kind: "app", app, windowId: w3 },
+      state: "unavailable",
+      unavailableReason: "window-closed",
+    } as unknown as import("@opensteer/protocol").ComputerView);
+    // w1 must still be cached (unavailable without probing); w2 was evicted.
+    await expect(targets.windowState(ownerId, computerId, w1, app)).resolves.toMatchObject({
+      unavailableCode: "window-closed",
+    });
+    expect(queryWindow).not.toHaveBeenCalled();
+
+    // Unapproved apps skip views.list completely in both single and batch paths.
+    listViews.mockClear();
+    const unapprovedApp = { bundleId: "com.other.App", displayName: "Other", teamId: null };
+    await expect(
+      targets.windowState(ownerId, computerId, w1, unapprovedApp),
+    ).resolves.toMatchObject({ state: "unavailable", unavailableCode: "access-denied" });
+    expect(listViews).not.toHaveBeenCalled();
+
+    // Queueing 4 fresh window probes must cap active concurrency at 2 and drain the rest.
+    const probeWindows = [
+      WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000301"),
+      WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000302"),
+      WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000303"),
+      WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000304"),
+    ];
+    await targets.windowStates(
+      ownerId,
+      probeWindows.map((w, index) => ({
+        tabId: TabIdSchema.parse(`tab_probe_${index}`),
+        computerId,
+        windowId: w,
+        app,
+      })),
+    );
+    expect(maxInFlight).toBe(2);
+    expect(queryWindow).toHaveBeenCalledTimes(2);
+
+    // Resolve the first two probes -> queued probes 3 and 4 start.
+    resolvers
+      .splice(0, 2)
+      .forEach((resolve) =>
+        resolve({ windowId: null, app: null, title: null, unavailableReason: "window-closed" }),
+      );
+    await vi.waitFor(() => expect(queryWindow).toHaveBeenCalledTimes(4));
+    expect(maxInFlight).toBe(2);
+    resolvers
+      .splice(0)
+      .forEach((resolve) =>
+        resolve({ windowId: null, app: null, title: null, unavailableReason: "window-closed" }),
+      );
+  });
+
+  it("notifies window recovery when a previously unavailable observation is evicted and later probes live", async () => {
+    const w1 = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000401");
+    const w2 = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000402");
+    const w3 = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000403");
+    const onWindowStateChanged = vi.fn();
+    const queryWindow = vi.fn(async () => ({
+      windowId: w1,
+      app,
+      title: "Recovered Note",
+      unavailableReason: null,
+    }));
+    const targets = new NativeTabTargets({
+      views: {
+        list: async () => [],
+        openForTab: vi.fn(),
+        closeTabViews: async () => undefined,
+      },
+      connections: async () => [connection],
+      owns: async () => true,
+      connected: () => true,
+      queryWindow,
+      users: () => [],
+      phoneUnavailable: () => null,
+      maxObservedWindows: 2,
+      onWindowStateChanged,
+    });
+
+    // Observe w1 as unavailable, then evict it by filling capacity with w2 and w3.
+    for (const w of [w1, w2, w3]) {
+      targets.observeView({
+        machineId: DeviceIdSchema.parse(computerId),
+        target: { kind: "app", app, windowId: w },
+        state: "unavailable",
+        unavailableReason: "window-closed",
+      } as unknown as import("@opensteer/protocol").ComputerView);
+    }
+
+    // Probing evicted w1 discovers it is live again; onWindowStateChanged must fire so warm catalogs recover.
+    await targets.windowState(ownerId, computerId, w1, app);
+    await vi.waitFor(() => {
+      expect(onWindowStateChanged).toHaveBeenCalledWith(ownerId, computerId, w1);
+    });
+  });
+
+  it("fences a stale in-flight probe and preserves recovery notifications even under heavy eviction churn", async () => {
+    const w1 = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000501");
+    const churnWindows = Array.from({ length: 6 }, (_, i) =>
+      WindowIdSchema.parse(`win_00000000-0000-4000-8000-00000000051${i}`),
+    );
+    const staleProbe = Promise.withResolvers<{
+      windowId: string | null;
+      app: typeof app | null;
+      title: string | null;
+      unavailableReason: string | null;
+    }>();
+    const onWindowStateChanged = vi.fn();
+    let calls = 0;
+    const queryWindow = vi.fn(() => {
+      calls += 1;
+      if (calls === 1) return staleProbe.promise;
+      return Promise.resolve({ windowId: w1, app, title: "Recovered", unavailableReason: null });
+    });
+    const targets = new NativeTabTargets({
+      views: {
+        list: async () => [],
+        openForTab: vi.fn(),
+        closeTabViews: async () => undefined,
+      },
+      connections: async () => [connection],
+      owns: async () => true,
+      connected: () => true,
+      queryWindow,
+      users: () => [],
+      phoneUnavailable: () => null,
+      maxObservedWindows: 1,
+      onWindowStateChanged,
+    });
+
+    // Start a probe for w1 with no prior cached observation.
+    await targets.windowState(ownerId, computerId, w1, app);
+    expect(queryWindow).toHaveBeenCalledTimes(1);
+
+    // Record window-closed for w1, then churn 6 other windows so eviction history overflows.
+    for (const w of [w1, ...churnWindows]) {
+      targets.observeView({
+        machineId: DeviceIdSchema.parse(computerId),
+        target: { kind: "app", app, windowId: w },
+        state: "unavailable",
+        unavailableReason: "window-closed",
+      } as unknown as import("@opensteer/protocol").ComputerView);
+    }
+
+    // Complete staleProbe with a locked/live result; it must be fenced regardless of eviction churn.
+    staleProbe.resolve({ windowId: null, app: null, title: null, unavailableReason: "locked" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onWindowStateChanged).not.toHaveBeenCalled();
+
+    // A fresh post-churn probe discovering w1 is live must still emit a recovery notification.
+    await targets.windowState(ownerId, computerId, w1, app);
+    await vi.waitFor(() => {
+      expect(onWindowStateChanged).toHaveBeenCalledWith(ownerId, computerId, w1);
+    });
+  });
+
+  it("supersedes pending probes on resolveWindow and scopes eviction overflow per computer", async () => {
+    const computerA = createId("runner");
+    const computerB = createId("runner");
+    const wA = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000601");
+    const churnB = Array.from({ length: 6 }, (_, i) =>
+      WindowIdSchema.parse(`win_00000000-0000-4000-8000-00000000061${i}`),
+    );
+    const connA = {
+      id: "conn-a",
+      definitionId: "macos-app",
+      computer: { runnerId: computerA, app, blockedAt: null },
+    } as unknown as IntegrationConnectionSummary;
+    const connB = {
+      id: "conn-b",
+      definitionId: "macos-app",
+      computer: { runnerId: computerB, app, blockedAt: null },
+    } as unknown as IntegrationConnectionSummary;
+    const staleProbe = Promise.withResolvers<{
+      windowId: string | null;
+      app: typeof app | null;
+      title: string | null;
+      unavailableReason: string | null;
+    }>();
+    const onWindowStateChanged = vi.fn();
+    let calls = 0;
+    const queryWindow = vi.fn(() => {
+      calls += 1;
+      if (calls === 1) return staleProbe.promise;
+      return Promise.resolve({ windowId: wA, app, title: "Live", unavailableReason: null });
+    });
+    const targets = new NativeTabTargets({
+      views: {
+        list: async () => [],
+        openForTab: vi.fn(),
+        closeTabViews: async () => undefined,
+      },
+      connections: async () => [connA, connB],
+      owns: async () => true,
+      connected: () => true,
+      queryWindow,
+      users: () => [],
+      phoneUnavailable: () => null,
+      maxObservedWindows: 1,
+      onWindowStateChanged,
+    });
+
+    // Start background probe on computerA, then resolveWindow records wA live.
+    await targets.windowState(ownerId, computerA, wA, app);
+    await targets.resolveWindow(ownerId, computerA, { windowId: wA });
+
+    // Stale probe completing with window-closed must NOT overwrite resolveWindow's live observation.
+    staleProbe.resolve({
+      windowId: null,
+      app: null,
+      title: null,
+      unavailableReason: "window-closed",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await expect(targets.windowState(ownerId, computerA, wA, app)).resolves.toEqual({
+      state: "asleep",
+      usedBy: [],
+    });
+    expect(onWindowStateChanged).not.toHaveBeenCalled();
+
+    // Observe wA unavailable, churn 6 unavailable windows on computerB, then forget computerB.
+    targets.observeView({
+      machineId: DeviceIdSchema.parse(computerA),
+      target: { kind: "app", app, windowId: wA },
+      state: "unavailable",
+      unavailableReason: "window-closed",
+    } as unknown as import("@opensteer/protocol").ComputerView);
+    for (const w of churnB) {
+      targets.observeView({
+        machineId: DeviceIdSchema.parse(computerB),
+        target: { kind: "app", app, windowId: w },
+        state: "unavailable",
+        unavailableReason: "window-closed",
+      } as unknown as import("@opensteer/protocol").ComputerView);
+    }
+    targets.forgetComputer(computerB);
+
+    // Forgetting computerB must NOT clear computerA's overflow flag; wA's live probe still notifies.
+    await targets.windowState(ownerId, computerA, wA, app);
+    await vi.waitFor(() => {
+      expect(onWindowStateChanged).toHaveBeenCalledWith(ownerId, computerA, wA);
+    });
+  });
+});

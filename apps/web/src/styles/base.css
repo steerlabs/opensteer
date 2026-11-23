@@ -949,7 +949,6 @@ svg.icon {
   .brand-link,
   .sidebar__nav-item,
   .sidebar__place,
-  .task-row__link,
   .page__back {
     min-height: var(--touch-target);
   }

@@ -233,6 +233,63 @@ describe("taskList", () => {
     expect(list.working).toEqual([]);
   });
 
+  it("settles a task a person stopped like a finished one, with its queue held behind Resume", () => {
+    const stopped = entry(1, "Stopped", "idle", 3, 2, { lastReply: "Got halfway" });
+    const list = taskList(
+      snapshot([{ ...stopped, thread: { ...stopped.thread, inputQueuePaused: true } }]),
+    );
+    expect(list.working).toEqual([]);
+    expect(list.ready).toEqual([
+      expect.objectContaining({
+        tone: "finished",
+        line: "Got halfway",
+        stopped: true,
+        unread: false,
+        quiet: true,
+      }),
+    ]);
+    expect(taskTime(list.ready[0]!, now)).toBe("3h");
+  });
+
+  it("quiets only settled work the reader has seen; live work, asks and news stay bright", () => {
+    const done = (index: number, title: string, status: ThreadStatus) => {
+      const row = entry(index, title, status, index, 0);
+      return { ...row, thread: { ...row.thread, doneAt: hoursAgo(0) } };
+    };
+    const list = taskList(
+      snapshot(
+        [
+          entry(1, "Finished, seen", "idle", 1, 0),
+          entry(2, "Finished, unread", "idle", 2, 0),
+          entry(3, "Failed, seen", "failed", 3, 0, { failure: "Couldn’t sign in" }),
+          entry(4, "Failed, unread", "failed", 4, 0, { failure: "Couldn’t sign in" }),
+          entry(5, "Working", "running", 5, 0),
+          entry(6, "Waiting", "waiting", 6, 0),
+          entry(7, "Asking", "idle", 7, 0),
+          done(8, "Done, seen", "idle"),
+          done(9, "Done, asking", "idle"),
+          done(10, "Done, still winding down", "running"),
+        ],
+        { unread: [2, 4], waiting: [asking(7, "Approve it"), asking(9, "Approve that")] },
+      ),
+    );
+    const quiet = Object.fromEntries(
+      [...list.working, ...list.ready, ...list.done].map((row) => [row.title, row.quiet]),
+    );
+    expect(quiet).toEqual({
+      "Finished, seen": true,
+      "Finished, unread": false,
+      "Failed, seen": true,
+      "Failed, unread": false,
+      Working: false,
+      Waiting: false,
+      Asking: false,
+      "Done, seen": true,
+      "Done, asking": false,
+      "Done, still winding down": false,
+    });
+  });
+
   it("never marks old work Done automatically, and keeps unread shared Done in Ready until read", () => {
     const old = entry(1, "Still open", "idle", 60, 47);
     const completed = entry(2, "Shared Done", "idle", 61, 48);
@@ -380,6 +437,7 @@ describe("sameTaskRow", () => {
     expect(sameTaskRow(row!, { ...row!, place: "united.com" })).toBe(false);
     expect(sameTaskRow(row!, { ...row!, unread: true })).toBe(false);
     expect(sameTaskRow(row!, { ...row!, tone: "finished" })).toBe(false);
+    expect(sameTaskRow(row!, { ...row!, quiet: true })).toBe(false);
   });
 });
 
@@ -600,5 +658,40 @@ describe("taskWaitingReason", () => {
       kind: "account-preparing",
     });
     client.dispose();
+  });
+
+  it("shows provider retry progress instead of generic Working when a running task is retrying", () => {
+    const task = entry(1001, "Set up Sales CRM", "running", 1, 1);
+    const retrying = {
+      ...task,
+      thread: {
+        ...task.thread,
+        status: "running" as const,
+        doneAt: null,
+        pendingRequests: 0,
+        retry: {
+          status: "retrying" as const,
+          attempt: 2,
+          maxAttempts: 5,
+          message: "Selected model is at capacity.",
+        },
+      },
+    };
+    const list = taskList(snapshot([retrying]));
+    expect(list.working[0]).toMatchObject({
+      threadId: task.thread.id,
+      tone: "working",
+      line: "Retrying (2/5)",
+    });
+
+    const recovered = {
+      ...retrying,
+      thread: { ...retrying.thread, retry: null },
+    };
+    expect(taskList(snapshot([recovered])).working[0]).toMatchObject({
+      threadId: task.thread.id,
+      tone: "working",
+      line: "Working",
+    });
   });
 });

@@ -21,17 +21,19 @@ type AXFrame struct {
 	Height float64 `json:"height"`
 }
 type AXNode struct {
-	NodeID   string   `json:"nodeId"`
-	Parent   *string  `json:"parent"`
-	Depth    int      `json:"depth"`
-	Role     string   `json:"role"`
-	Label    string   `json:"label"`
-	Frame    *AXFrame `json:"frame"`
-	Enabled  *bool    `json:"enabled"`
-	Focused  *bool    `json:"focused"`
-	Selected *bool    `json:"selected"`
-	Editable string   `json:"editable"`
-	Secure   string   `json:"secure"`
+	NodeID      string   `json:"nodeId"`
+	Parent      *string  `json:"parent"`
+	Depth       int      `json:"depth"`
+	Role        string   `json:"role"`
+	Label       string   `json:"label"`
+	Frame       *AXFrame `json:"frame"`
+	Enabled     *bool    `json:"enabled"`
+	Focused     *bool    `json:"focused"`
+	Selected    *bool    `json:"selected"`
+	Editable    string   `json:"editable"`
+	Secure      string   `json:"secure"`
+	Source      string   `json:"source,omitempty"`
+	nativeFrame *AXFrame
 }
 type AXCoverage struct {
 	CoordinateSpace string `json:"coordinateSpace"`
@@ -46,9 +48,10 @@ type AXCoverage struct {
 	Truncated       bool   `json:"truncated"`
 }
 type AXSnapshot struct {
-	Nodes      []AXNode
-	Coverage   AXCoverage
-	Foreground *Foreground
+	Nodes          []AXNode
+	Coverage       AXCoverage
+	Foreground     *Foreground
+	viewportFrames bool
 }
 type axRecord struct {
 	attributes map[string]interface{}
@@ -209,6 +212,9 @@ func fieldBool(value interface{}) *bool {
 	return &b
 }
 func axText(value interface{}) string {
+	if fields, ok := value.(map[string]interface{}); ok {
+		value = fields["NSString"]
+	}
 	s, _ := value.(string)
 	if !utf8.ValidString(s) {
 		return ""
@@ -293,7 +299,11 @@ func (t *axTree) snapshot(reason string) AXSnapshot {
 		if label == "" {
 			label = axText(a["3"])
 		}
-		n := AXNode{NodeID: fmt.Sprintf("n%d", len(snapshot.Nodes)+1), Parent: parent, Depth: depth, Role: axRole(a, t.roots[id]), Label: label, Enabled: fieldBool(a["27"]), Focused: fieldBool(a["28"]), Selected: fieldBool(a["30"]), Editable: "unknown", Secure: "unknown"}
+		n := AXNode{NodeID: fmt.Sprintf("n%d", len(snapshot.Nodes)+1), Parent: parent, Depth: depth, Role: axRole(a, t.roots[id]), Label: label, Enabled: fieldBool(a["27"]), Focused: fieldBool(a["28"]), Selected: fieldBool(a["30"]), Editable: "unknown", Secure: "unknown", Source: "ax"}
+		n.Secure, n.Editable = axEditing(map[string]interface{}{"45": a["45"], "2004": a["77"]})
+		if n.Secure == "yes" {
+			n.Label = ""
+		}
 		// Native frames have no qualified coordinate space; field values are never published.
 		encoded, _ := json.Marshal(n)
 		size := len(encoded)
@@ -359,6 +369,11 @@ func axNumbers(value interface{}, pattern *regexp.Regexp) []float64 {
 	return values
 }
 func parseAXFrame(value interface{}) *AXFrame {
+	if fields, ok := value.(map[string]interface{}); ok {
+		if rect, ok := fields["NS.rectval"]; ok {
+			value = rect
+		}
+	}
 	values := axNumbers(value, axFramePattern)
 	if len(values) != 4 || values[2] <= 0 || values[3] <= 0 {
 		return nil

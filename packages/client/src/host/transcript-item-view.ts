@@ -106,6 +106,7 @@ export function transcriptCard(
         replyMessageId: item.replyMessageId ?? null,
         ...(item.endedAt ? { endedAt: item.endedAt } : {}),
         ...(item.usage ? { usage: item.usage } : {}),
+        ...(item.retry ? { retry: item.retry } : {}),
         ...(view.status === "background" ? { background: true } : {}),
         status,
       };

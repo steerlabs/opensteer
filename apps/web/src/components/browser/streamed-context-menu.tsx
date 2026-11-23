@@ -32,6 +32,7 @@ export function StreamedContextMenu({
     document.addEventListener("pointerdown", dismiss);
     return () => document.removeEventListener("pointerdown", dismiss);
   }, [onDismiss]);
+  const openableLink = linkUrl !== undefined && /^https?:\/\//iu.test(linkUrl);
   const items: readonly { label: string; action: StreamedMenuAction; disabled?: boolean }[] = [
     ...(basicInput
       ? []
@@ -42,7 +43,9 @@ export function StreamedContextMenu({
     ...(linkUrl
       ? [
           { label: "Copy Link Address", action: "copy-link" as const },
-          { label: "Open Link in New Tab", action: "open-link" as const },
+          ...(openableLink
+            ? [{ label: "Open Link in New Tab", action: "open-link" as const }]
+            : []),
         ]
       : []),
   ];

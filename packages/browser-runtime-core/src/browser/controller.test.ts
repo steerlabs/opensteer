@@ -1693,6 +1693,225 @@ describe("BrowserController", () => {
     },
   );
 
+  it("preserves context-menu consumer across same-viewer pointer moves and cursor queries, and clears on other input", async () => {
+    const cdp = page.cdpSession;
+    cdp.responses.set("Page.getFrameTree", { frameTree: { frame: { id: "main" } } });
+    cdp.responses.set("Page.addScriptToEvaluateOnNewDocument", { identifier: "observer" });
+    cdp.responses.set("Page.getLayoutMetrics", {
+      visualViewport: { clientWidth: 1280, clientHeight: 720 },
+    });
+    cdp.responses.set("DOM.getFrameOwner", () => {
+      throw new Error("The root has no owner.");
+    });
+    const controller = new BrowserController({
+      cdpRouter,
+      claims: validClaims({ editingVersion: 1 }),
+      files,
+      ledger,
+      replaceSiteCookies,
+      platform: "darwin",
+      signIns: noSignIns(),
+      sink,
+      clipboard: {
+        machineClipboardShared: false,
+        open: async () => ({ close: async () => null }),
+      },
+    });
+    await controller.start();
+    try {
+      await flushMicrotasks();
+      const world = cdp.sent.find(
+        (entry) =>
+          entry.method === "Runtime.addBinding" &&
+          String(entry.parameters?.executionContextName).startsWith("opensteer-editing-"),
+      )!.parameters!;
+      cdp.emit("Runtime.executionContextCreated", {
+        context: {
+          id: 9,
+          uniqueId: globalThis.crypto.randomUUID(),
+          name: world.executionContextName,
+          origin: "https://example.test",
+          auxData: { frameId: "main", isDefault: false },
+        },
+      });
+      const viewerA = globalThis.crypto.randomUUID();
+      const viewerB = globalThis.crypto.randomUUID();
+      const surfaceId = activeSurfaceId();
+      const emitMenu = () =>
+        cdp.emit("Runtime.bindingCalled", {
+          name: world.name,
+          executionContextId: 9,
+          payload: JSON.stringify({
+            kind: "menu",
+            x: 40,
+            y: 40,
+            editable: false,
+            selection: false,
+            linkUrl: "https://example.test/item",
+          }),
+        });
+
+      // Right-click followed by a 1px pointer move and cursor query from the same viewer must still deliver the menu.
+      await controller.handle({
+        type: "input.pointer",
+        action: "down",
+        button: "right",
+        surfaceId,
+        x: 0.2,
+        y: 0.2,
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        consumerToken: viewerA,
+      });
+      await controller.handle({
+        type: "input.pointer",
+        action: "move",
+        button: "none",
+        surfaceId,
+        x: 0.201,
+        y: 0.201,
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        consumerToken: viewerA,
+      });
+      await controller.handle({
+        type: "cursor.query",
+        surfaceId,
+        producerId: viewerA,
+        cursorSequence: 1,
+        pointSequence: 1,
+      });
+      await controller.handle({
+        type: "input.pointer",
+        action: "up",
+        button: "right",
+        surfaceId,
+        x: 0.201,
+        y: 0.201,
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        consumerToken: viewerA,
+      });
+      emitMenu();
+      await flushMicrotasks();
+      expect(
+        sink.messages.filter((message) => message.type === "browser.contextmenu"),
+      ).toMatchObject([{ consumerToken: viewerA, linkUrl: "https://example.test/item" }]);
+
+      // Once delivered, a stray second menu event without a new trigger is ignored.
+      emitMenu();
+      await flushMicrotasks();
+      expect(
+        sink.messages.filter((message) => message.type === "browser.contextmenu"),
+      ).toHaveLength(1);
+
+      // A move from a DIFFERENT viewer clears the pending consumer.
+      await controller.handle({
+        type: "input.pointer",
+        action: "down",
+        button: "right",
+        surfaceId,
+        x: 0.2,
+        y: 0.2,
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        consumerToken: viewerA,
+      });
+      await controller.handle({
+        type: "input.pointer",
+        action: "move",
+        button: "none",
+        surfaceId,
+        x: 0.3,
+        y: 0.3,
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        consumerToken: viewerB,
+      });
+      emitMenu();
+      await flushMicrotasks();
+      expect(
+        sink.messages.filter((message) => message.type === "browser.contextmenu"),
+      ).toHaveLength(1);
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it.each([
+    ["linux", false, ["meta"], 2],
+    ["darwin", false, ["meta"], 4],
+    ["linux", true, ["meta"], 2],
+    ["linux", true, ["primary"], 2],
+    ["darwin", true, ["primary"], 4],
+    ["linux", true, ["primary", "meta"], 2 | 4],
+    ["darwin", true, ["control"], 2],
+  ] as const)(
+    "maps %s pointer and wheel modifiers (editing=%s, modifiers=%j -> %d)",
+    async (platform, editing, modifiers, expectedMask) => {
+      const cdp = page.cdpSession;
+      cdp.responses.set("Page.getFrameTree", { frameTree: { frame: { id: "main" } } });
+      cdp.responses.set("Page.addScriptToEvaluateOnNewDocument", { identifier: "observer" });
+      const controller = new BrowserController({
+        cdpRouter,
+        claims: editing ? validClaims({ editingVersion: 1 }) : validClaims(),
+        files,
+        ledger,
+        replaceSiteCookies,
+        platform,
+        signIns: noSignIns(),
+        sink,
+        ...(editing
+          ? {
+              clipboard: {
+                machineClipboardShared: false,
+                open: async () => ({ close: async () => null }),
+              },
+            }
+          : {}),
+      });
+      await controller.start();
+      try {
+        const surfaceId = activeSurfaceId();
+        await controller.handle({
+          type: "input.pointer",
+          action: "down",
+          button: "left",
+          modifiers: [...modifiers],
+          surfaceId,
+          x: 0.2,
+          y: 0.2,
+          viewportWidth: 1280,
+          viewportHeight: 720,
+        });
+        await controller.handle({
+          type: "input.wheel",
+          deltaX: 0,
+          deltaY: 120,
+          modifiers: [...modifiers],
+          surfaceId,
+          x: 0.2,
+          y: 0.2,
+          viewportWidth: 1280,
+          viewportHeight: 720,
+        });
+        const pointerSent = commandsNamed("Input.dispatchMouseEvent", page);
+        expect(pointerSent.at(-2)?.parameters).toMatchObject({
+          type: "mousePressed",
+          modifiers: expectedMask,
+        });
+        expect(pointerSent.at(-1)?.parameters).toMatchObject({
+          type: "mouseWheel",
+          modifiers: expectedMask,
+        });
+      } finally {
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
+
   it("normalizes the caret to the native crop and refreshes stationary fields on crop changes", async () => {
     const cdp = page.cdpSession;
     cdp.responses.set("Page.getFrameTree", { frameTree: { frame: { id: "main" } } });

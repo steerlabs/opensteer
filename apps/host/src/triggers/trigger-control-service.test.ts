@@ -19,6 +19,7 @@ vi.mock("@opensteer/database", async (importOriginal) => ({
   readAgentThreadRecent: async () => ({
     runs: [],
     places: [],
+    pendingRequests: [],
   }),
 }));
 const now = "2026-08-12T12:00:00.000Z";

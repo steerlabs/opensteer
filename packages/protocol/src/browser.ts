@@ -590,10 +590,7 @@ const BaselineBrowserClientMessageSchema = z
       cursorSequence: cursorSequence.optional(),
       geometryRevision: z.number().int().nonnegative().optional(),
       captureRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-      modifiers: z
-        .array(z.enum(["alt", "control", "meta", "shift"]))
-        .max(4)
-        .optional(),
+      modifiers: EditingModifiersSchema.optional(),
       buttons: z.number().int().min(0).max(7).optional(),
       targeted: z.boolean().optional(),
       /** Host-issued in editing sessions: names the controller a page write or menu this input causes belongs to. */
@@ -614,10 +611,7 @@ const BaselineBrowserClientMessageSchema = z
       /** Both axes are fractional remote CSS pixels. DOM lines use 16px; pages use the remote viewport per axis. */
       geometryRevision: z.number().int().nonnegative().optional(),
       captureRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-      modifiers: z
-        .array(z.enum(["alt", "control", "meta", "shift"]))
-        .max(4)
-        .optional(),
+      modifiers: EditingModifiersSchema.optional(),
       targeted: z.boolean().optional(),
       deltaX: z.number().finite().min(-100_000).max(100_000),
       deltaY: z.number().finite().min(-100_000).max(100_000),

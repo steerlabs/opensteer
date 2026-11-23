@@ -14,8 +14,8 @@ import {
   useTabsRevision,
 } from "@opensteer/client/react";
 import {
+  DeviceIdSchema,
   PlaceContentPartSchema,
-  RunnerIdSchema,
   placeContentLabel,
   type PlaceContentPart,
 } from "@opensteer/core";
@@ -526,7 +526,7 @@ async function placePart(hostClient: HostClient, place: PlaceItem): Promise<Plac
 function nativePart(place: PlaceItem): PlacePart {
   if (place.kind === "app") throw new Error("App tabs cannot be attached.");
   if (place.kind === "page") throw new Error("A page is read, not named.");
-  const machineId = RunnerIdSchema.parse(place.device.machineId);
+  const machineId = DeviceIdSchema.parse(place.device.machineId);
   if (place.kind === "phone") {
     return parsePlacePart({
       display: "main",

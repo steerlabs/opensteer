@@ -20,6 +20,7 @@ const opaque = new Set([
   "link",
   "result",
   "payload",
+  "question",
   "source",
   "program",
   "text",

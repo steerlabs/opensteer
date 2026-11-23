@@ -311,6 +311,7 @@ export class BrowserController {
     BrowserSurfaceId,
     { observer: PageEditingObserver; ready: Promise<void>; unsubscribeCapture: () => void }
   >();
+  private readonly nativePresented = new Set<BrowserSurfaceId>();
   private readonly clipboardTerminals = new WeakSet<object>();
   private readonly clipboardParts = new ClipboardParts((message, outcome) =>
     this.clipboardResult(message, {
@@ -704,6 +705,24 @@ export class BrowserController {
     this.screencast.viewersShown(this.deliveredActive);
   }
 
+  setNativePresented(surfaceId: BrowserSurfaceId, presented: boolean): void {
+    if (presented) this.nativePresented.add(surfaceId);
+    else this.nativePresented.delete(surfaceId);
+    this.syncRemoteEditing(surfaceId);
+  }
+
+  private needsRemoteEditing(surfaceId: BrowserSurfaceId): boolean {
+    if (!this.nativePresented.has(surfaceId)) return true;
+    return (
+      this.targetedCasts.get(surfaceId)?.subscription === "frames" ||
+      this.legacySubscriptions.has(surfaceId)
+    );
+  }
+
+  private syncRemoteEditing(surfaceId: BrowserSurfaceId): void {
+    this.observers.get(surfaceId)?.observer.setRemoteEditing(this.needsRemoteEditing(surfaceId));
+  }
+
   async followPresentedSurface(
     surfaceId: BrowserSurfaceId,
     size: PageSize | (() => PageSize | null),
@@ -973,7 +992,9 @@ export class BrowserController {
       (message.type === "input.key" &&
         (message.modifiers.includes("primary") ||
           message.location !== undefined ||
-          message.repeat !== undefined));
+          message.repeat !== undefined)) ||
+      ((message.type === "input.pointer" || message.type === "input.wheel") &&
+        Boolean(message.modifiers?.includes("primary")));
     if (!this.editing && extension)
       return this.enqueueFailure(
         new BrowserRuntimeError("forbidden", "Browser editing was not negotiated."),
@@ -1603,19 +1624,7 @@ export class BrowserController {
     await this.clipboard?.finish();
     if (admittedSurface) {
       const owner = this.menuConsumers.get(admittedSurface);
-      const release =
-        message.type === "input.pointer"
-          ? `pointer:${message.button}`
-          : message.type === "input.key"
-            ? `key:${message.code || message.key}`
-            : null;
-      if (
-        !owner ||
-        !(message.type === "input.pointer" || message.type === "input.key") ||
-        message.action !== "up" ||
-        owner.release !== release ||
-        owner.consumerToken !== message.consumerToken
-      )
+      if (owner && !preservesMenuConsumer(message, owner))
         this.menuConsumers.delete(admittedSurface);
     }
     if (this.editing)
@@ -1791,6 +1800,7 @@ export class BrowserController {
         let target = this.targetedCasts.get(surfaceId);
         if (message.type === "stream.unsubscribe") {
           this.targetedCasts.delete(surfaceId);
+          this.syncRemoteEditing(surfaceId);
           await target?.cast.close();
           return;
         }
@@ -1833,6 +1843,7 @@ export class BrowserController {
         // Reserve capacity before binding; a failed transition restores its old subscription.
         this.targetedCasts.set(surfaceId, target);
         target.subscription = subscription;
+        this.syncRemoteEditing(surfaceId);
         try {
           if (!previous) await target.cast.start();
           await target.cast.setStreaming(subscription === "frames", message.captureRegion === true);
@@ -1845,6 +1856,7 @@ export class BrowserController {
         } catch (error) {
           if (previous) {
             target.subscription = previous;
+            this.syncRemoteEditing(surfaceId);
             try {
               await target.cast.setStreaming(previous === "frames");
             } catch (rollback) {
@@ -1852,6 +1864,7 @@ export class BrowserController {
             }
           } else {
             this.targetedCasts.delete(surfaceId);
+            this.syncRemoteEditing(surfaceId);
             target.cast.abort();
           }
           throw error;
@@ -1861,6 +1874,7 @@ export class BrowserController {
         if (id) {
           if (message.type === "stream.subscribe") this.legacySubscriptions.add(id);
           else this.legacySubscriptions.delete(id);
+          this.syncRemoteEditing(id);
           this.ledger.touch(id);
         }
         await this.screencast.setStreaming(
@@ -2188,7 +2202,11 @@ export class BrowserController {
       await binding.cdp.send("Input.dispatchMouseEvent", {
         button: "none",
         buttons: pressedButtonMask(gesture?.buttons ?? noButtons),
-        modifiers: editingModifiers(message.modifiers ?? [], this.platform, !this.editing),
+        modifiers: editingModifiers(
+          message.modifiers ?? [],
+          this.platform,
+          !message.modifiers?.includes("primary"),
+        ),
         deltaX: message.deltaX,
         deltaY: message.deltaY,
         type: "mouseWheel",
@@ -2516,7 +2534,11 @@ export class BrowserController {
       await cdp.send("Input.dispatchMouseEvent", {
         button: effectiveButton,
         buttons: pressedButtonMask(held),
-        modifiers: editingModifiers(message.modifiers ?? [], this.platform, !this.editing),
+        modifiers: editingModifiers(
+          message.modifiers ?? [],
+          this.platform,
+          !message.modifiers?.includes("primary"),
+        ),
         clickCount: button ? (message.clickCount ?? 1) : 0,
         type:
           message.action === "down"
@@ -2805,7 +2827,8 @@ export class BrowserController {
           void coordinates
             .then((point) => {
               const mapped = this.editingCoordinates(surfaceId, point);
-              if (owner && this.menuConsumers.get(surfaceId) === owner && mapped && !this.closed)
+              if (owner && this.menuConsumers.get(surfaceId) === owner && mapped && !this.closed) {
+                this.menuConsumers.delete(surfaceId);
                 return this.send({
                   type: "browser.contextmenu",
                   surfaceId,
@@ -2815,6 +2838,7 @@ export class BrowserController {
                   x: mapped.x,
                   y: mapped.y,
                 });
+              }
               return undefined;
             })
             .catch(() => undefined);
@@ -2822,6 +2846,7 @@ export class BrowserController {
         undefined,
         this.personAuthority ? (event) => this.observePersonFill(surfaceId, event) : undefined,
         this.saveAuthority ? (event) => this.observePersonSave(surfaceId, event) : undefined,
+        this.needsRemoteEditing(surfaceId),
       );
       const unsubscribeCapture =
         binding.page.capture?.subscribe(() => observer.refresh()) ?? (() => {});
@@ -3361,6 +3386,7 @@ export class BrowserController {
       this.observers.get(surfaceId)?.unsubscribeCapture();
       void this.observers.get(surfaceId)?.observer.close();
       this.observers.delete(surfaceId);
+      this.nativePresented.delete(surfaceId);
       this.menuConsumers.delete(surfaceId);
       this.hoverOwners.delete(surfaceId);
       const lane = this.lanes.get(surfaceId);
@@ -4441,6 +4467,30 @@ const editingMessageKinds = new Set([
   "clipboard.paste-data",
   "clipboard.part",
 ]);
+
+function preservesMenuConsumer(
+  message: BrowserClientMessage,
+  owner: { readonly consumerToken: string; readonly release: string },
+): boolean {
+  if (
+    message.type === "cursor.query" ||
+    message.type === "cursor.reset" ||
+    message.type === "viewport.follow"
+  )
+    return true;
+  if (message.type === "input.pointer") {
+    if (message.consumerToken !== owner.consumerToken) return false;
+    return (
+      message.action === "move" ||
+      (message.action === "up" && owner.release === `pointer:${message.button}`)
+    );
+  }
+  if (message.type === "input.key") {
+    if (message.consumerToken !== owner.consumerToken) return false;
+    return message.action === "up" && owner.release === `key:${message.code || message.key}`;
+  }
+  return false;
+}
 
 function contextMenuTrigger(
   message: BrowserClientMessage,
