@@ -1461,6 +1461,15 @@ export const commandTable: CommandTable = {
     governsKinds: ["tab-group"],
     governs: (c) => resource("tab-group", c.groupId),
   },
+  "tab.group.close": {
+    family: "tabs-apps",
+    scope: "task",
+    step: "B",
+    // It closes the group's tabs, so it answers as closing those tabs does (tab.close).
+    faces: one("narrow", { readWrite: "connections" }),
+    governsKinds: ["tab-group"],
+    governs: (c) => resource("tab-group", c.groupId),
+  },
   "app.rename": {
     family: "tabs-apps",
     scope: "home",

@@ -85,7 +85,7 @@ describe("the command table", () => {
     const types = [...unionMembers().keys()].sort();
     expect(Object.keys(commandTable).sort()).toEqual(types);
     expect(rows.map((row) => row.type).sort()).toEqual(types);
-    expect(types).toHaveLength(138);
+    expect(types).toHaveLength(139);
   });
 
   it("says what the data file says, row by row and face by face", () => {

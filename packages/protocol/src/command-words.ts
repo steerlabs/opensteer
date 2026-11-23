@@ -142,6 +142,7 @@ export const commandTitles: { readonly [K in CommandType]: string } = {
   "tab.organize": "Arrange tabs",
   "tab.group.update": "Change a tab group",
   "tab.group.delete": "Delete a tab group",
+  "tab.group.close": "Close a tab group and its tabs",
   "app.rename": "Rename an app",
   "app.start": "Start an app",
   "app.stop": "Stop an app",

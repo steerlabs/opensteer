@@ -3354,6 +3354,30 @@
       }
     },
     {
+      "type": "tab.group.close",
+      "family": "tabs-apps",
+      "governs": "a tab group ← `groupId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`closeGroup(actor, …)` (`tab-service.ts:1208`): closes the tabs the group has, so it answers as `tab.close` of them (added with the Electron smokes branch's command)",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2606: the browser runtime",
+        "ongoing": false
+      }
+    },
+    {
       "type": "app.rename",
       "family": "tabs-apps",
       "governs": "a published app ← `appId`",

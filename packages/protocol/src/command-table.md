@@ -177,7 +177,7 @@ edit. Callers: (a) your own agent at Full access, (b) your own agent below Full 
 | `browser.pool.restart` | a Cloud Computer's pooled browser ← `runnerId` | destroy | now | ask | now | nf | B |  |
 | `browser.pool.notice.seen` | a notice shown to the person | person-view | nf | nf | nf | nf | — |  |
 
-## Tabs and apps (11)
+## Tabs and apps (12)
 
 | Command | Governs ← input | Class | (a) | (b) | (c) | (d) | Step | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -188,6 +188,7 @@ edit. Callers: (a) your own agent at Full access, (b) your own agent below Full 
 | `tab.organize` | tab order and groups | preference | now | now | now | now | A | ; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
 | `tab.group.update` | a tab group ← `groupId` | preference | now | now | now | now | A | ; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
 | `tab.group.delete` | a tab group ← `groupId` | preference | now | now | now | now | B | `deleteGroup(ownerId, …)` (`tab-service.ts:913`) |
+| `tab.group.close` | a tab group ← `groupId` | narrow | now | now | now | now | B | `closeGroup(actor, …)` (`tab-service.ts:1208`): closes the tabs the group has, so it answers as `tab.close` of them (added with the Electron smokes branch's command) |
 | `app.rename` | a published app ← `appId` | preference | now | ask | now | nf | B | `rename(ownerId, …)` (`app-service.ts:401`) |
 | `app.start` | an app server ← `appId` | widen-self | now | ask | now | nf | A | `AppActor` (`app-service.ts:51-53`); X11: an app server runs on, in no connection's Disconnect set, so a connection asks unless that lineage is its own |
 | `app.stop` | same | narrow | now | ask | now | nf | A | ; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
