@@ -20,12 +20,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  AntigravityHarnessDriver,
   antigravityModelDescriptors,
   antigravitySessionPolicy,
   classifyAntigravityAcpError,
   normalizeAntigravityUpdate,
   settleAntigravityHeldAssistant,
 } from "./driver.js";
+import * as antigravityRuntime from "./runtime.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -494,6 +496,8 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
     history: [],
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: undefined,
+    personalContext: true,
+    personLineage: true,
     machineAccessNotice: "No other computers are reachable.",
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,
@@ -620,4 +624,49 @@ it("delivers two namespaced review skills and a loose review through Antigravity
     expect(payload).toContain(skill.path);
   }
   await fixture.adapter.close();
+});
+
+it("refuses a task that is not the person's own before starting Antigravity", async () => {
+  const fixture = await setupTurn("skills");
+  const prepared = vi.spyOn(antigravityRuntime, "prepareAntigravityRuntime").mockResolvedValue({
+    directory: fixture.context.workspacePath,
+    executable: process.execPath,
+    harness: process.execPath,
+    protocolVersion: 1,
+    version: "1.4.1",
+  });
+  const driver = new AntigravityHarnessDriver({
+    nodeExecutable: process.execPath,
+    runtimeCacheDirectory: fixture.context.workspacePath,
+  });
+  try {
+    await driver.prepare({
+      config: {},
+      environment: fixture.context.environment,
+      providerState: fixture.context.providerState,
+      runtimeBoundary: fixture.context.runtimeBoundary,
+      signal: AbortSignal.timeout(2_000),
+      sourceId: "google",
+      workingDirectory: fixture.context.workspacePath,
+    });
+    const adapter = await driver.create({
+      config: {},
+      instanceId: fixture.context.harnessInstanceId,
+      sourceId: "google",
+    });
+    try {
+      await expect(
+        adapter.startSession({ ...fixture.context, personLineage: false }),
+      ).rejects.toMatchObject({
+        code: "forbidden",
+        message:
+          "Antigravity starts with your own Antigravity settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+      });
+    } finally {
+      await adapter.close();
+    }
+  } finally {
+    prepared.mockRestore();
+    await fixture.adapter.close();
+  }
 });

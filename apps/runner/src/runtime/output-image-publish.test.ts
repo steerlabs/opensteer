@@ -305,6 +305,7 @@ describe("RunnerRuntime output image publishing", () => {
             providerId: "test-provider",
           },
           personalContext: true,
+          personLineage: true,
           plugins: {
             token: "plugin-cache-token",
             url: "https://host.example/internal/v1/plugin-cache",

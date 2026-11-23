@@ -239,6 +239,9 @@ describe("Codex stdio process", () => {
       expect(stderr).toContain("Bearer [REDACTED]");
       expect(stderr).toContain("[OPAQUE_CREDENTIAL]");
       expect(stderr).not.toContain("deployment-secret");
+      // A proxy address the engine prints can carry a password.
+      expect(stderr).not.toContain("fake-proxy-password");
+      expect(stderr).toContain("http://[REDACTED]@proxy.example.test:8080");
       expect(stderr).not.toContain("bearer-secret");
       expect(stderr).not.toContain("os_secret_session");
       expect(stderr).not.toContain("z".repeat(20));
@@ -295,11 +298,28 @@ describe("Codex stdio process", () => {
       await fixture.close();
     }
   });
+
+  it("scrubs a configured proxy password printed separately by the Codex app-server", async () => {
+    const proxy = "http://alice:p@ss-word@proxy.invalid:8080";
+    const fixture = await startLifecycleClient("exit", "agent-tools-secret", proxy);
+    try {
+      await expect(fixture.client.request("initialize", {}, null)).rejects.toMatchObject({
+        details: {
+          stderr: expect.stringContaining(
+            "proxy http://[REDACTED]@proxy.invalid:8080; password [REDACTED]",
+          ),
+        },
+      });
+    } finally {
+      await fixture.close();
+    }
+  });
 });
 
 async function startLifecycleClient(
   scenario: "exit" | "no-read" | "timeout",
   agentToolsToken = "agent-tools-secret",
+  proxy?: string,
 ): Promise<{
   readonly client: CodexStdioClient;
   readonly close: () => Promise<void>;
@@ -321,6 +341,7 @@ async function startLifecycleClient(
       FAKE_CODEX_PROCESS_SCENARIO: scenario,
       OPENSTEER_AGENT_TOOLS_TOKEN: agentToolsToken,
       OPENSTEER_TEST_API_KEY: "deployment-secret",
+      ...(proxy ? { HTTPS_PROXY: proxy, FAKE_CODEX_PROXY_DIAGNOSTIC: "1" } : {}),
     }),
     launch: { arguments: [lifecycleServer], executable: process.execPath },
     onFailure: failure.resolve,

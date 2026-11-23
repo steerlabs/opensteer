@@ -638,6 +638,7 @@ describe("wire protocol", () => {
       commandId: createId("command"),
       context: {
         personalContext: true,
+        personLineage: true,
         accessMode: "full-access",
         assignment: null,
         taskPurpose: "task",

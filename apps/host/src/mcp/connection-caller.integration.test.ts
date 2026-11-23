@@ -1419,7 +1419,7 @@ describeStore("connection grants and lineage", (it) => {
     expect(context.reports.messages.map(({ id }) => id)).toEqual([report.message.id]);
   });
 
-  it("only lets an everything seed join the owner's provider session while it still qualifies", async ({
+  it("rotates off the owner's provider session on an everything seed and fails the queued seed if access ends", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("lineage-provider-session");
@@ -1444,7 +1444,20 @@ describeStore("connection grants and lineage", (it) => {
       .executeTakeFirstOrThrow();
     expect((await send(agent, task, "join-owner-session")).isError).not.toBe(true);
     const [reserved] = await read();
-    expect(reserved).toMatchObject({ providerSessionId: session.id, status: "queued" });
+    expect(reserved?.status).toBe("queued");
+    // A connected agent's Run never resumes a provider session created under the
+    // person's own configuration (`person_lineage = true`).
+    expect(reserved?.providerSessionId).not.toBe(session.id);
+    const rotated = await database
+      .selectFrom("providerSessions")
+      .select(["id", "personalContext", "personLineage"])
+      .where("id", "=", reserved!.providerSessionId!)
+      .executeTakeFirstOrThrow();
+    expect(rotated).toEqual({
+      id: reserved!.providerSessionId,
+      personalContext: true,
+      personLineage: false,
+    });
     const command = await database
       .selectFrom("commands")
       .select("id")

@@ -250,6 +250,94 @@ no operation variant, by design.
 
 For the agent builder's view of this contract, see [connecting-an-agent.md](connecting-an-agent.md).
 
+## How your own agents start
+
+A task in the person's own lineage starts its engine with the engine's own configuration, as if the
+person had started it in Agent home themselves: their user, project and local settings, the
+folder's `CLAUDE.md` or `AGENTS.md`, the engine's own tools (web search included), and their own
+MCP servers, hooks and skills. Opensteer adds its MCP server, its instructions and its skills, and
+overrides only what it needs, each with its reason beside it in the driver. A server of theirs named
+`opensteer` is replaced by Opensteer's in Claude Code, and a Run of Claude Code that has not loaded
+Opensteer's fails. Codex merges the two, Opensteer's fields winning, so their `enabled_tools` cannot
+hide Opensteer's tools; when theirs runs a command, the Run fails with one sentence asking them to
+rename it.
+
+The person wrote those settings for their own use. A task outside the person's own lineage
+starts the engine with none of them, with or without personal context: applying them would give a
+connected agent or a chat more than the person approved. The lineage walk that decides personal
+context decides this too (`runContextLineage`, `packages/database/src/run-personal-context.ts`): a
+task is not the person's own when its Run has a connection, a task on the walk was started by a
+connection, any message in it or the tasks it descends from was written by a connection, or the walk
+meets a chat. A memory pass is one of the person's own automations, driven by Opensteer's own fixed
+script for them, so it stays in the person's own lineage. Lineage narrows and never widens back:
+the person writing into such a task again, a task linked under it, and an automation of theirs that
+fires from it are not their own either. When `personLineage` narrows, the provider session rotates
+too (`provider_sessions.person_lineage`), so a non-own Run never resumes a native conversation made
+under the person's configuration. The Runner is told `personLineage`, and `engineConfiguration`
+(`packages/harness/src/engine-configuration.ts`) is the one place that chooses.
+
+Such a task keeps the task's mode, runs nothing of theirs (hooks, notify commands, command
+prefixes, credential commands, MCP servers) and reads none of their instructions or memory; what
+the engine needs to sign in stays. An engine runs such a task only where an engine-lane test plants
+one of each kind in a temporary home and project and shows all three on the real engine. Otherwise
+`assertEngineMayRun`, in the same file, refuses it before any process starts, with code `forbidden`
+and one sentence, for example: "Cursor starts with your own Cursor settings, so it runs only tasks
+you started yourself that no connected agent or chat has written to." The Home offers every engine
+to every task and does not refuse by engine itself, so the Runner refuses. Background text (task
+naming and Auto-mode review) always starts without the person's configuration on every engine,
+using the Opensteer-owned home on Codex (refusing as unavailable when no file login is present or
+the active provider runs a credential program) and the others'-tasks folder on Pi (refusing as
+unavailable when `models.json` or `auth.json` contains a `"!"` shell command).
+
+- **Claude Code** runs both. Its own task gets the person's settings, instructions, auto-memory,
+  plugins, tools and MCP servers. Another's task loads no settings source, no auto-memory, no user
+  plugins, only Opensteer's MCP server, and no web tools (`WebSearch`, `WebFetch`), and gates shell
+  commands through Opensteer's hook (`packages/harness-claude/src/own-configuration.engine.test.ts`).
+- **Pi** runs both when its `models.json` and `auth.json` contain no `"!"`-prefixed shell command
+  values (or on an isolated profile). Another's task starts with an agent folder of Opensteer's
+  that links only the person's `auth.json` and `models.json` (when present) and with an empty
+  system prompt, so their settings, command prefix, `SYSTEM.md`, `APPEND_SYSTEM.md`, `AGENTS.md`,
+  prompts and the project's `.pi` stay out, Pi keeps its own prompt, and the driver's extension
+  enforces Supervised mode. If either file contains a `"!"` value (which Pi executes as a shell
+  command to fetch a credential) or cannot be parsed, `assertEngineMayRun` refuses others' tasks
+  with code `forbidden` and background text returns `unavailable` before spawning Pi
+  (`packages/harness-pi/src/own-configuration.engine.test.ts`).
+- **Codex** runs both when the person's sign-in is in a file (`auth.json`, Codex's default) or on
+  an isolated profile. Its own task runs from the person's Codex home with their rules, `notify`,
+  instructions and MCP servers. Another's task runs from an Opensteer-owned `CODEX_HOME` that holds
+  only a symbolic link to the person's `auth.json` (never a copy; Codex 0.162.0 writes `auth.json`
+  through the link on both login and OAuth token refresh) and the reach-the-model settings from
+  their `config.toml`, with `cli_auth_credentials_store = "file"` and `project_doc_max_bytes = 0`
+  (`packages/harness-codex/src/own-configuration.engine.test.ts`). When the person stores their
+  Codex sign-in in the OS keyring (keyed by `CODEX_HOME` path), has no `auth.json`, or their active
+  provider runs a credential command or uses AWS/Bedrock credentials (`auth`, `aws.*`,
+  `amazon-bedrock`, `amazon-bedrock-runtime`), `assertEngineMayRun` refuses others' tasks with code
+  `forbidden` and background text returns `unavailable`.
+- **Cursor**, **Grok**, **Muse Code**, **OpenCode** and **Antigravity** run only the person's own
+  tasks: none has a real-engine boundary test proving all three guarantees on others' tasks, so
+  `assertEngineMayRun` refuses them with code `forbidden` before any process starts.
+
+Every task's engine gets the person's proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`,
+`NO_PROXY` and their lowercase spellings) and certificate variables (`NODE_EXTRA_CA_CERTS`,
+`SSL_CERT_FILE`, `SSL_CERT_DIR`) from their login shell. The Home's launch environment excludes
+these login-shell variables. A task's commands run as the person and can read the engine's
+environment, including passwords in proxy addresses. Opensteer removes proxy usernames and
+passwords from its own records when it writes errors and diagnostics from every engine,
+recorded Run failures, Runner log lines, Runner command rejections and inspection details, and
+the desktop supervisor's child logs and status details
+(`redactNetworkCredentials`, `packages/shared/src/safeMessage.ts`).
+
+In the person's own task the mode is the task's and the rules are the person's. The engine is
+started in the task's mode (Claude Code's permission mode on its command line, Codex's approval
+policy and sandbox on every turn), and a default mode in the person's settings does not replace it.
+What the person allowed in their engine is allowed, as in their terminal started in that mode: an
+allow rule, a hook, a command rule or an MCP tool's approval of theirs applies, and so do a
+project folder's own engine settings, as they would in a terminal opened there. Opensteer adds no
+prompt of its own on top. Opensteer's own tools are decided by the Home from the task's mode, not
+by the engine. A task started by a connected agent or a chat shows the connection mode descriptions
+in its mode picker; a person-started task later written into by another keeps the own-task sentence
+for now (safe side: the engine asks more than the sentence says).
+
 ## Stop and Disconnect
 
 ### Stop on a task or a tab
