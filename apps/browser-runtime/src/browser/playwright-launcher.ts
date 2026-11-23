@@ -1369,7 +1369,7 @@ class PlaywrightContextHandle implements BrowserContext {
   closeTarget: ((targetId: string) => Promise<void>) | undefined;
   /** Whether the browser behind this context still answers its own debugger. */
   browserAlive: (() => Promise<boolean>) | undefined;
-  beforeCreatePage: (() => Promise<() => void>) | undefined;
+  beforeCreatePage: ((signal?: AbortSignal) => Promise<() => void>) | undefined;
 
   readonly authenticator: PasskeyAuthenticator | undefined;
   readonly providerConfig: BrowserPagePolicyConfig;
@@ -2364,7 +2364,7 @@ class PlaywrightContextHandle implements BrowserContext {
     readonly signal?: AbortSignal;
   }): Promise<BrowserPage> {
     // TS13: admitted under memory pressure, one at a time; the turn ends once the page exists.
-    const done = await this.beforeCreatePage?.().catch(() => undefined);
+    const done = await this.beforeCreatePage?.(options?.signal).catch(() => undefined);
     try {
       return await this.createAdmittedPage(options);
     } finally {

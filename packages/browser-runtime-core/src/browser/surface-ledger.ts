@@ -570,6 +570,7 @@ export class SurfaceLedger {
     const documentId = record.documentId;
     let stage: "protection" | "capture" = "protection";
     let slept = false;
+    let captured = false;
     try {
       const protection = holds(await this.engineProtection(record));
       if (protection) return refused(protection);
@@ -579,6 +580,7 @@ export class SurfaceLedger {
         2_000,
         { timeoutError: () => new Error("Tab capture timed out.") },
       );
+      captured = true;
       if (
         live.page.captureRestore &&
         engine === null &&
@@ -627,7 +629,14 @@ export class SurfaceLedger {
       this.emit({ type: "changed", change: "updated", surface: this.toSurface(record) });
       slept = true;
     } catch {
-      if (record.live === live && record.documentId === documentId) {
+      // Only a capture that failed leaves the tab unrestorable; a freeze or a protection read
+      // that timed out is this pass's refusal, and the next pass tries again.
+      if (
+        stage === "capture" &&
+        !captured &&
+        record.live === live &&
+        record.documentId === documentId
+      ) {
         record.unrestorable = true;
         if (record.restore) record.restore = { url: record.url, engine: null, bytes: 0 };
       }
@@ -783,8 +792,12 @@ export class SurfaceLedger {
             expression: "[document.readyState, location.href]",
             returnByValue: true,
           }),
-          1_000,
-          { timeoutError: () => new Error("The page did not answer in time.") },
+          // Never past the wait's own deadline or its operation's end.
+          Math.max(1, Math.min(1_000, deadline - Date.now())),
+          {
+            ...(signal ? { signal } : {}),
+            timeoutError: () => new Error("The page did not answer in time."),
+          },
         ).catch(() => null)) as { result?: { value?: unknown } } | null;
         const [readyState, href] = Array.isArray(read?.result?.value) ? read.result.value : [];
         if (

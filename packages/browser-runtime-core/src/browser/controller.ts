@@ -3541,6 +3541,9 @@ export class BrowserController {
       this.cdpRouter.listOwnedTargets(this.claims.sessionId).includes(attachTargetId)
     ) {
       await this.ledger.settleTarget(attachTargetId);
+      // A cancel that came while the target settled ends the command before it attaches.
+      const request = this.scriptCommands.get(message.requestId);
+      if (request?.message === message && request.cancelled) throw commandCancelled();
     }
     // A new tab opens blank and loads its URL only once it has its size, so
     // the site's first layout already sees the person's size.
@@ -4120,8 +4123,16 @@ export class BrowserController {
           if (!binding) throw new BrowserRuntimeError("not_found", "The new tab closed.");
           if (origin === "person") this.ledger.recordHumanActivity(tabId, { kind: "navigation" });
           const navigation = this.ledger.navigate(tabId, url, message.navigationId);
-          if (message.replyBudget) await navigation;
-          else void navigation.catch(() => undefined);
+          if (message.replyBudget) {
+            // Stop during the first load stops the load.
+            const stop = () => void binding.cdp.send("Page.stopLoading").catch(() => undefined);
+            operationSignal.addEventListener("abort", stop, { once: true });
+            try {
+              await untilAborted(navigation, operationSignal);
+            } finally {
+              operationSignal.removeEventListener("abort", stop);
+            }
+          } else void navigation.catch(() => undefined);
         }
       }
       await this.drainTabs();
