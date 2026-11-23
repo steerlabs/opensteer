@@ -943,9 +943,7 @@ export async function assertActiveGrant(
   },
   executionNow: () => number = Date.now,
 ): Promise<import("./execution-authority.js").RunLineage> {
-  return withPersonalReadTransaction(database, (transaction) =>
-    assertActiveGrantInStore(transaction, input, executionNow),
-  );
+  return assertActiveGrantInStore(database, input, executionNow);
 }
 export async function bindProviderSession(
   database: Kysely<DatabaseSchema>,

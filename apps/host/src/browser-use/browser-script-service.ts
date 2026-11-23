@@ -23,6 +23,7 @@ type Services = {
     Partial<Pick<BrowserService, "pooledScriptPageWitness">>;
   store: Pick<OpensteerStore, "admitExecution">;
   tabs: Pick<TabService, "browserScriptPages" | "bindBrowserScript" | "open">;
+  workerEntry?: URL;
 };
 type ManagedTarget = Awaited<ReturnType<ReturnType<typeof createBrowserUsePort>["openPage"]>>;
 type SharedTarget = Awaited<ReturnType<ReturnType<ChromeSharedTabs["browserUsePort"]>["openPage"]>>;
@@ -141,6 +142,7 @@ export class BrowserScriptService {
       return port;
     };
     this.#repl = new BrowserReplService({
+      ...(services.workerEntry ? { workerEntry: services.workerEntry } : {}),
       port: {
         listPages: (call) => {
           const port = byContext(call.contextKey);
