@@ -12,7 +12,9 @@ import {
 import {
   AcpHarnessAdapter,
   createAcpProtocolClient,
+  acpMcpTool,
   normalizeAcpUpdate,
+  validToolIdentity,
   type AcpInspectionSnapshot,
   type AcpNormalizedUpdate,
   type AcpPermissionRequest,
@@ -418,6 +420,7 @@ class GrokHarnessAdapter implements HarnessAdapter {
         classifyError: grokAcpError,
         normalizeUpdate: normalizeGrokUpdate,
         toolUpdates: grokToolSubagents,
+        toolIdentity: grokToolIdentity,
         permissionChoices: grokPermissionChoices,
         rewritePromptText: rewriteGrokSkillInvocation,
       },
@@ -537,6 +540,16 @@ export function grokPermissionChoices(request: AcpPermissionRequest) {
       },
     ];
   });
+}
+
+/**
+ * Grok titles a call with its tool name, or with words about the step; only a
+ * name names it, and structured MCP fields name it better still.
+ */
+export function grokToolIdentity(call: import("@opensteer/harness-acp").AcpToolCall) {
+  return !acpMcpTool(call) && call.title && /^[\w.:-]+$/u.test(call.title)
+    ? validToolIdentity({ name: call.title, namespace: "acp" })
+    : undefined;
 }
 
 // Adapted from T3 Code's xaiAcpExtension.ts (MIT).

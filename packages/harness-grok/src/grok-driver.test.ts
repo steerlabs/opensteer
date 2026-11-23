@@ -8,6 +8,7 @@ import {
   grokPermissionChoices,
   normalizeGrokUpdate,
   parseGrokDeviceChallenge,
+  grokToolIdentity,
   rewriteGrokSkillInvocation,
   withResolvedGrokEffort,
 } from "./grok-driver.js";
@@ -182,5 +183,22 @@ describe("Grok normalization", () => {
       ).modelSelection.options.effort;
     expect(resolved("xhigh")).toBe("xhigh");
     expect(resolved("ultra")).toBeUndefined();
+  });
+});
+
+describe("Grok tool identity", () => {
+  it("names a call by an identifier title unless MCP fields name it", () => {
+    expect(grokToolIdentity({ id: "1", title: "spawn_subagent" })).toEqual({
+      name: "spawn_subagent",
+      namespace: "acp",
+    });
+    expect(grokToolIdentity({ id: "2", title: "Inspect files" })).toBeUndefined();
+    expect(
+      grokToolIdentity({
+        id: "3",
+        meta: { mcp: { server: "opensteer", tool: "opensteer_task_read" } },
+        title: "opensteer_task_read",
+      }),
+    ).toBeUndefined();
   });
 });

@@ -57,6 +57,7 @@ import {
   discoverModelServers,
   HarnessSteerDeliveryUnknownError,
   identifyModelServer,
+  EventBufferOverflowError,
   isHarnessLiveEvent,
   LiveSessionDirectory,
   type HarnessGenerateTextResult,
@@ -3076,10 +3077,14 @@ export class RunnerRuntime {
             "harness_protocol_error",
           );
     } catch (error) {
+      // Only an overflowing buffer spent the event budget; any other event the
+      // Runner could not take broke the harness protocol.
       terminal = consumptionError
         ? failureEvent(
             safeMessage(consumptionError, safeMessageOptions),
-            "harness_event_budget_exceeded",
+            consumptionError instanceof EventBufferOverflowError
+              ? "harness_event_budget_exceeded"
+              : "harness_protocol_error",
           )
         : active.abort.signal.aborted
           ? { data: { status: "interrupted" }, type: "run.interrupted" }
