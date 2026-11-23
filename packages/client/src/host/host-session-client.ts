@@ -2044,13 +2044,11 @@ export class HttpHostClient {
       old?.attention !== state.attention ||
       old.snapshot?.counts.pendingRequestCount !== shell.counts.pendingRequestCount ||
       old.snapshot?.counts.needsYouCount !== shell.counts.needsYouCount;
-    const effectiveWorkPolicy = shell.effectiveWorkPolicy ?? null;
     if (
       tasksChanged ||
       taskChanges ||
       visitsChanged ||
       attentionChanged ||
-      effectiveWorkPolicy !== this.#snapshot.effectiveWorkPolicy ||
       connection !== this.#snapshot.connection
     ) {
       const taskLists =
@@ -2066,7 +2064,6 @@ export class HttpHostClient {
           ...this.#snapshot,
           connection,
           connectionInterrupted: attached ? false : this.#snapshot.connectionInterrupted,
-          effectiveWorkPolicy,
           ...taskLists,
           ...(attentionChanged
             ? {

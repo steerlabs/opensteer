@@ -210,6 +210,40 @@ integration.sequential("browser sign-in authority", () => {
     );
   });
 
+  it("adds a source only on the person's own unfinished, unexpired pairing (AD10)", async ({
+    storeFixture,
+  }) => {
+    const { fixture, sources, store } = storeFixture;
+    const database = store.database;
+    const { ownerId } = await fixture();
+    const consume = (codeHash: string) =>
+      sources.consumePairing({
+        origin: "https://source-host.test",
+        routeGeneration: null,
+        codeHash,
+        tokenHash: createHash("sha256").update(randomUUID()).digest("hex"),
+        name: "Chrome",
+        replaces: null,
+      });
+    const before = await database.selectFrom("browserSources").select("id").execute();
+    // No pairing the person started: refused.
+    await expect(
+      consume(createHash("sha256").update(randomUUID()).digest("hex")),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    // A pairing past its time: refused.
+    const expired = createHash("sha256").update(randomUUID()).digest("hex");
+    await sources.createPairing({
+      codeHash: expired,
+      ownerId,
+      expiresAt: new Date(Date.now() - 1_000),
+      canonicalOrigin: "https://source-host.test",
+      remoteOrigin: null,
+      remoteGeneration: null,
+    });
+    await expect(consume(expired)).rejects.toMatchObject({ code: "forbidden" });
+    expect(await database.selectFrom("browserSources").select("id").execute()).toEqual(before);
+  });
+
   it("binds a source to the destination it paired on, and an older source to its first one", async ({
     storeFixture,
   }) => {

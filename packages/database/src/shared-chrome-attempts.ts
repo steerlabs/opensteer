@@ -29,7 +29,7 @@ export function sharedChromeAttempts(database: Kysely<DatabaseSchema>) {
         .where("id", "=", witness.connectionId)
         .where("userId", "=", witness.ownerId)
         .where("grantRevision", "=", witness.grantRevision)
-        .where(liveConnection(database, new Date()))
+        .where(liveConnection(new Date()))
         .executeTakeFirst();
       if (updated.numUpdatedRows !== 1n)
         throw new OpensteerError({

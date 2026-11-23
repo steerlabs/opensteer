@@ -219,16 +219,15 @@ describe("one connected agent on the phone", () => {
     ]);
     expect(row("tasks", "tasks")).toMatchObject({ value: true });
     expect(row("mode", "auto")).toMatchObject({ selected: true });
-    expect(row("activity", "unavailable").label).toBe(
-      "This Opensteer doesn’t keep a list of what connected agents did yet.",
-    );
+    // Its Recent activity is what the Home reports for it (connections.activity): nothing yet.
+    expect(row("activity", "empty").label).toBe("Nothing yet.");
     expect(
       section("about")?.rows.map((candidate) => [
         candidate.label,
         "detail" in candidate ? candidate.detail : null,
       ]),
     ).toEqual([
-      ["Calls itself", "“TravelBot Agent”"],
+      ["Calls itself", "TravelBot Agent"],
       ["Address it uses", "https://trips.example"],
       // The day it was added, never read as where it stands now.
       ["Added", expect.any(String)],

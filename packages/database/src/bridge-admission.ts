@@ -1,4 +1,4 @@
-import { AgentGrantSchema, OpensteerError, type UserId } from "@opensteer/core";
+import { OpensteerError, type UserId } from "@opensteer/core";
 import type { ChannelAccountId } from "@opensteer/channel-core";
 import type { Kysely } from "kysely";
 import { readConnectionRowStanding, type AgentConnectionAuthority } from "./resource-access.js";
@@ -21,8 +21,7 @@ export type BridgeSenderAdmission =
 
 /**
  * The one answer to "is this bridge live, and may this sender speak to it": read through the
- * connection's live row (grant, mode, revision and, on a work Home, the organization's policy,
- * in one statement), then who wrote, from the identities linked on its account. The ingress,
+ * connection's live row (grant, mode and revision, in one statement), then who wrote, from the identities linked on its account. The ingress,
  * the bridge's caller and the inbox all ask it; none keeps a query of its own. A message
  * admitted under one revision is refused under another.
  */
@@ -99,7 +98,8 @@ export async function admitBridgeSender(
     connection: {
       agentConnectionId: row.id,
       label: row.label,
-      grant: AgentGrantSchema.parse(row.grant),
+      // The standing read's effective grant (K6).
+      grant: row.grant,
       grantRevision: row.grantRevision,
       consentVersion: row.consentVersion,
       accessMode: row.accessMode,

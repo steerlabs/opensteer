@@ -103,7 +103,7 @@ export async function readThreadHistory(
         .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
         .where("messages.threadId", "=", input.threadId)
         .where(sql<boolean>`messages.published`)
-        .where(keptMessageSql);
+        .where(keptMessageSql());
       if (search)
         visible = visible.where(
           sql<boolean>`jsonb_to_tsvector('simple', jsonb_path_query_array(messages.content, '$[*] ? (@.type == "text").text'), '["string"]') @@ plainto_tsquery('simple', ${search})`,

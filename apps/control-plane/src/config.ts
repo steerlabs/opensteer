@@ -1,4 +1,3 @@
-import { loadOrganizationOffer, type OrganizationOffer } from "./organizations/config.js";
 import {
   loadCloudComputerConfig,
   withManagedHomeConfigFiles,
@@ -281,7 +280,6 @@ export interface ControlPlaneConfig {
     };
   };
   readonly cloudComputers?: CloudComputerConfig;
-  readonly organizationOffer?: OrganizationOffer;
   readonly listenHost: string;
   readonly listenPort: number;
 }
@@ -323,26 +321,11 @@ export function loadControlPlaneConfig(
   }
   const managedHomeEnvironment = withManagedHomeConfigFiles(environment);
   const cloudComputers = loadCloudComputerConfig(managedHomeEnvironment);
-  const organizationOffer = loadOrganizationOffer(managedHomeEnvironment);
-  if (
-    organizationOffer &&
-    (!cloudComputers || organizationOffer.priceId === cloudComputers.stripePriceId)
-  ) {
-    throw new Error(
-      "Organization billing requires Cloud Computers and a distinct Stripe seat price",
-    );
-  }
-  if (
-    organizationOffer &&
-    organizationOffer.portalConfigurationId === cloudComputers?.stripePortalConfigurationId
-  )
-    throw new Error("Organization billing requires a dedicated Stripe portal configuration");
   if (cloudComputers && parsed.OPENSTEER_CONTROL_PLANE_PUBLIC_URL.protocol !== "https:") {
     throw new Error("Cloud Computers require an HTTPS Account origin");
   }
   const config = {
     ...(cloudComputers ? { cloudComputers } : {}),
-    ...(organizationOffer ? { organizationOffer } : {}),
     environment: parsed.NODE_ENV,
     databaseUrl: parsed.OPENSTEER_CONTROL_PLANE_DATABASE_URL,
     publicOrigin: parsed.OPENSTEER_CONTROL_PLANE_PUBLIC_URL,

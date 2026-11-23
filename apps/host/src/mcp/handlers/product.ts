@@ -22,7 +22,6 @@ import {
   isThreadHistoryCursor,
   readAssignmentResult,
   readConnectionChildResult,
-  countPendingConnectionRequests,
   beginAssignmentResultWait,
   endAssignmentResultWait,
   withoutDatabaseOperationSignal,
@@ -678,18 +677,18 @@ export class ProductToolHandlers {
       selectedLineageId(caller),
     );
     if (!node) throw missing();
-    const thread = await this.#store.readTask(callerReader(caller), node.threadId, caller.userId);
+    const connectionAuthority = connectionAuthorityForLineage(caller);
+    const thread = await this.#store.readTask(
+      callerReader(caller),
+      node.threadId,
+      caller.userId,
+      connectionAuthority ? { connectionAuthority } : undefined,
+    );
     if (!thread) throw missing();
     const { node: subagent, ...activity } = await this.#activity(caller, thread.id, input, node.id);
-    const pendingRequests = await this.#scopedPendingRequests(
-      caller,
-      thread.id,
-      thread.pendingRequests,
-    );
     return {
       thread: {
         ...thread,
-        pendingRequests,
         link: formatReferenceLink(thread.id, thread.title),
       },
       subagent,
@@ -697,13 +696,6 @@ export class ProductToolHandlers {
       recentPlaces: [],
       ...activity,
     };
-  }
-
-  async #scopedPendingRequests(caller: AgentCaller, threadId: ThreadId, fallback: number) {
-    if (caller.kind === "connection") return fallback;
-    const connectionAuthority = connectionAuthorityForLineage(caller);
-    if (!connectionAuthority) return fallback;
-    return countPendingConnectionRequests(this.#store.database, connectionAuthority, threadId);
   }
 
   async #activity(
@@ -1008,19 +1000,21 @@ export class ProductToolHandlers {
   }
 
   async #task(caller: AgentCaller, summary: AssignmentSummary) {
+    const connectionAuthority = connectionAuthorityForLineage(caller);
     const assignment = await this.#store.getAssignmentForOwner({
       assignmentId: summary.id,
       ownerId: caller.userId,
       reader: callerReader(caller),
+      ...(connectionAuthority ? { connectionAuthority } : {}),
     });
     if (!assignment) throw forbidden("delegation is unavailable");
-    const pendingRequests = await this.#scopedPendingRequests(
-      caller,
-      summary.workerThread.id,
-      summary.workerThread.pendingRequests,
-    );
     return taskItem(
-      { ...summary, workerThread: { ...summary.workerThread, pendingRequests } },
+      assignment.pendingRequests === undefined
+        ? summary
+        : {
+            ...summary,
+            workerThread: { ...summary.workerThread, pendingRequests: assignment.pendingRequests },
+          },
       assignment.resultText,
     );
   }
@@ -1039,22 +1033,13 @@ export class ProductToolHandlers {
     );
     if (!worker) throw forbidden("Task is unavailable");
 
+    const connectionAuthority = connectionAuthorityForLineage(caller);
     const read = await readAssignmentResult(this.#store.database, {
       assignmentId: input.delegationId,
       authority: threadCallerAuthority(caller),
+      ...(connectionAuthority ? { connectionAuthority } : {}),
     });
-    const pendingRequests = await this.#scopedPendingRequests(
-      caller,
-      read.assignment.workerThread.id,
-      read.assignment.workerThread.pendingRequests,
-    );
-    return taskItem(
-      {
-        ...read.assignment,
-        workerThread: { ...read.assignment.workerThread, pendingRequests },
-      },
-      read.result,
-    );
+    return taskItem(read.assignment, read.result);
   }
 
   async opensteer_request_answer({
@@ -1129,8 +1114,9 @@ export class ProductToolHandlers {
     }
     const scope = callerListScope(caller);
     const connectionAuthority = connectionAuthorityForLineage(caller);
+    const reader = callerReader(caller);
     if (input.taskId) {
-      const target = await this.#store.readTask(callerReader(caller), input.taskId, caller.userId, {
+      const target = await this.#store.readTask(reader, input.taskId, caller.userId, {
         ...lineageOption(caller),
         nativeOnly: caller.kind === "connection",
       });
@@ -1138,6 +1124,7 @@ export class ProductToolHandlers {
     }
     const page = await this.#store.requests.agentPage({
       ownerId: caller.userId,
+      reader,
       scope,
       scopeId: caller.kind === "connection" ? caller.key : callerThread(caller).id,
       ...(connectionAuthority ? { connectionAuthority } : {}),
@@ -1340,7 +1327,13 @@ export class ProductToolHandlers {
           ? undefined
           : mutationAdmission(caller, "opensteer_task_send", input, requestId, [created.id]),
       );
-      const thread = (await this.#store.readTask(callerReader(caller), created.id, caller.userId))!;
+      const connectionAuthority = connectionAuthorityForLineage(caller);
+      const thread = (await this.#store.readTask(
+        callerReader(caller),
+        created.id,
+        caller.userId,
+        connectionAuthority ? { connectionAuthority } : undefined,
+      ))!;
       return {
         assignmentId: null,
         link: formatReferenceLink(thread.id, thread.title),
@@ -1351,11 +1344,7 @@ export class ProductToolHandlers {
         title: thread.title,
         objective: null,
         result: null,
-        pendingRequests: await this.#scopedPendingRequests(
-          caller,
-          thread.id,
-          thread.pendingRequests,
-        ),
+        pendingRequests: thread.pendingRequests,
         parentThreadId: null,
         environmentId: thread.environmentId,
         createdAt: thread.createdAt,
@@ -1965,6 +1954,7 @@ export class ProductToolHandlers {
           ? await readAssignmentResult(this.#store.database, {
               assignmentId: settled,
               authority: threadCallerAuthority(caller),
+              ...(connectionAuthority ? { connectionAuthority } : {}),
               ...(call.signal ? { signal: call.signal } : {}),
             })
           : connectedTask;
@@ -1972,25 +1962,9 @@ export class ProductToolHandlers {
       const items = boundedThreadItems(
         result.messages.map((message) => messageItem(message, 20_000)),
       );
-      const scopedTask = task
-        ? {
-            ...task,
-            assignment: {
-              ...task.assignment,
-              workerThread: {
-                ...task.assignment.workerThread,
-                pendingRequests: await this.#scopedPendingRequests(
-                  caller,
-                  task.assignment.workerThread.id,
-                  task.assignment.workerThread.pendingRequests,
-                ),
-              },
-            },
-          }
-        : undefined;
       return {
         status: result.status,
-        ...(scopedTask ? { task: taskItem(scopedTask.assignment, scopedTask.result) } : {}),
+        ...(task ? { task: taskItem(task.assignment, task.result) } : {}),
         ...(result.run
           ? {
               run: {

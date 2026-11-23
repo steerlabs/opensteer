@@ -51,16 +51,13 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
           readonly bridgeName: string | null;
           readonly idClientName: string | null;
           readonly idPlatformName: string | null;
-          readonly idEmbedderName: string | null;
         }>`
           select id, label, client_name as "clientName",
             bridge_conversation_name as "bridgeName",
             case when jsonb_typeof(identity_at_consent->'clientName') = 'string'
               then identity_at_consent->>'clientName' else null end as "idClientName",
             case when jsonb_typeof(identity_at_consent->'platformName') = 'string'
-              then identity_at_consent->>'platformName' else null end as "idPlatformName",
-            case when jsonb_typeof(identity_at_consent->'embedderName') = 'string'
-              then identity_at_consent->>'embedderName' else null end as "idEmbedderName"
+              then identity_at_consent->>'platformName' else null end as "idPlatformName"
           from agent_connections
           where ${after(afterId)}
             and (${needsClean(sql`label`, 120)}
@@ -69,9 +66,7 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
               or (jsonb_typeof(identity_at_consent->'clientName') = 'string'
                 and ${needsClean(sql`identity_at_consent->>'clientName'`, 100)})
               or (jsonb_typeof(identity_at_consent->'platformName') = 'string'
-                and ${needsClean(sql`identity_at_consent->>'platformName'`, 100)})
-              or (jsonb_typeof(identity_at_consent->'embedderName') = 'string'
-                and ${needsClean(sql`identity_at_consent->>'embedderName'`, 100)}))
+                and ${needsClean(sql`identity_at_consent->>'platformName'`, 100)}))
           order by id
           limit ${cleanBatchSize}
         `.execute(database)
@@ -85,8 +80,6 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
       const idClientChanged: boolean[] = [];
       const idPlatformNames: (string | null)[] = [];
       const idPlatformChanged: boolean[] = [];
-      const idEmbedderNames: (string | null)[] = [];
-      const idEmbedderChanged: boolean[] = [];
       for (const row of rows) {
         const clientName = outsideName(row.clientName, 100) || "Agent";
         const label = outsideName(row.label, 120) || clientName;
@@ -96,18 +89,14 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
           row.idClientName === null ? null : outsideName(row.idClientName, 100) || "Agent";
         const nextIdPlatform =
           row.idPlatformName === null ? null : outsideName(row.idPlatformName, 100) || "Agent";
-        const nextIdEmbedder =
-          row.idEmbedderName === null ? null : outsideName(row.idEmbedderName, 100) || "Agent";
         const clientIdDirty = nextIdClient !== row.idClientName;
         const platformIdDirty = nextIdPlatform !== row.idPlatformName;
-        const embedderIdDirty = nextIdEmbedder !== row.idEmbedderName;
         if (
           clientName === row.clientName &&
           label === row.label &&
           bridgeName === row.bridgeName &&
           !clientIdDirty &&
-          !platformIdDirty &&
-          !embedderIdDirty
+          !platformIdDirty
         )
           continue;
         ids.push(row.id);
@@ -118,19 +107,16 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
         idClientChanged.push(clientIdDirty);
         idPlatformNames.push(nextIdPlatform);
         idPlatformChanged.push(platformIdDirty);
-        idEmbedderNames.push(nextIdEmbedder);
-        idEmbedderChanged.push(embedderIdDirty);
       }
       if (ids.length === 0) return;
       const withClient = sql`case when u.id_client_changed then jsonb_set(t.identity_at_consent, '{clientName}', to_jsonb(u.id_client_name)) else t.identity_at_consent end`;
       const withPlatform = sql`case when u.id_platform_changed then jsonb_set((${withClient}), '{platformName}', to_jsonb(u.id_platform_name)) else (${withClient}) end`;
-      const withEmbedder = sql`case when u.id_embedder_changed then jsonb_set((${withPlatform}), '{embedderName}', to_jsonb(u.id_embedder_name)) else (${withPlatform}) end`;
       await sql`
         update agent_connections as t set
           label = u.label,
           client_name = u.client_name,
           bridge_conversation_name = u.bridge_conversation_name,
-          identity_at_consent = (${withEmbedder})
+          identity_at_consent = (${withPlatform})
         from unnest(
           ${ids}::text[],
           ${labels}::text[],
@@ -139,14 +125,11 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
           ${idClientNames}::text[],
           ${idClientChanged}::boolean[],
           ${idPlatformNames}::text[],
-          ${idPlatformChanged}::boolean[],
-          ${idEmbedderNames}::text[],
-          ${idEmbedderChanged}::boolean[]
+          ${idPlatformChanged}::boolean[]
         ) as u(
           id, label, client_name, bridge_conversation_name,
           id_client_name, id_client_changed,
-          id_platform_name, id_platform_changed,
-          id_embedder_name, id_embedder_changed
+          id_platform_name, id_platform_changed
         )
         where t.id = u.id
       `.execute(database);

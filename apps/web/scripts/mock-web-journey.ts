@@ -11,7 +11,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { chromium, webkit, type Browser } from "playwright-core";
+import { chromium, webkit, type Browser, type BrowserContext } from "playwright-core";
 import { build } from "vite";
 
 const webRoot = path.resolve(import.meta.dirname, "..");
@@ -19,6 +19,8 @@ const webRoot = path.resolve(import.meta.dirname, "..");
 export interface MockWeb {
   readonly browser: Browser;
   readonly origin: string;
+  /** Serves built app assets directly to `context`, avoiding Linux `veth` `ERR_NETWORK_CHANGED` aborts on loopback. */
+  routeBuild(context: BrowserContext): Promise<void>;
   /** Closes the browser and the server, and removes the build. */
   close(): Promise<void>;
 }
@@ -47,9 +49,19 @@ export async function openMockWeb(name: string): Promise<MockWeb> {
             headless: true,
             ...(executablePath ? { executablePath } : {}),
           });
+    const origin = `http://127.0.0.1:${address.port}`;
     return {
       browser,
-      origin: `http://127.0.0.1:${address.port}`,
+      origin,
+      async routeBuild(context) {
+        await context.route(
+          (url) => url.origin === origin,
+          async (route) => {
+            const served = await readServed(buildDirectory, route.request().url());
+            await route.fulfill(served);
+          },
+        );
+      },
       async close() {
         await browser.close();
         server.close();
@@ -149,20 +161,31 @@ async function buildMockWeb(outDir: string): Promise<void> {
   });
 }
 
-/** Files from the build, and the app for any route; as a Host serves its web app. */
-async function serve(root: string, request: IncomingMessage, response: ServerResponse) {
-  const url = new URL(request.url ?? "/", "http://127.0.0.1");
+async function readServed(
+  root: string,
+  requestUrl: string,
+): Promise<{
+  readonly body: Buffer | string;
+  readonly contentType: string;
+  readonly status: number;
+}> {
+  const url = new URL(requestUrl, "http://127.0.0.1");
   const relative = path.normalize(decodeURIComponent(url.pathname)).replace(/^([/\\])+/u, "");
   const candidate = path.join(root, relative);
   const inside = candidate === root || candidate.startsWith(`${root}${path.sep}`);
   const file = inside && (await isFile(candidate)) ? candidate : null;
   const target = file ?? (path.extname(relative) ? null : path.join(root, "index.html"));
   if (!target) {
-    response.writeHead(404, { "content-type": "text/plain; charset=utf-8" }).end("Not Found");
-    return;
+    return { body: "Not Found", contentType: "text/plain; charset=utf-8", status: 404 };
   }
-  response.writeHead(200, { "content-type": contentType(target) });
-  response.end(await readFile(target));
+  return { body: await readFile(target), contentType: contentType(target), status: 200 };
+}
+
+/** Files from the build, and the app for any route; as a Host serves its web app. */
+async function serve(root: string, request: IncomingMessage, response: ServerResponse) {
+  const served = await readServed(root, request.url ?? "/");
+  response.writeHead(served.status, { "content-type": served.contentType });
+  response.end(served.body);
 }
 
 async function isFile(candidate: string): Promise<boolean> {

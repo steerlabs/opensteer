@@ -1,6 +1,5 @@
 import type {
   AgentDirectoryEntryId,
-  AgentDirectoryJwks,
   AgentDirectoryOrigin,
 } from "@opensteer/control-plane-protocol";
 import type { ColumnType, Generated } from "kysely";
@@ -16,8 +15,6 @@ export interface AgentDirectoryEntryTable {
   id: AgentDirectoryEntryId;
   displayName: string;
   origins: ColumnType<readonly AgentDirectoryOrigin[], string, string>;
-  keys: ColumnType<AgentDirectoryJwks | null, string | null, string | null>;
-  embedsVia: ColumnType<readonly AgentDirectoryEntryId[] | null, string | null, string | null>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }

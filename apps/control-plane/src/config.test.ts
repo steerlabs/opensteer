@@ -57,10 +57,6 @@ it("loads optional managed Home settings from the Account runtime directory", ()
       OPENSTEER_CLOUD_COMPUTER_PLAN_NAME: "Personal",
       OPENSTEER_CLOUD_COMPUTER_CURRENCY: "usd",
       OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR: "2900",
-      OPENSTEER_ORGANIZATION_STRIPE_PRICE_ID: "price_seat",
-      OPENSTEER_ORGANIZATION_STRIPE_PORTAL_CONFIGURATION_ID: "bpc_org",
-      OPENSTEER_ORGANIZATION_CURRENCY: "usd",
-      OPENSTEER_ORGANIZATION_PRICE_MINOR: "4900",
     };
     for (const [name, value] of Object.entries(files)) {
       writeFileSync(join(directory, name), value + "\n", { mode: 0o600 });
@@ -75,7 +71,6 @@ it("loads optional managed Home settings from the Account runtime directory", ()
       releaseManifestUrl: files.OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL,
       region: "hel1",
     });
-    expect(config.organizationOffer).toMatchObject({ priceId: "price_seat", amountMinor: 4900 });
     expect(() =>
       loadControlPlaneConfig({
         ...environment,

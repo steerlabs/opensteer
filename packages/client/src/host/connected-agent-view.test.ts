@@ -3,6 +3,7 @@ import { outsideName } from "@opensteer/shared/outsideName";
 import { hostApi, type AgentConnection, type PluginsInstalledView } from "@opensteer/protocol";
 import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { describe, expect, it } from "vitest";
+import { agentClaim } from "./agent-identity.js";
 import { chatFacts, chatTasksNow, messagingAccountView } from "./chat-view.js";
 import { plainSentence, type SentencePart } from "./sentence-parts.js";
 import {
@@ -300,15 +301,15 @@ describe("connected agent identity", () => {
         connection({
           client: { fingerprint: null, redirectOrigin: "https://chatgpt.com" },
           identityAtConsent: {
-            kind: "platform",
-            platformOrigin: "https://chatgpt.com",
-            platformDirectoryId: "chatgpt",
-            platformName: "ChatGPT",
+            kind: "verified",
+            origin: "https://chatgpt.com",
+            directoryId: "chatgpt",
+            displayName: "ChatGPT",
             directoryRevision: 1,
             recordedAt: "2026-11-03T10:00:00.000Z",
           },
           identity: {
-            evidenceKind: "platform",
+            evidenceKind: "verified",
             verified: true,
             selfAsserted: false,
             heading: "ChatGPT",
@@ -340,7 +341,7 @@ describe("connected agent identity", () => {
     const withdrawn = connection({
       verificationWithdrawnAt: "2026-11-03T11:00:00.000Z",
       identity: {
-        evidenceKind: "platform",
+        evidenceKind: "verified",
         verified: true,
         selfAsserted: false,
         heading: "ChatGPT",
@@ -427,10 +428,10 @@ describe("connected agent detail", () => {
       names,
       { grantsAvailable: true, now },
     );
-    // A name it chose: drawn as a name, and in quotation marks where it is plain text.
+    // A name it chose: drawn as a name; the row's whole value, so unquoted, as the web draws it.
     expect(detail.about[0]).toMatchObject({
       label: "Calls itself",
-      value: "“TravelBot Agent”",
+      value: "TravelBot Agent",
       valueParts: [{ name: "TravelBot Agent" }],
     });
   });
@@ -802,5 +803,15 @@ describe("a chat's address, as parts", () => {
     const pausedDetail = connectedAgentDetail(onCall, names, { grantsAvailable: true, now });
     expect(pausedDetail.status.detailParts).toContainEqual({ name: "On-call" });
     expect(plainSentence(pausedDetail.status.detailParts!)).toBe(pausedDetail.status.detail);
+  });
+});
+
+describe("a client-chosen name as a claim", () => {
+  it("cuts a long name before an emoji sequence or flag, never inside one", () => {
+    const family = "\u{1F468}‍\u{1F469}‍\u{1F467}";
+    expect(agentClaim(`${"a".repeat(37)}${family}x`, 40)).toBe(`${"a".repeat(37)}…`);
+    expect(agentClaim(`${"a".repeat(38)}\u{1F1FA}\u{1F1F8}xx`, 40)).toBe(`${"a".repeat(38)}…`);
+    expect(agentClaim("a".repeat(41), 40)).toBe(`${"a".repeat(39)}…`);
+    expect(agentClaim("Helper", 40)).toBe("Helper");
   });
 });

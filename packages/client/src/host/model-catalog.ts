@@ -129,8 +129,8 @@ export function accountFunding(
 
 /**
  * Who a placement signs in as, in the words a person would recognise. Two
- * rules and no more: the identity the provider reported (an email, an
- * organisation) when there is one, otherwise the name the person gave the
+ * rules and no more: the identity the provider reported (an email, a team
+ * name) when there is one, otherwise the name the person gave the
  * account. An API key has no identity of its own, so it reads as its name,
  * and two keys can never read the same.
  */

@@ -3735,6 +3735,7 @@ export class BrowserService {
     this.#tabDescriptorTimers.delete(sessionId);
     return this.#serializeKey(`catalog:${sessionId}`, async () => {
       if (broker && this.#workspaceTabs) {
+        if (!broker.hasTabChanges) return;
         const changes = broker.tabChanges();
         let ownerId: UserId | undefined;
         let record: BrowserSessionRecord | null = null;
@@ -9212,14 +9213,16 @@ export class HostedBrowserBroker {
   }
 
   /** Sends a pending session state now instead of after its short delay. */
-  async #flushSessionState(): Promise<void> {
+  async #flushSessionState(options?: { readonly propagateError?: boolean }): Promise<void> {
     if (this.#sessionStateTimer) clearTimeout(this.#sessionStateTimer);
     this.#sessionStateTimer = undefined;
-    const hold = this.#sessionStateHold;
+    const hold = this.#sessionStateHold ?? this.#poolAdmission?.now();
     this.#sessionStateHold = undefined;
     try {
-      if (this.live && this.#snapshot?.surfaceState === 1)
-        await this.#sendSessionState().catch(() => undefined);
+      if (this.live && this.#snapshot?.surfaceState === 1) {
+        const sending = this.#sendSessionState();
+        await (options?.propagateError ? sending : sending.catch(() => undefined));
+      }
     } finally {
       hold?.release();
     }
@@ -10378,18 +10381,10 @@ export class HostedBrowserBroker {
           becameReady = true;
           this.#reconnecting = false;
           this.#runtimeReady = true;
-          // #onState("ready") transitions the session and may schedule a deferred
-          // refreshSessionState() timer with a pool hold; flush it now so no stale
-          // 50 ms hold outlives the initial session.state send.
-          if (this.#sessionStateTimer) clearTimeout(this.#sessionStateTimer);
-          this.#sessionStateTimer = undefined;
-          const hold = this.#sessionStateHold;
-          this.#sessionStateHold = undefined;
-          try {
-            await this.#sendSessionState();
-          } finally {
-            hold?.release();
-          }
+          // Hold the pool gate unconditionally across the initial session.state send
+          // (including on re-attach after a Runner restart) and flush any deferred
+          // refreshSessionState() timer scheduled by #onState("ready").
+          await this.#flushSessionState({ propagateError: true });
           const reconnectReady = this.#reconnectReady;
           this.#reconnectReady = null;
           reconnectReady?.resolve();

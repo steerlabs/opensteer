@@ -81,6 +81,9 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       "card_request",
       "computer_use",
       "discover",
+      "opensteer_command",
+      "opensteer_commands",
+      "opensteer_state",
       "opensteer_task_create",
       "opensteer_task_interrupt",
       "opensteer_task_read",
@@ -828,7 +831,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       requestedBy: f.userId,
       threadId: created,
       runId: pendingRun.id,
-      auditOwnerStop: true,
       idempotencyKey: "person-pauses-created-task",
     });
     const newTaskQueue = () =>
@@ -1231,7 +1233,14 @@ describeStore("connection grants and lineage", (it) => {
     });
     const listed = (await plugins.client.listTools()).tools.map(({ name }) => name);
     expect(listed.length).toBeGreaterThan(0);
-    expect(listed.filter((name) => name.startsWith("opensteer_"))).toEqual([]);
+    // No task tool; the Home's command tools, cut to what the grant holds, are not task tools.
+    expect(
+      listed.filter(
+        (name) =>
+          name.startsWith("opensteer_") &&
+          !["opensteer_commands", "opensteer_command", "opensteer_state"].includes(name),
+      ),
+    ).toEqual([]);
     for (const name of [
       "opensteer_task_list",
       "opensteer_task_read",

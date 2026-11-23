@@ -23,9 +23,9 @@ import { callerTaskReader, threadCallerLineageId } from "./thread-caller.js";
 import { readerSees } from "./task-reader.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
+import { threadExecutionAdmitted } from "./execution-authority.js";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
 import { assertThreadCaller, type ThreadCallerAuthority } from "./thread-caller.js";
-import { isWorkHomeDatabase } from "./work-home-context.js";
 export const AgentRequestResponderSchema = z.object({
   expectedRevision: PersonalRevisionSchema,
   authority: z.object({
@@ -95,10 +95,13 @@ export function assertAgentRequestAnswer(
 async function connectionRequestsQuery(
   tx: Transaction<DatabaseSchema>,
   authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
-  options?: { readonly ownerVerified?: boolean },
+  options?: {
+    readonly ownerVerified?: boolean;
+    readonly scope?: "everything" | "selected";
+  },
 ) {
   if (!options?.ownerVerified) await requirePersonalOwner(tx, authority.userId);
-  const scope = await connectionTaskRequestScope(tx, authority);
+  const scope = options?.scope ?? (await connectionTaskRequestScope(tx, authority));
 
   return tx
     .selectFrom("requests")
@@ -120,32 +123,7 @@ async function connectionRequestsQuery(
     .leftJoin("agentSessions", "agentSessions.id", "requests.originatingAgentSessionId")
     .selectAll("requests")
     .where("threads.createdBy", "=", authority.userId)
-    .$if(isWorkHomeDatabase(tx), (query) =>
-      query.where((eb) =>
-        eb.exists(
-          eb.selectFrom("workHomePolicy").select("singleton").where("state", "=", "active"),
-        ),
-      ),
-    )
-    .where((eb) =>
-      eb.exists(
-        eb
-          .selectFrom("personalSettings")
-          .innerJoin("users", "users.id", "personalSettings.ownerId")
-          .innerJoin(
-            "executionEnvironments",
-            "executionEnvironments.runnerId",
-            "personalSettings.agentHomeComputerId",
-          )
-          .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
-          .select("executionEnvironments.id")
-          .where("personalSettings.singletonKey", "=", "personal")
-          .where("personalSettings.ownerId", "=", authority.userId)
-          .where("users.disabledAt", "is", null)
-          .whereRef("executionEnvironments.id", "=", "threads.environmentId")
-          .where("runners.revokedAt", "is", null),
-      ),
-    )
+    .where(threadExecutionAdmitted(authority.userId))
     .$if(scope === "selected", (query) =>
       query.where("threads.originConnectionId", "=", authority.connectionId),
     )
@@ -159,7 +137,7 @@ async function connectionRequestsQuery(
               .selectFrom("agentConnections")
               .select("agentConnections.id")
               .whereRef("agentConnections.id", "=", "threads.originConnectionId")
-              .where(connectionState(tx), "!=", "ended"),
+              .where(connectionState(), "!=", "ended"),
           ),
         ]),
       ),
@@ -207,7 +185,10 @@ async function connectionRequestsQuery(
 export async function connectionRequests(
   tx: Transaction<DatabaseSchema>,
   authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
-  options?: { readonly ownerVerified?: boolean },
+  options?: {
+    readonly ownerVerified?: boolean;
+    readonly scope?: "everything" | "selected";
+  },
 ): Promise<SelectQueryBuilder<{ readonly requests: RequestRow }, "requests", RequestRow>> {
   const scoped = await connectionRequestsQuery(tx, authority, options);
   return tx.selectFrom(scoped.as("requests")).selectAll("requests");
@@ -276,23 +257,6 @@ export async function readPendingConnectionRequest(
     .orderBy("requests.createdAt", "asc")
     .limit(1)
     .executeTakeFirst();
-}
-
-export function countPendingConnectionRequests(
-  database: Kysely<DatabaseSchema>,
-  authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
-  threadId: Request["originatingThreadId"],
-): Promise<number> {
-  return withPersonalReadTransaction(database, async (tx) => {
-    const visibleRequests = await connectionRequests(tx, authority);
-    const row = await tx
-      .selectFrom(visibleRequests.as("visible_requests"))
-      .select(sql<number>`count(*)::int`.as("count"))
-      .where("visible_requests.originatingThreadId", "=", threadId)
-      .where("visible_requests.status", "=", "pending")
-      .executeTakeFirstOrThrow();
-    return Number(row.count);
-  });
 }
 
 async function readConnectionRequest(

@@ -19,12 +19,13 @@ const allowed: Readonly<Record<string, string>> = {
   "local-servers/local-mcp-secrets.ts":
     "A secret's field by its title and the schema's own sentence for it (a person's field entry).",
   "mcp/opensteer-mcp-service.ts": "Names the result fields an engine got wrong, to the engine.",
-  "mcp/connections/embedder-assertion.ts": "Reads an issue's code to decide; writes no text.",
   "plugins/engine-protocol.ts": "Reads issues to decide; writes no text.",
   "server.ts": "Logs the paths of a reply that failed its schema; nothing is sent.",
   "channels/channel-service.ts":
     "A messaging provider's inspection issues (sentences for the person), not a validator's.",
   "local-servers/local-server-registry.ts": "A plugin's own list of issues, not a validator's.",
+  "commands/dispatch.ts":
+    "An agent's command it sent wrong, told to that agent; the person's commands are run before it is read.",
 };
 
 it("writes a validator's issues into text only where each place says why it may", () => {

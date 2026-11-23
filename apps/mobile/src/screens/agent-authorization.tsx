@@ -11,8 +11,6 @@ import {
   agentBrowserOptions,
   agentHomeName,
   agentWords,
-  workHomeMark,
-  withinWorkPolicy,
   answerAgentConnection,
   connectedAgentIdentity,
   connectionDestination,
@@ -31,7 +29,6 @@ import {
   useAgentAppOptions,
   useAgentPluginOptions,
   useHostSelector,
-  useWorkPolicy,
 } from "@opensteer/client/react";
 import type { ThreadAccessMode } from "@opensteer/core";
 import type { AgentConnectionConsent } from "@opensteer/protocol";
@@ -101,7 +98,7 @@ function AgentAuthorization(props: {
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const grantsAvailable = load.kind === "ready" && load.consent.grantsAvailable === true;
   const [label, setLabel] = useState("");
-  const [pickedMode, setMode] = useState<ThreadAccessMode>("approval-required");
+  const [mode, setMode] = useState<ThreadAccessMode>("approval-required");
   const [draft, setDraft] = useState<AgentGrantDraft | null>(null);
   const [sheet, setSheet] = useState<AgentGrantSheet | null>(null);
   const [busy, setBusy] = useState<"allow" | "deny" | null>(null);
@@ -111,8 +108,6 @@ function AgentAuthorization(props: {
   // A retried approval reuses the profile the first attempt created.
   const createdProfile = useRef<string | null>(null);
   const mounted = useRef(true);
-  // A work Home's ceiling is known before any choice is offered, so none is offered then refused.
-  const workPolicy = useWorkPolicy(host);
   const apps = useAgentAppOptions(host, sheet === "apps");
   const plugins = useAgentPluginOptions(host, sheet === "plugins");
   useEffect(() => {
@@ -143,14 +138,12 @@ function AgentAuthorization(props: {
   }, [attempt, host, requestId]);
 
   const canCreate = browser.homes === null || browser.homes.length > 0;
-  const picked: AgentGrantDraft = draft ?? {
+  const chosen: AgentGrantDraft = draft ?? {
     scope: "selected",
     tasks: false,
     resources: [],
     newProfile: canCreate ? { homeRunnerId: browser.defaultHome } : null,
   };
-  // A newer policy version can rule out what was picked; Allow asks only for what it allows.
-  const { draft: chosen, mode } = withinWorkPolicy({ draft: picked, mode: pickedMode }, workPolicy);
   const close = () => navigation.goBack();
   const decide = async (approve: boolean) => {
     if (load.kind !== "ready" || busy !== null || (approve && !label.trim())) return;
@@ -240,8 +233,7 @@ function AgentAuthorization(props: {
     setBusy(null);
   }
 
-  if (load.kind === "loading" || (load.kind === "ready" && workPolicy === undefined))
-    return <AgentAuthorizationForm kind="loading" />;
+  if (load.kind === "loading") return <AgentAuthorizationForm kind="loading" />;
   if (load.kind !== "ready")
     return (
       <AgentAuthorizationForm
@@ -289,7 +281,6 @@ function AgentAuthorization(props: {
     apps,
     plugins,
     disabled,
-    ...(workPolicy ? { workPolicy } : {}),
   };
   const openDevices = () => {
     setSheet(null);
@@ -342,13 +333,11 @@ function AgentAuthorization(props: {
                   mode,
                   disabled,
                   onMode: setMode,
-                  workPolicy: workPolicy ?? undefined,
                 }),
               ]
             : null
         }
         title={heading.title}
-        work={workHomeMark(workPolicy)?.badge ?? null}
         who={{
           heading: heading.claimParts
             ? phoneSentence(heading.claimParts)

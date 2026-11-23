@@ -20,7 +20,6 @@ import { HomeFacts } from "./home-facts.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
-const workDeployment = "dep_00000000-0000-4000-8000-0000000000dd";
 let root: Root | undefined;
 let host: MockHostClient | undefined;
 beforeEach(() => localStorage.clear());
@@ -141,19 +140,6 @@ describe("Devices: the Home says what kind it is", () => {
     await vi.waitFor(() => expect(homeRow(container)?.textContent).toContain("Home · Always on"));
     expect(homeRow(container)?.textContent).toContain("Cloud Computer");
     expect(container.textContent).toContain("Your Opensteer lives on your Cloud Computer.");
-  });
-
-  it("is a work Home, with its organization's badge", async () => {
-    const { container } = await render(<DevicesSection />, {
-      exposure: "networked",
-      deploymentId: workDeployment,
-      cloud: new MockCloudComputerAccount("work", workDeployment),
-    });
-    await vi.waitFor(() =>
-      expect(homeRow(container)?.textContent).toContain("Work · Acme Robotics"),
-    );
-    expect(homeRow(container)?.textContent).toContain("Work Home");
-    expect(homeRow(container)?.textContent).not.toContain("Acme Robotics · Work Home");
   });
 });
 
@@ -277,7 +263,7 @@ describe("the asleep moment on the gate", () => {
       retry: () => undefined,
     }) as unknown as ClientConnection;
   const line = (
-    homeKind: "mac" | "cloud" | "server" | "work",
+    homeKind: "mac" | "cloud" | "server",
     deploymentId = "dep_00000000-0000-4000-8000-000000000001",
   ) => (
     <GateAsleepLine
@@ -334,8 +320,8 @@ describe("the asleep moment on the gate", () => {
     expect(offline.textContent).not.toContain("asleep or offline");
   });
 
-  it("never appears for a Cloud Computer, a server or a work Home", async () => {
-    for (const kind of ["cloud", "server", "work"] as const) {
+  it("never appears for a Cloud Computer or a server", async () => {
+    for (const kind of ["cloud", "server"] as const) {
       const container = await mountPlain(line(kind));
       expect(container.textContent).toBe("");
       act(() => root?.unmount());

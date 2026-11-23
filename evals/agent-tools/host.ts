@@ -94,12 +94,10 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const handlers: AgentToolHandlers = {
     discover: async () => unavailable(),
     opensteer_ai_account_list: async () => unavailable(),
-    opensteer_ai_account_update: async () => unavailable(),
-    opensteer_defaults_read: async () => unavailable(),
-    opensteer_defaults_update: async () => unavailable(),
+    opensteer_commands: async () => unavailable(),
+    opensteer_command: async () => unavailable(),
+    opensteer_state: async () => unavailable(),
     computer_list: async () => unavailable(),
-    computer_update: async () => unavailable(),
-    computer_remove: async () => unavailable(),
     computer_use: async () => unavailable(),
     computer_apps: async () => unavailable(),
     computer_access_request: async () => unavailable(),
@@ -121,8 +119,6 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     local_server_add: async () => unavailable(),
     local_server_list: async () => unavailable(),
     local_server_remove: async () => unavailable(),
-    browser_profile_update: async () => unavailable(),
-    browser_profile_remove: async () => unavailable(),
     browser_use: async () => unavailable(),
     browser_connect: async () => unavailable(),
     app_publish: async () => unavailable(),
@@ -322,6 +318,25 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
           : tabFixtureTools.has(name)
             ? undefined
             : (taskFixtureResult(testCase, name, args, scope.threadId) ?? defaultResult(name));
+        // A Home that changed answers with the change: `$after` reads `changed` once an earlier
+        // accepted call in this sample matched `call` (tool and partial arguments), else
+        // `before`, so a model that checks its own work sees what the Home would show. It may
+        // stand for a whole mock or for one `$byArgs` entry's result.
+        const changed = (value: unknown): unknown => {
+          if (!isRecord(value) || !isRecord(value.$after)) return value;
+          const after = value.$after;
+          const call = isRecord(after.call) ? after.call : {};
+          const done = calls
+            .slice(0, index)
+            .some(
+              (previous) =>
+                previous?.valid === true &&
+                previous.tool === call.tool &&
+                partialMatch(previous.args, isRecord(call.args) ? call.args : {}),
+            );
+          return done ? after.changed : after.before;
+        };
+        result = changed(result);
         if (
           result !== null &&
           typeof result === "object" &&
@@ -341,7 +356,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
             (candidate) => isRecord(candidate) && partialMatch(args, candidate.args),
           );
           result = isRecord(entry)
-            ? entry.result
+            ? changed(entry.result)
             : { $error: "No case mock matches these arguments" };
         }
         if (isRecord(result) && typeof result.$error === "string") {

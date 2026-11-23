@@ -99,9 +99,6 @@ it.skipIf(Boolean(reportPath))(
       expect(projected.tabs).toEqual([]);
       expect(tabSql).toHaveLength(1);
       expect([...shellSql, ...tabSql].filter((sql) => /browser_pool_slots/u.test(sql))).toEqual([]);
-      expect(
-        [...shellSql, ...tabSql].some((sql) => /work_home_policy|organization/u.test(sql)),
-      ).toBe(false);
     } finally {
       trace.mockRestore();
       try {
@@ -121,7 +118,8 @@ const parityFixture = new URL("./personal-hot-paths.parity.json", import.meta.ur
  * statements its own async work issues (the Runner's and the Run's background work runs in
  * contexts of its own and is never counted), and every path's statement texts, sorted, must
  * equal those recorded with this same test on the overhaul head before the pool (4910b97d7),
- * less the statements the team server's removal took off Home startup and plus the one read
+ * less the statements the team server's removal took off Home startup, less the embedder
+ * statements' replay sweep (gone with verification through a platform), and plus the one read
  * that refuses a team server's database before migrating it: a statement added,
  * removed or changed on any of these paths fails it. To record the fixture again, run with
  * OPENSTEER_POOL_PARITY_REPORT set to a file path on the base.
@@ -261,6 +259,26 @@ it.skipIf(Boolean(reportPath))(
         ]),
       );
       close.unshift(() => host.close());
+      // Startup's one read for command Requests (an approval a restart cut off) is served by its
+      // partial index, never a scan of every Request the Home has ever had.
+      const recovery = recorded["home startup"]!.find((statement) =>
+        statement.includes("'running'"),
+      );
+      expect(recovery).toBeDefined();
+      const planner = new pg.Client({ connectionString: database.url });
+      await planner.connect();
+      try {
+        await planner.query("begin");
+        await planner.query("set local enable_seqscan = off");
+        const plan = (await planner.query(`explain ${recovery!}`)).rows
+          .map((row: Record<string, string>) => row["QUERY PLAN"])
+          .join("\n");
+        expect(plan).toContain("requests_command_running");
+        expect(plan).not.toContain("Seq Scan");
+        await planner.query("rollback");
+      } finally {
+        await planner.end();
+      }
       const runner = await connectCallerMachine(host, {
         name: "Parity fixture",
         token: host.hostingRunnerEnrollmentToken,
@@ -689,9 +707,6 @@ it.skipIf(!reportPath)(
           tracing = undefined;
         }
         const ms = performance.now() - started;
-        expect(sql.some((statement) => /work_home_policy|organization/u.test(statement))).toBe(
-          false,
-        );
         if (index >= 0) entries.push({ ms, sql });
         await afterward?.(value);
       }

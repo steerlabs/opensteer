@@ -1,4 +1,3 @@
-import { WorkHomeMarkerSchema, type WorkHomeMarker } from "@opensteer/control-plane-protocol";
 import { hostExposurePolicy, normalizePersonName } from "@opensteer/core";
 import {
   allowsPlaintextRunnerTransport,
@@ -234,7 +233,6 @@ const HostEnvironmentSchema = z.object({
     (value) => (value === "" ? undefined : value),
     z.literal("true").optional(),
   ),
-  OPENSTEER_MANAGED_HOME_WORK_JSON: z.string().optional(),
   OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN: optionalUrl,
   OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID: z.preprocess(
     (value) => (value === "" ? undefined : value),
@@ -346,7 +344,6 @@ export interface HostConfig {
     readonly accountOrigin: URL;
     readonly cloudComputerId: string;
     readonly generation: number;
-    readonly work?: WorkHomeMarker;
     readonly oidc: { readonly clientId: string; readonly clientSecret: string };
     /**
      * Its browser runs on a pool host: from `browserPool: true` in its boot answer only, never
@@ -701,7 +698,6 @@ function parseManagedHome(parsed: {
   readonly OPENSTEER_MANAGED_HOME_BROWSER_POOL?: "true" | undefined;
   readonly OPENSTEER_MANAGED_HOME_ID?: string | undefined;
   readonly OPENSTEER_MANAGED_HOME_GENERATION?: number | undefined;
-  readonly OPENSTEER_MANAGED_HOME_WORK_JSON?: string | undefined;
   readonly OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN?: string | undefined;
   readonly OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID?: string | undefined;
   readonly OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET?: string | undefined;
@@ -714,10 +710,7 @@ function parseManagedHome(parsed: {
     parsed.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET,
   ];
   const configured = values.filter((value) => value !== undefined).length;
-  const work = parsed.OPENSTEER_MANAGED_HOME_WORK_JSON
-    ? WorkHomeMarkerSchema.parse(JSON.parse(parsed.OPENSTEER_MANAGED_HOME_WORK_JSON))
-    : undefined;
-  if (configured === 0 && !work) {
+  if (configured === 0) {
     if (parsed.OPENSTEER_MANAGED_HOME_BROWSER_POOL)
       throw new Error("OPENSTEER_MANAGED_HOME_BROWSER_POOL is only for a Cloud Computer's Home");
     return undefined;
@@ -733,7 +726,6 @@ function parseManagedHome(parsed: {
     ),
     cloudComputerId: parsed.OPENSTEER_MANAGED_HOME_ID!,
     generation: parsed.OPENSTEER_MANAGED_HOME_GENERATION!,
-    ...(work ? { work } : {}),
     oidc: {
       clientId: parsed.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID!,
       clientSecret: parsed.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET!,

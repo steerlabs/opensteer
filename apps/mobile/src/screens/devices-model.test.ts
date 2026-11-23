@@ -5,7 +5,7 @@ import { mockDeviceMachine, mockIphoneScreenDevice } from "@opensteer/client/moc
 import type { HomeKindFact } from "@opensteer/client/computers";
 import { deviceListSections } from "./devices-model.js";
 
-const macHome: HomeKindFact = { kind: "mac", from: "exposure", organization: null };
+const macHome: HomeKindFact = { kind: "mac", from: "exposure" };
 const common = { home: macHome, deploymentName: "Opensteer", devicesAvailable: true };
 const flat = (sections: ReturnType<typeof deviceListSections>) =>
   sections.map((section) => ({
@@ -250,26 +250,23 @@ describe("Devices on the phone", () => {
         noun: "iPhone",
         sessions: [],
       })[0];
-    expect(home({ kind: "mac", from: "exposure", organization: null })?.rows[0]).toMatchObject({
+    expect(home({ kind: "mac", from: "exposure" })?.rows[0]).toMatchObject({
       title: "Mac mini",
       detail: "Home · Online",
       symbol: "macmini",
       opens: { kind: "device", machineId: "rnr_11111111-1111-4111-8111-111111111111" },
     });
-    expect(home({ kind: "server", from: "exposure", organization: null })?.rows[0]).toMatchObject({
+    expect(home({ kind: "server", from: "exposure" })?.rows[0]).toMatchObject({
       detail: "Home · Server · Online",
       symbol: "server.rack",
     });
-    const cloud = home({ kind: "cloud", from: "account", organization: null });
+    const cloud = home({ kind: "cloud", from: "account" });
     expect(cloud?.rows[0]).toMatchObject({
       title: "Cloud Computer",
       detail: "Home · Always on",
       symbol: "cloud",
     });
     expect(cloud?.footer).toContain("lives on your Cloud Computer.");
-    const work = home({ kind: "work", from: "account", organization: "Acme" });
-    expect(work?.rows[0]).toMatchObject({ title: "Work Home", symbol: "cloud" });
-    expect(work?.footer).toContain("lives on your Acme work Home.");
   });
 
   it("marks a Device asleep or needing an update in amber, and says which", () => {

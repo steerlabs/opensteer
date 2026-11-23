@@ -2,7 +2,12 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { readTaskActivity } from "../host/agent-work.js";
 import type { AgentOperationView } from "@opensteer/core";
 import type { HostClient, HostSnapshot } from "../host/client.js";
-import { connectedAgentLive, connectedAgentWorkingTasks } from "../host/connected-agent-view.js";
+import {
+  connectedAgentActivity,
+  connectedAgentLive,
+  connectedAgentWorkingTasks,
+  type ConnectedAgentActivity,
+} from "../host/connected-agent-view.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
 import { useHostSelector } from "./use-host-snapshot.js";
 import { connectedAgentsClient, type ConnectedAgentsSnapshot } from "../host/connected-agents.js";
@@ -156,6 +161,38 @@ export function useConnectedAgentLive(client: HostClient, connectionId: string) 
       ? result.operations
       : undefined,
   );
+}
+
+/**
+ * A connection's Recent activity: its operations and the commands it sent, in one list. Absent
+ * while it loads; unavailable when this Home cannot list it.
+ */
+export function useConnectedAgentActivity(
+  client: HostClient,
+  connectionId: string,
+  /** Read again when this changes: the task the agent is working on, for one. */
+  revision: string | null,
+): ConnectedAgentActivity | undefined {
+  const [result, setResult] = useState<{
+    client: HostClient;
+    key: string;
+    activity: ConnectedAgentActivity;
+  }>();
+  const key = `${connectionId}:${revision ?? ""}`;
+  useEffect(() => {
+    const controller = new AbortController();
+    const receive = (activity: ConnectedAgentActivity) => {
+      if (!controller.signal.aborted) setResult({ client, key, activity });
+    };
+    void client.rpc["connections.activity"]({ connectionId }, { signal: controller.signal })
+      .then(unwrapRpcResult)
+      .then(
+        (page) => receive(connectedAgentActivity(page)),
+        () => receive({ kind: "unavailable" }),
+      );
+    return () => controller.abort();
+  }, [client, connectionId, key]);
+  return result?.client === client && result.key === key ? result.activity : undefined;
 }
 
 export function useTaskActivity(

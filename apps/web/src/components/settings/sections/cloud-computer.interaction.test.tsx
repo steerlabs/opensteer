@@ -7,7 +7,6 @@ import {
   mockCloudComputerAddress,
   mockCloudComputerDeploymentId,
   mockCloudComputerId,
-  mockWorkAddress,
   type MockCloudComputerScene,
 } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -29,7 +28,6 @@ function Where() {
 }
 
 const cloudDeployment = mockCloudComputerDeploymentId;
-const workDeployment = "dep_00000000-0000-4000-8000-0000000000dd";
 
 function bridgeFor(account: MockCloudComputerAccount | null, listed = true) {
   return {
@@ -58,10 +56,7 @@ async function mount(
     desktopBridge: bridge,
     deploymentAccess: {
       deployments: bridge?.listed
-        ? [
-            { id: cloudDeployment, canonicalOrigin: mockCloudComputerAddress },
-            { id: workDeployment, canonicalOrigin: mockWorkAddress },
-          ]
+        ? [{ id: cloudDeployment, canonicalOrigin: mockCloudComputerAddress }]
         : [],
     },
     snapshot: {
@@ -332,60 +327,5 @@ describe("Opensteer Cloud Computer on desktop", () => {
   it("offers no checkout without a website to open it on", async () => {
     const page = await mount(bridgeFor(scene("none")), { portalOrigin: null });
     expect(button(page, "Continue to checkout").disabled).toBe(true);
-  });
-});
-
-describe("work Homes on the Cloud Computer screen", () => {
-  it("shows a work Home as its own card, with no billing, suspend or delete", async () => {
-    const page = await mount(bridgeFor(new MockCloudComputerAccount("work", workDeployment)));
-    const card = page.querySelector(".work-home");
-    expect(card?.querySelector("h2")?.textContent).toBe("Acme Robotics · Work Home");
-    expect(card?.textContent).toContain("Running");
-    expect(card?.textContent).toContain(mockWorkAddress);
-    expect(card?.textContent).toContain(
-      "Managed by Acme Robotics: they pay for it and can suspend or delete it.",
-    );
-    expect(card?.textContent).toContain("Most a connected agent may do on its own: Supervised");
-    expect(card?.textContent).toContain("Agents may run tasks: Allowed");
-    for (const word of ["Manage billing", "Suspend", "Delete Cloud Computer"])
-      expect(card?.textContent).not.toContain(word);
-    // No personal one yet: the offer still shows beside it.
-    expect(page.querySelector(".cloud-computer__price")).not.toBeNull();
-  });
-
-  it("opens a work Home by the Home the Account pinned", async () => {
-    const bridge = bridgeFor(new MockCloudComputerAccount("work", workDeployment));
-    const page = await mount(bridge);
-    const open = page.querySelector<HTMLButtonElement>(".work-home button");
-    expect(open?.textContent).toBe("Open it");
-    await act(async () => open!.click());
-    expect(bridge.select).toHaveBeenLastCalledWith({ deploymentId: workDeployment });
-  });
-
-  it("shows both a personal Cloud Computer and a work Home", async () => {
-    const page = await mount(bridgeFor(new MockCloudComputerAccount("both", workDeployment)));
-    expect(page.querySelectorAll(".work-home")).toHaveLength(1);
-    expect(page.textContent).toContain("Cloud Computer is ready");
-    expect(button(page, "Manage billing")).toBeTruthy();
-  });
-
-  it("shows none when the person has no work Home", async () => {
-    const page = await mount(bridgeFor(scene("ready")));
-    expect(page.querySelectorAll(".work-home")).toHaveLength(0);
-  });
-
-  it("links from inside the work Home to its one page of what the organization can see", async () => {
-    const page = await mount(bridgeFor(new MockCloudComputerAccount("work", workDeployment)), {
-      deploymentId: workDeployment,
-    });
-    const link = [...page.querySelectorAll("a")].find((a) => a.textContent === "Open");
-    await act(async () => link!.click());
-    expect(path).toBe("/settings/work");
-  });
-
-  it("offers no such link from another Home, whose Settings → Work isn't this one's", async () => {
-    const page = await mount(bridgeFor(new MockCloudComputerAccount("work", workDeployment)));
-    await vi.waitFor(() => expect(page.textContent).toContain("Acme Robotics"));
-    expect([...page.querySelectorAll("a")].find((a) => a.textContent === "Open")).toBeUndefined();
   });
 });

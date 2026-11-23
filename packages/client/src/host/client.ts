@@ -900,8 +900,6 @@ export interface HostSnapshot {
     readonly manageComputers: boolean;
     readonly managePrivateResources: boolean;
   } | null;
-  /** Undefined before the shell arrives and null when it reports a personal Home. */
-  effectiveWorkPolicy?: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null;
   needsYou: import("@opensteer/protocol").NeedsYouPage | null;
   attentionSummaries?: readonly import("zod").infer<
     typeof import("@opensteer/protocol/personal-sync").PersonalShellSnapshotSchema

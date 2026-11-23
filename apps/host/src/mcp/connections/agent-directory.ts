@@ -157,7 +157,7 @@ export class AgentDirectoryCache {
 }
 
 /** Exact HTTPS origin match of a proven redirect URI against directory entries; loopback and non-HTTPS never match. */
-export function matchPlatform(
+export function matchDirectoryEntry(
   directory: AgentDirectoryDocument | null,
   redirectUri: string,
 ): AgentDirectoryEntry | null {

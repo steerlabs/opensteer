@@ -150,6 +150,7 @@ describe("Product tool handlers", () => {
     });
     expect(agentPage).toHaveBeenCalledWith({
       ownerId,
+      reader: { kind: "work", threadId: claims.threadId },
       scope: { kind: "personal" },
       scopeId: claims.threadId,
       status: "all",
@@ -212,6 +213,7 @@ describe("Product tool handlers", () => {
     });
     expect(agentPage).toHaveBeenCalledWith({
       ownerId,
+      reader: { kind: "work", threadId: claims.threadId },
       scope: { kind: "personal" },
       scopeId: claims.threadId,
       status: "all",

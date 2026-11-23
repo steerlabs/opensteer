@@ -21,8 +21,7 @@ describe("deploy/account/agent-directory.seed.json", () => {
 
     const parsedEntries = items.map((item) => {
       const entry = AgentDirectoryEntrySchema.parse(item);
-      expect(entry.keys).toBeUndefined();
-      expect(entry.embedsVia).toBeUndefined();
+      expect(Object.keys(entry).sort()).toEqual(["displayName", "id", "origins"]);
       return entry;
     });
 

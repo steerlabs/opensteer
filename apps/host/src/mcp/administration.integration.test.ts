@@ -6,7 +6,7 @@ import {
   personalBrowserRepository,
 } from "@opensteer/database/test-support/store";
 import { createId, DeviceIdSchema, type UserId } from "@opensteer/core";
-import { admitSettingsCaller, AgentConnectionStore, BrowserSourceStore } from "@opensteer/database";
+import { AgentConnectionStore, BrowserSourceStore, commandAdmission } from "@opensteer/database";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import { describeStore } from "@opensteer/database/test-support/store";
 import { RealtimeHub } from "@opensteer/orchestration";
@@ -19,10 +19,10 @@ import {
   type AdministrationDependencies,
 } from "../administration/administration-service.js";
 import { BrowserService } from "../browser/browser-service.js";
-import {
-  AdministrationToolHandlers,
-  administrationToolHandlers,
-} from "./handlers/administration.js";
+import { agentCommandRegistry } from "../commands/agent-door.js";
+import { AdministrationToolHandlers } from "./handlers/administration.js";
+import { CommandTools } from "./handlers/commands.js";
+import { agentToolHandlers } from "./handlers/index.js";
 import type { AgentToolHandlers } from "./handlers/types.js";
 import type { AgentCaller } from "./agent-caller.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
@@ -99,9 +99,20 @@ async function mcp(
     userId,
     accessMode: "full-access",
   };
-  const handlers = administrationToolHandlers(
-    new AdministrationToolHandlers(new AdministrationService(dependencies, vi.fn()), () => true),
+  const administration = new AdministrationToolHandlers(
+    new AdministrationService(dependencies, vi.fn()),
+    () => true,
   );
+  // The administration tools A5 removed are Home commands sent with opensteer_command now.
+  const handlers = agentToolHandlers({
+    administration,
+    commands: new CommandTools({
+      database: dependencies.store.database,
+      registry: agentCommandRegistry(administration.service),
+      requests: () => undefined,
+      administration,
+    }),
+  } as never);
   const service = new OpensteerMcpService({
     callers: { authenticate: async () => native },
     handlers: handlers as AgentToolHandlers,
@@ -126,11 +137,70 @@ async function mcp(
       });
     },
     call: async (name: string, input: Record<string, unknown>, operationKey = randomUUID()) => {
-      const result = await service.callTool("token", name, input, { operationKey });
+      const command = removedToolCommand(name, input, environmentId);
+      const result = await service.callTool(
+        "token",
+        command ? "opensteer_command" : name,
+        command ? { command } : input,
+        { operationKey },
+      );
       if (typeof result === "string") throw new Error(`${name} returned text, not a record`);
       return result;
     },
   };
+}
+/** The command a removed administration tool sent, as its handler built it before A5. */
+function removedToolCommand(
+  name: string,
+  input: Record<string, unknown>,
+  environmentId: string,
+): Record<string, unknown> | undefined {
+  switch (name) {
+    case "opensteer_ai_account_update": {
+      const common = { environmentId, harnessInstanceId: input.aiAccountId };
+      switch (input.action) {
+        case "rename":
+          return { type: "harness.rename", ...common, name: input.name };
+        case "enable":
+        case "disable":
+          return { type: "harness.enabled.set", ...common, enabled: input.action === "enable" };
+        case "set_default":
+          return { type: "harness.default.set", ...common };
+        default: {
+          const limits = input.modelLimits as { modelId: string; limits: unknown };
+          return {
+            type: "harness.model.configure",
+            ...common,
+            nativeModelId: limits.modelId,
+            settings: limits.limits,
+          };
+        }
+      }
+    }
+    case "opensteer_defaults_update":
+      return { type: "execution.preferences.remember", ...input };
+    case "computer_update":
+      return { type: "machine.rename", machineId: input.computerId, name: input.name };
+    case "computer_remove":
+      return input.target === "computer"
+        ? { type: "machine.revoke", machineId: input.computerId }
+        : { type: "machine.access.session.stop", sessionId: input.sessionId };
+    case "browser_profile_update":
+      return { type: "browser.profile.rename", profileId: input.profileId, name: input.name };
+    case "browser_profile_remove":
+      switch (input.target) {
+        case "profile":
+          return { type: "browser.profile.delete", profileId: input.profileId };
+        case "history":
+          return { type: "browser.history.clear", profileId: input.profileId };
+        case "history_url":
+          return { type: "browser.history.remove", profileId: input.profileId, url: input.url };
+        default:
+          return { type: "browser.site.remove", site: input.site };
+      }
+    default:
+      return undefined;
+  }
 }
 function realtime() {
   const hub = new RealtimeHub();
@@ -160,9 +230,19 @@ async function retryAfterPersonChange(
 }
 
 describeStore("MCP administration", (it) => {
-  for (const [name, change] of [
-    ["mode lowered", { accessMode: "approval-required" }],
-    ["grant narrowed", { grant: { scope: "selected", tasks: true, resources: [] } }],
+  for (const [name, change, refusal] of [
+    // A mode that no longer reaches asks the person: authority-changed, as the tools map it.
+    [
+      "mode lowered",
+      { accessMode: "approval-required" },
+      { code: "forbidden", reason: "authority-changed" },
+    ],
+    // A grant that no longer names the Home's devices reads as not there at all.
+    [
+      "grant narrowed",
+      { grant: { scope: "selected", tasks: true, resources: [] } },
+      { code: "not_found", message: "That item is unavailable." },
+    ],
   ] as const) {
     it(`refuses settings writes and replays with stale MCP authority after ${name}`, async ({
       storeFixture: fixture,
@@ -196,14 +276,19 @@ describeStore("MCP administration", (it) => {
               type: "machine.rename",
               request: { machineId: run.runnerId, name: "After" },
               authoritySource: { kind: "mcp" },
-              admit: (transaction) =>
-                admitSettingsCaller(transaction, {
-                  ownerUserId: run.userId,
-                  callerKey: `connection:${agent.connection.id}`,
-                }),
+              ...commandAdmission({
+                ownerUserId: run.userId,
+                callerKey: `connection:${agent.connection.id}`,
+                command: {
+                  type: "machine.rename",
+                  idempotencyKey: randomUUID(),
+                  machineId: run.runnerId as never,
+                  name: "After",
+                },
+              }),
             },
           }),
-        ).rejects.toMatchObject({ code: "forbidden" });
+        ).rejects.toMatchObject(refusal);
         expect(
           await fixture.database
             .selectFrom("runners")

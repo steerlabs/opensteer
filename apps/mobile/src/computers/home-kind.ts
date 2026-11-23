@@ -13,14 +13,12 @@ export const selectHomeKind = (snapshot: HostSnapshot) => snapshot.identityConfi
  * What kind of Home the open Opensteer lives on, as the phone can tell: its exposure from the
  * Host, and the Account's Cloud Computer views for its deployment. A phone never hosts the
  * Home, so a loopback Home is always a Mac elsewhere. `computer` is the Account's view of a
- * Cloud Computer or work Home, when it is one.
+ * Cloud Computer, when it is one.
  */
 export function usePhoneHome(input: {
   readonly exposure: "loopback" | "networked" | undefined;
   readonly homeKind?: "mac" | "server" | "cloud-computer" | undefined;
   readonly deploymentId: string | null;
-  /** The organization a work Home's own policy names; absent on a personal Home. */
-  readonly workOrganization?: string | null;
 }): { readonly kind: HomeKindFact; readonly computer: CloudComputerView | null } {
   const views = useCloudComputer(useMobileClient().cloudComputers ?? null).views;
   const { deploymentId } = input;
@@ -30,13 +28,10 @@ export function usePhoneHome(input: {
     deploymentId,
     hostedHere: false,
     account: views,
-    workOrganization: input.workOrganization ?? null,
   });
   const computer =
     deploymentId === null || views === null
       ? null
-      : (views.computers.find((view) => view.deploymentId === deploymentId) ??
-        views.work.find(({ computer: view }) => view?.deploymentId === deploymentId)?.computer ??
-        null);
+      : (views.computers.find((view) => view.deploymentId === deploymentId) ?? null);
   return { kind, computer };
 }
