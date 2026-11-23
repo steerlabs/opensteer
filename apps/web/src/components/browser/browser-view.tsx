@@ -308,7 +308,7 @@ export function PlaceBrowserView({
   const picture = useFreshPicture(hostClient, sessionId, tabId, viewer);
   // A Cloud Computer's browser sleeps and wakes; every other browser is `not-pooled` and shows
   // nothing of it.
-  const sleep = useBrowserSleep(hostClient, tabId);
+  const sleep = useBrowserSleep(hostClient, tabId, viewed?.reopenedAt);
   const pooled = sleep.browser.kind !== "not-pooled";
   const [restartAsked, setRestartAsked] = useState(false);
   const [restarting, setRestarting] = useState(false);

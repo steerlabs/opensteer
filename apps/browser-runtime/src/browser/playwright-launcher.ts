@@ -1808,12 +1808,18 @@ class PlaywrightContextHandle implements BrowserContext {
     if (!candidate) return;
     this.lifecyclePending = true;
     const deadline = performance.now() + probeMs;
-    // R9: a browser that refused the helper says so at once; only one that serves it is waited for.
+    // R9, TS7: only a browser that refused the helper outright ends the look early; one that
+    // serves it, or whose answer is not known yet, is looked for until the look's bound.
     const look = candidate
-      .served(extensionIds)
-      .catch(() => true)
-      .then((served) => (served ? readRows(candidate, deadline) : null));
-    this.lifecycleSettled = look.then(async (rows) => {
+      .served(extensionIds, deadline)
+      .catch(() => "unknown" as const)
+      .then(async (served) => ({
+        served,
+        rows: served === "refused" ? null : await readRows(candidate, deadline),
+      }));
+    this.lifecycleSettled = look.then(async ({ served, rows }) => {
+      // What the browser listed, read before the stop: the line says why there is no helper.
+      const listed = rows ? null : await candidate.listed().catch(() => null);
       // A look that ran out stops before it is over: no poll or navigation follows it (R6).
       if (!rows) await candidate.stop();
       this.lifecyclePending = false;
@@ -1821,7 +1827,12 @@ class PlaywrightContextHandle implements BrowserContext {
       if (rows) this.lifecycle = candidate;
       else
         process.stderr.write(
-          '{"event":"browser-runtime.tab-lifecycle-unavailable","stage":"launch-inventory"}\n',
+          `${JSON.stringify({
+            event: "browser-runtime.tab-lifecycle-unavailable",
+            stage: served === "refused" ? "manifest-refused" : "launch-inventory",
+            extensionIds,
+            listed,
+          })}\n`,
         );
     });
   }

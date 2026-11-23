@@ -181,6 +181,11 @@ export interface TabRecord {
   usedAt: number;
   unrestorable: boolean;
   restore: { url: string; engine: unknown | null; bytes: number } | null;
+  /**
+   * TS7: when the last wake opened this tab again at its address, so what it held is gone; the
+   * person is told, as after a browser restart. Cleared when the tab next sleeps.
+   */
+  reopenedAt?: number;
 }
 
 export interface LivePage {
@@ -575,6 +580,7 @@ export class SurfaceLedger {
         engine,
         bytes: engine == null ? 0 : Buffer.byteLength(JSON.stringify(engine)),
       };
+      delete record.reopenedAt;
       // Only a tab that can wake as itself keeps its place in a lineage (run 12).
       this.detachLive(record, engine != null);
       record.lease.endSleep(true);
@@ -656,8 +662,10 @@ export class SurfaceLedger {
           });
           if (this.records.get(id) !== record || this.closing)
             throw new BrowserRuntimeError("not_found", "The browser tab closed.");
-          if ((restore.engine === null || page.openedFresh) && isLive(record))
+          if ((restore.engine === null || page.openedFresh) && isLive(record)) {
             await this.navigateLive(record, restore.url);
+            record.reopenedAt = Date.now();
+          }
           if (this.records.get(id) !== record || !record.live)
             throw new BrowserRuntimeError("not_found", "The browser tab closed.");
           record.restore = null;
@@ -731,6 +739,7 @@ export class SurfaceLedger {
       canGoBack: record.live?.navigation?.canGoBack ?? false,
       canGoForward: record.live?.navigation?.canGoForward ?? false,
       sizedByAgent: record.agentMetrics !== null,
+      ...(record.reopenedAt ? { reopenedAt: record.reopenedAt } : {}),
     };
   }
 

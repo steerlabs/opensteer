@@ -273,35 +273,76 @@ export class ChromiumTabLifecycleBridge {
     this.privatePage = privatePage;
   }
 
+  /** Work the look or a call is doing; a stop waits for it (R6, TS14). */
+  private track<T>(work: Promise<T>): Promise<T> {
+    this.working.add(work);
+    void work.catch(() => undefined).finally(() => this.working.delete(work));
+    return work;
+  }
+
   /**
-   * R9: whether the browser serves the helper's own manifest at one of `ids`. A browser that
+   * R9, TS7: whether the browser serves the helper's own manifest at one of `ids`. A browser that
    * loaded it serves it from the moment the launch returns (20 of 20 starts of the pinned
-   * Chromium, before its worker ran); one that refused `--load-extension` (branded Chrome) answers
-   * ERR_BLOCKED_BY_CLIENT at once. Asked a few times before it is called absent.
+   * Chromium, before its worker ran): "served". Only a browser that refused `--load-extension`
+   * (branded Chrome) answering ERR_BLOCKED_BY_CLIENT to every id at every ask is "refused"; a
+   * timeout or any other answer is "unknown", not known yet, and the look goes on to its bound.
+   * The check runs within the look's `deadline` and is part of the work a stop waits for (TS14).
    */
-  async served(ids: readonly string[]): Promise<boolean> {
+  served(
+    ids: readonly string[],
+    deadline = Number.POSITIVE_INFINITY,
+  ): Promise<"served" | "refused" | "unknown"> {
+    return this.track(this.servedOnce(ids, deadline));
+  }
+
+  private async servedOnce(
+    ids: readonly string[],
+    deadline: number,
+  ): Promise<"served" | "refused" | "unknown"> {
     const page = this.privatePage;
-    if (!page || ids.length === 0) return true;
+    if (!page || ids.length === 0) return "unknown";
     try {
-      for (let check = 0; check < servedChecks && !this.stopped; check++) {
+      for (let check = 0; check < servedChecks; check++) {
         if (check > 0) await new Promise((resolve) => setTimeout(resolve, servedCheckGapMs));
         for (const id of ids) {
-          if (page.isClosed()) return true;
-          const response = await withTimeout(
+          const left = deadline - performance.now();
+          if (this.stopped || page.isClosed() || left <= 0) return "unknown";
+          const answer = await withTimeout(
             page.goto(`chrome-extension://${id}/manifest.json`),
-            cdpStepMs,
+            Math.min(cdpStepMs, left),
             { timeoutError: () => new Error("Helper manifest check timed out.") },
-          ).catch(() => null);
-          if (response?.ok()) return true;
+          ).then(
+            (response) => (response?.ok() ? ("served" as const) : ("unknown" as const)),
+            (error: unknown) =>
+              error instanceof Error && error.message.includes("net::ERR_BLOCKED_BY_CLIENT")
+                ? ("refused" as const)
+                : ("unknown" as const),
+          );
+          if (answer !== "refused") return answer;
         }
       }
-      return false;
+      return "refused";
     } finally {
       if (!page.isClosed())
         await withTimeout(page.goto("about:blank"), 500, {
           timeoutError: () => new Error("Helper anchor reset timed out."),
         }).catch(() => undefined);
     }
+  }
+
+  /** TS7: what the browser lists that could be the helper, for the line a missing helper writes. */
+  async listed(): Promise<readonly { type: string; url: string }[]> {
+    const response = (await withTimeout(this.browserCdp.send("Target.getTargets"), cdpStepMs, {
+      timeoutError: () => new Error("Helper Target.getTargets timed out."),
+    })) as { targetInfos?: readonly { type?: string; url?: string }[] };
+    return (response.targetInfos ?? [])
+      .filter(
+        (target) =>
+          target.type === "service_worker" ||
+          target.type === "background_page" ||
+          (typeof target.url === "string" && target.url.startsWith("chrome-extension://")),
+      )
+      .map((target) => ({ type: String(target.type), url: String(target.url).slice(0, 200) }));
   }
 
   private async runningServiceWorkerTarget(timeoutMs = cdpStepMs): Promise<string | null> {
@@ -359,16 +400,30 @@ export class ChromiumTabLifecycleBridge {
       return;
     }
     let session: PlaywrightCdpSession | undefined;
+    const stopped = () => {
+      if (this.stopped) throw new Error("The tab lifecycle helper was stopped.");
+    };
     try {
       await withTimeout(this.privatePage.goto(`${origin}/manifest.json`), stepMs, {
         timeoutError: () => new Error("Helper manifest navigation timed out."),
       }).catch(() => undefined);
-      session = await withTimeout(this.context.newCDPSession(this.privatePage), stepMs, {
-        timeoutError: () => new Error("Helper CDP attach timed out."),
+      stopped();
+      const attaching = this.context.newCDPSession(this.privatePage);
+      session = await withTimeout(attaching, stepMs, {
+        timeoutError: () => {
+          // TS14: a debugger session that arrives after its wait is let go of at once.
+          void attaching.then(
+            (late) => late.detach().catch(() => undefined),
+            () => undefined,
+          );
+          return new Error("Helper CDP attach timed out.");
+        },
       });
+      stopped();
       await withTimeout(session.send("ServiceWorker.enable"), stepMs, {
         timeoutError: () => new Error("Helper ServiceWorker.enable timed out."),
       });
+      stopped();
       await withTimeout(
         session.send("ServiceWorker.startWorker", { scopeURL: `${origin}/` }),
         stepMs,
@@ -398,6 +453,7 @@ export class ChromiumTabLifecycleBridge {
       const runningUrl = await this.runningServiceWorkerTarget(
         Math.max(100, Math.min(cdpStepMs, remaining)),
       ).catch(() => null);
+      if (this.stopped) break;
       if (!runningUrl && !woke) {
         woke = true;
         await this.wakeServiceWorker(deadline - Date.now());
@@ -442,10 +498,7 @@ export class ChromiumTabLifecycleBridge {
     fn: (worker: Worker) => Promise<T>,
     kind: "read" | "change" = "read",
   ): Promise<T> {
-    const call = this.callWorkerOnce(fn, kind);
-    this.working.add(call);
-    void call.catch(() => undefined).finally(() => this.working.delete(call));
-    return call;
+    return this.track(this.callWorkerOnce(fn, kind));
   }
 
   private async callWorkerOnce<T>(
@@ -458,6 +511,7 @@ export class ChromiumTabLifecycleBridge {
       let asked = false;
       try {
         const worker = await this.ensureWorker();
+        if (this.stopped) throw new Error("The tab lifecycle helper was stopped.");
         asked = true;
         return await withTimeout(fn(worker), workerCallMs, {
           timeoutError: () => new Error("Opensteer tab lifecycle helper call timed out."),

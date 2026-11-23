@@ -1,6 +1,6 @@
 import { runInNewContext } from "node:vm";
-import { describe, expect, it } from "vitest";
-import { extensionServiceWorkerJs } from "./tab-lifecycle-extension.js";
+import { describe, expect, it, vi } from "vitest";
+import { ChromiumTabLifecycleBridge, extensionServiceWorkerJs } from "./tab-lifecycle-extension.js";
 
 interface FakeTab {
   id: number;
@@ -185,5 +185,71 @@ describe("tab lifecycle helper", () => {
       consistent: false,
       rows: [{ tabId: 40, identity: null }],
     });
+  });
+});
+
+describe("the look for the helper's manifest (TS7, TS14)", () => {
+  /** A private page whose manifest asks answer as `answer` says; about:blank always loads. */
+  function bridge(answer: (url: string, ask: number) => Promise<unknown>) {
+    const asked: string[] = [];
+    const page = {
+      isClosed: () => false,
+      goto: (url: string) => {
+        asked.push(url);
+        return url === "about:blank" ? Promise.resolve(null) : answer(url, asked.length);
+      },
+    };
+    return {
+      asked,
+      bridge: new ChromiumTabLifecycleBridge({} as never, {} as never, page as never),
+    };
+  }
+  const refusal = (url: string) =>
+    Promise.reject(new Error(`page.goto: net::ERR_BLOCKED_BY_CLIENT at ${url}`));
+
+  it("calls only a browser that refused every ask of every id refused", async () => {
+    const { bridge: refused, asked } = bridge(refusal);
+    expect(await refused.served(["aaaa", "bbbb"])).toBe("refused");
+    expect(asked.filter((url) => url.startsWith("chrome-extension://"))).toHaveLength(6);
+    expect(asked.at(-1)).toBe("about:blank");
+    expect(await bridge(async () => ({ ok: () => true })).bridge.served(["aaaa"])).toBe("served");
+  });
+
+  it("calls a timeout, another error or an answer that is not the manifest not known yet", async () => {
+    const hanging = bridge(() => new Promise(() => {}));
+    const started = performance.now();
+    expect(await hanging.bridge.served(["aaaa"], performance.now() + 300)).toBe("unknown");
+    // Within the look's bound, not the three asks' own time.
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(hanging.asked.at(-1)).toBe("about:blank");
+    expect(
+      await bridge(() => Promise.reject(new Error("page.goto: net::ERR_ABORTED"))).bridge.served([
+        "aaaa",
+      ]),
+    ).toBe("unknown");
+    expect(await bridge(async () => ({ ok: () => false })).bridge.served(["aaaa"])).toBe("unknown");
+    // Refused twice, then not answered in time: still not known.
+    const mixed = bridge((url, ask) =>
+      ask <= 2 ? refusal(url) : Promise.reject(new Error("Helper manifest check timed out.")),
+    );
+    expect(await mixed.bridge.served(["aaaa"])).toBe("unknown");
+  });
+
+  it("is work a stop waits for, and asks nothing after the stop", async () => {
+    let release!: () => void;
+    const held = bridge((url) => new Promise((resolve) => (release = () => resolve(refusal(url)))));
+    const look = held.bridge.served(["aaaa"]);
+    await vi.waitFor(() => expect(release).toBeDefined());
+    let stopped = false;
+    const stop = held.bridge.stop().then(() => (stopped = true));
+    // The stop is still waiting on the ask in flight.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    release();
+    expect(await look).toBe("unknown");
+    await stop;
+    // One ask, then the page back where it started; nothing after the stop.
+    expect(held.asked).toEqual(["chrome-extension://aaaa/manifest.json", "about:blank"]);
   });
 });

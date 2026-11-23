@@ -9,6 +9,7 @@ import {
   browserSleepWords,
   browserStartFailure,
   browserTabNote,
+  browserTabReturnOf,
   browserWakeLine,
   restartPooledBrowser,
   type BrowserSleep,
@@ -191,6 +192,30 @@ describe("the note a tab says once", () => {
       "This page couldn’t be restored, and text you hadn’t sent is gone. Reload to open it again.",
     );
     expect(browserTabNote({ kind: "kept" })).toBeNull();
+  });
+
+  it("says a tab put to sleep by closing reloaded, on any Home, and a report's note comes first (TS7)", () => {
+    const at = Date.parse("2026-11-20T09:00:00.000Z");
+    const reopened = browserTabReturnOf({ kind: "kept" }, at);
+    expect(reopened).toEqual({
+      kind: "reloaded",
+      typed: false,
+      reason: "tab-sleep",
+      startAt: "2026-11-20T09:00:00.000Z",
+    });
+    expect(browserTabNote(reopened)).toEqual({
+      title: "This page reloaded",
+      detail: "It was closed to free memory and opened again from its address.",
+      line: "This page reloaded because it was closed to free memory.",
+    });
+    expect(browserTabReturnOf({ kind: "kept" }, undefined)).toEqual({ kind: "kept" });
+    expect(browserTabReturnOf(view("lost").tab, at)).toEqual(view("lost").tab);
+    // Seen once on this device, it does not come back; a later reopening is a new note.
+    const notes = new BrowserReturnNotes();
+    expect(notes.note(computer, tab, reopened)).not.toBeNull();
+    notes.seen(computer, tab, reopened);
+    expect(notes.note(computer, tab, reopened)).toBeNull();
+    expect(notes.note(computer, tab, browserTabReturnOf({ kind: "kept" }, at + 1))).not.toBeNull();
   });
 
   it("leaves once seen, and gives a start's reason in only the first note seen", () => {

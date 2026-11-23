@@ -952,6 +952,7 @@ export class MockPlaceWorld {
       loading: tab.loading ?? false,
       navigationFailed: false,
       sizedByAgent: tab.sizedByAgent ?? false,
+      ...(tab.reopenedAt ? { reopenedAt: tab.reopenedAt } : {}),
       favicon: tab.favicon ?? null,
     };
   }

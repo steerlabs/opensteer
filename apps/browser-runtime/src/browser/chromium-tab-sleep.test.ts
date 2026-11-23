@@ -423,6 +423,8 @@ it("sleeps native Chromium tabs by discarding, restores scroll/forms/SPA/session
   // Wake each of the 4 remaining tabs and verify fidelity!
   const articleWoken = await ledger.wake(articleSurface.id);
   await waitLoaded(articleWoken.cdp, "/article");
+  // Woken as itself: nothing to tell the person.
+  expect(ledger.toRecord(articleSurface.id)).not.toHaveProperty("reopenedAt");
   await vi.waitFor(
     async () => {
       expect(await evalValue<number>(articleWoken.cdp, "window.scrollY")).toBe(2600);
@@ -748,6 +750,12 @@ it("still sleeps and wakes by address without marking unrestorable when the help
 
   const woken2 = await ledger.wake(s2.id);
   await waitLoaded(woken2.cdp, "/article");
+  // TS7: a tab opened again at its address says so on its row, so the person is told once; the
+  // mark goes with the tab's next sleep.
+  const reopenedAt = ledger.toRecord(s2.id)?.reopenedAt;
+  expect(reopenedAt).toEqual(expect.any(Number));
+  expect(await ledger.sleep(s2.id, () => null)).toBe(true);
+  expect(ledger.toRecord(s2.id)).not.toHaveProperty("reopenedAt");
 });
 
 it("serializes immediate wake behind an in-flight discard and settles helper timeouts via inventory with zero orphan tabs", async () => {

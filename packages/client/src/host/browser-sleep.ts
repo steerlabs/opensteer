@@ -115,7 +115,8 @@ export type BrowserTabReturn =
   | {
       readonly kind: "reloaded";
       readonly typed: boolean;
-      readonly reason: BrowserStartReason | null;
+      /** "tab-sleep": this tab alone was closed to free memory and opened again at its address. */
+      readonly reason: BrowserStartReason | "tab-sleep" | null;
       /** The start this note is about; null when the Home did not say. */
       readonly startAt: string | null;
       /** The Home's id for this note, sent back once the person has seen it. */
@@ -192,6 +193,24 @@ function tabOf(report: BrowserPoolReport, tabId: string): BrowserTabReturn {
         ...notice,
       }
     : { kind: "lost", typed: page.typed, startAt, ...notice };
+}
+
+/**
+ * TS7: a tab whose last wake opened it again at its address (the tab row's `reopenedAt`), on any
+ * Home: it was put to sleep by closing, so its history, scroll and page state are gone, and it says
+ * so once, as a page that reloaded after a browser restart does. A report's own note comes first.
+ */
+export function browserTabReturnOf(
+  reported: BrowserTabReturn,
+  reopenedAt: number | null | undefined,
+): BrowserTabReturn {
+  if (reported.kind !== "kept" || !reopenedAt) return reported;
+  return {
+    kind: "reloaded",
+    typed: false,
+    reason: "tab-sleep",
+    startAt: new Date(reopenedAt).toISOString(),
+  };
 }
 
 /** Whether this is a Cloud Computer's pooled browser, which alone offers Restart browser. */
@@ -337,6 +356,12 @@ export function browserTabNote(
         : "This page couldn’t be restored as you left it. Reload to open it again.",
     };
   }
+  if (tab.reason === "tab-sleep")
+    return {
+      title: "This page reloaded",
+      detail: "It was closed to free memory and opened again from its address.",
+      line: "This page reloaded because it was closed to free memory.",
+    };
   const reason = options.reasonSaid ? null : tab.reason;
   // Why, said once: only a reason the person would not otherwise know or expect is named.
   const restarted =

@@ -639,6 +639,8 @@ export interface BrowserTabSummary {
   /** The page is loading; absent from an older Browser Runtime. */
   loading?: boolean | undefined;
   navigationFailed?: boolean | undefined;
+  /** The last wake opened this tab again at its address (ms since the epoch). */
+  reopenedAt?: number | undefined;
   id: BrowserSurfaceId;
   title: string;
   url: string;

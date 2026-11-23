@@ -894,6 +894,9 @@ function viewerSurface(sessionId: string, tabId: string): BrowserViewerSurface |
     loading: false,
     navigationFailed: false,
     sizedByAgent: page.sizedByAgent ?? false,
+    ...((page as { reopenedAt?: number }).reopenedAt
+      ? { reopenedAt: (page as { reopenedAt?: number }).reopenedAt }
+      : {}),
     favicon: null,
   } as unknown as BrowserViewerSurface;
   surfaces.set(page, surface);
@@ -3208,6 +3211,19 @@ describe("a Cloud Computer's browser", () => {
     expect(container.textContent).toContain("This page reloaded");
     expect(container.textContent).toContain(
       "Your browser restarted, so text you hadn’t sent may be gone.",
+    );
+    await pressAsync(container, "Dismiss");
+    expect(container.textContent).not.toContain("This page reloaded");
+  });
+
+  it("says once that a tab put to sleep by closing reloaded, on a Home with no pooled browser (TS7)", async () => {
+    const reopened = { ...firstPage, reopenedAt: Date.parse("2026-11-22T10:00:00Z") };
+    const { container, render } = await setup({ sessionId: "chosen" });
+    state.snapshot = snapshot([session("chosen", "ready", [reopened as PageInput])]);
+    await render();
+    expect(container.textContent).toContain("This page reloaded");
+    expect(container.textContent).toContain(
+      "It was closed to free memory and opened again from its address.",
     );
     await pressAsync(container, "Dismiss");
     expect(container.textContent).not.toContain("This page reloaded");
