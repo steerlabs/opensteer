@@ -50,6 +50,26 @@ export const codexApprovedFeatures: ReadonlySet<string> = new Set([
 /** Every configurable feature mapped to whether a Run has it on. */
 export type CodexFeatureBoundary = Readonly<Record<string, boolean>>;
 
+/**
+ * The only features a Run with Codex's own configuration has set by Opensteer;
+ * every other one is as the person, or Codex, has it. Opensteer shows, steers
+ * and stops the current collaboration contract's subagents and not the older
+ * tool set's, and a daemon Codex starts on its own would outlive the Run, where
+ * Opensteer can neither show nor stop what it does.
+ */
+const codexOwnConfigurationFeatures: Readonly<Record<string, boolean>> = {
+  daemon_auto_start: false,
+  multi_agent: false,
+  multi_agent_v2: true,
+};
+
+/** The features Opensteer sets for a Run with Codex's own configuration, among those this executable lists. */
+export function codexOwnFeatureOverrides(boundary: CodexFeatureBoundary): CodexFeatureBoundary {
+  return Object.fromEntries(
+    Object.entries(codexOwnConfigurationFeatures).filter(([name]) => name in boundary),
+  );
+}
+
 const featureNamePattern = /^[a-z0-9_]+(?:\.[a-z0-9_]+)*$/u;
 const featureListTimeoutMs = 30_000;
 const featureListPageLimit = 16;
@@ -91,6 +111,8 @@ export async function assertCodexFeatureBoundary(
   client: CodexStdioClient,
   boundary: CodexFeatureBoundary,
   timeoutMs: number,
+  /** `named`: only the features the boundary names; the rest are the person's. */
+  scope: "every" | "named" = "every",
 ): Promise<void> {
   const conflicting: string[] = [];
   let cursor: string | undefined;
@@ -116,6 +138,7 @@ export async function assertCodexFeatureBoundary(
       if (typeof feature.enabled !== "boolean") {
         throw protocolError(`Codex did not report whether ${name} is enabled`);
       }
+      if (scope === "named" && !(name in boundary)) continue;
       if (feature.enabled !== (boundary[name] ?? false)) conflicting.push(name);
     }
     if (result.nextCursor === null || result.nextCursor === undefined) break;

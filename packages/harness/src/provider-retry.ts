@@ -1,4 +1,5 @@
 import { runRetryMessageMaxLength, utf8Prefix, type RunRetry } from "@opensteer/core";
+import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import type { HarnessDurableEvent, HarnessLog } from "./types.js";
 
 /**
@@ -139,7 +140,10 @@ export class ProviderRetryTracker {
     const rawCode = input.code?.trim();
     const code = rawCode ? utf8Prefix(rawCode, 128) : null;
     const message =
-      utf8Prefix(input.message.trim(), runRetryMessageMaxLength) || "Provider is retrying";
+      utf8Prefix(
+        redactNetworkCredentials(input.message.trim(), networkCredentialSecrets(process.env)),
+        runRetryMessageMaxLength,
+      ) || "Provider is retrying";
     const record: ProviderRetryRecord = {
       source,
       attempt,

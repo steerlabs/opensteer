@@ -215,6 +215,11 @@ export const CaseSchema = z
       .optional(),
     browser: BrowserFixtureSchema.optional(),
     fixtures: z.record(fixturePath, z.string()).default({}),
+    /**
+     * Files of the person's own engine configuration, written into the sample's
+     * temporary engine home (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`) before it starts.
+     */
+    engineHomeFixtures: z.record(fixturePath, z.string()).default({}),
     /** Published task messages, including this worker's prior handoffs. Explicit mocks win. */
     tasks: z
       .array(
@@ -284,6 +289,12 @@ export const CaseSchema = z
       /** Checked against assistant text from turns before the graded last turn. */
       earlierTextMust: z.array(regex).default([]),
       maxInvalidCalls: z.number().int().nonnegative().default(0),
+      /**
+       * `requested`: the engine must ask the person before a native tool runs.
+       * The eval never grants it: the ask ends the turn, graded as this check,
+       * instead of making the sample incomplete.
+       */
+      nativeApproval: z.enum(["requested"]).optional(),
     }),
   })
   .superRefine((c, ctx) => {

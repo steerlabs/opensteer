@@ -138,7 +138,7 @@ it("keeps a Home that used teams working: its old rows read without error and ev
     });
 
     // The Home's start runs this release's migrations over that database.
-    await sql`delete from kysely_migration where name='0107_needs_you_counts_requests'`.execute(
+    await sql`delete from kysely_migration where name >= '0107_needs_you_counts_requests'`.execute(
       store.database,
     );
     await migrateToLatest(store.database);

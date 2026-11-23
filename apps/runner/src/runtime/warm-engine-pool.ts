@@ -206,6 +206,7 @@ export function warmEngineKey(input: {
         context.agentTools.skills,
         context.taskPurpose,
         context.personalContext,
+        context.personLineage,
         input.warmSelection
           ? {
               providerId: context.modelSelection.providerId,

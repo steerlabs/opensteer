@@ -1,4 +1,5 @@
 import { harnessCatalog } from "@opensteer/core";
+import { networkEnvironmentNames } from "@opensteer/shared/safeMessage";
 import { selectEnvironment } from "@opensteer/shared/userEnvironment";
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
@@ -40,6 +41,10 @@ const allowedEnvironmentNames = new Set([
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
   "XDG_STATE_HOME",
+  // How an engine reaches the network, so it works behind a company proxy as
+  // it does in the person's own terminal. A proxy address can carry a
+  // password; nothing prints these values.
+  ...networkEnvironmentNames,
 ]);
 
 export interface PersonalUserEnvironmentPort {
