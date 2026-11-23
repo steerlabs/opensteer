@@ -503,6 +503,12 @@ export async function runTabRestoreTrial(input: {
     target: () => Promise<number>,
     options: { readonly overPage?: boolean; readonly escape?: boolean } = {},
   ) => {
+    // As click() does: rows still sliding from the last move are not where they will stand,
+    // and a press at a sliding row's middle can land on the row passing under it.
+    await wait(
+      async () => !(await has(".side-list[data-moving]")),
+      "rows settled before the press",
+    );
     const start = await rowPoint(selector);
     await dom(`(() => {
       const log = [];
@@ -529,6 +535,12 @@ export async function runTabRestoreTrial(input: {
     pressed = true;
     await glide(start, { x: start.x, y: start.y + 10 });
     await wait(() => has('.side-list > [data-sort="lifted"]'), "row lifted");
+    assert(
+      await dom(
+        `document.querySelector('.side-list > [data-sort="lifted"]')?.matches(${JSON.stringify(selector)}) === true`,
+      ),
+      `The press lifted another row than ${selector}`,
+    );
     await dom(`(() => {
       const list = document.querySelector(".side-section--tabs .side-list");
       window.__dragLog?.push([Math.round(performance.now()), "lifted", list.scrollTop, list.clientHeight, list.scrollHeight,
