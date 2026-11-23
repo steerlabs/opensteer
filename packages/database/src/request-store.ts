@@ -808,51 +808,6 @@ export class RequestStore {
       "repeatable read",
     );
   }
-
-  /** With `lineageConnectionId`, only Requests from tasks in that connection's lineage. */
-  async connectionPage(input: {
-    userId: UserId;
-    before?: string;
-    limit: number;
-    lineageConnectionId?: string;
-  }) {
-    const limit = clampLimit(input.limit);
-    const scope = input.lineageConnectionId
-      ? `connection:${input.userId}:${input.lineageConnectionId}`
-      : `connection:${input.userId}`;
-    const anchor = input.before ? decodeRequestCursor(input.before, scope) : null;
-    await requirePersonalOwner(this.#database, input.userId);
-    let query = this.#database
-      .selectFrom("requests")
-      .selectAll("requests")
-      .$if(input.lineageConnectionId !== undefined, (builder) =>
-        builder.where(({ exists, selectFrom }) =>
-          exists(
-            selectFrom("threads")
-              .select("threads.id")
-              .whereRef("threads.id", "=", "requests.originatingThreadId")
-              .where("threads.originConnectionId", "=", input.lineageConnectionId!),
-          ),
-        ),
-      );
-    const count = await query
-      .clearSelect()
-      .select(({ fn }) => fn.countAll<string>().as("count"))
-      .executeTakeFirstOrThrow();
-    if (anchor)
-      query = query.where((eb) =>
-        eb.or([
-          eb("createdAt", "<", anchor.createdAt),
-          eb.and([eb("createdAt", "=", anchor.createdAt), eb("id", "<", anchor.id)]),
-        ]),
-      );
-    const rows = await query
-      .orderBy("createdAt", "desc")
-      .orderBy("id", "desc")
-      .limit(limit + 1)
-      .execute();
-    return requestPage(rows, Number(count.count), limit, scope);
-  }
   async visiblePage(input: {
     readonly before?: string;
     readonly limit: number;

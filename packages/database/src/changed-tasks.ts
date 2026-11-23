@@ -1,6 +1,7 @@
 import type { ThreadDoneBy, ThreadId } from "@opensteer/core";
 import { sql, type Transaction } from "kysely";
 import { publishedMessagePredicate } from "./message-visibility.js";
+import type { connectionRequests } from "./request-agent-response.js";
 import type { DatabaseSchema } from "./schema.js";
 
 export interface ChangedTaskSummary {
@@ -27,7 +28,10 @@ export interface ChangedTaskSummary {
 export function changedTasksSubquery(
   transaction: Transaction<DatabaseSchema>,
   since: Date,
-  options: { readonly excludeSystemWorkers?: boolean } = {},
+  options: {
+    readonly excludeSystemWorkers?: boolean;
+    readonly visibleRequests?: Awaited<ReturnType<typeof connectionRequests>>;
+  } = {},
 ) {
   const excludeSystemWorkers = options.excludeSystemWorkers === true;
   const changedMessageAt = sql<Date>`coalesce(thread_inputs.updated_at, messages.created_at)`;
@@ -70,19 +74,41 @@ export function changedTasksSubquery(
 
   const msgSub = messageRows.groupBy("messages.threadId").as("changed_messages");
 
-  const questionSub = transaction
-    .selectFrom("requests")
-    .select([
-      "requests.originatingThreadId as threadId",
-      sql<string>`count(*) filter (where requests.status = 'fulfilled')`.as("questionsAnswered"),
-      sql<string>`count(*) filter (where requests.status = 'declined')`.as("questionsDismissed"),
-      sql<Date>`max(requests.resolved_at)`.as("lastQuestionAt"),
-    ])
-    .where("requests.kind", "=", "person.question")
-    .where("requests.status", "in", ["fulfilled", "declined"])
-    .where("requests.resolvedAt", ">", since)
-    .groupBy("requests.originatingThreadId")
-    .as("changed_questions");
+  const questionSub = (
+    options.visibleRequests
+      ? transaction
+          .selectFrom(options.visibleRequests.as("requests"))
+          .select([
+            "requests.originatingThreadId as threadId",
+            sql<string>`count(*) filter (where requests.status = 'fulfilled')`.as(
+              "questionsAnswered",
+            ),
+            sql<string>`count(*) filter (where requests.status = 'declined')`.as(
+              "questionsDismissed",
+            ),
+            sql<Date>`max(requests.resolved_at)`.as("lastQuestionAt"),
+          ])
+          .where("requests.kind", "=", "person.question")
+          .where("requests.status", "in", ["fulfilled", "declined"])
+          .where("requests.resolvedAt", ">", since)
+          .groupBy("requests.originatingThreadId")
+      : transaction
+          .selectFrom("requests")
+          .select([
+            "requests.originatingThreadId as threadId",
+            sql<string>`count(*) filter (where requests.status = 'fulfilled')`.as(
+              "questionsAnswered",
+            ),
+            sql<string>`count(*) filter (where requests.status = 'declined')`.as(
+              "questionsDismissed",
+            ),
+            sql<Date>`max(requests.resolved_at)`.as("lastQuestionAt"),
+          ])
+          .where("requests.kind", "=", "person.question")
+          .where("requests.status", "in", ["fulfilled", "declined"])
+          .where("requests.resolvedAt", ">", since)
+          .groupBy("requests.originatingThreadId")
+  ).as("changed_questions");
 
   const doneSince = sql<Date | null>`case when threads.done_at > ${since} and threads.done_reason is distinct from 'quiet' then threads.done_at end`;
   const newest = sql<Date>`greatest(changed_messages.last_message_at, changed_questions.last_question_at, ${doneSince})`;

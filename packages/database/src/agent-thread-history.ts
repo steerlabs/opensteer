@@ -25,7 +25,9 @@ import type { PlaceView } from "./personal-state-schema.js";
 import { authorizedDetail, authorizedSyncState } from "./personal-sync-store.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
 import { requestFromRow } from "./request-persistence.js";
+import { connectionRequests } from "./request-agent-response.js";
 import type { DatabaseSchema } from "./schema.js";
+import type { ThreadCallerAuthority } from "./thread-caller.js";
 import { executionNodeFromRow, messagesFromRows } from "./thread-row-mappers.js";
 
 type Database = Kysely<DatabaseSchema>;
@@ -67,13 +69,21 @@ export type AgentThreadActivityItem = ActivityBase &
 
 export async function readAgentThreadRecent(
   database: Database,
-  input: { threadId: ThreadId; ownerId: UserId; runLimit: number },
+  input: {
+    threadId: ThreadId;
+    ownerId: UserId;
+    runLimit: number;
+    connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
+  },
 ) {
   return withPersonalReadTransaction(database, async (tx) => {
     await authorizedSyncState(tx, input.ownerId);
     if (!(await authorizedDetail(tx, input.ownerId, { kind: "thread", threadId: input.threadId })))
       return null;
-    const [runs, pendingRequestRows] = await Promise.all([
+    const visibleRequests = input.connectionAuthority
+      ? await connectionRequests(tx, input.connectionAuthority)
+      : null;
+    const [runs, pendingRequestRows, pendingCountRow] = await Promise.all([
       tx
         .selectFrom("runs")
         .select([
@@ -98,6 +108,14 @@ export async function readAgentThreadRecent(
         .orderBy("id", "asc")
         .limit(25)
         .execute(),
+      visibleRequests
+        ? tx
+            .selectFrom(visibleRequests.as("visible_requests"))
+            .select(sql<number>`count(*)::int`.as("count"))
+            .where("visible_requests.originatingThreadId", "=", input.threadId)
+            .where("visible_requests.status", "=", "pending")
+            .executeTakeFirstOrThrow()
+        : Promise.resolve(null),
     ]);
     const recent = runs.slice(0, 25).map(({ runId }) => runId);
     const places = recent.length
@@ -123,6 +141,7 @@ export async function readAgentThreadRecent(
       })),
       places,
       pendingRequests: pendingRequestRows.map(requestFromRow),
+      ...(pendingCountRow ? { pendingRequestCount: Number(pendingCountRow.count) } : {}),
     };
   });
 }

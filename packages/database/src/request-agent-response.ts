@@ -13,15 +13,10 @@ import {
   type RequestId,
 } from "@opensteer/core";
 import { z } from "zod";
-import type { Kysely, Transaction } from "kysely";
+import { sql, type Kysely, type SelectQueryBuilder, type Transaction } from "kysely";
 import "./connection.js";
 import { assertRequestRevision, requestFromRow } from "./request-persistence.js";
-import {
-  bindingAgentConnectionId,
-  connectionTaskRequestScope,
-  liveAgentConnection,
-  sendEligible,
-} from "./resource-access.js";
+import { connectionTaskRequestScope } from "./resource-access.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { threadCallerLineageId } from "./thread-caller.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
@@ -94,7 +89,7 @@ export function assertAgentRequestAnswer(
     });
   assertRequestRevision({ revision }, responder.expectedRevision);
 }
-async function connectionRequests(
+async function connectionRequestsQuery(
   tx: Transaction<DatabaseSchema>,
   authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
 ) {
@@ -164,6 +159,14 @@ async function connectionRequests(
     });
 }
 
+export async function connectionRequests(
+  tx: Transaction<DatabaseSchema>,
+  authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
+): Promise<SelectQueryBuilder<{ readonly requests: RequestRow }, "requests", RequestRow>> {
+  const scoped = await connectionRequestsQuery(tx, authority);
+  return tx.selectFrom(scoped.as("requests")).selectAll("requests");
+}
+
 export async function queryConnectionRequestPage(
   tx: Transaction<DatabaseSchema>,
   input: {
@@ -175,7 +178,7 @@ export async function queryConnectionRequestPage(
     readonly limit: number;
   },
 ): Promise<{ readonly rows: readonly RequestRow[]; readonly total: number }> {
-  const scoped = await connectionRequests(tx, input.authority);
+  const scoped = await connectionRequestsQuery(tx, input.authority);
   const base = () => {
     let query = scoped.clearSelect().where("threads.removedAt", "is", null);
     if (input.lineageRootThreadId !== null)
@@ -218,7 +221,7 @@ export async function readPendingConnectionRequest(
   assignmentId?: import("@opensteer/core").AssignmentId,
 ) {
   if (!(await threadExecutionIsAvailableToUser(tx, threadId, authority.userId))) return undefined;
-  const query = await connectionRequests(tx, authority);
+  const query = await connectionRequestsQuery(tx, authority);
   return query
     .clearSelect()
     .select(["requests.id", "requests.kind"])
@@ -241,7 +244,7 @@ export function visibleConnectionRequestIds(
 ): Promise<ReadonlySet<RequestId>> {
   if (!requestIds.length) return Promise.resolve(new Set());
   return withPersonalReadTransaction(database, async (tx) => {
-    const query = await connectionRequests(tx, authority);
+    const query = await connectionRequestsQuery(tx, authority);
     const rows = await query
       .clearSelect()
       .select(["requests.id", "requests.originatingThreadId"])
@@ -262,12 +265,29 @@ export function visibleConnectionRequestIds(
   });
 }
 
+export function countPendingConnectionRequests(
+  database: Kysely<DatabaseSchema>,
+  authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
+  threadId: Request["originatingThreadId"],
+): Promise<number> {
+  return withPersonalReadTransaction(database, async (tx) => {
+    const visibleRequests = await connectionRequests(tx, authority);
+    const row = await tx
+      .selectFrom(visibleRequests.as("visible_requests"))
+      .select(sql<number>`count(*)::int`.as("count"))
+      .where("visible_requests.originatingThreadId", "=", threadId)
+      .where("visible_requests.status", "=", "pending")
+      .executeTakeFirstOrThrow();
+    return Number(row.count);
+  });
+}
+
 async function readConnectionRequest(
   tx: Transaction<DatabaseSchema>,
   authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
   requestId: RequestId,
 ) {
-  const query = await connectionRequests(tx, authority);
+  const query = await connectionRequestsQuery(tx, authority);
   const row = await query.where("requests.id", "=", requestId).executeTakeFirst();
   if (
     !row ||
@@ -282,13 +302,36 @@ export function readAgentRequest(
   authority: ThreadCallerAuthority,
   requestId: RequestId,
 ): Promise<{ readonly request: Request; readonly revision: string }> {
+  const parsedRequestId = RequestIdSchema.parse(requestId);
   return withPersonalReadTransaction(database, async (transaction) => {
     if (authority.kind === "connection")
-      return readConnectionRequest(transaction, authority, RequestIdSchema.parse(requestId));
+      return readConnectionRequest(transaction, authority, parsedRequestId);
+    if (authority.kind === "run" && authority.scope.requestedBy !== authority.userId)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Request is unavailable",
+      });
+    const reader = await threadCallerLineageId(transaction, authority);
+    if (reader) {
+      const read = await readConnectionRequest(
+        transaction,
+        {
+          kind: "connection",
+          userId: authority.userId,
+          connectionId: reader,
+          accessMode: authority.accessMode,
+        },
+        parsedRequestId,
+      );
+      await assertAgentRequestTarget(transaction, authority, read.request.originatingThreadId, {
+        readOnly: true,
+      });
+      return read;
+    }
     const row = await transaction
       .selectFrom("requests")
       .selectAll()
-      .where("id", "=", RequestIdSchema.parse(requestId))
+      .where("id", "=", parsedRequestId)
       .executeTakeFirst();
     if (!row)
       throw new OpensteerError({
@@ -298,24 +341,6 @@ export function readAgentRequest(
     await assertAgentRequestTarget(transaction, authority, row.originatingThreadId, {
       readOnly: true,
     });
-    // The execution that asked, not only its task: a connection reads only Requests its own
-    // lineage made, or, with `everything`, the person's own.
-    const reader = await threadCallerLineageId(transaction, authority);
-    if (reader) {
-      const asker = row.originatingRunId
-        ? `run:${row.originatingRunId}`
-        : row.originatingOccurrenceId
-          ? `trigger:${row.originatingOccurrenceId}`
-          : row.originatingWatchActivationId
-            ? `watch:${row.originatingWatchActivationId}`
-            : row.originatingAgentSessionId
-              ? `session:${row.originatingAgentSessionId}`
-              : null;
-      const askerLineage = asker ? await bindingAgentConnectionId(transaction, asker) : null;
-      const connection = await liveAgentConnection(transaction, authority.userId, reader);
-      if (!sendEligible(connection, askerLineage))
-        throw new OpensteerError({ code: "forbidden", message: "Request is unavailable" });
-    }
     return { request: requestFromRow(row), revision: row.revision };
   }).catch((error: unknown) => {
     if (

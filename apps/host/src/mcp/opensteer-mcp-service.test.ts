@@ -841,7 +841,6 @@ describe("Opensteer MCP spine", () => {
           requests: {
             agentPage: async () => page,
             visiblePage: async () => page,
-            connectionPage: async () => page,
             withdraw: async () => ({ request: { ...request, status: "withdrawn" }, events: [] }),
           },
         },

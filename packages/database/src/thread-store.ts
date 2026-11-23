@@ -6,6 +6,7 @@ import { compactionReturnHint } from "./compaction-eligibility.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
 import { type TaskPurpose, type ThreadDoneBy } from "@opensteer/core";
 import { changedTasksSubquery } from "./changed-tasks.js";
+import { connectionRequests } from "./request-agent-response.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import type { MemoryPassExecution } from "./memory-pass-store.js";
 import { getThreadNamingInput } from "./execution-store.js";
@@ -804,6 +805,7 @@ export async function agentThreadPageForOwner(
     readonly nativeOnly?: boolean;
     readonly done?: boolean;
     readonly hasPendingRequests?: boolean;
+    readonly connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
   },
 ): Promise<AgentThreadListPage> {
   const maxItems = boundedWindowLimit(input.maxItems, 50);
@@ -823,6 +825,9 @@ export async function agentThreadPageForOwner(
     database,
     async (transaction) => {
       await requirePersonalOwner(transaction, input.ownerId);
+      const visibleRequests = input.connectionAuthority
+        ? await connectionRequests(transaction, input.connectionAuthority)
+        : undefined;
       const lineageRootThreadId =
         scope.kind === "lineage"
           ? (
@@ -838,8 +843,13 @@ export async function agentThreadPageForOwner(
         .where("threads.removedAt", "is", null)
         .$if(input.nativeOnly === true, (q) => q.where("threads.worker", "=", "native"))
         .$if(since !== null, (query) =>
-          query.innerJoin(changedTasksSubquery(transaction, since!).as("changed"), (join) =>
-            join.onRef("changed.threadId", "=", "threads.id"),
+          query.innerJoin(
+            changedTasksSubquery(
+              transaction,
+              since!,
+              visibleRequests ? { visibleRequests } : {},
+            ).as("changed"),
+            (join) => join.onRef("changed.threadId", "=", "threads.id"),
           ),
         );
       if (input.parentThreadId) {
@@ -868,14 +878,27 @@ export async function agentThreadPageForOwner(
           : base.where("threads.doneAt", "is", null);
       }
       if (input.hasPendingRequests !== undefined) {
-        const pendingExists = sql<boolean>`exists (
+        if (visibleRequests) {
+          base = base.where((eb) => {
+            const pendingExists = eb.exists(
+              eb
+                .selectFrom(visibleRequests.as("visible_requests"))
+                .select("visible_requests.id")
+                .whereRef("visible_requests.originatingThreadId", "=", "threads.id")
+                .where("visible_requests.status", "=", "pending"),
+            );
+            return input.hasPendingRequests ? pendingExists : eb.not(pendingExists);
+          });
+        } else {
+          const pendingExists = sql<boolean>`exists (
           select 1 from requests
           where requests.originating_thread_id = threads.id
             and requests.status = 'pending'
         )`;
-        base = base.where(
-          input.hasPendingRequests ? pendingExists : sql<boolean>`not ${pendingExists}`,
-        );
+          base = base.where(
+            input.hasPendingRequests ? pendingExists : sql<boolean>`not ${pendingExists}`,
+          );
+        }
       }
       if (pattern && search) {
         base = base.where(
@@ -941,8 +964,20 @@ export async function agentThreadPageForOwner(
               .whereRef("visibleParent.id", "=", "threads.parentThreadId")
               .as("parentThreadId"),
           )
+          .$if(visibleRequests !== undefined, (query) =>
+            query.select((eb) =>
+              eb
+                .selectFrom(visibleRequests!.as("visible_requests"))
+                .select(sql<number>`count(*)::int`.as("count"))
+                .whereRef("visible_requests.originatingThreadId", "=", "threads.id")
+                .where("visible_requests.status", "=", "pending")
+                .as("pendingRequests"),
+            ),
+          )
+          .$if(visibleRequests === undefined, (query) =>
+            query.select(threadPendingRequestsSelection),
+          )
           .select([
-            threadPendingRequestsSelection,
             threadVisitSelection,
             threadProviderSessionSelection,
             threadContinuationIdentitySelection,
@@ -981,6 +1016,7 @@ export async function agentThreadPageForOwner(
                 questionsDismissed === undefined ? 0 : Number(questionsDismissed);
               return {
                 ...row,
+                pendingRequests: row.pendingRequests ?? 0,
                 updatedAt: row.updatedAt.toISOString(),
                 doneAt: row.doneAt?.toISOString() ?? null,
                 doneBy: row.doneBy ?? null,
