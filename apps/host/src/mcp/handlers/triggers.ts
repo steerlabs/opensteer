@@ -12,7 +12,6 @@ import {
   beginAgentSession,
   commandAdmission,
   commandNotFoundMessage,
-  readerSees,
   type CommandIdentity,
   type CommandRequestOrigin,
   type DatabaseSchema,
@@ -20,9 +19,14 @@ import {
 import type { HostApiCommand } from "@opensteer/protocol";
 import { commandTable, type CommandType } from "@opensteer/protocol/command-table";
 import { triggerSourceFromInput, type TriggerControlInput } from "@opensteer/triggers";
-import { sql, type Kysely } from "kysely";
+import type { Kysely } from "kysely";
 import { z } from "zod";
-import { agentCommandDoor } from "../../commands/agent-door.js";
+import {
+  agentAutomationTypes,
+  agentCommandDoor,
+  type AgentAutomationExecutor,
+  type TriggerCommand,
+} from "../../commands/agent-door.js";
 import {
   dispatchCommand,
   type AgentCommandDoor,
@@ -78,7 +82,7 @@ const personOnlyHandler = {
   },
 };
 
-export class TriggerToolHandlers {
+export class TriggerToolHandlers implements AgentAutomationExecutor {
   readonly triggers: AgentTriggerManager;
   readonly lineage: TriggerLineage;
   readonly #database: Kysely<DatabaseSchema> | undefined;
@@ -106,7 +110,7 @@ export class TriggerToolHandlers {
       });
     const database = this.#database;
     const requests = this.#requests();
-    const baseDoor = agentCommandDoor({
+    return agentCommandDoor({
       database,
       registry,
       ...(requests
@@ -150,92 +154,77 @@ export class TriggerToolHandlers {
           }
         : {}),
     });
-    if (caller.kind === "connection") return baseDoor;
-    const reader = { kind: "work" as const, threadId: callerThread(caller).id };
-    return {
-      ...baseDoor,
-      admit: async (agent, command) => {
-        if (!(await triggerTargetVisibleToWork(database, agent.userId, reader, command)))
-          return { answer: "not_found", face: undefined, execution: null };
-        return baseDoor.admit(agent, command);
-      },
+  }
+
+  async execute(
+    actor: AgentCaller,
+    command: TriggerCommand,
+    authority: CommandAuthority,
+    options?: { readonly operationKey?: string; readonly ownTask?: true },
+  ): Promise<unknown> {
+    const actorThreadId = actor.kind === "connection" ? null : callerThread(actor).id;
+    const lineage = callerLineage(actor);
+    const context = {
+      commandIdentity: authority.identity,
+      operationKey: options?.operationKey ?? command.idempotencyKey,
+      ...(lineage ? { agentConnectionId: lineage.agentConnectionId } : {}),
     };
+    let control: TriggerControlInput;
+    switch (command.type) {
+      case "trigger.create":
+        control = {
+          operation: "create",
+          anchorThreadId: command.input.anchorThreadId,
+          idempotencyKey: command.idempotencyKey,
+          name: command.input.name,
+          script: command.input.script,
+          source: command.input.source,
+          ...(options?.ownTask ? { ownTask: true } : {}),
+        };
+        break;
+      case "trigger.update":
+        control = {
+          operation: "update",
+          triggerId: command.triggerId,
+          expectedRevisionId: command.input.expectedRevisionId,
+          ...(command.input.name === undefined ? {} : { name: command.input.name }),
+          ...(command.input.script === undefined ? {} : { script: command.input.script }),
+          ...(command.input.source === undefined ? {} : { source: command.input.source }),
+        };
+        break;
+      case "trigger.status.set":
+        control = {
+          operation: "set_status",
+          triggerId: command.triggerId,
+          status: command.status,
+        };
+        break;
+      case "trigger.run":
+        control = {
+          operation: "run",
+          triggerId: command.triggerId,
+          ...(command.payload === undefined ? {} : { payload: command.payload }),
+        };
+        break;
+      case "trigger.cancel":
+        control = {
+          operation: "cancel",
+          triggerId: command.triggerId,
+          ...(command.occurrenceId === undefined ? {} : { occurrenceId: command.occurrenceId }),
+        };
+        break;
+      default:
+        throw new OpensteerError({ code: "internal", message: "Unexpected automation command" });
+    }
+    const result = await this.triggers.manage(actor.userId, control, actorThreadId, context);
+    return command.type === "trigger.status.set" ? { trigger: result } : result;
   }
 
   #registry(writeKey: string, ownTask?: true): CommandRegistry {
-    const run = async (
-      actor: AgentCaller,
-      command: HostApiCommand,
-      authority: CommandAuthority,
-    ) => {
-      const actorThreadId = actor.kind === "connection" ? null : callerThread(actor).id;
-      const lineage = callerLineage(actor);
-      const context = {
-        commandIdentity: authority.identity,
-        operationKey: writeKey,
-        ...(lineage ? { agentConnectionId: lineage.agentConnectionId } : {}),
-      };
-      let control: TriggerControlInput;
-      switch (command.type) {
-        case "trigger.create":
-          control = {
-            operation: "create",
-            anchorThreadId: command.input.anchorThreadId,
-            idempotencyKey: command.idempotencyKey,
-            name: command.input.name,
-            script: command.input.script,
-            source: command.input.source,
-            ...(ownTask ? { ownTask: true } : {}),
-          };
-          break;
-        case "trigger.update":
-          control = {
-            operation: "update",
-            triggerId: command.triggerId,
-            expectedRevisionId: command.input.expectedRevisionId,
-            ...(command.input.name === undefined ? {} : { name: command.input.name }),
-            ...(command.input.script === undefined ? {} : { script: command.input.script }),
-            ...(command.input.source === undefined ? {} : { source: command.input.source }),
-          };
-          break;
-        case "trigger.status.set":
-          control = {
-            operation: "set_status",
-            triggerId: command.triggerId,
-            status: command.status,
-          };
-          break;
-        case "trigger.run":
-          control = {
-            operation: "run",
-            triggerId: command.triggerId,
-            ...(command.payload === undefined ? {} : { payload: command.payload }),
-          };
-          break;
-        case "trigger.cancel":
-          control = {
-            operation: "cancel",
-            triggerId: command.triggerId,
-            ...(command.occurrenceId === undefined ? {} : { occurrenceId: command.occurrenceId }),
-          };
-          break;
-        default:
-          throw new OpensteerError({ code: "internal", message: "Unexpected automation command" });
-      }
-      const result = await this.triggers.manage(actor.userId, control, actorThreadId, context);
-      return command.type === "trigger.status.set" ? { trigger: result } : result;
-    };
-    const triggerTypes = new Set<CommandType>([
-      "trigger.create",
-      "trigger.update",
-      "trigger.status.set",
-      "trigger.run",
-      "trigger.cancel",
-    ]);
     return Object.fromEntries(
       (Object.keys(commandTable) as CommandType[]).map((type) => [
         type,
-        triggerTypes.has(type)
+        agentAutomationTypes.has(type)
           ? {
               accepts: "any" as const,
               run: async (
@@ -245,7 +234,12 @@ export class TriggerToolHandlers {
               ) => {
                 if (actor.kind === "person" || !extra.authority)
                   throw new OpensteerError({ code: "internal", message: "Not the person's door" });
-                return run(actor as AgentCaller, command, extra.authority);
+                return this.execute(
+                  actor as AgentCaller,
+                  command as TriggerCommand,
+                  extra.authority,
+                  { operationKey: writeKey, ...(ownTask ? { ownTask } : {}) },
+                );
               },
             }
           : personOnlyHandler,
@@ -507,47 +501,6 @@ export class TriggerToolHandlers {
   }
 }
 
-async function triggerTargetVisibleToWork(
-  database: Kysely<DatabaseSchema>,
-  ownerId: UserId,
-  reader: { readonly kind: "work"; readonly threadId: ThreadId },
-  command: HostApiCommand,
-): Promise<boolean> {
-  if (command.type === "trigger.create") {
-    const row = await database
-      .selectFrom("threads")
-      .select("id")
-      .where("id", "=", command.input.anchorThreadId)
-      .where("createdBy", "=", ownerId)
-      .where(readerSees(reader, sql.ref("threads.origin_connection_id")))
-      .executeTakeFirst();
-    return Boolean(row);
-  }
-  if (
-    command.type === "trigger.update" ||
-    command.type === "trigger.status.set" ||
-    command.type === "trigger.run" ||
-    command.type === "trigger.cancel"
-  ) {
-    const row = await database
-      .selectFrom("triggers")
-      .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
-      .select("triggers.id")
-      .where("triggers.id", "=", command.triggerId)
-      .where("triggers.createdBy", "=", ownerId)
-      .where(
-        readerSees(
-          reader,
-          sql.ref("triggers.origin_connection_id"),
-          sql.ref("threads.origin_connection_id"),
-        ),
-      )
-      .executeTakeFirst();
-    return Boolean(row);
-  }
-  return true;
-}
-
 function askAsForbidden(reason: string | undefined): OpensteerError {
   return new OpensteerError({
     code: "forbidden",
@@ -555,7 +508,7 @@ function askAsForbidden(reason: string | undefined): OpensteerError {
     message:
       reason === "lineage"
         ? "Only the person or an agent in this automation's own lineage can change or run it."
-        : "Full access is required to change, run, or archive an automation; pause, resume, reschedule, and cancel stay available.",
+        : "Full access is required to change or run an automation; pause, archive, resume, reschedule, and cancel stay available.",
   });
 }
 

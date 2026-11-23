@@ -416,11 +416,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
         },
         triggerId: created.trigger.id,
       },
-      {
-        operation: "set_status",
-        status: "archived",
-        triggerId: created.trigger.id,
-      },
     ] as const) {
       const failure = await denied(
         `A1/F5/F6/F7/F27 ${input.operation}`,
@@ -439,6 +434,17 @@ integration.sequential("Trigger authority through real Host services and Postgre
       expect(detail.revision.script).toEqual(script);
       expect(detail.occurrences).toHaveLength(1);
     }
+    // T2: archiving narrows authority, so a same-mode child below Full access runs it now.
+    await check("A1/T2 archived", f.child.id, "set_status archived", "archived", async () => {
+      await agentTrigger(f.childToken, {
+        operation: "set_status",
+        status: "archived",
+        triggerId: created.trigger.id,
+      });
+      const detail = await personDetail(f, created.trigger.id);
+      expect(detail.trigger.status).toBe("archived");
+      return detail.trigger;
+    });
   });
 
   it("A4/F4/F4b: lower modes may see but cannot control higher anchors or define programs", async () => {

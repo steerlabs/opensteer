@@ -16,9 +16,13 @@ import { describeStore, type StoreFixture } from "@opensteer/database/test-suppo
 import type { HostApiServerContext } from "@opensteer/protocol";
 import { sql } from "kysely";
 import { expect, vi } from "vitest";
+import type { AdministrationService } from "../administration/administration-service.js";
 import { personActor } from "../commands/actor.js";
+import { agentCommandRegistry } from "../commands/agent-door.js";
 import { CommandRequestService } from "../commands/requests.js";
 import type { AgentCaller } from "../mcp/agent-caller.js";
+import type { AdministrationToolHandlers } from "../mcp/handlers/administration.js";
+import { CommandTools } from "../mcp/handlers/commands.js";
 import { TriggerToolHandlers } from "../mcp/handlers/triggers.js";
 import { handleTriggerCommand } from "./trigger-routes.js";
 import { TriggerService } from "./trigger-service.js";
@@ -45,6 +49,7 @@ describeStore("Track B: automation commands through the one door (brief section 
     await database
       .updateTable("runners")
       .set({
+        kind: "main",
         capabilities: sql`(select jsonb_agg(distinct value) from jsonb_array_elements_text(capabilities || '["automation-script-v1"]'::jsonb))`,
       } as never)
       .where("id", "=", f.runnerId)
@@ -71,9 +76,16 @@ describeStore("Track B: automation commands through the one door (brief section 
       store: new CommandRequestStore(database, store.requests),
       database,
       requests: store.requests,
+      homeKind: "mac",
     });
     const handlers = new TriggerToolHandlers(triggers, store, {
       requests: () => commandRequests,
+    });
+    const commandTools = new CommandTools({
+      database,
+      registry: agentCommandRegistry({} as AdministrationService, handlers),
+      requests: () => commandRequests,
+      administration: {} as AdministrationToolHandlers,
     });
     const sessionId = `ses_${randomUUID()}`;
     await database
@@ -131,6 +143,7 @@ describeStore("Track B: automation commands through the one door (brief section 
       triggerStore,
       triggers,
       commandRequests,
+      commandTools,
       handlers,
       runCaller,
       context,
@@ -138,13 +151,13 @@ describeStore("Track B: automation commands through the one door (brief section 
     };
   }
 
-  it("opens Requests for supervised create/update-script/run, allows pause and cancel now (narrow)", async ({
+  it("opens Requests with T4 script-place text for supervised create/update-script/run, allows pause, archive, and cancel now (narrow)", async ({
     storeFixture,
   }) => {
-    const { f, database, triggerStore, triggers, handlers, runCaller, approveRequest } =
+    const { f, database, store, triggerStore, triggers, handlers, runCaller, approveRequest } =
       await setup(storeFixture, "approval-required");
 
-    // 1. Supervised create -> pending Request, nothing created yet.
+    // 1. Supervised create -> pending Request saying where the script runs (T4), nothing created yet.
     const createResult = await handlers.write({
       caller: runCaller,
       input: {
@@ -159,6 +172,10 @@ describeStore("Track B: automation commands through the one door (brief section 
       status: "pending",
       requestId: expect.any(String),
     });
+    expect(
+      (await store.requests.get((createResult as { requestId: RequestId }).requestId))?.command
+        ?.gives,
+    ).toBe("Its script runs on your Mac, as you.");
     expect(
       await database
         .selectFrom("triggers")
@@ -182,7 +199,7 @@ describeStore("Track B: automation commands through the one door (brief section 
     const revisionId = createdTriggers[0]!.currentRevisionId!;
     expect(createdTriggers[0]!.originConnectionId).toBeNull();
 
-    // 2. Supervised script update -> pending Request, revision unchanged.
+    // 2. Supervised script update -> pending Request with T4 script-place sentence, revision unchanged.
     const updateResult = await handlers.write({
       caller: runCaller,
       input: {
@@ -196,6 +213,10 @@ describeStore("Track B: automation commands through the one door (brief section 
       status: "pending",
       requestId: expect.any(String),
     });
+    expect(
+      (await store.requests.get((updateResult as { requestId: RequestId }).requestId))?.command
+        ?.gives,
+    ).toBe("Its script runs on your Mac, as you.");
     const afterUpdateAsk = await database
       .selectFrom("triggers")
       .select("currentRevisionId")
@@ -203,7 +224,7 @@ describeStore("Track B: automation commands through the one door (brief section 
       .executeTakeFirstOrThrow();
     expect(afterUpdateAsk.currentRevisionId).toBe(revisionId);
 
-    // 3. Supervised run_now -> pending Request, no occurrence queued.
+    // 3. Supervised run_now -> pending Request with T4 script-place sentence, no occurrence queued.
     const runResult = await handlers.write({
       caller: runCaller,
       input: {
@@ -217,6 +238,9 @@ describeStore("Track B: automation commands through the one door (brief section 
       requestId: expect.any(String),
     });
     expect(
+      (await store.requests.get((runResult as { requestId: RequestId }).requestId))?.command?.gives,
+    ).toBe("Its script runs on your Mac, as you.");
+    expect(
       await database
         .selectFrom("triggerOccurrences")
         .select("id")
@@ -224,7 +248,7 @@ describeStore("Track B: automation commands through the one door (brief section 
         .execute(),
     ).toEqual([]);
 
-    // 4. Queue a firing as the person, then supervised Run cancels it (`narrow` -> now) and pauses (`narrow` -> now).
+    // 4. Queue a firing as the person, then supervised Run cancels (`narrow` -> now), pauses (`narrow` -> now), and archives (T2 `narrow` -> now).
     const occurrence = await triggers.run(f.userId, triggerId, null, null, "person-run");
     const cancelResult = await handlers.write({
       caller: runCaller,
@@ -250,12 +274,29 @@ describeStore("Track B: automation commands through the one door (brief section 
     });
     const pausedRow = await triggerStore.getForOwner(triggerId, f.userId, 5, { kind: "person" });
     expect(pausedRow?.trigger.status).toBe("paused");
+
+    const archiveResult = await handlers.write({
+      caller: runCaller,
+      input: {
+        automationId: triggerId,
+        action: "archive",
+      },
+      operationKey: "sup-archive",
+    });
+    expect(archiveResult).toMatchObject({
+      trigger: expect.objectContaining({ id: triggerId, status: "archived" }),
+    });
+    const archivedRow = await triggerStore.getForOwner(triggerId, f.userId, 5, { kind: "person" });
+    expect(archivedRow?.trigger.status).toBe("archived");
   });
 
-  it("returns not_found for invisible anchors, asks outside lineage, and preserves proposing connection lineage on approval", async ({
+  it("returns not_found for invisible anchors, asks outside lineage for every caller (T1), and preserves proposing connection lineage on approval", async ({
     storeFixture,
   }) => {
-    const { f, database, handlers, approveRequest } = await setup(storeFixture, "full-access");
+    const { f, database, store, handlers, runCaller, approveRequest } = await setup(
+      storeFixture,
+      "full-access",
+    );
     const connections = new AgentConnectionStore(database);
 
     const makeConnection = async (
@@ -318,11 +359,12 @@ describeStore("Track B: automation commands through the one door (brief section 
     await database
       .updateTable("runners")
       .set({
+        kind: "main",
         capabilities: sql`(select jsonb_agg(distinct value) from jsonb_array_elements_text(capabilities || '["automation-script-v1"]'::jsonb))`,
       } as never)
       .where("id", "=", ownTask.runnerId)
       .execute();
-    const ownCreated = await handlers.write({
+    const ownCreated = (await handlers.write({
       caller: selected.caller,
       input: {
         taskId: ownTask.threadId,
@@ -331,16 +373,64 @@ describeStore("Track B: automation commands through the one door (brief section 
         source: scheduleSource,
       },
       operationKey: "sel-own-create",
-    });
+    })) as { trigger: { id: TriggerId; currentRevisionId: string; name: string } };
     expect(ownCreated).toMatchObject({
       trigger: expect.objectContaining({ name: "Own lineage schedule" }),
     });
     const ownRow = await database
       .selectFrom("triggers")
-      .select("originConnectionId")
-      .where("id", "=", (ownCreated as { trigger: { id: TriggerId } }).trigger.id)
+      .select(["originConnectionId", "currentRevisionId"])
+      .where("id", "=", ownCreated.trigger.id)
       .executeTakeFirstOrThrow();
     expect(ownRow.originConnectionId).toBe(selected.id);
+
+    // 2b. T1: the person's own full-access agent targeting a connected agent's task/automation
+    // is outside its own lineage -> asks the person (with T4's script-place sentence).
+    const ownAgentOnConnCreate = await handlers.write({
+      caller: runCaller,
+      input: {
+        taskId: ownTask.threadId,
+        name: "Own agent on connected task",
+        script: scriptInput,
+        source: scheduleSource,
+      },
+      operationKey: "t1-own-on-conn-create",
+    });
+    expect(ownAgentOnConnCreate).toMatchObject({
+      status: "pending",
+      requestId: expect.any(String),
+    });
+    expect(
+      (await store.requests.get((ownAgentOnConnCreate as { requestId: RequestId }).requestId))
+        ?.command?.gives,
+    ).toBe("Its script runs on your Mac, as you.");
+
+    const ownAgentOnConnUpdate = await handlers.write({
+      caller: runCaller,
+      input: {
+        automationId: ownCreated.trigger.id,
+        expectedRevisionId: ownRow.currentRevisionId!,
+        script: { text: "console.log('edited-across-lineage')" },
+      },
+      operationKey: "t1-own-on-conn-update",
+    });
+    expect(ownAgentOnConnUpdate).toMatchObject({
+      status: "pending",
+      requestId: expect.any(String),
+    });
+
+    const ownAgentOnConnRun = await handlers.write({
+      caller: runCaller,
+      input: {
+        automationId: ownCreated.trigger.id,
+        action: "run_now",
+      },
+      operationKey: "t1-own-on-conn-run",
+    });
+    expect(ownAgentOnConnRun).toMatchObject({
+      status: "pending",
+      requestId: expect.any(String),
+    });
 
     // 3. Everything connection targeting the person's task (outside its lineage) -> asks the person!
     const foreignAsk = await handlers.write({
@@ -452,5 +542,113 @@ describeStore("Track B: automation commands through the one door (brief section 
     expect(nowCreate).toMatchObject({
       trigger: expect.objectContaining({ name: "Child from firing at full access" }),
     });
+  });
+
+  it("runs trigger.status.set (pause) through opensteer_command when held and returns the door's answer otherwise", async ({
+    storeFixture,
+  }) => {
+    const { f, database, store, triggerStore, triggers, commandTools, runCaller } = await setup(
+      storeFixture,
+      "approval-required",
+    );
+
+    const created = await triggers.create(
+      {
+        anchorThreadId: f.threadId,
+        idempotencyKey: "cmd-door-auto",
+        name: "Command door automation",
+        ownerId: f.userId,
+        script,
+        source: {
+          kind: "schedule",
+          schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+        },
+      },
+      null,
+    );
+
+    // 1. Agent with what it needs (pause is narrow -> now) runs trigger.status.set through opensteer_command.
+    const paused = await commandTools.opensteer_command({
+      caller: runCaller,
+      input: {
+        command: {
+          type: "trigger.status.set",
+          triggerId: created.trigger.id,
+          status: "paused",
+        },
+      },
+      operationKey: "cmd-door-pause",
+    });
+    expect(paused).toMatchObject({
+      status: "done",
+      result: expect.objectContaining({
+        trigger: expect.objectContaining({ id: created.trigger.id, status: "paused" }),
+      }),
+    });
+    const pausedRow = await triggerStore.getForOwner(created.trigger.id, f.userId, 5, {
+      kind: "person",
+    });
+    expect(pausedRow?.trigger.status).toBe("paused");
+
+    // 2. Agent lacking Full access gets the door's ask (with T4's script-place sentence) on trigger.run.
+    const askedRun = await commandTools.opensteer_command({
+      caller: runCaller,
+      input: {
+        command: {
+          type: "trigger.run",
+          triggerId: created.trigger.id,
+        },
+      },
+      operationKey: "cmd-door-run-ask",
+    });
+    expect(askedRun).toMatchObject({
+      status: "pending",
+      requestId: expect.any(String),
+    });
+    expect(
+      (await store.requests.get((askedRun as { requestId: RequestId }).requestId))?.command?.gives,
+    ).toBe("Its script runs on your Mac, as you.");
+    expect(
+      await database
+        .selectFrom("triggerOccurrences")
+        .select("id")
+        .where("triggerId", "=", created.trigger.id)
+        .execute(),
+    ).toEqual([]);
+
+    // 3. Connected agent outside its grant gets the door's identical not_found.
+    const connections = new AgentConnectionStore(database);
+    const record = await connections.create({
+      userId: f.userId,
+      label: "Selected outside automation",
+      clientName: "Selected outside automation",
+      accessMode: "full-access",
+      resource: "https://track-b.opensteer.test/mcp",
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    await connections.activate(record.id, `hash-cmd-door-${randomUUID()}`);
+    const outsideCaller = {
+      kind: "connection",
+      key: `connection:${record.id}`,
+      connectionId: record.id,
+      userId: f.userId as UserId,
+      accessMode: "full-access",
+      grant: { scope: "selected", tasks: true, resources: [] },
+    } as unknown as AgentCaller;
+
+    await expect(
+      commandTools.opensteer_command({
+        caller: outsideCaller,
+        input: {
+          command: {
+            type: "trigger.status.set",
+            triggerId: created.trigger.id,
+            status: "paused",
+          },
+        },
+        operationKey: "cmd-door-outside",
+      }),
+    ).rejects.toMatchObject({ code: "not_found", message: commandNotFoundMessage });
   });
 });

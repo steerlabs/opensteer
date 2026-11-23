@@ -3374,6 +3374,9 @@ export async function createHostRuntime(
       onError: (error) => reportAgentSessionError(error),
     });
     onSessionRequestClosed = (requestId) => agentSessions.requestClosed(requestId);
+    const triggerTools = new TriggerToolHandlers(triggers, store, {
+      requests: () => commandRequestsForTools,
+    });
     const agentTools = (bridgeToolService = new OpensteerMcpService({
       connectionPasswords: () => {
         const hosting = initializedPersonal?.options.hostingComputerId;
@@ -3410,7 +3413,7 @@ export async function createHostRuntime(
         commands: new CommandTools({
           database,
           reads: () => personReadHandlers,
-          registry: agentCommandRegistry(administration.service),
+          registry: agentCommandRegistry(administration.service, triggerTools),
           requests: () => commandRequestsForTools,
           sessions: agentSessions,
           administration,
@@ -3459,9 +3462,7 @@ export async function createHostRuntime(
           access: accessRequests,
           sessions: agentSessions,
         }),
-        triggers: new TriggerToolHandlers(triggers, store, {
-          requests: () => commandRequestsForTools,
-        }),
+        triggers: triggerTools,
       }),
     }));
     const transcriptFileServices = createTranscriptFileServices({

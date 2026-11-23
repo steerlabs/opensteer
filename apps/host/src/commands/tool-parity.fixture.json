@@ -253,7 +253,7 @@
   },
   "trigger.status.set (archive)": {
     "own-full": "allowed",
-    "own-supervised": "asked",
+    "own-supervised": "allowed",
     "everything": "refused:not_offered",
     "selected-covering": "refused:not_offered",
     "selected-not": "not_found"
