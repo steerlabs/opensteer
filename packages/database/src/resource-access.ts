@@ -869,8 +869,9 @@ export interface CommandRuleCaller {
   /** For a task row: the task's mode is no higher than the caller's, so it is its own work. */
   readonly ownWork: boolean;
   /**
-   * For a connection: the governed thing is in its own lineage, so what it starts there is in its
-   * Disconnect set. Undefined where that is not known: a face that runs on then asks.
+   * The governed thing is in the caller's own lineage (a connection's, or for your own agents the
+   * person's), so what goes on after the command is its own work, in its own Disconnect set.
+   * Undefined where that is not known: a face that runs on then asks.
    */
   readonly ownLineage?: boolean;
 }
@@ -943,10 +944,14 @@ function classRule(
     default:
   }
   if (face.personSession) return { answer: "ask", reason: "session" };
-  // What goes on after the command, unless it is in this connection's own lineage, is out of
-  // reach of its Stop and Disconnect: the person is asked.
-  if (connection && face.lineage && caller.ownLineage !== true)
-    return { answer: "ask", reason: "lineage" };
+  // What goes on after the command, unless it is in the caller's own lineage, gives another
+  // lineage more than it holds and is out of reach of the caller's Stop and Disconnect: the person
+  // is asked. For your own agents too (T1): a program put on the computer to run as a connected
+  // agent's task is not their own work.
+  // A thing with no task lineage (a plugin, an app, a profile) is the person's: your own agents'
+  // own lineage, never a connection's.
+  const ownLineage = caller.ownLineage ?? !connection;
+  if (face.lineage && !ownLineage) return { answer: "ask", reason: "lineage" };
   if (effect === "read") return { answer: "now" };
   const selected = connection?.grant === "selected";
   // Destroying, or making something new, inside a selected grant asks: it changes what is granted.
@@ -1246,7 +1251,7 @@ function commandFaceFor(
 interface CommandReach {
   readonly reach: boolean;
   readonly ownWork: boolean;
-  /** For a connection: the governed thing's lineage is its own; undefined where it has none. */
+  /** The governed thing's lineage is the caller's own; undefined where it has none. */
   readonly ownLineage?: boolean;
   /** The face the stored state shows, where the Home read it while finding the thing. */
   readonly face?: number;
@@ -1294,7 +1299,8 @@ async function commandReach(
     return {
       reach: true,
       ownWork: own(thread.accessMode),
-      ...(connection ? { ownLineage: lineage === connection.agentConnectionId } : {}),
+      // A connection's own lineage, or for your own agents the person's (no connection).
+      ownLineage: lineage === (connection ? connection.agentConnectionId : null),
     };
   };
   const both = (left: CommandReach, right: CommandReach): CommandReach => ({
