@@ -276,23 +276,28 @@ under the person's configuration. The Runner is told `personLineage`, and `engin
 
 Such a task keeps the task's mode, runs nothing of theirs (hooks, notify commands, command
 prefixes, MCP servers) and reads none of their instructions or memory; what the engine needs to
-sign in stays. An engine runs such a task only where an engine-lane test plants one of each kind in
-a temporary home and project and shows all three on the real engine. Otherwise
+sign in stays. An engine that reads the person's own configuration runs such a task only where an
+engine-lane test plants one of each kind in a temporary home and project and shows all three on the
+real engine (OpenCode and Antigravity always start from a Runner-owned home and do not read the
+person's configuration in either case, though neither has a boundary test yet). Otherwise
 `assertEngineMayRun`, in the same file, refuses it before any process starts, with code `forbidden`
-and one sentence: "Codex starts with your own Codex settings, so it runs only tasks you started
-yourself that no connected agent or chat has written to." The Home offers every engine to every
-task and does not refuse by engine itself, so the Runner refuses. Background text (task naming and
-Auto-mode review) always starts without the person's configuration on every engine, using the
-Opensteer-owned home on Codex (refusing as unavailable when no file login is present) and the
-others'-tasks folder on Pi.
+and one sentence, for example: "Cursor starts with your own Cursor settings, so it runs only tasks
+you started yourself that no connected agent or chat has written to." The Home offers every engine
+to every task and does not refuse by engine itself, so the Runner refuses. Background text (task
+naming and Auto-mode review) always starts without the person's configuration on every engine,
+using the Opensteer-owned home on Codex (refusing as unavailable when no file login is present) and
+the others'-tasks folder on Pi.
 
-- **Claude Code** runs both. Its own task gets the person's settings, instructions, tools and MCP
-  servers. Another's task loads no settings source, only Opensteer's MCP server, and no web search
-  (`packages/harness-claude/src/own-configuration.engine.test.ts`).
+- **Claude Code** runs both. Its own task gets the person's settings, instructions, auto-memory,
+  plugins, tools and MCP servers. Another's task loads no settings source, no auto-memory, no user
+  plugins, only Opensteer's MCP server, and no web tools (`WebSearch`, `WebFetch`), and gates shell
+  commands through Opensteer's hook (`packages/harness-claude/src/own-configuration.engine.test.ts`).
 - **Pi** runs both. Another's task starts with an agent folder of Opensteer's that links only the
-  person's `auth.json` and `models.json` and with an empty system prompt, so their settings,
-  command prefix, `SYSTEM.md`, `APPEND_SYSTEM.md`, `AGENTS.md`, prompts and the project's `.pi`
-  stay out and Pi keeps its own prompt (`packages/harness-pi/src/own-configuration.engine.test.ts`).
+  person's `auth.json` and `models.json` (when present) and with an empty system prompt, so their
+  settings, command prefix, `SYSTEM.md`, `APPEND_SYSTEM.md`, `AGENTS.md`, prompts and the project's
+  `.pi` stay out, Pi keeps its own prompt, and the driver's extension enforces Supervised mode;
+  linking `models.json` preserves custom provider sign-in, including any `!`-prefixed credential
+  command the person put there (`packages/harness-pi/src/own-configuration.engine.test.ts`).
 - **Codex** runs both when the person's sign-in is in a file (`auth.json`, Codex's default) or on
   an isolated profile. Its own task runs from the person's Codex home with their rules, `notify`,
   instructions and MCP servers. Another's task runs from an Opensteer-owned `CODEX_HOME` that holds
@@ -326,10 +331,10 @@ policy and sandbox on every turn), and a default mode in the person's settings d
 What the person allowed in their engine is allowed, as in their terminal started in that mode: an
 allow rule, a hook, a command rule or an MCP tool's approval of theirs applies, and so do a
 project folder's own engine settings, as they would in a terminal opened there. Opensteer adds no
-prompt of its own on top. Opensteer's own tools are decided by the Home from the task's mode, not by the engine. A task
-started by a connected agent or a chat shows the connection mode descriptions in its mode picker;
-a person-started task later written into by another keeps the own-task sentence for now (safe side:
-the engine asks more than the sentence says).
+prompt of its own on top. Opensteer's own tools are decided by the Home from the task's mode, not
+by the engine. A task started by a connected agent or a chat shows the connection mode descriptions
+in its mode picker; a person-started task later written into by another keeps the own-task sentence
+for now (safe side: the engine asks more than the sentence says).
 
 ## Stop and Disconnect
 
