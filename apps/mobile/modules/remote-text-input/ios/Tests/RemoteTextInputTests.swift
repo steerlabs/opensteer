@@ -744,6 +744,18 @@ import UIKit
     XCTAssertEqual(text.utf16.count, (text as NSString).length)
   }
 
+  // W1: the bridge hands JavaScript's numbers over as Double. A paste's answer, read with them,
+  // puts the pasted text in the native field, so the next Backspace deletes one character of it,
+  // not the whole paste and the character before it.
+  func testAnAnswerWithTheBridgesNumbersIsApplied() {
+    let field = Field(settled: "hello")
+    let pasted = "hellofixture clipboard 👩‍💻"
+    let at = Double(pasted.utf16.count)
+    field.view.respond(["id": 0, "set": ["value": pasted, "selectionStart": at, "selectionEnd": at] as [String: Any],
+      "edit": ["start": 5.0, "end": 5.0, "text": "fixture clipboard 👩‍💻"] as [String: Any]])
+    XCTAssertEqual(field.view.text, pasted)
+    XCTAssertEqual(field.view.selectedRange, NSRange(location: pasted.utf16.count, length: 0))
+  }
   // CS2: an answer is applied as the edit it is. A paste's answer inserts the pasted text where it
   // went, so a keystroke and a caret move still waiting are carried over it, not over a cleared
   // field. The move is two back from the person's caret, which ends after "Py".

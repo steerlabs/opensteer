@@ -276,11 +276,11 @@ struct BrowserHelperRefusal: CodedError {
         primitive.action.deltaY = message["deltaY"] as? Double ?? 0
       }
     case "input.text":
-      guard let edit = message["edit"] as? [String: Any], edit["contextId"] as? String == tab.contextId,
+      guard let edit = message["edit"] as? [String: Any], let contextId = edit["contextId"] as? String, contextId == tab.contextId,
         edit["before"] as? String == "", edit["after"] as? String == "", let text = edit["text"] as? String else { throw BrowserRefusal.notActionable }
       primitive.action.kind = "text.insert"; primitive.action.text = text
     case "input.compose":
-      guard let composition = message["composition"] as? [String: Any], composition["contextId"] as? String == tab.contextId,
+      guard let composition = message["composition"] as? [String: Any], let contextId = composition["contextId"] as? String, contextId == tab.contextId,
         (composition["before"] as? String ?? "").isEmpty, (composition["after"] as? String ?? "").isEmpty, let text = composition["text"] as? String,
         let start = BrowserWireNumber.integer(composition["selectionStart"]), let end = BrowserWireNumber.integer(composition["selectionEnd"]) else { throw BrowserRefusal.notActionable }
       primitive.action.kind = "text.mark"; primitive.action.text = text
@@ -304,7 +304,8 @@ struct BrowserHelperRefusal: CodedError {
       guard let command = message["command"] as? String, ["selectAll", "deleteBackward"].contains(command) else { throw BrowserRefusal.unsupportedOperation }
       // A phone browser's field has one context at a time: a command made for any other is
       // refused, as an edit is.
-      guard message["contextId"] as? String == tab.contextId else { throw BrowserRefusal.notActionable }
+      // Bound first (CZ11): two absent contexts are not the same one.
+      guard let contextId = message["contextId"] as? String, contextId == tab.contextId else { throw BrowserRefusal.notActionable }
       primitive.action.kind = command == "selectAll" ? "text.selectAll" : "text.backspace"
     case "clipboard.paste":
       guard let text = message["text"] as? String else { throw BrowserRefusal.invalidArgument }

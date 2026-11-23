@@ -218,10 +218,18 @@ import UniformTypeIdentifiers
       if selectedRange != carried { selectedRange = carried }
     }
   }
+  /// W1: a whole number from the bridge, which hands JavaScript's numbers over as Double (a
+  /// test's as Int). Read with `as? Int`, a Double is nothing, and the answer was dropped whole.
+  static func integer(_ value: Any?) -> Int? {
+    guard let number = value as? NSNumber else { return nil }
+    let double = number.doubleValue
+    guard double.isFinite, double == double.rounded(), abs(double) < 9_007_199_254_740_992 else { return nil }
+    return number.intValue
+  }
   private func apply(_ instruction: [String: Any]) {
     guard markedTextRange == nil, let state = instruction["set"] as? [String: Any],
-      let value = state["value"] as? String, let start = state["selectionStart"] as? Int,
-      let end = state["selectionEnd"] as? Int, start >= 0, end >= start, end <= value.utf16.count else { return }
+      let value = state["value"] as? String, let start = Self.integer(state["selectionStart"]),
+      let end = Self.integer(state["selectionEnd"]), start >= 0, end >= start, end <= value.utf16.count else { return }
     mutating = true
     defer {
       selectedRange = NSRange(location: start, length: end - start)
@@ -232,8 +240,8 @@ import UniformTypeIdentifiers
     }
     let old = (text ?? "") as NSString, new = value as NSString
     // An answer that says which edit it is is applied as exactly that edit.
-    if let exact = instruction["edit"] as? [String: Any], let from = exact["start"] as? Int,
-      let to = exact["end"] as? Int, let inserted = exact["text"] as? String, from >= 0, to >= from, to <= old.length,
+    if let exact = instruction["edit"] as? [String: Any], let from = Self.integer(exact["start"]),
+      let to = Self.integer(exact["end"]), let inserted = exact["text"] as? String, from >= 0, to >= from, to <= old.length,
       old.replacingCharacters(in: NSRange(location: from, length: to - from), with: inserted) == value {
       let target = NSRange(location: from, length: to - from)
       edit(target) { textStorage.replaceCharacters(in: target, with: inserted) }
