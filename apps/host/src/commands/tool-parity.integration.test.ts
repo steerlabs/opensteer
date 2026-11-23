@@ -6,7 +6,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { AgentGrant, ThreadAccessMode, ThreadId } from "@opensteer/core";
 import type { ShellSessionId } from "@opensteer/protocol";
-import { AgentConnectionStore } from "@opensteer/database";
+import { AgentConnectionStore, IntegrationPlatformStore } from "@opensteer/database";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { testReadyHarnessCatalog } from "@opensteer/database/test-support/store";
 import {
@@ -28,6 +28,7 @@ import { ThreadService } from "../threads/thread-service.js";
 import { TriggerService } from "../triggers/trigger-service.js";
 import { TabService } from "../tabs/tab-service.js";
 import { AppService } from "../apps/app-service.js";
+import { LocalServerRegistry } from "../local-servers/local-server-registry.js";
 import { startBrowserRuntime } from "../browser/browser-runtime.test-support.js";
 import { agentCommandAdmission, agentCommandScope, dispatchCommand } from "./dispatch.js";
 import type { CommandRegistry } from "./registry.js";
@@ -147,6 +148,8 @@ const decided: Readonly<Record<string, string>> = {
     "differs from the tool at f4d789f84: the tool switches a schedule on with no approvalMode, which takes the store's default and may approve itself; the door asks (the approve face, reviews G2 and D5)",
   "plugins.install / selected-not":
     "differs from the tool at f4d789f84: a grant holding nothing has no tool server today; a new plugin is outside the grant and the door asks for more (the table's (d))",
+  "plugin.remove / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "tab.organize (into a new group) / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "tab.group.update (rename) / everything":
@@ -198,7 +201,6 @@ const withoutTool: Readonly<Record<string, string>> = {
  * owed before this branch is trial-merged (the lead's item 2). The list only shrinks.
  */
 const owed: Readonly<Record<string, string>> = {
-  "plugin.remove": "local_server_remove",
   "plugins.webhook.remove": "opensteer_plugin_resource_update",
 };
 
@@ -616,6 +618,25 @@ export default defineApp({}, { tools: router({ tick }),
       )) as { id: string };
       return (workflowRuns[caller] = started.id);
     };
+    /**
+     * A local server the person registered, one per caller, on no computer yet: removing it asks
+     * nothing of a computer. Its record is the one registering writes.
+     */
+    const localServers = {} as Record<Caller, { name: string; pluginId: string }>;
+    const registered = async (caller: Caller) => {
+      const name = `parity-server-${caller}`;
+      const pluginId = randomUUID();
+      await new IntegrationPlatformStore(host.store.database).plugins.install({
+        id: pluginId,
+        name,
+        actorUserId: owner,
+        source: { directory: `/parity/${name}` },
+        digest: name,
+        packageFormat: "opensteer.plugin-package/2",
+        manifest: { name },
+      });
+      return (localServers[caller] = { name, pluginId });
+    };
     /** The messages each caller's queue scenario acts on, made as its arguments are. */
     const queued = {} as Record<Caller, { first: string; second?: string }>;
     const callerNames = Object.keys(callers) as Caller[];
@@ -983,6 +1004,12 @@ export default defineApp({}, { tools: router({ tick }),
           pluginId: featured.pluginId,
           runId: workflowRuns[c],
         }),
+      },
+      {
+        name: "plugin.remove",
+        tool: "local_server_remove",
+        args: async (c) => ({ name: (await registered(c)).name }),
+        command: (c) => ({ type: "plugin.remove", pluginId: localServers[c]?.pluginId }),
       },
       {
         name: "thread.rename",
@@ -1538,6 +1565,10 @@ export default defineApp({}, { tools: router({ tick }),
       }[action];
       return type ? { type, pluginId, ...rest } : undefined;
     });
+    intercept(LocalServerRegistry.prototype, "removePlugin", ([, pluginId]) => ({
+      type: "plugin.remove",
+      pluginId,
+    }));
     intercept(CommandService.prototype, "cancelAssignment", ([input]) => ({
       type: "assignment.cancel",
       assignmentId: (input as { assignmentId: string }).assignmentId,

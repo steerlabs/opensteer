@@ -160,6 +160,13 @@
     "selected-covering": "refused:not_offered",
     "selected-not": "not_found"
   },
+  "plugin.remove": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
   "thread.rename": {
     "own-full": "allowed",
     "own-supervised": "allowed",

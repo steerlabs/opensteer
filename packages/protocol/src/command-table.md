@@ -93,7 +93,7 @@ edit. Callers: (a) your own agent at Full access, (b) your own agent below Full 
 | `integration.grant.create` | which installation may use a device-data account ← `input.connectionId`,`installationId` | approve | ask | ask | ask | ask | — | today's `app_access_request {dataApp}` |
 | `integration.grant.revoke` | same ← `grantId` | narrow | now | ask | now | now | A (d: B) | `dev-admin:42` takes an identity; only the tool whitelist (`h/administration.ts:43-53`) blocks it |
 | `integration.disconnect` | a device-app connection ← `connectionId` | narrow | now | ask | now | now | A (d: B) | `dev-admin:50` |
-| `plugin.remove` | a local server ← `pluginId` | destroy | now | ask | now | ask | A | `dev-admin:39` |
+| `plugin.remove` | a local server ← `pluginId` | destroy | now | ask | now | ask | A | `dev-admin:39`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
 | `integration.server.secrets.set` | a local server's secrets ← `serverId` | secret | ask | ask | ask | ask | — |  |
 | `settings.plugin.enabled.set` | a plugin target ← `target`; `false` narrow / `true` approve | narrow / approve | now/ask | ask | now/ask | now/ask | B | store takes an identity; handler does not pass it (`server.ts:1746`) |
 

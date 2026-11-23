@@ -1665,7 +1665,7 @@
         }
       ],
       "step": "A",
-      "note": "`dev-admin:39`",
+      "note": "`dev-admin:39`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "outside",
         "why": "device-administration.ts:40: a local server's files and process",
