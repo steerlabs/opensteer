@@ -23,6 +23,7 @@ import {
   applyInlineTranscriptMessages,
   applyStoppedRunsNotNews,
   applyThreadDoneBy,
+  applyRunProviderRetry,
   applyPersonalStateSchema,
   browserSessionTabsIndexMigrationName,
   applyDropDeviceAccessCount,
@@ -31,6 +32,7 @@ import {
   inlineTranscriptMessagesMigrationName,
   stoppedRunsNotNewsMigrationName,
   threadDoneByMigrationName,
+  runProviderRetryMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 import {
@@ -612,6 +614,7 @@ export function migrationProvider(options?: {
               [inlineTranscriptMessagesMigrationName]: { up: applyInlineTranscriptMessages },
               [stoppedRunsNotNewsMigrationName]: { up: applyStoppedRunsNotNews },
               [threadDoneByMigrationName]: { up: applyThreadDoneBy },
+              [runProviderRetryMigrationName]: { up: applyRunProviderRetry },
             }
           : {}),
       };

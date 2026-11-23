@@ -902,6 +902,11 @@ export interface RunTable {
   threadId: ThreadId;
   environmentId: EnvironmentId;
   failure: ColumnType<RunFailure | null, RunFailure | null | undefined, RunFailure | null>;
+  providerRetry: ColumnType<
+    import("@opensteer/core").RunRetry | null,
+    import("@opensteer/core").RunRetry | null | undefined,
+    import("@opensteer/core").RunRetry | null
+  >;
   harnessInstanceId: HarnessInstanceId;
   modelSelection: JsonColumn<ModelSelection>;
   replyTarget: JsonColumn<ReplyTarget | null>;

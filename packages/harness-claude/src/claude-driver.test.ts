@@ -3020,6 +3020,115 @@ describe("Claude Agent SDK harness", () => {
     },
   );
 
+  it("surfaces Claude api_retry notices and clears them once output arrives", async () => {
+    const sdk = new FakeSdk((parameters) => {
+      const sessionId = providerSessionId(parameters.options);
+      const system = (fields: Record<string, unknown>) =>
+        message({ session_id: sessionId, type: "system", uuid: randomProviderUuid(), ...fields });
+      const drained = (async () => {
+        for await (const _input of streamingPrompt(parameters));
+      })();
+      return generatedQuery(async function* () {
+        yield initMessage(sessionId);
+        yield system({
+          subtype: "api_retry",
+          attempt: 1,
+          max_retries: 4,
+          retry_delay_ms: 5_000,
+          error_status: 529,
+          error: "Overloaded",
+        });
+        // Non-substantive stream lifecycle frames and empty deltas must NOT clear active retry.
+        yield message({
+          session_id: sessionId,
+          type: "stream_event",
+          uuid: randomProviderUuid(),
+          parent_tool_use_id: null,
+          event: { type: "message_start", message: { id: "msg_1", role: "assistant" } },
+        });
+        yield message({
+          session_id: sessionId,
+          type: "stream_event",
+          uuid: randomProviderUuid(),
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "" },
+          },
+        });
+        yield system({
+          subtype: "api_retry",
+          attempt: 2,
+          max_retries: 4,
+          retry_delay_ms: 10_000,
+          error_status: 529,
+          error: "Overloaded",
+        });
+        yield assistantMessage(sessionId, [{ type: "text", text: "Recovered reply" }]);
+        yield successMessage(sessionId, "Recovered reply");
+        await drained;
+      });
+    });
+    const directory = await temporaryDirectory();
+    const driver = new ClaudeHarnessDriver({ executable: fakeClaudeExecutable, sdk });
+    const adapter = await driver.create({
+      sourceId: "anthropic",
+      config: {},
+      instanceId: createId("harnessInstance"),
+    });
+    const session = await adapter.startSession(await context(directory));
+    const observer = observe(session.events);
+    await session.execute({
+      environment: {},
+      inputs: [humanInput("Hello")],
+      context: noThreadContext,
+      reports: { messages: [], omittedCount: 0, throughSequence: null },
+      requestedBy: createId("user"),
+      runId: createId("run"),
+      signal: new AbortController().signal,
+    });
+    await session.stop();
+    await observer.done;
+    const retries = observer.events.filter((event) => event.type === "run.retry");
+    expect(retries).toEqual([
+      {
+        type: "run.retry",
+        data: {
+          status: "retrying",
+          attempt: 1,
+          maxAttempts: 4,
+          retryDelayMs: 5_000,
+          code: "http_529",
+          message: "Overloaded",
+        },
+      },
+      {
+        type: "run.retry",
+        data: {
+          status: "retrying",
+          attempt: 2,
+          maxAttempts: 4,
+          retryDelayMs: 10_000,
+          code: "http_529",
+          message: "Overloaded",
+        },
+      },
+      {
+        type: "run.retry",
+        data: {
+          status: "recovered",
+          attempt: 2,
+          maxAttempts: 4,
+          code: "http_529",
+          message: "Overloaded",
+        },
+      },
+    ]);
+    expect(observer.events.some((event) => event.type === "run.completed")).toBe(true);
+    await adapter.close();
+  });
+
   it("tells the model this Run's computer inventory on every turn, resumed or not", async () => {
     const received: SDKUserMessage[][] = [];
     const sdk = new FakeSdk((parameters) => {

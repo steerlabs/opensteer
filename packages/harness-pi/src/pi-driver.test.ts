@@ -1383,6 +1383,8 @@ describe("Pi sessions", () => {
     await retryObserver.waitFor("run.completed");
     expect(normalizedTypes(retryObserver.events)).toContain("run.started");
     expect(normalizedTypes(retryObserver.events)).not.toContain("run.status");
+    const retryEvents = retryObserver.events.filter((event) => event.type === "run.retry");
+    expect(retryEvents.map((event) => event.data.status)).toEqual(["retrying", "recovered"]);
     await retrySession.stop();
     await retry.adapter.close();
   });

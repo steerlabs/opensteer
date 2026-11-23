@@ -1466,10 +1466,11 @@ export class HttpHostClient {
       const row = state.snapshot?.thread;
       if (row && row !== previousThread) {
         previousThread = row;
+        const detailSummary = row.thread
+          ? toThreadSummary(row.thread, this.#snapshot.environments, this.#snapshot.harnesses)
+          : compactThread(row);
         const thread = this.#threadState.reconcile(
-          row.thread
-            ? toThreadSummary(row.thread, this.#snapshot.environments, this.#snapshot.harnesses)
-            : compactThread(row),
+          row.retry === undefined ? detailSummary : { ...detailSummary, retry: row.retry },
           SequenceSchema.parse(row.revision),
           undefined,
           row.thread ? undefined : row,
@@ -1896,6 +1897,7 @@ export class HttpHostClient {
               latestRunCompletedAt: row.latestRunCompletedAt,
               inputQueuePaused: row.inputQueuePaused ?? held.inputQueuePaused,
               runQueued: row.runQueued,
+              ...(row.retry === undefined ? {} : { retry: row.retry }),
             },
             SequenceSchema.parse(row.revision),
             undefined,
@@ -3198,12 +3200,16 @@ export class HttpHostClient {
     });
   }
 
-  async stopRun(threadId: string): Promise<void> {
+  async stopRun(threadId: string, expectedRunId?: string): Promise<void> {
     const thread = this.#snapshot.threads.find((item) => item.id === threadId);
     if (!thread) throw new Error("Thread not found.");
     const detail = this.#reader(threadId)?.getSnapshot();
     const run = threadStopTarget({ runQueue: detail?.synchronized ? detail.runQueue : [], thread });
-    if (!run) throw new Error("This Thread has nothing to stop.");
+    if (!run) {
+      if (expectedRunId !== undefined) return;
+      throw new Error("This Thread has nothing to stop.");
+    }
+    if (expectedRunId !== undefined && run.id !== expectedRunId) return;
     const result = await this.dispatch({
       idempotencyKey: mutationIdempotencyKey("interrupt"),
       runId: run.id,
@@ -3906,8 +3912,14 @@ export class HttpHostClient {
         {
           ...entry,
           thread: this.#reconcilePageThread(
-            // The queued-account reason rides beside the Thread on the page, as on the shell row.
-            entry.runQueued === undefined ? thread : { ...thread, runQueued: entry.runQueued },
+            // The queued-account reason and active retry ride beside the Thread on the page, as on the shell row.
+            entry.runQueued === undefined && entry.retry === undefined
+              ? thread
+              : {
+                  ...thread,
+                  ...(entry.runQueued === undefined ? {} : { runQueued: entry.runQueued }),
+                  ...(entry.retry === undefined ? {} : { retry: entry.retry }),
+                },
             page.asOfSequence,
           ),
         },
@@ -4979,6 +4991,7 @@ function compactThread(
     environmentId: row.environmentId,
     harnessInstanceId: row.harnessInstanceId,
     runQueued: row.runQueued,
+    ...(row.retry === undefined ? {} : { retry: row.retry }),
     modelSelection: unknownModelSelection,
     harnessLabel: "",
     modelLabel: "",

@@ -14,6 +14,7 @@ import {
   inlineTranscriptMessagesMigrationName,
   stoppedRunsNotNewsMigrationName,
   threadDoneByMigrationName,
+  runProviderRetryMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 it("exposes the fresh, uniquely named Host baseline and the migrations after it", async () => {
@@ -63,6 +64,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     inlineTranscriptMessagesMigrationName,
     stoppedRunsNotNewsMigrationName,
     threadDoneByMigrationName,
+    runProviderRetryMigrationName,
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

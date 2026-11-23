@@ -459,6 +459,7 @@ export function createPersonalReads(
             failure: task.failurePreview?.slice(0, 280) ?? null,
             lastReply: task.lastReplyPreview?.slice(0, 280) ?? null,
             runQueued: task.runQueued,
+            retry: task.retry ?? null,
           };
           const bytes = Buffer.byteLength(JSON.stringify(entry)) + (tasks.length ? 1 : 0);
           if (byteCount + bytes > 63 * 1024) {

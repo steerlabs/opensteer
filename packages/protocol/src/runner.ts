@@ -429,6 +429,7 @@ const pendingEventVariants = [
   pendingEventVariant("run.status"),
   pendingEventVariant("run.context-measured"),
   pendingEventVariant("run.compaction"),
+  pendingEventVariant("run.retry"),
   pendingEventVariant("run.usage"),
   pendingEventVariant("run.phase"),
   pendingEventVariant("node.started"),
@@ -450,6 +451,7 @@ export const PendingAgentEventSchema = z
 
 export const runEventsVersion = 2;
 export const runEventsCapability = "run-events-v2";
+export const runRetryCapability = "run-retry-v1";
 export const runEventsUpdateReason = "Update Opensteer on the Host and this computer to run tasks.";
 export const PendingAgentEventV2Schema = z
   .discriminatedUnion("type", [
@@ -1986,6 +1988,8 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     heartbeatIntervalMs: z.number().int().min(1_000).max(300_000),
     /** The hosting computer's Agent home, sent only to a Runner advertising `agent-home-settings-v1`. */
     agentHome: ComputerFolderSchema.optional(),
+    /** Present and true when the Host accepts `run.retry` events; sent only to a Runner advertising `run-retry-v1`. */
+    runRetryEvents: z.literal(true).optional(),
     serverTime: IsoDateTimeSchema,
     type: z.literal("host.welcome"),
   }),

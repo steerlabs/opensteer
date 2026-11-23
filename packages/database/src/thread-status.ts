@@ -21,6 +21,7 @@ import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
 import {
   taskPageThreadSelections,
   taskPageThreadsFromRows,
+  threadProviderRetry,
   threadRunQueued,
 } from "./personal-task-store.js";
 import { detailThreadValue } from "./personal-snapshot-store.js";
@@ -57,6 +58,7 @@ export async function writeThreadSummary(
       .returningAll()
       .returning(taskPageThreadSelections())
       .returning(threadRunQueued.as("runQueued"))
+      .returning(threadProviderRetry.as("retry"))
       .executeTakeFirstOrThrow();
     const threadScope = `thread:${threadId}` as const;
     const view = {
@@ -76,6 +78,7 @@ export async function writeThreadSummary(
       environmentId: row.environmentId,
       harnessInstanceId: row.harnessInstanceId,
       runQueued: row.runQueued,
+      retry: row.retry ?? null,
     };
     const thread = row.removedAt
       ? undefined

@@ -108,6 +108,7 @@ export function transcriptCard(
         ...(item.endedAt ? { endedAt: item.endedAt } : {}),
         ...(item.usage ? { usage: item.usage } : {}),
         ...(item.delivery ? { delivery: item.delivery } : {}),
+        ...(item.retry ? { retry: item.retry } : {}),
         ...(view.status === "background" ? { background: true } : {}),
         status,
       };
