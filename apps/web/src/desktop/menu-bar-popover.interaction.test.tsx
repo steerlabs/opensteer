@@ -166,9 +166,9 @@ describe("Right now", () => {
     try {
       const rows = Array.from(view.node.querySelectorAll(".menu-bar__activity-row"));
       expect(rows.map((row) => row.textContent)).toEqual([
-        "Says it is GrokA browser profile · Friday dinner",
+        "Says it is “Grok”A browser profile · Friday dinner",
         "Claude CodeWorking on this Mac · Rename photos",
-        "Verified: ClaudeWorking on this Mac · Compare flights",
+        "Verified: “Claude”Working on this Mac · Compare flights",
       ]);
       // Only the verified one wears the check and its platform's logo.
       expect(rows.map((row) => row.querySelector(".menu-bar__verified") !== null)).toEqual([

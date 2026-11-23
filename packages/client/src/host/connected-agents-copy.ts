@@ -321,14 +321,34 @@ export const connectedAgentsCopy = {
 
 export type ConnectedAgentsCopyId = keyof typeof connectedAgentsCopy;
 
-/** One string from `connectedAgentsCopy` with its `{values}` filled in. */
-export function agentWords(
+type ForbiddenOutsideAgentCopyKey = "agent" | "label" | "name" | "task";
+const forbiddenOutsideAgentCopyKeys = new Set<string>(["agent", "label", "name", "task"]);
+
+export type SafeAgentCopyValues = Readonly<Record<string, string | number>> &
+  Partial<Record<ForbiddenOutsideAgentCopyKey, never>>;
+
+function formatAgentCopy(
   id: ConnectedAgentsCopyId,
   values: Readonly<Record<string, string | number>> = {},
 ): string {
   return connectedAgentsCopy[id].replace(/\{(\w+)\}/gu, (whole, key: string) =>
     Object.hasOwn(values, key) ? String(values[key]) : whole,
   );
+}
+
+/**
+ * One string from `connectedAgentsCopy` for Opensteer's own words and numbers. Outside-name keys
+ * (`agent`, `label`, `name`, `task`) are forbidden here: use `agentSentence` or `agentText`.
+ */
+export function agentWords(id: ConnectedAgentsCopyId, values: SafeAgentCopyValues = {}): string {
+  for (const key of Object.keys(values)) {
+    if (forbiddenOutsideAgentCopyKeys.has(key)) {
+      throw new TypeError(
+        `agentWords("${id}") forbids outside-name key "${key}"; use agentSentence instead.`,
+      );
+    }
+  }
+  return formatAgentCopy(id, values);
 }
 
 /**
@@ -350,7 +370,7 @@ export function agentSentence(
     else parts[key] = part;
   return sentenceWith(
     (slot) =>
-      agentWords(id, {
+      formatAgentCopy(id, {
         ...words,
         ...Object.fromEntries(Object.keys(parts).map((key) => [key, slot(key)])),
       }),

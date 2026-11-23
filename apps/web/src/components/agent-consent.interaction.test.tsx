@@ -139,7 +139,7 @@ describe("agent consent with grants", () => {
     );
     // Grok's name is only the one it gave itself: no verified mark, and it says so.
     expect(container.querySelector(".agent-who--verified")).toBeNull();
-    expect(container.textContent).toContain("It calls itself: Grok");
+    expect(container.textContent).toContain("It calls itself: “Grok”");
     expect(container.textContent).toContain("Only allow this if you started it yourself.");
     expect(container.textContent).not.toContain("Returns to");
     const checked = [
@@ -518,7 +518,7 @@ describe("agent consent with grants", () => {
     await act(async () => buttonNamed(container, "Allow").click());
     // The screen is the agent as the Home now presents it, with one line beside Allow.
     expect(container.querySelector("h1")?.textContent).toBe("An agent wants to connect");
-    expect(container.textContent).toContain("It calls itself: Claude");
+    expect(container.textContent).toContain("It calls itself: “Claude”");
     expect(container.querySelector(".form-actions")?.previousElementSibling?.textContent).toBe(
       "This agent’s verification changed. Review it again.",
     );
