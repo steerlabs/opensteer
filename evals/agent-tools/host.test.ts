@@ -603,7 +603,7 @@ it("answers a read with what an accepted command changed ($after)", async () => 
                     args: { command: { type: "harness.default.set" } },
                   },
                   before: { area: "engines", view: { default: "Codex" } },
-                  then: { area: "engines", view: { default: "Claude Code" } },
+                  changed: { area: "engines", view: { default: "Claude Code" } },
                 },
               },
             },
