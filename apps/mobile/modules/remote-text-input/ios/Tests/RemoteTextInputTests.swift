@@ -241,6 +241,22 @@ import UIKit
     XCTAssertEqual(field.view.text, "helloaxbc")
   }
 
+  // CV3: the field resigning (UIKit's textViewDidEndEditing) while an edit waits. The edit keeps
+  // its turn and goes as typed; the blur is told after it, in order, and changes nothing else.
+  // (What UIKit itself does to marked text when the field resigns needs a window: not recorded
+  // here, so the typing test blurs only while nothing is marked.)
+  func testABlurWhileAnEditWaitsComesAfterItAndKeepsIt() {
+    let field = Field(settled: "a")
+    let settled = field.packets.count
+    field.view.insertText("b")
+    field.view.textViewDidEndEditing(field.view)
+    field.answerAll()
+    let types = field.packets[settled...].compactMap { ($0["event"] as? [String: Any])?["type"] as? String }
+    XCTAssertEqual(types, ["beforeinput", "input", "blur"])
+    XCTAssertEqual(field.view.text, "ab")
+    XCTAssertEqual(field.view.selectedRange, NSRange(location: 2, length: 0))
+  }
+
   // P1: a typo then Backspace erases the typo, not the character before it.
   func testATypoThenBackspaceErasesTheTypo() {
     let field = Field(settled: "a")

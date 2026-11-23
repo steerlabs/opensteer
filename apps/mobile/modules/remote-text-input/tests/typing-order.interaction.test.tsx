@@ -710,6 +710,11 @@ describe("a person's caret moves and selections in the native field", () => {
           (f) => f.replaceRange(start, end, word),
         );
       },
+      /** The field resigns (the person dismisses the keyboard), then takes focus again. */
+      blur: async () => {
+        steps.push("blur()");
+        await keyboard((f) => f.blur());
+      },
       paste: (text: string) =>
         does(
           `paste(${said(text)})`,
@@ -1145,7 +1150,20 @@ describe("a person's caret moves and selections in the native field", () => {
     for (let step = 0; step < length; step++) {
       if (next() < 0.12) {
         acted = true;
-        if (which === "B") {
+        // CV3: the field resigns and takes focus again, while nothing is marked (what UIKit does
+        // to marked text when the field resigns is not recorded). It is the same field: nothing
+        // the person did there may be lost.
+        if (which === "B" && next() < 0.3) {
+          if (segments.at(-1)!.person.marked === null) {
+            // A range UIKit selected in the hidden field does not outlive the blur (the mirror is
+            // begun again): the person's selection is where the page's caret is, its end.
+            record((p) => {
+              const at = p.selection.end;
+              p.selection = { start: at, end: at };
+            });
+            await run.blur();
+          }
+        } else if (which === "B") {
           steps.push("the person arrives in another field");
           const id = fresh();
           const field = new FarField();
@@ -1378,6 +1396,18 @@ describe("a person's caret moves and selections in the native field", () => {
       refused: sent.filter((entry) => !applied(entry)).length,
     };
   }
+  // CV3: the field resigning while an edit waits, as the real view does it: the edit keeps its
+  // turn, the blur comes after it, and what the person typed reaches the page.
+  it("keeps an edit that waits when the field resigns", async () => {
+    const { remote, native, keyboard, answerAll } = await open();
+    await keyboard((field) => field.insertText("a"));
+    await keyboard((field) => field.blur());
+    await answerAll();
+    expect(native.text === "" || native.text === "a").toBe(true);
+    expect(remote.value).toBe("a");
+    expect(remote.refused).toEqual([]);
+  });
+
   // CW2, CW3: each check catches a loss. A far side that drops or refuses one operation makes
   // the regime fail on the first seed where that operation is sent.
   const insertion = (operation: unknown) => {

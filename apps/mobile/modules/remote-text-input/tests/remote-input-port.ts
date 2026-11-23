@@ -728,6 +728,14 @@ export class NativeField {
       });
     });
   }
+  /**
+   * The field resigns (RemoteInputTextView.textViewDidEndEditing): the blur is told after what
+   * waits, which keeps its turn (RemoteTextInputTests.testABlurWhileAnEditWaitsComesAfterItAndKeepsIt).
+   * What UIKit does to marked text when the field resigns is not recorded: not modelled.
+   */
+  blur() {
+    this.notify({ type: "blur" });
+  }
   paste(text: string) {
     this.enqueue(() => {
       this.onTurn?.("begin");
