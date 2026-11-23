@@ -54,7 +54,12 @@ then removes the name. A wake that cannot finish removes the tab before the tab 
 its address; one whose open was abandoned leaves the tab asleep. Opensteer reads Chromium's tabs only
 from a read that agrees with itself; otherwise the answer is "not known", never "absent". The
 helper marks each tab it sees as not discardable by Chromium itself, so Opensteer is the one that
-discards. A tab that cannot be put to sleep under its name is closed and wakes by address; one whose
+discards. `chrome.tabs.discard(tabId)` bypasses every refusal of Chromium's discard policy: it
+never calls `CanDiscard` (`chrome/browser/extensions/api/tabs/tabs_api.cc` `TabsDiscardFunction::Run`
+reaches `TabLifecycleUnit::Discard(EXTERNAL)` in
+`chrome/browser/resource_coordinator/tab_lifecycle_unit.cc`, which never reads
+`chrome/browser/performance_manager/policies/discard_eligibility_policy.cc`; read at Chromium
+`ef22aa0711`). So every protection Opensteer wants, Opensteer enforces. A tab that cannot be put to sleep under its name is closed and wakes by address; one whose
 end is not proven stays guarded until it is, and a discarded tab without a name, which only a sleep
 that failed can leave, is removed with it. Closing a sleeping tab or ending its session removes it
 from Chromium on evidence: when the session's end returns, the tab is out of every session's reach,
