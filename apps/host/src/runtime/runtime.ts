@@ -17,7 +17,11 @@ import {
   installPersonalMutationHooks,
   type PersonalCommitReaction,
 } from "@opensteer/database/personal-mutation";
-import { createRunFinishDrain, republishThreads } from "@opensteer/database";
+import {
+  createRunFinishDrain,
+  recoverCommandAttempts,
+  republishThreads,
+} from "@opensteer/database";
 import { shadowRunsTouched } from "../browser/shadow-host.js";
 import { createReturnHintRefresh } from "./personal-return-hints.js";
 import { withUpgradeHeartbeat } from "./upgrade-heartbeat.js";
@@ -3517,6 +3521,8 @@ export async function createHostRuntime(
     }));
     // An approval cut off by a restart may have taken effect: it is unknown, never run again.
     await commandRequestStore.recoverRunning();
+    // A command that was acting outside the database when the Home stopped may have happened.
+    await recoverCommandAttempts(store.database);
     const app = await createHostServer(
       {
         commandRequests,

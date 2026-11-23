@@ -253,6 +253,7 @@
       "update \"auth_admissions\" set \"consumed_at\" = $1, \"consumed_by\" = $2 where \"id\" = $3 and \"consumed_at\" is null",
       "update \"client_sync_state\" set \"sequence\" = $1, \"pruned_through_sequence\" = $2, \"retained_change_count\" = $3, \"last_commit_at\" = $4, \"resource_revisions\" = $5, \"pending_request_count\" = $6, \"needs_you_count\" = $7, \"unread_task_count\" = $8 where \"deployment_id\" = $9",
       "update \"client_sync_state\" set \"sequence\" = $1, \"pruned_through_sequence\" = $2, \"retained_change_count\" = $3, \"last_commit_at\" = $4, \"resource_revisions\" = $5, \"pending_request_count\" = $6, \"needs_you_count\" = $7, \"unread_task_count\" = $8 where \"deployment_id\" = $9",
+      "update \"command_attempts\" set \"state\" = $1, \"settled_at\" = $2 where \"state\" = $3",
       "update \"commands\" set \"dispatcher_id\" = $1, \"status\" = $2, \"updated_at\" = $3 where \"status\" = $4 and \"type\" in ($5, $6, $7, $8) and not exists (select \"id\" from \"runs\" where \"runs\".\"id\" = \"commands\".\"run_id\" and \"finish_intent\" is not null)",
       "update \"machine_access_sessions\" set \"end_reason\" = $1, \"ended_at\" = $2, \"state\" = $3 where \"ended_at\" is null",
       "update \"owner_enrollments\" set \"consumed_at\" = $1, \"consumed_by\" = $2 where \"id\" = $3 and \"consumed_at\" is null",

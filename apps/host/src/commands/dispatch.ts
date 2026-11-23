@@ -1,7 +1,10 @@
 import { OpensteerError } from "@opensteer/core";
 import { z } from "zod";
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
+import { runCommandEffect, type CommandAttempts } from "./command-effect.js";
 import {
   admitCommand,
+  assertCommandAdmitted,
   commandAdmission,
   commandCallerHolder,
   commandHolds,
@@ -78,6 +81,14 @@ export interface AgentCommandDoor extends CommandDoor {
    * effective grant (null for your own agents) and its live mode; `gone` once it may not act.
    */
   readonly scope: (caller: AgentCaller) => Promise<CommandHolder | "gone">;
+  /** Where an outside command's attempt is recorded and settled (G4); a stand-in door has none. */
+  readonly attempts?: CommandAttempts;
+  /** The last admission, in the transaction that records the attempt (G3). */
+  readonly readmit?: (
+    transaction: Kysely<DatabaseSchema>,
+    caller: AgentCaller,
+    command: HostApiCommand,
+  ) => Promise<void>;
   /** Opens the person's Request for a command that waits for them; without it, `ask` is returned. */
   readonly propose?: (
     caller: AgentCaller,
@@ -105,6 +116,16 @@ export function agentCommandScope(
 ): AgentCommandDoor["scope"] {
   return async (caller) =>
     commandCallerHolder(database, caller.userId, await admittedSubject(database, caller, taskId));
+}
+
+/** The last admission before an outside command acts, as the door admitted it (G3). */
+export function agentCommandReadmission(taskId?: string): NonNullable<AgentCommandDoor["readmit"]> {
+  return async (transaction, caller, command) =>
+    assertCommandAdmitted(transaction, {
+      ownerUserId: caller.userId,
+      subject: await admittedSubject(transaction, caller, taskId),
+      command,
+    });
 }
 
 /** `admitCommand` for an agent the Home authenticated, from its live execution. */
@@ -187,8 +208,28 @@ export async function dispatchCommand(
     agentRunsNow(row, admission.face, handler, holder?.scope ?? null)
   ) {
     const authority = commandAuthority(actor, command);
-    const output = await handler.run(actor, command as never, { context: null, authority });
-    return { status: "done", output: commandAgentOutput(command, output) };
+    const readmit = door.readmit;
+    const effect = await runCommandEffect({
+      row,
+      attempts: door.attempts,
+      attempt: {
+        requestedBy: actor.userId,
+        callerKey: actor.key,
+        connectionId:
+          actor.kind === "connection"
+            ? actor.connectionId
+            : (actor.agentConnection?.agentConnectionId ?? null),
+        type: command.type,
+        idempotencyKey: (command as { readonly idempotencyKey: string }).idempotencyKey,
+      },
+      readmit: readmit ? (transaction) => readmit(transaction, actor, command) : undefined,
+      act: () => handler.run(actor, command as never, { context: null, authority }),
+    });
+    if (effect.status === "done")
+      return { status: "done", output: commandAgentOutput(command, effect.output) };
+    if (effect.status === "failed") throw effect.error;
+    // It may have happened: never failed, never retried by the Home (rule 4).
+    throw new OperationOutcomeUnknown("This change may have happened. Check before trying again.");
   }
   const answers =
     row.answersAsk && admission.face !== undefined && row.answersAsk.faces.includes(admission.face)

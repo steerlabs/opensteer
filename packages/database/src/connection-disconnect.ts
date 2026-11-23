@@ -74,7 +74,9 @@ export type LineageAttempt =
     })
   | ConnectionAttempt<"plugin" | "shared-chrome">
   /** A message to a bridge's chat: written before it is sent, its status is its evidence. */
-  | ConnectionAttempt<"chat">;
+  | ConnectionAttempt<"chat">
+  /** A command acting outside the database (G4): written before it acts, settled after. */
+  | ConnectionAttempt<"command">;
 
 export interface ConnectionAttemptStopper {
   stop(
@@ -279,6 +281,15 @@ export async function connectionAttempts(
       where f.disconnected and (
         d.status in ('pending', 'leased', 'attempt-started', 'retryable-failed')
         or (d.status = 'unknown' and d.updated_at >= f.cleanup_requested_at))
+      union all
+      -- A command with an effect outside the database, acting now in this Home's process: its
+      -- settled state is its evidence; one that may have acted is unknown, contact lost (G4).
+      select 'command', a.id, null, null, null, null, null, a.state = 'running',
+        case when a.state <> 'running' then a.settled_at end,
+        case when a.state = 'unknown' then a.settled_at end, null
+      from command_attempts a join floor f on f.id = a.connection_id
+      where f.disconnected and (
+        a.state = 'running' or (a.state = 'unknown' and a.settled_at >= f.cleanup_requested_at))
       union all
       select 'session', s.id, null, s.thread_id, null, null, null, false, null, null, null
       from agent_sessions s join floor f on f.id = s.connection_id

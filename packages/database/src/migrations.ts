@@ -682,6 +682,25 @@ export function migrationProvider(options?: {
                     create index commands_agent_caller on commands
                       ((authority_source->>'callerKey'), created_at desc)
                       where authority_source->>'kind' = 'mcp';
+                    -- A command with an effect outside the database, recorded before it acts and
+                    -- settled after: what a Disconnect waits on for a connection's (G4).
+                    create table command_attempts (
+                      id text primary key,
+                      requested_by text not null references users(id) on delete cascade,
+                      caller_key text not null,
+                      connection_id text references agent_connections(id) on delete cascade,
+                      type text not null,
+                      idempotency_key text not null,
+                      state text not null default 'running'
+                        check (state in ('running', 'done', 'failed', 'unknown')),
+                      started_at timestamptz not null default now(),
+                      settled_at timestamptz,
+                      check ((state = 'running') = (settled_at is null))
+                    );
+                    create index command_attempts_connection on command_attempts (connection_id)
+                      where connection_id is not null;
+                    create index command_attempts_running on command_attempts (id)
+                      where state = 'running';
                   `.execute(database);
                 },
               },

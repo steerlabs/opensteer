@@ -8,7 +8,13 @@ import {
   type AdministrationService,
 } from "../administration/administration-service.js";
 import type { AgentCaller } from "../mcp/agent-caller.js";
-import { agentCommandAdmission, agentCommandScope, type AgentCommandDoor } from "./dispatch.js";
+import { commandAttempts } from "./command-effect.js";
+import {
+  agentCommandAdmission,
+  agentCommandReadmission,
+  agentCommandScope,
+  type AgentCommandDoor,
+} from "./dispatch.js";
 import type { CommandRegistry } from "./registry.js";
 
 /**
@@ -55,6 +61,8 @@ export function agentCommandDoor(input: {
     registry: input.registry,
     admit: agentCommandAdmission(input.database, input.taskId),
     scope: agentCommandScope(input.database, input.taskId),
+    attempts: commandAttempts(input.database),
+    readmit: agentCommandReadmission(input.taskId),
     ...(input.propose ? { propose: input.propose } : {}),
   };
 }

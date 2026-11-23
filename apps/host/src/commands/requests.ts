@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import {
-  isRaisedBeforeEffect,
   OpensteerError,
   RequestJsonObjectSchema,
   requestTitleMaxLength,
@@ -13,6 +12,7 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
+import { commandAttempts, runCommandEffect } from "./command-effect.js";
 import {
   admitCommand,
   commandSubject,
@@ -24,7 +24,6 @@ import { hostApi, type HostApiCommand, type HostApiCommandOutput } from "@openst
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
   commandAgentOutput,
-  commandEffect,
   commandResourceKey,
   commandRow,
   type CommandResource,
@@ -327,31 +326,42 @@ export class CommandRequestService {
       revision: input.expectedRevision,
       proposedBy: { ...pending.command.proposer },
     });
+    // The one way a command acts (G4): its attempt in the proposer's Disconnect set, the act,
+    // then what is known of it. Its last admission is the approval's own (#stillAsks above).
+    const effect = await runCommandEffect({
+      row,
+      attempts: commandAttempts(this.#database),
+      attempt: {
+        requestedBy: actor.userId,
+        callerKey: `request:${input.requestId}`,
+        connectionId: connectionId ?? null,
+        type: command.type,
+        idempotencyKey: (command as { readonly idempotencyKey: string }).idempotencyKey,
+      },
+      act: () => run(approver, command),
+    });
     let outcome: CommandRequestOutcome;
-    try {
-      const output = await run(approver, command);
-      // Exactly what the door gives that agent for this command when it runs it itself.
-      const result = JSON.parse(JSON.stringify(commandAgentOutput(command, output) ?? null));
+    if (effect.status === "done") {
+      // Exactly what the door gives that agent for this command when it runs it itself; what
+      // ran is done even if its result cannot be kept.
+      let result: unknown = null;
+      try {
+        result = JSON.parse(JSON.stringify(commandAgentOutput(command, effect.output) ?? null));
+      } catch {
+        result = undefined;
+      }
       outcome =
-        JSON.stringify(result).length <= maxResultBytes
-          ? { status: "done", result }
+        result !== undefined && JSON.stringify(result).length <= maxResultBytes
+          ? { status: "done", result: result as never }
           : { status: "done" };
-    } catch (error) {
-      // Unknown is the default: failed only for a refusal marked where it was raised, before
-      // anything was sent, or the Home's own refusal inside a database-only command's
-      // transaction. The proposer reads the Home's words only.
-      // A refusal the Home raised inside a database-only command's one transaction rolled it
-      // back; any other error (a connection lost mid-commit) leaves even that commit unknown.
-      outcome =
-        isRaisedBeforeEffect(error) ||
-        (commandEffect(row) === "database" && error instanceof OpensteerError)
-          ? {
-              status: "failed",
-              code: error instanceof OpensteerError ? error.code : "internal",
-              message: commandRefusedWords,
-            }
-          : { status: "unknown" };
-    }
+    } else if (effect.status === "failed") {
+      // The proposer reads the Home's words only.
+      outcome = {
+        status: "failed",
+        code: effect.error instanceof OpensteerError ? effect.error.code : "internal",
+        message: commandRefusedWords,
+      };
+    } else outcome = { status: "unknown" };
     await this.#store.settle(input.requestId, outcome);
     return outcome;
   }

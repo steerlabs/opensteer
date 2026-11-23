@@ -16,6 +16,7 @@ import {
 } from "@opensteer/protocol/command-table";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import { personActor, type PersonActor } from "./actor.js";
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import { dispatchCommand, type AgentCommandOutcome } from "./dispatch.js";
 import type { CommandRegistry, PersonCommandHandler } from "./registry.js";
 import { sampleCommand } from "@opensteer/protocol/test-support/command-samples";
@@ -251,6 +252,34 @@ describe("dispatchCommand", () => {
             type,
           ).rejects.toThrow("That item is unavailable.");
     });
+  });
+
+  it("settles an outside command whose handler throws after acting as unknown (G4, rule 4)", async () => {
+    const thrown = new Error("The computer stopped answering mid-revoke");
+    const registry = {
+      ...spyRegistry().registry,
+      "machine.revoke": {
+        accepts: "any",
+        run: async () => {
+          throw thrown;
+        },
+      },
+    } as unknown as CommandRegistry;
+    const settled: string[] = [];
+    const door = {
+      registry,
+      admit: async () => ({ answer: "now" as const, face: 0, execution: null }),
+      scope: signedIn,
+      attempts: {
+        begin: async () => "cat_1",
+        settle: async (_id: string, state: string) => {
+          settled.push(state);
+        },
+      },
+    };
+    const outcome = dispatchCommand(run("full-access"), sample("machine.revoke"), door);
+    await expect(outcome).rejects.toBeInstanceOf(OperationOutcomeUnknown);
+    expect(settled).toEqual(["unknown"]);
   });
 
   it("reads a folder install under a connection's grant like a kind the schema does not know (rule 5)", async () => {
