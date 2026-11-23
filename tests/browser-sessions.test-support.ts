@@ -888,11 +888,19 @@ export async function startBrowserService(stack: VerticalStack): Promise<{ reado
   addCleanup(
     "browser service process",
     async () => {
-      await owner.close(() => {
-        child.kill("SIGTERM");
-      }, 20_000);
-      if (child.exitCode !== 0)
-        throw new Error(`The browser service did not stop cleanly: ${output.join("")}`);
+      const startedAt = performance.now();
+      const formatFailure = () => {
+        const elapsedMs = Math.round(performance.now() - startedAt);
+        return `The browser service did not stop cleanly (exitCode=${String(child.exitCode)}, signal=${String(child.signalCode)}, elapsedMs=${elapsedMs}): ${output.join("")}`;
+      };
+      try {
+        await owner.close(() => {
+          child.kill("SIGTERM");
+        }, 20_000);
+      } catch (error) {
+        throw new Error(formatFailure(), { cause: error });
+      }
+      if (child.exitCode !== 0) throw new Error(formatFailure());
     },
     0,
   );

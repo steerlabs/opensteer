@@ -1,4 +1,4 @@
-import { OpensteerError, type DeviceId } from "@opensteer/core";
+import { OpensteerError, type DeviceId, type RunnerId } from "@opensteer/core";
 import type { DatabaseSchema } from "@opensteer/database";
 import { deviceAccess } from "@opensteer/protocol";
 import type { Kysely } from "kysely";
@@ -62,4 +62,41 @@ export async function requireDeviceAccess(
     );
   if (!deviceAccess(runner.accessPolicy)[capability])
     throw new DeviceAccessRefusal("device-access-off", machineId, capability);
+}
+
+/**
+ * Resolves the Runner's active self Device and checks its capability access in
+ * a single query rather than reading `deviceDrivers`/`devices` twice.
+ */
+export async function requireRunnerDeviceAccess(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+  capability: DeviceCapability,
+  online: boolean,
+  options: { readonly asleep?: boolean; readonly stopped?: boolean } = {},
+): Promise<void> {
+  const runner = await database
+    .selectFrom("deviceDrivers")
+    .innerJoin("devices", "devices.id", "deviceDrivers.deviceId")
+    .innerJoin("runners", "runners.id", "deviceDrivers.runnerId")
+    .select(["devices.id", "devices.accessPolicy", "devices.name"])
+    .where("deviceDrivers.runnerId", "=", runnerId)
+    .where("deviceDrivers.role", "=", "self")
+    .where("deviceDrivers.detachedAt", "is", null)
+    .where("devices.removedAt", "is", null)
+    .where("runners.revokedAt", "is", null)
+    .executeTakeFirst();
+  if (!runner)
+    throw new OpensteerError({ code: "not_found", message: "Active self Device not found" });
+  if (options.stopped)
+    throw new DeviceAccessRefusal("device-stopped", runner.id, capability, runner.name);
+  if (!online)
+    throw new DeviceAccessRefusal(
+      options.asleep ? "device-asleep" : "device-offline",
+      runner.id,
+      capability,
+      runner.name,
+    );
+  if (!deviceAccess(runner.accessPolicy)[capability])
+    throw new DeviceAccessRefusal("device-access-off", runner.id, capability);
 }

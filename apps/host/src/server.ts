@@ -603,7 +603,7 @@ export async function createHostServer(
       maxPayload: maxBrowserRelayFrameBytes,
       perMessageDeflate: false,
     },
-    preClose: closeWebSocketsWithin(webSocketShutdownGraceMs, httpShutdownGraceMs),
+    preClose: closeWebSocketsWithin(webSocketShutdownGraceMs, httpShutdownGraceMs, app.server),
   });
   app.addContentTypeParser(
     ["application/octet-stream", "application/x-www-form-urlencoded", "text/plain"],

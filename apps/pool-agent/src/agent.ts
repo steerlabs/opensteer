@@ -17,6 +17,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { browserPoolAgentRequestWindowMs } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import {
   browserPoolControlBytes,
+  pooledRuntimeSessionDeadlineMs,
   type BrowserPoolControl,
   type BrowserPoolRuntimeFence,
 } from "@opensteer/browser-runtime-core/browser-pool";
@@ -74,7 +75,7 @@ export interface PoolAgentDeadlines {
   readonly snapshotDrain: number;
   /** Round H: how long a slot's credentials are fetched from the account service. */
   readonly egress: number;
-  /** E2: how long a pulling host waits for a slot's egress proxy to serve `/health`. */
+  /** How long a pulling host waits for a slot's egress proxy to serve `/health`. */
   readonly proxy: number;
 }
 
@@ -99,6 +100,12 @@ export const defaultDeadlines: PoolAgentDeadlines = {
 
 /** The binding limit on how long a parked guest's live state may be kept. */
 export const maximumRetentionMs = 24 * 60 * 60_000;
+/** Margin above the guest runtime's session-without-channel deadline before stopping a silent running guest. */
+export const homeSilenceMarginMs = 2 * 60_000;
+/** Lowest allowed silent-Home timeout: runtime deadline (10 min) plus margin (2 min). */
+export const minimumHomeSilenceMs = pooledRuntimeSessionDeadlineMs + homeSilenceMarginMs;
+/** Default silent-Home timeout: 15 minutes without an authenticated Home call. */
+export const defaultHomeSilenceMs = 15 * 60_000;
 
 export interface PoolAgentOptions {
   readonly journal: SlotJournal;
@@ -108,6 +115,8 @@ export interface PoolAgentOptions {
   readonly retentionMs?: number;
   /** How long a guest stays paused in memory before it is saved to disk; null keeps it there. */
   readonly saveAfterMs?: number | null;
+  /** How long a running guest may go without an authenticated Home call before the agent stops it. */
+  readonly homeSilenceMs?: number;
   readonly maxConcurrentSaves?: number;
   /** How long a call's stored result answers a repeat of the call. */
   readonly resultRetentionMs?: number;
@@ -150,8 +159,11 @@ interface Slot {
   deleted: boolean;
   /** Wakes waiting for this slot: an idle save yields to them. */
   demand: number;
+  /** When this slot's Home last made an authenticated call (in-memory; starts at agent start). */
+  lastHomeCallAt: number;
   saveTimer: ReturnType<typeof setTimeout> | undefined;
   expiryTimer: ReturnType<typeof setTimeout> | undefined;
+  silenceTimer: ReturnType<typeof setTimeout> | undefined;
   /** An unfinished step (a failed clean-up, a failed expiry) is tried again from here. */
   retryTimer: ReturnType<typeof setTimeout> | undefined;
   /** The last job failed: the next timed attempt waits at least the retry interval. */
@@ -238,10 +250,20 @@ export class PoolAgent {
     // The setting may lower the limit, never raise it.
     if (!(retention > 0 && retention <= maximumRetentionMs))
       throw new RangeError("A parked guest's live state is kept at most 24 hours.");
+    const homeSilence = options.homeSilenceMs ?? defaultHomeSilenceMs;
+    // Never below the guest runtime's session-without-channel deadline plus margin.
+    if (!Number.isFinite(homeSilence) || homeSilence < minimumHomeSilenceMs)
+      throw new RangeError(
+        `A running guest's silent-Home timeout must be at least ${minimumHomeSilenceMs}ms.`,
+      );
   }
 
   get retentionMs(): number {
     return this.#options.retentionMs ?? maximumRetentionMs;
+  }
+
+  get homeSilenceMs(): number {
+    return this.#options.homeSilenceMs ?? defaultHomeSilenceMs;
   }
 
   /** Every driver step the agent awaits has a deadline. */
@@ -505,6 +527,7 @@ export class PoolAgent {
       !record.bridgeToken
     )
       return { ok: false, code: "parked" };
+    this.#heardFromHome(slot);
     const grant: PoolRelayGrant = {
       slot: record.slotId,
       term: record.term,
@@ -541,6 +564,7 @@ export class PoolAgent {
     if (term !== slot.record.term)
       throw new SlotNotFound("The pool agent does not know this slot and term.");
     this.#admit(slot, generation);
+    this.#heardFromHome(slot);
     const withProxy = (status: BrowserPoolAgentStatus): BrowserPoolAgentStatus =>
       this.#proxiesDown.has(slotId) && status.phase !== "stopped"
         ? { ...status, proxy: "down" }
@@ -563,12 +587,14 @@ export class PoolAgent {
     const slot = this.#slots.get(slotId);
     if (!slot || term !== slot.record.term) return null;
     this.#admit(slot, generation);
+    this.#heardFromHome(slot);
     return structuredClone(stored(slot.record, id) ?? null);
   }
 
   async apply(call: BrowserPoolAgentCall, generation?: number): Promise<BrowserPoolAgentResult> {
     const slot = this.#require(call.slotId);
     this.#admit(slot, generation);
+    this.#heardFromHome(slot);
     if (call.kind === "resume") slot.demand += 1;
     const arrived = performance.now();
     let started = arrived;
@@ -602,6 +628,13 @@ export class PoolAgent {
       throw new SlotNotFound("The pool agent does not know this slot.");
     if (generation !== undefined && generation !== slot.keyGeneration)
       throw new SlotFenced("The request was signed by a Home key this slot no longer has.");
+  }
+
+  /** Notes authenticated life from this slot's Home and pushes a running guest's silence timer out. */
+  #heardFromHome(slot: Slot): void {
+    slot.lastHomeCallAt = this.#now();
+    if (!slot.lane.busy && !this.#dead && !slot.deleted && slot.record.phase === "running")
+      this.#schedule(slot);
   }
 
   /** One job on the slot's lane; whatever its outcome, the slot's timers are armed again. */
@@ -1169,7 +1202,9 @@ export class PoolAgent {
       diskGeneration: before.diskGeneration + 1,
       jailId,
       incarnation: this.#incarnation,
+      stopReason: null,
     };
+    slot.lastHomeCallAt = this.#now();
     return this.#store(slot, next, this.#applied(call.id, next, slot, control), "start");
   }
 
@@ -1232,8 +1267,32 @@ export class PoolAgent {
       jailGeneration += 1;
       jailId = jailName(before.slotId, jailGeneration);
     }
+    const steps: Record<string, number> = {};
+    let mark = performance.now();
+    const step = (name: string) => {
+      const at = performance.now();
+      steps[name] = Math.round((at - mark) * 10) / 10;
+      mark = at;
+    };
+    // Host rules, slot network, proxy readiness and closing the guest gate touch nothing of
+    // the paused guest or its saved state. They run before the right to resume is consumed so a
+    // refusal known here (such as `egress-proxy-down`) leaves the slot `paused` with its saved
+    // state intact and the same resume can be asked again later.
+    try {
+      await this.#ensureHost();
+      step("host");
+      await this.#prepareToRun(before.slotId, before.guest.egress);
+      step("prepare");
+      await this.#drained(before.slotId, "network", () => this.#driver.closeNetwork(before.slotId));
+      step("close");
+    } catch (error) {
+      if (error instanceof AgentCrashed) throw error;
+      if (error instanceof DriverStateUncertain) this.#die(error);
+      const reason = error instanceof EgressProxyDown ? "egress-proxy-down" : "resume-failed";
+      return this.#refuseUnchanged(slot, call, reason, error);
+    }
+    this.#checkpoint("resume:prepared");
     this.#unschedule(slot);
-    const consumedAt = performance.now();
     // The right to resume is consumed here, durably, before anything is loaded or thawed.
     await this.#commit(slot, {
       ...before,
@@ -1246,23 +1305,9 @@ export class PoolAgent {
         ...(jailId ? { jailId } : {}),
       },
     });
+    step("journal");
     this.#checkpoint("resume:consumed");
-    const steps: Record<string, number> = { journal: round(performance.now() - consumedAt) };
-    let mark = performance.now();
-    const step = (name: string) => {
-      const at = performance.now();
-      steps[name] = Math.round((at - mark) * 10) / 10;
-      mark = at;
-    };
     try {
-      await this.#ensureHost();
-      step("host");
-      await this.#prepareToRun(before.slotId, before.guest.egress);
-      step("prepare");
-      await within(this.#deadlines.network, "Closing the guest network", () =>
-        this.#driver.closeNetwork(before.slotId),
-      );
-      step("close");
       if (saved.tier === "disk") {
         if (!saved.image || saved.diskGeneration !== before.diskGeneration)
           throw new Error("The saved state does not match the profile disk.");
@@ -1303,8 +1348,6 @@ export class PoolAgent {
     } catch (error) {
       if (error instanceof AgentCrashed) throw error;
       if (error instanceof DriverStateUncertain) this.#die(error);
-      if (error instanceof EgressProxyDown)
-        return this.#fail(slot, call, "egress-proxy-down", error);
       return this.#fail(slot, call, "resume-failed", error);
     }
     const fence = {
@@ -1330,7 +1373,9 @@ export class PoolAgent {
       installed: fence,
       jailId,
       incarnation: this.#incarnation,
+      stopReason: null,
     };
+    slot.lastHomeCallAt = this.#now();
     return this.#store(slot, next, this.#applied(call.id, next, slot, control), "resume");
   }
 
@@ -1354,7 +1399,13 @@ export class PoolAgent {
       await this.#step("discard", () =>
         this.#driver.discard(slot.record.slotId, slot.record.saved!.id),
       );
-    const next: SlotRecord = { ...slot.record, phase: "stopped", saved: null, jailId: null };
+    const next: SlotRecord = {
+      ...slot.record,
+      phase: "stopped",
+      saved: null,
+      jailId: null,
+      stopReason: null,
+    };
     return this.#store(slot, next, this.#applied(call.id, next, slot), "stop");
   }
 
@@ -1369,6 +1420,27 @@ export class PoolAgent {
       this.#applied(call.id, next, slot, control),
       `sign:${control.kind}`,
     );
+  }
+
+  /**
+   * A call refused before anything of the guest was loaded, thawed or changed. The slot keeps
+   * its current record (for a resume: `paused` with its `savedState` intact). The refusal is
+   * stored under that call's id, so asking again means a new call.
+   */
+  #refuseUnchanged(
+    slot: Slot,
+    call: BrowserPoolAgentCall,
+    reason: string,
+    error: unknown,
+  ): Promise<BrowserPoolAgentResult> {
+    this.#log({
+      event: "call.failed",
+      slotId: call.slotId,
+      kind: call.kind,
+      reason,
+      message: messageOf(error),
+    });
+    return this.#store(slot, slot.record, refused(call.id, reason, slot.record));
   }
 
   /**
@@ -1414,6 +1486,19 @@ export class PoolAgent {
         Math.max(floor, retry),
       );
       slot.retryTimer.unref?.();
+      return;
+    }
+    if (slot.record.phase === "running") {
+      const stopIn = slot.lastHomeCallAt + this.homeSilenceMs - this.#now();
+      slot.silenceTimer = setTimeout(
+        () => {
+          void this.#run(slot, () => this.#stopIfSilent(slot)).catch((error: unknown) =>
+            this.#background(slot, error),
+          );
+        },
+        Math.max(floor, Math.min(Math.max(0, stopIn), 2 ** 31 - 1)),
+      );
+      slot.silenceTimer.unref?.();
       return;
     }
     const saved = slot.record.saved;
@@ -1484,10 +1569,57 @@ export class PoolAgent {
   #unschedule(slot: Slot): void {
     if (slot.saveTimer) clearTimeout(slot.saveTimer);
     if (slot.expiryTimer) clearTimeout(slot.expiryTimer);
+    if (slot.silenceTimer) clearTimeout(slot.silenceTimer);
     if (slot.retryTimer) clearTimeout(slot.retryTimer);
     slot.saveTimer = undefined;
     slot.expiryTimer = undefined;
+    slot.silenceTimer = undefined;
     slot.retryTimer = undefined;
+  }
+
+  /**
+   * Stops a running guest whose Home has sent no authenticated call for `homeSilenceMs`. By then
+   * the guest's runtime has already torn down its sessions and closed Chromium, so stopping it
+   * frees host memory immediately while keeping the profile disk untouched. Goes through the
+   * slot's lane and journal like any other stop.
+   */
+  async #stopIfSilent(slot: Slot): Promise<void> {
+    this.#admit(slot, undefined);
+    await this.#settle(slot);
+    if (this.#closed || slot.deleted || slot.record.phase !== "running") return;
+    if (this.#now() - slot.lastHomeCallAt < this.homeSilenceMs) return;
+    this.#unschedule(slot);
+    await this.#commit(slot, {
+      ...slot.record,
+      pending: { kind: "stop", reason: "home-silent", step: "stopping", at: this.#iso() },
+    });
+    this.#checkpoint("silent-stop:journaled");
+    await this.#completeAutonomousStop(slot, "home-silent");
+  }
+
+  async #completeAutonomousStop(slot: Slot, reason: "home-silent"): Promise<void> {
+    this.#unschedule(slot);
+    await within(this.#deadlines.network, "Closing the guest network", () =>
+      this.#driver.closeNetwork(slot.record.slotId),
+    );
+    await this.#kill(slot);
+    this.#checkpoint("silent-stop:killed");
+    if (slot.record.saved)
+      await this.#step("discard", () =>
+        this.#driver.discard(slot.record.slotId, slot.record.saved!.id),
+      );
+    const next: SlotRecord = {
+      ...slot.record,
+      phase: "stopped",
+      epoch: null,
+      saved: null,
+      jailId: null,
+      pending: null,
+      stopReason: reason,
+      effects: bounded([...slot.record.effects, `stop:${reason}`]),
+    };
+    await this.#commit(slot, next);
+    this.#log({ event: "guest.stopped", slotId: next.slotId, reason });
   }
 
   #background(slot: Slot, error: unknown): void {
@@ -1641,6 +1773,10 @@ export class PoolAgent {
       await this.#lose(slot, { answer: { id: pending.call.id, reason: "interrupted" } });
       return;
     }
+    if (pending.kind === "stop") {
+      await this.#completeAutonomousStop(slot, pending.reason);
+      return;
+    }
     if (pending.kind === "discard") {
       await this.#lose(slot);
       return;
@@ -1747,6 +1883,7 @@ export class PoolAgent {
       saved: null,
       jailId: null,
       pending: null,
+      stopReason: null,
       ...options.extra,
       effects: lost ? bounded([...slot.record.effects, "lost"]) : slot.record.effects,
     };
@@ -1802,8 +1939,10 @@ export class PoolAgent {
       keyGeneration: 0,
       deleted: false,
       demand: 0,
+      lastHomeCallAt: this.#now(),
       saveTimer: undefined,
       expiryTimer: undefined,
+      silenceTimer: undefined,
       retryTimer: undefined,
       failedAt: undefined,
       saveFailure: undefined,
@@ -1989,7 +2128,7 @@ export class ProfilesNotMounted extends Error {
   override readonly name = "ProfilesNotMounted";
 }
 
-/** E2: The slot's egress proxy failed to serve within `deadlines.proxy` on a pulling host. */
+/** The slot's egress proxy failed to serve within `deadlines.proxy` on a pulling host. */
 class EgressProxyDown extends Error {
   override readonly name = "EgressProxyDown";
 }
@@ -2002,6 +2141,7 @@ export function statusOf(record: SlotRecord): BrowserPoolAgentStatus {
     epoch: record.epoch,
     phase: record.phase,
     savedState: record.phase === "paused" && record.saved ? publicSaved(record.saved) : null,
+    ...(record.phase === "stopped" && record.stopReason ? { stopReason: record.stopReason } : {}),
   };
 }
 

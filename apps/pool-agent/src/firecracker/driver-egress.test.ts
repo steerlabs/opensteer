@@ -21,7 +21,7 @@ const defined: string[][] = [];
 const stopped: string[] = [];
 /** Round I's follow-up: what a test sees at a stop, and a crash there if it throws. */
 let onStop: ((names: readonly string[]) => void) | undefined;
-/** E2: simulated `/health` probe answer and service state per slot index. */
+/** Simulated `/health` probe answer and service state per slot index. */
 let healthProbe: ((index: number) => string | Error) | undefined;
 const serviceStates = new Map<number, string>();
 
@@ -300,7 +300,7 @@ describe("a pulling host's slot proxies always require an upstream", () => {
     expect(existsSync(files.url) || existsSync(files.username)).toBe(false);
   });
 
-  // E2: verifyProxy confirms /health returns {"ok":true} and the service is active; resets
+  // verifyProxy confirms /health returns {"ok":true} and the service is active; resets
   // activating/failed units before probing; returns false promptly when the service fails.
   it("verifyProxy confirms /health + active service, resets stale activating state, and fails promptly on failed unit", async () => {
     const { driver } = await host();

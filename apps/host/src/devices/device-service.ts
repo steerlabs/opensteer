@@ -413,7 +413,7 @@ export class DeviceService {
     readonly runFiles?: RunFilePort;
     readonly computerReplTime?: Pick<
       ConstructorParameters<typeof ComputerReplService>[0],
-      "clock" | "wait"
+      "clock" | "wait" | "workerEntry"
     >;
     /**
      * Whether this Run's engine renders MCP image content blocks. An engine
