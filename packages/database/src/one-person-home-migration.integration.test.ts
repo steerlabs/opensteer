@@ -2,13 +2,26 @@ import type { AgentGrant, ThreadAccessMode, UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
-import { migrateToLatest } from "./migrations.js";
+import { replayMigrations } from "./migration-replay.test-support.js";
 import { removeOrganizationsMigrationName } from "./one-person-home-migration.js";
 import { applyWorkHome, enableWorkHomeTriggers } from "./one-person-home-migration.test-support.js";
 import { withLockOrderMode } from "./lock-order-checker.test-support.js";
 import { admitExecution } from "./resource-access.js";
+import { removePlatformVerificationMigrationName } from "./platform-verification-removal-migration.js";
 import type { DatabaseSchema } from "./schema.js";
 import { describeStore } from "./store.integration.test-support.js";
+
+/**
+ * Runs the migration that removes organizations once more, and the one after it that changes the
+ * same rows (platform verification removed), as an update does. No later migration runs again.
+ */
+async function replayRemoval(database: Kysely<DatabaseSchema>): Promise<void> {
+  await replayMigrations(
+    database,
+    removeOrganizationsMigrationName,
+    removePlatformVerificationMigrationName,
+  );
+}
 
 interface Policy {
   readonly externalMaxMode: ThreadAccessMode;
@@ -55,9 +68,6 @@ async function workHomeDatabase<T>(
     await enableWorkHomeTriggers(database);
     return seed();
   });
-  await sql`delete from kysely_migration where name >= ${removeOrganizationsMigrationName}`.execute(
-    database,
-  );
   return seeded;
 }
 
@@ -169,7 +179,7 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
       select count(*)::integer as count from work_audit_outbox`.execute(database);
     expect(rows[0]!.count).toBeGreaterThan(0);
 
-    await migrateToLatest(database);
+    await replayRemoval(database);
 
     expect(await leftovers(database)).toEqual([]);
     expect(await connection(database, above)).toEqual({
@@ -229,7 +239,7 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
       await connection(database, kept),
     ];
 
-    await migrateToLatest(database);
+    await replayRemoval(database);
 
     expect(await connection(database, refused)).toEqual({
       ...refusedBefore,
@@ -268,7 +278,7 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
     );
     const keptBefore = await connection(database, kept);
 
-    await migrateToLatest(database);
+    await replayRemoval(database);
 
     expect(await connection(database, refused)).toMatchObject({
       revokedAt: expect.any(Date),
@@ -294,7 +304,7 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
       () => connected(database, fixture.userId, everything, "approval-required"),
     );
 
-    await migrateToLatest(database);
+    await replayRemoval(database);
 
     expect(await connection(database, refused)).toMatchObject({
       revokedAt: expect.any(Date),
@@ -316,7 +326,7 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
     );
     const before = await connection(database, agent);
 
-    await migrateToLatest(database);
+    await replayRemoval(database);
 
     expect(await connection(database, agent)).toEqual(before);
     expect(await admit(database, fixture.userId, agent)).toMatchObject({ mode: "full-access" });
@@ -367,7 +377,7 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
     );
     const before = await connection(database, agent);
 
-    await migrateToLatest(database);
+    await replayRemoval(database);
 
     expect(await leftovers(database)).toEqual([]);
     expect(await connection(database, agent)).toEqual({
@@ -397,10 +407,7 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
     const { fixture } = await storeFixture.createChannelDeliveryFixture("never-work");
     const agent = await connected(database, fixture.userId, tasks, "auto");
     const before = await connection(database, agent);
-    await sql`delete from kysely_migration where name >= ${removeOrganizationsMigrationName}`.execute(
-      database,
-    );
-    await migrateToLatest(database);
+    await replayRemoval(database);
     expect(await connection(database, agent)).toEqual(before);
     expect(await leftovers(database)).toEqual([]);
   });
@@ -457,7 +464,7 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
       await snapshot(refusedGrant),
     ];
 
-    await migrateToLatest(database);
+    await replayRemoval(database);
 
     expect(await snapshot(aboveCap)).toEqual(aboveCapBefore);
     expect(await snapshot(refusedGrant)).toEqual(refusedGrantBefore);

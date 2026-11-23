@@ -1,7 +1,7 @@
 import { sql } from "kysely";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
-import { migrateToLatest } from "./migrations.js";
+import { replayMigrations } from "./migration-replay.test-support.js";
 import { removePlatformVerificationMigrationName } from "./platform-verification-removal-migration.js";
 import { describeStore } from "./store.integration.test-support.js";
 
@@ -25,9 +25,6 @@ describeStore("a connection verified through a platform reads as verified by its
       );
       insert into agent_embedder_assertion_claims values ('https://errand.example', 'jti-1', now());
     `.execute(database);
-    await sql`delete from kysely_migration where name >= ${removePlatformVerificationMigrationName}`.execute(
-      database,
-    );
     const connections = new AgentConnectionStore(database);
     const agent = await connections.create({
       userId: fixture.userId,
@@ -90,7 +87,7 @@ describeStore("a connection verified through a platform reads as verified by its
       )}::jsonb, now())
     `.execute(database);
 
-    await migrateToLatest(database);
+    await replayMigrations(database, removePlatformVerificationMigrationName);
 
     const { rows } = await sql<{ table: string | null }>`
       select to_regclass('agent_embedder_assertion_claims')::text as table`.execute(database);
