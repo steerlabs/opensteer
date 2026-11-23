@@ -14,10 +14,12 @@ export interface ThreadContextLineage {
   readonly fromChat: boolean;
   /**
    * Only the person ever wrote into the task and the tasks it descends from:
-   * no chat, no connected agent (its own task, a message it sent, or a message
-   * from a Run that was not the person's), and no Opensteer job such as a
-   * memory pass. It narrows and never widens back: once a connected agent or a
-   * chat has written into a task, that task is not the person's own again.
+   * no chat and no connected agent (its own task, a message it sent, or a
+   * message from a Run that was not the person's). A memory pass is driven by
+   * Opensteer's own fixed script for the person like any automation of theirs,
+   * so it stays the person's own. Lineage narrows and never widens back: once
+   * a connected agent or a chat has written into a task, that task is not the
+   * person's own again.
    */
   readonly personLineage: boolean;
 }
@@ -89,17 +91,13 @@ export async function threadContextLineage(
       ) parent
     )
     -- A thread is not the person's when a connected agent started it or wrote
-    -- into it, or it anchors one of Opensteer's own jobs (a memory pass).
+    -- into it.
     select context_threads.id as thread_id,
       (thread.origin_connection_id is not null
         or exists (
           select 1 from thread_inputs written
           where written.thread_id = context_threads.id and written.state <> 'cancelled'
             and written.connection_id is not null
-        )
-        or exists (
-          select 1 from triggers job
-          where job.anchor_thread_id = context_threads.id and job.system_role is not null
         )) as not_persons
     from context_threads
     join threads thread on thread.id = context_threads.id

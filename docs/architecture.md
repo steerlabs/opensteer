@@ -265,12 +265,14 @@ starts the engine with none of them, with or without personal context: applying 
 connected agent or a chat more than the person approved. The lineage walk that decides personal
 context decides this too (`runContextLineage`, `packages/database/src/run-personal-context.ts`): a
 task is not the person's own when its Run has a connection, a task on the walk was started by a
-connection, any message in it or the tasks it descends from was written by a connection, the walk
-meets a chat, or it anchors one of Opensteer's own jobs, such as a memory pass. It narrows and never
-widens back: the person writing into such a task again, a task linked under it, and an automation
-of theirs that fires from it are not their own either. The Runner is told `personLineage`, and
-`engineConfiguration` (`packages/harness/src/engine-configuration.ts`) is the one place that
-chooses.
+connection, any message in it or the tasks it descends from was written by a connection, or the walk
+meets a chat. A memory pass is one of the person's own automations, driven by Opensteer's own fixed
+script for them, so it stays in the person's own lineage. Lineage narrows and never widens back:
+the person writing into such a task again, a task linked under it, and an automation of theirs that
+fires from it are not their own either. When `personLineage` narrows, the provider session rotates
+too (`provider_sessions.person_lineage`), so a non-own Run never resumes a native conversation made
+under the person's configuration. The Runner is told `personLineage`, and `engineConfiguration`
+(`packages/harness/src/engine-configuration.ts`) is the one place that chooses.
 
 Such a task keeps the task's mode, runs nothing of theirs (hooks, notify commands, command
 prefixes, MCP servers) and reads none of their instructions or memory; what the engine needs to

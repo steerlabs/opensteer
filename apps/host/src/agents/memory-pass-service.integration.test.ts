@@ -491,12 +491,12 @@ describeStore("managed memory passes", (it) => {
       pauseReason: "Paused deliberately",
     });
     if (!light) throw new Error("Partial pair creation missing");
-    // A memory pass is Opensteer's job, not the person's task: it never runs
-    // with the person's own engine configuration.
+    // A memory pass is one of the person's own automations, driven by
+    // Opensteer's fixed script for them, so it stays in their own lineage.
     expect(
       (await threadContextLineage(f.database, light.trigger.anchorThreadId, base.userId))
         .personLineage,
-    ).toBe(false);
+    ).toBe(true);
     await expect(
       createMemoryPass(f.database, {
         ...input,

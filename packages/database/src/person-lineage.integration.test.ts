@@ -54,7 +54,7 @@ async function finish(
 }
 
 describeStore("the person's own lineage", (it) => {
-  it("never counts Opensteer's own job, such as a memory pass, as the person's task", async ({
+  it("counts Opensteer's own memory pass as the person's own automation", async ({
     storeFixture: f,
   }) => {
     const fixture = await f.createRunFixture("lineage-memory");
@@ -78,13 +78,14 @@ describeStore("the person's own lineage", (it) => {
     expect(
       (await threadContextLineage(f.database, fixture.threadId, fixture.userId)).personLineage,
     ).toBe(true);
-    // What makes it a memory pass: its system role.
+    // A memory pass is driven by Opensteer's own fixed script for the person,
+    // like any automation of theirs; its system role does not strip their configuration.
     await sql`update triggers set system_role = 'memory-light' where id = ${job.trigger.id}`.execute(
       f.database,
     );
     expect(
       (await threadContextLineage(f.database, fixture.threadId, fixture.userId)).personLineage,
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("stays the person's while only the person writes into it", async ({ storeFixture: f }) => {
