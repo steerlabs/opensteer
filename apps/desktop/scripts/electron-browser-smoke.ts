@@ -347,12 +347,20 @@ async function run(): Promise<void> {
   );
   const vectorIcon = ledger.snapshot().find((surface) => surface.url === `${origin}/`)?.favicon;
   progress("cross-site-svg-csp-read");
+  /**
+   * The root tab at `url`, loaded, as a person sees it before they act on it. Chromium can report
+   * a document's commit before it takes commands for it ("Not attached to an active page", the
+   * walker's run 2 on 4ecf539ae, a command sent as the ledger listed the address); the ledger
+   * reads the tab's history again when its loading stops.
+   */
+  const rootLoaded = (url: string) =>
+    waitFor(() =>
+      ledger
+        .snapshot()
+        .some((surface) => surface.openerId == null && surface.url === url && !surface.loading),
+    );
   await platformCdp.send("Page.navigate", { url: `${origin}/history` });
-  await waitFor(() =>
-    ledger
-      .snapshot()
-      .some((surface) => surface.openerId == null && surface.url === `${origin}/history`),
-  );
+  await rootLoaded(`${origin}/history`);
   const history = (await platformCdp.send("Page.getNavigationHistory")) as {
     currentIndex?: unknown;
     entries?: Array<{ id?: unknown }>;
@@ -363,9 +371,7 @@ async function run(): Promise<void> {
     entryId: previousEntry,
   });
   await waitFor(() => firstPage.url() === `${origin}/`);
-  await waitFor(() =>
-    ledger.snapshot().some((surface) => surface.openerId == null && surface.url === `${origin}/`),
-  );
+  await rootLoaded(`${origin}/`);
   progress("history-metadata-synchronized");
   const blockedNavigation = (await platformCdp.send("Page.navigate", {
     url: "file:///etc/passwd",
@@ -378,6 +384,7 @@ async function run(): Promise<void> {
   }
   await platformCdp.send("Page.navigate", { url: origin });
   await waitFor(() => firstPage.url() === `${origin}/`);
+  await rootLoaded(`${origin}/`);
   await platformCdp.send("Runtime.evaluate", {
     expression: `document.cookie = "session=electron-cookie; SameSite=Lax";
       localStorage.setItem("account", "desktop");`,
