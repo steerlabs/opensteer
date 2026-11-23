@@ -209,6 +209,16 @@ async function run(): Promise<void> {
         .end(JSON.stringify({ cookie: request.headers.cookie ?? "" }));
       return;
     }
+    if (new URL(request.url ?? "/", "http://fixture").pathname === "/slow-load") {
+      // A document that commits and draws at once and loads for three seconds more.
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.write(
+        `<!doctype html><title>Slow load</title><body style="margin:0;background:#00c000"><p>Loading</p>${" ".repeat(2_048)}`,
+      );
+      const end = setTimeout(() => response.end("<p>Loaded</p></body>"), 3_000);
+      response.on("close", () => clearTimeout(end));
+      return;
+    }
     if (new URL(request.url ?? "/", "http://fixture").pathname === "/follow") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(followPage);
       return;
@@ -3132,6 +3142,81 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
       outcome,
     );
     return outcome;
+  });
+
+  // A tab the person opens on a page that loads for seconds is pictured as soon as its document
+  // commits, not when its load ends: within half a second of the commit, with at most two starts
+  // (one refused while Chromium's browser side had not taken the document, one answered).
+  await section("slow-load-tab", async () => {
+    const from = messages.length;
+    const openSince = performance.now();
+    const followAtOpen = followDiagnostics().length;
+    const url = `${origin}/slow-load`;
+    const events: Array<{ readonly at: number; readonly entry: string; readonly id: string }> = [];
+    let committedAt: number | null = null;
+    let loadedAt: number | null = null;
+    const stopEvents = ledger.subscribe((event) => {
+      if (event.type !== "changed") return;
+      const at = performance.now();
+      const surface = event.surface;
+      if (surface.url === url && committedAt === null) committedAt = at;
+      if (surface.url === url && committedAt !== null && !surface.loading && loadedAt === null)
+        loadedAt = at;
+      events.push({
+        at,
+        entry: `${Math.round(at - openSince)}ms changed ${event.change} revision ${surface.geometryRevision}${surface.loading ? " loading" : ""} ${surface.url}`,
+        id: surface.id,
+      });
+    });
+    let opened: typeof surfaceId | null = null;
+    try {
+      await controller.handle({ type: "surface.open", url });
+      const tab = ledger.active();
+      if (!tab || tab.surface.id === surfaceId) throw new Error("The slow tab did not open.");
+      const id = tab.surface.id;
+      opened = id;
+      const green = (frame: TimedFrame) => {
+        const pixel = framePixel(
+          frame,
+          frame.header.viewportWidth - 30,
+          frame.header.viewportHeight - 30,
+        );
+        return pixel.green > 150 && pixel.green - pixel.red > 60 && pixel.green - pixel.blue > 60;
+      };
+      const shows = (frame: TimedFrame) =>
+        frame.at >= openSince && frame.header.surfaceId === id && green(frame);
+      await waitFor(() => frames.some(shows), 5_000).catch(() => undefined);
+      const picture = frames.find(shows) ?? null;
+      const tabDebugger = debuggerOf(url);
+      const pictureAt = picture?.at ?? null;
+      const outcome = {
+        committedMs: committedAt === null ? null : Math.round(committedAt - openSince),
+        pictureMs: pictureAt === null ? null : Math.round(pictureAt - openSince),
+        pictureAfterCommitMs:
+          pictureAt === null || committedAt === null ? null : Math.round(pictureAt - committedAt),
+        loadedMs: loadedAt === null ? null : Math.round(loadedAt - openSince),
+        castStarts: castStartsOn(tabDebugger, openSince, performance.now()),
+        timeline: castTimeline(tabDebugger, openSince),
+        followView: followDiagnostics().slice(followAtOpen),
+        ledgerEvents: events.filter((event) => event.id === id).map((event) => event.entry),
+        errors: errorsFrom(from),
+      };
+      ensure(
+        committedAt !== null &&
+          pictureAt !== null &&
+          pictureAt - committedAt < 500 &&
+          // Pictured while it still loaded: the picture did not wait for the load to end.
+          (loadedAt === null || pictureAt < loadedAt) &&
+          outcome.castStarts <= 2 &&
+          outcome.errors.length === 0,
+        outcome,
+      );
+      return outcome;
+    } finally {
+      stopEvents();
+      if (opened) await controller.handle({ surfaceId: opened, type: "surface.close" });
+      await controller.handle({ surfaceId, type: "surface.activate" });
+    }
   });
 
   /**
