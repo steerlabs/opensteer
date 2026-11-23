@@ -52,6 +52,11 @@ interface ActiveCast {
   raster: PageSize | null;
   casting: boolean;
   awaitingNavigation: boolean;
+  /**
+   * The document a start was refused for while it loaded, until the page can take one: another
+   * document commits, or its loading stops. Every start asked for before then joins that one.
+   */
+  deferredFor: string | null;
   cdp: CdpSession;
   /** The page zoom of the latest picture shown, which input on it undoes. */
   pageScale: number;
@@ -472,6 +477,7 @@ export class ScreencastController {
       raster: null,
       casting: false,
       awaitingNavigation: false,
+      deferredFor: null,
       cdp: binding.cdp,
       pageScale: 1,
       onFrame: (parameters) => {
@@ -773,6 +779,17 @@ export class ScreencastController {
 
   private async castLive(active: ActiveCast, reason: string): Promise<void> {
     if (!this.inView(active) || !this.streaming || active.casting) return;
+    if (active.deferredFor !== null) {
+      // Chromium refused a start for this document while it loaded (a tab opened with an
+      // address is not attached to a page until its first document commits): a start before the
+      // page can take one would be refused the same way, so this one joins it.
+      const surface = this.ledger.binding(active.surfaceId)?.surface;
+      if (surface?.loading && surface.documentId === active.deferredFor) {
+        this.diagnose({ stage: "cast-held", reason, castId: active.castId });
+        return;
+      }
+      active.deferredFor = null;
+    }
     if (this.ledger.dialogOpen(active.surfaceId)) {
       this.showRetainedPicture(active);
       return;
@@ -867,9 +884,11 @@ export class ScreencastController {
             surface &&
             (active.awaitingNavigation || surface.loading || surface.documentId !== documentId)
           ) {
-            // Navigation can retire the renderer while its cast starts.
-            // Keep demand until a document commits or its navigation stops.
+            // Navigation can retire the renderer while its cast starts, and a tab opened with an
+            // address has none attached until its document commits. Keep demand until a
+            // document commits or its navigation stops.
             active.awaitingNavigation = true;
+            active.deferredFor = documentId ?? null;
             this.diagnose({
               stage: "cast-deferred",
               reason: "navigation",

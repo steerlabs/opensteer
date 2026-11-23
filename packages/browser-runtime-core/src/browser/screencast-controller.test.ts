@@ -273,3 +273,145 @@ describe("the follow view, when the person turns to another tab", async () => {
     await follow.close();
   });
 });
+
+/*
+ * The walker's eight runs on 4ecf539ae, `never-shown-tab` failing in four: a tab the person opens
+ * with an address is not yet attached to a page when the follow view first asks it for a picture.
+ * Chromium refused each start ("Not attached to an active page") and the follow view deferred it
+ * for the navigation, but every trigger that came before the page could take one sent another
+ * start into the same unattached page: four starts in 3 ms, the last answered once the document
+ * committed about 40 ms later.
+ */
+describe("the follow view, when a tab it is shown is not attached to a page yet", async () => {
+  const { ScreencastController } = await import("./screencast-controller.js");
+  const { LatestFrameStream } = await import("../stream/latest-frame-stream.js");
+  const { FakeCdpSession } = await import("../test-support/fakes.js");
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+  /** A tab opened with an address, loading its first document, which Chromium has not attached. */
+  async function opening() {
+    const cdp = new FakeCdpSession();
+    let attached = false;
+    /** Each start sent, by whether the page was attached to take it. */
+    const sent: boolean[] = [];
+    cdp.responses.set("Page.startScreencast", () => {
+      sent.push(attached);
+      if (!attached) throw new Error("Not attached to an active page");
+      return {};
+    });
+    const surface = {
+      active: true,
+      documentId: "a",
+      geometryRevision: 0,
+      id: "tab",
+      loading: true,
+    };
+    let size = { height: 600, width: 800 };
+    let capture = { height: 600, rasterScale: 1, revision: 1, width: 800 };
+    const captureListeners = new Set<() => void>();
+    const page = {
+      applyGeometry: async () => undefined,
+      capture: {
+        read: () => capture,
+        subscribe: (listener: () => void) => {
+          captureListeners.add(listener);
+          return () => captureListeners.delete(listener);
+        },
+      },
+      settleRendering: async () => undefined,
+    };
+    const binding = { cdp, page, surface };
+    const listeners = new Set<(event: unknown) => void>();
+    const emit = (event: unknown) => {
+      for (const listener of listeners) listener(event);
+    };
+    const ledger = {
+      active: () => binding,
+      binding: () => binding,
+      dialogOf: () => null,
+      dialogOpen: () => false,
+      recordPageScale: () => undefined,
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      viewportOf: () => size,
+      withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+    };
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async () => undefined }),
+      ledger: ledger as never,
+      onDialogChanged: () => undefined,
+    });
+    const changed = () => emit({ change: "updated", surface: { ...surface }, type: "changed" });
+    // The person's tab is shown, and streamed: the follow view binds it (`rebind`).
+    await follow.start();
+    await follow.setStreaming(true);
+    await settle();
+    return {
+      follow,
+      starts: () => ({
+        refused: sent.filter((taken) => !taken).length,
+        taken: sent.filter(Boolean).length,
+      }),
+      /** The surface it has bound, if any. */
+      bound: () =>
+        (follow as unknown as { active: { surfaceId: string } | null }).active?.surfaceId,
+      /** Something about the loading page changed: its title, its address, its geometry. */
+      changed: async () => {
+        surface.geometryRevision += 1;
+        changed();
+        await settle();
+      },
+      /** Its initial size reached it. */
+      resized: async () => {
+        size = { height: 610, width: 810 };
+        capture = { height: 610, rasterScale: 1, revision: capture.revision + 1, width: 810 };
+        surface.geometryRevision += 1;
+        for (const listener of captureListeners) listener();
+        emit({ surfaceId: "tab", type: "resized" });
+        await settle();
+      },
+      /** Its first document commits, and Chromium attaches the page to it. */
+      commit: async () => {
+        attached = true;
+        surface.documentId = "b";
+        surface.geometryRevision += 1;
+        changed();
+        await settle();
+      },
+      /** Its navigation stopped without a document Chromium attached. */
+      stop: async () => {
+        attached = true;
+        surface.loading = false;
+        changed();
+        await settle();
+      },
+    };
+  }
+
+  it("sends no further start into the unattached page, and one once its document commits", async () => {
+    const tab = await opening();
+    await tab.changed();
+    await tab.changed();
+    await tab.changed();
+    expect(tab.starts()).toEqual({ refused: 1, taken: 0 });
+    // The deferred start kept the tab bound: nothing has to bind it again for its commit to count.
+    expect(tab.bound()).toBe("tab");
+    await tab.commit();
+    await vi.waitFor(() => expect(tab.starts()).toEqual({ refused: 1, taken: 1 }));
+    await tab.follow.close();
+  });
+
+  it("holds its size and capture's triggers too, and starts once its navigation stops", async () => {
+    const tab = await opening();
+    await tab.resized();
+    await tab.changed();
+    expect(tab.starts()).toEqual({ refused: 1, taken: 0 });
+    expect(tab.bound()).toBe("tab");
+    await tab.stop();
+    await vi.waitFor(() => expect(tab.starts()).toEqual({ refused: 1, taken: 1 }));
+    await tab.follow.close();
+  });
+});
