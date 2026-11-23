@@ -2207,7 +2207,11 @@ describe("Electron debugger teardown", () => {
   });
 
   // Finding 5: every session the hub attaches for itself is detached exactly once, on every path
-  // a cast ends by, and no channel hears of it.
+  // a cast ends by, and no channel hears of it. The paths: stopped; its owner released; after a
+  // navigation; the renderer gone; the renderer gone during a release; a start it was attached
+  // for failing; the page closed; the app quitting; the window destroyed; the debugger's detach;
+  // and interrupted while attaching, once the attach answers. Which attach is the hub's is told by
+  // its session, never by whether one of the hub's is under way.
   describe("the hub's own sessions", () => {
     const view = { format: "jpeg", maxHeight: 900, maxWidth: 1_400, quality: 80 };
     const small = { format: "png", maxHeight: 240, maxWidth: 320 };
@@ -2377,6 +2381,74 @@ describe("Electron debugger teardown", () => {
       expect(heard).toEqual(["Target.attachedToTarget frame-1"]);
       await hub.browser.close();
     });
+
+    // The re-check of 5d197dfbc..e7080ea31, finding 5.
+    it("when the renderer goes while it is attaching, once the attach answers", async () => {
+      const hub = await hubPage("52");
+      const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+      const attach = Promise.withResolvers<unknown>();
+      hub.contents.debugger.sendCommand.mockImplementation(
+        (method: string, parameters?: Record<string, unknown>, session?: string) =>
+          method === "Target.attachToTarget" ? attach.promise : answer(method, parameters, session),
+      );
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      await person.send("Page.startScreencast", view);
+      const starting = agent.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(hub.sent("Target.attachToTarget")).toHaveLength(1));
+      fire(hub, "render-process-gone", { reason: "crashed" });
+      await expect(starting).rejects.toThrow(/crashed/u);
+      attach.resolve({ sessionId: "cast-1" });
+      await vi.waitFor(() =>
+        expect(hub.sent("Target.detachFromTarget")).toEqual([
+          ["Target.detachFromTarget", { sessionId: "cast-1" }],
+        ]),
+      );
+      await hub.browser.close();
+    });
+
+    it("lets an agent hear its own target session, attached while one of the hub's was", async () => {
+      const hub = await hubPage("53");
+      const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+      const attaches: { id: string; reply: PromiseWithResolvers<unknown> }[] = [];
+      hub.contents.debugger.sendCommand.mockImplementation(
+        (method: string, parameters?: Record<string, unknown>, session?: string) => {
+          if (method !== "Target.attachToTarget") return answer(method, parameters, session);
+          const id = `session-${attaches.length + 1}`;
+          const reply = Promise.withResolvers<unknown>();
+          attaches.push({ id, reply });
+          // Chromium tells the page's session of each attach to it before it answers.
+          hub.deliver("Target.attachedToTarget", {
+            sessionId: id,
+            targetInfo: { targetId: "target-1", type: "page" },
+            waitingForDebugger: false,
+          });
+          return reply.promise;
+        },
+      );
+      const person = await hub.page.cdp();
+      const caster = await hub.page.agentCdp();
+      const agent = await hub.page.agentCdp();
+      const agentHeard: string[] = [];
+      agent.onEvent((method) => agentHeard.push(method));
+      await person.send("Page.startScreencast", view);
+      // The hub attaches for the caster's cast, and the agent for its targets, at once.
+      const casting = caster.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(attaches).toHaveLength(1));
+      const targets = agent.send("Target.getTargetInfo");
+      await vi.waitFor(() => expect(attaches).toHaveLength(2));
+      attaches[1]!.reply.resolve({ sessionId: "session-2" });
+      await targets;
+      attaches[0]!.reply.resolve({ sessionId: "session-1" });
+      await casting;
+      hub.deliver(
+        "Target.targetInfoChanged",
+        { targetInfo: { targetId: "target-1" } },
+        "session-2",
+      );
+      expect(agentHeard).toEqual(["Target.targetInfoChanged"]);
+      await hub.browser.close();
+    });
   });
 
   // Finding 8: a page runs a few casts at most, and equal settings are one cast.
@@ -2419,6 +2491,26 @@ describe("Electron debugger teardown", () => {
       const phone = await hub.page.cdp();
       await phone.send("Page.startScreencast", { format: "jpeg", maxWidth: 390 });
       expect(own.attached).toEqual(["cast-1", "cast-2", "cast-3"]);
+      await hub.browser.close();
+    });
+
+    // The re-check of 5d197dfbc..e7080ea31, finding 5: the cap counts casts that run or start.
+    it("counts no cast the renderer's loss ended, though its owners stay", async () => {
+      const hub = await hubPage("63");
+      ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agents = await Promise.all([1, 2, 3].map(() => hub.page.agentCdp()));
+      await person.send("Page.startScreencast", { format: "jpeg", maxWidth: 1_400 });
+      await agents[0]!.send("Page.startScreencast", { format: "png", maxWidth: 320 });
+      await agents[1]!.send("Page.startScreencast", { format: "png", maxWidth: 640 });
+      for (const [name, listener] of hub.contents.on.mock.calls) {
+        if (name === "render-process-gone")
+          (listener as (...a: unknown[]) => void)({}, { reason: "crashed" });
+        if (name === "did-navigate") (listener as (...a: unknown[]) => void)({});
+      }
+      await expect(
+        agents[2]!.send("Page.startScreencast", { format: "png", maxWidth: 800 }),
+      ).resolves.toEqual({});
       await hub.browser.close();
     });
   });

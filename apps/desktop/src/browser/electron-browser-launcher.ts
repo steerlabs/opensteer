@@ -2497,6 +2497,8 @@ class ElectronDebuggerHub {
   readonly #ownSessionsSeen = new Set<string>();
   #ownAttaching = 0;
   #ownTargetId: string | null = null;
+  /** Attaches to this page announced while one of the hub's own was unanswered. */
+  #heldSelfAttaches: Record<string, unknown>[] = [];
   readonly #webContents: WebContents;
   readonly #setRenderingDemand: (demanded: boolean) => void;
   readonly #prepareInput: () => Promise<void>;
@@ -2574,16 +2576,21 @@ class ElectronDebuggerHub {
         // Its scripts belonged to documents that are gone; a stop reads what is alive then.
         if (this.#profileInventory) void this.#closeProfileInventory(this.#profileInventory);
       }
-      // The hub's own sessions are no channel's: none hears them attach or detach.
+      // The hub's own sessions are no channel's: none hears them attach or detach, by their
+      // identity. An attach to this page announced while one of the hub's own is unanswered is
+      // held until that answer says whose it is (another channel attaches to it too).
       if (method === "Target.attachedToTarget" || method === "Target.detachedFromTarget") {
         const own = typeof record.sessionId === "string" ? record.sessionId : null;
-        const attachingSelf =
+        if (own !== null && this.#ownSessionsSeen.has(own)) {
+          if (method === "Target.detachedFromTarget") this.#ownSessionGone(own);
+          return;
+        }
+        if (
           method === "Target.attachedToTarget" &&
           this.#ownAttaching > 0 &&
-          asRecord(record.targetInfo).targetId === this.#ownTargetId;
-        if (own !== null && (this.#ownSessionsSeen.has(own) || attachingSelf)) {
-          this.#ownSessionsSeen.add(own);
-          if (method === "Target.detachedFromTarget") this.#ownSessionGone(own);
+          asRecord(record.targetInfo).targetId === this.#ownTargetId
+        ) {
+          this.#heldSelfAttaches.push(record);
           return;
         }
       }
@@ -3349,10 +3356,12 @@ class ElectronDebuggerHub {
     const previous = this.#castOf.get(channel);
     const same = [...this.#casts].find((cast) => cast.key === key);
     const leavingAlone = previous !== undefined && previous !== same && previous.owners.size === 1;
+    // Casts that run or are starting: one whose renderer died runs nothing and holds no place.
+    const live = [...this.#casts].filter((cast) => cast.run !== null);
     if (
       same === undefined &&
       channel.role !== "platform" &&
-      this.#casts.size - (leavingAlone ? 1 : 0) >= maxCastsPerPage
+      live.length - (leavingAlone && previous.run !== null ? 1 : 0) >= maxCastsPerPage
     )
       throw new Error(
         `This page is already pictured in ${maxCastsPerPage} formats or sizes at once, the most it gives. Ask for one of those, or ask again when one of them ends.`,
@@ -3601,7 +3610,9 @@ class ElectronDebuggerHub {
 
   /**
    * A session of the hub's own on this page. Its attach event reaches no channel, even one that
-   * arrives before the attach answers.
+   * arrives before the attach answers. The attach goes straight to the debugger: a session it
+   * opens is the hub's whatever happens to its caller meanwhile, and one that answers after its
+   * caller was interrupted is let go at once, never left attached.
    */
   async #attachOwn(generation = this.#rendererGeneration): Promise<string> {
     const info = asRecord(await this.#command("Target.getTargetInfo"));
@@ -3609,22 +3620,46 @@ class ElectronDebuggerHub {
     if (typeof targetId !== "string") throw new Error("Browser page target is unavailable");
     this.#ownTargetId = targetId;
     this.#ownAttaching += 1;
-    let sessionId: unknown;
     try {
-      sessionId = asRecord(
-        await this.#command("Target.attachToTarget", { targetId, flatten: true }),
-      ).sessionId;
+      return await new Promise<string>((resolve, reject) => {
+        let interrupted = false;
+        const interrupt = (error: Error) => {
+          interrupted = true;
+          reject(error);
+        };
+        this.#pending.add(interrupt);
+        const answered = (sessionId: unknown) => {
+          this.#pending.delete(interrupt);
+          if (typeof sessionId !== "string") {
+            reject(new Error("Page debugger did not return a session"));
+            return;
+          }
+          this.#ownSessions.add(sessionId);
+          this.#ownSessionsSeen.add(sessionId);
+          if (interrupted || generation !== this.#rendererGeneration) {
+            void this.#detachOwn(sessionId);
+            reject(new Error("Electron CDP renderer changed before command dispatch."));
+            return;
+          }
+          resolve(sessionId);
+        };
+        if (this.#webContents.isDestroyed() || !this.#debugger.isAttached()) {
+          this.#pending.delete(interrupt);
+          reject(new Error("Electron CDP target is closed."));
+          return;
+        }
+        void this.#debugger.sendCommand("Target.attachToTarget", { targetId, flatten: true }).then(
+          (result) => answered(asRecord(result).sessionId),
+          (error: unknown) => {
+            this.#pending.delete(interrupt);
+            reject(error instanceof Error ? error : new Error(String(error)));
+          },
+        );
+      });
     } finally {
       this.#ownAttaching -= 1;
+      if (this.#ownAttaching === 0) this.#releaseHeldAttaches();
     }
-    if (typeof sessionId !== "string") throw new Error("Page debugger did not return a session");
-    this.#ownSessions.add(sessionId);
-    this.#ownSessionsSeen.add(sessionId);
-    if (generation !== this.#rendererGeneration) {
-      await this.#detachOwn(sessionId);
-      throw new Error("Electron CDP renderer changed before command dispatch.");
-    }
-    return sessionId;
   }
 
   /** An event of the page's own session, to the channels that hear it. */
@@ -3645,6 +3680,17 @@ class ElectronDebuggerHub {
         continue;
       }
       channel.emit(method, record);
+    }
+  }
+
+  /** Each attach held while the hub's own was unanswered: the hub's dropped, any other passed on. */
+  #releaseHeldAttaches(): void {
+    const held = this.#heldSelfAttaches;
+    this.#heldSelfAttaches = [];
+    for (const record of held) {
+      const sessionId = typeof record.sessionId === "string" ? record.sessionId : null;
+      if (sessionId !== null && this.#ownSessionsSeen.has(sessionId)) continue;
+      this.#pageEvent("Target.attachedToTarget", record);
     }
   }
 
