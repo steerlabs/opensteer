@@ -128,6 +128,12 @@ export const commandDecisionFieldId = "decision";
 const maxResultBytes = 64 * 1_024;
 /** A name inside the Home's sentence is cut, so the sentence itself always fits whole. */
 const maxNameLength = 80;
+/** Where a script runs on this Home's own computer, by what this Home is (T4). */
+const homeScriptPlaces: Readonly<Record<HostHomeKind, CommandScriptPlace>> = {
+  mac: { where: "on your Mac", name: null, as: "you" },
+  "cloud-computer": { where: "on this Cloud Computer", name: null, as: "its user" },
+  server: { where: "on this server", name: null, as: "its user" },
+};
 /** A name from outside the Home, as every approval sentence carries one: quoted and bounded. */
 const quotedName = (value: string | null | undefined) =>
   value
@@ -472,16 +478,9 @@ export class CommandRequestService {
       .executeTakeFirst();
     if (!device) return null;
     if (device.runnerKind === "main" || device.runnerKind === null)
-      switch (this.#homeKind) {
-        case "mac":
-          return { where: "on your Mac", name: null, as: "you" };
-        case "cloud-computer":
-          return { where: "on this Cloud Computer", name: null, as: "its user" };
-        case "server":
-          return { where: "on this server", name: null, as: "its user" };
-        default:
-          return { where: "on this Home's computer", name: null, as: "its user" };
-      }
+      return this.#homeKind
+        ? homeScriptPlaces[this.#homeKind]
+        : { where: "on this Home's computer", name: null, as: "its user" };
     return device.platform === "macos"
       ? { where: "on your Mac", name: quotedName(device.name), as: "you" }
       : { where: "on the computer", name: quotedName(device.name), as: "its user" };
