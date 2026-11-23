@@ -25,6 +25,7 @@ import {
   transcriptPreview,
 } from "./transcript-store.js";
 import { completeRunReplacement, recoverLostRunTransaction } from "./run-recovery.js";
+import { clearThreadStartHold } from "./execution-recovery.js";
 import {
   contentSaysSomething,
   isPlaceContentPart,
@@ -940,6 +941,7 @@ export async function commitRunnerEvent(
   };
   let duplicateRunUsage = false;
   let revokedGrants: readonly RevokedRunGrant[] = [];
+  let clearHeldThreadId: ThreadId | null = null;
   const statement = { ...event, runnerId: input.runnerId, runnerBootId: input.runnerBootId };
   const accept = () =>
     commitPersonalMutation(database, async (tx, mutation) =>
@@ -953,23 +955,13 @@ export async function commitRunnerEvent(
           // with stopConfirmedAt, lift any previous-stop-unconfirmed hold on queued
           // Runs, and clear the failed task status. Never becomes completed.
           if (
+            input.verifiedContainment !== false &&
             run.status === "failed" &&
             run.failure?.code === runTerminationUnprovenCode &&
             event.type === "run.interrupted"
           ) {
             const confirmedAt = mutation.state.now;
-            // Lock and update any held queued Runs BEFORE locking `threads`
-            // (lock order: runs -> threads -> transcriptItems -> providerSessions -> runAttempts).
-            await tx
-              .updateTable("runs")
-              .set({
-                startHoldReason: null,
-                revision: mutation.sequence,
-              })
-              .where("threadId", "=", run.threadId)
-              .where("status", "=", "queued")
-              .where("startHoldReason", "is not", null)
-              .execute();
+            clearHeldThreadId = run.threadId;
             await lockStatementThread(tx, event.threadId, context.channelInputs);
             await lockRunProjectionRows(tx, {
               threadIds: [run.threadId],
@@ -1205,6 +1197,7 @@ export async function commitRunnerEvent(
             connectionId = run.connectionId;
           },
           allowExpiredLease: event.type === "run.interrupted" && event.data.cause === "lease-lost",
+          verifiedContainment: input.verifiedContainment,
         },
       ),
     );
@@ -1214,6 +1207,9 @@ export async function commitRunnerEvent(
       await drainRunFinish(database, links, event.runId);
       result = await accept();
       if ("finishing" in result) throw new Error("Run finish did not commit its Runner receipt");
+    }
+    if (clearHeldThreadId) {
+      await clearThreadStartHold(database, clearHeldThreadId);
     }
     await recordTerminalEvidence();
     return { ...result, duplicateRunUsage, revokedGrants };

@@ -100,6 +100,7 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         workHomeMigrationName,
         browserPoolMigrationName,
         "0051_needs_you_counts_requests",
+        "0052_stop_truth_and_recovery",
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`

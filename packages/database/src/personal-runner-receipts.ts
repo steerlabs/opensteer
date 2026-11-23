@@ -156,6 +156,7 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
   options?: {
     readonly now: number;
     readonly allowExpiredLease: boolean;
+    readonly verifiedContainment?: boolean | undefined;
     readonly onRunLoaded?: (run: RunnerStatementContext["run"]) => void;
   },
 ): Promise<
@@ -295,6 +296,7 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
       ? { active: bound.sessionActive!, leaseExpiresAt: bound.sessionLeaseExpiresAt }
       : undefined;
   const lateStopProof =
+    options?.verifiedContainment !== false &&
     run.status === "failed" &&
     run.failure?.code === runTerminationUnprovenCode &&
     statement.type === "run.interrupted";

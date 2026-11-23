@@ -659,11 +659,11 @@ export function migrationProvider(options?: {
                 async up(database: Kysely<unknown>) {
                   await sql`
                     alter table runs
-                      add column interrupted_cause text check (interrupted_cause in ('lease-lost', 'engine-retired')),
-                      add column start_hold_reason text check (start_hold_reason in ('previous-stop-unconfirmed')),
-                      add column stop_confirmed_at timestamptz;
+                      add column if not exists interrupted_cause text check (interrupted_cause in ('lease-lost', 'engine-retired')),
+                      add column if not exists start_hold_reason text check (start_hold_reason in ('previous-stop-unconfirmed')),
+                      add column if not exists stop_confirmed_at timestamptz;
                     alter table threads
-                      add column failure_code text;
+                      add column if not exists failure_code text;
                     update threads t
                       set failure_code = last_run.code
                       from (
