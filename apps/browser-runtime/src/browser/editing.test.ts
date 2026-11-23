@@ -435,14 +435,32 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         await waitForBrowserState(() => read<boolean>("t.value==='仮'"));
         await read("second.value='untouched';second.focus()");
         await waitForBrowserState(() => context().context.contextId !== composing);
+        // The page reports the focus move more than once (the first field's composition ends
+        // too): it has settled when a frame and a round trip through the controller publish
+        // nothing new.
+        const quiet = async () => {
+          await read(
+            "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))",
+          );
+          await agent("Browser.getVersion");
+        };
+        for (let seen = ""; seen !== context().context.contextId;) {
+          seen = context().context.contextId;
+          await quiet();
+        }
         const secondContext = context().context.contextId;
         send({
           type: "input.text",
           surfaceId,
           edit: { contextId: composing, before: "", after: "", text: "wrong field" },
         });
-        await waitForBrowserState(() => context().context.contextId !== secondContext);
+        // The rule: an edit under another field's context is refused alone, and nothing rotates,
+        // so no context is published for it. (This waited for a new context, which only an
+        // unrelated republication of the page gave, two runs in three.) A command sent after it
+        // through the same controller answers once the edit has been taken and refused.
+        await quiet();
         expect(await read("second.value")).toBe("untouched");
+        expect(context().context.contextId).toBe(secondContext);
         checks.push("first composition takes over verified text; focus change refuses old commit");
         await read(
           "t.value='az';t.focus();t.setSelectionRange(2,2);window.layoutBinding=e=>{if(!(e.metaKey||e.ctrlKey)||e.altKey||e.shiftKey)return;if(e.keyCode===65){e.preventDefault();t.select()}if(e.keyCode===90){e.preventDefault();document.execCommand('undo')}};t.addEventListener('keydown',layoutBinding)",
