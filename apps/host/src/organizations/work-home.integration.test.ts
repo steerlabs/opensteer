@@ -356,7 +356,7 @@ describeStore("work Home", (it) => {
       threadId,
     };
     await expect(store.assertActiveExecutionBinding(binding)).resolves.toBeUndefined();
-    expect(statements).toHaveLength(3);
+    expect(statements).toHaveLength(2);
     expect(
       statements.filter((statement) => statement.includes('"name":"work_home_policy"')),
     ).toEqual([expect.stringContaining('"name":"threads"')]);
