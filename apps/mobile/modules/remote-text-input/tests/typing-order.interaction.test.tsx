@@ -297,6 +297,21 @@ describe("typing into a remote field", () => {
     expect(remote.value).toBe("x日yz");
   });
 
+  // CX1, the walk's paste: the answer to the native field's paste event is the phone's own
+  // reducer's (set plus edit), returned by the editing proxy through the adapter to the same
+  // packet; no far side delivers it. Once it arrives both sides read the same.
+  it("leaves both sides equal after the walk's paste", async () => {
+    const { remote, native, keyboard, answerAll } = await open();
+    for (const letter of "hello") await keyboard((field) => field.type(letter));
+    await answerAll();
+    await keyboard((field) => field.paste("fixture clipboard 👩‍💻"));
+    await answerAll();
+    expect(remote.value).toBe("hellofixture clipboard 👩‍💻");
+    expect(native.text).toBe(remote.value);
+    expect(native.selection).toEqual({ start: 28, end: 28 });
+    expect(remote.caret).toBe(28);
+  });
+
   it("keeps the order around a paste typed in the middle of a burst", async () => {
     const { remote, keyboard, answerAll } = await open();
     const pasted = "The quick brown fox jumps over a lazy do";
