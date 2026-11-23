@@ -272,14 +272,9 @@ async function renderOpensteer(): Promise<void> {
                 import("./desktop/desktop-preview-bridge.js"),
                 import("./desktop/desktop-deployment-selection.js"),
               ]);
+              // Remote access on through Connect, as a Home that has it reports it.
               if (scenario !== "blocked")
-                client.setPersonalRemoteAccessStatus({
-                  accountLink: null,
-                  generation: 1,
-                  mode: "connect",
-                  route: null,
-                  schemaVersion: 2,
-                });
+                client.connectRemoteAccess("https://alex.connect.opensteer.invalid");
               const bridge = desktopPreviewBridge("?desktop-preview=first-run", true, {
                 attached: {
                   id:

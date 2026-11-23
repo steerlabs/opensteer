@@ -35,6 +35,7 @@ export function agentToolsPlanForRun(input: {
     ...(input.grant ? { grant: input.grant } : {}),
     capabilities: input.capabilities,
     accessMode: input.accessMode,
+    personalContext: input.personalContext !== false,
   });
   const runToolsCatalog = runTools.map((tool) => ({
     name: tool.name,

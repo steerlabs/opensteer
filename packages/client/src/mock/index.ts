@@ -16,6 +16,7 @@ export * from "./mock-iphone-setup.js";
 
 export { mockInputQueue } from "./mock-scoped-personal.js";
 export * from "./mock-connected-agents.js";
+export * from "./chat-parity.js";
 export * from "./mock-cloud-computers.js";
 export * from "./mock-agent-work.js";
 export * from "./mock-work-home.js";

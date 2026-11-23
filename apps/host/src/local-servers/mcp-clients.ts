@@ -15,7 +15,7 @@ import type {
   IntegrationToolMaterial,
 } from "@opensteer/integration-core/models";
 import { createIntegrationId } from "@opensteer/integration-core/ids";
-import { boundedToolDescription, boundedToolTitle } from "@opensteer/integration-core/tool-schemas";
+import { boundedToolDescription } from "@opensteer/integration-core/tool-schemas";
 import { ComputerMcpTransport } from "./computer-mcp-transport.js";
 
 export const localToolBlocked = Symbol("local tool refusal");
@@ -233,7 +233,7 @@ export async function listTools(client: Client): Promise<readonly IntegrationToo
     name: tool.name,
     outputSchema: tool.outputSchema ? objectValue(tool.outputSchema) : null,
     status: "active",
-    title: boundedToolTitle(tool.title ?? tool.annotations?.title, tool.name),
+    title: tool.title ?? tool.annotations?.title ?? tool.name,
   }));
 }
 

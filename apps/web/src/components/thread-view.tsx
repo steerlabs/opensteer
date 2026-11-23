@@ -34,6 +34,7 @@ import {
   threadStartHold,
   threadStartsRunForMessage,
   threadStopTarget,
+  taskOriginEndedMessage,
   taskWaitingReason,
   usageLimitReached,
   visibleTranscript,
@@ -1088,6 +1089,7 @@ function ThreadView({
   const startHold = live
     ? threadStartHold({ environments: snapshot.environments, runQueue: runQueue, thread })
     : null;
+  const endedOriginMessage = thread.endedOrigin ? taskOriginEndedMessage(thread.endedOrigin) : null;
   const composerPlaceholder = threadComposerPlaceholder(conversation.length === 0);
   // The field names whom it writes to: the task by its name.
   const recipient = useMemo(() => ({ lead: "Reply to", name: thread.title }), [thread.title]);
@@ -1441,7 +1443,9 @@ function ThreadView({
                                 transcript={projected}
                                 onError={reportActionError}
                                 paused={inputQueue?.paused ?? false}
-                                resumable={thread.status !== "archived"}
+                                resumable={
+                                  thread.status !== "archived" && endedOriginMessage === null
+                                }
                                 threadId={thread.id}
                                 viewerUserId={snapshot.user?.id ?? null}
                               />
@@ -1647,7 +1651,11 @@ function ThreadView({
                     }
                   />
                 ) : null}
-                {voiceThread || sessionView ? null : (
+                {voiceThread || sessionView ? null : endedOriginMessage !== null ? (
+                  <p className="notice thread-view__ended-notice" role="status">
+                    {endedOriginMessage}
+                  </p>
+                ) : (
                   <InputSurface
                     autoContext={false}
                     voice={false}
@@ -1722,7 +1730,7 @@ function ThreadView({
                     }
                   />
                 )}
-                {dock.composerHidden || sessionView ? null : (
+                {dock.composerHidden || sessionView || endedOriginMessage !== null ? null : (
                   <UsageNotice
                     action={
                       usageAlternative ? (

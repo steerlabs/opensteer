@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 import { act, useId, useEffect, type ReactNode } from "react";
+import { readAsDrawn } from "./read-as-drawn.test-support.js";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
-import { MockHostClient } from "@opensteer/client/mock";
+import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import { hostApi } from "@opensteer/protocol";
-import type { HostClient } from "@opensteer/client/host";
+import { HostClientRequestError, type HostClient } from "@opensteer/client/host";
 import type { NativeSettingsPageProps } from "./native-settings-page.types.js";
 const state = vi.hoisted(() => ({
   os: "ios",
@@ -12,6 +13,8 @@ const state = vi.hoisted(() => ({
   host: null as HostClient | null,
   page: null as NativeSettingsPageProps | null,
   pages: new Map<string, NativeSettingsPageProps>(),
+  /** The pages as given, before `readAsDrawn` takes out the marks the phone does not draw. */
+  given: new Map<string, NativeSettingsPageProps>(),
 }));
 vi.mock("react-native", () => ({
   Platform: {
@@ -31,11 +34,13 @@ vi.mock("./device-app-setup-sheet.js", () => ({ DeviceAppSetupSheet: () => null 
 vi.mock("./native-settings-page.js", () => ({
   NativeSettingsPage: (props: NativeSettingsPageProps) => {
     const id = useId();
-    state.page = props;
-    state.pages.set(id, props);
+    state.page = readAsDrawn(props);
+    state.pages.set(id, readAsDrawn(props));
+    state.given.set(id, props);
     useEffect(
       () => () => {
         state.pages.delete(id);
+        state.given.delete(id);
       },
       [id],
     );
@@ -99,187 +104,564 @@ async function input(label: string, value: string) {
   await act(async () => found.onChange(value));
 }
 
+it.each(["ios", "android"])("sends every Messaging change from the phone on %s", async (os) => {
+  state.os = os;
+  await open("messaging");
+  const now = new Date().toISOString();
+  const accountId = `cha_${crypto.randomUUID()}`;
+  const connectionId = `con_${crypto.randomUUID()}`;
+  const response = await host.rpc["channels.get"]({});
+  if (!response.ok) throw new Error("Missing messaging catalog");
+  const data = hostApi["channels.get"].success.parse({
+    ...response.data,
+    accounts: [
+      {
+        id: accountId,
+        connectionId,
+        provider: "slack",
+        displayName: "Team bot",
+        externalAccountId: "team",
+        handle: null,
+        metadata: {},
+        routingMode: "dedicated",
+        status: "connected",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    connections: [
+      {
+        capabilities: [],
+        connectionMethod: "api-key",
+        createdAt: now,
+        displayName: "Team bot",
+        externalIdentityId: null,
+        externalTenantId: null,
+        id: connectionId,
+        ownerUserId: host.getSnapshot().user!.id,
+        provider: "slack",
+        status: "connected",
+        statusDetail: null,
+        statusReason: null,
+        transportKind: "socket",
+        updatedAt: now,
+      },
+    ],
+  });
+  const check = vi.fn(async () => ({
+    ok: true,
+    data: { ready: true, capabilities: [], identity: null, issues: [] },
+  }));
+  const rpc = host.rpc;
+  Object.defineProperty(host, "rpc", {
+    value: new Proxy(rpc, {
+      get(target, key, receiver) {
+        if (key === "channel.connection.check") return check;
+        if (key === "channels.get")
+          return async () => ({ ok: true, data: { ...data, accounts: [...data.accounts] } });
+        return Reflect.get(target, key, receiver);
+      },
+    }),
+  });
+  await press("Refresh");
+  const commands: Parameters<HostClient["dispatch"]>[0][] = [];
+  vi.spyOn(host, "dispatch").mockImplementation(async (command) => {
+    commands.push(command);
+    throw new Error("Keep the current state");
+  });
+  await press("Check again");
+  expect(check).toHaveBeenCalledWith({ connectionId });
+  await press("Pause");
+  expect(commands.at(-1)).toMatchObject({
+    type: "channel.connection.status.set",
+    connectionId,
+    status: "paused",
+  });
+  data.accounts[0]!.status = "paused";
+  data.connections[0]!.status = "paused";
+  await press("Refresh");
+  // Paused Slack: what becomes of what is sent meanwhile, in the Home's words for Slack.
+  expect(row("Paused").kind).toBe("status");
+  expect(
+    rows().some(
+      (candidate) =>
+        candidate.label ===
+        "Paused: its chats hold their replies until you resume it. Messages sent while this is paused are not delivered.",
+    ),
+  ).toBe(true);
+  await press("Resume");
+  expect(commands.at(-1)).toMatchObject({
+    type: "channel.connection.status.set",
+    status: "connected",
+    connectionId,
+  });
+  // Back, the Home says it is connecting first: the phone says so too, as the web does.
+  data.accounts[0]!.status = "connected";
+  data.connections[0]!.status = "pending";
+  await press("Refresh");
+  expect(row("Connecting").kind).toBe("status");
+  // Needs attention: what the connection reports, and Fix setup, for a provider app's tokens.
+  data.connections[0]!.status = "needs-attention";
+  data.connections[0]!.statusDetail = "Slack says the token was revoked.";
+  await press("Refresh");
+  expect(row("Needs attention").kind).toBe("status");
+  expect(row("Slack says the token was revoked.").kind).toBe("text");
+  expect(rows().some((candidate) => candidate.label === "Pause")).toBe(false);
+  await press("Link my account");
+  expect(commands.at(-1)).toMatchObject({ type: "channel.me.link", accountId });
+  const { Alert } = await import("react-native");
+  await press("Remove account");
+  const buttons = vi.mocked(Alert.alert).mock.calls.at(-1)?.[2];
+  expect(vi.mocked(Alert.alert).mock.calls.at(-1)?.[1]).toContain("Every chat on it ends");
+  await act(async () => buttons?.find((button) => button.style === "destructive")?.onPress?.());
+  expect(commands.at(-1)).toMatchObject({
+    type: "channel.connection.status.set",
+    status: "revoked",
+    connectionId,
+  });
+  // iMessage is added on the Mac it will use: the phone says so, and opens nothing for it.
+  expect(row("iMessage")).toMatchObject({
+    kind: "text",
+    detail: "Add iMessage from Opensteer on the Mac it will use.",
+  });
+  await press("Fix setup");
+  await input("Bot user OAuth token", "replacement");
+  await input("App-level token", "replacement-app");
+  await press("Replace credentials");
+  expect(commands.at(-1)).toMatchObject({
+    type: "channel.connection.credentials.replace",
+    connectionId,
+    credentials: { botToken: "replacement", appToken: "replacement-app" },
+  });
+  // Nothing a person reads names the machinery.
+  expect(
+    rows().some((candidate) =>
+      /bridge|lineage|ingress|route|binding|waiting/iu.test(
+        `${candidate.label} ${"detail" in candidate ? (candidate.detail ?? "") : ""}`,
+      ),
+    ),
+  ).toBe(false);
+});
+
 it.each(["ios", "android"])(
-  "sends every Messaging mutation with revision fences on %s",
+  "shows each account's chats with their state, who is me and the code that links it, on %s",
   async (os) => {
     state.os = os;
-    await open("messaging");
-    const snapshot = host.getSnapshot();
-    const now = new Date().toISOString();
-    const accountId = `cha_${crypto.randomUUID()}`;
-    const connectionId = `con_${crypto.randomUUID()}`;
-    const bindingId = `chb_${crypto.randomUUID()}`;
-    const response = await host.rpc["channels.get"]({});
-    if (!response.ok) throw new Error("Missing messaging catalog");
-    const base = response.data;
-    const data = hostApi["channels.get"].success.parse({
-      ...base,
-      accounts: [
-        {
-          id: accountId,
-          connectionId,
-          provider: "slack",
-          displayName: "Team bot",
-          externalAccountId: "team",
-          handle: null,
-          metadata: {},
-          routingMode: "shared",
-          status: "connected",
-          createdAt: now,
-          updatedAt: now,
-        },
-      ],
-      bindings: [
-        {
-          id: bindingId,
-          accountId,
-          createdBy: snapshot.user!.id,
-          createdAt: now,
-          updatedAt: now,
-          revision: 7,
-          status: "active",
-          selector: {
-            conversationId: "general",
-            conversationType: null,
-            scopeId: null,
-            threadId: null,
-          },
-          accessPolicy: {
-            channels: {
-              scope: "selected",
-              conversationIds: [],
-              sender: { mode: "approved", allowedExternalUserIds: [] },
-            },
-            directMessages: { mode: "owner", allowedExternalUserIds: [] },
-          },
-          executionPolicy: { harness: "default", harnessInstanceId: null },
-        },
-      ],
-      accessGrants: [
-        {
-          accountId,
-          bindingId,
-          externalUserId: "alice",
-          displayName: "Alice",
-          status: "pending",
-          revision: 4,
-          requestedAt: now,
-          decidedAt: null,
-          decidedBy: null,
-        },
-      ],
+    host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
+    await host.load();
+    state.host = host;
+    const element = document.createElement("div");
+    root = createRoot(element);
+    await act(async () =>
+      root!.render(<SettingsMessagingScreen route={{ params: { deploymentId: "deployment" } }} />),
+    );
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "Slack · #team")).toBe(true));
+    const chat = row("Slack · #team");
+    expect(chat.kind === "button" && chat.detail).toBe(
+      "“#team” on Slack, through “Workshop” · Tasks · Supervised",
+    );
+    // Each name in the line stands isolated from the words around it, as every phone sentence.
+    const given = [...state.given.values()]
+      .flatMap((page) => page.sections.flatMap((section) => section.rows))
+      .find((candidate) => candidate.label === "Slack · #team");
+    expect(given && "detail" in given ? given.detail : null).toContain("“\u2068#team\u2069”");
+    if (chat.kind !== "button") throw new Error("Not a button");
+    await act(async () => chat.onPress());
+    expect(state.navigate).toHaveBeenCalledWith("ConnectedAgent", {
+      deploymentId: "deployment",
+      connectionId: "mcn_00000000-0000-4000-8000-0000000000c2",
     });
-    const check = vi.fn(async () => ({
-      ok: true,
-      data: { ready: true, capabilities: [], identity: null, issues: [] },
-    }));
-    const rpc = host.rpc;
-    Object.defineProperty(host, "rpc", {
-      value: new Proxy(rpc, {
-        get(target, key, receiver) {
-          if (key === "channel.connection.check") return check;
-          if (key === "channels.get")
-            return async () => ({ ok: true, data: { ...data, accounts: [...data.accounts] } });
-          return Reflect.get(target, key, receiver);
-        },
-      }),
+    // iMessage, paused: what is sent meanwhile arrives when it is back.
+    expect(
+      rows().some(
+        (candidate) =>
+          candidate.label ===
+          "Paused: its chats hold their replies until you resume it. Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late.",
+      ),
+    ).toBe(true);
+    expect(row("Needs attention").kind).toBe("status");
+    // What the connection reports, and Fix setup only where the Home accepts it: the provider
+    // app that needs attention, never a computer's Messages, never a healthy account.
+    expect(row("Slack says the token was revoked.").kind).toBe("text");
+    expect(rows().filter((candidate) => candidate.label === "Fix setup")).toHaveLength(1);
+    const me = rows().find((candidate) => candidate.label === "You on Slack");
+    expect(me && "detail" in me ? me.detail : null).toBe(
+      "“Tim” is you. Messages from it count as you in your chats. Linking another account replaces “Tim” as you.",
+    );
+    const sections = [...state.pages.values()].flatMap((page) => page.sections);
+    expect(
+      sections.some((section) =>
+        section.footer?.text?.startsWith("Add a chat from Opensteer on your computer"),
+      ),
+    ).toBe(true);
+    await act(async () => {
+      const link = rows().find((candidate) => candidate.label === "Link another account");
+      if (link?.kind === "button") link.onPress();
     });
-    await press("Refresh");
-    const commands: Parameters<HostClient["dispatch"]>[0][] = [];
-    vi.spyOn(host, "dispatch").mockImplementation(async (command) => {
-      commands.push(command);
-      throw new Error("Keep the current state");
-    });
-    await press("Check connection");
-    expect(check).toHaveBeenCalledWith({ connectionId });
-    await press("Pause");
-    expect(commands.at(-1)).toMatchObject({
-      type: "channel.connection.status.set",
-      connectionId,
-      status: "paused",
-    });
-    data.accounts[0]!.status = "paused";
-    await press("Refresh");
-    await press("Resume");
-    expect(commands.at(-1)).toMatchObject({
-      type: "channel.connection.status.set",
-      status: "connected",
-      connectionId,
-    });
-    await input("Conversation ID", "support");
-    await press("Add route");
-    expect(commands.at(-1)).toMatchObject({
-      type: "channel.binding.create",
-      accountId,
-      selector: { conversationId: "support" },
-    });
-    for (const label of [
-      "Direct messages: approved",
-      "Channel senders: anyone",
-      "Channels: all",
-      "✓ Channels: selected",
-      "Channels: off",
-    ]) {
-      await press(label);
-      expect(commands.at(-1)).toMatchObject({
-        type: "channel.binding.update",
-        bindingId,
-        expectedRevision: 7,
-      });
-    }
-    for (const [label, decision] of [
-      ["Approve", "approved"],
-      ["Decline", "declined"],
-      ["Revoke", "revoked"],
-    ]) {
-      await press(label!);
-      expect(commands.at(-1)).toMatchObject({
-        type: "channel.access.review",
-        bindingId,
-        externalUserId: "alice",
-        expectedRevision: 4,
-        decision,
-      });
-    }
-    await press("Remove route");
-    expect(commands.at(-1)).toMatchObject({ type: "channel.binding.revoke", bindingId });
-    const { Alert } = await import("react-native");
-    await press("Remove");
-    const buttons = vi.mocked(Alert.alert).mock.calls.at(-1)?.[2];
-    expect(buttons?.find((button) => button.style === "destructive")).toBeDefined();
-    await act(async () => buttons?.find((button) => button.style === "destructive")?.onPress?.());
-    expect(commands.at(-1)).toMatchObject({
-      type: "channel.connection.status.set",
-      status: "revoked",
-      connectionId,
-    });
-    await press("iMessage");
-    await input("Your iMessage addresses, separated by commas", "owner@example.com");
-    await press("Connect");
-    expect(commands.at(-1)).toMatchObject({
-      type: "channel.connection.computer.create",
-      ownerHandles: ["owner@example.com"],
-    });
-    await press("Cancel");
-    await press("Repair");
-    await input("Bot user OAuth token", "replacement");
-    await input("App-level token", "replacement-app");
-    await press("Replace credentials");
-    expect(commands.at(-1)).toMatchObject({
-      type: "channel.connection.credentials.replace",
-      connectionId,
-      credentials: { botToken: "replacement", appToken: "replacement-app" },
-    });
+    await vi.waitFor(() =>
+      expect(
+        rows().some((candidate) =>
+          /^Send MOCKCODE to “Workshop” in a direct message from your own Slack account\. It works once, until .+\. Nothing is said in the chat; this page shows your account once it’s linked\.$/u.test(
+            candidate.label,
+          ),
+        ),
+      ).toBe(true),
+    );
   },
 );
 
 it.each(["ios", "android"])(
-  "fences a retained Messaging Link action after the session stops on %s",
+  "says an account's chats could not be read when that read failed, never that it has none, on %s",
   async (os) => {
     state.os = os;
-    await open("messaging");
-    await input("Link code", "ABCDEFGH");
-    const retained = row("Link account");
+    host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
+    await host.load();
+    Object.defineProperty(host.rpc, "connections.list", {
+      value: vi.fn(async () => {
+        throw new Error("down");
+      }),
+      configurable: true,
+    });
+    state.host = host;
+    root = createRoot(document.createElement("div"));
+    await act(async () =>
+      root!.render(<SettingsMessagingScreen route={{ params: { deploymentId: "deployment" } }} />),
+    );
+    await vi.waitFor(() =>
+      expect(rows().some((r) => r.label === "Couldn’t read this account’s chats.")).toBe(true),
+    );
+    expect(rows().some((r) => r.label === "No chat on this account yet.")).toBe(false);
+  },
+);
+
+it.each(["ios", "android"])("says an account with no chat has none yet, on %s", async (os) => {
+  state.os = os;
+  host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats-empty") });
+  await host.load();
+  state.host = host;
+  root = createRoot(document.createElement("div"));
+  await act(async () =>
+    root!.render(<SettingsMessagingScreen route={{ params: { deploymentId: "deployment" } }} />),
+  );
+  await vi.waitFor(() =>
+    expect(rows().filter((r) => r.label === "No chat on this account yet.")).toHaveLength(3),
+  );
+});
+
+async function openChats(scene: "chats" | "chats-empty", edit?: (rpc: HostClient["rpc"]) => void) {
+  host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents(scene) });
+  await host.load();
+  edit?.(host.rpc);
+  state.host = host;
+  root = createRoot(document.createElement("div"));
+  await act(async () =>
+    root!.render(<SettingsMessagingScreen route={{ params: { deploymentId: "deployment" } }} />),
+  );
+}
+function footers() {
+  return [...state.pages.values()].flatMap((page) =>
+    page.sections.flatMap((section) => (section.footer ? [section.footer] : [])),
+  );
+}
+
+it.each(["ios", "android"])(
+  "says a failed read of Messaging in the web's words, with Try again, on %s",
+  async (os) => {
+    state.os = os;
+    await openChats("chats", (rpc) =>
+      Object.defineProperty(rpc, "channels.get", {
+        value: vi.fn(async () => {
+          throw new Error("down");
+        }),
+        configurable: true,
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(footers().map((footer) => footer.text)).toContain(
+        "Couldn’t read your messaging accounts.",
+      ),
+    );
+    const footer = footers().find((f) => f.text === "Couldn’t read your messaging accounts.");
+    expect(footer?.link?.label).toBe("Try again");
+    expect(rows().some((r) => r.label === "Workshop" || r.label === "Connected")).toBe(false);
+    expect(rows().some((r) => r.label.startsWith("No messaging account yet"))).toBe(false);
+  },
+);
+
+/** Every control on the drawn pages that acts (not one that only opens another page). */
+function acting() {
+  return rows()
+    .filter(
+      (candidate) =>
+        (candidate.kind === "button" && !candidate.opens) ||
+        candidate.kind === "toggle" ||
+        candidate.kind === "input" ||
+        candidate.kind === "choice" ||
+        candidate.kind === "chips",
+    )
+    .map((candidate) => candidate.label);
+}
+/** The page's Try again, a row or a footer's link. */
+async function tryAgain() {
+  const control =
+    rows().find((candidate) => candidate.kind === "button" && candidate.label === "Try again") ??
+    footers().find((footer) => footer.link?.label === "Try again")?.link;
+  expect(control, "Missing control: Try again").toBeDefined();
+  await act(async () =>
+    "onPress" in control! ? (control as { onPress: () => void }).onPress() : undefined,
+  );
+}
+/** Makes `read` refuse, or answer as before once `failing` is false. */
+function failable(rpc: HostClient["rpc"], read: "channels.get" | "connections.list") {
+  const real = rpc[read] as (input: unknown) => Promise<unknown>;
+  const control = { failing: false, calls: 0 };
+  Object.defineProperty(rpc, read, {
+    value: async (input: unknown) => {
+      control.calls += 1;
+      if (control.failing)
+        throw new HostClientRequestError({ code: "internal", message: "down", status: 503 });
+      return real(input);
+    },
+    configurable: true,
+  });
+  return control;
+}
+
+it.each(["ios", "android"])(
+  "closes an open setup when a read fails, and opens nothing of it again once read, on %s",
+  async (os) => {
+    state.os = os;
+    let accounts!: ReturnType<typeof failable>;
+    await openChats("chats", (rpc) => (accounts = failable(rpc, "channels.get")));
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "Slack")).toBe(true));
+    await press("Slack");
+    await input("Bot user OAuth token", "typed-before-the-failure");
+    accounts.failing = true;
+    await press("Refresh");
+    await vi.waitFor(() =>
+      expect(rows().some((r) => r.label === "Bot user OAuth token")).toBe(false),
+    );
+    accounts.failing = false;
+    await tryAgain();
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "Slack")).toBe(true));
+    // Read again: no sheet came back, and none holds what was typed.
+    expect(rows().some((r) => r.label === "Bot user OAuth token")).toBe(false);
+    await press("Slack");
+    expect(row("Bot user OAuth token")).toMatchObject({ value: "" });
+  },
+);
+
+it.each(["ios", "android"])(
+  "after its chats could not be read again, offers one Try again that reads both, on %s",
+  async (os) => {
+    state.os = os;
+    let accounts!: ReturnType<typeof failable>;
+    let chats!: ReturnType<typeof failable>;
+    const changed: (() => void)[] = [];
+    await openChats("chats", (rpc) => {
+      accounts = failable(rpc, "channels.get");
+      chats = failable(rpc, "connections.list");
+      const subscribe = host.subscribeConnectionsChanged.bind(host);
+      vi.spyOn(host, "subscribeConnectionsChanged").mockImplementation((listener) => {
+        changed.push(listener);
+        return subscribe(listener);
+      });
+    });
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "Slack · #team")).toBe(true));
+    chats.failing = true;
+    await act(async () => {
+      for (const listener of changed) listener();
+    });
+    await vi.waitFor(() => expect(acting()).toEqual(["Try again"]));
+    chats.failing = false;
+    const before = { accounts: accounts.calls, chats: chats.calls };
+    await tryAgain();
+    await vi.waitFor(() => expect(acting()).toContain("Refresh"));
+    expect(accounts.calls).toBeGreaterThan(before.accounts);
+    expect(chats.calls).toBeGreaterThan(before.chats);
+  },
+);
+
+it.each(["ios", "android"])("says there is no messaging account yet, on %s", async (os) => {
+  state.os = os;
+  await openChats("chats", (rpc) => {
+    const read = rpc["channels.get"];
+    Object.defineProperty(rpc, "channels.get", {
+      value: async (input: Parameters<typeof read>[0]) => {
+        const response = await read(input);
+        return response.ok
+          ? { ...response, data: { ...response.data, accounts: [], connections: [], me: [] } }
+          : response;
+      },
+      configurable: true,
+    });
+  });
+  await vi.waitFor(() =>
+    expect(
+      rows().some(
+        (r) => r.label === "No messaging account yet. Add one to message your own agents.",
+      ),
+    ).toBe(true),
+  );
+});
+
+it.each(["ios", "android"])(
+  "reads Messaging again while a code is shown, and says a paused account links once resumed, on %s",
+  async (os) => {
+    state.os = os;
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let reads = 0;
+      await openChats("chats", (rpc) => {
+        const read = rpc["channels.get"];
+        Object.defineProperty(rpc, "channels.get", {
+          value: (input: Parameters<typeof read>[0]) => {
+            reads += 1;
+            return read(input);
+          },
+          configurable: true,
+        });
+      });
+      await vi.waitFor(() =>
+        expect(rows().filter((r) => r.label === "Link another account")).toHaveLength(2),
+      );
+      // The second account is the paused iMessage one.
+      const link = rows().filter((r) => r.label === "Link another account")[1]!;
+      if (link.kind !== "button") throw new Error("Not a button");
+      await act(async () => link.onPress());
+      await vi.waitFor(() =>
+        expect(rows().some((r) => r.label.startsWith("Send MOCKCODE to"))).toBe(true),
+      );
+      expect(
+        rows().some(
+          (r) => r.label === "Once this account is resumed, sending the code links your account.",
+        ),
+      ).toBe(true);
+      const before = reads;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(reads).toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
+
+it.each(["ios", "android"])(
+  "reads its chats again after an account is paused, and asks nothing the Home ignores, on %s",
+  async (os) => {
+    state.os = os;
+    const list = vi.fn();
+    await openChats("chats", (rpc) => {
+      const read = rpc["connections.list"];
+      Object.defineProperty(rpc, "connections.list", {
+        value: (input: Parameters<typeof read>[0]) => {
+          list();
+          return read(input);
+        },
+        configurable: true,
+      });
+    });
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "Slack · #team")).toBe(true));
+    const before = list.mock.calls.length;
+    await press("Pause");
+    await vi.waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(before));
+    await press("Slack");
+    expect(rows().some((r) => r.label === "Shared bot")).toBe(false);
+  },
+);
+
+it.each(["ios", "android"])(
+  "after a read that failed, each account reads Not read just now and offers no control, on %s",
+  async (os) => {
+    state.os = os;
+    let fail = false;
+    await openChats("chats", (rpc) => {
+      const read = rpc["channels.get"];
+      Object.defineProperty(rpc, "channels.get", {
+        value: async (input: Parameters<typeof read>[0]) => {
+          if (fail) throw new Error("down");
+          return read(input);
+        },
+        configurable: true,
+      });
+    });
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "Connected")).toBe(true));
+    fail = true;
+    await press("Refresh");
+    await vi.waitFor(() =>
+      expect(rows().map((r) => r.label)).toContain("Couldn’t read your messaging accounts."),
+    );
+    const statuses = rows().filter((r) => r.kind === "status");
+    expect(statuses.map((r) => r.label)).toEqual([
+      "Not read just now",
+      "Not read just now",
+      "Not read just now",
+    ]);
+    // Every row that acts, by enumeration: only the one Try again, and moving around, stay.
+    expect(acting()).toEqual(["Try again"]);
+  },
+);
+
+it.each(["ios", "android"])(
+  "opens a setup only for a provider the phone can finish, and says where to add the others, on %s",
+  async (os) => {
+    state.os = os;
+    await openChats("chats");
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "iMessage")).toBe(true));
+    // Every provider offered is one rule: a sheet to finish here, or one sentence where to go.
+    expect(row("iMessage")).toMatchObject({
+      kind: "text",
+      detail: "Add iMessage from Opensteer on the Mac it will use.",
+    });
+    await press("Slack");
+    expect(
+      rows()
+        .filter((r) => r.kind === "input")
+        .map((r) => r.label),
+    ).toEqual(["Bot user OAuth token", "App-level token"]);
+    expect(row("Connect").kind).toBe("button");
+  },
+);
+
+it.each(["ios", "android"])(
+  "says a code on an account that needs attention links it only once it is fixed, on %s",
+  async (os) => {
+    state.os = os;
+    await openChats("chats");
+    await vi.waitFor(() =>
+      expect(rows().filter((r) => r.label === "Link my account")).toHaveLength(1),
+    );
+    await press("Link my account");
+    await vi.waitFor(() =>
+      expect(rows().some((r) => r.label.startsWith("Send MOCKCODE to “On-call”"))).toBe(true),
+    );
+    expect(
+      rows().some(
+        (r) =>
+          r.label ===
+          "Until this account is fixed, the code can’t link your account: fix its setup first, then send it.",
+      ),
+    ).toBe(true);
+  },
+);
+
+it.each(["ios", "android"])(
+  "fences a retained Messaging action after the session stops on %s",
+  async (os) => {
+    state.os = os;
+    host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
+    await host.load();
+    state.host = host;
+    root = createRoot(document.createElement("div"));
+    await act(async () =>
+      root!.render(<SettingsMessagingScreen route={{ params: { deploymentId: "deployment" } }} />),
+    );
+    await vi.waitFor(() =>
+      expect(rows().some((r) => r.label === "Link another account")).toBe(true),
+    );
+    const retained = row("Link another account");
     const dispatch = vi.spyOn(host, "dispatch");
     await act(async () => host.connection.stop());
     if (retained.kind !== "button") throw new Error("Missing link action");

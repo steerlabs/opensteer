@@ -1,3 +1,4 @@
+import { settingsDestinationTarget } from "./settings-home-model.js";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { workHomeMark } from "@opensteer/client/host";
 import { useWorkPolicy } from "@opensteer/client/react";
@@ -36,13 +37,12 @@ export function SettingsScreen() {
           : null
       }
       onOpen={(route) => {
-        if (route === "SettingsAiSharing") {
-          navigation.navigate(route);
-          return;
-        }
-        if (selection.deploymentId)
-          navigation.navigate(route, { deploymentId: selection.deploymentId });
-        else navigation.navigate("DeploymentSwitcher");
+        // With no Home open, the picker says which page it is choosing a Home for.
+        const target = settingsDestinationTarget(route, selection.deploymentId);
+        if (target.name === "DeploymentSwitcher")
+          navigation.navigate("DeploymentSwitcher", target.params);
+        else if (target.name === "SettingsAiSharing") navigation.navigate(target.name);
+        else if (target.params) navigation.navigate(target.name, target.params);
       }}
     />
   );

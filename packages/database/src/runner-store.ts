@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { assertWorkDeviceEnrollment } from "./work-policy.js";
 import { isWorkHomeDatabase } from "./work-home-context.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
@@ -309,7 +310,7 @@ async function activateRunnerConnection(
       updateRequired: null,
       ...(descriptor.modules.integrations?.platform === "android"
         ? {
-            name: descriptor.name,
+            name: outsideName(descriptor.name, 120) || "Computer",
           }
         : {}),
       updatedAt: seenAt,
@@ -1153,7 +1154,17 @@ export async function revokeRunner(
         };
 
         // A messaging service's accounts may move to another; a channel pinned
-        // to this computer went with its app connection above.
+        // to this computer went with its app connection above. Each set of rows is
+        // locked in id order before it changes.
+        await transaction
+          .selectFrom("integrationConnections")
+          .select("id")
+          .where("runnerId", "=", runnerId)
+          .where("connectionKind", "=", "channel")
+          .where("transportKind", "!=", "computer")
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute(databaseOperationOptions());
         await transaction
           .updateTable("integrationConnections")
           .set({
@@ -1164,8 +1175,17 @@ export async function revokeRunner(
           .where("connectionKind", "=", "channel")
           .where("transportKind", "!=", "computer")
           .execute(databaseOperationOptions());
+        // A bridge's reply this computer held but never started goes to whichever takes over.
         await transaction
-          .updateTable("channelDeliveries")
+          .selectFrom("bridgeDeliveries")
+          .select("id")
+          .where("claimOwner", "=", runnerId)
+          .where("status", "=", "leased")
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute(databaseOperationOptions());
+        await transaction
+          .updateTable("bridgeDeliveries")
           .set({
             claimExpiresAt: null,
             claimOwner: null,
@@ -1247,12 +1267,13 @@ export async function renameRunner(
   database: Kysely<DatabaseSchema>,
   runnerId: RunnerId,
   ownerId: UserId,
-  name: string,
+  requestedName: string,
   options: {
     readonly allowDeployment?: boolean;
     readonly administration?: AdministrationCommandIdentity | undefined;
   } = {},
 ): Promise<void> {
+  const name = outsideName(requestedName, 120) || "Computer";
   await commitPersonalMutation(database, (transaction, mutation) =>
     administrationCommand(transaction, options.administration, async () => {
       const updatedAt = new Date();
@@ -1455,6 +1476,7 @@ export async function createRunnerEnrollment(
     readonly tokenHash: string;
   },
 ): Promise<RunnerEnrollmentIssuanceRecord> {
+  const name = outsideName(input.name, 120) || "Computer";
   return commitPersonalMutation(database, async (transaction, mutation) => {
     const configuredService =
       input.configuredInitial &&
@@ -1571,7 +1593,7 @@ export async function createRunnerEnrollment(
         !isDeepStrictEqual(existing.preparedIdentity, preparedIdentity) ||
         existing.deviceProfile !== (input.deviceProfile ?? null) ||
         (!keepEnrolled && existing.requestFingerprint !== input.requestFingerprint) ||
-        existing.name !== input.name ||
+        existing.name !== name ||
         existing.runnerKind !== input.runnerKind ||
         (!keepEnrolled && existing.tokenHash !== input.tokenHash) ||
         // A replay that names a different owner is a different request, not
@@ -1673,7 +1695,7 @@ export async function createRunnerEnrollment(
         expiresAt: input.expiresAt,
         id: input.id,
         idempotencyKey: input.idempotencyKey,
-        name: input.name,
+        name,
         ownerKind: input.runnerKind === "local" ? "user" : "deployment",
         ownerUserId,
         requestFingerprint: input.requestFingerprint,

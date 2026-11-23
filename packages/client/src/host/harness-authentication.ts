@@ -1,3 +1,4 @@
+import { homeFailureText } from "./failure-text.js";
 import {
   harnessChallengeReturnsToLoopback,
   type HarnessSetupMethod,
@@ -237,10 +238,7 @@ export function startHarnessAuthentication({
         }
       }
     } catch (cause) {
-      if (!stopped)
-        onError(
-          cause instanceof Error ? cause.message : "Opensteer couldn’t complete that action.",
-        );
+      if (!stopped) onError(homeFailureText(cause, "Opensteer couldn’t complete that action."));
     } finally {
       if (lifetimeTimer !== undefined) clearTimeout(lifetimeTimer);
     }

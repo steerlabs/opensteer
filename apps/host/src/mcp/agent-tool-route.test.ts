@@ -74,7 +74,7 @@ function fixture(grant?: AgentGrant) {
     callers,
     handlers: { computer_apps: handler, browser_profile_update: settingsHandler },
     store: {
-      getThreadForOwner: async () => thread,
+      readTask: async () => thread,
       threadOrigins: async () => new Map(),
       requests: { get: async () => null },
     },

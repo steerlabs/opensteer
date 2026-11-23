@@ -80,7 +80,8 @@ export function localMcpSecretsToSend(
     if (!parsed.success)
       return {
         ok: false,
-        message: `${field.title}: ${parsed.error.issues[0]?.message ?? "Invalid value"}`,
+        // The field by its title, never a validator's issue text.
+        message: `${field.title}: Invalid value`,
       };
     secrets[field.name] = value;
   }

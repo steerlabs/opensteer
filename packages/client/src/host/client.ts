@@ -7,12 +7,7 @@ import type { TabsClient } from "./tabs-contract.js";
 import type { AnsweredQuestion } from "@opensteer/core";
 import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
 import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
-import type {
-  ChannelAccessPolicy,
-  ChannelAccount,
-  ChannelBinding,
-  IntegrationConnection,
-} from "@opensteer/channel-core";
+import type { ChannelAccount, IntegrationConnection } from "@opensteer/channel-core";
 import type {
   ArtifactContentPart,
   AssignmentSummary,
@@ -248,6 +243,8 @@ export interface ThreadSummary {
   agentSessionId?: string | null;
   /** A connected agent's own task: its session and connection, kept after the session ends. */
   externalWork?: import("@opensteer/protocol/personal-sync").PersonalTaskExternalWork | null;
+  /** The chat or connected agent that started this task ended, so it takes no new messages. */
+  endedOrigin?: "chat" | "agent" | null | undefined;
   /** Active provider retry on the task's executing Run, when retrying. */
   retry?: import("@opensteer/core").RunRetry | null;
   id: string;
@@ -1043,7 +1040,6 @@ export interface ResolveRequestInput {
 }
 
 export interface CreateChannelConnectionInput {
-  accessPolicy: ChannelAccessPolicy;
   credentials: Readonly<Record<string, string>>;
   provider: string;
   routingMode: "dedicated" | "shared";
@@ -1052,7 +1048,6 @@ export interface CreateChannelConnectionInput {
 
 export interface CreatedChannelConnection {
   account: ChannelAccount;
-  binding: ChannelBinding;
   connection: IntegrationConnection;
 }
 

@@ -63,7 +63,6 @@ import {
 import { readRunThreadState } from "./run-thread-state.js";
 import { newestMessageWindow } from "./message-window.js";
 
-import { channelRunAuthorityIsCurrent } from "./channel-execution.js";
 import { assertSendEligible } from "./resource-access.js";
 import { hasUncertainEarlierExecution } from "./personal-run-state.js";
 import {
@@ -678,12 +677,6 @@ export async function acquireExecutionBinding(
         message: "AI engine is unavailable",
       });
     }
-    if (!(await channelRunAuthorityIsCurrent(transaction, input.runId))) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Messaging access changed before this Run could start",
-      });
-    }
     const thread = await transaction
       .selectFrom("threads")
       .innerJoin("executionEnvironments", "executionEnvironments.id", "threads.environmentId")
@@ -701,7 +694,7 @@ export async function acquireExecutionBinding(
     if (!thread)
       throw new OpensteerError({
         code: "not_found",
-        message: "Thread not found",
+        message: "Task not found",
       });
     if (thread.runnerId !== input.runnerId) {
       throw new OpensteerError({

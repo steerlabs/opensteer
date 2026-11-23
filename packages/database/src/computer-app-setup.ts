@@ -1,6 +1,13 @@
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { randomUUID } from "node:crypto";
-import type { RequestPresentation, DeviceId, UserId, ThreadId } from "@opensteer/core";
+import {
+  requestTitleMaxLength,
+  type RequestPresentation,
+  type DeviceId,
+  type UserId,
+  type ThreadId,
+} from "@opensteer/core";
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   DeviceComputerAppSetupRequestSchema,
   computerAppIdentityKey,
@@ -241,11 +248,18 @@ export function computerAppAccessPresentation(input: {
       title: `Wants to ${input.access === "read-write" ? "see and control" : "see"} ${input.runnerName}`,
     };
   }
+  const titlePrefix = "Wants to use ";
+  const computer = ` on ${input.runnerName}`;
+  const appName =
+    outsideName(
+      input.app.displayName,
+      requestTitleMaxLength - titlePrefix.length - computer.length,
+    ) || "App";
   return {
-    detail: `${input.reason} ${input.app.displayName} on ${input.runnerName} — ${allowed}. Allow or decline from any Opensteer app.`,
+    detail: `${input.reason} ${appName}${computer} — ${allowed}. Allow or decline from any Opensteer app.`,
     kind: "external",
     subject,
-    title: `Wants to use ${input.app.displayName} on ${input.runnerName}`,
+    title: `${titlePrefix}${appName}${computer}`,
   };
 }
 

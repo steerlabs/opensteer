@@ -253,17 +253,11 @@ it("runs no PostgreSQL queries from idle queue and execution owners for five min
   const acquisitions = vi.fn();
   pool.on("acquire", acquisitions);
   const channels = new ChannelService({
-    canonicalOrigin: "https://opensteer.test",
     channels: channelStore,
     credentials: {} as CredentialService,
     relay: {} as MessagingRelayHub,
-    runners: {
-      canRunHarness: () => false,
-      identityForEnvironment: () => undefined,
-      isAvailable: () => false,
-    },
+    bridgeTools: () => ({ callTool: async () => ({}) }),
     store,
-    onExecutionQueued() {},
     onError,
   });
   const continuations = new ContinuationService({

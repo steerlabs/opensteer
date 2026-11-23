@@ -12,15 +12,19 @@ import {
 import type { Kysely, Transaction } from "kysely";
 import {
   bindingAgentConnectionId,
+  connectionIsWaiting,
   lineageEndedMessage,
   liveAgentConnection,
+  chatTasksWithdrawnMessage,
   tasksWithdrawnMessage,
   type AgentConnectionAuthority,
 } from "./resource-access.js";
+import { admitBridgeSender, chatWaitingError } from "./bridge-admission.js";
 import { lockCommandIdempotency } from "./store-primitives.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import type { DatabaseSchema } from "./schema.js";
+import type { TaskReader } from "./task-reader.js";
 import { assertActiveGrant, admitThreadExecution } from "./execution-authority.js";
 import {
   assertActiveTriggerExecutionBinding,
@@ -47,8 +51,25 @@ export type ThreadCallerAuthority = {
   | {
       readonly kind: "connection";
       readonly connectionId: string;
+      /**
+       * A chat's message: who wrote it and the bridge's revision it was admitted under. Every
+       * task tool it reaches asks again whether this sender may speak, at the moment it acts.
+       */
+      readonly chat?: {
+        readonly conversationId: string;
+        readonly externalUserId: string;
+        readonly revision: number;
+      };
     }
 );
+/** Who reads a task when this caller does: work reads as the task it runs in. */
+export function callerTaskReader(caller: ThreadCallerAuthority): TaskReader {
+  if (caller.kind === "connection") return { kind: "connection" };
+  return {
+    kind: "work",
+    threadId: caller.kind === "watch" ? caller.scope.anchorThreadId : caller.scope.threadId,
+  };
+}
 /** The connection a caller works for, read from its immutable binding; null for owner work. */
 export async function threadCallerLineageId(
   tx: Kysely<DatabaseSchema>,
@@ -172,7 +193,11 @@ export async function assertThreadCaller(
   if (lineageId) {
     try {
       lineage = await liveAgentConnection(tx, caller.userId, lineageId);
-    } catch {
+    } catch (error) {
+      // A chat's message that finds its chat paused waits for it; it is not refused. The read
+      // that found it not live said so.
+      if (caller.kind === "connection" && caller.chat && connectionIsWaiting(error))
+        throw chatWaitingError();
       throw forbidden(
         caller.kind === "connection"
           ? "The connected agent credential is invalid or expired."
@@ -180,6 +205,28 @@ export async function assertThreadCaller(
       );
     }
     if (!agentGrantAllowsTasks(lineage.grant)) throw forbidden(tasksWithdrawnMessage);
+    const sender =
+      caller.kind === "connection" && caller.chat
+        ? await admitBridgeSender(tx, {
+            ownerUserId: caller.userId,
+            bridgeId: caller.connectionId,
+            externalUserId: caller.chat.externalUserId,
+            expectedRevision: caller.chat.revision,
+          })
+        : null;
+    if (sender?.kind === "waiting") throw chatWaitingError();
+    if (
+      caller.kind === "connection" &&
+      caller.chat &&
+      (sender?.kind !== "admitted" ||
+        !(await tx
+          .selectFrom("bridgeConversations")
+          .select("id")
+          .where("id", "=", caller.chat.conversationId as never)
+          .where("bridgeId", "=", caller.connectionId)
+          .executeTakeFirst()))
+    )
+      throw forbidden(chatTasksWithdrawnMessage);
   }
   let runMode: ThreadAccessMode | null = null;
   if (caller.kind === "run") {

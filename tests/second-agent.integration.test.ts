@@ -860,7 +860,7 @@ integration("a second agent on the person's computer", () => {
     const connect = await decide(direct, "refuse");
     await connecting;
     expect(connect.request.presentation.title).toBe(
-      `Let Agent A take direct control of ${profileA.name}?`,
+      `Let “\u2068Agent A\u2069” take direct control of ${profileA.name}?`,
     );
     expect(personWords(connect.request.presentation)).toContain(
       "It can control its own pages and access every cookie and signed-in site in this profile.",

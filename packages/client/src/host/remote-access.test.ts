@@ -630,8 +630,9 @@ describe("RemoteAccessRunner", () => {
     const test = harness(facts());
     test.request.mockRejectedValueOnce(
       new HostClientRequestError({
-        code: "invalid_request",
+        code: "bad_request",
         message: "Use an HTTPS address.",
+        provenance: "host",
         status: 400,
       }),
     );

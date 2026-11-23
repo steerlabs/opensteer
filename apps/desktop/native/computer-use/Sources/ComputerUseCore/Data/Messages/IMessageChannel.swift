@@ -398,13 +398,15 @@ public actor IMessageChannel {
         budget: budget)
       try MessagesSender.check(outcome)
     } catch {
-      if (error as? HelperError)?.code == .outcomeUnknown {
-        throw Self.unconfirmedSend()
-      }
+      // Only a refusal that proves nothing was sent forgets the attempt; anything else may have
+      // sent it, so it is unconfirmed and never sent again.
+      guard let refusal = error as? HelperError,
+        [.failed, .permissionRequired, .busy].contains(refusal.code)
+      else { throw Self.unconfirmedSend() }
       var all = try recorded()
       all[key] = nil
       try save(all)
-      throw error
+      throw refusal
     }
     let receipt = IMessageReceipt(key: key, sentAt: clock.text(now()))
     do {

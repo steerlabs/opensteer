@@ -89,20 +89,6 @@ export class ChannelDeliveryWorker {
         lease: claim.lease,
         signal: AbortSignal.any([streamSignal, AbortSignal.timeout(15_000)]),
       };
-      // An attempt whose outcome was lost may already have reached the
-      // provider; ask before sending, or the person reads the reply twice.
-      if (claim.mayHaveBeenSent) {
-        const reconciled = await adapter.outbound.reconcile(input);
-        if (reconciled.kind === "sent") {
-          await this.#host.finishDelivery({
-            claimToken: claim.claimToken,
-            deliveryId: claim.delivery.id,
-            outcome: "sent",
-            receipt: reconciled.receipt,
-          });
-          return;
-        }
-      }
       const result = await adapter.outbound.send(input);
       await this.#host.finishDelivery({
         claimToken: claim.claimToken,
