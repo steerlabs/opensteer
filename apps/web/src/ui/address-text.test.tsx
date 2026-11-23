@@ -26,21 +26,15 @@ it.each([
     "Work, who may use everything",
     "Work, who may use everything",
   ],
-  ["a name with a right-to-left override", "Alice\u202E evol", "Alice evol"],
-  ["a name with a zero-width space", "Work\u200BOps", "WorkOps"],
-])(
-  "draws %s as a name, cleaned and in its own weight, never as an address",
-  (_what, name, shown) => {
-    const markup = renderToStaticMarkup(
-      <SentenceText
-        parts={["Uses ", { name }, " to reach ", { address: "api.example.com" }, "."]}
-      />,
-    );
-    expect(markup).toBe(
-      `Uses <bdi class="outside-name">${shown.replaceAll("&", "&amp;")}</bdi> to reach <bdi class="address">${box("api")}${box(".example")}${box(".com")}</bdi>.`,
-    );
-  },
-);
+  ["a name the Home cleaned of a right-to-left override", "Alice evol", "Alice evol"],
+])("draws %s as a name, in its own weight, never as an address", (_what, name, shown) => {
+  const markup = renderToStaticMarkup(
+    <SentenceText parts={["Uses ", { name }, " to reach ", { address: "api.example.com" }, "."]} />,
+  );
+  expect(markup).toBe(
+    `Uses <bdi class="outside-name">${shown.replaceAll("&", "&amp;")}</bdi> to reach <bdi class="address">${box("api")}${box(".example")}${box(".com")}</bdi>.`,
+  );
+});
 
 it.each([
   ["a soft hyphen inside a host", "evil\u00ADgoogle.com", [box("evilgoogle"), box(".com")]],

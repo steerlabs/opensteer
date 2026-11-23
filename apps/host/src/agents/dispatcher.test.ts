@@ -1,6 +1,6 @@
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { ModelSelectionSchema, OpensteerError, createId, type Message } from "@opensteer/core";
-import { chatEndedWithTheUpdate, type CommandRow, type OpensteerStore } from "@opensteer/database";
+import type { CommandRow, OpensteerStore } from "@opensteer/database";
 import { CommandDispatchError } from "@opensteer/orchestration";
 import {
   HarnessModelDescriptorSchema,
@@ -161,23 +161,6 @@ describe("HostCommandDispatcher Request responses", () => {
   });
 });
 describe("HostCommandDispatcher steering", () => {
-  it("never sends a message a chat queued before the update", async () => {
-    const runnersDispatch = vi.fn(async () => undefined);
-    const refuseSteer = vi.fn(async () => undefined);
-    const succeedCommand = vi.fn(async () => undefined);
-    const dispatcher = steerDispatcher({ runnersDispatch, refuseSteer, succeedCommand });
-    const command = {
-      ...steerCommand(),
-      authoritySource: {
-        kind: "channel-ingress",
-      },
-    };
-    await dispatcher.dispatch(command, new AbortController().signal);
-    // Refused through the inbox, which cancels the message; it never reaches the Runner.
-    expect(refuseSteer).toHaveBeenCalledWith(command.id, chatEndedWithTheUpdate, undefined);
-    expect(succeedCommand).not.toHaveBeenCalled();
-    expect(runnersDispatch).not.toHaveBeenCalled();
-  });
   it.each([undefined, "request-pending"])(
     "compensates through the Thread Inbox when the Runner refuses steering (%s)",
     async (reason) => {

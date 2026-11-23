@@ -101,7 +101,7 @@ import {
   finalizeRunTransaction,
 } from "./run-finalization.js";
 import {
-  chatEndedWithTheUpdate,
+  chatEndedMessage,
   connectionIsWaiting,
   liveAgentConnection,
   meetsConnectionFloor,
@@ -317,21 +317,26 @@ async function claimObservedCommand(
       .where("id", "=", run.threadId)
       .executeTakeFirstOrThrow();
     let waiting = false;
-    let endedWithTheUpdate = false;
+    let chatEnded = false;
     const connection = await liveAgentConnection(transaction, observed.requestedBy, lineage).catch(
       (error: unknown) => {
         if (error instanceof OpensteerError && error.code === "forbidden") {
           waiting = connectionIsWaiting(error);
-          endedWithTheUpdate = error.message === chatEndedWithTheUpdate;
+          chatEnded = error.message === chatEndedMessage;
           return null;
         }
         throw error;
       },
     );
-    // A chat paused after this command was listed: its Run is held, pending and queued, with its
-    // message kept, and is listed again when the chat is back. Only an end is terminal. The one
-    // read that found it not live said which.
-    if (!connection && observed.type === "run.execute" && waiting) return null;
+    // A chat paused after this command was listed: its Run, or a message steered into one, is
+    // held, pending, with its message kept, and is listed again when the chat is back. Only an
+    // end is terminal. The one read that found it not live said which.
+    if (
+      !connection &&
+      (observed.type === "run.execute" || observed.type === "run.steer") &&
+      waiting
+    )
+      return null;
     if (
       !connection ||
       !agentGrantAllowsTasks(connection.grant) ||
@@ -339,8 +344,8 @@ async function claimObservedCommand(
       ((observed.type === "run.steer" || run.admittedGrantRevision !== null) &&
         !meetsConnectionFloor(connection, run.admittedGrantRevision, run.admittedAccessMode))
     ) {
-      terminalFailure = endedWithTheUpdate
-        ? chatEndedWithTheUpdate
+      terminalFailure = chatEnded
+        ? chatEndedMessage
         : "The connected agent's access ended before this work could be delivered.";
       if (observed.type === "run.execute") terminalFailureInput = "seed-input";
     }
@@ -1492,13 +1497,14 @@ export async function listPendingCommands(
 }
 /**
  * The command is a paused chat's work, held until the chat is back (asked of the one state
- * function): a Run in the chat's lineage, or an automation's run whose lineage is the chat
+ * function): a Run in the chat's lineage or a message steered into one, or an automation's run
+ * whose lineage is the chat
  * (`triggers.origin_connection_id`, as authority and Disconnect read it). A paused chat's
  * schedule fires nothing, so only a tick enqueued before the pause is held here. Reads `commands`
  * and the left-joined `runs`.
  */
 function chatWorkHeld() {
-  return sql<boolean>`((commands.type = 'run.execute' and runs.connection_id is not null
+  return sql<boolean>`((commands.type in ('run.execute', 'run.steer') and runs.connection_id is not null
       and exists (
         select 1 from agent_connections
         where agent_connections.id = runs.connection_id

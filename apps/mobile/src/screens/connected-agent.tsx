@@ -8,6 +8,7 @@ import {
   agentWords,
   workWords,
   chatFacts,
+  chatStopFoundRunEnded,
   chatTaskStop,
   chatTasksNow,
   connectedAgentConnected,
@@ -292,6 +293,11 @@ export function ConnectedAgentController(props: {
                   setStopping(
                     (current) => new Set([...current].filter((run) => run !== task.runId)),
                   );
+                  // The Run had already ended: read the chat's list again, say nothing.
+                  if (chatStopFoundRunEnded(error)) {
+                    void agents.refresh?.();
+                    return;
+                  }
                   const words = failureWords(error, {
                     label: "stop this task",
                     done: "stopped",

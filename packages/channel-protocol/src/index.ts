@@ -212,11 +212,6 @@ export const ClaimedChannelDeliverySchema = z.strictObject({
     externalUserId: z.string().min(1).max(512).nullable(),
   }),
   lease: ChannelCredentialLeaseSchema,
-  /**
-   * An earlier attempt lost its outcome, so the provider may already hold
-   * this message. The runtime reconciles before it sends again.
-   */
-  mayHaveBeenSent: z.boolean(),
   provider: ChannelProviderSchema,
 });
 export type ClaimedChannelDelivery = z.infer<typeof ClaimedChannelDeliverySchema>;

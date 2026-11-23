@@ -18,6 +18,7 @@ import {
 } from "@opensteer/protocol";
 import { randomBytes, sign, verify, timingSafeEqual, type KeyObject } from "node:crypto";
 import { z } from "zod";
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   credentialHash,
   connectionCredentialPrefix,
@@ -50,11 +51,9 @@ const ClientSchema = z.object({
 });
 type Client = z.infer<typeof ClientSchema>;
 const defaultClientName = "MCP client";
+/** A client's own name enters the Home clean, as every name from outside does. */
 function sanitizeClientName(name: string): string {
-  return name
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "")
-    .replace(/\s+/gu, " ")
-    .trim();
+  return outsideName(name, 100);
 }
 const RegistrationSchema = z.object({
   client_name: z

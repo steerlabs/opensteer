@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router";
 import {
   agentWords,
+  chatStopFoundRunEnded,
   chatTaskStop,
   mutationIdempotencyKey,
   type ChatFacts,
@@ -22,6 +23,7 @@ export function ChatFactsSection({
   client,
   facts,
   live,
+  onRunEnded,
   tasks,
 }: {
   readonly client: Pick<ChatScreenHost, "dispatch">;
@@ -30,6 +32,8 @@ export function ChatFactsSection({
   readonly live: boolean;
   /** Its recent tasks as they are now. */
   readonly tasks: readonly ChatTaskNow[];
+  /** A Stop found its Run already ended: the chat's list is read again. */
+  readonly onRunEnded: () => void;
 }) {
   // A Run whose Stop was asked reads Stopping… until the Home says the task no longer runs (its
   // device answers), never Stop again beside Running; a Stop the Home refused says why. A later
@@ -42,7 +46,12 @@ export function ChatFactsSection({
     try {
       await client.dispatch(chatTaskStop(task, mutationIdempotencyKey("chat-stop")));
     } catch (reason) {
-      setError(presentFailure(reason, "stop this task", "stopped"));
+      // The Run had already ended: read the chat's list again, say nothing.
+      if (chatStopFoundRunEnded(reason)) {
+        onRunEnded();
+        return;
+      }
+      setError(presentFailure(reason, "stop this task", "stopped", "the task was stopped"));
       setAsked((current) => new Set([...current].filter((run) => run !== task.runId)));
     }
   };

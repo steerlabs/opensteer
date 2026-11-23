@@ -592,7 +592,7 @@ export class NativePersonalRemoteHostControl {
       true,
     );
     const body = await this.#json(response);
-    if (response.ok) return PersonalRemoteAccessStatusSchema.parse(body);
+    if (response.ok) return hostAnswer(PersonalRemoteAccessStatusSchema, body);
     throw accountLinkFailure(response, body, "completion");
   }
 
@@ -610,7 +610,7 @@ export class NativePersonalRemoteHostControl {
       true,
     );
     const body = await this.#json(response);
-    if (response.ok) return PersonalRemoteAccessStatusSchema.parse(body);
+    if (response.ok) return hostAnswer(PersonalRemoteAccessStatusSchema, body);
     throw accountLinkFailure(response, body, "activation");
   }
 
@@ -743,8 +743,13 @@ export class NativePersonalRemoteHostControl {
     }
   }
 
-  #json(response: Response): Promise<unknown> {
-    return readBoundedJson(response, personalHostJsonOptions(256 * 1_024));
+  /** A Home's answer as JSON; one this build cannot read is a failed call, never a report. */
+  async #json(response: Response): Promise<unknown> {
+    try {
+      return await readBoundedJson(response, personalHostJsonOptions(256 * 1_024));
+    } catch (error) {
+      throw new PersonalHostCallFailedError(error);
+    }
   }
 }
 

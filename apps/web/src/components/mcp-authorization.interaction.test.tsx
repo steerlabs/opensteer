@@ -26,6 +26,7 @@ describe("signed-in MCP connection consent", () => {
         latencyMs: 0,
         connectionConsent: {
           requestId: "r".repeat(43),
+          // The preview, as the Home, cleans the name where the client registers it.
           clientName: "Grok\u202e\nVerified",
           redirectUri: "https://example.agent/callback",
           resource: "https://host.example/internal/v1/mcp",

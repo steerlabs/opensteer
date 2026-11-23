@@ -146,6 +146,30 @@ import Darwin
     }
     throw JourneyFailure.failed("No AX editing context was published after the input's receipt")
   }
+  /// The first text context for `stream` published after `mark` that the
+  /// helper then publishes again unchanged: its idle republication saw the
+  /// same field and selection, so the app had finished applying earlier input.
+  func settledEditingContext(_ stream: String, after mark: Int, seconds: Double = 1.5) async throws -> String {
+    let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(seconds * 1_000_000_000)
+    var next = mark
+    var previous: String?
+    while true {
+      while next < editingContexts.count {
+        let row = editingContexts[next]; next += 1
+        guard row.stream == stream else { continue }
+        guard let id = row.context["contextId"] as? String, let field = row.context["field"] as? [String: Any],
+          field["sensitive"] as? Bool == false
+        else { previous = nil; continue }
+        if id == previous { return id }
+        previous = id
+      }
+      guard let value = try await nextFrame(until: deadline) else { break }
+      let object = try JSONSerialization.jsonObject(with: value) as? [String: Any]
+      try require(object?["id"] == nil, "An unrequested reply reached the editing wait")
+      try record(event: value, object: object, request: sequence)
+    }
+    throw JourneyFailure.failed("No settled AX editing context was published after the app applied the input")
+  }
   func request(_ method: String, _ params: [String: Any], timeoutMs: Int = 30_000,
                until deadline: UInt64? = nil) async throws
     -> [String: Any]
@@ -630,9 +654,14 @@ extension WireJourney {
       ["kind": "key", "action": "up", "code": "KeyQ", "key": "q", "modifiers": []]])
     try require(key["outcome"] as? String == "dispatched", "Unicode-carrying key was refused")
     try require(try await note() == "q", "AppKit key did not insert exactly once")
+    // The fixture now shows the key, but its receipt came first: Electron
+    // applies a key in its renderer, so the context the helper read at once
+    // can name the field before "q" landed, and an edit against it is rightly
+    // stale. A person commits into a settled field.
+    let afterKey = editingMark
     passed()
     start("IME-commit")
-    let ime = try await input([["kind": "edit", "edit": ["contextId": try await context(), "text": "漢字!", "before": "", "after": ""]]])
+    let ime = try await input([["kind": "edit", "edit": ["contextId": try await settledEditingContext(streamA, after: afterKey), "text": "漢字!", "before": "", "after": ""]]])
     try require(ime["outcome"] as? String == "dispatched", "IME commit was refused")
     try require(try await note() == "q漢字!", "IME commit did not insert once")
     passed()

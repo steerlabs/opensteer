@@ -2,7 +2,7 @@ import type { ChannelProviderManifest } from "@opensteer/channel-core";
 import type { AgentConnection, MachineSummary } from "@opensteer/protocol";
 import { RunIdSchema, ThreadIdSchema } from "@opensteer/core";
 import type { ChatScreenCommand } from "./chat-screen-host.js";
-import type { HostSnapshot } from "./client.js";
+import { HostClientRequestError, type HostSnapshot } from "./client.js";
 import type { ConnectedAgentPhase } from "./connected-agent-view.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 import { agentWords } from "./connected-agents-copy.js";
@@ -143,6 +143,8 @@ export function chatTasksNow(
     const live = threadInDirectory(task.id, directory);
     const running = live ? live.status === "running" : task.running;
     if (running !== task.running) moved.push(`${task.id}:${running}`);
+    // Running by the list, and held by no live update: the list is read again to know.
+    else if (!live && task.running) moved.push(`${task.id}:unseen`);
     return {
       id: task.id,
       title: live?.title ?? task.title,
@@ -151,6 +153,18 @@ export function chatTasksNow(
     };
   });
   return { tasks: now, behind: moved.length === 0 ? null : moved.join(",") };
+}
+
+/**
+ * The Home's answer to a Stop of a Run that had already ended: not a failure, the Run ended. The
+ * page reads the chat's list again and says nothing.
+ */
+export function chatStopFoundRunEnded(error: unknown): boolean {
+  return (
+    error instanceof HostClientRequestError &&
+    error.code === "conflict" &&
+    error.message === "Run is already terminal"
+  );
 }
 
 /** Stop, of the one Run the task is doing: the Home interrupts that Run and no later one. */

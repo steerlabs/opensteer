@@ -479,9 +479,11 @@ function Messaging({
                     key: chat.id,
                     kind: "button",
                     label: chat.label,
-                    detail: connectedAgentRow(chat, {
-                      profiles: host.getSnapshot().browserProfiles,
-                    }).line,
+                    detail: phoneSentence(
+                      connectedAgentRow(chat, {
+                        profiles: host.getSnapshot().browserProfiles,
+                      }).lineParts,
+                    ),
                     opens: true,
                     onPress: () =>
                       navigation.navigate("ConnectedAgent", {

@@ -28,6 +28,7 @@ import {
 } from "@opensteer/control-plane-protocol";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { outsideName } from "@opensteer/shared/outsideName";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { RunId } from "@opensteer/core";
 import type { AgentConnectionTable, DatabaseSchema } from "./schema.js";
@@ -117,8 +118,9 @@ export class AgentConnectionStore {
         .values({
           id: `mcn_${randomUUID()}`,
           userId: input.userId,
-          label: input.label,
-          clientName: input.clientName,
+          // Names from outside enter clean (`outsideName`): never stored or served dirty.
+          label: outsideName(input.label, 120) || outsideName(input.clientName, 100) || "Agent",
+          clientName: outsideName(input.clientName, 100) || "Agent",
           accessMode,
           resource: input.resource,
           createdAt: this.now(),
@@ -131,7 +133,11 @@ export class AgentConnectionStore {
           clientFingerprint: input.clientFingerprint ?? null,
           redirectUri: input.redirectUri ?? null,
           identityAtConsent: input.identityAtConsent
-            ? jsonValue(AgentConnectionIdentityAtConsentSchema.parse(input.identityAtConsent))
+            ? jsonValue(
+                cleanIdentityNames(
+                  AgentConnectionIdentityAtConsentSchema.parse(input.identityAtConsent),
+                ),
+              )
             : null,
         })
         .returningAll()
@@ -168,12 +174,17 @@ export class AgentConnectionStore {
       const { accessMode } = input;
       await assertGrantable(tx, input.userId, grant);
       const provider = bridgeProviderLabel(account.provider);
+      const conversationName = input.conversation
+        ? outsideName(input.conversation.name, 160) || null
+        : null;
       const row = await tx
         .insertInto("agentConnections")
         .values({
           id: `mcn_${randomUUID()}`,
           userId: input.userId,
-          label: (input.label ?? bridgeLabel(provider, input.conversation?.name)).slice(0, 120),
+          label:
+            outsideName(input.label ?? bridgeLabel(provider, conversationName ?? undefined), 120) ||
+            provider,
           clientName: provider,
           accessMode,
           resource: bridgeResource,
@@ -187,7 +198,7 @@ export class AgentConnectionStore {
           bridgeAccountId: input.accountId,
           bridgeConversationId: input.conversation?.id ?? null,
           bridgeSenders: input.senders,
-          bridgeConversationName: input.conversation?.name ?? null,
+          bridgeConversationName: conversationName,
         })
         .returningAll()
         .executeTakeFirstOrThrow()
@@ -469,7 +480,10 @@ export class AgentConnectionStore {
     const row = await tx
       .updateTable("agentConnections")
       .set({
-        label: input.label ?? current.label,
+        label:
+          input.label === undefined
+            ? current.label
+            : outsideName(input.label, 120) || current.label,
         accessMode,
         grant: jsonValue(grant),
         grantRevision: current.grantRevision + Number(changed),
@@ -853,4 +867,16 @@ function identityAtConsent(
 function detailText(detail: Readonly<Record<string, unknown>> | null, key: string): string | null {
   const value = detail?.[key];
   return typeof value === "string" ? value : null;
+}
+
+/** The names in who an agent is (its own and its directory entry's) enter clean too. */
+function cleanIdentityNames<Identity extends object>(identity: Identity): Identity {
+  return Object.fromEntries(
+    Object.entries(identity).map(([key, value]) => [
+      key,
+      typeof value === "string" && key.endsWith("Name")
+        ? outsideName(value, 100) || "Agent"
+        : value,
+    ]),
+  ) as Identity;
 }

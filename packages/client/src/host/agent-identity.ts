@@ -51,24 +51,18 @@ export interface AgentWhoOrigin {
 export const agentClaimMaxLength = 40;
 
 /**
- * A client-chosen name as text that can only read as itself: control, format (including
- * bidirectional overrides and zero-width joiners) and line or paragraph separators removed,
- * whitespace collapsed to single spaces, and long names cut. Check marks and look-alike
- * words stay as plain characters; the claim's label and styling say what they are.
+ * A client-chosen name shown on one line, as a labelled claim: the Home cleaned it where it
+ * entered (`outsideName`), so all that is left here is the cut for a claim's short space.
  */
 export function agentClaim(name: string, maxLength = agentClaimMaxLength): string {
-  const flat = name
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-  const chars = Array.from(flat);
+  const chars = Array.from(name.trim());
   if (!chars.length) return workWords("who.unnamed");
   return chars.length > maxLength
     ? `${chars
         .slice(0, maxLength - 1)
         .join("")
         .trimEnd()}…`
-    : flat;
+    : name.trim();
 }
 
 /** Logos the apps draw, keyed by the verified directory's own platform id. */
