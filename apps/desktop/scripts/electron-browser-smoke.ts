@@ -90,6 +90,15 @@ void withTimeout(run(), 90_000, {
   (error: unknown) => {
     smokeFinished = true;
     clearInterval(smokeLiveness);
+    // What the follow view and each tab's debugger did up to the failure, whichever check it was.
+    if (followEvidence)
+      try {
+        process.stderr.write(
+          `${JSON.stringify({ event: "electron-browser-smoke.follow-evidence", ...followEvidence() })}\n`,
+        );
+      } catch {
+        // The evidence is a help; the failure below is the result.
+      }
     process.stderr.write(
       `${JSON.stringify({
         event: "electron-browser-smoke.failed",
@@ -1576,6 +1585,9 @@ async function transportAgentSizePhase(origin: string): Promise<void> {
  * with a styled scrollbar, through a sustained drag. Writes frames and a JSON
  * report beside the other browser artifacts.
  */
+/** Set while the follow-view phase runs: what to report if the smoke fails inside it. */
+let followEvidence: (() => Record<string, unknown>) | null = null;
+
 async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string): Promise<void> {
   const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000009");
   const browser = await launcher.launch({
@@ -1600,6 +1612,9 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     readonly width: unknown;
     /** When Chromium's answer came back, for a cast start or stop. */
     answeredAt?: number;
+    /** When, and why, Chromium refused it instead. */
+    refusedAt?: number;
+    refusal?: string;
     readonly sessionId?: string;
   }> = [];
   /** Every frame each page's debugger sent: its id, the size it says, and when. */
@@ -1658,7 +1673,10 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
           () => {
             entry.answeredAt = performance.now();
           },
-          () => undefined,
+          (error: unknown) => {
+            entry.refusedAt = performance.now();
+            entry.refusal = error instanceof Error ? error.message : String(error);
+          },
         );
         return response;
       }
@@ -1678,9 +1696,11 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
           entry: `${command.method}${command.sessionId ? ` in ${command.sessionId}` : ""}${
             command.width === undefined ? "" : ` ${String(command.width)}x${String(command.height)}`
           }${command.cast ? ` ${String(command.cast.maxWidth)}x${String(command.cast.maxHeight)}` : ""}${
-            command.answeredAt === undefined
-              ? " (unanswered)"
-              : ` (answered +${Math.round(command.answeredAt - command.at)}ms)`
+            command.answeredAt !== undefined
+              ? ` (answered +${Math.round(command.answeredAt - command.at)}ms)`
+              : command.refusedAt !== undefined
+                ? ` (refused +${Math.round(command.refusedAt - command.at)}ms: ${command.refusal ?? ""})`
+                : " (unanswered)"
           }`,
         })),
       ...debuggerFrames
@@ -1801,6 +1821,18 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
       (record) =>
         `${record.stage}${record.reason === undefined ? "" : ` ${record.reason}`}${record.castId === undefined ? "" : ` #${record.castId}`}`,
     );
+  const phaseStart = performance.now();
+  followEvidence = () => ({
+    followView: followDiagnostics().slice(-60),
+    tabs: [...new Set(debuggerCommands.map((command) => command.target))].map((target) => ({
+      url: webContents
+        .getAllWebContents()
+        .find((contents) => contents.debugger === target)
+        ?.getURL(),
+      // The last fifteen seconds of it, or since the phase began.
+      timeline: castTimeline(target, Math.max(phaseStart, performance.now() - 15_000)),
+    })),
+  });
   await controller.start();
   const root = ledger.active();
   if (!root) throw new Error("The follow-view session has no page.");
