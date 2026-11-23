@@ -491,7 +491,7 @@ integration("organizations removed (0037_remove_organizations)", () => {
     await maintenance?.end();
   });
 
-  it("deletes the computer an organization paid for, frees its seats and keeps the person's own", async () => {
+  it("refuses while an organization or its computer exists, changes nothing, and runs once an operator decided", async () => {
     await sql`
       insert into public.users (id, display_name, email, email_verified) values
         (${assignee}, 'Ada', 'ada@example.test', true),
@@ -525,32 +525,47 @@ integration("organizations removed (0037_remove_organizations)", () => {
           'fingerprint-seat-1', ${organization});
     `.execute(database);
     const before = await computer(personal);
+    const workBefore = await computer(work);
+    const left = () =>
+      sql<{ name: string }>`
+        select table_name as name from information_schema.tables where table_schema = 'public'
+          and (table_name like 'organization%' or table_name like 'work\\_%')
+        union all select table_name || '.' || column_name from information_schema.columns
+          where table_schema = 'public' and (column_name like '%organization%'
+            or column_name = 'work_assignment_id')
+        order by 1`
+        .execute(database)
+        .then(({ rows }) => rows.map(({ name }) => name));
+    const shapeBefore = await left();
+    expect(shapeBefore.length).toBeGreaterThan(0);
 
-    await migrateControlPlaneToLatest(database);
-
-    const left = await sql<{ name: string }>`
-      select table_name as name from information_schema.tables where table_schema = 'public'
-        and (table_name like 'organization%' or table_name like 'work\\_%')
-      union all select table_name || '.' || column_name from information_schema.columns
-        where table_schema = 'public' and (column_name like '%organization%'
-          or column_name = 'work_assignment_id')
-      order by 1`.execute(database);
-    expect(left.rows).toEqual([]);
-    // The person's own Cloud Computer and its billing are exactly as they were.
+    // A computer someone paid for is never destroyed or orphaned by a migration: it refuses and
+    // names what an operator must decide about.
+    const refused = await migrateControlPlaneToLatest(database).then(
+      () => null,
+      (error: unknown) => error as Error & { cause?: Error },
+    );
+    expect(refused?.message).toContain("0037_remove_organizations");
+    expect(String(refused?.cause?.message)).toContain(`Cloud Computer ${work}`);
+    expect(String(refused?.cause?.message)).toContain(`organization ${organization}`);
+    expect(await left()).toEqual(shapeBefore);
+    expect(await computer(work)).toEqual(workBefore);
     expect(await computer(personal)).toEqual(before);
-    // The organization's: deleted, as its offboarding ended one, with nothing left to settle.
-    expect(await computer(work)).toMatchObject({
-      account_id: null,
-      state: "deleted",
-      phase: "deleting",
-      billing_status: "canceled",
-      deletion_requested_at: expect.any(Date),
-      deleted_at: expect.any(Date),
-      billing_settled_at: expect.any(Date),
-      sealed_setup_code: null,
-      setup_code_digest: null,
-    });
-    // The seat it reserved is a free backup target again.
+
+    // An operator decides: here, the computer is handed to the person who used it, and the
+    // organization's records go. Then the migration runs, and keeps both computers.
+    await sql`
+      update public.cloud_computers set work_assignment_id = null, account_id = ${assignee}
+        where id = ${work};
+      delete from public.work_assignments;
+      delete from public.organization_members;
+      delete from public.organizations;
+    `.execute(database);
+    await migrateControlPlaneToLatest(database);
+    expect(await left()).toEqual([]);
+    expect(await computer(personal)).toEqual(before);
+    expect(await computer(work)).toMatchObject({ account_id: assignee, state: "active" });
+    // The seat it reserved is a free backup target.
     const target = await sql<{ id: string }>`
       select id from public.cloud_computer_backup_targets where id = ${reservedTarget}
         and computer_id is null and checkout_key is null`.execute(database);
