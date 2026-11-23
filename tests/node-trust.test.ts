@@ -54,6 +54,15 @@ describe("what a Home service or Runner trusts", () => {
     ).toEqual({ NODE_EXTRA_CA_CERTS: "/home-proof-account-ca.pem" });
   });
 
+  it("reads the setting without case, as Windows does, from a plain object too", () => {
+    expect(
+      nodeTrustEnvironment(
+        { HOME: "/home/person" },
+        { environmentInputs: "drop", settings: { Opensteer_System_Certificates: "off" } },
+      ),
+    ).toEqual({ HOME: "/home/person" });
+  });
+
   it("reads the setting from this process's own environment when no other is given", () => {
     const previous = process.env[nodeTrustSetting];
     process.env[nodeTrustSetting] = "off";

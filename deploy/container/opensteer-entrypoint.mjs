@@ -29,7 +29,7 @@ export async function main() {
  */
 export function serviceEnvironment(service, environment) {
   return homeServicePackages.includes(service)
-    ? nodeTrustEnvironment(environment, { environmentInputs: "keep" })
+    ? nodeTrustEnvironment(environment, { environmentInputs: "keep", settings: environment })
     : environment;
 }
 

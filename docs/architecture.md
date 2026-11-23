@@ -437,6 +437,12 @@ its only owner. The organization pays and governs; it is never a user of the Hom
 
 ## Where a Home runs
 
+Every Home and every Runner trusts Node's certificate authorities plus the ones its computer
+trusts (a Mac's keychains, Windows' certificate stores, a Linux container's `/etc/ssl/certs`), so
+it reaches the Opensteer account through a network that inspects TLS
+([opensteer-node-trust.mjs](../deploy/container/opensteer-node-trust.mjs)).
+`OPENSTEER_SYSTEM_CERTIFICATES=off` where the app or the Home starts leaves Node's own list only.
+
 ### On a Mac
 
 The Host listens on loopback. The one signed Opensteer app stays in the menu bar: closing the

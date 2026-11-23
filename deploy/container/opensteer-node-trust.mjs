@@ -75,7 +75,10 @@ export function nodeTrustEnvironment(environment, options) {
   if (options.environmentInputs !== "drop" && options.environmentInputs !== "keep") {
     throw new TypeError("environmentInputs must be drop or keep.");
   }
-  const systemCertificates = (options.settings ?? process.env)[nodeTrustSetting] !== "off";
+  const settings = Object.entries(options.settings ?? process.env);
+  const systemCertificates = !settings.some(
+    ([name, value]) => name.toUpperCase() === nodeTrustSetting && value === "off",
+  );
   const inputs = new Set(nodeTrustInputs.map((name) => name.toUpperCase()));
   /** @type {Record<string, string>} */
   const started = {};

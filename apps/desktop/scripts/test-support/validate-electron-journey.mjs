@@ -99,6 +99,13 @@ try {
     case "usb":
       assert(!local("usb.json").error);
       break;
+    case "system-ca": {
+      // The Home's Node and the desktop's own Runner, with the switch on and off.
+      const { rows } = local("system-ca.json");
+      assert.equal(rows.length, 4);
+      for (const row of rows) assert.equal(row.reached, row.setting === "on", JSON.stringify(row));
+      break;
+    }
     case "browser":
       assert(local("electron-follow-view.json"));
       break;

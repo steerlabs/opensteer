@@ -40,6 +40,16 @@ describe("container entrypoint", () => {
     expect(serviceEnvironment(service, environment)).toEqual({ OPENSTEER_MODE: "production" });
   });
 
+  it("reads the off switch from the environment it starts the service with", () => {
+    expect(process.env.OPENSTEER_SYSTEM_CERTIFICATES).toBeUndefined();
+    expect(
+      serviceEnvironment("@opensteer/host", {
+        OPENSTEER_MODE: "production",
+        OPENSTEER_SYSTEM_CERTIFICATES: "off",
+      }),
+    ).toEqual({ OPENSTEER_MODE: "production", OPENSTEER_SYSTEM_CERTIFICATES: "off" });
+  });
+
   it("names the service its package stamp is for", async () => {
     await expect(
       verifyReleaseIdentity(
