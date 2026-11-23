@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   addressParts,
   addressText,
+  isolatedPlainSentence,
   outsideText,
   phoneSentence,
   plainSentence,
@@ -161,7 +162,7 @@ describe("a name as the Home gives it", () => {
   ])("with %s is drawn quoted, as the Home cleaned it", (_what, value, cleaned) => {
     const given = outsideName(value, 160);
     expect(given).toBe(cleaned);
-    expect(plainSentence([{ name: given }])).toBe(`“${cleaned}”`);
+    expect(plainSentence(["By ", { name: given }])).toBe(`By “${cleaned}”`);
   });
 
   it("never lets a name close its quotation or start a line of Opensteer's", () => {
@@ -173,6 +174,15 @@ describe("a name as the Home gives it", () => {
     expect(plain.match(/[“”"]/gu)).toEqual(["“", "”"]);
     expect(plain).not.toMatch(/[\n\r\u2028\u2029]/u);
     expect(phoneSentence(["You, as ", { name: forged }])).not.toMatch(/[\n\r\u2028\u2029"”](?!$)/u);
+  });
+
+  it("quotes a name beside anything else, and a name drawn alone nowhere", () => {
+    expect(plainSentence([{ name: "Alice" }])).toBe("Alice");
+    expect(isolatedPlainSentence([{ name: "Alice" }])).toBe("\u2068Alice\u2069");
+    expect(phoneSentence([{ name: "Alice" }])).toBe("\u2068Alice\u2069");
+    expect(plainSentence([{ name: "Alice" }, { address: "alice.example" }])).toBe(
+      "“Alice”alice.example",
+    );
   });
 
   it("makes a double quotation mark a single one", () => {
