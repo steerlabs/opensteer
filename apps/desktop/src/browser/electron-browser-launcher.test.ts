@@ -2499,6 +2499,55 @@ describe("Electron debugger teardown", () => {
       await hub.browser.close();
     });
 
+    // Opus review W3: if a channel shares a private session cast with another owner, starts a new
+    // cast on the page's own session, and Chromium detaches that private session while the new
+    // start is in flight with Chromium, the hub rejects the start AND stops Chromium's main-session
+    // cast once the in-flight answer arrives (without touching any other owner's cast).
+    it("stops an in-flight start on the page's own session when Chromium detaches the owner's previous private session, without touching another owner's cast (W3)", async () => {
+      const hub = await hubPage("83d");
+      const own = ownSessions(hub);
+      const person = await hub.page.cdp();
+      const peer = await hub.page.agentCdp();
+      const helper = await hub.page.agentCdp();
+      const bystander = await hub.page.agentCdp();
+      const bystanderSaw = seen(bystander);
+      let personTold = 0;
+      person.on(screencastEndedEvent, () => (personTold += 1));
+
+      // Helper holds the page's own session so person & peer open a shared cast on private session
+      // "cast-1" and bystander opens "cast-2"; then helper stops so the page's own session is free.
+      await helper.send("Page.startScreencast", view);
+      await person.send("Page.startScreencast", small);
+      await peer.send("Page.startScreencast", small);
+      await bystander.send("Page.startScreencast", { ...small, maxWidth: 420 });
+      await helper.send("Page.stopScreencast");
+      expect(own.attached).toEqual(["cast-1", "cast-2"]);
+
+      // Hold the next Page.startScreencast on the page's own session.
+      const heldStart = hub.hold("Page.startScreencast");
+      const stopsBefore = hub.sent("Page.stopScreencast").length;
+      const newStart = person.send("Page.startScreencast", { ...view, maxWidth: 900 });
+      await vi.waitFor(() => expect(heldStart.replies).toHaveLength(1));
+
+      // While person's new start is in flight on the page's own session, Chromium detaches cast-1.
+      hub.deliver("Target.detachedFromTarget", { sessionId: "cast-1", targetId: "target-1" });
+      expect(personTold).toBe(1);
+      await expect(newStart).rejects.toThrow(/detached|ended/u);
+
+      // Now Chromium answers the in-flight start on the page's own session.
+      heldStart.release();
+      heldStart.replies[0]!.resolve({});
+      await vi.waitFor(() => expect(hub.sent("Page.stopScreencast")).toHaveLength(stopsBefore + 1));
+      const lastStop = hub.sent("Page.stopScreencast").at(-1)!;
+      expect(lastStop.sessionId).toBeUndefined();
+
+      // Bystander's cast on private session "cast-2" is untouched and keeps delivering frames.
+      expect(own.detached).not.toContain("cast-2");
+      hub.deliver("Page.screencastFrame", frame("bystander view", 1), "cast-2");
+      expect(bystanderSaw).toEqual(["bystander view"]);
+      await hub.browser.close();
+    });
+
     // Run on e7080ea31, follow-stale-dialog-answers: the second tab, answered, was pictured no
     // more. The smoke's order on that tab: opened and pictured, its cast started again in a new
     // size, then left before that start's first frame; a dialog opens there and is answered; its

@@ -78,7 +78,11 @@ interface Bound {
    * document the follow view had seen when it arrived. Only while the start is sent: `reconcile`
    * acks and drops it otherwise.
    */
-  held: { readonly parameters: unknown; readonly document: string | null } | null;
+  held: {
+    readonly parameters: unknown;
+    readonly document: string | null;
+    readonly stale: boolean;
+  } | null;
   /**
    * The start, or the repair's redraw, under way, to abort it by. Only while the state has it (a
    * start preparing or sent, a repair): `reconcile` aborts it otherwise. `stopSent` records when
@@ -764,14 +768,16 @@ export class ScreencastController {
         if (bound.firstFrameTimer?.timer !== timer) return;
         bound.firstFrameTimer = null;
         if (this.bound === bound) {
-          const before = bound.state.trouble;
+          const before = bound.state;
           this.apply(bound, {
             binding: bound.binding,
             kind: "first-frame-timeout",
             session: this.session(bound.cdp),
           });
-          if (bound.state.trouble !== before)
+          if (bound.state.trouble !== before.trouble)
             this.diagnose({ stage: "cast-first-frame-timeout", durationMs: ms });
+          else if (before.refusal !== null && bound.state.refusal === null)
+            this.diagnose({ stage: "cast-refusal-timeout", durationMs: ms });
         }
         this.requestPass();
       }, ms);
@@ -894,7 +900,7 @@ export class ScreencastController {
             bound.held = null;
             this.apply(bound, { kind: "answered" });
             bound.paintDelay = paintRetryInitialMs;
-            if (held !== null) this.onFrame(bound, held.parameters, held.document);
+            if (held !== null) this.onFrame(bound, held.parameters, held.document, held.stale);
           } else this.apply(bound, { kind: "not-sent" });
         },
         (error: unknown) => {
@@ -969,7 +975,12 @@ export class ScreencastController {
       .finally(() => this.requestPass());
   }
 
-  private onFrame(bound: Bound, parameters: unknown, seenDocument?: string | null): void {
+  private onFrame(
+    bound: Bound,
+    parameters: unknown,
+    seenDocument?: string | null,
+    heldStale?: boolean,
+  ): void {
     const session = screencastSessionSchema.safeParse(parameters);
     if (!session.success) return;
     const event = parseScreencastFrame(parameters);
@@ -987,21 +998,23 @@ export class ScreencastController {
     const raster = decoded && browserFrameFits(decoded.width, decoded.height) ? decoded : null;
     const facts = this.readFacts();
     const document = seenDocument === undefined ? (facts.tab?.document ?? null) : seenDocument;
+    const sessionState = this.session(bound.cdp);
     const verdict = frameVerdict(
       bound.state,
-      this.session(bound.cdp),
-      { document, geometry: event.geometry, raster },
+      sessionState,
+      { document, geometry: event.geometry, raster, ...(heldStale ? { stale: true } : {}) },
       facts,
     );
     switch (verdict) {
       case "held":
         // A frame that comes with a start, of what it asked for, is its picture: it waits for
-        // the answer.
+        // the answer (carrying whether an earlier-generation timed-out stop was still unanswered).
         this.dropHeld(bound);
-        bound.held = { document, parameters };
+        bound.held = { document, parameters, stale: sessionState.staleStops > 0 };
         this.diagnose({ stage: "capture-held" });
         return;
       case "show":
+      case "show-unproven":
       case "restamp-show": {
         const told = bound.state.told;
         const want = wanted(facts);

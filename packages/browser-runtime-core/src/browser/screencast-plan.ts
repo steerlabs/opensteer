@@ -117,22 +117,36 @@ export interface Refusal extends StartFacts {
 export interface SessionCastState {
   /**
    * Bumped when the engine ended the session's casts or a stop's answer was given up on: a stop
-   * sent in an earlier generation is settled, and its late answer changes nothing.
+   * sent in an earlier generation is settled, and its late answer never changes current `stops`.
    */
   readonly generation: number;
   /** Stops sent in this generation and not answered. */
   readonly stops: number;
   /** Stops whose answer was given up on while this session was not yet charged to a tab (U4). */
   readonly timedOut: number;
+  /**
+   * Stops of earlier generations whose answer was given up on (S3) and has still not arrived
+   * from Chromium (W1). While positive, a frame arriving on the session may still be an earlier
+   * cast's: it may be shown, but it does not prove the running cast works.
+   */
+  readonly staleStops: number;
+  /** Generations strictly below this ended via `casts-ended`; their late answers change nothing. */
+  readonly endedBefore: number;
 }
 
-export const initialSessionCastState: SessionCastState = { generation: 0, stops: 0, timedOut: 0 };
+export const initialSessionCastState: SessionCastState = {
+  endedBefore: 0,
+  generation: 0,
+  staleStops: 0,
+  stops: 0,
+  timedOut: 0,
+};
 
 /**
- * How long a stop's answer is waited for on a live session (S3) before it counts as answered. A
- * frame of the stopped cast may then still come, and at the same size be taken for the next
- * cast's picture of the same page; that is accepted over a tab that waits for ever. A frame of
- * another size, or of a document from before, is still caught by `frameVerdict`.
+ * How long a stop's answer is waited for on a live session (S3) before a new start may go out.
+ * While that stop is still unanswered (`staleStops > 0`), a frame of the stopped cast may still
+ * arrive at the same size: it may be shown, but it never proves the running cast works, sets no
+ * `shown`, resets no retry count, and leaves the first-frame wait running (W1).
  */
 export const stopAnswerWaitMs = 5_000;
 
@@ -153,14 +167,32 @@ export function afterSession(state: SessionCastState, event: SessionEvent): Sess
     case "stop-sent":
       return { ...state, stops: state.stops + 1 };
     case "stop-answered":
-      return event.generation === state.generation && state.stops > 0
-        ? { ...state, stops: state.stops - 1 }
-        : state;
+      if (event.generation === state.generation && state.stops > 0)
+        return { ...state, stops: state.stops - 1 };
+      if (
+        event.generation >= state.endedBefore &&
+        event.generation < state.generation &&
+        state.staleStops > 0
+      )
+        return { ...state, staleStops: state.staleStops - 1 };
+      return state;
     case "casts-ended":
-      return { generation: state.generation + 1, stops: 0, timedOut: 0 };
+      return {
+        endedBefore: state.generation + 1,
+        generation: state.generation + 1,
+        staleStops: 0,
+        stops: 0,
+        timedOut: 0,
+      };
     case "stop-timed-out":
       return event.generation === state.generation && state.stops > 0
-        ? { generation: state.generation + 1, stops: 0, timedOut: state.timedOut + 1 }
+        ? {
+            endedBefore: state.endedBefore,
+            generation: state.generation + 1,
+            staleStops: state.staleStops + state.stops,
+            stops: 0,
+            timedOut: state.timedOut + 1,
+          }
         : state;
     case "timed-out-taken":
       return state.timedOut > 0 ? { ...state, timedOut: 0 } : state;
@@ -314,6 +346,11 @@ export type FrameVerdict =
   /** It is the running cast's, and of another size or shape than its region. */
   | "misfit"
   | "show"
+  /**
+   * It arrived while an earlier-generation timed-out stop was still unanswered on the session
+   * (W1): show it (same tab and size), but do not treat it as proof the running cast works.
+   */
+  | "show-unproven"
   /** It is the running cast's, of the new document it saw commit: the cast is restamped for it. */
   | "restamp-show"
   /** It is no cast's to show: from before the document changed, or nothing is cast. */
@@ -580,7 +617,17 @@ export function nextStep(
   if (state.paint && samePaint(state.paint, key))
     return { kind: "wait", why: "the page did not paint" };
   const can = canTakeStart(tab, state.refusal);
-  if (!can.ok) return { kind: "wait", why: can.why };
+  if (!can.ok) {
+    // W2: a refusal held while the page loads or a navigation is pending is bounded like the
+    // loading first-frame wait so a stuck load never leaves the tab blank forever.
+    if (state.refusal !== null && !refusalReleased(tab, state.refusal) && loadingNow)
+      return {
+        kind: "wait",
+        timer: loadingFirstFrameWaitMs * 2 ** Math.min(state.unpictured, 2),
+        why: can.why,
+      };
+    return { kind: "wait", why: can.why };
+  }
   return { kind: "start" };
 }
 
@@ -613,6 +660,8 @@ export interface FrameMeasure {
   readonly geometry: PageSize | null;
   readonly raster: PageSize | null;
   readonly document: string | null;
+  /** True when captured while an earlier-generation timed-out stop was still unanswered (W1). */
+  readonly stale?: boolean;
 }
 
 /** What a frame is, from what was told, the facts, and its measure. */
@@ -654,6 +703,7 @@ export function frameVerdict(
         Math.abs(frame.raster.height - expected.height) > 1))
   )
     return "misfit";
+  if (session.staleStops > 0 || frame.stale === true) return restamp ? "dropped" : "show-unproven";
   return restamp ? "restamp-show" : "show";
 }
 
@@ -849,6 +899,7 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
             unpictured: 0,
           };
         }
+        case "show-unproven":
         case "held":
         case "dropped":
           return state;
@@ -863,9 +914,29 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
         state,
         event.session ?? initialSessionCastState,
       );
-      return step.kind === "wait" && step.timer !== undefined
-        ? { ...state, trouble: "no-picture" }
-        : state;
+      if (step.kind !== "wait" || step.timer === undefined) return state;
+      if (told.state === "running") return { ...state, trouble: "no-picture" };
+      // W2: a refusal held while loading or navigating reached its bound; release it and count as
+      // a retry, or give up at `pictureLimit` with `whileLoading` and the refusal's reason.
+      const want = wanted(facts);
+      if (told.state === "none" && state.refusal !== null && want.kind === "cast") {
+        const limit = pictureLimit(facts.tab?.native ?? false);
+        const atBound = state.unpictured >= limit;
+        return {
+          ...state,
+          failed: atBound
+            ? {
+                key: want.key,
+                whileLoading: true,
+                why: state.refusal.why,
+              }
+            : state.failed,
+          lastKey: want.key,
+          refusal: null,
+          unpictured: atBound ? state.unpictured : state.unpictured + 1,
+        };
+      }
+      return state;
     }
     case "resumed":
       return { ...state, failed: null, refusal: null, unpictured: 0 };
@@ -873,21 +944,23 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
       return told.state === "running" && facts.tab?.native === false
         ? { ...state, redraw: true, shown: false }
         : state;
-    case "restamped":
-      return told.state === "running"
-        ? {
-            ...state,
-            shown: false,
-            told: {
-              key: {
-                ...told.key,
-                document: event.document,
-                geometryRevision: event.geometryRevision,
-              },
-              state: "running",
-            },
-          }
-        : state;
+    case "restamped": {
+      if (told.state !== "running") return state;
+      const key = {
+        ...told.key,
+        document: event.document,
+        geometryRevision: event.geometryRevision,
+      };
+      // A new document at the same size is a new cast: its retries begin afresh (M16, W1).
+      return {
+        ...state,
+        lastKey: key,
+        shown: false,
+        told: { key, state: "running" },
+        trouble: null,
+        unpictured: 0,
+      };
+    }
   }
 }
 

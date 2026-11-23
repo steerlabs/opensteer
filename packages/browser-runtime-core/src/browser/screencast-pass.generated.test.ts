@@ -27,7 +27,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  * 12. after a change (a new key) or a resume, a cast that then fails gets its full number of
  *     retries again (M16);
  * 13. after every reconcile, the set of timers that are armed equals exactly the set the state
- *     asks for: none missing, none left over (M18).
+ *     asks for: none missing, none left over (M18);
+ * 14. no wait state has no timer except those that end with an event that is certain to come (W2).
  *
  * Stand-in rules and the real ElectronDebuggerHub behaviour each mirrors (launcher tests in
  * apps/desktop/src/browser/electron-browser-launcher.test.ts):
@@ -101,6 +102,8 @@ class Chromium {
   stopsSent = 0;
   /** Stops of the session's current generation whose answer settled (M9). */
   currentGenStopsAnswered = 0;
+  /** Stops of earlier timed-out generations whose answer settled (W1). */
+  staleStopsAnswered = 0;
   readonly lateAnswers: Array<() => void> = [];
   /** Held stop answers tagged with the session generation when sent, for live M9 checks. */
   readonly lateStops: Array<{ readonly generation: number; readonly resolve: () => void }> = [];
@@ -169,8 +172,8 @@ class Chromium {
       });
       return new Promise(() => undefined);
     }
-    const sentStopGeneration =
-      method === "Page.stopScreencast" ? this.world.sessionState(this.id).generation : null;
+    const sentGeneration = this.world.sessionState(this.id).generation;
+    const sentStopGeneration = method === "Page.stopScreencast" ? sentGeneration : null;
     const era = this.era;
     const interrupted = () => {
       if (era !== this.era) throw new Error("Interrupted: the casts ended.");
@@ -187,6 +190,7 @@ class Chromium {
       }
       if (method === "Page.stopScreencast") {
         const wasCasting = this.casting;
+        const actualStoppedCast = this.cast;
         this.casting = false;
         if (this.stopLate) {
           // A late in-flight frame from the cast being stopped while the stop is still with Chromium (M6).
@@ -196,8 +200,15 @@ class Chromium {
             this.lateStops.push({ generation: sentStopGeneration ?? 0, resolve });
           });
         }
-        if (sentStopGeneration === this.world.sessionState(this.id).generation)
-          this.currentGenStopsAnswered += 1;
+        this.world.tabs[this.id].timedOutStopCasts.delete(actualStoppedCast);
+        const curSession = this.world.sessionState(this.id);
+        if (sentStopGeneration === curSession.generation) this.currentGenStopsAnswered += 1;
+        else if (
+          sentStopGeneration !== null &&
+          sentStopGeneration >= curSession.endedBefore &&
+          sentStopGeneration < curSession.generation
+        )
+          this.staleStopsAnswered += 1;
         interrupted();
       }
       if (method !== "Page.startScreencast") return {};
@@ -213,6 +224,14 @@ class Chromium {
       this.world.startedOn(this.id, castTag!);
       this.cast += 1;
       const cast = this.cast;
+      const startSession = this.world.sessionState(this.id);
+      if (
+        sentGeneration >= startSession.endedBefore &&
+        sentGeneration < startSession.generation &&
+        startSession.staleStops > 0
+      ) {
+        this.world.tabs[this.id].timedOutStopCasts.add(cast);
+      }
       const before = this.frameBefore;
       // Each start's frame comes with its answer or once the answer is handled, as it falls; a
       // frame of a cast stopped before it was due is never sent.
@@ -283,7 +302,10 @@ class Chromium {
     this.world.painted.set(id, {
       cast: this.cast,
       document: tab.documentId,
+      fromTimedOutStop:
+        tab.timedOutStopCasts.has(this.cast) && this.world.sessionState(this.id).staleStops > 0,
       session: this,
+      staleAtArrival: this.world.sessionState(this.id).staleStops > 0,
       tab: this.id,
     });
     const data = Buffer.concat([jpeg(picture.width, picture.height), Buffer.from(`#frame:${id}`)]);
@@ -342,8 +364,8 @@ interface TabWorld {
   readonly restampedCasts: Set<string>;
   /** Stop timeouts recorded for this tab since its last picture/resume/session (U1/U4). */
   stopTimeouts: number;
-  /** Whether a stop timed out under S3 on the current session without a fresh-cast picture yet. */
-  stopTimedOut: boolean;
+  /** Exact cast numbers whose stop timed out on the current session and is still unanswered (W1). */
+  readonly timedOutStopCasts: Set<number>;
   readonly captureListeners: Set<() => void>;
   readonly navigationListeners: Set<() => void>;
 }
@@ -365,10 +387,14 @@ class World {
     {
       readonly cast: number;
       readonly document: string;
+      readonly fromTimedOutStop: boolean;
       readonly session: Chromium;
+      readonly staleAtArrival: boolean;
       readonly tab: Id;
     }
   >();
+  /** Reads the controller's live bound state, for immediate post-delivery W1 checks. */
+  boundState: () => Internals["bound"] = () => null;
   readonly delivered = new Set<number>();
   readonly ledgerListeners = new Set<(event: unknown) => void>();
   readonly tabs: Record<Id, TabWorld>;
@@ -398,8 +424,8 @@ class World {
       castTag: 0,
       restampedCasts: new Set(),
       startsByTag: new Map(),
-      stopTimedOut: false,
       stopTimeouts: 0,
+      timedOutStopCasts: new Set(),
       unpainted: opening,
     });
     // B is a tab the person opened with an address, its first document still to commit.
@@ -547,10 +573,14 @@ class World {
           return;
         }
         this.delivered.add(id);
-        if (this.sessionState(tab.id).stops > 0)
+        const session = this.sessionState(tab.id);
+        if (session.stops > 0)
           this.violations.push(
             `${tab.id} showed a frame while a stop of its cast was with Chromium`,
           );
+        const timedOutCastWhileUnanswered =
+          painted.fromTimedOutStop ||
+          (tab.timedOutStopCasts.has(painted.cast) && session.staleStops > 0);
         if (painted.tab !== tab.id)
           this.violations.push(`${tab.id} was shown ${painted.tab}'s picture`);
         else if (painted.document !== tab.documentId)
@@ -559,18 +589,38 @@ class World {
           );
         else if (
           painted.session !== tab.chromium ||
-          (painted.cast !== tab.chromium.cast &&
-            !(tab.stopTimedOut && painted.cast < tab.chromium.cast))
+          (painted.cast !== tab.chromium.cast && !timedOutCastWhileUnanswered)
         )
           this.violations.push(
             `${tab.id} was shown a picture of cast ${painted.cast}, not of cast ${tab.chromium.cast} that runs`,
           );
-        tab.castTag += 1;
-        tab.startsByTag.clear();
-        tab.attemptsByCast.clear();
-        tab.restampedCasts.clear();
-        if (painted.cast === tab.chromium.cast) tab.stopTimedOut = false;
-        tab.stopTimeouts = 0;
+        const unproven = painted.staleAtArrival || session.staleStops > 0;
+        if (unproven) {
+          // W1: a frame arriving while an earlier-generation timed-out stop is unanswered may be
+          // shown, but must not mark the running cast pictured (a timer stays armed).
+          const castAtDelivery = tab.chromium.cast;
+          queueMicrotask(() => {
+            const bound = this.boundState();
+            if (
+              bound &&
+              bound.id === tab.id &&
+              bound.cdp === tab.chromium &&
+              tab.chromium.cast === castAtDelivery &&
+              this.sessionState(tab.id).staleStops > 0 &&
+              bound.state.shown
+            ) {
+              this.violations.push(
+                `${tab.id} marked cast ${castAtDelivery} pictured from an unproven frame while an earlier-generation stop was still unanswered`,
+              );
+            }
+          });
+        } else {
+          tab.castTag += 1;
+          tab.startsByTag.clear();
+          tab.attemptsByCast.clear();
+          tab.restampedCasts.clear();
+          tab.stopTimeouts = 0;
+        }
       },
     };
   }
@@ -832,6 +882,7 @@ function actions(
             if (stop.generation < before.generation) {
               const stopsSentBefore = tab.chromium.stopsSent;
               const answeredBefore = tab.chromium.currentGenStopsAnswered;
+              const staleAnsweredBefore = tab.chromium.staleStopsAnswered;
               handled.add(stop.resolve);
               stop.resolve();
               await turns(2);
@@ -842,13 +893,18 @@ function actions(
                   (tab.chromium.stopsSent - stopsSentBefore) -
                   (tab.chromium.currentGenStopsAnswered - answeredBefore),
               );
+              const expectedStaleStops = Math.max(
+                0,
+                before.staleStops - (tab.chromium.staleStopsAnswered - staleAnsweredBefore),
+              );
               if (
                 afterState.generation !== before.generation ||
                 afterState.stops !== expectedStops ||
-                afterState.timedOut !== before.timedOut
+                afterState.timedOut !== before.timedOut ||
+                afterState.staleStops !== expectedStaleStops
               ) {
                 world.violations.push(
-                  `an answer to a stop from earlier generation ${stop.generation} changed ${tab.id}'s session state at generation ${before.generation} (stops ${before.stops} → ${afterState.stops}, expected ${expectedStops})`,
+                  `an answer to a stop from earlier generation ${stop.generation} changed ${tab.id}'s session state at generation ${before.generation} (stops ${before.stops} → ${afterState.stops}, expected ${expectedStops}; staleStops ${before.staleStops} → ${afterState.staleStops}, expected ${expectedStaleStops})`,
                 );
               }
             }
@@ -880,8 +936,9 @@ function actions(
         const chromium = tab.chromium;
         const before = world.sessionState(tab.id);
         world.afresh(tab.id, false);
-        chromium.casting = false;
-        chromium.era += 1;
+        tab.chromium.casting = false;
+        tab.chromium.era += 1;
+        tab.timedOutStopCasts.clear();
         chromium.emit(screencastEndedEvent, {});
         world.violations.push(
           ...castsEndedClearsSessionStops(tab.id, before, world.sessionState(tab.id)),
@@ -992,7 +1049,7 @@ function actions(
         tab.epoch += 1;
         tab.attemptsByCast.clear();
         tab.restampedCasts.clear();
-        tab.stopTimedOut = false;
+        tab.timedOutStopCasts.clear();
         tab.stopTimeouts = 0;
         world.afresh(tab.id);
         world.changed(tab.id);
@@ -1101,25 +1158,40 @@ function castsEndedClearsSessionStops(
   ];
 }
 
-/** Invariant 10 (M9): an answer to a stop from an earlier generation changes nothing. */
+/** Invariant 10 (M9, W1): an answer to a stop from an earlier generation never changes current `stops`; one from a `casts-ended` generation changes nothing, and one from a `stop-timed-out` generation only decrements `staleStops`. */
 function lateStopAnswerChangesNothing(world: World): string[] {
   const broken: string[] = [];
   for (const id of ["A", "B"] as const) {
     const state = world.sessionState(id);
     if (state.generation === 0) continue;
     const before: SessionCastState = { ...state, stops: Math.max(1, state.stops) };
+    const earlier = state.generation - 1;
     const afterState = afterSession(before, {
-      generation: state.generation - 1,
+      generation: earlier,
       kind: "stop-answered",
     });
+    const expectedStale =
+      earlier >= before.endedBefore ? Math.max(0, before.staleStops - 1) : before.staleStops;
     if (
       afterState.generation !== before.generation ||
       afterState.stops !== before.stops ||
-      afterState.timedOut !== before.timedOut
+      afterState.timedOut !== before.timedOut ||
+      afterState.staleStops !== expectedStale
     ) {
       broken.push(
-        `an answer to a stop from earlier generation ${state.generation - 1} changed ${id}'s session state at generation ${before.generation} (stops ${before.stops} → ${afterState.stops})`,
+        `an answer to a stop from earlier generation ${earlier} changed ${id}'s session state at generation ${before.generation} (stops ${before.stops} → ${afterState.stops}, staleStops ${before.staleStops} → ${afterState.staleStops})`,
       );
+    }
+    if (before.endedBefore > 0) {
+      const fromEnded = afterSession(before, {
+        generation: before.endedBefore - 1,
+        kind: "stop-answered",
+      });
+      if (fromEnded !== before) {
+        broken.push(
+          `an answer to a stop from ended generation ${before.endedBefore - 1} changed ${id}'s session state at generation ${before.generation}`,
+        );
+      }
     }
   }
   return broken;
@@ -1140,7 +1212,8 @@ async function timedWaitEndsByItsLimit(
     bound.firstFrameTimer !== null &&
     (why === "its first frame" ||
       why === "its own frame, after one of another size" ||
-      why === "its document's first frame, as it loads")
+      why === "its document's first frame, as it loads" ||
+      why?.startsWith("refused"))
   ) {
     const limitMs = bound.firstFrameTimer.ms;
     const castBefore = chromium.cast;
@@ -1148,6 +1221,7 @@ async function timedWaitEndsByItsLimit(
     const refusalBefore = bound.state.refusal;
     const paintBefore = bound.state.paint;
     const failedBefore = bound.state.failed;
+    const unpicturedBefore = bound.state.unpictured;
     vi.advanceTimersByTime(limitMs + 1);
     await settle(world, internals, 4);
     const nowBound = internals.bound;
@@ -1162,6 +1236,7 @@ async function timedWaitEndsByItsLimit(
       nowBound.state.repairing !== null ||
       nowBound.state.refusal !== refusalBefore ||
       nowBound.state.paint !== paintBefore ||
+      nowBound.state.unpictured !== unpicturedBefore ||
       (nowBound.state.failed !== null && nowBound.state.failed !== failedBefore);
     if (!progressed)
       return [
@@ -1328,6 +1403,52 @@ function armedTimersMatchState(
   return broken;
 }
 
+/**
+ * Invariant 14 (W2): no wait state without a timer except those that end with an event that is
+ * certain to come (or a terminal state already shown to the person / a host or dialog hold):
+ * - "a start is being prepared": `settleRendering` has its paint timeout and `Emulation.setVisibleSize`/geometry lock settles or fails on detach/abort.
+ * - "a start is with Chromium": CDP `Page.startScreencast` always resolves, rejects, or ends on detach/crash.
+ * - "the page is drawn again": `invalidateSurface` always settles and dispatches `repair-drawn`.
+ * - "a dialog is open": a JS modal dialog blocks the page until the person answers it (published via `onDialogChanged`).
+ * - "the page has no size yet" / "its capture is let go" / "its capture is larger than the page": no valid region exists until the host/window supplies one.
+ * - "its first document has not committed": initial blank-document navigation ends on commit or load failure/abort.
+ * - "its cast was given up: ...": honest terminal state already reported (`browser-capture-mismatch`).
+ * - "refused (...) until ...": ONLY outside loading/navigation, where the refusal was already reported to the caller (`cast-refused`); while loading or navigating, it MUST carry a timer.
+ */
+function noUnboundedWait(
+  world: World,
+  follow: InstanceType<typeof ScreencastController>,
+): string[] {
+  const broken: string[] = [];
+  const internals = follow as unknown as Internals;
+  const bound = internals.bound;
+  if (!bound || bound.id !== world.active) return broken;
+  const tab = world.tabs[world.active];
+  const facts = world.facts();
+  const step = nextStep(facts as never, "", bound.state, world.sessionState(bound.id));
+  if (step.kind !== "wait") return broken;
+  const hasTimer =
+    step.timer !== undefined ||
+    (step.why === "the page did not paint" && bound.paintTimer !== null) ||
+    (step.why === "a stop is with Chromium" && internals.stopTimers?.has(tab.chromium) === true);
+  if (hasTimer) return broken;
+  const loadingNow = tab.loading || (world.port && tab.navigation.pending);
+  const certainWithoutTimer =
+    step.why === "a start is being prepared" ||
+    step.why === "a start is with Chromium" ||
+    step.why === "the page is drawn again" ||
+    step.why === "a dialog is open" ||
+    step.why === "the page has no size yet" ||
+    step.why === "its capture is let go" ||
+    step.why === "its capture is larger than the page" ||
+    step.why === "its first document has not committed" ||
+    step.why.startsWith("its cast was given up:") ||
+    (step.why.startsWith("refused (") && !loadingNow);
+  if (!certainWithoutTimer)
+    broken.push(`${world.active} is in wait "${step.why}" with no timer and no certain end event`);
+  return broken;
+}
+
 /** The invariants at a quiet point; each one broken is said in words. */
 function check(world: World, follow: InstanceType<typeof ScreencastController>): string[] {
   const broken: string[] = [];
@@ -1346,23 +1467,26 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
   broken.push(...lateStopAnswerChangesNothing(world));
   broken.push(...fullRetriesAfterChangeOrResume(world, follow));
   broken.push(...armedTimersMatchState(world, follow));
+  broken.push(...noUnboundedWait(world, follow));
   if (bound && bound.id === world.active && want.kind === "cast") {
     const told = bound.state.told;
     const pictured =
       told.state === "running" && fits(told.key as never, want.key) === "same" && bound.state.shown;
     const why = bound.waiting ?? "";
     const holding = chromium.lateAnswers.length > 0;
+    const loadingNow = tab.loading || (world.port && tab.navigation.pending);
     // The plan gave the wait a time, and it is running for this tab: the wait ends with it.
-    // Re-check 11, finding 6.1 (U5): a first-frame timer excuses only a running cast waiting on
-    // its first frame (with Chromium casting when no answer is held).
+    // Re-check 11, finding 6.1 (U5) & W2: a timer excuses a running cast waiting on its first
+    // frame (with Chromium casting when no answer is held), or a loading-time refusal (W2).
     const timed =
       (bound.firstFrameTimer !== undefined &&
         bound.firstFrameTimer !== null &&
-        told.state === "running" &&
-        (holding || chromium.casting) &&
-        (why === "its first frame" ||
-          why === "its document's first frame, as it loads" ||
-          why === "its own frame, after one of another size")) ||
+        ((told.state === "running" &&
+          (holding || chromium.casting) &&
+          (why === "its first frame" ||
+            why === "its document's first frame, as it loads" ||
+            why === "its own frame, after one of another size")) ||
+          (told.state === "none" && why.startsWith("refused") && loadingNow))) ||
       (why === "a stop is with Chromium" && internals.stopTimers?.has(chromium) === true);
     const named =
       timed ||
@@ -1377,9 +1501,9 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
         world.port &&
         tab.navigation.pending &&
         tab.navigation.blankDocument) ||
-      // A refusal waits rightly while the page takes no command, or is about to say it can.
-      (why.startsWith("refused") &&
-        (!chromium.attached || tab.loading || (world.port && tab.navigation.pending))) ||
+      // Outside loading/navigation, a refusal was already reported to the caller and waits for a
+      // fact to change; inside loading/navigation, it must be bounded by `timed` above (W2).
+      (why.startsWith("refused") && !loadingNow && !chromium.attached) ||
       (why === "the page did not paint" && tab.paintTimedOut && bound.paintTimer !== null) ||
       (why.startsWith("its cast was given up") &&
         world.errorsFor.get(tab.id) === world.castOf(tab.id) &&
@@ -1443,13 +1567,18 @@ async function run(seed: number, engine: "desktop" | "linux", length: number) {
   world.sessionState = (id) =>
     (follow as unknown as Internals).sessionStates.get(world.tabs[id].chromium) ??
     initialSessionCastState;
+  world.boundState = () => (follow as unknown as Internals).bound;
   const pushDiagnostic = follow.diagnostics.push.bind(follow.diagnostics);
   follow.diagnostics.push = (...entries) => {
     for (const entry of entries) {
       const id = entry.surfaceId as string | undefined;
       if (entry.stage === "cast-stop-timeout" && (id === "A" || id === "B")) {
         world.tabs[id].stopTimeouts += 1;
-        world.tabs[id].stopTimedOut = true;
+        world.tabs[id].timedOutStopCasts.add(world.tabs[id].chromium.cast);
+      }
+      if (entry.stage === "cast-refusal-timeout" && (id === "A" || id === "B")) {
+        world.tabs[id].chromium.lastRefusal = null;
+        world.attemptOn(id);
       }
     }
     return pushDiagnostic(...entries);

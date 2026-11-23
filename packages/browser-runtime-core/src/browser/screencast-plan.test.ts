@@ -776,7 +776,7 @@ describe("the state after each event", () => {
         {
           binding: "tab#1",
           kind: "first-frame-timeout",
-          session: { generation: 0, stops: 1, timedOut: 0 },
+          session: { ...initialSessionCastState, stops: 1 },
         },
         base,
       ),
@@ -806,22 +806,49 @@ describe("the state after each event", () => {
     let session = initialSessionCastState;
     session = afterSession(session, { kind: "stop-sent" });
     session = afterSession(session, { kind: "stop-sent" });
-    expect(session).toEqual({ generation: 0, stops: 2, timedOut: 0 });
+    expect(session).toEqual({
+      endedBefore: 0,
+      generation: 0,
+      staleStops: 0,
+      stops: 2,
+      timedOut: 0,
+    });
     expect(afterSession(session, { generation: 0, kind: "stop-answered" }).stops).toBe(1);
     const ended = afterSession(session, { kind: "casts-ended" });
-    expect(ended).toEqual({ generation: 1, stops: 0, timedOut: 0 });
+    expect(ended).toEqual({
+      endedBefore: 1,
+      generation: 1,
+      staleStops: 0,
+      stops: 0,
+      timedOut: 0,
+    });
     // The ended generation's answers change nothing, and never go below none.
     expect(afterSession(ended, { generation: 0, kind: "stop-answered" })).toBe(ended);
     const timedOut = afterSession(session, { generation: 0, kind: "stop-timed-out" });
-    expect(timedOut).toEqual({ generation: 1, stops: 0, timedOut: 1 });
-    expect(afterSession(timedOut, { kind: "timed-out-taken" })).toEqual({
+    expect(timedOut).toEqual({
+      endedBefore: 0,
       generation: 1,
+      staleStops: 2,
+      stops: 0,
+      timedOut: 1,
+    });
+    expect(afterSession(timedOut, { kind: "timed-out-taken" })).toEqual({
+      endedBefore: 0,
+      generation: 1,
+      staleStops: 2,
       stops: 0,
       timedOut: 0,
     });
     expect(afterSession(timedOut, { generation: 0, kind: "stop-timed-out" })).toBe(timedOut);
     const again = afterSession(timedOut, { kind: "stop-sent" });
-    expect(afterSession(again, { generation: 0, kind: "stop-answered" })).toBe(again);
+    // W1: a late answer to a timed-out stop decrements staleStops without touching current stops.
+    expect(afterSession(again, { generation: 0, kind: "stop-answered" })).toEqual({
+      endedBefore: 0,
+      generation: 1,
+      staleStops: 1,
+      stops: 1,
+      timedOut: 1,
+    });
     // The tab's next start after a stop given up on counts as an attempt, even across a resize or
     // rebind (re-check 11, finding 4 / U4).
     const afterRebind = after(initialTabCastState(), { kind: "stop-timed-out" }, base);
@@ -905,5 +932,120 @@ describe("the state after each event", () => {
     );
     expect(failedBack.failed).toBeNull();
     expect(failedBack.unpictured).toBe(1);
+  });
+
+  // Opus review W1: frames arriving while an earlier-generation timed-out stop is unanswered
+  // may be shown but do not mark the running cast pictured or clear retries.
+  it("counts earlier-generation timed-out stops and shows their frames without marking the cast pictured (W1)", () => {
+    const base = facts();
+    const key = keyOf(base);
+    let session = afterSession(initialSessionCastState, { kind: "stop-sent" });
+    session = afterSession(session, { generation: 0, kind: "stop-timed-out" });
+    expect(session).toMatchObject({ generation: 1, staleStops: 1, stops: 0, timedOut: 1 });
+
+    const running: TabCastState = {
+      ...initialTabCastState(),
+      lastKey: key,
+      told: { key, state: "running" },
+      unpictured: 1,
+    };
+    const verdict = frameVerdict(
+      running,
+      session,
+      { document: "a", geometry: key.region, raster: key.raster },
+      base,
+    );
+    expect(verdict).toBe("show-unproven");
+    const afterUnproven = after(running, { kind: "frame", verdict }, base);
+    expect(afterUnproven.shown).toBe(false);
+    expect(afterUnproven.unpictured).toBe(1);
+    expect(nextStep(base, "tab#1", afterUnproven, session)).toMatchObject({
+      kind: "wait",
+      timer: 6_000,
+    });
+
+    // A late answer to the timed-out stop decrements staleStops without touching current stops.
+    const withNewStop = afterSession(session, { kind: "stop-sent" });
+    const afterLate = afterSession(withNewStop, { generation: 0, kind: "stop-answered" });
+    expect(afterLate).toMatchObject({ generation: 1, staleStops: 0, stops: 1 });
+
+    // Once casts-ended advances the generation, earlier answers change nothing.
+    const ended = afterSession(withNewStop, { kind: "casts-ended" });
+    expect(ended).toMatchObject({ generation: 2, staleStops: 0, stops: 0, timedOut: 0 });
+    expect(afterSession(ended, { generation: 0, kind: "stop-answered" })).toBe(ended);
+    expect(afterSession(ended, { generation: 1, kind: "stop-answered" })).toBe(ended);
+
+    // Restamping for a new document at the same size resets unpictured so the new document gets
+    // its full retries (caught by generated test Linux seed 815658).
+    const restampedState = after(
+      { ...running, trouble: "no-picture", unpictured: 3 },
+      { document: "b", geometryRevision: 2, kind: "restamped" },
+      facts({}, { document: "b", geometryRevision: 2 }),
+    );
+    expect(restampedState).toMatchObject({ shown: false, trouble: null, unpictured: 0 });
+  });
+
+  // Opus review W2: a refusal held while loading/navigating is bounded by the loading wait timer.
+  it("bounds a refusal held while loading or navigating and gives up at pictureLimit (W2)", () => {
+    const loadingFacts = facts({}, { loading: true });
+    const key = keyOf(loadingFacts);
+    const preparing: TabCastState = {
+      ...initialTabCastState(),
+      told: { state: "preparing" },
+    };
+    const refused = after(
+      preparing,
+      {
+        at: startFacts(loadingFacts.tab!),
+        kind: "start-failed",
+        why: "Emulation.setVisibleSize failed",
+      },
+      loadingFacts,
+    );
+    expect(refused.refusal?.why).toBe("Emulation.setVisibleSize failed");
+    expect(nextStep(loadingFacts, "tab#1", refused)).toEqual({
+      kind: "wait",
+      timer: 10_000,
+      why: "refused (Emulation.setVisibleSize failed) until its loading, its document change",
+    });
+
+    // At the 10 s bound, refusal is released and unpictured increments (retry 1).
+    const retry1 = after(refused, { binding: "tab#1", kind: "first-frame-timeout" }, loadingFacts);
+    expect(retry1).toMatchObject({ failed: null, refusal: null, unpictured: 1 });
+    expect(nextStep(loadingFacts, "tab#1", retry1)).toEqual({ kind: "start" });
+
+    // Backoff doubles while still loading (20 s at unpictured=1, 40 s at unpictured=2).
+    expect(nextStep(loadingFacts, "tab#1", { ...refused, unpictured: 1 })).toMatchObject({
+      kind: "wait",
+      timer: 20_000,
+    });
+    expect(nextStep(loadingFacts, "tab#1", { ...refused, unpictured: 2 })).toMatchObject({
+      kind: "wait",
+      timer: 40_000,
+    });
+
+    // At pictureLimit (3 on command-sized), the bound gives up with whileLoading and the refusal's reason.
+    const givenUp = after(
+      { ...refused, unpictured: 3 },
+      { binding: "tab#1", kind: "first-frame-timeout" },
+      loadingFacts,
+    );
+    expect(givenUp).toMatchObject({
+      failed: { key, whileLoading: true, why: "Emulation.setVisibleSize failed" },
+      refusal: null,
+      unpictured: 3,
+    });
+
+    // Outside loading/navigation, a refusal wait has no timer (already reported to caller).
+    const idleFacts = facts({}, { loading: false });
+    const idleRefused = after(
+      { ...initialTabCastState(), told: { at: startFacts(idleFacts.tab!), key, state: "sent" } },
+      { kind: "start-failed", why: "Target closed" },
+      idleFacts,
+    );
+    expect(nextStep(idleFacts, "tab#1", idleRefused)).toEqual({
+      kind: "wait",
+      why: "refused (Target closed) until its loading, its document change",
+    });
   });
 });

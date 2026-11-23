@@ -3442,6 +3442,7 @@ class ElectronDebuggerHub {
     this.#updateThrottling();
     let ending: Screencast | null = null;
     let released = false;
+    let sentToChromium = false;
     try {
       this.#assertCurrent(generation);
       this.#assertCastCurrent(channel, castGeneration);
@@ -3466,6 +3467,7 @@ class ElectronDebuggerHub {
       await (lane.id === undefined
         ? send("Page.startScreencast", parameters)
         : this.#command("Page.startScreencast", parameters, lane.id));
+      sentToChromium = true;
       // Counted while its session lives: one let go meanwhile keeps no count.
       if (lane.id === undefined || session.ownSessions.has(lane.id))
         starts.set(laneKey, (starts.get(laneKey) ?? 0) + 1);
@@ -3513,6 +3515,15 @@ class ElectronDebuggerHub {
       } else if (lane?.id !== undefined) {
         // A session attached for this start is let go, whoever else is in the cast.
         await this.#detachOwn(lane.id);
+      } else if (
+        sentToChromium &&
+        lane !== null &&
+        generation === this.#rendererGeneration &&
+        this.#pageSessionFree(run)
+      ) {
+        // W3: a start the hub sent on the page's own session and then failed still took effect in
+        // Chromium; stop it when no other run owns that session.
+        await this.#command("Page.stopScreencast", undefined, undefined).catch(() => undefined);
       }
       if (cast.owners.size === 0) this.#casts.delete(cast);
       throw error;

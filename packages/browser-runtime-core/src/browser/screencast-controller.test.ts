@@ -2077,6 +2077,192 @@ describe("the follow view, when a page loads forever and never paints (U6)", asy
       vi.useRealTimers();
     }
   });
+
+  // Opus review W1: a stale frame from a cast whose stop timed out is shown, but does not mark
+  // a silent next cast pictured or disarm its first-frame timer.
+  it("keeps the first-frame timer armed when a stale frame from a timed-out stop arrives on a silent next cast (W1)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const surface = {
+        active: true,
+        documentId: "doc-1",
+        geometryRevision: 1,
+        id: "tab-1" as never,
+        loading: false,
+        url: "https://example.com/",
+      };
+      const delivered: Buffer[] = [];
+      const errors: string[] = [];
+      const cdp = new FakeCdpSession();
+      let starts = 0;
+      const stopAnswers: Array<() => void> = [];
+      cdp.responses.set("Page.startScreencast", async () => {
+        starts += 1;
+        return {};
+      });
+      cdp.responses.set("Page.stopScreencast", async () => {
+        await new Promise<void>((resolve) => stopAnswers.push(resolve));
+        return {};
+      });
+      const binding = {
+        cdp,
+        page: {
+          applyGeometry: async () => undefined,
+          capture: {
+            read: () => ({ height: 600, rasterScale: 1, revision: 1, width: 800 }),
+            subscribe: () => () => undefined,
+          },
+          invalidateSurface: async () => undefined,
+          settleRendering: async () => undefined,
+        },
+        surface,
+      };
+      const ledger = {
+        active: () => binding,
+        binding: () => binding,
+        dialogOf: () => null,
+        dialogOpen: () => false,
+        recordPageScale: () => undefined,
+        subscribe: () => () => undefined,
+        use: async <T>(_surfaceId: unknown, operation: () => Promise<T>) => operation(),
+        viewportOf: () => ({ height: 600, width: 800 }),
+        withGeometry: async <T>(_surfaceId: unknown, operation: () => Promise<T>) => operation(),
+      };
+      const follow = new ScreencastController({
+        frames: new LatestFrameStream({
+          sendFrame: async (frame) => {
+            delivered.push(frame.data);
+          },
+        }),
+        ledger: ledger as never,
+        onDialogChanged: () => undefined,
+        onError: (error) => errors.push(error.reason ?? error.message),
+      });
+      const internals = follow as unknown as {
+        readonly bound: {
+          readonly firstFrameTimer: { readonly ms: number } | null;
+          readonly state: { readonly shown: boolean; readonly unpictured: number };
+        } | null;
+      };
+
+      await follow.start();
+      await follow.setStreaming(true);
+      await settle();
+      expect(starts).toBe(1);
+
+      // Cast 1 is silent: 3 s first-frame timer fires, repair begins, stop hangs in Chromium.
+      vi.advanceTimersByTime(3_001);
+      await settle();
+      expect(stopAnswers).toHaveLength(1);
+
+      // After 5 s, stop times out and cast 2 starts (also silent!).
+      vi.advanceTimersByTime(5_001);
+      await settle();
+      expect(starts).toBe(2);
+
+      // While cast 1's stop is still unanswered, a stale frame of cast 1 arrives and is shown.
+      cdp.emit("Page.screencastFrame", {
+        data: jpeg(800, 600).toString("base64"),
+        metadata: { deviceHeight: 600, deviceWidth: 800 },
+        sessionId: 1,
+      });
+      await settle();
+      expect(delivered).toHaveLength(1);
+      // It must NOT prove cast 2 works: shown stays false, unpictured is NOT wiped, timer stays armed!
+      expect(internals.bound?.state.shown).toBe(false);
+      expect(internals.bound?.state.unpictured).toBeGreaterThan(0);
+      expect(internals.bound?.firstFrameTimer).not.toBeNull();
+
+      // When cast 2's first-frame limit expires, cast 2 gives up honestly instead of staying stuck.
+      vi.advanceTimersByTime(internals.bound!.firstFrameTimer!.ms + 1);
+      await settle();
+      expect(errors).toEqual(["browser-capture-mismatch"]);
+
+      for (const resolve of stopAnswers.splice(0)) resolve();
+      await follow.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Opus review W2: a navigation-time refusal while loading forever is bounded and gives up.
+  it("bounds a navigation-time refusal while a page loads forever and gives up at pictureLimit (W2)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const surface = {
+        active: true,
+        documentId: "doc-1",
+        geometryRevision: 1,
+        id: "tab-1" as never,
+        loading: true,
+        url: "https://example.com/slow-sign-in",
+      };
+      const errors: string[] = [];
+      const cdp = new FakeCdpSession();
+      let sizeCalls = 0;
+      cdp.responses.set("Emulation.setVisibleSize", async () => {
+        sizeCalls += 1;
+        throw new Error("Emulation.setVisibleSize failed");
+      });
+      const binding = {
+        cdp,
+        page: { invalidateSurface: async () => undefined, settleRendering: async () => undefined },
+        surface,
+      };
+      const listeners = new Set<(event: unknown) => void>();
+      const ledger = {
+        active: () => binding,
+        binding: () => binding,
+        dialogOf: () => null,
+        dialogOpen: () => false,
+        recordPageScale: () => undefined,
+        subscribe: (listener: (event: unknown) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        use: async <T>(_surfaceId: unknown, operation: () => Promise<T>) => operation(),
+        viewportOf: () => ({ height: 600, width: 800 }),
+        withGeometry: async <T>(_surfaceId: unknown, operation: () => Promise<T>) => operation(),
+      };
+      const follow = new ScreencastController({
+        frames: new LatestFrameStream({ sendFrame: async () => undefined }),
+        ledger: ledger as never,
+        onDialogChanged: () => undefined,
+        onError: (error) => errors.push(`${error.reason}:${error.message}`),
+      });
+
+      await follow.start();
+      await follow.setStreaming(true);
+      await settle();
+      expect(sizeCalls).toBe(1);
+      // Refusal is held with the 10 s loading bound timer (not unbounded).
+      expect(vi.getTimerCount()).toBe(1);
+
+      // 10 s -> retry 1 (attempt 2), 20 s -> retry 2 (attempt 3), 40 s -> retry 3 (attempt 4), 40 s -> give up.
+      vi.advanceTimersByTime(10_001);
+      await settle();
+      expect(sizeCalls).toBe(2);
+      vi.advanceTimersByTime(20_001);
+      await settle();
+      expect(sizeCalls).toBe(3);
+      vi.advanceTimersByTime(40_001);
+      await settle();
+      expect(sizeCalls).toBe(4);
+      expect(errors).toEqual([]);
+
+      vi.advanceTimersByTime(40_001);
+      await settle();
+      expect(sizeCalls).toBe(4);
+      expect(errors).toEqual([
+        "browser-capture-mismatch:The picture of the page was given up: Emulation.setVisibleSize failed.",
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+
+      await follow.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 /*
