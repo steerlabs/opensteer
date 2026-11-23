@@ -31,6 +31,28 @@ export const chatScreenReads = [
 /** The Host methods those screens call that send a command, by the command each sends. */
 export const chatScreenMethods = { stopRun: "run.interrupt" } as const;
 
+/**
+ * The hooks those screens hand a whole Home client, by why each may: none sends a command the
+ * lists above do not hold. `tests/chat-parity-coverage.test.ts` fails on a hook given one that
+ * is not here.
+ */
+export const chatScreenHooks = {
+  useConnectedAgents:
+    "Sends and reads only what these lists hold: its client is typed from ChatScreenHost (`ConnectedAgentsHost`); it takes the whole client to hear that connections changed.",
+  useConnectedAgentLive:
+    "Reads what a connected agent's task is doing now (connections.activity) for Watch; sends nothing.",
+  useChromeTabGrantCatalog:
+    "Reads which shared Chrome tabs a grant may name (browser.sources.get); sends nothing.",
+  useAgentAppOptions: "Reads which Mac apps and phone screens a grant may name; sends nothing.",
+  useAgentPluginOptions: "Reads which plugins a grant may name; sends nothing.",
+  useWorkPolicy: "Reads the work Home's policy from the snapshot; no call of its own.",
+  usePersonalRemoteAccess:
+    "Remote access to this Home, shown on the Connected agents list: its own page and its own tests, no chat or account.",
+  useScreenAction:
+    "Runs this screen's own sends, which go through ChatScreenHost; it takes the client for its connection state only.",
+  useSettingsHost: "Reads the snapshot the phone's Settings draw; no call of its own.",
+} as const;
+
 export type ChatScreenCommandType = (typeof chatScreenCommands)[number];
 export type ChatScreenCommand = Extract<
   ClientCommandInput,

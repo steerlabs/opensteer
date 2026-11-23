@@ -4,10 +4,12 @@ import { describe, expect, it } from "vitest";
 import recorded from "../packages/client/src/mock/chat-parity.fixture.json" with { type: "json" };
 import {
   chatScreenCommands,
+  chatScreenHooks,
   chatScreenMethods,
   chatScreenReads,
 } from "../packages/client/src/host/chat-screen-host.js";
 import {
+  chatParityAcceptedOutside,
   chatParityOutside,
   chatParityRefusesNothing,
   chatParityViewReads,
@@ -30,8 +32,10 @@ const screens = [
   "apps/web/src/components/computer-channel-setup.tsx",
   "apps/web/src/components/settings/sections/chat-facts.tsx",
   "apps/web/src/components/settings/sections/connected-agent-page.tsx",
+  "apps/web/src/components/settings/sections/external-agents.tsx",
   "apps/mobile/src/screens/settings-messaging.tsx",
   "apps/mobile/src/screens/connected-agent.tsx",
+  "apps/mobile/src/screens/settings-external-agents-controller.tsx",
 ];
 const root = fileURLToPath(new URL("../", import.meta.url));
 
@@ -50,21 +54,16 @@ describe("the chat parity script covers what the chat screens can send", () => {
   });
 
   it.each(Object.entries(chatScreenSends))(
-    "%s has a step the Home accepted and one it refused",
+    "%s has a step the Home accepted and one it refused, each compared",
     (type, kind) => {
       const steps = record.steps.filter((step) => step.command.kind === kind);
+      // A step the preview could not be compared with stands for neither side.
       const compared = steps.filter((step) => !step.notComparable);
-      const stoodIn = steps.filter((step) => step.notComparable);
-      // Where the answer needs a provider the test cannot have, the recorded step says why and
-      // stands for that side.
-      for (const step of stoodIn) expect(step.notComparable!.length, step.name).toBeGreaterThan(20);
-      const accepted =
-        compared.some((step) => step.answer.ok) || stoodIn.some((step) => !step.answer.ok);
+      const accepted = compared.some((step) => step.answer.ok) || type in chatParityAcceptedOutside;
       const refused =
         type in chatParityRefusesNothing
           ? compared.length >= 2
-          : compared.some((step) => !step.answer.ok) ||
-            (stoodIn.length > 0 && compared.length === 0);
+          : compared.some((step) => !step.answer.ok);
       expect({ type, kind, accepted, refused }).toEqual({
         type,
         kind,
@@ -81,6 +80,9 @@ describe("the chat parity script covers what the chat screens can send", () => {
       /([A-Za-z_$][\w$]*)\s*\??\.\s*(?:dispatch|stopRun)\s*\(|([A-Za-z_$][\w$]*)\s*\.\s*rpc\b/gu,
     ))
       receivers.add(match[1] ?? match[2]!);
+    // A hook handed a whole client is one listed with why it may be (`chatScreenHooks`).
+    for (const hook of source.matchAll(/\b(use[A-Z]\w*)\([^)]*\b(?:client|host|hostClient)\b/gu))
+      expect(Object.keys(chatScreenHooks), `${path}: ${hook[1]}`).toContain(hook[1]);
     for (const name of source.matchAll(/createDedicatedProfile\(\s*([A-Za-z_$][\w$]*)/gu))
       receivers.add(name[1]!);
     for (const name of receivers) {
