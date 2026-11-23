@@ -77,6 +77,7 @@ const { RemovedView } = await import("../phone-setup/removed-view.js");
 const { removedCopy } = await import("../phone-setup/removed-copy.js");
 const { DeploymentGate } = await import("./deployment-gate.js");
 const { StartupFailureView } = await import("../startup-failure.js");
+const { SheetWindowTop } = await import("../ui/fit-sheet.js");
 const { ConnectionDetails } = await import("../ui/connection-details.js");
 const { View } = (await import("../../test-support/yoga-frames.js")).layoutReactNative;
 
@@ -206,18 +207,20 @@ describe("the screens a person meets when something is wrong, at the largest tex
         }}
         testID="sheet"
       >
-        <ConnectionDetails
-          action={{ label: "Reconnect", onPress: () => undefined }}
-          explanation="Your phone can’t reach Studio Mac mini. Messages you send wait here and go when it’s back."
-          mark={<View style={{ height: 28, width: 28 }} />}
-          meta="Last connected 9:41 · via Connect"
-          name="Studio Mac mini"
-          others={[
-            { key: "a", name: "Office", onPress: () => undefined, state: "Reconnecting…" },
-            { key: "b", name: "Cloud Computer", onPress: () => undefined, state: "Offline" },
-          ]}
-          state="Reconnecting…"
-        />
+        <SheetWindowTop.Provider value={narrowest.insets.top}>
+          <ConnectionDetails
+            action={{ label: "Reconnect", onPress: () => undefined }}
+            explanation="Your phone can’t reach Studio Mac mini. Messages you send wait here and go when it’s back."
+            mark={<View style={{ height: 28, width: 28 }} />}
+            meta="Last connected 9:41 · via Connect"
+            name="Studio Mac mini"
+            others={[
+              { key: "a", name: "Office", onPress: () => undefined, state: "Reconnecting…" },
+              { key: "b", name: "Cloud Computer", onPress: () => undefined, state: "Offline" },
+            ]}
+            state="Reconnecting…"
+          />
+        </SheetWindowTop.Provider>
       </View>,
       { ...narrowest.insets, top: 0 },
     );
@@ -245,15 +248,17 @@ describe("the screens a person meets when something is wrong, at the largest tex
     const { container, frames } = await draw(
       landscape,
       <View style={{ maxHeight: landscape.window.height, width: landscape.window.width }}>
-        <ConnectionDetails
-          action={{ label: "Reconnect", onPress: () => undefined }}
-          explanation="Your phone can’t reach Studio Mac mini."
-          mark={<View style={{ height: 28, width: 28 }} />}
-          meta={null}
-          name="Studio Mac mini"
-          others={[]}
-          state="Offline"
-        />
+        <SheetWindowTop.Provider value={landscape.insets.top}>
+          <ConnectionDetails
+            action={{ label: "Reconnect", onPress: () => undefined }}
+            explanation="Your phone can’t reach Studio Mac mini."
+            mark={<View style={{ height: 28, width: 28 }} />}
+            meta={null}
+            name="Studio Mac mini"
+            others={[]}
+            state="Offline"
+          />
+        </SheetWindowTop.Provider>
       </View>,
       landscape.insets,
     );

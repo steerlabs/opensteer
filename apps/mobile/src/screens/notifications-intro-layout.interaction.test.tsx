@@ -82,6 +82,7 @@ vi.mock("../ui/pane.js", () => ({ useContentInsets: () => geometry.insets }));
 vi.mock("../ui/screen.js", () => ({ useGutter: () => 16 }));
 
 const { NotificationsIntroScreen } = await import("./notifications-intro.js");
+const { SheetWindowTop } = await import("../ui/fit-sheet.js");
 const { View } = (await import("../../test-support/yoga-frames.js")).layoutReactNative;
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -121,7 +122,10 @@ async function draw(phone: LayoutPhone, fontScale: number) {
           }}
           testID="sheet"
         >
-          <NotificationsIntroScreen />
+          {/* As the app presents it: the window's top handed in from outside the sheet. */}
+          <SheetWindowTop.Provider value={phone.insets.top}>
+            <NotificationsIntroScreen />
+          </SheetWindowTop.Provider>
         </View>
       </View>,
     ),

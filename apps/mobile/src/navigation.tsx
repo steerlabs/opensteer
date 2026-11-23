@@ -1,6 +1,8 @@
 import { screenPresentations } from "./navigation-presentations.js";
 import type { ReactNode } from "react";
 import { SheetAnchor } from "./ui/sheet.js";
+import { SheetWindowTop } from "./ui/fit-sheet.js";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { PersonalReferenceProvider } from "./markdown/reference-navigation.js";
 import { useAttachedHostOf } from "./screens/deployment-gate.js";
 import { SettingsAiSharingScreen } from "./screens/settings-ai-sharing.js";
@@ -113,10 +115,19 @@ function ScreenLayout(props: {
   readonly route: { readonly params?: unknown };
 }) {
   const focused = useIsFocused();
+  // The window's top inset, read here outside the sheet's own pane, for a sheet that fits its
+  // contents to grow no further than the window lets it (`useFitSheetHeight`).
+  const windowTop = useSafeAreaInsets().top;
   const content = <RouteReferences route={props.route}>{props.children}</RouteReferences>;
   return (
     <>
-      {props.modal ? <Pane>{content}</Pane> : content}
+      {props.modal ? (
+        <SheetWindowTop.Provider value={windowTop}>
+          <Pane>{content}</Pane>
+        </SheetWindowTop.Provider>
+      ) : (
+        content
+      )}
       {props.modal ? null : <TopLevelMenu />}
       {props.modal ? null : <PublishHeaderClearance largeTitle={props.largeTitle} />}
       <SheetAnchor active={focused} level={1} />
