@@ -16,7 +16,10 @@ describe("Automation skill and script guide", () => {
       resolve(repositoryRoot, "apps/runner/agent-skills/skills/automations/references/scripts.md"),
       "utf8",
     );
-    expect(skill).toContain("No wrapper, no required export, and no version field.");
+    expect(skill).toContain("Write a normal file in Agent home");
+    expect(skill).toContain("run it in your shell to test it like any file");
+    expect(skill).toContain("To change it, edit the file, test it, and register the updated text");
+    expect(skill).not.toContain("wrapper");
     expect(guide).toContain("OPENSTEER_EVENT");
     expect(guide).toContain("OPENSTEER_SECRET_");
     expect(skill).not.toContain("toolContractVersion");

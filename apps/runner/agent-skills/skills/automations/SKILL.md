@@ -5,7 +5,7 @@ description: Create, inspect or repair durable schedules, webhooks and continuou
 
 # Opensteer automations
 
-An automation is an ordinary script that runs later, at an address, or continuously. Write a normal file in Agent home (JavaScript, TypeScript, Python, shell, or anything installed on the computer), run it in your shell to test it like any file, then register its text and when it runs with `opensteer_automation_create` (default interpreter: Node; pass `interpreter`, such as `["python3"]` or `["bash"]`, for anything else). To change it, edit the file, test it, and register the updated text with `opensteer_automation_update`. No wrapper, no required export, and no version field.
+An automation is an ordinary script that runs later, at an address, or continuously. Write a normal file in Agent home (JavaScript, TypeScript, Python, shell, or anything installed on the computer), run it in your shell to test it like any file, then register its text and when it runs with `opensteer_automation_create` (default interpreter: Node; pass `interpreter`, such as `["python3"]` or `["bash"]`, for anything else). To change it, edit the file, test it, and register the updated text with `opensteer_automation_update`.
 
 When you have just done something for the person whose outcome arrives later and they would want to hear it, such as a message to a seller or an application sent, offer once with `ask_person` to watch for it, naming what you would check and how often. Build the watch only on their yes.
 

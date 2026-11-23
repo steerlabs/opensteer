@@ -1,6 +1,6 @@
 # Running automation scripts
 
-Write a normal script file in Agent home, run it in your shell to test it, and register its text and schedule, webhook, or watch source with `opensteer_automation_create`. To change it, edit the file, test it, and register the updated text with `opensteer_automation_update`. There is no wrapper, no required export, and no version field.
+Write a normal script file in Agent home, run it in your shell to test it, and register its text and schedule, webhook, or watch source with `opensteer_automation_create`. To change it, edit the file, test it, and register the updated text with `opensteer_automation_update`.
 
 When an automation fires, Opensteer writes the registered text (up to 256 KiB) to a private file and runs it with Agent home as the working directory:
 

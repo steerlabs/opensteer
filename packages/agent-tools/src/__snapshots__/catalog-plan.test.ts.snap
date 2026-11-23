@@ -4263,7 +4263,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "Write a normal script file in Agent home, test it in your shell, then register its text and when it runs (schedule, reminder, cron, webhook, or watch). Omit interpreter for Node, or pass argv such as ["python3"] or ["bash"]; no wrapper, export, or version field. Requires full access. Connections must name taskId. ownTask: true runs it in a new task linked under that task and kept off the task list: it keeps running after that task is Done, its failures and Requests reach that task, and nothing returns automatically.",
+    "description": "Write a normal script file in Agent home, test it in your shell, then register its text and when it runs (schedule, reminder, cron, webhook, or watch). Omit interpreter for Node, or pass argv such as ["python3"] or ["bash"]. Requires full access. Connections must name taskId. ownTask: true runs it in a new task linked under that task and kept off the task list: it keeps running after that task is Done, its failures and Requests reach that task, and nothing returns automatically.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,

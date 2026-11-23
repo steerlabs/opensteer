@@ -44,7 +44,7 @@ export const opensteer_automation_create = defineAgentTool({
   name: "opensteer_automation_create",
   title: "Create an automation",
   description:
-    'Write a normal script file in Agent home, test it in your shell, then register its text and when it runs (schedule, reminder, cron, webhook, or watch). Omit interpreter for Node, or pass argv such as ["python3"] or ["bash"]; no wrapper, export, or version field. Requires full access. Connections must name taskId. ownTask: true runs it in a new task linked under that task and kept off the task list: it keeps running after that task is Done, its failures and Requests reach that task, and nothing returns automatically.',
+    'Write a normal script file in Agent home, test it in your shell, then register its text and when it runs (schedule, reminder, cron, webhook, or watch). Omit interpreter for Node, or pass argv such as ["python3"] or ["bash"]. Requires full access. Connections must name taskId. ownTask: true runs it in a new task linked under that task and kept off the task list: it keeps running after that task is Done, its failures and Requests reach that task, and nothing returns automatically.',
   targetFields: ["taskId"],
   input: z.strictObject({
     taskId: ThreadIdSchema.optional(),
