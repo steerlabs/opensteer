@@ -40,6 +40,20 @@ describe("placing automations", () => {
     expect(
       placeAutomation({ ...light, pauseReason: "It kept failing", status: "paused" }, now),
     ).toEqual({ group: "attention", problem: "It kept failing" });
+    const lostMemory = automation({
+      latestOccurrence: {
+        completedAt: null,
+        contactLostAt: at(-1, 14, 15),
+        createdAt: at(-1, 14, 0),
+        status: "running",
+      } as NonNullable<TriggerSummary["latestOccurrence"]>,
+      name: "memory",
+      systemRole: "memory-light",
+    });
+    expect(placeAutomation(lostMemory, now)).toEqual({
+      group: "attention",
+      problem: expect.stringMatching(/^Running as far as Opensteer knows — contact lost yesterday,/u),
+    });
     expect(sectionAutomations([light, automation()], now).map(({ id }) => id)).toEqual([
       "repeating",
       "system",
