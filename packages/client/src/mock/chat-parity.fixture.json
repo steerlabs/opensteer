@@ -283,6 +283,7 @@
           "tasks": true,
           "resources": []
         },
+        "grantRevision": 1,
         "account": "Workshop",
         "conversation": null,
         "senders": "owner",
@@ -338,6 +339,7 @@
             "tasks": true,
             "resources": []
           },
+          "grantRevision": 1,
           "account": "Workshop",
           "conversation": "#team",
           "senders": "anyone",
@@ -399,6 +401,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": null,
             "senders": "owner",
@@ -432,6 +435,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": "#team",
             "senders": "anyone",
@@ -517,6 +521,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": null,
             "senders": "owner",
@@ -550,6 +555,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": "#team",
             "senders": "anyone",
@@ -632,6 +638,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": null,
             "senders": "owner",
@@ -665,6 +672,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": "#team",
             "senders": "anyone",
@@ -748,6 +756,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": null,
             "senders": "owner",
@@ -781,6 +790,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": "#team",
             "senders": "anyone",
@@ -866,6 +876,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": null,
             "senders": "owner",
@@ -899,6 +910,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": "#team",
             "senders": "anyone",
@@ -942,6 +954,7 @@
             "tasks": true,
             "resources": []
           },
+          "grantRevision": 1,
           "account": "Studio",
           "conversation": null,
           "senders": "owner",
@@ -1003,6 +1016,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Studio",
             "conversation": null,
             "senders": "owner",
@@ -1027,6 +1041,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": null,
             "senders": "owner",
@@ -1060,6 +1075,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": "#team",
             "senders": "anyone",
@@ -1103,6 +1119,7 @@
             "tasks": true,
             "resources": []
           },
+          "grantRevision": 1,
           "account": "Lab",
           "conversation": null,
           "senders": "owner",
@@ -1164,6 +1181,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Lab",
             "conversation": null,
             "senders": "owner",
@@ -1188,6 +1206,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Studio",
             "conversation": null,
             "senders": "owner",
@@ -1212,6 +1231,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": null,
             "senders": "owner",
@@ -1245,6 +1265,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": "#team",
             "senders": "anyone",
@@ -1288,6 +1309,7 @@
             "tasks": true,
             "resources": []
           },
+          "grantRevision": 1,
           "account": "On-call",
           "conversation": null,
           "senders": "owner",
@@ -1349,6 +1371,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Lab",
             "conversation": null,
             "senders": "owner",
@@ -1373,6 +1396,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "On-call",
             "conversation": null,
             "senders": "owner",
@@ -1397,6 +1421,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Studio",
             "conversation": null,
             "senders": "owner",
@@ -1421,6 +1446,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": null,
             "senders": "owner",
@@ -1454,6 +1480,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": "#team",
             "senders": "anyone",
@@ -1527,6 +1554,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Lab",
             "conversation": null,
             "senders": "owner",
@@ -1551,6 +1579,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "On-call",
             "conversation": null,
             "senders": "owner",
@@ -1575,6 +1604,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Studio",
             "conversation": null,
             "senders": "owner",
@@ -1599,6 +1629,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": null,
             "senders": "owner",
@@ -1632,6 +1663,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": "#team",
             "senders": "anyone",
@@ -1705,6 +1737,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Lab",
             "conversation": null,
             "senders": "owner",
@@ -1729,6 +1762,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "On-call",
             "conversation": null,
             "senders": "owner",
@@ -1753,6 +1787,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Studio",
             "conversation": null,
             "senders": "owner",
@@ -1777,6 +1812,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": null,
             "senders": "owner",
@@ -1810,6 +1846,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": "#team",
             "senders": "anyone",
@@ -1875,6 +1912,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Lab",
             "conversation": null,
             "senders": "owner",
@@ -1899,6 +1937,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 2,
             "account": "On-call",
             "conversation": null,
             "senders": "owner",
@@ -1923,6 +1962,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Studio",
             "conversation": null,
             "senders": "owner",
@@ -1947,6 +1987,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": null,
             "senders": "owner",
@@ -1980,6 +2021,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": "#team",
             "senders": "anyone",
@@ -2057,6 +2099,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Lab",
             "conversation": null,
             "senders": "owner",
@@ -2081,6 +2124,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 2,
             "account": "On-call",
             "conversation": null,
             "senders": "owner",
@@ -2105,6 +2149,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Studio",
             "conversation": null,
             "senders": "owner",
@@ -2129,6 +2174,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": null,
             "senders": "owner",
@@ -2162,6 +2208,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": "#team",
             "senders": "anyone",
@@ -2230,6 +2277,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Lab",
             "conversation": null,
             "senders": "owner",
@@ -2254,6 +2302,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 2,
             "account": "On-call",
             "conversation": null,
             "senders": "owner",
@@ -2278,6 +2327,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Studio",
             "conversation": null,
             "senders": "owner",
@@ -2302,6 +2352,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": null,
             "senders": "owner",
@@ -2335,6 +2386,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": "#team",
             "senders": "anyone",
@@ -2401,6 +2453,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Lab",
             "conversation": null,
             "senders": "owner",
@@ -2425,6 +2478,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 2,
             "account": "On-call",
             "conversation": null,
             "senders": "owner",
@@ -2449,6 +2503,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Studio",
             "conversation": null,
             "senders": "owner",
@@ -2473,6 +2528,7 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
             "account": "Workshop",
             "conversation": null,
             "senders": "owner",
@@ -2506,6 +2562,3663 @@
               "tasks": true,
               "resources": []
             },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "change #team's safety mode and give it a plugin",
+      "command": {
+        "kind": "connection.update",
+        "account": "Workshop",
+        "chat": "Slack · #team",
+        "revision": "current",
+        "accessMode": "auto",
+        "grant": {
+          "scope": "selected",
+          "tasks": true,
+          "resources": [
+            {
+              "kind": "plugin",
+              "target": {
+                "kind": "installed",
+                "pluginId": "plugin_team_notes"
+              },
+              "access": "read"
+            }
+          ]
+        }
+      },
+      "answer": {
+        "ok": true,
+        "chat": {
+          "label": "Slack · #team",
+          "state": "active",
+          "accessMode": "auto",
+          "grant": {
+            "scope": "selected",
+            "tasks": true,
+            "resources": [
+              {
+                "kind": "plugin",
+                "target": {
+                  "kind": "installed",
+                  "pluginId": "plugin_team_notes"
+                },
+                "access": "read"
+              }
+            ]
+          },
+          "grantRevision": 2,
+          "account": "Workshop",
+          "conversation": "#team",
+          "senders": "anyone",
+          "me": null,
+          "pausedBy": null,
+          "pauseDetail": null,
+          "pausedMessages": null,
+          "endedBy": null,
+          "grantShape": {
+            "everything": false,
+            "tasks": "required",
+            "resources": ["plugin"]
+          },
+          "tasks": []
+        }
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "paused",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Studio",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": "you",
+            "pauseDetail": null,
+            "pausedMessages": "lost",
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Slack · #team",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "give #team a grant a chat for anyone may not hold",
+      "command": {
+        "kind": "connection.update",
+        "account": "Workshop",
+        "chat": "Slack · #team",
+        "revision": "current",
+        "grant": {
+          "scope": "everything"
+        }
+      },
+      "answer": {
+        "ok": false,
+        "code": "bad_request",
+        "message": "When anyone in the conversation can message it, it can use only tasks and the plugins you choose."
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "paused",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Studio",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": "you",
+            "pauseDetail": null,
+            "pausedMessages": "lost",
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Slack · #team",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "save #team from a page read before the last save (two devices)",
+      "command": {
+        "kind": "connection.update",
+        "account": "Workshop",
+        "chat": "Slack · #team",
+        "revision": "stale",
+        "accessMode": "full-access"
+      },
+      "answer": {
+        "ok": false,
+        "code": "conflict",
+        "message": "This connected agent changed since you opened it. Review it and try again."
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "paused",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Studio",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": "you",
+            "pauseDetail": null,
+            "pausedMessages": "lost",
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Slack · #team",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "rename #team",
+      "command": {
+        "kind": "connection.update",
+        "account": "Workshop",
+        "chat": "Slack · #team",
+        "revision": "current",
+        "label": "Team room"
+      },
+      "answer": {
+        "ok": true,
+        "chat": {
+          "label": "Team room",
+          "state": "active",
+          "accessMode": "auto",
+          "grant": {
+            "scope": "selected",
+            "tasks": true,
+            "resources": [
+              {
+                "kind": "plugin",
+                "target": {
+                  "kind": "installed",
+                  "pluginId": "plugin_team_notes"
+                },
+                "access": "read"
+              }
+            ]
+          },
+          "grantRevision": 2,
+          "account": "Workshop",
+          "conversation": "#team",
+          "senders": "anyone",
+          "me": null,
+          "pausedBy": null,
+          "pauseDetail": null,
+          "pausedMessages": null,
+          "endedBy": null,
+          "grantShape": {
+            "everything": false,
+            "tasks": "required",
+            "resources": ["plugin"]
+          },
+          "tasks": []
+        }
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "paused",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Studio",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": "you",
+            "pauseDetail": null,
+            "pausedMessages": "lost",
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "edit the chat whose account was removed",
+      "command": {
+        "kind": "connection.update",
+        "account": "On-call",
+        "chat": "Slack",
+        "revision": "current",
+        "accessMode": "auto"
+      },
+      "answer": {
+        "ok": false,
+        "code": "not_found",
+        "message": "This connected agent is no longer connected."
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "paused",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Studio",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": "you",
+            "pauseDetail": null,
+            "pausedMessages": "lost",
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "remove Studio's chat before disconnecting it",
+      "command": {
+        "kind": "connection.remove",
+        "account": "Studio",
+        "chat": "Slack"
+      },
+      "answer": {
+        "ok": false,
+        "code": "conflict",
+        "message": "Disconnect this agent before removing it."
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "paused",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Studio",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": "you",
+            "pauseDetail": null,
+            "pausedMessages": "lost",
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disconnect Studio's paused chat",
+      "command": {
+        "kind": "connection.revoke",
+        "account": "Studio",
+        "chat": "Slack"
+      },
+      "answer": {
+        "ok": true
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "Studio",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "you",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disconnect Studio's chat again, from another device",
+      "command": {
+        "kind": "connection.revoke",
+        "account": "Studio",
+        "chat": "Slack"
+      },
+      "answer": {
+        "ok": true
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "Studio",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "you",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "remove Studio's chat after disconnecting it",
+      "command": {
+        "kind": "connection.remove",
+        "account": "Studio",
+        "chat": "Slack"
+      },
+      "answer": {
+        "ok": true
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "link me on the removed account",
+      "command": {
+        "kind": "me.link",
+        "account": "On-call"
+      },
+      "answer": {
+        "ok": false,
+        "code": "not_found",
+        "message": "That messaging account is no longer connected."
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "check the removed account",
+      "command": {
+        "kind": "account.check",
+        "account": "On-call"
+      },
+      "answer": {
+        "ok": false,
+        "code": "not_found",
+        "message": "That messaging account is no longer connected."
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "check an account that does not exist",
+      "command": {
+        "kind": "account.check",
+        "account": "Nowhere"
+      },
+      "answer": {
+        "ok": false,
+        "code": "not_found",
+        "message": "That messaging account is no longer connected."
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "check Workshop",
+      "command": {
+        "kind": "account.check",
+        "account": "Workshop"
+      },
+      "notComparable": "Checking an account asks its provider; the test has no Slack. The Home's answer with the test's stand-ins is recorded.",
+      "answer": {
+        "ok": false,
+        "code": "internal",
+        "message": "Credential envelope is invalid"
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "link me on Workshop",
+      "command": {
+        "kind": "me.link",
+        "account": "Workshop"
+      },
+      "answer": {
+        "ok": true
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "pause the removed account",
+      "command": {
+        "kind": "account.status",
+        "account": "On-call",
+        "status": "paused"
+      },
+      "answer": {
+        "ok": false,
+        "code": "not_found",
+        "message": "That messaging account is no longer connected."
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "add iMessage with tokens",
+      "command": {
+        "kind": "account.create",
+        "provider": "imessage"
+      },
+      "answer": {
+        "ok": false,
+        "code": "conflict",
+        "message": "iMessage is not available for bring-your-own setup"
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "add a Slack account with its tokens",
+      "command": {
+        "kind": "account.create",
+        "provider": "slack"
+      },
+      "notComparable": "Adding an account asks the provider to check its tokens; the test has no Slack. The Home's answer with the test's stand-ins is recorded.",
+      "answer": {
+        "ok": false,
+        "code": null,
+        "message": "[\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"capabilities\"\n    ],\n    \"message\": \"Invalid input: expected array, received undefined\"\n  },\n  {\n    \"expected\": \"object\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"identity\"\n    ],\n    \"message\": \"Invalid input: expected object, received undefined\"\n  },\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"issues\"\n    ],\n    \"message\": \"Invalid input: expected array, received undefined\"\n  },\n  {\n    \"expected\": \"boolean\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"ready\"\n    ],\n    \"message\": \"Invalid input: expected boolean, received undefined\"\n  }\n]"
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "add Slack through a computer",
+      "command": {
+        "kind": "account.computer.create",
+        "provider": "slack"
+      },
+      "answer": {
+        "ok": false,
+        "code": "conflict",
+        "message": "Slack is not reached through a computer"
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "add iMessage through this Mac",
+      "command": {
+        "kind": "account.computer.create",
+        "provider": "imessage"
+      },
+      "notComparable": "Adding iMessage needs the Mac's Messages app; the test has no Mac. The Home's answer with the test's stand-ins is recorded.",
+      "answer": {
+        "ok": false,
+        "code": "conflict",
+        "message": "That computer is not connected with iMessage yet. Try again once it is online."
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "replace the removed account's tokens",
+      "command": {
+        "kind": "credentials.replace",
+        "account": "On-call"
+      },
+      "answer": {
+        "ok": false,
+        "code": "not_found",
+        "message": "This channel connection has no credentials to replace."
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "replace Workshop's tokens",
+      "command": {
+        "kind": "credentials.replace",
+        "account": "Workshop"
+      },
+      "notComparable": "Replacing tokens asks the provider to check them; the test has no Slack. The Home's answer with the test's stand-ins is recorded.",
+      "answer": {
+        "ok": false,
+        "code": null,
+        "message": "[\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"capabilities\"\n    ],\n    \"message\": \"Invalid input: expected array, received undefined\"\n  },\n  {\n    \"expected\": \"object\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"identity\"\n    ],\n    \"message\": \"Invalid input: expected object, received undefined\"\n  },\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"issues\"\n    ],\n    \"message\": \"Invalid input: expected array, received undefined\"\n  },\n  {\n    \"expected\": \"boolean\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"ready\"\n    ],\n    \"message\": \"Invalid input: expected boolean, received undefined\"\n  }\n]"
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": true
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Team room",
+            "state": "active",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": [
+                {
+                  "kind": "plugin",
+                  "target": {
+                    "kind": "installed",
+                    "pluginId": "plugin_team_notes"
+                  },
+                  "access": "read"
+                }
+              ]
+            },
+            "grantRevision": 2,
             "account": "Workshop",
             "conversation": "#team",
             "senders": "anyone",

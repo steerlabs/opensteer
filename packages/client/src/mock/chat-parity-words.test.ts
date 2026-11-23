@@ -10,8 +10,11 @@ import type { ChatParityRecord } from "./chat-parity.js";
  * words a failed call through `homeFailureText`, which keeps a refusal's sentence for the person.
  */
 const record = recorded as unknown as ChatParityRecord;
+// A step that is not comparable was answered with the test's stand-ins, not as a Home answers.
 const refusals = record.steps.flatMap((step) =>
-  step.answer.ok || step.answer.code === null ? [] : [{ step: step.name, ...step.answer }],
+  step.notComparable || step.answer.ok || step.answer.code === null
+    ? []
+    : [{ step: step.name, ...step.answer }],
 );
 
 describe("the Home's refusals in the parity script", () => {

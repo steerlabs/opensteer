@@ -2548,7 +2548,9 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
           );
     },
     "channel.connection.check": async (input) =>
-      rpcSuccess(await client.checkChannelConnection(input.connectionId)),
+      client
+        .checkChannelConnection(input.connectionId)
+        .then((inspection) => rpcSuccess(inspection), mockRefusal),
     "channels.get": async () => {
       if (client.unreadable) throw new Error("The preview Home can't be reached.");
       return rpcSuccess(hostApi["channels.get"].success.parse(await client.loadChannels()));
@@ -3494,13 +3496,14 @@ async function executeMockCommand(
       await client.revokeIntegrationGrant(client.getSnapshot().deploymentId!, command.grantId);
       return rpcSuccess({ type: command.type });
     case "channel.connection.create":
-      await client.createChannelConnection({
-        credentials: command.credentials,
-        provider: command.provider,
-        routingMode: command.routingMode,
-        deploymentId: client.getSnapshot().deploymentId!,
-      });
-      return unsupportedMockRpc();
+      return client
+        .createChannelConnection({
+          credentials: command.credentials,
+          provider: command.provider,
+          routingMode: command.routingMode,
+          deploymentId: client.getSnapshot().deploymentId!,
+        })
+        .then(unsupportedMockRpc, mockRefusal);
     case "channel.chat.create":
       try {
         const connection = client.createChat(command);
@@ -3510,14 +3513,18 @@ async function executeMockCommand(
         return mockRefusal(error);
       }
     case "channel.connection.computer.create":
-      return unsupportedMockRpc();
-    case "channel.me.link":
-      // A preview shows the code the person would send; the mock Host links nobody.
+      return mockRefusal(client.computerChannelRefusal(command.provider));
+    case "channel.me.link": {
+      // A preview shows the code the person would send; the mock Host links nobody. An account
+      // that is gone is said to be gone, in the Home's words.
+      if (!client.channelAccountLinkable(command.accountId))
+        return mockRefusal(mockNotFound(chatAddRefusals.accountGone));
       return rpcSuccess({
         code: "MOCKCODE",
         expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
         type: command.type,
       });
+    }
     case "channel.connection.credentials.replace":
       await client.replaceChannelConnectionCredentials(command.connectionId, command.credentials);
       return rpcSuccess({ type: command.type });
@@ -6046,19 +6053,40 @@ class MockHostState {
             (row.expiresAt === null || Date.parse(row.expiresAt) > this.now().getTime()))),
     );
   }
-  revokeConnection(id: string) {
+  /**
+   * As on the Home: what it may do moves on (its revision), and a chat remembers that you ended
+   * it; it is no longer paused, so nothing says why it was.
+   */
+  revokeConnection(id: string, endedBy: "you" | "account" = "you") {
     const revokedAt = this.now().toISOString();
-    this.connections = this.connections.map((row) =>
-      row.id === id && row.userId === this.snapshot.user?.id && row.state !== "stopped"
-        ? { ...row, state: "stopped", revokedAt }
-        : row,
-    );
+    this.connections = this.connections.map((row) => {
+      if (row.id !== id || row.userId !== this.snapshot.user?.id || row.revokedAt) return row;
+      const ended = {
+        ...row,
+        state: "stopped" as const,
+        revokedAt,
+        grantRevision: (row.grantRevision ?? 1) + 1,
+      };
+      if (!row.bridge) return ended;
+      const {
+        pausedBy: _by,
+        pauseDetail: _detail,
+        pausedMessages: _messages,
+        ...bridge
+      } = row.bridge;
+      return { ...ended, bridge: { ...bridge, endedBy } };
+    });
   }
   updateConnection(command: Extract<HostApiCommand, { type: "connection.update" }>) {
     const current = this.listConnections().find((row) => row.id === command.connectionId);
-    if (!current) throw mockConflict("This connected agent is no longer connected.");
+    if (!current) throw mockNotFound("This connected agent is no longer connected.");
     if ((current.grantRevision ?? 1) !== command.expectedRevision)
-      throw mockConflict("This connected agent changed since you opened it.");
+      throw new HostClientRequestError({
+        code: "conflict",
+        reason: "revision-changed",
+        message: "This connected agent changed since you opened it. Review it and try again.",
+        status: 409,
+      });
     // A chat's grant is refused by the Home's own rule, here as there.
     const refusal =
       current.bridge && command.grant
@@ -6076,8 +6104,12 @@ class MockHostState {
       ...(command.label !== undefined ? { label: command.label } : {}),
       ...(command.accessMode !== undefined ? { accessMode: command.accessMode } : {}),
       ...(command.grant !== undefined ? { grant: command.grant } : {}),
-      grantRevision: (current.grantRevision ?? 1) + 1,
     };
+    // A new name is not a change to what it may do: the revision moves only for mode or grant.
+    const changed =
+      next.accessMode !== current.accessMode ||
+      JSON.stringify(next.grant) !== JSON.stringify(current.grant);
+    if (changed) next.grantRevision = (current.grantRevision ?? 1) + 1;
     this.connections = this.connections.map((row) => (row.id === current.id ? next : row));
     return next;
   }
@@ -6089,6 +6121,11 @@ class MockHostState {
     );
   }
   removeConnection(id: string) {
+    const row = this.connections.find(
+      (connection) => connection.id === id && connection.userId === this.snapshot.user?.id,
+    );
+    if (row && row.state !== "stopped" && row.state !== "expired")
+      throw mockConflict("Disconnect this agent before removing it.");
     this.connections = this.connections.filter(
       (row) =>
         row.id !== id ||
@@ -11157,16 +11194,53 @@ class MockHostState {
     );
   }
 
+  /**
+   * The preview has no messaging service to check tokens with, so it answers as a Home whose
+   * service has not started, in the Home's words; a provider set up another way is refused first,
+   * as there.
+   */
   async createChannelConnection(
-    _input: import("../host/client.js").CreateChannelConnectionInput,
+    input: import("../host/client.js").CreateChannelConnectionInput,
   ): Promise<import("../host/client.js").CreatedChannelConnection> {
-    throw new Error("The mock Host does not persist channel connections.");
+    const manifest: import("@opensteer/channel-core").ChannelProviderManifest | undefined =
+      channelProviderCatalog.find(({ provider }) => provider === input.provider);
+    if (!manifest)
+      throw mockConflict(`${input.provider} is not a messaging provider this Deployment knows`);
+    if (!manifest.connectionMethods.includes("bring-your-own"))
+      throw mockConflict(`${manifest.label} is not available for bring-your-own setup`);
+    throw mockConflict(
+      `${manifest.label} connection service is still starting. Try again in a moment.`,
+    );
   }
 
+  /** The preview has no computer carrying a messaging app: answered as the Home answers that. */
+  computerChannelRefusal(provider: string): HostClientRequestError {
+    const manifest: import("@opensteer/channel-core").ChannelProviderManifest | undefined =
+      channelProviderCatalog.find((entry) => entry.provider === provider);
+    if (!manifest)
+      return mockConflict(`${provider} is not a messaging provider this Deployment knows`);
+    if (!manifest.transportKinds.includes("computer") || !manifest.computerApp)
+      return mockConflict(`${manifest.label} is not reached through a computer`);
+    return mockConflict(
+      `That computer is not connected with ${manifest.label} yet. Try again once it is online.`,
+    );
+  }
+
+  /** An account that is gone, or one reached through a computer, has no tokens to replace. */
   async replaceChannelConnectionCredentials(
-    _connectionId: string,
+    connectionId: string,
     _credentials: Readonly<Record<string, string>>,
-  ): Promise<void> {}
+  ): Promise<void> {
+    const connection = this.channels?.connections.find(({ id }) => id === connectionId);
+    if (!connection || connection.status === "revoked" || connection.transportKind === "computer")
+      throw mockNotFound("This channel connection has no credentials to replace.");
+  }
+
+  /** Whether a person may link who they are on this account: it is theirs and not removed. */
+  channelAccountLinkable(accountId: string): boolean {
+    const account = this.channels?.accounts.find(({ id }) => id === accountId);
+    return account !== undefined && account.status !== "revoked";
+  }
 
   /** What checking an account finds: ready when connected, otherwise what it reports. */
   async checkChannelConnection(
@@ -11174,7 +11248,8 @@ class MockHostState {
   ): Promise<import("@opensteer/channel-core").ChannelConnectionInspection> {
     const connection = this.channels?.connections.find(({ id }) => id === connectionId);
     const account = this.channels?.accounts.find((row) => row.connectionId === connectionId);
-    if (!connection || !account) throw new Error("Messaging account not found.");
+    if (!connection || !account || account.status === "revoked")
+      throw mockNotFound(chatAddRefusals.accountGone);
     if (connection.status === "needs-attention")
       return {
         capabilities: [...connection.capabilities],
@@ -11210,6 +11285,8 @@ class MockHostState {
     status: "connected" | "paused" | "revoked",
   ): Promise<void> {
     if (!this.channels) return;
+    const account = this.channels.accounts.find((row) => row.connectionId === connectionId);
+    if (!account || account.status === "revoked") throw mockNotFound(chatAddRefusals.accountGone);
     const accountStatus = status === "revoked" ? "revoked" : status;
     this.channels = {
       ...this.channels,
@@ -11243,6 +11320,7 @@ class MockHostState {
           ...row,
           state: "stopped",
           revokedAt: ended,
+          grantRevision: (row.grantRevision ?? 1) + 1,
           bridge: { ...bridge, endedBy: "account" },
         };
       return status === "paused"

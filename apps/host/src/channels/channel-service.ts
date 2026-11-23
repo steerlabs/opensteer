@@ -1,3 +1,4 @@
+import { chatAddRefusals } from "@opensteer/core";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import {
@@ -136,7 +137,7 @@ export class ChannelService {
     if (!manifest.connectionMethods.includes("bring-your-own")) {
       throw new OpensteerError({
         code: "conflict",
-        message: `${provider} is not available for bring-your-own setup`,
+        message: `${manifest.label} is not available for bring-your-own setup`,
       });
     }
     const transportKind = manifest.defaultTransportKind;
@@ -346,7 +347,10 @@ export class ChannelService {
   async checkConnection(connectionIdInput: string, ownerUserId: UserId) {
     const connectionId = IntegrationConnectionIdSchema.parse(connectionIdInput);
     const connection = await this.#channels.connectionForCheck(connectionId, ownerUserId);
-    if (!connection || !this.#relay.isConnected(connection.runnerId)) {
+    // An account that is gone is said to be gone, never "still starting".
+    if (!connection)
+      throw new OpensteerError({ code: "not_found", message: chatAddRefusals.accountGone });
+    if (connection === "unplaced" || !this.#relay.isConnected(connection.runnerId)) {
       throw new OpensteerError({
         code: "conflict",
         message: "Messaging connection service is still starting. Try again in a moment.",

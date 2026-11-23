@@ -28,12 +28,71 @@ export type ChatParityCommand =
       readonly account: string;
       readonly chat: string;
       readonly task: string;
-    };
+    }
+  | {
+      readonly kind: "connection.update";
+      readonly account: string;
+      readonly chat: string;
+      /** "stale": the revision before the current one, as a page read before the last save. */
+      readonly revision: "current" | "stale";
+      readonly accessMode?: ThreadAccessMode;
+      readonly grant?: AgentGrant;
+      readonly label?: string;
+    }
+  | { readonly kind: "connection.revoke"; readonly account: string; readonly chat: string }
+  | { readonly kind: "connection.remove"; readonly account: string; readonly chat: string }
+  | { readonly kind: "me.link"; readonly account: string }
+  | { readonly kind: "account.check"; readonly account: string }
+  /** Adds an account with its tokens (bring your own app), as the Messaging page's form does. */
+  | { readonly kind: "account.create"; readonly provider: string }
+  /** Adds an account reached through the person's computer (Messages on a Mac). */
+  | { readonly kind: "account.computer.create"; readonly provider: string }
+  | { readonly kind: "credentials.replace"; readonly account: string };
 
 export interface ChatParityStep {
   readonly name: string;
   readonly command: ChatParityCommand;
+  /**
+   * Why the preview's answer can't be the Home's here (a step that needs a provider the test
+   * cannot have): it is recorded, and the preview's must still be one the Home can give.
+   */
+  readonly notComparable?: string;
 }
+
+/**
+ * Every command and read the Messaging, chat and connected-agent screens send, by the parity
+ * step kinds that cover them. A screen's client that sends one not listed here fails
+ * `tests/chat-parity-coverage.test.ts`; one listed with no accepted and no refused step in the fixture
+ * fails it too.
+ */
+export const chatScreenSends = {
+  "channel.chat.create": "chat.create",
+  "channel.connection.create": "account.create",
+  "channel.connection.computer.create": "account.computer.create",
+  "channel.connection.status.set": "account.status",
+  "channel.me.link": "me.link",
+  "channel.connection.check": "account.check",
+  "channel.connection.credentials.replace": "credentials.replace",
+  "connection.update": "connection.update",
+  "connection.revoke": "connection.revoke",
+  "connection.remove": "connection.remove",
+  "run.interrupt": "task.stop",
+} as const satisfies Record<string, ChatParityCommand["kind"]>;
+
+/** The reads every step's views are made of: each step records both, as the screens read them. */
+export const chatParityViewReads = ["channels.get", "connections.list"] as const;
+
+/** Commands the Home never refuses, by why: a second step that repeats it stands for a refusal. */
+export const chatParityRefusesNothing = {
+  "connection.revoke":
+    "Disconnect is never refused: a second one, from another device or a retry, is answered done and finishes stopping what the first began.",
+} as const satisfies Partial<Record<keyof typeof chatScreenSends, string>>;
+
+/** What those screens send that this script does not cover, by why; listed so it is seen. */
+export const chatParityOutside = {
+  "browser.profile.create":
+    "Makes the browser profile a connected agent's new grant names, as Browser profiles makes one; this script runs no browser.",
+} as const;
 
 /** What a command came to: done, with the chat it made, or refused in the Home's words. */
 export type ChatParityAnswer =
@@ -45,6 +104,8 @@ export interface ChatParityChat {
   readonly state: string | null;
   readonly accessMode: string;
   readonly grant: unknown;
+  /** Moves when what it may do changes (mode or grant), not for a new name. */
+  readonly grantRevision: number | null;
   readonly account: string | null;
   readonly conversation: string | null;
   readonly senders: string;
@@ -89,6 +150,7 @@ export function chatParityChat(connection: AgentConnection): ChatParityChat {
     state: connection.state ?? null,
     accessMode: connection.accessMode,
     grant: connection.grant ?? null,
+    grantRevision: connection.grantRevision ?? null,
     account: bridge.accountName ?? null,
     conversation: bridge.conversationName ?? null,
     senders: bridge.senders,
