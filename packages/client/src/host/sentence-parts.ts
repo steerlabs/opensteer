@@ -6,8 +6,13 @@
  * exactly as written. Taken from the first-run branch's phone files (`sentence-parts.ts`,
  * `address-words.ts`), with one change: a dot's joint is before the dot, so a line never ends in
  * a dot that reads as a full stop.
+ *
+ * Three kinds of part: plain words; `{ address }`, drawn by the address rule; and `{ name }`, a
+ * name supplied from outside Opensteer (an account's or a conversation's display name, a
+ * plugin's or its provider's name), drawn as words, never passed to the address drawing and never
+ * searched for an address.
  */
-export type SentencePart = string | { readonly address: string };
+export type SentencePart = string | { readonly address: string } | { readonly name: string };
 
 /** `Send ${code} to ${address}.`, as parts: each interpolated value is an address. */
 export function sentence(
@@ -38,9 +43,25 @@ export function sentenceAround(
   return [...(before === "" ? [] : [before]), { address: value }, ...(after === "" ? [] : [after])];
 }
 
-/** The sentence as a person reads it aloud, copies it or sees it in an alert. */
+/**
+ * The same, for a value supplied from outside Opensteer: an address part when it is one,
+ * otherwise a name part, never plain words a screen might search.
+ */
+export function sentenceAroundName(
+  words: (slot: string) => string,
+  value: string,
+): readonly SentencePart[] {
+  const slot = String.fromCharCode(0);
+  const [before = "", after = ""] = words(slot).split(slot);
+  const part = isAddress(value) ? { address: value } : { name: value };
+  return [...(before === "" ? [] : [before]), part, ...(after === "" ? [] : [after])];
+}
+
+/** The sentence as a person reads it aloud, copies it or sees it in an alert: all three kinds as written. */
 export function plainSentence(parts: readonly SentencePart[]): string {
-  return parts.map((part) => (typeof part === "string" ? part : part.address)).join("");
+  return parts
+    .map((part) => (typeof part === "string" ? part : "address" in part ? part.address : part.name))
+    .join("");
 }
 
 /**

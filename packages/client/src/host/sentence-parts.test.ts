@@ -5,6 +5,7 @@ import {
   plainSentence,
   sentence,
   sentenceAround,
+  sentenceAroundName,
 } from "./sentence-parts.js";
 
 const table: ReadonlyArray<{
@@ -102,5 +103,27 @@ describe("a sentence as parts", () => {
       " on iMessage",
     ]);
     expect(sentenceAround(words, "Workshop")).toEqual(["Direct messages to Workshop on iMessage"]);
+  });
+
+  it("keeps a name from outside Opensteer a name part, never words to search, unless it is an address", () => {
+    const words = (account: string) => `Direct messages to ${account} on Slack`;
+    expect(sentenceAroundName(words, "Workshop")).toEqual([
+      "Direct messages to ",
+      { name: "Workshop" },
+      " on Slack",
+    ]);
+    expect(sentenceAroundName(words, "acme.slack.com")).toEqual([
+      "Direct messages to ",
+      { address: "acme.slack.com" },
+      " on Slack",
+    ]);
+    // A name that reads like a host is still a name when the code says it is one.
+    const parts = [
+      "Uses ",
+      { name: "evil-google.com Notes" },
+      " to reach ",
+      { address: "api.example.com" },
+    ];
+    expect(plainSentence(parts)).toBe("Uses evil-google.com Notes to reach api.example.com");
   });
 });

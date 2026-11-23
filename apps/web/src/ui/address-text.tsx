@@ -20,12 +20,21 @@ export function Address({ value }: { readonly value: string }) {
   );
 }
 
-/** A sentence given as parts: its words as words, and each address part as an `Address`. */
+/**
+ * A sentence given as parts: its words and any name from outside Opensteer as words, and each
+ * address part as an `Address`.
+ */
 export function SentenceText({ parts }: { readonly parts: readonly SentencePart[] }) {
   return (
     <>
       {parts.map((part, index) =>
-        typeof part === "string" ? part : <Address key={index} value={part.address} />,
+        typeof part === "string" ? (
+          part
+        ) : "address" in part ? (
+          <Address key={index} value={part.address} />
+        ) : (
+          part.name
+        ),
       )}
     </>
   );

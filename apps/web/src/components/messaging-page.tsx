@@ -12,7 +12,7 @@ import type {
 import {
   agentWords,
   homeFailureText,
-  sentenceAround,
+  sentenceAroundName,
   chatsOfAccount,
   connectedAgentRow,
   connectionsRead,
@@ -549,7 +549,7 @@ export function ChannelOverview({
                     <span className="card__row-title">
                       <Link to={`/settings/messaging/${encodeURIComponent(connection.id)}`}>
                         <SentenceText
-                          parts={sentenceAround((name) => name, connection.displayName)}
+                          parts={sentenceAroundName((name) => name, connection.displayName)}
                         />
                       </Link>
                       {/* A read that failed leaves the last answer on screen, never as current. */}
@@ -705,7 +705,7 @@ export function AccountChats({
             <SentenceText
               parts={
                 me
-                  ? sentenceAround(
+                  ? sentenceAroundName(
                       (identity) => agentWords("messaging.me.linked", { identity }),
                       me.displayName,
                     )
@@ -716,7 +716,7 @@ export function AccountChats({
           {code ? (
             <span className="card__row-detail" role="status">
               <SentenceText
-                parts={sentenceAround(
+                parts={sentenceAroundName(
                   (account) =>
                     agentWords("messaging.me.code", {
                       code: code.code,
@@ -737,7 +737,7 @@ export function AccountChats({
           {me ? (
             <span className="card__row-detail">
               <SentenceText
-                parts={sentenceAround(
+                parts={sentenceAroundName(
                   (identity) => agentWords("messaging.me.replaces", { identity }),
                   me.displayName,
                 )}

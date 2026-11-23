@@ -3,6 +3,7 @@ import { hostApi, type AgentConnection, type PluginsInstalledView } from "@opens
 import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { describe, expect, it } from "vitest";
 import { chatFacts, messagingAccountView } from "./chat-view.js";
+import { plainSentence } from "./sentence-parts.js";
 import {
   agentAppOptions,
   agentBrowserOptions,
@@ -692,15 +693,18 @@ describe("a list from a newer Home", () => {
 });
 
 describe("a chat's address, as parts", () => {
-  it("holds the account's address as a part of its own in where it listens and its row, and a name as words", () => {
+  it("holds the account's address as a part of its own in where it listens and its row, and its name as a name", () => {
     const chats = mockConnectedAgents("chats").connections;
     const imessage = chats.find(({ label }) => label === "iMessage")!;
     const slack = chats.find(({ label }) => label === "Slack")!;
     expect(chatFacts(imessage, "paused")!.whereParts).toContainEqual({
       address: "tim@example.com",
     });
-    expect(chatFacts(slack, "active")!.whereParts).toEqual([chatFacts(slack, "active")!.where]);
+    const where = chatFacts(slack, "active")!;
+    // The account's display name comes from Slack: a name part, never words to search.
+    expect(where.whereParts).toContainEqual({ name: "Workshop" });
+    expect(plainSentence(where.whereParts)).toBe(where.where);
     const row = connectedAgentRow(slack, { profiles: [] });
-    expect(row.lineParts.join("")).toBe(row.line);
+    expect(plainSentence(row.lineParts)).toBe(row.line);
   });
 });

@@ -2,7 +2,7 @@ import type { ChannelProviderManifest } from "@opensteer/channel-core";
 import type { AgentConnection, MachineSummary } from "@opensteer/protocol";
 import type { ConnectedAgentPhase } from "./connected-agent-view.js";
 import { agentWords } from "./connected-agents-copy.js";
-import { plainSentence as plain, sentenceAround, type SentencePart } from "./sentence-parts.js";
+import { plainSentence as plain, sentenceAroundName, type SentencePart } from "./sentence-parts.js";
 
 /**
  * What only a chat has beside any connected agent's page, in the person's words: where it
@@ -39,7 +39,7 @@ export function chatFacts(
   if (!bridge) return null;
   const account = bridge.accountName ?? bridge.provider;
   const conversation = bridge.conversationName ?? bridge.conversationId ?? "";
-  const whereParts = sentenceAround(
+  const whereParts = sentenceAroundName(
     (slot) =>
       bridge.conversationId === null
         ? agentWords("chat.where.dm", { account: slot, provider: bridge.provider })
@@ -66,8 +66,11 @@ export function chatFacts(
         )
       : identity !== undefined
         ? words(
-            sentenceAround((slot) => agentWords("chat.speakers.me", { identity: slot }), identity),
-            sentenceAround(
+            sentenceAroundName(
+              (slot) => agentWords("chat.speakers.me", { identity: slot }),
+              identity,
+            ),
+            sentenceAroundName(
               (slot) => agentWords("chat.speakers.meDetail", { identity: slot }),
               identity,
             ),
