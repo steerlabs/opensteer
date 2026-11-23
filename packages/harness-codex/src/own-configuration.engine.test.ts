@@ -15,11 +15,7 @@ import {
   type HarnessSessionContext,
 } from "@opensteer/harness";
 import { afterEach, expect, it } from "vitest";
-import {
-  CodexHarnessDriver,
-  codexOthersHomeDirectory,
-  packagedCodexExecutable,
-} from "./index.js";
+import { CodexHarnessDriver, codexOthersHomeDirectory, packagedCodexExecutable } from "./index.js";
 
 /**
  * The shipped Codex, started by the driver in a temporary `CODEX_HOME` and

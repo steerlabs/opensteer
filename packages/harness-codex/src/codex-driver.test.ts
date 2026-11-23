@@ -2816,7 +2816,10 @@ describe("Codex app-server harness", () => {
       const personCodexHome = join(root, "person-codex");
       await mkdir(personCodexHome, { recursive: true });
       const personAuth = join(personCodexHome, "auth.json");
-      await writeFile(personAuth, JSON.stringify({ OPENAI_API_KEY: "sk-stub", auth_mode: "apikey" }));
+      await writeFile(
+        personAuth,
+        JSON.stringify({ OPENAI_API_KEY: "sk-stub", auth_mode: "apikey" }),
+      );
       await writeFile(
         join(personCodexHome, "config.toml"),
         [

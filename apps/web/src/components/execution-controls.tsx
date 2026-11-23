@@ -359,11 +359,11 @@ function ExecutionSwitchReviewPanel({
             it may do:
           </p>
           <AccessChoice
-          change={outcome.access}
-          onChange={setAccessMode}
-          startedByOther={startedByOther}
-          value={accessMode}
-        />
+            change={outcome.access}
+            onChange={setAccessMode}
+            startedByOther={startedByOther}
+            value={accessMode}
+          />
         </>
       ) : null}
       <div className="switch-review__actions">

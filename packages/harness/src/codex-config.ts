@@ -116,10 +116,7 @@ interface CodexModelConfig {
 }
 
 type TomlPrimitive = string | number | boolean;
-type TomlValue =
-  | TomlPrimitive
-  | readonly TomlValue[]
-  | { readonly [key: string]: TomlValue };
+type TomlValue = TomlPrimitive | readonly TomlValue[] | { readonly [key: string]: TomlValue };
 
 const safeProviderStringKeys = [
   "name",
@@ -184,9 +181,7 @@ function sanitizeStringMap(value: unknown): Record<string, string> | undefined {
  * provider. Every personal rule, hook, notify command, instruction, agent,
  * project trust entry, MCP server, skill, feature or sandbox setting is left out.
  */
-export function extractCodexModelConfig(
-  parsed: Record<string, unknown>,
-):
+export function extractCodexModelConfig(parsed: Record<string, unknown>):
   | {
       readonly ok: true;
       readonly storeMode: "file" | "auto";
@@ -359,9 +354,9 @@ export function parseCodexConfigToml(source: string): Record<string, unknown> {
   let index = 0;
   const length = input.length;
 
-  const fail = (message: string): never => {
+  function fail(message: string): never {
     throw new Error(`Invalid TOML at offset ${index}: ${message}`);
-  };
+  }
 
   const skipSpaces = () => {
     while (index < length && (input[index] === " " || input[index] === "\t")) index += 1;
@@ -558,10 +553,7 @@ export function parseCodexConfigToml(source: string): Record<string, unknown> {
     if (input[index] === "{") return parseInlineTable();
 
     const start = index;
-    while (
-      index < length &&
-      !/[\s,#\]}]/u.test(input[index]!)
-    ) {
+    while (index < length && !/[\s,#\]}]/u.test(input[index]!)) {
       index += 1;
     }
     // RFC 3339 date-times may contain a single space separating date and time.
@@ -578,7 +570,12 @@ export function parseCodexConfigToml(source: string): Record<string, unknown> {
     }
     if (raw === "true") return true;
     if (raw === "false") return false;
-    if (/^\d{4}-\d{2}-\d{2}(?:[Tt]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[Zz]|[+-]\d{2}:\d{2})?)?$/u.test(raw) || /^\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/u.test(raw)) {
+    if (
+      /^\d{4}-\d{2}-\d{2}(?:[Tt]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[Zz]|[+-]\d{2}:\d{2})?)?$/u.test(
+        raw,
+      ) ||
+      /^\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/u.test(raw)
+    ) {
       return raw;
     }
     const cleanNum = raw.replaceAll("_", "");
