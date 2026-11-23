@@ -22,6 +22,7 @@ import { PlaywrightChromiumLauncher } from "./browser/playwright-launcher.js";
 import { readBrowserRuntimeConfig } from "./config.js";
 import { acquireProfileRootLock } from "./profile-root-lock.js";
 import { shutdownSignals } from "@opensteer/shared/processControl";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 
 async function main(): Promise<void> {
   const config = readBrowserRuntimeConfig();
@@ -152,20 +153,58 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
     }
   })();
 
-  let closing = false;
-  const close = async () => {
-    if (closing) return;
-    closing = true;
-    await relay?.close();
-    await server.close();
-    // The OS closes the root-lock descriptor when this process exits.
-  };
-  for (const signal of shutdownSignals) process.once(signal, () => void close().catch(fail));
+  let closing: Promise<void> | undefined;
+  /**
+   * TS17: the stop's work (the relay ended, every session closed and every profile saved by its
+   * own Chromium, the servers closed), each step within its bound; then this process exits. It
+   * never waits on a handle the stop does not own (a just-launched Chromium's helper still holding
+   * a pipe, a library's close timer). What could not be confirmed is said in one line.
+   */
+  const close = () =>
+    (closing ??= (async () => {
+      const started = performance.now();
+      const unconfirmed: string[] = [];
+      const step = async (name: string, work: Promise<void> | undefined, boundMs: number) => {
+        if (!work) return;
+        const finished = await withTimeout(
+          work.then(() => true),
+          boundMs,
+          {
+            timeoutError: () => new Error(`${name} did not finish`),
+          },
+        ).catch((error: unknown) => {
+          if (error instanceof Error && error.message === `${name} did not finish`) return false;
+          throw error;
+        });
+        if (!finished) unconfirmed.push(name);
+      };
+      try {
+        await step("relay", relay?.close(), relayStopMs);
+        // The runtime's own shutdown bounds the saving of profiles; it is not shortened here.
+        await server.close();
+      } catch (error) {
+        fail(error);
+      } finally {
+        process.stdout.write(
+          `${JSON.stringify({
+            event: "browser-runtime.stopped",
+            elapsedMs: Math.round(performance.now() - started),
+            ...(unconfirmed.length ? { unconfirmed } : {}),
+            ...(process.getActiveResourcesInfo().length
+              ? { leftHandles: [...new Set(process.getActiveResourcesInfo())] }
+              : {}),
+          })}\n`,
+        );
+        // The OS closes the root-lock descriptor when this process exits.
+        exitAfterOutput(process.exitCode === undefined ? 0 : Number(process.exitCode));
+      }
+    })());
+  for (const signal of shutdownSignals) process.once(signal, () => void close());
   // Another process reclaimed the data directory lease: this runtime no longer
   // owns the profile root it is relaying, so it stops and says why.
   relay?.onLost((reason) => {
     fail(reason);
-    void close().catch(fail);
+    void close();
   });
   process.stdout.write(
     `${JSON.stringify({ event: "browser-runtime.ready", host: address.host, port: address.port })}\n`,
@@ -271,6 +310,16 @@ async function startBrowserRelay(options: {
     },
     onLost: (listener) => lock.onLost(listener),
   };
+}
+
+/** How long ending the relay to the Host may take before the stop goes on without it. */
+const relayStopMs = 5_000;
+
+/** Exits once what was written has reached the pipe, or a moment after: nothing else holds it. */
+function exitAfterOutput(code: number): void {
+  const exit = () => process.exit(code);
+  setTimeout(exit, 1_000).unref();
+  process.stdout.write("", () => process.stderr.write("", exit));
 }
 
 function fail(error: unknown): void {

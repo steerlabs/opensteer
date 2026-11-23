@@ -1760,6 +1760,7 @@ class ClaudeHarnessSession implements HarnessSession {
         },
         log: this.#log,
         logContext: { harness: "claude", runId: run.runId },
+        secrets: engineDiagnosticSecrets(environment, 4),
       }),
       idle: false,
       wakePending: false,

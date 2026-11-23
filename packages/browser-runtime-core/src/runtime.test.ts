@@ -94,6 +94,39 @@ describe("BrowserRuntime", () => {
     }
   });
 
+  it.each([true, false])(
+    "evaluates memory pressure before each page a host creates only where it is read (C9, %s)",
+    async (linux) => {
+      const context = new FakeContext([new FakePage()]);
+      const pressure = vi.fn(async () => ({ usedBytes: 1, limitBytes: 100 }));
+      const launcher = Object.assign(
+        new FakeLauncher(new FakeLaunchedBrowser(context)),
+        linux ? { memoryPressure: pressure } : {},
+      );
+      const runtime = new BrowserRuntime({
+        launcher,
+        runtimeId: "runtime_test",
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: new FakeTicketVerifier(freshClaims()),
+      });
+      try {
+        await runtime.attach("fresh-ticket", new FakeSink());
+        expect(typeof context.beforeCreatePage).toBe(linux ? "function" : "undefined");
+        if (linux) {
+          await context.beforeCreatePage!();
+          expect(pressure).toHaveBeenCalled();
+        }
+        // A page Chromium opened marks the growth window too, where pressure is read (Q4).
+        const sleeper = (runtime as unknown as { sleeper: { lastOpenAt: number } }).sleeper;
+        sleeper.lastOpenAt = Number.NEGATIVE_INFINITY;
+        context.addPage(new FakePage({ url: "https://popup.test/" }));
+        expect(Number.isFinite(sleeper.lastOpenAt)).toBe(linux);
+      } finally {
+        await runtime.shutdown();
+      }
+    },
+  );
+
   it("retires an idle Guest process with a reason and preserves suspended tab records", async () => {
     vi.useFakeTimers();
     vi.spyOn(process, "availableMemory").mockReturnValue(0);
@@ -269,12 +302,28 @@ describe("BrowserRuntime", () => {
           creationOrigin === "person"
             ? ["live", "live"]
             : [
-                activity === "activation" || activity === "native" || activity === "host-activation"
+                activity === "activation" ||
+                activity === "native" ||
+                activity === "host-activation" ||
+                activity === "watch"
                   ? "live"
                   : "suspended",
                 "suspended",
               ],
         );
+        if (activity === "watch") {
+          // TS16: a tab a person saw stays awake ten minutes, as in desktop Chrome; a Watch never
+          // made it the person's, so it sleeps then.
+          expect([...sink.tabs.rows.values()].map((row) => row.state)).toEqual([
+            "live",
+            "suspended",
+          ]);
+          await vi.advanceTimersByTimeAsync(10 * 60_000);
+          expect([...sink.tabs.rows.values()].map((row) => row.state)).toEqual([
+            "suspended",
+            "suspended",
+          ]);
+        }
       } finally {
         await runtime.shutdown();
         vi.useRealTimers();

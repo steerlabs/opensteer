@@ -17,6 +17,7 @@ import {
 } from "../apps/host/src/mcp/connection-caller.test-support.js";
 import type { RequestId, ThreadId } from "../packages/core/src/index.js";
 import { listBrowserPoolDocumentLosses, type TabRecord } from "../packages/database/src/index.js";
+import { TabSleeper } from "../packages/browser-runtime-core/src/browser/tab-sleeper.js";
 import { before, holdResume, journey } from "./browser-pool-journey.test-support.js";
 
 type Journey = Awaited<ReturnType<typeof journey>>;
@@ -138,6 +139,45 @@ async function directWork(j: Journey, home: () => Home) {
 
 const text = (result: Awaited<ReturnType<Awaited<ReturnType<typeof directWork>>["use"]>>) =>
   JSON.stringify(result.content);
+
+it("makes a tab a pooled browser_use script binds the agent's at the bind, before any input (V5)", async () => {
+  // The runtime's sleeper hears every session state the Home sends (TS12's agentTabs).
+  const states: { sessionId: string; agentTabs: readonly string[] }[] = [];
+  const setSessionState = TabSleeper.prototype.setSessionState;
+  const spy = vi.spyOn(TabSleeper.prototype, "setSessionState").mockImplementation(function (
+    this: TabSleeper,
+    id,
+    state,
+  ) {
+    states.push({ sessionId: id, agentTabs: state.agentTabs ?? [] });
+    return setSessionState.call(this, id, state);
+  });
+  const j = await journey("direct-script-bound", { profile: true });
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [tab] = await home.service.savedPages(j.task.userId, session.id);
+    if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    await j.draft();
+    const work = await directWork(j, () => home);
+    // A read only: no input, no action; the bind alone makes the tab the agent's.
+    const read = await work.use(
+      `const page = await openPage(${JSON.stringify(tab.id)}); return await page.js("document.title")`,
+    );
+    expect(read.isError, text(read)).not.toBe(true);
+    await vi.waitFor(() =>
+      expect(
+        states.some((state) => state.sessionId === session.id && state.agentTabs.includes(tab.id)),
+      ).toBe(true),
+    );
+  } finally {
+    spy.mockRestore();
+    await j.close();
+  }
+});
 
 it("runs a connected agent's script on a parked browser after one wake, and rebinds its cached page only with its witnesses", async () => {
   const j = await journey("direct-script", { profile: true });

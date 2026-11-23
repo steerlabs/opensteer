@@ -526,7 +526,12 @@ export interface RunEntry {
   createdAt: string;
   /** When it ended, which settles what a page before its end left open. */
   endedAt?: string;
-  error: { code: string; message: string; retryable: boolean } | null;
+  error: {
+    code: string;
+    message: string;
+    ownerMessage?: string | undefined;
+    retryable: boolean;
+  } | null;
   id: string;
   kind: "run";
   /**
@@ -642,6 +647,8 @@ export interface BrowserTabSummary {
   /** The page is loading; absent from an older Browser Runtime. */
   loading?: boolean | undefined;
   navigationFailed?: boolean | undefined;
+  /** The last wake opened this tab again at its address (ms since the epoch). */
+  reopenedAt?: number | undefined;
   id: BrowserSurfaceId;
   title: string;
   url: string;

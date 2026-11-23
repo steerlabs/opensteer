@@ -30,6 +30,8 @@ export interface TabsClient {
     options?: {
       readonly wake?: boolean;
       readonly signal?: AbortSignal;
+      /** V8: the tab as the Home read it after this activation, before the viewer is returned. */
+      readonly answered?: (tab: Tab) => void;
     },
   ): Promise<TabViewer>;
   organizeTabs(input: TabOrganizeInput): Promise<TabOrganizeResult>;

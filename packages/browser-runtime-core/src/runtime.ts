@@ -338,6 +338,7 @@ export class BrowserRuntime implements NativePresentationSource {
       memoryBudgetBytes: options.memoryBudgetBytes,
       hostCost: this.launcher.hostCost,
       rendererUsage: this.launcher.rendererUsage?.bind(this.launcher),
+      memoryPressure: this.launcher.memoryPressure?.bind(this.launcher),
       onPass: options.onSleepPass,
       pageCounts: () => this.pages.counts(),
       untabbedPages: () => {
@@ -1293,8 +1294,11 @@ export class BrowserRuntime implements NativePresentationSource {
           else {
             // Owned by this session from its handle on; rollback ends it.
             const context = host.browser.context;
-            const creation = this.pages.create(claims.sessionId, null, "open-failed", (own) =>
-              context.createPage({ own }),
+            const creation = this.pages.create(
+              claims.sessionId,
+              null,
+              "open-failed",
+              (own, signal) => context.createPage({ own, signal }),
             );
             rootPage = await wait(creation.page);
           }
@@ -1313,9 +1317,10 @@ export class BrowserRuntime implements NativePresentationSource {
               ),
             // Every page the session holds, a tab the person opened included, is
             // one its agents can list and attach to.
-            claimTarget: (targetId, openerId) =>
-              sessionRouter.claimTarget(claims.sessionId, targetId, openerId),
-            releaseTarget: (targetId) => sessionRouter.releaseTarget(claims.sessionId, targetId),
+            claimTarget: (targetId, openerId, woke) =>
+              sessionRouter.claimTarget(claims.sessionId, targetId, openerId, woke),
+            releaseTarget: (targetId, asleep) =>
+              sessionRouter.releaseTarget(claims.sessionId, targetId, asleep),
             // A person who started the browser from a view gets its first page
             // at that view's size, before anything loads there.
             initialViewport: claims.viewport
@@ -1347,9 +1352,11 @@ export class BrowserRuntime implements NativePresentationSource {
           };
           host.sessions.set(claims.sessionId, active);
           this.sessions.set(claims.sessionId, active);
+          const sleepContext = host.browser.context;
           this.sleeper.add(claims.sessionId, {
             ledger,
             restoreVersion: claims.tabRestoreVersion,
+            sleepReady: () => sleepContext.sleepReady?.() ?? null,
             blocked: (id) =>
               [...this.nativePresentations].some(
                 (p) => p.sessionId === claims.sessionId && p.surfaceId === id,
@@ -1734,6 +1741,12 @@ export class BrowserRuntime implements NativePresentationSource {
         };
         host = launchedHost;
         browser.onClose(onBrowserClose);
+        // The pressure rule also runs as each page is created, not only on its timer (C9), and a
+        // page Chromium opened (a popup, a new-tab link) counts as new growth like one we open (Q4).
+        if (this.launcher.memoryPressure) {
+          browser.context.beforeCreatePage = (signal) => this.sleeper.beforePageOpen(signal);
+          browser.context.onPage(() => this.sleeper.notePageArrived());
+        }
         this.hosts.set(hostKey, host);
         createdHost = true;
         await wait(Promise.resolve(browser.profile?.ready()));
@@ -1810,23 +1823,28 @@ export class BrowserRuntime implements NativePresentationSource {
     }
     this.state = "closing";
     const operation = (async () => {
-      await this.lanes.drain();
-      await this.preparation?.catch(() => undefined);
-      const results = await Promise.allSettled(
-        [...this.hosts.values()].map((host) => this.cleanupHost(host, "runtime-shutdown")),
-      );
-      const failures = results.flatMap((result) =>
-        result.status === "rejected" ? [result.reason] : [],
-      );
-      // Every page still held is asked again. Pages still unconfirmed are reported
-      // and stay owned, but never fail the shutdown: the engine's own teardown and a
-      // supervisor restart must still run after it.
-      await this.pages.shutdown(pageShutdownMs);
-      if (failures.length)
-        throw new AggregateError(failures, "Browser resources could not be closed.");
-      this.hosts.clear();
-      this.sessions.clear();
-      await this.localStore?.close();
+      try {
+        await this.lanes.drain();
+        await this.preparation?.catch(() => undefined);
+        const results = await Promise.allSettled(
+          [...this.hosts.values()].map((host) => this.cleanupHost(host, "runtime-shutdown")),
+        );
+        const failures = results.flatMap((result) =>
+          result.status === "rejected" ? [result.reason] : [],
+        );
+        // Every page still held is asked again. Pages still unconfirmed are reported
+        // and stay owned, but never fail the shutdown: the engine's own teardown and a
+        // supervisor restart must still run after it.
+        await this.pages.shutdown(pageShutdownMs);
+        if (failures.length)
+          throw new AggregateError(failures, "Browser resources could not be closed.");
+        this.hosts.clear();
+        this.sessions.clear();
+      } finally {
+        // A failed shutdown (Chromium died under it) still lets the profile go, so the same
+        // process can start a runtime on it again.
+        await this.localStore?.close();
+      }
       this.state = "closed";
     })();
     this.shutdownResult = withTimeout(operation, shutdownTimeoutMs, {
