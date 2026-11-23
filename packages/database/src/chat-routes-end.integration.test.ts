@@ -208,8 +208,24 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       occurrenceId: occurrence.id,
     })}::jsonb where message_id = ${sent.message.id}`.execute(database);
 
+    // A title stored dirty before the Home cleaned names where they enter.
+    await database
+      .updateTable("threads")
+      .set({ title: "Old\u202E\ntitle\u200D" })
+      .where("id", "=", under.id)
+      .execute();
+
     await migrateToLatest(database);
 
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("title")
+          .where("id", "=", under.id)
+          .executeTakeFirstOrThrow()
+      ).title,
+    ).toBe("Old title");
     const origin = async (id: string) =>
       (
         await database

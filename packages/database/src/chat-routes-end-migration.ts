@@ -30,6 +30,40 @@ export const chatRoutesEndMigrationName = "0053_chat_routes_end_contract";
  *   connection (`ensureQueuedRun`, which start recovery runs for every task with waiting work),
  *   and a waiting message the person sent runs as theirs.
  */
+/**
+ * The names stored before the Home cleaned them where they enter (`outsideName` in
+ * `@opensteer/shared`), cleaned the same way: line breaks and tabs to one space, every Cc and Cf
+ * character removed (Postgres has no category classes, so Cf is spelled out, Unicode 17), runs of
+ * space collapsed, trimmed, cut at the field's maximum.
+ */
+const cleanStoredNames = String.raw`
+  create function pg_temp.outside_name(value text, maximum integer, fallback text) returns text
+  language sql immutable as $clean$
+    select coalesce(nullif(rtrim(left(btrim(regexp_replace(regexp_replace(
+      regexp_replace(value, '\r\n|[\n\r\t\v\f\u0085\u2028\u2029]', ' ', 'g'),
+      '[\x01-\x1f\x7f-\x9f\u00ad\u0600-\u0605\u061c\u06dd\u070f\u0890-\u0891\u08e2\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0001\U000e0020-\U000e007f]', '', 'g'), '\s+', ' ', 'g')), maximum)), ''), fallback)
+  $clean$;
+  update agent_connections set
+    label = pg_temp.outside_name(label, 120, client_name),
+    client_name = pg_temp.outside_name(client_name, 100, 'Agent'),
+    bridge_conversation_name = pg_temp.outside_name(bridge_conversation_name, 160, null);
+  update channel_accounts set display_name = pg_temp.outside_name(display_name, 160, external_account_id),
+    handle = pg_temp.outside_name(handle, 160, null);
+  update integration_connections set display_name = pg_temp.outside_name(display_name, 160, provider)
+    where connection_kind = 'channel';
+  update channel_identities set display_name = pg_temp.outside_name(display_name, 160, external_user_id);
+  update principals set display_name = pg_temp.outside_name(display_name, 160, 'Someone')
+    where kind = 'channel-identity';
+  update bridge_conversations set display_name = pg_temp.outside_name(display_name, 240, null);
+  update threads set title = pg_temp.outside_name(title, 240, 'Task');
+  update apps set name = pg_temp.outside_name(name, 160, 'App');
+  update messages set author = jsonb_set(author, '{displayName}',
+      to_jsonb(pg_temp.outside_name(author->>'displayName', 160, 'Someone')))
+    where author ? 'displayName'
+      and author->>'displayName' <> pg_temp.outside_name(author->>'displayName', 160, 'Someone');
+  drop function pg_temp.outside_name(text, integer, text);
+`;
+
 export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<void> {
   await sql`
     -- Work that ran without the person's personal context, and everything under it.
@@ -158,4 +192,5 @@ export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<voi
     drop table channel_conversations;
     drop table channel_bindings;
   `.execute(database);
+  await sql.raw(cleanStoredNames).execute(database);
 }

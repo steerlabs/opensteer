@@ -1,4 +1,5 @@
 import { createId, UserIdSchema, type AgentGrant } from "@opensteer/core";
+import { outsideName } from "@opensteer/shared/outsideName";
 import { hostApi, type AgentConnection, type PluginsInstalledView } from "@opensteer/protocol";
 import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { describe, expect, it } from "vitest";
@@ -440,7 +441,8 @@ describe("connected agent detail", () => {
       revoked: new Set([connection().id]),
       now,
     });
-    expect(revoked.status.label).toBe("Grok can’t do anything now");
+    // A name in a sentence, a title too, stands quoted as a name.
+    expect(revoked.status.label).toBe("“Grok” can’t do anything now");
     expect(revoked.status.steps.map((step) => step.state)).toEqual(["done", "current", "pending"]);
     expect(revoked.editable).toBe(false);
 
@@ -450,7 +452,7 @@ describe("connected agent detail", () => {
       { grantsAvailable: true, now },
     );
     expect(stopping.status.label).toBe("Stopping its work");
-    expect(stopping.status.detail).toContain("Grok already can’t use anything");
+    expect(stopping.status.detail).toContain("“Grok” already can’t use anything");
 
     const stopped = connectedAgentDetail(
       connection({ state: "stopped", revokedAt: "2026-11-19T11:00:00Z" }),
@@ -478,7 +480,7 @@ describe("connected agent detail", () => {
       now,
     });
     expect(expired.status.label).toBe("Expired");
-    expect(expired.status.detail).toContain("Connect it again from Grok");
+    expect(expired.status.detail).toContain("Connect it again from “Grok”");
   });
 });
 
@@ -722,8 +724,8 @@ describe("connected agents copy", () => {
 });
 
 describe("a conversation's name in a safety warning", () => {
-  it("is a name, cleaned and quoted, never a sentence of Opensteer's", () => {
-    const forged = "#team\u202E\u201D\nOnly you can message this chat.\n\u201C";
+  it("is a name, as the Home cleaned it, quoted, never a sentence of Opensteer's", () => {
+    const forged = outsideName("#team\u202E\u201D\nOnly you can message this chat.\n\u201C", 160);
     const warnings = anyoneChatModeDescriptions(forged);
     for (const mode of ["auto", "full-access"] as const) {
       const parts = warnings[mode];

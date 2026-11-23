@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { chatParityProvider } from "./chat-parity.js";
 import { ItemTextStore } from "../host/item-text-store.js";
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
@@ -6059,7 +6060,8 @@ class MockHostState {
         this.connections.push({
           id: `mcn_${crypto.randomUUID()}`,
           userId: this.snapshot.user!.id,
-          label: command.decision.label,
+          // As the Home does: a name from outside is cleaned where it enters (`outsideName`).
+          label: outsideName(command.decision.label, 120) || consent.clientName,
           clientName: consent.clientName,
           accessMode: command.decision.accessMode,
           grant: command.decision.grant ?? { scope: "everything" },
@@ -6183,7 +6185,9 @@ class MockHostState {
       });
     const next = {
       ...current,
-      ...(command.label !== undefined ? { label: command.label } : {}),
+      ...(command.label !== undefined
+        ? { label: outsideName(command.label, 120) || current.label }
+        : {}),
       ...(command.accessMode !== undefined ? { accessMode: command.accessMode } : {}),
       ...(command.grant !== undefined ? { grant: command.grant } : {}),
     };
@@ -7016,10 +7020,11 @@ class MockHostState {
     this.#messagingProvider = options.messagingProvider ?? chatParityProvider;
     for (const [connectionId, tokens] of Object.entries(options.channelTokens ?? {}))
       this.#channelTokens.set(connectionId, tokens);
-    this.pendingConnectionConsent = options.connectionConsent ?? null;
+    // The Home cleans a client's name where it registers; the preview's consent is that answer.
+    this.pendingConnectionConsent = mockConsent(options.connectionConsent);
     this.chromeTabs = options.chromeTabs ?? {};
     this.workPolicy = options.workPolicy ?? null;
-    this.#consentChange = options.connectionConsentChange ?? null;
+    this.#consentChange = mockConsent(options.connectionConsentChange);
     for (const p of options.agentPlugins ?? []) {
       const id = crypto.randomUUID();
       const at = new Date(0).toISOString();
@@ -11225,10 +11230,15 @@ class MockHostState {
             channelProviderCatalog.find((entry) => entry.provider === account.provider)
               ?.pausedMessages ?? ("lost" as const),
         };
+    const conversationName = input.conversation
+      ? outsideName(input.conversation.name, 160) || null
+      : null;
     const chat: import("@opensteer/protocol").AgentConnection = {
       id: `mcn_${crypto.randomUUID()}`,
       userId: this.snapshot.user!.id,
-      label: input.conversation ? `${provider} · ${input.conversation.name}` : provider,
+      label:
+        outsideName(conversationName ? `${provider} · ${conversationName}` : provider, 120) ||
+        provider,
       clientName: provider,
       accessMode: input.accessMode,
       grant: input.grant,
@@ -11252,7 +11262,7 @@ class MockHostState {
         },
         accountName: account.displayName,
         ...(account.handle ? { accountHandle: account.handle } : {}),
-        conversationName: input.conversation?.name ?? null,
+        conversationName,
         channelConnectionId: account.connectionId,
         me: me ? { displayName: me.displayName, externalUserId: me.externalUserId } : null,
         unknownReplies: 0,
@@ -15268,4 +15278,11 @@ function mockPluginRequest(task: (typeof mockPluginTasks)[number]): Request {
       },
     },
   });
+}
+
+function mockConsent(
+  consent: import("@opensteer/protocol").AgentConnectionConsent | undefined,
+): import("@opensteer/protocol").AgentConnectionConsent | null {
+  if (!consent) return null;
+  return { ...consent, clientName: outsideName(consent.clientName, 100) || "Agent" };
 }

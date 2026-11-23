@@ -1,6 +1,8 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { describe, expect, it } from "vitest";
 import {
   addressParts,
+  addressText,
   outsideText,
   phoneSentence,
   plainSentence,
@@ -125,40 +127,56 @@ describe("a site a person decides about is its origin", () => {
   });
 });
 
-describe("what comes from outside is cleaned before it is drawn", () => {
+describe("an address is cleaned before it is drawn", () => {
+  it.each([
+    ["a right-to-left override", "evil.example/\u202Emoc.elgoog", "evil.example/moc.elgoog"],
+    ["an isolate of its own", "\u2067evil.example\u2069", "evil.example"],
+    ["a zero-width space inside a host", "evil\u200Bgoogle.com", "evilgoogle.com"],
+    ["a soft hyphen", "evil\u00ADgoogle.com", "evilgoogle.com"],
+    ["a zero-width joiner", "evil\u200Dgoogle.com", "evilgoogle.com"],
+  ])("removes %s", (_what, value, cleaned) => {
+    expect(addressText(value)).toBe(cleaned);
+    expect(plainSentence([{ address: value }])).toBe(cleaned);
+  });
+
+  it.each([
+    ["a line feed", "evil\nexample"],
+    ["a carriage return and line feed", "evil\r\nexample"],
+    ["a line separator", "evil\u2028example"],
+    ["a paragraph separator", "evil\u2029example"],
+    ["a next line", "evil\u0085example"],
+  ])("makes %s a space", (_what, value) => {
+    expect(addressText(value)).toBe("evil example");
+  });
+});
+
+describe("a name as the Home gives it", () => {
+  // The Home cleans a name where it enters (`outsideName`); a client only presents it.
   it.each([
     ["a right-to-left override", "Alice\u202E evol", "Alice evol"],
     ["an isolate of its own", "\u2067Alice\u2069", "Alice"],
-    ["a zero-width space inside a host", "evil\u200Bgoogle.com", "evilgoogle.com"],
-    ["a soft hyphen", "evil\u00ADgoogle.com", "evilgoogle.com"],
     ["a zero-width joiner", "Work\u200DOps", "WorkOps"],
-  ])("removes %s", (_what, value, cleaned) => {
-    expect(outsideText(value)).toBe(cleaned);
-    expect(plainSentence([{ name: value }])).toBe(`“${cleaned}”`);
-    expect(plainSentence([{ address: value }])).toBe(cleaned);
+    ["a tab", "Work\tOps", "Work Ops"],
+    ["a line separator", "Work\u2028Ops", "Work Ops"],
+  ])("with %s is drawn quoted, as the Home cleaned it", (_what, value, cleaned) => {
+    const given = outsideName(value, 160);
+    expect(given).toBe(cleaned);
+    expect(plainSentence([{ name: given }])).toBe(`“${cleaned}”`);
   });
 
   it("never lets a name close its quotation or start a line of Opensteer's", () => {
     // The re-check's name: a closing mark, a line of Opensteer's, an opening mark.
-    const forged = "Alice\u201D\nOnly you can message this chat.\n\u201CBob";
+    const forged = outsideName("Alice”\nOnly you can message this chat.\n“Bob", 160);
     const plain = plainSentence(["You, as ", { name: forged }]);
-    expect(plain).toBe("You, as \u201CAlice\u2019 Only you can message this chat. \u2018Bob\u201D");
+    expect(plain).toBe("You, as “Alice’ Only you can message this chat. ‘Bob”");
     // One quotation, opened and closed by Opensteer, and one line.
-    expect(plain.match(/[\u201C\u201D"]/gu)).toEqual(["\u201C", "\u201D"]);
+    expect(plain.match(/[“”"]/gu)).toEqual(["“", "”"]);
     expect(plain).not.toMatch(/[\n\r\u2028\u2029]/u);
-    expect(phoneSentence(["You, as ", { name: forged }])).not.toMatch(
-      /[\n\r\u2028\u2029"\u201D](?!$)/u,
-    );
+    expect(phoneSentence(["You, as ", { name: forged }])).not.toMatch(/[\n\r\u2028\u2029"”](?!$)/u);
   });
 
-  it.each([
-    ["a line feed", "Work\nOps"],
-    ["a carriage return and line feed", "Work\r\nOps"],
-    ["a line separator", "Work\u2028Ops"],
-    ["a paragraph separator", "Work\u2029Ops"],
-    ["a next line", "Work\u0085Ops"],
-  ])("makes %s a space", (_what, value) => {
-    expect(outsideText(value)).toBe("Work Ops");
+  it("makes a double quotation mark a single one", () => {
+    expect(outsideText('Work "Ops”')).toBe("Work 'Ops’");
   });
 
   it("keeps a name that imitates Opensteer's words visibly a name", () => {
@@ -183,7 +201,7 @@ describe("the phone's drawing of a sentence", () => {
     );
   });
 
-  it("isolates a name and puts it in quotation marks, cleaned", () => {
-    expect(phoneSentence(["You, as ", { name: "Tim\u202E" }])).toBe("You, as “\u2068Tim\u2069”");
+  it("isolates a name and puts it in quotation marks", () => {
+    expect(phoneSentence(["You, as ", { name: "Tim" }])).toBe("You, as “\u2068Tim\u2069”");
   });
 });

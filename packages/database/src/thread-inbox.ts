@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import type { PersonalInputQueue } from "@opensteer/protocol";
 import type { AuthSessionId } from "@opensteer/core";
 import { assignmentWasCancelled } from "./execution-authority.js";
@@ -5686,7 +5687,7 @@ export async function delegateThreadInTransaction(
           inputQueuePaused: false,
           lastRunFailed: false,
         }),
-        title: input.title,
+        title: outsideName(input.title, 240) || "Task",
         titleSource: input.titleSource ?? "chosen",
         icon: null,
         iconSource: "provisional",

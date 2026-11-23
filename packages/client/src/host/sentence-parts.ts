@@ -7,8 +7,9 @@
  * - `{ name }`: a name someone else chose (an account's or a person's display name, a channel's
  *   name), drawn as a name and never as an address, whatever it looks like.
  *
- * Before anything is drawn, every name and address goes through `outsideText`: direction
- * controls, zero-width characters and soft hyphens are removed. Screens isolate each from the
+ * A name reaches a client already clean: the Home cleans every name where it enters
+ * (`outsideName` in `@opensteer/shared`). An address is cleaned here (`addressText`): it comes
+ * from a page or a provider, not through a name's entrance. Screens isolate each from the
  * direction of the text around it and draw a name in its own weight (the web's `SentenceText`);
  * in plain text (`plainSentence`: a label read aloud, an alert, a copy, the phone) a name stands
  * in quotation marks, so a person can tell where a name ends and Opensteer's words begin.
@@ -16,18 +17,28 @@
 export type SentencePart = string | { readonly address: string } | { readonly name: string };
 
 /**
- * A value from outside, as it may stand in a sentence: direction controls, zero-width characters
- * and soft hyphens are removed; each line break is a space, so it never starts a line of its own;
- * each double quotation mark is a single one, so it never ends the quotation a name stands in.
+ * A name from outside as it stands in a sentence. The Home cleans every name where it enters
+ * (`outsideName` in `@opensteer/shared`): no control, format or line-break character reaches a
+ * client. What is left here is presentation: a double quotation mark is a single one, so a name
+ * never ends the quotation it stands in.
  */
 export function outsideText(value: string): string {
   return value
-    .replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "")
-    .replace(/[\u00AD\u180E\u200B-\u200D\u2060\uFEFF]/gu, "")
-    .replace(/\r\n|[\n\r\v\f\u0085\u2028\u2029]/gu, " ")
     .replace(/[\u201C\u201F\u301D\u301E]/gu, "\u2018")
     .replace(/[\u201D\u201E\u301F]/gu, "\u2019")
     .replace(/[\u0022\uFF02]/gu, "\u0027");
+}
+
+/**
+ * An address (an origin, a host, a provider's handle) as it may be drawn: it comes from a page or
+ * a provider rather than through a name's entrance, so it is cleaned here. Direction controls,
+ * zero-width characters and soft hyphens are removed, and each line break is a space.
+ */
+export function addressText(value: string): string {
+  return value
+    .replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "")
+    .replace(/[\u00AD\u180E\u200B-\u200D\u2060\uFEFF]/gu, "")
+    .replace(/\r\n|[\n\r\v\f\u0085\u2028\u2029]/gu, " ");
 }
 
 /**
@@ -37,7 +48,7 @@ export function outsideText(value: string): string {
  */
 export function siteOrigin(value: string): string | null {
   try {
-    const origin = new URL(outsideText(value).trim()).origin;
+    const origin = new URL(addressText(value).trim()).origin;
     return origin === "null" ? null : origin;
   } catch {
     return null;
@@ -75,9 +86,9 @@ export function sentenceWith(
   });
 }
 
-/** A name part's or an address part's text, cleaned. */
+/** A name part's or an address part's text, as it is drawn. */
 export function partText(part: { readonly address: string } | { readonly name: string }): string {
-  return outsideText("address" in part ? part.address : part.name);
+  return "address" in part ? addressText(part.address) : outsideText(part.name);
 }
 
 /**

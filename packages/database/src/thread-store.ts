@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   commitPersonalMutation,
   threadPendingRequestsCount,
@@ -1213,7 +1214,8 @@ export async function createThreadInTransaction(
     parentThreadId: input.parentThreadId ?? null,
     purpose,
     status: "idle",
-    title: input.title,
+    // A title may come from a chat's message: it enters clean, as every name from outside.
+    title: outsideName(input.title, 240) || "Task",
     titleSource: input.generateTitle ? "provisional" : "chosen",
     icon: input.icon ?? null,
     iconSource: input.icon ? "chosen" : "provisional",
@@ -1888,7 +1890,7 @@ export async function renameThread(
       const row = await transaction
         .updateTable("threads")
         .set({
-          title,
+          title: outsideName(title, 240) || thread.title,
           titleSource: "chosen",
           updatedAt: new Date(),
         })
@@ -2102,7 +2104,7 @@ export async function applyGeneratedThreadName(
           : await transaction
               .updateTable("threads")
               .set({
-                title,
+                title: outsideName(title, 240) || "Task",
                 titleSource: "generated",
                 updatedAt: new Date(),
               })

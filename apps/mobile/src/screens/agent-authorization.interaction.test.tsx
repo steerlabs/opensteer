@@ -196,6 +196,7 @@ describe("agent consent on the phone", () => {
       const client = consentHost({
         homes: [],
         consent: {
+          // The preview, as the Home, cleans the name where the client registers it.
           clientName: "Grok\u202e\nVerified",
           chromeTabs: [{ sourceId, computerName: "Work Mac", paired: true }],
           chromeTabsNeedPairing: true,

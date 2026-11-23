@@ -15,6 +15,7 @@ import { accessModeOptions } from "./access-modes.js";
 import { agentWho, agentWithdrawnLine, type AgentWho } from "./agent-identity.js";
 import type { ThreadSummary } from "./client.js";
 import {
+  agentText,
   agentWords,
   anyoneChatModeDescriptions,
   type ConnectionModeDescription,
@@ -440,7 +441,7 @@ export function connectedAgentStatus(
       };
     case "revoked":
       return {
-        label: agentWords("disconnect.revoked.label", { agent }),
+        label: agentText("disconnect.revoked.label", { agent: { name: agent } }),
         detail: agentWords("disconnect.revoked.detail", {
           time: formatClock(ended ?? now.toISOString()),
         }),
@@ -454,7 +455,7 @@ export function connectedAgentStatus(
     case "stopping":
       return {
         label: agentWords("disconnect.stopping.label"),
-        detail: agentWords("disconnect.stopping.detailGeneric", { agent }),
+        detail: agentText("disconnect.stopping.detailGeneric", { agent: { name: agent } }),
         tone: "neutral",
         steps: [
           { label: agentWords("disconnect.step.removed"), state: "done" },
@@ -474,10 +475,11 @@ export function connectedAgentStatus(
     case "expired":
       return {
         label: agentWords("disconnect.expired.label"),
-        detail: agentWords("disconnect.expired.detail", {
-          time: connection.expiresAt ? `on ${formatDay(connection.expiresAt)}` : "",
-          agent,
-        }),
+        detail: agentText(
+          "disconnect.expired.detail",
+          { agent: { name: agent } },
+          { time: connection.expiresAt ? `on ${formatDay(connection.expiresAt)}` : "" },
+        ),
         tone: "neutral",
         steps: [],
       };
@@ -508,7 +510,9 @@ export function connectedAgentDetail(
     uncertain: row.uncertain
       ? {
           label: agentWords("disconnect.uncertain.label"),
-          detail: agentWords("disconnect.uncertain.detailGeneric", { agent: identity.label }),
+          detail: agentText("disconnect.uncertain.detailGeneric", {
+            agent: { name: identity.label },
+          }),
         }
       : null,
     legacy,

@@ -1,4 +1,4 @@
-import { addressParts, outsideText, type SentencePart } from "@opensteer/client/host";
+import { addressParts, addressText, outsideText, type SentencePart } from "@opensteer/client/host";
 
 /**
  * A value known to be an address (an origin, a provider's handle), drawn so it wraps only at its
@@ -6,13 +6,13 @@ import { addressParts, outsideText, type SentencePart } from "@opensteer/client/
  * a line breaks only between parts, never after a hyphen the address has, and never with a
  * hyphen added. A part breaks inside itself only when it alone is wider than the line. It is
  * never cut with an ellipsis: an origin is drawn whole wherever a person grants, adds or links.
- * It is cleaned first (`outsideText`) and isolated from the direction of the text around it.
+ * It is cleaned first (`addressText`) and isolated from the direction of the text around it.
  * What is selected and copied is the address exactly.
  */
 export function Address({ value }: { readonly value: string }) {
   return (
     <bdi className="address">
-      {addressParts(outsideText(value)).map((part, index) => (
+      {addressParts(addressText(value)).map((part, index) => (
         <span className="address__part" key={index}>
           {part}
         </span>
@@ -22,8 +22,8 @@ export function Address({ value }: { readonly value: string }) {
 }
 
 /**
- * A name someone else chose, drawn as a name: cleaned, isolated from the direction of the text
- * around it, and in its own weight, the same everywhere, so a person can tell where it ends and
+ * A name someone else chose, drawn as a name: the Home cleaned it where it entered; here it is
+ * isolated from the direction of the text around it, and in its own weight, the same everywhere, so a person can tell where it ends and
  * Opensteer's words begin. Never drawn as an address, whatever it looks like.
  */
 export function OutsideName({ value }: { readonly value: string }) {

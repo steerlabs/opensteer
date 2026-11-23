@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import { getDeviceSelfRunnerId, getSelfDeviceId } from "./device-inventory-store.js";
@@ -330,7 +331,7 @@ export class ChannelStore {
           connectionKind: "channel",
           connectionMethod: input.connection.connectionMethod,
           credentialId: input.credential?.id ?? null,
-          displayName: input.connection.displayName,
+          displayName: outsideName(input.connection.displayName, 160) || input.connection.provider,
           externalIdentityId,
           externalTenantId: input.connection.externalTenantId ?? null,
           id: createChannelId("connection"),
@@ -349,9 +350,10 @@ export class ChannelStore {
         .insertInto("channelAccounts")
         .values({
           connectionId: connectionRow.id,
-          displayName: input.account.displayName,
+          displayName:
+            outsideName(input.account.displayName, 160) || input.account.externalAccountId,
           externalAccountId: input.account.externalAccountId,
-          handle: input.account.handle ?? null,
+          handle: input.account.handle ? outsideName(input.account.handle, 160) || null : null,
           id: createChannelId("account"),
           metadata: jsonValue(input.account.metadata ?? {}),
           provider: input.connection.provider,
@@ -729,7 +731,21 @@ export class ChannelStore {
           claimExpiresAt: null,
           claimOwner: null,
           claimTokenHash: null,
-          event: jsonValue(event),
+          // The names a message brings enter clean (`outsideName`), as every name from outside.
+          event: jsonValue({
+            ...event,
+            actor: {
+              ...event.actor,
+              displayName: outsideName(event.actor.displayName, 160) || event.actor.externalUserId,
+            },
+            conversation: {
+              ...event.conversation,
+              displayName:
+                event.conversation.displayName === null
+                  ? null
+                  : outsideName(event.conversation.displayName, 240) || null,
+            },
+          }),
           id,
           laneKey,
           lastError: null,
@@ -1329,6 +1345,7 @@ export async function upsertChannelIdentity(
     readonly externalUserId: string;
   },
 ) {
+  input = { ...input, displayName: outsideName(input.displayName, 160) || input.externalUserId };
   const existing = await transaction
     .selectFrom("channelIdentities")
     .selectAll()
