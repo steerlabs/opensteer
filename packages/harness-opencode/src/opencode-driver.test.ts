@@ -2062,6 +2062,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     },
     instructions: "Follow the workspace instructions.",
     personalContext: false,
+    personLineage: false,
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,

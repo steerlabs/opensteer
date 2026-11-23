@@ -196,6 +196,7 @@ export async function runEngine(input: {
     runtimeBoundary: { kind: "isolated-service" },
     // Every case is the person's own task, so the engine runs its own configuration.
     personalContext: true,
+    personLineage: true,
     machineAccessNotice: c.machineAccessNotice ?? "No other computers are available to this Run.",
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,

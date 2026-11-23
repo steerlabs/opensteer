@@ -2728,6 +2728,24 @@ describe("Codex app-server harness", () => {
       await fixture.adapter.close();
     });
 
+    it("starts a connected agent's or a chat's task with personal context with none of the person's configuration", async () => {
+      const fixture = await setup("ambient-extensions", {
+        accessMode: "approval-required",
+        personalContext: true,
+        personLineage: false,
+      });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const { argv, config } = await threadStartOf(fixture);
+      expect(argv).toEqual(expect.arrayContaining(['web_search="disabled"']));
+      expect(config).toMatchObject({
+        "mcp_servers.github.enabled": false,
+        project_doc_max_bytes: 0,
+        web_search: "disabled",
+      });
+      await session.stop();
+      await fixture.adapter.close();
+    });
+
     it("leaves the person's servers' approvals alone in Full access", async () => {
       const fixture = await setup("ambient-extensions", { personalContext: true });
       const session = await fixture.adapter.startSession(fixture.context);
@@ -3931,6 +3949,8 @@ interface SetupOptions {
   readonly maxWriteBufferBytes?: number;
   readonly machineAccessNotice?: string;
   readonly personalContext?: boolean;
+  /** Defaults to `personalContext`: the person's own task unless a test says otherwise. */
+  readonly personLineage?: boolean;
   readonly requestTimeoutMs?: number;
   readonly providerStateKind?: "ambient" | "isolated";
   readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
@@ -3990,6 +4010,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
   });
   const context: HarnessSessionContext = {
     personalContext: options.personalContext ?? false,
+    personLineage: options.personLineage ?? options.personalContext ?? false,
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,

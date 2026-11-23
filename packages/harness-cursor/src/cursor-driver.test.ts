@@ -1304,6 +1304,7 @@ async function setup(options: SetupOptions): Promise<Fixture> {
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: "Follow the workspace instructions.",
     personalContext: false,
+    personLineage: false,
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,

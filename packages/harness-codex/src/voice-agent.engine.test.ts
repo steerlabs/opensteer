@@ -235,6 +235,7 @@ describe.skipIf(!qualify).each([
         // The Runner delivers the Host's Run plan instructions as the platform guide.
         platformGuide: guide,
         personalContext: false,
+        personLineage: false,
         machineAccessNotice: "No other computers are reachable.",
         machineAccessPlatform: undefined,
         machineAccessRelaySocket: undefined,

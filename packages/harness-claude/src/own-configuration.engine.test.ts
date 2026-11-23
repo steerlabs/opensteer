@@ -256,6 +256,7 @@ async function runOnce(input: {
       providerId: "anthropic",
     }),
     personalContext: input.personalContext,
+    personLineage: input.personalContext,
     platformGuide: "",
     providerState: {
       continuationKey: setup.root,

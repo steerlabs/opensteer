@@ -3,23 +3,46 @@ import type { RunId, ThreadId, UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
+/**
+ * What a task's context lineage says about whose it is: whether it may carry
+ * the person's personal context, and whether a chat is anywhere in it. A chat
+ * the person alone speaks in keeps personal context, and is still a chat.
+ */
+export interface ThreadContextLineage {
+  readonly personalContext: boolean;
+  readonly fromChat: boolean;
+}
+
 /** Re-evaluate every sender represented in this task, including later admitted batches. */
 export async function runAllowsPersonalContext(
   database: Kysely<DatabaseSchema>,
   runId: RunId,
 ): Promise<boolean> {
+  return (await runContextLineage(database, runId)).personalContext;
+}
+export async function runContextLineage(
+  database: Kysely<DatabaseSchema>,
+  runId: RunId,
+): Promise<ThreadContextLineage> {
   const run = await database
     .selectFrom("runs")
     .select(["threadId", "requestedBy"])
     .where("id", "=", runId)
     .executeTakeFirstOrThrow();
-  return threadAllowsPersonalContext(database, run.threadId, run.requestedBy);
+  return threadContextLineage(database, run.threadId, run.requestedBy);
 }
 export async function threadAllowsPersonalContext(
   database: Kysely<DatabaseSchema>,
   threadId: ThreadId,
   ownerId: UserId,
 ): Promise<boolean> {
+  return (await threadContextLineage(database, threadId, ownerId)).personalContext;
+}
+export async function threadContextLineage(
+  database: Kysely<DatabaseSchema>,
+  threadId: ThreadId,
+  ownerId: UserId,
+): Promise<ThreadContextLineage> {
   // Reused workers retain every assigning conversation's context restriction, a task linked
   // under another (an automation's own task) retains its parent's, and work an automation's
   // program sends anywhere retains its anchor's.
@@ -86,12 +109,15 @@ export async function threadAllowsPersonalContext(
       .where("activeThreadId", "in", unrepresented)
       .executeTakeFirst())
   )
-    return false;
-  return sources.every((source) =>
-    channelAllowsPersonalContext({
-      conversationType: source.conversationType,
-      linkedSenderId: source.status === "linked" ? source.linkedUserId : null,
-      ownerId: ownerId,
-    }),
-  );
+    return { fromChat: true, personalContext: false };
+  return {
+    fromChat: sources.length > 0,
+    personalContext: sources.every((source) =>
+      channelAllowsPersonalContext({
+        conversationType: source.conversationType,
+        linkedSenderId: source.status === "linked" ? source.linkedUserId : null,
+        ownerId: ownerId,
+      }),
+    ),
+  };
 }

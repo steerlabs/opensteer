@@ -138,6 +138,7 @@ console.log(JSON.stringify({ hookSpecificOutput: {
       instructions: "",
       platformGuide: "",
       personalContext: false,
+      personLineage: false,
       machineAccessNotice: "No other computers are reachable.",
       machineAccessPlatform: undefined,
       machineAccessRelaySocket: undefined,

@@ -4377,6 +4377,8 @@ async function openSession(
     readonly machineAccessRelaySocket?: string;
     readonly modelSelection?: HarnessSessionContext["modelSelection"];
     readonly personalContext?: boolean;
+    /** Defaults to `personalContext`: the person's own task unless a test says otherwise. */
+    readonly personLineage?: boolean;
     readonly runtimeBoundary?: HarnessRuntimeBoundary;
     readonly sourceId?: string;
     readonly wrapProcessLaunch?: HarnessSessionContext["wrapProcessLaunch"];
@@ -4411,6 +4413,8 @@ async function openSession(
     machineAccessRelaySocket: overrides.machineAccessRelaySocket,
     modelSelection: overrides.modelSelection ?? baseContext.modelSelection,
     personalContext: overrides.personalContext ?? baseContext.personalContext,
+    personLineage:
+      overrides.personLineage ?? overrides.personalContext ?? baseContext.personLineage,
     wrapProcessLaunch: overrides.wrapProcessLaunch ?? baseContext.wrapProcessLaunch,
   };
   const session = await adapter.startSession(sessionContext);
@@ -4437,6 +4441,7 @@ async function context(
   return {
     accessMode: "full-access",
     personalContext: false,
+    personLineage: false,
     machineAccessNotice: noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,
@@ -5101,6 +5106,7 @@ describe("whose configuration Claude Code starts with", () => {
     const fixture = await openSession(sdk, {
       accessMode: "approval-required",
       personalContext: false,
+      personLineage: false,
     });
     await send(fixture.session, "Hello");
     await fixture.session.stop();
@@ -5192,6 +5198,24 @@ describe("whose configuration Claude Code starts with", () => {
         { signal: new AbortController().signal },
       ),
     ).toMatchObject({ hookSpecificOutput: { permissionDecision: "ask" } });
+    await fixture.adapter.close();
+  });
+
+  it("starts a connected agent's or a chat's task with personal context with none of the person's configuration", async () => {
+    const sdk = doneSdk();
+    const fixture = await openSession(sdk, {
+      accessMode: "approval-required",
+      personalContext: true,
+      personLineage: false,
+    });
+    await send(fixture.session, "Hello");
+    await fixture.session.stop();
+    const options = sdk.calls[0]!.options;
+    expect(options.settingSources).toEqual(["project"]);
+    expect(options.strictMcpConfig).toBe(true);
+    expect(Array.isArray(options.tools)).toBe(true);
+    expect(options.managedSettings).toMatchObject({ disableAllHooks: true });
+    expect(options.hooks?.PreToolUse?.[0]?.matcher).toBe("Bash");
     await fixture.adapter.close();
   });
 

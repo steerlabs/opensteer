@@ -762,6 +762,7 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: undefined,
     personalContext: false,
+    personLineage: false,
     machineAccessNotice: "No other computers are reachable.",
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,

@@ -330,6 +330,12 @@ export interface HarnessSessionContext {
    * through `engineConfiguration`.
    */
   readonly personalContext: boolean;
+  /**
+   * The task and every task it descends from are the person's own: no
+   * connected agent's lineage and no chat in it. A driver reads it only
+   * through `engineConfiguration`.
+   */
+  readonly personLineage: boolean;
   /** Runner-owned storage for this profile. */
   readonly providerState: HarnessProviderState;
   readonly runtimeBoundary: HarnessRuntimeBoundary;

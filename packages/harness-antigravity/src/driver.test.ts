@@ -495,6 +495,7 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: undefined,
     personalContext: false,
+    personLineage: false,
     machineAccessNotice: "No other computers are reachable.",
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,
