@@ -220,7 +220,7 @@ integration("Cloud Computer website pages", () => {
     expect(billing.status).toBe(303);
     expect(billing.headers.get("location")).toBe(billingUrl);
     expect(stripe.portal).toHaveBeenCalledWith(customer, pagesUrl, "bpc_cloud");
-    const [computer] = await cloud.list(person.id);
+    const [computer] = await cloud.listForAccount(person.id);
     expect((await post("/cloud-computer/suspend", person, { id: computer!.id })).status).toBe(303);
     expect((await page(`/cloud-computer?checkout=${requestId}`, person)).body).toContain(
       paidNotice,
@@ -231,12 +231,12 @@ integration("Cloud Computer website pages", () => {
     const person = await signIn();
     const stranger = await signIn();
     await complete(person.id, randomUUID());
-    const [computer] = await cloud.list(person.id);
+    const [computer] = await cloud.listForAccount(person.id);
     const id = computer!.id;
 
     const theirs = await post("/cloud-computer/suspend", stranger, { id });
     expect(theirs.status).toBe(404);
-    expect((await cloud.list(person.id))[0]?.status).toBe("preparing");
+    expect((await cloud.listForAccount(person.id))[0]?.status).toBe("preparing");
 
     expect((await post("/cloud-computer/suspend", person, { id })).headers.get("location")).toBe(
       "/cloud-computer",
@@ -247,12 +247,12 @@ integration("Cloud Computer website pages", () => {
     expect(suspended.headers.get("refresh")).toBeNull();
 
     expect((await post("/cloud-computer/resume", person, { id })).status).toBe(303);
-    expect((await cloud.list(person.id))[0]?.status).toBe("preparing");
+    expect((await cloud.listForAccount(person.id))[0]?.status).toBe("preparing");
 
     const mistyped = await post("/cloud-computer/delete", person, { id, confirm: "remove" });
     expect(mistyped.status).toBe(400);
     expect(mistyped.body).toContain(escapeHtml(cloudWords("cloud.web.typeWord")));
-    expect((await cloud.list(person.id))[0]?.status).toBe("preparing");
+    expect((await cloud.listForAccount(person.id))[0]?.status).toBe("preparing");
 
     const deleted = await post("/cloud-computer/delete", person, { id, confirm: " Delete " });
     expect(deleted.status).toBe(303);
@@ -269,7 +269,7 @@ integration("Cloud Computer website pages", () => {
   it("shows the store's refusal with what to do next instead of a blank error", async () => {
     const person = await signIn();
     await complete(person.id, randomUUID());
-    const [computer] = await cloud.list(person.id);
+    const [computer] = await cloud.listForAccount(person.id);
     await database.updateTable("cloudComputers").set({ state: "deleted" }).execute();
     const refused = await post("/cloud-computer/suspend", person, { id: computer!.id });
     expect(refused.status).toBe(409);

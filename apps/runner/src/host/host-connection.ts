@@ -1,4 +1,3 @@
-import { announceEnrollmentPreview, WorkHomeEnrollmentRefused } from "./enrollment-preview.js";
 import type { ExecutionContainment } from "../runtime/execution-containment.js";
 import { AppServerError } from "../apps/app-server-manager.js";
 import { harnessMinimumVersion } from "@opensteer/core";
@@ -33,7 +32,6 @@ import {
   runnerRestartingCloseCode,
   sameRunnerConnectionFence,
   computerAppMaxTimeoutMs,
-  workHomeEnrollmentPreviewRequiredReason,
 } from "@opensteer/protocol";
 import { openAppTunnel } from "../apps/app-tunnel.js";
 import type { HostAppRequest, HostAppsSync } from "@opensteer/protocol";
@@ -295,7 +293,6 @@ export interface ReconnectingHostConnectionOptions {
     readonly runnerId: RunnerIdentity["runnerId"];
   }) => Promise<void> | void;
   readonly onDisconnected?: () => Promise<void> | void;
-  readonly enrollmentNotice?: (message: string) => void;
   /** Called once, instead of reconnecting, when the Host revokes this identity. */
   readonly onRevoked?: () => Promise<void> | void;
   /** Host OS platform override for tests; defaults to `process.platform`. */
@@ -335,7 +332,6 @@ export class ReconnectingHostConnection {
   readonly #logger: RunnerLogger;
   readonly #onConnected: ReconnectingHostConnectionOptions["onConnected"];
   readonly #onDisconnected: ReconnectingHostConnectionOptions["onDisconnected"];
-  readonly #enrollmentNotice: ReconnectingHostConnectionOptions["enrollmentNotice"];
   readonly #onRevoked: ReconnectingHostConnectionOptions["onRevoked"];
   readonly #runtimeVersion: string;
   readonly #shellModule: ReconnectingHostConnectionOptions["shellModule"];
@@ -435,7 +431,6 @@ export class ReconnectingHostConnection {
       : undefined;
     this.#onConnected = options.onConnected;
     this.#onDisconnected = options.onDisconnected;
-    this.#enrollmentNotice = options.enrollmentNotice;
     this.#onRevoked = options.onRevoked;
     this.#runtimeVersion = options.runtimeVersion;
     this.#shellModule = options.shellModule;
@@ -472,35 +467,13 @@ export class ReconnectingHostConnection {
   async run(signal: AbortSignal): Promise<void> {
     let failures = 0;
     let reportedUnenrollable = false;
-    let previewChecked = false;
     while (!signal.aborted) {
-      if (
-        !previewChecked &&
-        this.#enrollmentNotice &&
-        this.#config.runnerKind === "local" &&
-        this.#enrollmentCredential &&
-        (this.#identity.lastConnectionGeneration === 0 || this.#reenroll)
-      ) {
-        await announceEnrollmentPreview(
-          {
-            hostOrigin: this.#config.hostUrl,
-            controlCaPath: this.#config.controlCaPath,
-            mode: this.#config.mode,
-          },
-          this.#enrollmentCredential.enrollmentToken,
-          signal,
-          this.#enrollmentNotice,
-        );
-        if (signal.aborted) break;
-        previewChecked = true;
-      }
       try {
         await this.#connectOnce(signal);
         failures = 0;
         reportedUnenrollable = false;
       } catch (error) {
         if (signal.aborted) break;
-        if (error instanceof WorkHomeEnrollmentRefused) throw error;
         // Removal is the one refusal that retrying can never fix: this identity
         // is gone from the Deployment, and reconnecting would only ask a Host
         // that has already answered. Stop, and say so once.
@@ -805,8 +778,6 @@ export class ReconnectingHostConnection {
       "Host did not acknowledge the Runner identity proof",
     );
     if (response.type === "host.error") {
-      if (response.error.reason === workHomeEnrollmentPreviewRequiredReason)
-        throw new WorkHomeEnrollmentRefused(response.error.message);
       // The Host deliberately does not say whether the identity is unknown or
       // the signature is wrong, because that would let an unauthenticated peer
       // enumerate enrolled Runners. It does not need to: this Runner knows

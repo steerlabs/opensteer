@@ -53,7 +53,6 @@ import {
   CloudComputerStore,
 } from "../apps/control-plane/src/cloud-computers/store.js";
 import type {
-  CloudComputerStripe,
   StripeBilling,
   StripeSubscription,
 } from "../apps/control-plane/src/cloud-computers/stripe.js";
@@ -63,7 +62,6 @@ import { migrateControlPlaneToLatest } from "../apps/control-plane/src/database/
 import { ControlPlaneStore } from "../apps/control-plane/src/database/store.js";
 import { googleServiceAccountVerifier } from "../apps/control-plane/src/cloud-computers/provisioner-verifier.js";
 import { CloudComputerSecretCipher } from "../apps/control-plane/src/cloud-computers/secret-cipher.js";
-import { OrganizationStore } from "../apps/control-plane/src/organizations/store.js";
 import { createControlPlaneServer } from "../apps/control-plane/src/server/server.js";
 import { createHostRuntime, type PersonalHostRuntime } from "../apps/host/src/runtime/runtime.js";
 import { createPublicHttpsFetch } from "../packages/access/src/host.js";
@@ -75,10 +73,7 @@ import {
   ManagedHomeClaimReceiptSchema,
   managedHomeClaimPath,
   ListAccountDeploymentsResponseSchema,
-  MyOrganizationsResponseSchema,
-  WorkAssignmentViewSchema,
   accountCloudComputerCheckoutPath,
-  accountOrganizationsPath,
   cloudComputerBootCompletePath,
   cloudComputerBootPath,
   cloudComputerLeaseHeader,
@@ -275,10 +270,8 @@ const database = createControlPlaneDatabase({
 const subscriptions = new Map<string, StripeSubscription>();
 const checkouts = new Map<string, string>();
 let stripeUnavailable = false;
-let lastCheckout: Parameters<StripeBilling["checkout"]>[0] | undefined;
 const stripe = {
   checkout: async (input: Parameters<StripeBilling["checkout"]>[0]) => {
-    lastCheckout = input;
     return {
       id: checkouts.get(input.requestId) ?? `cs_test_${randomUUID().replaceAll("-", "")}`,
       url: "https://checkout.stripe.example.test/pay",
@@ -300,10 +293,7 @@ const stripe = {
   cancel: async () => {
     if (stripeUnavailable) throw new Error("Stripe is unavailable");
   },
-  updateSeatQuantity: async () => {
-    throw new Error("Not used");
-  },
-} satisfies StripeBilling & Pick<CloudComputerStripe, "updateSeatQuantity">;
+} satisfies StripeBilling;
 const config = loadCloudComputerConfig({
   OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL: provisionerEmail,
   OPENSTEER_CLOUD_COMPUTER_DOMAIN: domain,
@@ -335,29 +325,9 @@ const auth = createControlPlaneAuth(database, {
   googleClientId: "test-client",
   googleClientSecret: "test-secret",
 });
-const organizations = new OrganizationStore(database, {
-  stripe: {
-    ...stripe,
-    invoice: async () => {
-      throw new Error("Not used");
-    },
-    voidInvoice: async () => {
-      throw new Error("Not used");
-    },
-  },
-  offer: {
-    priceId: "price_seat",
-    portalConfigurationId: "bpc_org",
-    name: "Work seat",
-    currency: "usd",
-    amountMinor: 4900,
-    interval: "month",
-  },
-});
 const cloud = new CloudComputerStore(database, {
   backupKeyVault: testBackupVault(),
   purgeBackupStep: async () => true,
-  organizations,
   onBillingAttention: () => undefined,
   config,
   accountOrigin: publicOrigin,
@@ -562,7 +532,6 @@ async function startManagedHome(booted: CloudComputerBootResponse, snapshot?: Ho
     OPENSTEER_MANAGED_HOME_ID: managed.cloudComputerId,
     OPENSTEER_MANAGED_HOME_GENERATION: String(managed.generation),
     OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN: booted.accountOrigin,
-    ...(booted.work ? { OPENSTEER_MANAGED_HOME_WORK_JSON: JSON.stringify(booted.work) } : {}),
     OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID: managed.oidc.clientId,
     OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET: managed.oidc.clientSecret,
   });
@@ -783,10 +752,6 @@ beforeAll(async () => {
           throw new Error("Not used");
         },
       }),
-      organizations,
-      workHomeFetch: async () => {
-        throw new Error("Not used");
-      },
       cloudComputers: {
         store: cloud,
         kickBootstrap: () => undefined,
@@ -814,7 +779,6 @@ beforeAll(async () => {
   await app.listen({ host: "127.0.0.1", port: 0 });
   accountFront.target = (app.server.address() as AddressInfo).port;
   await cloud.checkOffer();
-  await organizations.checkOffer();
   // One backup namespace per Cloud Computer this file buys.
   for (const prefix of [
     "claim-1",
@@ -874,7 +838,6 @@ it.skipIf(!controlPlaneUrl || !hostUrl)(
       account: { issuer: publicOrigin.origin, subject: buyer.id },
       authority: { canonicalOrigin: homeOrigin, ...identity },
     });
-    expect(receipt.document.work).toBeUndefined();
 
     // The Home is in the buyer's directory, at its own address.
     // An app that hasn't said it understands a Home at its own address isn't shown one.
@@ -1019,183 +982,6 @@ it.skipIf(!controlPlaneUrl || !hostUrl)(
     expect(await restored.host.store.database.selectFrom("users").select("id").execute()).toEqual([
       owner,
     ]);
-  },
-  240_000,
-);
-
-it.skipIf(!controlPlaneUrl || !hostUrl)(
-  "claims a work Cloud Computer for its assignee and carries the organization's marker",
-  async () => {
-    const admin = await accountUser();
-    const member = await accountUser();
-    const paid = order(admin.id);
-    const organizationCheckout = await admin.browser.request(
-      account(`${accountOrganizationsPath}/checkout`),
-      json({ requestId: paid.requestId, name: "Workspace", seats: 1 }),
-    );
-    expect(organizationCheckout.status, await organizationCheckout.text()).toBe(200);
-    const organizationId = lastCheckout!.organization!.id;
-    const metadata = { ...paid.session.metadata, organization_id: organizationId };
-    subscriptions.set(paid.session.subscription, {
-      ...subscriptions.get(paid.session.subscription)!,
-      metadata,
-      items: {
-        has_more: false,
-        data: [{ id: "si_seat", quantity: 1, price: { id: "price_seat", currency: "usd" } }],
-      },
-    });
-    await webhook({ ...paid.session, metadata });
-    const organizationPath = `${accountOrganizationsPath}/${organizationId}`;
-    const invited = await admin.browser.request(
-      account(`${organizationPath}/invitations`),
-      json({ email: `${member.id}@example.test`, role: "member" }),
-    );
-    expect(invited.status, await invited.clone().text()).toBe(200);
-    const invitation = (await invited.json()) as { id: string };
-    const inbox = MyOrganizationsResponseSchema.parse(
-      await (await member.browser.request(account(accountOrganizationsPath))).json(),
-    );
-    expect(inbox.invitations).toHaveLength(1);
-    expect(
-      (
-        await member.browser.request(
-          account(`${accountOrganizationsPath}/invitations/${invitation.id}/accept`),
-          json({}),
-        )
-      ).status,
-    ).toBe(200);
-    const assigned = await admin.browser.request(
-      account(`${organizationPath}/assignments`),
-      json({ requestId: randomUUID(), accountId: member.id }),
-    );
-    expect(assigned.status, await assigned.clone().text()).toBe(200);
-    const assignment = WorkAssignmentViewSchema.parse(await assigned.json());
-
-    const source = await bootAndClaim(assignment.computerId);
-    const { homeOrigin, receipt } = source;
-    const work = {
-      organizationId,
-      organizationName: "Workspace",
-      assignmentId: assignment.assignmentId,
-    };
-    expect(receipt.document.account.subject).toBe(member.id);
-    expect(receipt.document.work).toEqual(work);
-    const session = await signInToHome(member.browser, homeOrigin);
-    expect(session.status, session.trail).toBe(200);
-    const owner = await source.host.store.database
-      .selectFrom("users")
-      .select("id")
-      .executeTakeFirstOrThrow();
-    expect(await session.json()).toMatchObject({ session: { user: { id: owner.id } } });
-
-    const runnerId = createId("runner");
-    const publicKeyPem = generateKeyPairSync("ed25519")
-      .publicKey.export({ format: "pem", type: "spki" })
-      .toString();
-    await expect(
-      source.host.store.enrollRunnerConnection({
-        descriptor: {
-          ...testRunnerDescriptor({
-            runnerKind: "managed",
-            runnerId,
-            name: "Messaging service",
-            environmentId: source.environmentId,
-            modules: {},
-          }),
-          capabilities: [],
-        },
-        enrollmentTokenHash: hashRunnerEnrollmentToken(source.messagingToken),
-        publicKeyPem,
-        publicKeyFingerprint: runnerPublicKeyFingerprint(publicKeyPem),
-      }),
-    ).resolves.toMatchObject({ runnerId, allowedModules: ["integrations", "messaging"] });
-    expect(
-      await source.host.store.database
-        .selectFrom("deviceDrivers")
-        .select("deviceId")
-        .where("runnerId", "=", runnerId)
-        .executeTakeFirst(),
-    ).toBeUndefined();
-    await source.close();
-
-    const claim = { ...receipt.document.claim, generation: receipt.document.claim.generation + 1 };
-    // Stage the replacement in the fixture. The restored receipt supplies the work marker.
-    const { work: _bootMarker, ...replacementBoot } = source.booted;
-    const replacement = await startManagedHome(
-      {
-        ...replacementBoot,
-        managedHome: { ...source.booted.managedHome!, ...claim },
-        setupCodeDigest: createHash("sha256").update(randomBytes(32)).digest("hex"),
-      },
-      source,
-    );
-    const linkGeneration = randomBytes(32).toString("base64url");
-    const hostCredential = `osc_${randomBytes(32).toString("base64url")}`;
-    const setupCode = randomBytes(32).toString("base64url");
-    const replacementClaim = async (marker: typeof work | undefined) => {
-      const iat = Math.floor(Date.now() / 1000);
-      const { token: assertion } = await auth.api.signJWT({
-        body: {
-          payload: {
-            tokenUse: "opensteer-managed-home-claim",
-            iss: publicOrigin.origin,
-            aud: replacement.homeOrigin,
-            sub: member.id,
-            iat,
-            exp: iat + 120,
-            jti: `mhc_${randomUUID()}`,
-            authority: receipt.document.authority,
-            claim,
-            ...(marker ? { work: marker } : {}),
-            owner: {
-              email: `${member.id}@example.test`,
-              displayName: "Assignee",
-              emailVerified: true,
-            },
-            link: {
-              generation: linkGeneration,
-              hostCredentialSha256: createHash("sha256").update(hostCredential).digest("base64url"),
-            },
-          },
-        },
-      });
-      return operator.request(
-        `${replacement.homeOrigin}${managedHomeClaimPath}`,
-        json({
-          schemaVersion: 1,
-          setupCode,
-          assertion,
-          hostCredential,
-        }),
-      );
-    };
-    const personalOnly = await replacementClaim(undefined);
-    expect(personalOnly.status, await personalOnly.clone().text()).toBe(403);
-    expect(await personalOnly.text()).toContain("This claim is for a different work assignment");
-    const reclaimed = await replacementClaim(work);
-    expect(reclaimed.status, await reclaimed.clone().text()).toBe(200);
-    expect(ManagedHomeClaimReceiptSchema.parse(await reclaimed.json()).document).toMatchObject({
-      account: { issuer: publicOrigin.origin, subject: member.id },
-      authority: receipt.document.authority,
-      claim,
-      work,
-      linkGeneration,
-    });
-    expect(
-      await replacement.host.store.database.selectFrom("users").select("id").execute(),
-    ).toEqual([owner]);
-    expect(
-      await replacement.host.store.database
-        .selectFrom("personalRemoteAccountLink")
-        .select(["challengeId", "issuer", "subject", "linkGeneration"])
-        .where("singletonKey", "=", "opensteer-account")
-        .executeTakeFirstOrThrow(),
-    ).toEqual({
-      challengeId: assignment.computerId,
-      issuer: publicOrigin.origin,
-      subject: member.id,
-      linkGeneration,
-    });
   },
   240_000,
 );

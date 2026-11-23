@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { readdirSync, readFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { runningSupervisedProcesses, type HarnessProcessLaunchWrapper } from "@opensteer/harness";
@@ -39,10 +39,14 @@ export type RunnerShutdownProof = z.infer<typeof RunnerShutdownProofSchema>;
 export async function confirmRunnerShutdown(
   dataDirectory: string,
   proof?: Pick<RunnerShutdownProof, "bootId" | "processIdentities">,
+  options?: { readonly terminationGraceMs?: number },
 ): Promise<boolean> {
   const containment = new ExecutionContainment({
     bootId: proof?.bootId ?? "desktop",
     dataDirectory,
+    ...(options?.terminationGraceMs !== undefined
+      ? { terminationGraceMs: options.terminationGraceMs }
+      : {}),
   });
   if (!proof) {
     await containment.reapEarlierBoots();
@@ -93,6 +97,7 @@ export class ExecutionContainment {
   readonly #bootId: string;
   readonly #installation: string;
   readonly #list: ProcessLister | undefined;
+  readonly #terminationGraceMs: number;
   /** The processes noted for each execution before its engine was told to stop. */
   readonly #noted = new Map<string, Set<string>>();
 
@@ -102,6 +107,7 @@ export class ExecutionContainment {
     readonly dataDirectory: string;
     readonly listProcesses?: ProcessLister;
     readonly platform?: NodeJS.Platform;
+    readonly terminationGraceMs?: number;
   }) {
     this.#bootId = options.bootId;
     this.#installation = createHash("sha256")
@@ -109,6 +115,7 @@ export class ExecutionContainment {
       .digest("base64url")
       .slice(0, 16);
     this.#list = options.listProcesses ?? processListerFor(options.platform ?? process.platform);
+    this.#terminationGraceMs = options.terminationGraceMs ?? terminationGraceMs;
   }
 
   scope(executionId: string): string {
@@ -257,7 +264,7 @@ export class ExecutionContainment {
     processes = await remaining();
     if (processes.length === 0) return "proven";
     signal(processes, "SIGTERM");
-    processes = await waitUntilGone(remaining, terminationGraceMs);
+    processes = await waitUntilGone(remaining, this.#terminationGraceMs);
     if (processes.length === 0) return "proven";
     processes = await waitUntilGone(remaining, killSettleMs, "SIGKILL");
     return processes.length === 0 ? "proven" : "unknown";
@@ -360,13 +367,15 @@ async function listSupervisedProcesses(variable: string): Promise<readonly Liste
 async function listLinuxProcesses(variable: string): Promise<readonly ListedProcess[]> {
   const prefix = `${variable}=`;
   const found: ListedProcess[] = [];
-  for (const entry of await readdir("/proc")) {
+  // /proc entries are kernel-backed memory; reading them synchronously avoids thousands of
+  // sequential libuv threadpool round-trips per scan under CPU load.
+  for (const entry of readdirSync("/proc")) {
     if (!/^[1-9][0-9]*$/u.test(entry)) continue;
     const pid = Number(entry);
     if (pid === process.pid) continue;
     let environ = "";
     try {
-      environ = await readFile(`/proc/${entry}/environ`, "latin1");
+      environ = readFileSync(`/proc/${entry}/environ`, "latin1");
     } catch {
       // Linux removes a zombie's address space before its PID is reaped.
       // Its start identity must remain listed even when environ returns ESRCH.
@@ -374,7 +383,7 @@ async function listLinuxProcesses(variable: string): Promise<readonly ListedProc
     const scope = environ.split("\0").find((value) => value.startsWith(prefix));
     let stat: string;
     try {
-      stat = await readFile(`/proc/${entry}/stat`, "latin1");
+      stat = readFileSync(`/proc/${entry}/stat`, "latin1");
     } catch {
       continue;
     }

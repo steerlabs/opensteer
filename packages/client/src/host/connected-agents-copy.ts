@@ -1,4 +1,8 @@
-import type { ThreadAccessMode } from "@opensteer/core";
+import {
+  agentEndedForPersonMessage,
+  chatEndedMessage,
+  type ThreadAccessMode,
+} from "@opensteer/core";
 import { agentConnectionVerificationChangedMessage } from "@opensteer/protocol";
 import { plainSentence, sentenceWith, type SentencePart } from "./sentence-parts.js";
 
@@ -188,10 +192,8 @@ export const connectedAgentsCopy = {
     "This is chosen when the chat is added and can’t be changed. To change it, disconnect this chat and add it again.",
   "chat.ended.you": "You disconnected it.",
   "chat.ended.unknown": "This chat has ended.",
-  "chat.ended.organization": "Your organization turned off tasks for chats.",
   "chat.ended.account": "Its messaging account was disconnected.",
   "chat.ended.computer": "The Mac it used was removed, or can no longer use Messages.",
-  "chat.ended.work-home": "Your work Home is closing.",
   "chat.ended.again": "To use it again, add the chat again on Messaging.",
   "chat.unknownReply":
     "1 reply may have been sent. Opensteer couldn’t confirm it arrived, so it won’t send it again.",
@@ -442,11 +444,9 @@ export function anyoneChatModeDescriptions(
 }
 
 /**
- * What a task says when the chat or connected agent that started it has ended, matching the Home's
- * own refusal (`chatEndedMessage` / `agentEndedForPersonMessage`).
+ * What a task says when the chat or connected agent that started it has ended: the Home's own
+ * refusal (`chatEndedMessage` / `agentEndedForPersonMessage` in `@opensteer/core`).
  */
 export function taskOriginEndedMessage(origin: "chat" | "agent"): string {
-  return origin === "chat"
-    ? "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging."
-    : "This connected agent's access ended, so this task takes no new messages. Start a new task, or reconnect it from Connected agents.";
+  return origin === "chat" ? chatEndedMessage : agentEndedForPersonMessage;
 }

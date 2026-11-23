@@ -1,8 +1,6 @@
-import { organizationsPortalPath } from "../organizations/portal-pages.js";
 import { loadControlPlaneConfig } from "../config.js";
 import { createControlPlaneDatabase } from "../database/database.js";
 import { CloudComputerSecretCipher } from "./secret-cipher.js";
-import { OrganizationStore } from "../organizations/store.js";
 import { ControlPlaneError } from "../server/errors.js";
 import { cloudComputerOperatorUsage, runCloudComputerOperator } from "./operator.js";
 import { CloudComputerStore } from "./store.js";
@@ -22,17 +20,11 @@ async function main(args: readonly string[]): Promise<void> {
     maxConnections: 2,
   });
   const stripe = new CloudComputerStripe({ key: cloud.stripeKey, returnUrl: config.publicOrigin });
-  const organizations = new OrganizationStore(db, {
-    stripe,
-    offer: config.organizationOffer,
-    returnUrl: new URL(organizationsPortalPath, config.portalOrigin),
-  });
   const store = new CloudComputerStore(db, {
     config: cloud,
     accountOrigin: config.publicOrigin,
     cipher: new CloudComputerSecretCipher(config.adoptionOperationKey),
     stripe,
-    organizations,
   });
   try {
     console.info(JSON.stringify(await runCloudComputerOperator(store, args)));

@@ -1,18 +1,18 @@
 import type { AgentConnectionIdentityAtConsent } from "@opensteer/control-plane-protocol";
 import type { AgentConnectionIdentityPresentation } from "@opensteer/protocol";
-import { workSentence, workText, workWords } from "./agent-work-copy.js";
+import { outsideName } from "@opensteer/shared/outsideName";
+import { workSentence, workWords } from "./agent-work-copy.js";
 import { plainSentence, siteOrigin, type SentencePart } from "./sentence-parts.js";
 
 /**
  * Who a connected agent is, as far as the Home could prove at consent. The Home's own
  * presentation decides the words; without one (an older Home), the agent is only the name
- * it gave itself and where it returns to. A logo is shown only for a platform the Home
+ * it gave itself and where it returns to. A logo is shown only for a directory entry the Home
  * verified, never guessed from a domain.
  */
 export interface AgentWho {
   /**
-   * "Errand via AgentPay", a verified platform's name, or the self-given name made safe to
-   * show on one line. Beside a mark only when `verified`; otherwise only inside a claim.
+   * A verified directory entry's name, or the self-given name made safe to show on one line. Beside a mark only when `verified`; otherwise only inside a claim.
    */
   readonly heading: string;
   /** The verified origin, the redirect origin, or "an app on this computer", as plain text. */
@@ -22,7 +22,7 @@ export interface AgentWho {
   readonly verified: boolean;
   /** The heading is only what the client calls itself. */
   readonly selfAsserted: boolean;
-  /** A logo key for a verified platform; null otherwise. */
+  /** A logo key for a verified directory entry; null otherwise. */
   readonly providerId: string | null;
   /** The redirect returns to this computer. */
   readonly local: boolean;
@@ -34,17 +34,17 @@ export interface AgentWho {
    * shown only as a labelled claim ("Says it is …"); null when the Home verified who it is.
    */
   readonly claim: string | null;
-  /** Each origin the Home recorded, labelled by what it is: both, for a verified pairing. */
+  /** Each origin the Home recorded, labelled by what it is. */
   readonly origins: readonly AgentWhoOrigin[];
 }
 
 /** One origin the Home recorded for this agent. */
 export interface AgentWhoOrigin {
-  readonly role: "embedder" | "platform" | "redirect";
+  readonly role: "verified" | "redirect";
   /** The Home's verified name for it; null for a redirect, whose only name is the claim. */
   readonly name: string | null;
   readonly origin: string;
-  /** What this origin is: "Asked for this", "Holds the access", "Returns to". */
+  /** What this origin is: "Holds the access", "Returns to". */
   readonly roleLabel: string;
 }
 
@@ -53,21 +53,19 @@ export const agentClaimMaxLength = 40;
 
 /**
  * A client-chosen name shown on one line, as a labelled claim: the Home cleaned it where it
- * entered (`outsideName`), so all that is left here is the cut for a claim's short space.
+ * entered (`outsideName`), so all that is left here is the cut for a claim's short space, made
+ * by the same cleaner so it never splits an emoji, a flag or a letter from its marks.
  */
 export function agentClaim(name: string, maxLength = agentClaimMaxLength): string {
-  const chars = Array.from(name.trim());
-  if (!chars.length) return workWords("who.unnamed");
-  return chars.length > maxLength
-    ? `${chars
-        .slice(0, maxLength - 1)
-        .join("")
-        .trimEnd()}…`
-    : name.trim();
+  const trimmed = name.trim();
+  if (!trimmed) return workWords("who.unnamed");
+  return Array.from(trimmed).length > maxLength
+    ? `${outsideName(trimmed, maxLength - 1)}…`
+    : trimmed;
 }
 
-/** Logos the apps draw, keyed by the verified directory's own platform id. */
-const platformLogos: Readonly<Record<string, string>> = {
+/** Logos the apps draw, keyed by the verified directory entry's id. */
+const directoryLogos: Readonly<Record<string, string>> = {
   chatgpt: "openai",
   claude: "anthropic",
 };
@@ -93,18 +91,10 @@ export function agentWho(input: {
     // An unverified heading is the client's own name: only ever a claim, made safe to show.
     const claim = presented.verified ? null : agentClaim(input.clientName);
     // The line under the heading, from what the Home recorded, each value by what it is.
-    const named = (role: "embedder" | "platform") =>
-      presented.origins.find((origin) => origin.role === role);
-    const embedder = named("embedder");
-    const platform = named("platform");
+    const verifiedOrigin = presented.origins.find((origin) => origin.role === "verified");
     const detailParts: readonly SentencePart[] = local
       ? [workWords("who.local")]
-      : embedder && platform
-        ? workSentence("who.pairDetail", {
-            embedder: { name: embedder.label },
-            platform: { name: platform.label },
-          })
-        : originParts(platform?.origin ?? input.redirect);
+      : originParts(verifiedOrigin?.origin ?? input.redirect);
     return {
       heading: claim ?? presented.heading,
       detail: plainSentence(detailParts),
@@ -113,7 +103,7 @@ export function agentWho(input: {
       selfAsserted: presented.selfAsserted,
       providerId:
         verified && recorded && recorded.kind !== "unverified"
-          ? (platformLogos[recorded.platformDirectoryId] ?? null)
+          ? (directoryLogos[recorded.directoryId] ?? null)
           : null,
       local,
       withdrawnSince: presented.verified ? withdrawnSince : null,
@@ -128,35 +118,21 @@ export function agentWho(input: {
     };
   }
   if (recorded && recorded.kind !== "unverified") {
-    const pair = recorded.kind === "platform-and-embedder";
     const origins: AgentWhoOrigin[] = [
       {
-        role: "platform",
-        name: recorded.platformName,
-        origin: recorded.platformOrigin,
-        roleLabel: workWords("who.origin.platform"),
+        role: "verified",
+        name: recorded.displayName,
+        origin: recorded.origin,
+        roleLabel: workWords("who.origin.verified"),
       },
     ];
-    if (pair)
-      origins.unshift({
-        role: "embedder",
-        name: recorded.embedderName,
-        origin: recorded.embedderOrigin,
-        roleLabel: workWords("who.origin.embedder"),
-      });
     return {
-      heading: pair
-        ? workText("who.pair", {
-            embedder: recorded.embedderName,
-            platform: recorded.platformName,
-          })
-        : recorded.platformName,
-      detail: plainSentence(originParts(recorded.platformOrigin)),
-      detailParts: originParts(recorded.platformOrigin),
+      heading: recorded.displayName,
+      detail: plainSentence(originParts(recorded.origin)),
+      detailParts: originParts(recorded.origin),
       verified: withdrawnSince === null,
       selfAsserted: false,
-      providerId:
-        withdrawnSince === null ? (platformLogos[recorded.platformDirectoryId] ?? null) : null,
+      providerId: withdrawnSince === null ? (directoryLogos[recorded.directoryId] ?? null) : null,
       local,
       withdrawnSince,
       warning: workWords("who.consentWarning"),

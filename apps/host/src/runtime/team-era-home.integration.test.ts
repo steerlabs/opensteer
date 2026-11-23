@@ -139,8 +139,7 @@ it("keeps a Home that used teams working: its old rows read without error and ev
     });
 
     // This release's migration for it runs over that database, as on a Home that last ran the
-    // release before. Later migrations already ran on this one, so it is run as itself rather
-    // than by forgetting it and migrating again.
+    // release before. A migration runs once; the test must not need later ones (like 0108) twice.
     const migrations = await migrationProvider().getMigrations();
     await migrations["0107_needs_you_counts_requests"]!.up(store.database as never);
 

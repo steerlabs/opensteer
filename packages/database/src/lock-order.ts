@@ -109,7 +109,6 @@ export const databaseLockOrder = [
   "personal_settings",
   // Run admission and control precede Occurrences and browser execution state.
   "agent_directory_cache",
-  "agent_embedder_assertion_claims",
   "agent_connections",
   // A session and its operations are admitted under their connection, before any Run.
   "agent_sessions",
@@ -278,9 +277,6 @@ export const databaseLockOrder = [
   // The deferred integration trigger writes generations at COMMIT, after Personal projections.
   "integration_authority_generations",
   // Account-service tables are separate physical resources from identically named Host tables.
-  "work_home_policy",
-  "work_audit_head",
-  "work_audit_outbox",
   "control-plane:auth_accounts",
   "control-plane:auth_jwks",
   "control-plane:auth_rate_limits",
@@ -294,14 +290,6 @@ export const databaseLockOrder = [
   "control-plane:cloud_computer_stripe_events",
   // Account authority precedes session, notification and Personal-link mutations.
   "control-plane:users",
-  "control-plane:organizations",
-  "control-plane:organization_members",
-  "control-plane:organization_invitations",
-  "control-plane:organization_checkouts",
-  "control-plane:organization_seat_changes",
-  "control-plane:work_assignments",
-  "control-plane:work_audit_records",
-  "control-plane:work_audit_batches",
   "control-plane:auth_sessions",
   "control-plane:notification_devices",
   "control-plane:notification_deliveries",

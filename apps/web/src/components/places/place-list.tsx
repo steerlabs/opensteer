@@ -72,15 +72,7 @@ export function PlaceList({
                   <Icon name={row.icon} />
                 </span>
                 <span className="place-row__text">
-                  <span className="place-row__name">
-                    {row.name}
-                    {row.work ? (
-                      <span className="work-badge">
-                        <Icon name="users" />
-                        {row.work}
-                      </span>
-                    ) : null}
-                  </span>
+                  <span className="place-row__name">{row.name}</span>
                   <span className="place-row__detail">{row.detail}</span>
                 </span>
                 {row.facts ? <PlaceSignals facts={row.facts} /> : null}

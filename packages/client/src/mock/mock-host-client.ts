@@ -1925,8 +1925,6 @@ export interface MockHostClientOptions {
    * refused for the change, and the request reads like this from then on.
    */
   connectionConsentChange?: import("@opensteer/protocol").AgentConnectionConsent;
-  /** The work policy `personal.shell.get` reports; none on a personal Home. */
-  workPolicy?: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy;
   /** Which paired Chromes can share tabs with a connected agent, as `browser.sources.get` says. */
   chromeTabs?: import("../host/connected-agent-options.js").ChromeTabGrantCatalog;
   /** Whether the connection reads report grants support. Defaults to true. */
@@ -5128,13 +5126,6 @@ export class MockHostClient implements HostClient {
     this.#state.mockDeviceStates();
   }
 
-  /** The organization applies a new policy version, as the synced shell would bring it. */
-  applyWorkPolicy(
-    policy: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null,
-  ): void {
-    this.#state.applyWorkPolicy(policy);
-  }
-
   /** Connected agents working tasks themselves, in each state, with a tab each uses. */
   mockAgentWork(
     options: {
@@ -6062,7 +6053,6 @@ class MockHostState {
   readonly #channelTokens = new Map<string, Readonly<Record<string, string>>>();
   private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
   readonly chromeTabs: import("../host/connected-agent-options.js").ChromeTabGrantCatalog;
-  workPolicy: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null;
   private connectionDecision: { requestId: string; fingerprint: string } | null = null;
   connectionConsent(requestId: string) {
     const consent = this.pendingConnectionConsent;
@@ -6215,11 +6205,15 @@ class MockHostState {
       return { ...ended, bridge: { ...bridge, endedBy } };
     });
     if (endedOrigin === null) return;
-    const affected = new Set(
-      [...this.#threadOriginConnection.entries()]
+    // A chat's tasks, and a connected agent's own tasks (those it works itself).
+    const affected = new Set([
+      ...[...this.#threadOriginConnection.entries()]
         .filter(([, connId]) => connId === id)
         .map(([threadId]) => threadId),
-    );
+      ...this.snapshot.threads
+        .filter((thread) => thread.externalWork?.connection.id === id)
+        .map((thread) => thread.id),
+    ]);
     if (affected.size === 0) return;
     this.update({
       ...this.snapshot,
@@ -7099,7 +7093,6 @@ class MockHostState {
     // The Home cleans a client's name where it registers; the preview's consent is that answer.
     this.pendingConnectionConsent = mockConsent(options.connectionConsent);
     this.chromeTabs = options.chromeTabs ?? {};
-    this.workPolicy = options.workPolicy ?? null;
     this.#consentChange = mockConsent(options.connectionConsentChange);
     for (const p of options.agentPlugins ?? []) {
       const id = crypto.randomUUID();
@@ -7172,10 +7165,7 @@ class MockHostState {
           : {}),
       };
     const firstRun = options.world === "first-run";
-    this.snapshot = {
-      ...(firstRun ? firstRunWorld(initial) : initial),
-      effectiveWorkPolicy: this.workPolicy,
-    };
+    this.snapshot = firstRun ? firstRunWorld(initial) : initial;
     this.applyAutomaticEligibility();
     for (const thread of this.snapshot.threads) {
       if (thread.icon === null && thread.purpose === "task") this.#provisionalIcons.add(thread.id);
@@ -7830,13 +7820,6 @@ class MockHostState {
       requests: { ...this.snapshot.requests, ...seed.requests } as typeof this.snapshot.requests,
       browserSessions,
     });
-  }
-
-  applyWorkPolicy(
-    policy: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null,
-  ): void {
-    this.workPolicy = policy;
-    this.update({ ...this.snapshot, effectiveWorkPolicy: policy });
   }
 
   mockDeviceStates(): void {

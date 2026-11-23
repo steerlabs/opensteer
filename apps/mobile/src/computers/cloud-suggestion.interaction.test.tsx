@@ -83,10 +83,10 @@ describe("the asleep moment on the phone", () => {
     });
   });
 
-  it("never shows on the gate of a server, a Cloud Computer or a work Home", async () => {
+  it("never shows on the gate of a server or a Cloud Computer", async () => {
     await show(<GateAsleepLine deploymentId="dep_1" macHome={false} name="Opensteer" />);
     expect(text()).toBe("");
-    for (const homeKind of ["server", "cloud", "work"] as const) {
+    for (const homeKind of ["server", "cloud"] as const) {
       await show(moment({ homeKind, moment: `gate:${homeKind}` }));
       expect(text()).toBe("");
     }

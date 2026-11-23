@@ -60,12 +60,9 @@ export class CommandTools {
   readonly #requests: () => CommandRequestService | undefined;
   readonly #administration: AdministrationToolHandlers;
   readonly #reads: () => Readonly<Record<string, unknown>> | undefined;
-  readonly #policy: (() => Promise<unknown>) | undefined;
   constructor(options: {
     /** The person's read handlers, as the Host registered them. */
     readonly reads?: () => Readonly<Record<string, unknown>> | undefined;
-    /** The organization's effective policy on a work Home; nothing on a personal one. */
-    readonly policy?: () => Promise<unknown>;
     readonly database: Kysely<DatabaseSchema>;
     readonly registry: CommandRegistry;
     readonly requests: () => CommandRequestService | undefined;
@@ -77,7 +74,6 @@ export class CommandTools {
     this.#requests = options.requests;
     this.#administration = options.administration;
     this.#reads = options.reads ?? (() => undefined);
-    this.#policy = options.policy;
   }
 
   /** What this caller holds, and how the Home answers each: from the rule, cut to the caller. */
@@ -341,8 +337,6 @@ export class CommandTools {
                     : (caller as Extract<AgentCaller, { kind: "program" }>).anchor.id,
               }),
         };
-      case "policy":
-        return { area: input.area, view: { policy: (await this.#policy?.()) ?? null } };
     }
   }
 

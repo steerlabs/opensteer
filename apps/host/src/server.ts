@@ -41,8 +41,6 @@ import type { DeviceDriverManagementPort } from "./administration/device-driver-
 import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
 import { installClientAddress, installTrustedProxy } from "./identity/anonymous-client-address.js";
 import { registerManagedHomeClaimRoute } from "./identity/managed-home-claim.js";
-import { registerDeviceEnrollmentPreview } from "./organizations/device-enrollment-preview.js";
-import { registerWorkHomeRoutes, type WorkHomeService } from "./organizations/work-home.js";
 import { deviceAccess } from "@opensteer/protocol";
 import {
   deviceMembershipTurn,
@@ -492,9 +490,6 @@ export interface HostServerDependencies {
     import("./identity/managed-home-claim.js").ManagedHomeClaimService,
     "claim"
   >;
-  readonly workHome?: {
-    readonly service: WorkHomeService;
-  };
   /** The Opensteer Account link, on every Personal Host whether or not it has Remote access. */
   readonly personalAccountLink?: { readonly service: PersonalRemoteAccessService } | undefined;
   /** The personal owner's name; absent before the Home has an owner. */
@@ -724,7 +719,6 @@ export async function createHostServer(
       }
     : undefined;
   if (connectionRoutes) registerConnectionRoutes(app, connectionRoutes);
-  if (dependencies.workHome) registerWorkHomeRoutes(app, dependencies.workHome.service);
   if (dependencies.managedHomeClaim)
     registerManagedHomeClaimRoute(app, dependencies.managedHomeClaim, (address) =>
       consumeAnonymousRateLimit(
@@ -2738,7 +2732,6 @@ export async function createHostServer(
     },
   });
 
-  registerDeviceEnrollmentPreview(app, dependencies.store.database);
   app.post(
     "/v1/runner/leave",
     { config: unversionedRoute, bodyLimit: 8 * 1024 },

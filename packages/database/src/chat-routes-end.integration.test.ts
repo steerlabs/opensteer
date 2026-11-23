@@ -16,7 +16,8 @@ import { createBrowserProfile } from "./browser-session-store.js";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import { chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
 import type { LineageAttempt } from "./connection-disconnect.js";
-import { migrateToLatest, migrationProvider } from "./migrations.js";
+import { replayMigrations } from "./migration-replay.test-support.js";
+import { removePlatformVerificationMigrationName } from "./platform-verification-removal-migration.js";
 import { chatEndedMessage, lineagePersonalContext } from "./resource-access.js";
 import type { DatabaseSchema } from "./schema.js";
 import {
@@ -65,28 +66,16 @@ async function restoreRoutes(database: Kysely<DatabaseSchema>): Promise<void> {
 }
 
 /**
- * Runs migration `0109_chat_routes_end_contract` once more, and only it, through the migrator:
- * the ledger rows from 0109 on are set aside, the migrator sees the list cut after 0109, and the
- * rows of the later migrations are put back. No later migration is ever run a second time, so
- * nothing a later migration adds has to be undone here.
+ * Runs migration `0109_chat_routes_end_contract` once more, and after it the two that change the
+ * same rows (organizations removed, platform verification removed), as an update does: what these
+ * tests seed in the old shape is read back in today's.
  */
 async function replayFromChatRoutesEnd(database: Kysely<DatabaseSchema>): Promise<void> {
-  const ledger = await sql<{ name: string; timestamp: string }>`
-    select name, timestamp from kysely_migration where name > ${chatRoutesEndMigrationName}`.execute(
+  await replayMigrations(
     database,
+    chatRoutesEndMigrationName,
+    removePlatformVerificationMigrationName,
   );
-  await sql`delete from kysely_migration where name >= ${chatRoutesEndMigrationName}`.execute(
-    database,
-  );
-  const all = await migrationProvider().getMigrations();
-  const throughChatRoutesEnd = Object.fromEntries(
-    Object.entries(all).filter(([name]) => name <= chatRoutesEndMigrationName),
-  );
-  await migrateToLatest(database, { getMigrations: async () => throughChatRoutesEnd });
-  for (const row of ledger.rows)
-    await sql`insert into kysely_migration (name, timestamp) values (${row.name}, ${row.timestamp})`.execute(
-      database,
-    );
 }
 
 describeStore("the update ends chat routes, and the work they ran keeps what it had", (it) => {
@@ -948,8 +937,8 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
     expect(cleanedFallback.label).toContain(persian);
     expect(cleanedFallback.label).toContain(england);
     expect(cleanedFallback.identityAtConsent).toMatchObject({
-      platformName: outsideName(rloWithWriting, 100),
-      embedderName: "Agent",
+      kind: "verified",
+      displayName: outsideName(rloWithWriting, 100),
     });
 
     const cleanedEmoji = listedAgents.find(({ id }) => id === emojiAgent.id)!;

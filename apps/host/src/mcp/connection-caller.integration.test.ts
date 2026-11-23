@@ -832,7 +832,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       requestedBy: f.userId,
       threadId: created,
       runId: pendingRun.id,
-      auditOwnerStop: true,
       idempotencyKey: "person-pauses-created-task",
     });
     const newTaskQueue = () =>

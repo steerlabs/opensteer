@@ -1,10 +1,14 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdirSync, readFileSync } from "node:fs";
 import { afterEach, expect, it, vi } from "vitest";
 import { ExecutionContainment, executionScopeVariable } from "./execution-containment.js";
 
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, readdir: vi.fn(actual.readdir), readFile: vi.fn(actual.readFile) };
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    readdirSync: vi.fn(actual.readdirSync),
+    readFileSync: vi.fn(actual.readFileSync),
+  };
 });
 
 afterEach(() => vi.useRealTimers());
@@ -19,10 +23,10 @@ it("keeps an orphan's identity until reaping when Linux has already removed its 
   let state: "running" | "zombie" | "reaped" = "running";
   const stat = (pid: number, ppid: number) =>
     `${pid} (engine child) ${state === "zombie" ? "Z" : "S"} ${ppid} ${Array(17).fill(0).join(" ")} 123`;
-  vi.mocked(readdir).mockImplementation(
-    async () => (state === "running" ? ["101", "102"] : state === "zombie" ? ["102"] : []) as never,
+  vi.mocked(readdirSync).mockImplementation(
+    () => (state === "running" ? ["101", "102"] : state === "zombie" ? ["102"] : []) as never,
   );
-  vi.mocked(readFile).mockImplementation(async (path) => {
+  vi.mocked(readFileSync).mockImplementation((path) => {
     if (String(path).endsWith("/stat"))
       return (
         String(path).includes("/101/") ? stat(101, 1) : stat(102, state === "running" ? 101 : 1)

@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   administrationCommand,
@@ -250,7 +251,8 @@ export class BrowserSourceStore {
         .values({
           id: createId("browserSource"),
           ownerId: pairing.ownerId,
-          name: input.name,
+          // The Chrome profile's name as the extension reports it: a name from outside.
+          name: outsideName(input.name, 120) || "Chrome",
           tokenHash: input.tokenHash,
           revokedAt: null,
           lastSeenAt: null,
@@ -375,7 +377,7 @@ export class BrowserSourceStore {
       await assertPersonalOwner(tx, input.ownerId);
       const result = await tx
         .updateTable("browserSources")
-        .set({ name: input.name, updatedAt: new Date() })
+        .set({ name: outsideName(input.name, 120) || "Chrome", updatedAt: new Date() })
         .where("id", "=", input.sourceId)
         .where("ownerId", "=", input.ownerId)
         .where("revokedAt", "is", null)

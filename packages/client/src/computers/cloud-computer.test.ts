@@ -5,20 +5,12 @@ import {
   cloudComputerFailure,
 } from "../connections/account-cloud-computers.js";
 import { AccountRequestError } from "../connections/account-deployment-directory.js";
-import {
-  MockCloudComputerAccount,
-  mockCloudComputerId,
-  mockWorkComputerId,
-  mockWorkHome,
-} from "../mock/mock-cloud-computers.js";
+import { MockCloudComputerAccount, mockCloudComputerId } from "../mock/mock-cloud-computers.js";
 import {
   CloudComputerClient,
   cloudComputerDetail,
   cloudCheckoutWatchMs,
   cloudComputerScreen,
-  currentCloudComputer,
-  workHomeBadges,
-  workHomeCard,
   cloudComputerDeleteInput,
   cloudComputerHomeKind,
   cloudComputerPlanView,
@@ -100,7 +92,6 @@ describe("Cloud Computer screen", () => {
             computers: [],
             plan: { name: "Cloud", currency: "usd", amountMinor: 2000, interval: "month" },
           },
-          work: [],
         },
         checkoutOpened: false,
         deleted: false,
@@ -292,7 +283,6 @@ describe("Cloud Computer Account client", () => {
     await client.act({ action: "delete", id, confirmation: `DELETE:${id}` });
     expect(accountRequest.mock.calls).toEqual([
       ["/v1/account/cloud-computers", { method: "GET" }],
-      ["/v1/account/organizations", { method: "GET" }],
       [`/v1/account/cloud-computers/${id}/suspend`, { method: "POST", body: "{}" }],
       [
         `/v1/account/cloud-computers/${id}`,
@@ -500,123 +490,5 @@ describe("what the Account reports about a Cloud Computer", () => {
         }),
       ).message,
     ).toBe("Your subscription ended. Fix the payment in Manage billing. Nothing on it is deleted.");
-  });
-});
-
-describe("work Homes", () => {
-  const plan = { name: "Cloud", currency: "usd", amountMinor: 2000, interval: "month" } as const;
-  it("draws a work Home as its own card: status, address, policy, who manages it, no billing", () => {
-    const card = workHomeCard(mockWorkHome("dep_00000000-0000-4000-8000-0000000000d1"), "en-US");
-    expect(card).toMatchObject({
-      title: "Acme Robotics · Work Home",
-      badge: "Work · Acme Robotics",
-      status: { label: "Running", tone: "good" },
-      address: "https://w3r8.cloud.opensteer.example",
-      deploymentId: "dep_00000000-0000-4000-8000-0000000000d1",
-      managed: "Managed by Acme Robotics: they pay for it and can suspend or delete it.",
-      seeTitle: "What Acme Robotics can see",
-    });
-    expect(card.policy.map(({ value }) => value)).toEqual([
-      "Supervised",
-      "Allowed",
-      "Not allowed",
-      "Only the work Home’s own Cloud Computer",
-    ]);
-    expect(Object.keys(card)).not.toEqual(expect.arrayContaining(["canSuspend", "canDelete"]));
-    expect(workHomeBadges([card]).get("dep_00000000-0000-4000-8000-0000000000d1")?.badge).toBe(
-      "Work · Acme Robotics",
-    );
-    expect(workHomeBadges([workHomeCard(mockWorkHome(null))]).size).toBe(0);
-  });
-
-  it("says sign-in is cut first, and the organization's reason", () => {
-    const home = mockWorkHome();
-    const cut = workHomeCard({
-      ...home,
-      home: {
-        ...home.home,
-        assignment: {
-          ...home.home.assignment,
-          state: "offboarding",
-          signInCut: true,
-          homeStatus: "suspended",
-          suspended: true,
-          address: null,
-          reason: "Your organization ended this assignment.",
-        },
-      },
-      computer: null,
-    });
-    expect(cut.status).toEqual({
-      label: "Sign-in cut",
-      tone: "attention",
-      reason: "Your organization ended this assignment.",
-    });
-    expect(cut.deploymentId).toBeNull();
-  });
-
-  it("shows personal only, work only, both or neither, and never a work Home twice", async () => {
-    for (const [scene, kind, work] of [
-      ["none", "offer", 0],
-      ["ready", "computer", 0],
-      ["work", "offer", 1],
-      ["both", "computer", 1],
-    ] as const) {
-      const { store, stop } = await started(new MockCloudComputerAccount(scene));
-      expect(store.getSnapshot().screen.kind).toBe(kind);
-      expect(store.getSnapshot().work).toHaveLength(work);
-      stop();
-    }
-    const work = [mockWorkHome()];
-    const listed = { id: mockWorkComputerId, egress: "assigned", status: "preparing" } as const;
-    expect(currentCloudComputer([listed], work)).toBeNull();
-    expect(
-      cloudComputerScreen({
-        read: { kind: "ready", data: { computers: [listed], plan }, work },
-        checkoutOpened: false,
-        deleted: false,
-      }).kind,
-    ).toBe("offer");
-  });
-
-  it("keeps the personal screen when the organization reads fail", async () => {
-    const accountRequest = vi.fn(async (path: string) => {
-      if (path.endsWith("/cloud-computers"))
-        return {
-          computers: [{ id: mockCloudComputerId, egress: "pending", status: "preparing" }],
-          plan,
-        };
-      throw new AccountRequestError({ code: null, status: 503, message: "down" });
-    });
-    const result = await new AccountCloudComputerClient({ transport: { accountRequest } }).read();
-    expect(result).toMatchObject({ ok: true });
-    expect(result.ok && result.work).toBeUndefined();
-  });
-
-  it("reads each organization's work Home and its Cloud Computer, tolerating a missing one", async () => {
-    const home = mockWorkHome();
-    const accountRequest = vi.fn(async (path: string) => {
-      if (path.endsWith("/cloud-computers")) return { computers: [], plan };
-      if (path === "/v1/account/organizations")
-        return {
-          organizations: [
-            { id: home.home.assignment.organizationId, name: "Acme Robotics", role: "member" },
-            { id: "org_00000000-0000-4000-8000-0000000000a2", name: "Beta", role: "admin" },
-          ],
-          invitations: [],
-        };
-      if (path.endsWith("0000000000a1/work-home")) return home.home;
-      if (path.endsWith("/work-home")) return null;
-      throw new AccountRequestError({ code: "not_found", status: 404, message: "gone" });
-    });
-    const result = await new AccountCloudComputerClient({ transport: { accountRequest } }).read();
-    expect(result.ok && result.work).toEqual([{ home: home.home, computer: null }]);
-    expect(accountRequest.mock.calls.map(([path]) => path)).toEqual([
-      "/v1/account/cloud-computers",
-      "/v1/account/organizations",
-      "/v1/account/organizations/org_00000000-0000-4000-8000-0000000000a1/work-home",
-      "/v1/account/organizations/org_00000000-0000-4000-8000-0000000000a2/work-home",
-      `/v1/account/cloud-computers/${mockWorkComputerId}`,
-    ]);
   });
 });

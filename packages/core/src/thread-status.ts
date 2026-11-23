@@ -1,6 +1,16 @@
 import type { Run, ThreadStatus } from "./models.js";
 
 /**
+ * What a person reads in a connected agent's task once its access has ended: the Home's refusal
+ * and the apps' line are this one sentence.
+ */
+export const agentEndedForPersonMessage =
+  "This connected agent's access ended, so this task takes no new messages. Start a new task, or reconnect it from Connected agents.";
+/** What a chat's task says once its chat has ended: it takes no new work, and why. */
+export const chatEndedMessage =
+  "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging.";
+
+/**
  * A Thread's status from the facts that decide it. The Host projects it into
  * the database. Clients use this only for optimistic feedback: their Run facts
  * can be incomplete, so snapshots and Host status events remain authoritative.

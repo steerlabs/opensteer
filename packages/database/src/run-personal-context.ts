@@ -64,11 +64,11 @@ async function queryContextLineage(
   threadId: ThreadId,
   runConnectionId: string | null,
 ): Promise<ThreadContextLineage> {
-  // Reused workers retain every assigning conversation's context restriction, a task linked
-  // under another (an automation's own task) retains its parent's, and work an automation's
-  // program sends anywhere retains its anchor's. Chats are connections in `agent_connections`
-  // with `bridge_senders` set ('me' keeps personal context, 'anyone' drops it; both are chats
-  // and neither is the person's own lineage).
+  // Reused workers retain every assigning task's context restriction, a task linked under another
+  // (an automation's own task) retains its parent's, and work an automation's program sends
+  // anywhere retains its anchor's. Chats are connections in `agent_connections` with
+  // `bridge_senders` set ('me' keeps personal context, 'anyone' drops it; both are chats and
+  // neither is the person's own lineage).
   const result = await sql<{
     total: number;
     chatCount: number;

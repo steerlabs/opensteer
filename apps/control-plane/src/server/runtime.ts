@@ -1,9 +1,7 @@
 import { billingErrorDetails } from "../cloud-computers/billing-error.js";
 import { AgentDirectoryStore } from "../agent-directory/store.js";
-import { OrganizationStore } from "../organizations/store.js";
 import { CloudComputerClaimer, HttpManagedHomeClient } from "../cloud-computers/claim.js";
 import { cloudComputerPortalPath } from "../cloud-computers/portal-pages.js";
-import { organizationsPortalPath } from "../organizations/portal-pages.js";
 import { CloudComputerStore } from "../cloud-computers/store.js";
 import { CloudComputerStripe } from "../cloud-computers/stripe.js";
 import { appleClientSecret } from "../auth/apple-sign-in.js";
@@ -72,13 +70,6 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     const stripe = cloud
       ? new CloudComputerStripe({ key: cloud.stripeKey, returnUrl: config.publicOrigin })
       : undefined;
-    const organizations = stripe
-      ? new OrganizationStore(database, {
-          stripe,
-          offer: cloud?.backupKeyProject ? config.organizationOffer : undefined,
-          returnUrl: new URL(organizationsPortalPath, config.portalOrigin),
-        })
-      : undefined;
     const cloudComputers =
       cloud && stripe
         ? new CloudComputerStore(database, {
@@ -86,7 +77,6 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
             accountOrigin: config.publicOrigin,
             cipher: new CloudComputerSecretCipher(config.adoptionOperationKey),
             stripe,
-            ...(organizations ? { organizations } : {}),
             returnUrl: new URL(cloudComputerPortalPath, config.portalOrigin),
           })
         : undefined;
@@ -146,7 +136,6 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         connectLifecycle,
         ...(hostedOAuthBroker ? { hostedOAuthBroker } : {}),
         agentDirectory: new AgentDirectoryStore(database),
-        ...(organizations ? { organizations } : {}),
         ...(cloud && cloudComputers
           ? {
               cloudComputers: {
@@ -189,7 +178,6 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         "Cloud Computer billing reconciliation failed",
       );
     await cloudComputers?.checkOffer().catch(billingError);
-    await organizations?.checkOffer().catch(billingError);
     await server.listen({ host: config.listenHost, port: config.listenPort });
 
     server.log.info({ apns: Boolean(apns), fcm: Boolean(fcm) }, "Push providers configured");
@@ -261,22 +249,6 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     backupTimer?.unref();
     runBackupErasure();
 
-    let offboardingPass: Promise<void> | undefined;
-    const offboardingError = () => server.log.error("Work Home offboarding is pending");
-    const runOffboarding = () => {
-      if (!offboardingPass && organizations) {
-        offboardingPass = organizations
-          .reconcileOffboarding(offboardingError)
-          .catch(offboardingError)
-          .finally(() => {
-            offboardingPass = undefined;
-          });
-      }
-    };
-    const offboardingTimer = organizations ? setInterval(runOffboarding, 5_000) : undefined;
-    offboardingTimer?.unref();
-    runOffboarding();
-
     const cleanup = setInterval(() => {
       void Promise.all([
         store.purgeExpiredAdoptionResults(),
@@ -294,9 +266,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
           clearInterval(cleanup);
           clearInterval(billingTimer);
           clearInterval(backupTimer);
-          clearInterval(offboardingTimer);
           await billingPass;
-          await offboardingPass;
           await backupPass;
           await cloudComputerClaimer?.close();
           await notificationDelivery?.close();

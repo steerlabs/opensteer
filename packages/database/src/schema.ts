@@ -624,7 +624,6 @@ interface RunnerEnrollmentTable {
   } | null>;
   issuanceModules: Generated<readonly RunnerModuleName[] | null>;
   deviceProfile: Generated<"iphone" | null>;
-  workEnrollmentPreviewedAt: NullableTimestamp;
   id: string;
   name: string;
   tokenHash: string;
@@ -1308,7 +1307,6 @@ export interface CommandTable {
   payload: JsonColumn<unknown>;
   encryptedRequestResponse: Generated<Buffer | null>;
   requestResponseKeyVersion: Generated<number | null>;
-  workOwnerStop: Generated<boolean | null>;
   status: CommandStatus;
   frameSentAt: Generated<Date | null>;
   attempts: Generated<number>;
@@ -1923,7 +1921,7 @@ export interface AgentConnectionTable {
 }
 
 export type BridgeSenders = "owner" | "anyone";
-export type BridgeEndedBy = "you" | "organization" | "account" | "computer" | "work-home";
+export type BridgeEndedBy = "you" | "account" | "computer";
 
 export interface BridgeConversationTable {
   id: ChannelConversationId;
@@ -1991,12 +1989,6 @@ interface AgentDirectoryCacheTable {
   acceptedAt: Date;
 }
 
-interface AgentEmbedderAssertionClaimTable {
-  issuer: string;
-  statementId: string;
-  expiresAt: Date;
-}
-
 export interface AgentSessionTable {
   id: AgentSessionId;
   connectionId: string;
@@ -2021,7 +2013,6 @@ export interface AgentOperationTable {
   target: JsonColumn<AgentOperationTarget>;
   targetGeneration: string | null;
   grantRevision: number;
-  workPolicyRevision: Generated<number | null>;
   mode: ThreadAccessMode;
   effect: "read" | "write";
   state: AgentOperationState;
@@ -2044,27 +2035,6 @@ export interface AgentOperationTable {
 export interface DatabaseSchema {
   agentSessions: AgentSessionTable;
   agentOperations: AgentOperationTable;
-  workHomePolicy: {
-    singleton: Generated<boolean>;
-    assignmentId: import("@opensteer/control-plane-protocol").WorkAssignmentId;
-    deploymentId: DeploymentId;
-    organizationName: string;
-    state: Generated<import("@opensteer/control-plane-protocol").WorkPolicyDocument["state"]>;
-    revision: Generated<number>;
-    policy: JsonColumn<import("@opensteer/control-plane-protocol").WorkPolicy>;
-  };
-  workAuditHead: {
-    singleton: Generated<boolean>;
-    sequence: Generated<number>;
-    hash: Generated<string>;
-    acknowledgedSequence: Generated<number>;
-    sendingThrough: Generated<number | null>;
-  };
-  workAuditOutbox: {
-    sequence: number;
-    record: JsonColumn<import("@opensteer/control-plane-protocol").WorkAuditRecord>;
-    hash: string;
-  };
   pluginOauthRecords: {
     id: string;
     ownerUserId: UserId;
@@ -2159,7 +2129,6 @@ export interface DatabaseSchema {
 
   agentConnections: AgentConnectionTable;
   agentDirectoryCache: AgentDirectoryCacheTable;
-  agentEmbedderAssertionClaims: AgentEmbedderAssertionClaimTable;
   apps: AppTable;
   appServers: AppServerTable;
   appVersions: AppVersionTable;
@@ -2415,7 +2384,7 @@ export type DeploymentRow = Selectable<DeploymentTable>;
 export type ThreadRow = Selectable<ThreadTable>;
 export type RunRow = Selectable<RunTable>;
 export type RequestRow = Selectable<RequestTable>;
-export type CommandRow = Omit<Selectable<CommandTable>, "workOwnerStop" | "frameSentAt">;
+export type CommandRow = Omit<Selectable<CommandTable>, "frameSentAt">;
 /** A command awaiting dispatch, with the AI account of the Run it names. */
 export type PendingCommandRow = CommandRow & {
   readonly runHarnessInstanceId: HarnessInstanceId | null;

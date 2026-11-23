@@ -50,7 +50,7 @@ describe("an origin that does not parse", () => {
     expect(
       addresses(
         agentWhoOriginParts({
-          role: "platform",
+          role: "verified",
           name: "Claude",
           origin,
           roleLabel: "Holds the access",
@@ -61,10 +61,10 @@ describe("an origin that does not parse", () => {
       clientName: "Grok",
       redirect: origin,
       identityAtConsent: {
-        kind: "platform",
-        platformDirectoryId: "claude",
-        platformName: "Claude",
-        platformOrigin: origin,
+        kind: "verified",
+        directoryId: "claude",
+        displayName: "Claude",
+        origin,
       } as never,
     });
     expect(addresses(unparsed.detailParts)).toEqual([]);
@@ -76,13 +76,13 @@ describe("an origin that does not parse", () => {
 });
 
 describe("who a connected agent is", () => {
-  it("names a verified pair and a verified platform in the Home's words, with a logo only for a verified platform", () => {
+  it("names a verified agent in the Home's words, with a logo only for a known one", () => {
     const errand = agentWho({
       ...named("Errand"),
       redirect: "https://agentpay.example/cb",
     });
     expect(errand).toMatchObject({
-      heading: "Errand via AgentPay",
+      heading: "AgentPay",
       verified: true,
       selfAsserted: false,
       providerId: null,

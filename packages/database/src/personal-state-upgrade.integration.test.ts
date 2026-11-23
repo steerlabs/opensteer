@@ -23,7 +23,11 @@ import {
 import { agentGrantsMigrationName } from "./agent-grants-migration.js";
 import { agentSessionsMigrationName } from "./agent-sessions-migration.js";
 import { agentDirectoryMigrationName } from "./agent-directory-migration.js";
-import { workHomeMigrationName } from "./work-home-migration.js";
+import {
+  removeOrganizationsMigrationName,
+  workHomeMigrationName,
+} from "./one-person-home-migration.js";
+import { removePlatformVerificationMigrationName } from "./platform-verification-removal-migration.js";
 import { browserPoolMigrationName } from "./browser-pool-migration.js";
 import { bridgeConnectionsMigrationName } from "./bridge-connections-migration.js";
 import { chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
@@ -111,6 +115,8 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         "0107_needs_you_counts_requests",
         bridgeConnectionsMigrationName,
         chatRoutesEndMigrationName,
+        removeOrganizationsMigrationName,
+        removePlatformVerificationMigrationName,
         commandRequestsMigrationName,
         "0113_automations_contract",
         "0114_thread_inputs_written_by_connection",

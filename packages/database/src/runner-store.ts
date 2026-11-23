@@ -1,6 +1,4 @@
 import { outsideName } from "@opensteer/shared/outsideName";
-import { assertWorkDeviceEnrollment } from "./work-policy.js";
-import { isWorkHomeDatabase } from "./work-home-context.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import {
   lockDeviceRemovalInTransaction,
@@ -56,7 +54,6 @@ import {
   machineAccessPolicyDefault,
   runnerDescriptorProfileRefusal,
   runnerEnvironmentIds,
-  workHomeEnrollmentPreviewRequiredReason,
 } from "@opensteer/protocol";
 import { type Kysely, type Transaction, sql } from "kysely";
 import { TransactionScopeChanged } from "./connection.js";
@@ -1663,13 +1660,6 @@ export async function createRunnerEnrollment(
 ): Promise<RunnerEnrollmentIssuanceRecord> {
   const name = outsideName(input.name, 120) || "Computer";
   return commitPersonalMutation(database, async (transaction, mutation) => {
-    const configuredService =
-      input.configuredInitial &&
-      input.createdBy === null &&
-      input.ownerUserId === undefined &&
-      isSupervisedServiceRunner({ ...input, ownerKind: "deployment" });
-    if (input.runnerKind !== "main" && !configuredService)
-      await assertWorkDeviceEnrollment(transaction);
     let preparedIdentity = input.preparedIdentity ?? null;
     if (preparedIdentity) {
       try {
@@ -1999,15 +1989,6 @@ export async function enrollRunnerConnection(
         message: "Runner enrollment failed",
       });
     }
-    const configuredService =
-      enrollmentIdentity.createdBy === null &&
-      enrollmentIdentity.ownerUserId === null &&
-      isSupervisedServiceRunner(enrollmentIdentity);
-    const previewRequired =
-      enrollmentIdentity.runnerKind !== "main" &&
-      !configuredService &&
-      isWorkHomeDatabase(transaction);
-    if (previewRequired) await assertWorkDeviceEnrollment(transaction);
     if (enrollmentIdentity.runnerKind === "main") {
       await lockMainRunnerEnrollment(transaction);
     }
@@ -2153,7 +2134,7 @@ export async function enrollRunnerConnection(
           revokedAt: null,
         })
         .executeTakeFirstOrThrow(databaseOperationOptions());
-      const consumed = await transaction
+      await transaction
         .updateTable("runnerEnrollments")
         .set({
           consumedAt: new Date(),
@@ -2161,14 +2142,7 @@ export async function enrollRunnerConnection(
         })
         .where("tokenHash", "=", input.enrollmentTokenHash)
         .where("consumedAt", "is", null)
-        .$if(previewRequired, (query) => query.where("workEnrollmentPreviewedAt", "is not", null))
         .executeTakeFirstOrThrow(databaseOperationOptions());
-      if (previewRequired && consumed.numUpdatedRows === 0n)
-        throw new OpensteerError({
-          code: "forbidden",
-          reason: workHomeEnrollmentPreviewRequiredReason,
-          message: "Read what this work Home shares first, then try again.",
-        });
     }
     await upsertSelfDeviceInTransaction(
       transaction,

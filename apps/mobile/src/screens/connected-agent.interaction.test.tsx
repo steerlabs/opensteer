@@ -227,7 +227,7 @@ describe("one connected agent on the phone", () => {
         "detail" in candidate ? candidate.detail : null,
       ]),
     ).toEqual([
-      ["Calls itself", "“TravelBot Agent”"],
+      ["Calls itself", "TravelBot Agent"],
       ["Address it uses", "https://trips.example"],
       // The day it was added, never read as where it stands now.
       ["Added", expect.any(String)],

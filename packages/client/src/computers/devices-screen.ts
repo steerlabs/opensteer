@@ -1,6 +1,6 @@
-import { orgWords, type CloudComputerView } from "@opensteer/control-plane-protocol";
+import type { CloudComputerView } from "@opensteer/control-plane-protocol";
 import type { DeploymentShape, AuthSessionSummary } from "@opensteer/core";
-import type { DesktopWorkHome, MachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import { formatRelativeTime } from "../host/thread-list-model.js";
 import { phoneScreenMac, phoneScreenStatus } from "../integrations/phone-screen.js";
 import { cloudSuggestionAllowed } from "./cloud-computer.js";
@@ -18,47 +18,39 @@ import {
 /**
  * What kind of Home this Opensteer lives on. The Home does not send a kind, so it is
  * derived, in this order, from facts the client already holds:
- * - `work` / `cloud`: the Account's Cloud Computer view whose `deploymentId` is this
- *   Deployment's (a work Home is one an organization assigned, or one whose view carries
- *   the organization's work marker);
+ * - `cloud`: the Account's Cloud Computer view whose `deploymentId` is this Deployment's;
  * - `server`: otherwise, a Home the Host reports as `exposure: "networked"`;
  * - `this-mac`: a loopback Home whose Device is the one this app runs on;
  * - `mac`: any other loopback Home.
  */
-export type HomeKind = "this-mac" | "mac" | "server" | "cloud" | "work";
+export type HomeKind = "this-mac" | "mac" | "server" | "cloud";
 
 export interface HomeKindFact {
   readonly kind: HomeKind;
   /** Which fact decided it, for tests and the report; never shown. */
   readonly from: "account" | "home" | "exposure" | "this-device";
-  /** The organization of a work Home. */
-  readonly organization: string | null;
 }
 
 /** The Account's Cloud Computer read, as far as this question needs it. */
 export interface HomeAccountFacts {
   readonly computers: readonly CloudComputerView[];
-  readonly work: readonly DesktopWorkHome[];
 }
 
 /**
- * The Homes the Account itself says are Opensteer Cloud Computers, a person's own or a work
- * Home an organization assigned: what a list of Homes marks "Cloud Computer". Empty until the
- * Account was read.
+ * The Homes the Account itself says are Opensteer Cloud Computers: what a list of Homes marks
+ * "Cloud Computer". Empty until the Account was read.
  */
 export function cloudComputerDeployments(
   account: HomeAccountFacts | null | undefined,
 ): ReadonlySet<string> {
   const ids = new Set<string>();
   for (const view of account?.computers ?? []) if (view.deploymentId) ids.add(view.deploymentId);
-  for (const { computer } of account?.work ?? [])
-    if (computer?.deploymentId) ids.add(computer.deploymentId);
   return ids;
 }
 
 /**
  * What the Opensteer Cloud Computer row in Settings says under its name: on a Cloud Computer
- * or a work Home it is about the Home already open, and only on a Mac does it offer to keep
+ * it is about the Home already open, and only on a Mac does it offer to keep
  * agents working while the Mac sleeps.
  */
 export function cloudComputerEntryDetail(kind: HomeKind): string {
@@ -71,7 +63,6 @@ const cloudEntryDetails = {
   mac: "cloud.entry.detail",
   server: "cloud.lead",
   cloud: "cloud.entry.here",
-  work: "cloud.entry.here",
 } as const satisfies Record<HomeKind, Parameters<typeof cloudWords>[0]>;
 
 export function homeKind(input: {
@@ -83,27 +74,13 @@ export function homeKind(input: {
   readonly hostedHere: boolean;
   /** Null until the Account was read, or when this app has no Account. */
   readonly account: HomeAccountFacts | null;
-  /** The organization a work Home's own policy names; absent on a personal Home. */
-  readonly workOrganization?: string | null | undefined;
 }): HomeKindFact {
-  // The Home says it is a work Home in its own policy read, wherever this app runs.
-  if (input.workOrganization)
-    return { kind: "work", from: "home", organization: input.workOrganization };
   if (input.deploymentId !== null && input.account !== null) {
     const id = input.deploymentId;
-    const assigned = input.account.work.find(({ computer }) => computer?.deploymentId === id);
-    if (assigned)
-      return {
-        kind: "work",
-        from: "account",
-        organization: assigned.home.assignment.organizationName,
-      };
-    const computer = input.account.computers.find((view) => view.deploymentId === id);
-    if (computer?.work)
-      return { kind: "work", from: "account", organization: computer.work.organizationName };
-    if (computer) return { kind: "cloud", from: "account", organization: null };
+    if (input.account.computers.some((view) => view.deploymentId === id))
+      return { kind: "cloud", from: "account" };
   }
-  // The Home's own word, when it gave one; a work Home is still the Account's to say.
+  // The Home's own word, when it gave one.
   if (input.homeKind)
     return {
       kind:
@@ -115,13 +92,11 @@ export function homeKind(input: {
               ? "this-mac"
               : "mac",
       from: "home",
-      organization: null,
     };
-  if (input.exposure === "networked")
-    return { kind: "server", from: "exposure", organization: null };
+  if (input.exposure === "networked") return { kind: "server", from: "exposure" };
   return input.hostedHere
-    ? { kind: "this-mac", from: "this-device", organization: null }
-    : { kind: "mac", from: "exposure", organization: null };
+    ? { kind: "this-mac", from: "this-device" }
+    : { kind: "mac", from: "exposure" };
 }
 
 export type DeviceRowTone = "online" | "asleep" | "offline" | "attention" | "waiting";
@@ -133,8 +108,6 @@ export interface HomeRowView {
   readonly title: string;
   readonly detail: string;
   readonly symbol: HomeSymbol;
-  /** "Work · {organization}" on a work Home. */
-  readonly badge: string | null;
 }
 
 export interface DeviceScreenRow {
@@ -241,7 +214,6 @@ function homeRow(
         title: name,
         detail: deviceWords("devices.home.thisMac"),
         symbol: "laptop",
-        badge: null,
       };
     case "mac":
       return {
@@ -250,7 +222,6 @@ function homeRow(
         title: name,
         detail: deviceWords("devices.home.mac"),
         symbol: "laptop",
-        badge: null,
       };
     case "server":
       return {
@@ -259,7 +230,6 @@ function homeRow(
         title: name,
         detail: deviceWords("devices.home.server"),
         symbol: "server",
-        badge: null,
       };
     case "cloud":
       return {
@@ -268,27 +238,12 @@ function homeRow(
         title: cloudWords("cloud.shortTitle"),
         detail: deviceWords("devices.home.cloud"),
         symbol: "cloud",
-        badge: null,
       };
-    case "work": {
-      const organization = fact.organization ?? "";
-      return {
-        kind: fact.kind,
-        machineId,
-        // The organization is the mark's to say, once; the row says what it is.
-        title: deviceWords("devices.home.work"),
-        detail: deviceWords("devices.home.cloud"),
-        symbol: "cloud",
-        badge: orgWords("org.work.badge", { organization }),
-      };
-    }
   }
 }
 
 function leadHome(fact: HomeKindFact, row: HomeRowView): string {
   if (fact.kind === "cloud") return deviceWords("devices.lead.cloud");
-  if (fact.kind === "work")
-    return deviceWords("devices.lead.work", { organization: fact.organization ?? "" });
   return row.title;
 }
 

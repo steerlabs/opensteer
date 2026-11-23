@@ -3,6 +3,7 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { executionDate } from "./personal-transaction.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   type HarnessId,
@@ -829,18 +830,19 @@ export async function recordHarnessCatalogs(
         await adoptSupersededContinuationIdentities(transaction, input.environmentId, catalog);
     }
     // Publish catalogs only after every affected Thread and provider row is fenced.
+    const capturedAt = executionDate(transaction);
     for (const catalog of currentCatalogs) {
       await transaction
         .insertInto("harnessCatalogs")
         .values({
-          capturedAt: new Date(),
+          capturedAt,
           catalog: jsonValue(catalog),
           environmentId: input.environmentId,
           harnessInstanceId: catalog.harnessInstanceId,
         })
         .onConflict((conflict) =>
           conflict.columns(["environmentId", "harnessInstanceId"]).doUpdateSet({
-            capturedAt: new Date(),
+            capturedAt,
             catalog: jsonValue(catalog),
           }),
         )

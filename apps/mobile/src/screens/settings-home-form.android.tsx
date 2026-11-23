@@ -1,5 +1,5 @@
 import { contactSupport } from "../report-mail.js";
-import { settingsDestinations, type SettingsHomeWork } from "./settings-home-model.js";
+import { settingsDestinations } from "./settings-home-model.js";
 import {
   LinkRow,
   Section,
@@ -8,20 +8,12 @@ import {
 } from "./settings-form-primitives.android.js";
 export function SettingsHomeForm({
   onOpen,
-  work = null,
 }: {
   readonly onOpen: (route: (typeof settingsDestinations)[number]["route"]) => void;
-  /** Only on a work Home; a personal Home shows nothing more. */
-  readonly work?: SettingsHomeWork | null;
 }) {
   return (
     <SettingsHost>
       <SettingsList>
-        {work ? (
-          <Section title={work.badge}>
-            <LinkRow onPress={work.onPress} title={work.title} />
-          </Section>
-        ) : null}
         {["", "For your agents"].map((group) => (
           <Section key={group} title={group}>
             {settingsDestinations
