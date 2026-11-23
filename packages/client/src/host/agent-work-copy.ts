@@ -99,6 +99,7 @@ export const agentWorkCopy = {
   "who.consentHeading": "An agent wants to connect",
   "who.claim": "It calls itself: {name}",
   "who.pair": "{embedder} via {platform}",
+  "who.pairDetail": "{embedder} asked for this. {platform} will hold the access.",
   "who.namedOrigin": "{role}: {name} · {origin}",
   "who.redirectOrigin": "{role}: {origin}",
   "who.thisAgent": "This connected agent",

@@ -17,6 +17,7 @@ import type { ThreadSummary } from "./client.js";
 import {
   agentWords,
   anyoneChatModeDescriptions,
+  type ConnectionModeDescription,
   connectionModeDescriptions,
   ownerChatModeDescriptions,
 } from "./connected-agents-copy.js";
@@ -144,7 +145,7 @@ export interface ConnectedAgentDetail {
   readonly revision: number;
   readonly accessMode: ThreadAccessMode;
   /** What each safety mode means for it, where its mode is chosen (web and phone). */
-  readonly modeDescriptions: Readonly<Record<ThreadAccessMode, string>>;
+  readonly modeDescriptions: Readonly<Record<ThreadAccessMode, ConnectionModeDescription>>;
   readonly live: ConnectedAgentLive | null;
   readonly activity: ConnectedAgentActivity;
   /** `valueParts`: the value as parts, an address a part of its own when it is one. */

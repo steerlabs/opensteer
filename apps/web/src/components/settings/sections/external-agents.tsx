@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, Route, Routes, useParams } from "react-router";
 import {
   agentWords,
@@ -15,6 +15,7 @@ import {
 } from "@opensteer/client/host";
 import { useConnectedAgents, usePersonalRemoteAccess } from "@opensteer/client/react";
 import type { AgentConnection } from "@opensteer/protocol";
+import { ReadGate } from "../../read-gate.js";
 import { useShell } from "../../app-shell.js";
 import { CopyBlock } from "../../copy-block.js";
 import { Dialog } from "../../dialog.js";
@@ -77,8 +78,15 @@ function ConnectedAgentsList({
   const names = { profiles: shell.snapshot.browserProfiles };
   const list = connectedAgentsView(agents.connections ?? [], names, agents.revoked);
   // Setup takes its baseline from the loaded list, so it waits for the first read.
+  // A list read before whose refresh failed changes nothing until it is read again (`ReadGate`):
+  // no setup starts against it, and one open closes.
+  const readFailed = agents.readFailed && agents.connections !== null;
+  useEffect(() => {
+    if (readFailed) setGuide(null);
+  }, [readFailed]);
   const available = (entry: ExternalAgentGuide) =>
     agents.connections !== null &&
+    !readFailed &&
     (reach.kind === "ready" || (entry.reach === "any" && thisComputer !== null));
   return (
     <>
@@ -86,67 +94,73 @@ function ConnectedAgentsList({
       {agents.connections === null && agents.error ? (
         <SettingsUnreadable label="your connected agents" onRetry={() => void agents.refresh?.()} />
       ) : null}
-      {list.connected.length > 0 ? (
-        <AgentRows
-          heading={list.disconnected.length > 0 ? agentWords("agents.section.connected") : null}
-          id="connected-agents-active"
-          rows={list.connected}
-        />
-      ) : null}
-      {list.disconnected.length > 0 ? (
-        <AgentRows
-          heading={agentWords("agents.section.disconnected")}
-          id="connected-agents-ended"
-          rows={list.disconnected}
-        />
-      ) : null}
-      <SettingsGroup
-        heading={agentWords("agents.section.add")}
-        headingId="external-agents-add"
-        note={
-          reach.kind === "ready" && reach.personal
-            ? agentWords("agents.reachNote", { home: view.name })
-            : null
-        }
+      <ReadGate
+        failed={readFailed}
+        message={agentWords("agent.readFailed")}
+        onRetry={() => void agents.refresh?.()}
       >
-        {reach.kind === "needs-remote" ? (
-          <SettingsRow
-            title={agentWords("remoteAccess.turnOnFirst.title")}
-            detail={agentWords("remoteAccess.turnOnFirst.detail")}
-            action={
-              <Link className="btn btn--small btn--primary" to={remoteAccessPath}>
-                {agentWords("remoteAccess.turnOnFirst.action")}
-              </Link>
-            }
+        {list.connected.length > 0 ? (
+          <AgentRows
+            heading={list.disconnected.length > 0 ? agentWords("agents.section.connected") : null}
+            id="connected-agents-active"
+            rows={list.connected}
           />
         ) : null}
-        {externalAgentGuides.map((entry) => (
-          <SettingsRow
-            key={entry.id}
-            title={
-              <>
-                {entry.providerId ? <ProviderLogo providerId={entry.providerId} /> : null}
-                {entry.name}
-              </>
-            }
-            detail={entry.summary}
-            action={
-              <button
-                aria-label={`Add ${entry.name}`}
-                className="btn btn--small"
-                disabled={!available(entry)}
-                onClick={() => setGuide(entry)}
-                type="button"
-              >
-                Add
-              </button>
-            }
+        {list.disconnected.length > 0 ? (
+          <AgentRows
+            heading={agentWords("agents.section.disconnected")}
+            id="connected-agents-ended"
+            rows={list.disconnected}
           />
-        ))}
-      </SettingsGroup>
+        ) : null}
+        <SettingsGroup
+          heading={agentWords("agents.section.add")}
+          headingId="external-agents-add"
+          note={
+            reach.kind === "ready" && reach.personal
+              ? agentWords("agents.reachNote", { home: view.name })
+              : null
+          }
+        >
+          {reach.kind === "needs-remote" ? (
+            <SettingsRow
+              title={agentWords("remoteAccess.turnOnFirst.title")}
+              detail={agentWords("remoteAccess.turnOnFirst.detail")}
+              action={
+                <Link className="btn btn--small btn--primary" to={remoteAccessPath}>
+                  {agentWords("remoteAccess.turnOnFirst.action")}
+                </Link>
+              }
+            />
+          ) : null}
+          {externalAgentGuides.map((entry) => (
+            <SettingsRow
+              key={entry.id}
+              title={
+                <>
+                  {entry.providerId ? <ProviderLogo providerId={entry.providerId} /> : null}
+                  {entry.name}
+                </>
+              }
+              detail={entry.summary}
+              action={
+                <button
+                  aria-label={`Add ${entry.name}`}
+                  className="btn btn--small"
+                  disabled={!available(entry)}
+                  onClick={() => setGuide(entry)}
+                  type="button"
+                >
+                  Add
+                </button>
+              }
+            />
+          ))}
+        </SettingsGroup>
+      </ReadGate>
       <SettingsError
         message={
-          (agents.connections === null ? null : agents.error) ??
+          (agents.connections === null || readFailed ? null : agents.error) ??
           (reach.kind === "unavailable" ? reach.detail : null)
         }
       />

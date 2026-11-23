@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  agentText,
   agentWords,
   chatsOfAccount,
   connectedAgentRow,
   connectionsRead,
   messagingAccountView,
-  messagingComputers,
   mutationIdempotencyKey,
   unwrapRpcResult,
   type HostClient,
@@ -95,7 +95,20 @@ function Messaging({
   const [providerId, setProvider] = useState<string | null>(null);
   const [repair, setRepair] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
-  const [runnerId, setRunner] = useState("");
+  // The last read of either thing this page shows (its accounts, their chats) failed: what is
+  // shown is the answer before it, never as current, and nothing on it changes anything; one
+  // Try again reads both again (`readGateSections`, the one rule for every phone page drawn from
+  // a read). A sheet open when it fails closes without keeping what it held.
+  const loaded = readLine(dashboard, dashboard.refresh);
+  const readFailed =
+    (loaded !== null && dashboard.data !== null) ||
+    (agents.readFailed && agents.connections !== null);
+  useEffect(() => {
+    if (!readFailed) return;
+    setCredentials({});
+    setProvider(null);
+    setRepair(null);
+  }, [readFailed]);
   const change = useScreenAction(host, "channel-change", {
     label: "save the change",
     done: "saved",
@@ -194,7 +207,6 @@ function Messaging({
     secure = false,
   ): NativeSettingsRow => ({ key, kind: "input", label, value, onChange, secure });
   const sections: NativeSettingsSection[] = [];
-  const loaded = readLine(dashboard, dashboard.refresh);
   sections.push({
     key: "refresh",
     title: "Messaging",
@@ -212,8 +224,9 @@ function Messaging({
           }))
         : []),
     ],
-    // A read that failed says so in the web's words; a refusal keeps the Home's own.
-    ...(loaded
+    // A read that failed says so in the web's words; a refusal keeps the Home's own. Once the
+    // page was read, the gate below says it with its one Try again.
+    ...(loaded && !readFailed
       ? {
           footer: settingsFooter(
             loaded.tone === "danger"
@@ -258,27 +271,8 @@ function Messaging({
           field.secret,
         ),
       );
-      const computer = provider.transportKinds.includes("computer");
-      // The Mac a computer provider is set up on; empty when none can do it.
-      let chosen = "";
-      if (computer) {
-        rows.push(
-          text(
-            "how",
-            "Choose the Mac signed into Messages with the bot's Apple account. Once it is connected, link your own iMessage account with a code, then add a chat.",
-          ),
-        );
-        // Which Mac can do it: the web's rule, shared. None says what to do.
-        const eligible = messagingComputers(host.getSnapshot().machines, provider);
-        chosen = eligible.some((m) => m.id === runnerId) ? runnerId : (eligible[0]?.id ?? "");
-        rows.push(
-          ...(eligible.length === 0
-            ? [text("no-mac", agentWords("messaging.computer.none"))]
-            : eligible.map((m) =>
-                button(m.id, `${m.id === chosen ? "✓ " : ""}${m.name}`, () => setRunner(m.id)),
-              )),
-        );
-      }
+      // The phone sets up only an app's tokens (adding one, or replacing them on one that needs
+      // it); an account added through a computer is added and fixed on that computer.
       const connect = button("save", repair ? "Replace credentials" : "Connect", () => {
         const idempotencyKey = mutationIdempotencyKey("channel-connect");
         const section = `setup:${provider.provider}:${repair ?? "new"}`;
@@ -288,16 +282,6 @@ function Messaging({
               type: "channel.connection.credentials.replace",
               connectionId: repair,
               credentials,
-              idempotencyKey,
-            },
-            section,
-          );
-        else if (computer)
-          dispatch(
-            {
-              type: "channel.connection.computer.create",
-              provider: provider.provider,
-              runnerId: chosen,
               idempotencyKey,
             },
             section,
@@ -314,8 +298,7 @@ function Messaging({
             section,
           );
       });
-      // Nothing is sent without a Mac that can do it.
-      rows.push(computer && !repair && chosen === "" ? { ...connect, disabled: true } : connect);
+      rows.push(connect);
       rows.push(
         button("cancel", "Cancel", () => {
           setCredentials({});
@@ -439,7 +422,7 @@ function Messaging({
           agentWords("messaging.remove"),
           () =>
             Alert.alert(
-              agentWords("messaging.remove.title", { account: account.displayName }),
+              agentText("messaging.remove.title", { account: { name: account.displayName } }),
               agentWords("messaging.remove.body"),
               [
                 { text: agentWords("common.cancel"), style: "cancel" },
@@ -510,14 +493,19 @@ function Messaging({
       });
     }
   }
-  // The last read failed: what is shown is the answer before it, never as current, and nothing
-  // on it changes anything; only Refresh, Try again and moving around stay (`readGateSections`,
-  // the one rule for every phone page drawn from a read).
-  const readFailed = loaded !== null && dashboard.data !== null;
   const drawn = readGateSections(sections, {
     failed: readFailed,
-    keep: (section) => section.key === "refresh",
-  }).filter((section) => section.key === "refresh" || section.rows.length > 0 || section.footer);
+    retry: {
+      message: agentWords("messaging.readFailed"),
+      onRetry: () => {
+        dashboard.refresh();
+        void agents.refresh?.();
+      },
+    },
+  }).filter(
+    (section) =>
+      (section.key === "refresh" && !readFailed) || section.rows.length > 0 || section.footer,
+  );
   const setup = drawn.filter((section) => section.key.startsWith("setup:"));
   return (
     <>

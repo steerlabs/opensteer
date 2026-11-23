@@ -1,3 +1,4 @@
+import { chatParityProvider } from "./chat-parity.js";
 import { ItemTextStore } from "../host/item-text-store.js";
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import {
@@ -1910,10 +1911,12 @@ export interface MockHostClientOptions {
   channels?: import("@opensteer/channel-core").ChannelDashboard;
   /**
    * The messaging provider this preview reaches, as a Home's messaging runtime reaches one: it
-   * checks tokens and says whose they are. Without one (the preview app), adding an account
-   * answers as a Home whose messaging service has not started.
+   * checks tokens and says whose they are. Without one, the stand-in the chat parity script
+   * compares (`chatParityProvider`), so the preview a person walks runs the compared code.
    */
   messagingProvider?: MockMessagingProvider;
+  /** The tokens each seeded messaging connection holds, as its provider will read them. */
+  channelTokens?: Readonly<Record<string, Readonly<Record<string, string>>>>;
   connectionConsent?: import("@opensteer/protocol").AgentConnectionConsent;
   /**
    * The consent as the Home presents it once its verification changes: the first approval is
@@ -5677,8 +5680,6 @@ export class MockHostClient implements HostClient {
     const snapshot = this.getSnapshot();
     const thread = snapshot.threads.find(({ id }) => id === threadId);
     const run = thread ? threadStopTarget({ runQueue: snapshot.runQueue, thread }) : null;
-    // A chat's task the Home lists as at work is stopped there (`MockHostState.stopRun`).
-    if (!run && !expectedRunId) return this.#state.stopRun(threadId);
     if (!run || (expectedRunId && run.id !== expectedRunId))
       throw new Error("This Thread has nothing to stop.");
     await this.dispatch({
@@ -6013,7 +6014,7 @@ class MockHostState {
   readonly unreadable: boolean;
   private connections: import("@opensteer/protocol").AgentConnection[];
   private channels: import("@opensteer/channel-core").ChannelDashboard | null;
-  readonly #messagingProvider: MockMessagingProvider | null;
+  readonly #messagingProvider: MockMessagingProvider;
   /** The tokens each account was added or last replaced with, as its provider checks them. */
   readonly #channelTokens = new Map<string, Readonly<Record<string, string>>>();
   private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
@@ -6095,13 +6096,44 @@ class MockHostState {
     return { operations: operations.slice(0, 50), nextBefore: null };
   }
   listConnections(includeRevoked = false) {
-    return this.connections.filter(
-      (row) =>
-        row.userId === this.snapshot.user?.id &&
-        (includeRevoked ||
-          (row.state !== "stopped" &&
-            (row.expiresAt === null || Date.parse(row.expiresAt) > this.now().getTime()))),
-    );
+    return this.connections
+      .filter(
+        (row) =>
+          row.userId === this.snapshot.user?.id &&
+          (includeRevoked ||
+            (row.state !== "stopped" &&
+              (row.expiresAt === null || Date.parse(row.expiresAt) > this.now().getTime()))),
+      )
+      .map((row) => (row.bridge?.tasks ? { ...row, bridge: this.chatTasksNow(row.bridge) } : row));
+  }
+  /**
+   * A chat's recent tasks as the Home lists them when asked: newest first, running while the task
+   * runs. The task is a task like any other, and nothing else about it changes the connection.
+   */
+  private chatTasksNow(
+    bridge: NonNullable<import("@opensteer/protocol").AgentConnection["bridge"]>,
+  ) {
+    const tasks = (bridge.tasks ?? []).map((task) => {
+      const thread = this.snapshot.threads.find(({ id }) => id === task.id);
+      return {
+        task: thread
+          ? {
+              id: task.id,
+              title: thread.title,
+              running: thread.status === "running",
+              runId:
+                thread.status === "running"
+                  ? ((this.snapshot.runQueue.find(
+                      (run) => run.threadId === task.id && run.status !== "queued",
+                    )?.id ?? null) as import("@opensteer/core").RunId | null)
+                  : null,
+            }
+          : task,
+        at: thread?.updatedAt ?? "",
+      };
+    });
+    tasks.sort((left, right) => (left.at < right.at ? 1 : left.at > right.at ? -1 : 0));
+    return { ...bridge, tasks: tasks.map(({ task }) => task) };
   }
   /**
    * As on the Home: what it may do moves on (its revision), and a chat remembers that you ended
@@ -6979,7 +7011,11 @@ class MockHostState {
       };
     this.connections = [...(options.connections ?? [])];
     this.channels = options.channels ?? null;
-    this.#messagingProvider = options.messagingProvider ?? null;
+    // The preview reaches the same stand-in provider the parity script compares, unless a test
+    // gives its own: what a person walks in the preview is the code that was compared.
+    this.#messagingProvider = options.messagingProvider ?? chatParityProvider;
+    for (const [connectionId, tokens] of Object.entries(options.channelTokens ?? {}))
+      this.#channelTokens.set(connectionId, tokens);
     this.pendingConnectionConsent = options.connectionConsent ?? null;
     this.chromeTabs = options.chromeTabs ?? {};
     this.workPolicy = options.workPolicy ?? null;
@@ -7264,6 +7300,7 @@ class MockHostState {
         }),
       ),
     };
+    this.seedChatTasks();
     this.snapshot = {
       ...this.snapshot,
       threads: this.snapshot.threads.map((thread) => ({
@@ -7296,6 +7333,55 @@ class MockHostState {
       );
   }
 
+  /**
+   * A chat's recent tasks are tasks of the person's, as on the Home: each a task in the task
+   * lists, a running one with the Run it is doing, so Stop ends it as it ends any task's Run.
+   */
+  private seedChatTasks() {
+    const template = this.snapshot.threads.find(
+      ({ listed, purpose }) => listed && purpose === "task",
+    );
+    if (!template) return;
+    const at = new Date(this.now().getTime() - 60_000).toISOString();
+    for (const connection of this.connections)
+      for (const [index, task] of (connection.bridge?.tasks ?? []).entries()) {
+        if (this.snapshot.threads.some(({ id }) => id === task.id)) continue;
+        const updatedAt = new Date(Date.parse(at) - index * 60_000).toISOString();
+        this.#provisionalIcons.add(task.id);
+        this.snapshot = {
+          ...this.snapshot,
+          threads: [
+            ...this.snapshot.threads,
+            {
+              ...template,
+              agentSessionId: null,
+              externalWork: null,
+              createdAt: updatedAt,
+              icon: null,
+              id: task.id,
+              parentThreadId: null,
+              pendingRequests: 0,
+              status: task.running ? "running" : "idle",
+              title: task.title,
+              unread: false,
+              updatedAt,
+            },
+          ],
+          runQueue: task.running
+            ? [
+                ...this.snapshot.runQueue,
+                {
+                  createdAt: updatedAt,
+                  id: task.runId ?? `run_${task.id.slice("thr_".length)}`,
+                  runOrdinal: 0,
+                  status: "running",
+                  threadId: task.id,
+                },
+              ]
+            : this.snapshot.runQueue,
+        };
+      }
+  }
   private readonly acceptedCommands = new Map<
     string,
     { command: string; result: ReturnType<typeof executeMockCommand> }
@@ -11261,10 +11347,6 @@ class MockHostState {
     if (!manifest.connectionMethods.includes("bring-your-own"))
       throw mockConflict(`${manifest.label} is not available for bring-your-own setup`);
     const provider = this.#messagingProvider;
-    if (!provider)
-      throw mockConflict(
-        `${manifest.label} connection service is still starting. Try again in a moment.`,
-      );
     const credentials = mockProviderCredentials(manifest, input.credentials);
     const inspection = provider.inspect({ credentials, provider: manifest.provider });
     if (!inspection.ready || !inspection.identity) throw mockInspectionRefusal(inspection);
@@ -11337,7 +11419,6 @@ class MockHostState {
     if (!connection || connection.status === "revoked" || connection.transportKind === "computer")
       throw mockNotFound("This channel connection has no credentials to replace.");
     const provider = this.#messagingProvider;
-    if (!provider) return;
     // As on the Home: the provider checks them, and they must be this same account's.
     const manifest = channelProviderCatalog.find(
       (entry) => entry.provider === connection.provider,
@@ -11383,78 +11464,49 @@ class MockHostState {
     if (!connection || !account || account.status === "revoked")
       throw mockNotFound(chatAddRefusals.accountGone);
     const provider = this.#messagingProvider;
-    if (provider) {
-      // As on the Home: the provider checks the tokens the account holds; whose they are must be
-      // this account's; a ready one is connected, any other needs attention.
-      const inspection = provider.inspect({
-        credentials: this.#channelTokens.get(connectionId) ?? {},
-        provider: connection.provider,
-        account: { externalAccountId: account.externalAccountId, displayName: account.displayName },
-      });
-      const label =
-        channelProviderCatalog.find((entry) => entry.provider === connection.provider)?.label ??
-        connection.provider;
-      const mismatch =
-        inspection.identity !== null &&
-        inspection.identity.externalAccountId !== connection.externalTenantId;
-      const issue = mismatch
-        ? {
-            code: `${connection.provider}.account_mismatch`,
-            kind: "credentials" as const,
-            message: `These credentials belong to a different ${label} account.`,
-            missing: [],
-          }
-        : inspection.issues[0];
-      const ready = inspection.ready && !mismatch;
-      this.channels = {
-        ...this.channels!,
-        connections: this.channels!.connections.map((row) =>
-          row.id !== connectionId
-            ? row
-            : ready
-              ? {
-                  ...row,
-                  status: "pending",
-                  statusDetail: "Reconnecting to messaging provider",
-                  statusReason: null,
-                }
-              : {
-                  ...row,
-                  status: "needs-attention",
-                  statusDetail: issue?.message ?? "Provider setup is incomplete",
-                  statusReason: issue?.kind ?? "configuration",
-                },
-        ),
-      };
-      return mismatch ? { ...inspection, issues: [issue!], ready: false } : inspection;
-    }
-    if (connection.status === "needs-attention")
-      return {
-        capabilities: [...connection.capabilities],
-        identity: null,
-        issues: [
-          {
-            code: "needs-attention",
-            kind: connection.statusReason ?? "credentials",
-            message: connection.statusDetail ?? "It needs attention.",
-            missing: [],
-          },
-        ],
-        ready: false,
-      };
-    return {
-      capabilities: [...connection.capabilities],
-      identity: {
-        accountDisplayName: account.displayName,
-        connectionDisplayName: connection.displayName,
-        externalAccountId: account.externalAccountId,
-        externalIdentityId: connection.externalIdentityId,
-        handle: account.handle,
-        metadata: {},
-      },
-      issues: [],
-      ready: true,
+    // As on the Home: the provider checks the tokens the account holds; whose they are must be
+    // this account's; a ready one is connected, any other needs attention.
+    const inspection = provider.inspect({
+      credentials: this.#channelTokens.get(connectionId) ?? {},
+      provider: connection.provider,
+      account: { externalAccountId: account.externalAccountId, displayName: account.displayName },
+    });
+    const label =
+      channelProviderCatalog.find((entry) => entry.provider === connection.provider)?.label ??
+      connection.provider;
+    const mismatch =
+      inspection.identity !== null &&
+      inspection.identity.externalAccountId !== connection.externalTenantId;
+    const issue = mismatch
+      ? {
+          code: `${connection.provider}.account_mismatch`,
+          kind: "credentials" as const,
+          message: `These credentials belong to a different ${label} account.`,
+          missing: [],
+        }
+      : inspection.issues[0];
+    const ready = inspection.ready && !mismatch;
+    this.channels = {
+      ...this.channels!,
+      connections: this.channels!.connections.map((row) =>
+        row.id !== connectionId
+          ? row
+          : ready
+            ? {
+                ...row,
+                status: "pending",
+                statusDetail: "Reconnecting to messaging provider",
+                statusReason: null,
+              }
+            : {
+                ...row,
+                status: "needs-attention",
+                statusDetail: issue?.message ?? "Provider setup is incomplete",
+                statusReason: issue?.kind ?? "configuration",
+              },
+      ),
     };
+    return mismatch ? { ...inspection, issues: [issue!], ready: false } : inspection;
   }
 
   /** Pausing or resuming an account pauses or resumes every chat that speaks through it. */
@@ -12779,29 +12831,6 @@ class MockHostState {
     const runId =
       active?.id ??
       (thread ? threadStopTarget({ runQueue: this.snapshot.runQueue, thread })?.id : undefined);
-    // A chat's task at work is stopped as the Home stops it: the stop is taken, and the task
-    // reads as running until its device answers, as it does on a Home.
-    if (
-      runId === undefined &&
-      expectedRunId === undefined &&
-      this.connections.some((row) =>
-        (row.bridge?.tasks ?? []).some(({ id, running }) => id === threadId && running),
-      )
-    ) {
-      // The stop changes the task, so the Home lists it first among its chat's recent work.
-      this.connections = this.connections.map((row) => {
-        const tasks = row.bridge?.tasks;
-        const task = tasks?.find(({ id }) => id === threadId);
-        return task && row.bridge
-          ? {
-              ...row,
-              bridge: { ...row.bridge, tasks: [task, ...tasks!.filter((t) => t !== task)] },
-            }
-          : row;
-      });
-      for (const listener of this.connectionsListeners) listener();
-      return;
-    }
     if (runId === undefined || (expectedRunId && runId !== expectedRunId))
       throw new Error("This Thread has nothing to stop.");
     if (active) active.cancelled = true;
@@ -12853,6 +12882,8 @@ class MockHostState {
                   status: runQueue.some((entry) => entry.threadId === threadId)
                     ? "running"
                     : "idle",
+                  // The Home records the Run it stopped as the task's latest ended one.
+                  latestRunCompletedAt: timestamp,
                   updatedAt: timestamp,
                 }
               : thread,

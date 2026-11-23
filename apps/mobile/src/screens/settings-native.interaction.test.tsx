@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import { hostApi } from "@opensteer/protocol";
-import type { HostClient } from "@opensteer/client/host";
+import { HostClientRequestError, type HostClient } from "@opensteer/client/host";
 import type { NativeSettingsPageProps } from "./native-settings-page.types.js";
 const state = vi.hoisted(() => ({
   os: "ios",
@@ -379,6 +379,100 @@ it.each(["ios", "android"])(
   },
 );
 
+/** Every control on the drawn pages that acts (not one that only opens another page). */
+function acting() {
+  return rows()
+    .filter(
+      (candidate) =>
+        (candidate.kind === "button" && !candidate.opens) ||
+        candidate.kind === "toggle" ||
+        candidate.kind === "input" ||
+        candidate.kind === "choice" ||
+        candidate.kind === "chips",
+    )
+    .map((candidate) => candidate.label);
+}
+/** The page's Try again, a row or a footer's link. */
+async function tryAgain() {
+  const control =
+    rows().find((candidate) => candidate.kind === "button" && candidate.label === "Try again") ??
+    footers().find((footer) => footer.link?.label === "Try again")?.link;
+  expect(control, "Missing control: Try again").toBeDefined();
+  await act(async () =>
+    "onPress" in control! ? (control as { onPress: () => void }).onPress() : undefined,
+  );
+}
+/** Makes `read` refuse, or answer as before once `failing` is false. */
+function failable(rpc: HostClient["rpc"], read: "channels.get" | "connections.list") {
+  const real = rpc[read] as (input: unknown) => Promise<unknown>;
+  const control = { failing: false, calls: 0 };
+  Object.defineProperty(rpc, read, {
+    value: async (input: unknown) => {
+      control.calls += 1;
+      if (control.failing)
+        throw new HostClientRequestError({ code: "internal", message: "down", status: 503 });
+      return real(input);
+    },
+    configurable: true,
+  });
+  return control;
+}
+
+it.each(["ios", "android"])(
+  "closes an open setup when a read fails, and opens nothing of it again once read, on %s",
+  async (os) => {
+    state.os = os;
+    let accounts!: ReturnType<typeof failable>;
+    await openChats("chats", (rpc) => (accounts = failable(rpc, "channels.get")));
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "Slack")).toBe(true));
+    await press("Slack");
+    await input("Bot user OAuth token", "typed-before-the-failure");
+    accounts.failing = true;
+    await press("Refresh");
+    await vi.waitFor(() =>
+      expect(rows().some((r) => r.label === "Bot user OAuth token")).toBe(false),
+    );
+    accounts.failing = false;
+    await tryAgain();
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "Slack")).toBe(true));
+    // Read again: no sheet came back, and none holds what was typed.
+    expect(rows().some((r) => r.label === "Bot user OAuth token")).toBe(false);
+    await press("Slack");
+    expect(row("Bot user OAuth token")).toMatchObject({ value: "" });
+  },
+);
+
+it.each(["ios", "android"])(
+  "after its chats could not be read again, offers one Try again that reads both, on %s",
+  async (os) => {
+    state.os = os;
+    let accounts!: ReturnType<typeof failable>;
+    let chats!: ReturnType<typeof failable>;
+    const changed: (() => void)[] = [];
+    await openChats("chats", (rpc) => {
+      accounts = failable(rpc, "channels.get");
+      chats = failable(rpc, "connections.list");
+      const subscribe = host.subscribeConnectionsChanged.bind(host);
+      vi.spyOn(host, "subscribeConnectionsChanged").mockImplementation((listener) => {
+        changed.push(listener);
+        return subscribe(listener);
+      });
+    });
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "Slack · #team")).toBe(true));
+    chats.failing = true;
+    await act(async () => {
+      for (const listener of changed) listener();
+    });
+    await vi.waitFor(() => expect(acting()).toEqual(["Try again"]));
+    chats.failing = false;
+    const before = { accounts: accounts.calls, chats: chats.calls };
+    await tryAgain();
+    await vi.waitFor(() => expect(acting()).toContain("Refresh"));
+    expect(accounts.calls).toBeGreaterThan(before.accounts);
+    expect(chats.calls).toBeGreaterThan(before.chats);
+  },
+);
+
 it.each(["ios", "android"])("says there is no messaging account yet, on %s", async (os) => {
   state.os = os;
   await openChats("chats", (rpc) => {
@@ -488,7 +582,7 @@ it.each(["ios", "android"])(
     fail = true;
     await press("Refresh");
     await vi.waitFor(() =>
-      expect(footers().map((f) => f.text)).toContain("Couldn’t read your messaging accounts."),
+      expect(rows().map((r) => r.label)).toContain("Couldn’t read your messaging accounts."),
     );
     const statuses = rows().filter((r) => r.kind === "status");
     expect(statuses.map((r) => r.label)).toEqual([
@@ -496,15 +590,8 @@ it.each(["ios", "android"])(
       "Not read just now",
       "Not read just now",
     ]);
-    // Every row that sends a command, by enumeration: only Refresh and moving around stay.
-    const commands = rows().filter(
-      (r) =>
-        (r.kind === "button" && !r.opens && r.label !== "Refresh") ||
-        r.kind === "toggle" ||
-        r.kind === "input" ||
-        r.kind === "chips",
-    );
-    expect(commands.map((r) => r.label)).toEqual([]);
+    // Every row that acts, by enumeration: only the one Try again, and moving around, stay.
+    expect(acting()).toEqual(["Try again"]);
   },
 );
 

@@ -119,7 +119,7 @@ describe("Messaging", () => {
     try {
       const page = await mount(client);
       await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
-      const toggle = page.querySelector<HTMLInputElement>('input[aria-label="Pause Workshop"]');
+      const toggle = page.querySelector<HTMLInputElement>('input[aria-label="Pause “Workshop”"]');
       expect(toggle).not.toBeNull();
       await act(async () => toggle!.click());
       await vi.waitFor(() =>
@@ -203,7 +203,7 @@ describe("Messaging", () => {
       const page = await mount(client);
       await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
       const menu = page.querySelector<HTMLButtonElement>(
-        'button[aria-label="Actions for Workshop"]',
+        'button[aria-label="Actions for “Workshop”"]',
       );
       await act(async () => menu!.click());
       const dispatch = vi.spyOn(client, "dispatch");
@@ -309,7 +309,7 @@ describe("Messaging", () => {
       expect(page.querySelector('input[aria-label="Pause Messages on Studio Mac"]')).toBeNull();
       expect(page.querySelector('input[aria-label="Resume Messages on Studio Mac"]')).toBeNull();
       expect(
-        page.querySelector('button[aria-label="Actions for Messages on Studio Mac"]'),
+        page.querySelector('button[aria-label="Actions for “Messages on Studio Mac”"]'),
       ).not.toBeNull();
     } finally {
       client.dispose();
@@ -454,7 +454,9 @@ describe("Messaging", () => {
       const page = await mount(client);
       await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
       await act(async () =>
-        page.querySelector<HTMLButtonElement>('button[aria-label="Actions for Workshop"]')!.click(),
+        page
+          .querySelector<HTMLButtonElement>('button[aria-label="Actions for “Workshop”"]')!
+          .click(),
       );
       await act(async () =>
         [...document.querySelectorAll<HTMLElement>("[role=menuitem], button")]

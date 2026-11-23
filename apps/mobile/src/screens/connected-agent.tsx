@@ -3,14 +3,19 @@ import { failureWords } from "../ui/client-feedback.js";
 import {
   agentBrowserOptions,
   agentHomeName,
+  agentSentence,
+  agentText,
   agentWords,
   workWords,
   chatFacts,
+  chatTaskStop,
+  chatTasksNow,
   connectedAgentConnected,
   connectionsRead,
   connectedAgentDetail,
   chatScreenHost,
   createDedicatedProfile,
+  mutationIdempotencyKey,
   chatDraftRefusal,
   draftFromGrant,
   grantFromDraft,
@@ -20,6 +25,7 @@ import {
   sameGrant,
   type AgentGrantDraft,
   type ConnectedAgentDetail,
+  type ChatTaskNow,
   type HostClient,
 } from "@opensteer/client/host";
 import {
@@ -28,6 +34,7 @@ import {
   useChromeTabGrantCatalog,
   useConnectedAgentLive,
   useConnectedAgents,
+  useLiveTasks,
   useWorkPolicy,
 } from "@opensteer/client/react";
 import { type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
@@ -76,6 +83,7 @@ export function ConnectedAgentController(props: {
   // What this screen sends is what the chat parity script covers.
   const chatHost = chatScreenHost(host);
   const live = useConnectedAgentLive(host, connectionId);
+  const liveTasks = useLiveTasks(host);
   const chromeTabs = useChromeTabGrantCatalog(host, true);
   const workPolicy = useWorkPolicy(host);
   const [sheet, setSheet] = useState<{
@@ -84,11 +92,18 @@ export function ConnectedAgentController(props: {
   } | null>(null);
   const [note, setNote] = useState<"saved" | "profile-failed" | null>(null);
   const [creating, setCreating] = useState(false);
-  // The task whose Stop is in flight: shown as Stopping, and no second Stop is sent meanwhile.
-  // A task whose Stop was asked reads Stopping… until the Home says it no longer runs (its
-  // device answers), never Stop again beside Running; a Stop the Home refused says why.
+  // A Run whose Stop was asked reads Stopping… until the Home says the task no longer runs (its
+  // device answers), never Stop again beside Running, and no second Stop is sent meanwhile; a
+  // Stop the Home refused says why. A later Run of the task is a new Run, with a Stop of its own.
   const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
   const connection = agents.connections?.find((row) => row.id === connectionId) ?? null;
+  // A chat's tasks as the Home's live task updates say they are now; its list is read again
+  // when one of them moved past it, so a Stop names the Run that is at work.
+  const chatTasks = chatTasksNow(connection?.bridge?.tasks ?? [], liveTasks);
+  const refreshAgents = agents.refresh;
+  useEffect(() => {
+    if (chatTasks.behind !== null) void refreshAgents?.();
+  }, [chatTasks.behind, refreshAgents]);
   const snapshot = host.getSnapshot();
   const names = { profiles: snapshot.browserProfiles };
   const detail =
@@ -156,7 +171,7 @@ export function ConnectedAgentController(props: {
   const chatShape = connection.bridge?.grantShape as ChatGrantShape | undefined;
   const context = {
     ...(chatShape ? { chat: chatShape } : {}),
-    agent,
+    agent: { name: agent },
     home: agentHomeName(snapshot),
     chromeTabs,
     browser,
@@ -215,21 +230,25 @@ export function ConnectedAgentController(props: {
       void save({ draft: { ...current, scope } });
       return;
     }
-    Alert.alert(agentWords("agent.narrow.title", { agent }), agentWords("agent.narrow.body"), [
-      { text: agentWords("common.cancel"), style: "cancel" },
-      {
-        text: agentWords("agent.narrow.confirm"),
-        onPress: () =>
-          void save({
-            // A chat always holds Tasks: limiting it keeps that (the same draft function).
-            draft: draftFromGrant({ scope: "selected", tasks: false, resources: [] }, chatShape),
-          }),
-      },
-    ]);
+    Alert.alert(
+      agentText("agent.narrow.title", { agent: { name: agent } }),
+      agentWords("agent.narrow.body"),
+      [
+        { text: agentWords("common.cancel"), style: "cancel" },
+        {
+          text: agentWords("agent.narrow.confirm"),
+          onPress: () =>
+            void save({
+              // A chat always holds Tasks: limiting it keeps that (the same draft function).
+              draft: draftFromGrant({ scope: "selected", tasks: false, resources: [] }, chatShape),
+            }),
+        },
+      ],
+    );
   };
   const disconnect = () =>
     Alert.alert(
-      agentWords("agent.disconnect.title", { agent }),
+      agentText("agent.disconnect.title", { agent: { name: agent } }),
       agentWords("agent.disconnect.body"),
       [
         { text: agentWords("common.cancel"), style: "cancel" },
@@ -268,20 +287,25 @@ export function ConnectedAgentController(props: {
             onRemove: remove,
             onScope: changeScope,
             onWatch: (threadId) => navigation.navigate("Thread", { deploymentId, threadId }),
-            onStop: (threadId) => {
-              if (stopping.has(threadId)) return;
-              setStopping((current) => new Set([...current, threadId]));
-              void chatHost.stopRun(threadId).catch((error: unknown) => {
-                setStopping((current) => new Set([...current].filter((id) => id !== threadId)));
-                const words = failureWords(error, {
-                  label: "stop this task",
-                  done: "stopped",
-                  happened: "the task was stopped",
+            onStop: (task) => {
+              if (stopping.has(task.runId)) return;
+              setStopping((current) => new Set([...current, task.runId]));
+              void chatHost
+                .dispatch(chatTaskStop(task, mutationIdempotencyKey("chat-stop")))
+                .catch((error: unknown) => {
+                  setStopping(
+                    (current) => new Set([...current].filter((run) => run !== task.runId)),
+                  );
+                  const words = failureWords(error, {
+                    label: "stop this task",
+                    done: "stopped",
+                    happened: "the task was stopped",
+                  });
+                  if (words !== null) Alert.alert(agentWords("chat.tasks.stop"), words);
                 });
-                if (words !== null) Alert.alert(agentWords("chat.tasks.stop"), words);
-              });
             },
             stopping,
+            chatTasks: chatTasks.tasks,
             onChromeTab: (resource, on) =>
               void save({ draft: toggleDraftResource(current, resource, on) }),
             onTasks: (tasks) => void save({ draft: { ...current, tasks } }),
@@ -336,10 +360,12 @@ export function connectedAgentSections(props: {
   readonly onChromeTab: Parameters<typeof agentGrantSections>[0]["onChromeTab"];
   readonly onTasks: (on: boolean) => void;
   readonly onWatch: (threadId: string) => void;
-  /** Stops a chat's running task; one it can't stop says why. */
-  readonly onStop?: (threadId: string) => void;
-  /** The tasks whose Stop was asked: they read Stopping… while they still run. */
+  /** Stops the Run a chat's task is doing; one it can't stop says why. */
+  readonly onStop?: (task: ChatTaskNow & { readonly runId: string }) => void;
+  /** The Runs whose Stop was asked: their task reads Stopping… while it still runs them. */
   readonly stopping?: ReadonlySet<string>;
+  /** A chat's recent tasks as the Home's live task updates say they are now (`chatTasksNow`). */
+  readonly chatTasks?: readonly ChatTaskNow[];
   readonly pending: "revoke" | "update" | "remove" | null;
   /** Under a work Home's ceiling the choices wait for it, so none is offered and then refused. */
   readonly workPolicyRead?: boolean;
@@ -352,13 +378,14 @@ export function connectedAgentSections(props: {
   const active = connectedAgentConnected(detail.row.phase);
   // A chat is a connected agent with two facts of its own: where it listens, who may speak.
   const chat = chatFacts(detail.row.connection, detail.row.phase);
+  const chatTasks = chat ? (props.chatTasks ?? chat.tasks) : [];
   const disconnectRow = (): NativeSettingsRow => ({
     key: "disconnect",
     kind: "button",
     label:
       props.pending === "revoke"
         ? agentWords("agent.disconnecting")
-        : agentWords("agent.disconnect", { agent }),
+        : phoneSentence(agentSentence("agent.disconnect", { agent: { name: agent } })),
     destructive: true,
     disabled: props.busy,
     onPress: props.onDisconnect,
@@ -483,9 +510,9 @@ export function connectedAgentSections(props: {
         key: "chat-tasks",
         title: agentWords("chat.tasks.title"),
         rows:
-          chat.tasks.length === 0
+          chatTasks.length === 0
             ? [{ key: "none", kind: "text", label: agentWords("chat.tasks.empty") }]
-            : chat.tasks.flatMap((task): NativeSettingsRow[] => [
+            : chatTasks.flatMap((task): NativeSettingsRow[] => [
                 {
                   key: task.id,
                   kind: "button",
@@ -494,18 +521,18 @@ export function connectedAgentSections(props: {
                   opens: true,
                   onPress: () => props.onWatch(task.id),
                 },
-                ...(active && task.running && props.onStop
+                ...(active && task.running && task.runId !== null && props.onStop
                   ? [
                       {
                         key: `${task.id}-stop`,
                         kind: "button" as const,
                         label:
-                          props.stopping?.has(task.id) === true
+                          props.stopping?.has(task.runId) === true
                             ? agentWords("chat.tasks.stopping")
                             : agentWords("chat.tasks.stop"),
                         destructive: true,
-                        disabled: props.busy || props.stopping?.has(task.id) === true,
-                        onPress: () => props.onStop?.(task.id),
+                        disabled: props.busy || props.stopping?.has(task.runId) === true,
+                        onPress: () => props.onStop?.({ ...task, runId: task.runId! }),
                       },
                     ]
                   : []),
@@ -563,7 +590,7 @@ export function connectedAgentSections(props: {
         rows: [],
         footer:
           props.note === "saved"
-            ? { text: agentWords("agent.saved", { agent }) }
+            ? { text: phoneSentence(agentSentence("agent.saved", { agent: { name: agent } })) }
             : { text: agentWords("consent.error.newProfile"), tone: "danger" },
       });
   }

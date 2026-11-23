@@ -3,7 +3,7 @@
 import { act } from "react";
 import { readAsDrawn } from "./read-as-drawn.test-support.js";
 import { createRoot, type Root } from "react-dom/client";
-import { externalAgentGuides } from "@opensteer/client/host";
+import { externalAgentGuides, HostClientRequestError } from "@opensteer/client/host";
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
@@ -186,6 +186,47 @@ describe("Connected agents on the phone", () => {
     expect(state.navigate).toHaveBeenCalledWith("SettingsAccount", {
       deploymentId: "deployment-a",
     });
+  });
+
+  it("after a refresh of the list fails, says so and starts no setup until it is read again", async () => {
+    const client = new MockHostClient({ latencyMs: 0 });
+    const changed: (() => void)[] = [];
+    const subscribe = client.subscribeConnectionsChanged.bind(client);
+    vi.spyOn(client, "subscribeConnectionsChanged").mockImplementation((listener) => {
+      changed.push(listener);
+      return subscribe(listener);
+    });
+    const real = client.rpc["connections.list"];
+    let failing = false;
+    Object.defineProperty(client.rpc, "connections.list", {
+      value: async (input: Parameters<typeof real>[0]) => {
+        if (failing)
+          throw new HostClientRequestError({ code: "internal", message: "down", status: 503 });
+        return real(input);
+      },
+      configurable: true,
+    });
+    await open(client);
+    const adds = () =>
+      section("add")?.rows.map((row) => row.kind === "button" && row.disabled === true);
+    await vi.waitFor(() => expect(adds()?.every((disabled) => !disabled)).toBe(true));
+    failing = true;
+    await act(async () => {
+      for (const listener of changed) listener();
+    });
+    await vi.waitFor(() =>
+      expect(section("read-failed")?.rows.map((row) => row.label)).toEqual([
+        "Couldn’t read your connected agents.",
+        "Try again",
+      ]),
+    );
+    expect(adds()?.every((disabled) => disabled)).toBe(true);
+    failing = false;
+    const retry = section("read-failed")!.rows[1]!;
+    if (retry.kind !== "button") throw new Error("Try again is a button");
+    await act(async () => retry.onPress());
+    await vi.waitFor(() => expect(adds()?.every((disabled) => !disabled)).toBe(true));
+    expect(section("read-failed")).toBeUndefined();
   });
 
   it("offers each guide once the list has loaded on a networked Home", async () => {

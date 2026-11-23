@@ -23,6 +23,8 @@ import {
   type AgentGrantDraft,
   type HostClient,
   type HostSnapshot,
+  type SentencePart,
+  agentSentence,
 } from "@opensteer/client/host";
 import {
   useAgentAppOptions,
@@ -68,7 +70,7 @@ export function AgentAuthorizationScreen({ route }: Props): ReactNode {
 type Load =
   | { readonly kind: "loading" }
   | { readonly kind: "ready"; readonly consent: AgentConnectionConsent }
-  | { readonly kind: "expired"; readonly agent: string | null }
+  | { readonly kind: "expired" }
   | { readonly kind: "answered" }
   | { readonly kind: "failed" };
 
@@ -132,7 +134,7 @@ function AgentAuthorization(props: {
         if (controller.signal.aborted) return;
         setLoad(
           classifyClientFailure(failure).code === "not_found"
-            ? { kind: "expired", agent: null }
+            ? { kind: "expired" }
             : { kind: "failed" },
         );
       });
@@ -199,7 +201,7 @@ function AgentAuthorization(props: {
       setBusy(null);
       const classified = classifyClientFailure(failure);
       if (classified.code === "conflict") setLoad({ kind: "answered" });
-      else if (classified.code === "not_found") setLoad({ kind: "expired", agent: null });
+      else if (classified.code === "not_found") setLoad({ kind: "expired" });
       // A lost answer may have decided it; only a refusal says it didn't.
       else
         setError(
@@ -230,7 +232,7 @@ function AgentAuthorization(props: {
       if (!mounted.current) return;
       setLoad(
         classifyClientFailure(failure).code === "not_found"
-          ? { kind: "expired", agent: null }
+          ? { kind: "expired" }
           : { kind: "failed" },
       );
     }
@@ -247,9 +249,7 @@ function AgentAuthorization(props: {
         {...(load.kind === "expired"
           ? {
               title: agentWords("consent.edge.expired.title"),
-              detail: load.agent
-                ? agentWords("consent.edge.expired.detail", { agent: load.agent })
-                : agentWords("consent.edge.expired.detailUnnamed"),
+              detail: agentWords("consent.edge.expired.detailUnnamed"),
               onRetry: null,
             }
           : load.kind === "answered"
@@ -277,7 +277,8 @@ function AgentAuthorization(props: {
   );
   const who = identity.who;
   const heading = agentConsentHeading(who);
-  const agent = heading.mark ? heading.title : workWords("who.thisAgent");
+  // The Home's verified name is a name; with none, Opensteer's own words for it.
+  const agent: SentencePart = heading.mark ? { name: heading.title } : workWords("who.thisAgent");
   const disabled = busy !== null;
   const context = {
     agent,
@@ -301,7 +302,9 @@ function AgentAuthorization(props: {
         destination={who.verified ? null : connectionDestination(consent.redirectUri)}
         error={error}
         finePrint={
-          grantsAvailable ? agentWords("consent.finePrint", { agent }) : agentAuthorizationFinePrint
+          grantsAvailable
+            ? phoneSentence(agentSentence("consent.finePrint", { agent }))
+            : agentAuthorizationFinePrint
         }
         label={label}
         mark={
