@@ -205,6 +205,9 @@ mainMenu.addItem(fileItem)
 let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
 let editMenu = NSMenu(title: "Edit")
 editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+let redoItem = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+redoItem.keyEquivalentModifierMask = [.command, .shift]
+editMenu.addItem(redoItem)
 editMenu.addItem(withTitle: "Select All", action: Selector(("selectAll:")), keyEquivalent: "a")
 editItem.submenu = editMenu
 mainMenu.addItem(editItem)
