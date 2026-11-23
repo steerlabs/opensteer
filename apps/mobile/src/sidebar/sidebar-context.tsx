@@ -40,6 +40,9 @@ export const SidebarControlContext = createContext<SidebarControl | null>(null);
  */
 export const sidebarRef: { current: SidebarControl | null } = { current: null };
 
+/** Whether the mounted shell is docked, readable by static `screenOptions` on a route's first frame. */
+export const sidebarDockedRef: { current: boolean } = { current: false };
+
 /**
  * True from the moment the drawer starts to cover the screen until it has fully
  * left. A docked sidebar covers nothing: it is beside the screen, not over it.

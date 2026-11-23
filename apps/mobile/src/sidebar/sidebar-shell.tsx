@@ -66,6 +66,7 @@ import {
   SidebarControlContext,
   SidebarDockedContext,
   SidebarVisibleContext,
+  sidebarDockedRef,
   sidebarRef,
   type SidebarControl,
 } from "./sidebar-context.js";
@@ -253,6 +254,15 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   const docked = column !== null;
   const dockedRef = useRef(docked);
   dockedRef.current = docked;
+  useLayoutEffect(() => {
+    sidebarDockedRef.current = docked;
+  }, [docked]);
+  useEffect(
+    () => () => {
+      sidebarDockedRef.current = false;
+    },
+    [],
+  );
 
   const drawerWidth = Math.max(
     0,

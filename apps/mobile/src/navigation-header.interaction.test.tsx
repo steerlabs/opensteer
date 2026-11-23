@@ -22,6 +22,7 @@ const harness = vi.hoisted(() => ({
   open: vi.fn(),
   routeKey: "thread-a",
   presented: false,
+  routes: null as readonly { key: string; name: string }[] | null,
 }));
 
 vi.mock("react-native", () => ({
@@ -68,12 +69,14 @@ vi.mock("@react-navigation/native", () => {
     useNavigation: () => navigation,
     useNavigationState: (select: (value: typeof state) => unknown) =>
       select(
-        harness.presented
-          ? {
-              ...state,
-              routes: [state.routes[0]!, { key: "settings", name: "Settings" }, state.routes[2]!],
-            }
-          : state,
+        harness.routes !== null
+          ? { index: harness.routes.length - 1, routes: [...harness.routes] }
+          : harness.presented
+            ? {
+                ...state,
+                routes: [state.routes[0]!, { key: "settings", name: "Settings" }, state.routes[2]!],
+              }
+            : state,
       ),
     useRoute: () => ({ key: harness.routeKey }),
   };
@@ -103,6 +106,7 @@ afterEach(() => {
   harness.open.mockReset();
   harness.routeKey = "thread-a";
   harness.presented = false;
+  harness.routes = null;
 });
 
 function mount(docked: boolean) {
@@ -174,6 +178,13 @@ describe("the Menu in a top-level screen's bar", () => {
   it("leaves a presented flow's own controls in charge", () => {
     harness.presented = true;
     harness.routeKey = "subagent";
+    mount(false);
+    expect(harness.options).toEqual({});
+  });
+
+  it("leaves Your Opensteers' own Settings gear in charge when no Home is open", () => {
+    harness.routes = [{ key: "deployments", name: "Deployments" }];
+    harness.routeKey = "deployments";
     mount(false);
     expect(harness.options).toEqual({});
   });
