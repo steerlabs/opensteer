@@ -107,6 +107,7 @@ describe("the follow view's cast, when nothing about the picture changed", async
       delivered,
       follow,
       navigate: async () => {
+        surface.documentId += "+";
         surface.geometryRevision += 1;
         for (const listener of listeners)
           listener({ change: "updated", surface: { ...surface }, type: "changed" });
