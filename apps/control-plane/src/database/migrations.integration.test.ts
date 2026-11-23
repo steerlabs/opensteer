@@ -590,7 +590,7 @@ integration("organizations removed (0037_remove_organizations)", () => {
     await migrateControlPlaneToLatest(database);
     expect(await left()).toEqual([]);
     // Every column it had is kept, but the one the migration drops.
-    const { workAssignmentId, ...kept } = before;
+    const { workAssignmentId, ...kept } = { ...before };
     expect(workAssignmentId).toBeNull();
     expect(await computer(personal)).toEqual(kept);
     expect(await computer(work)).toMatchObject({ accountId: admin, state: "active" });
