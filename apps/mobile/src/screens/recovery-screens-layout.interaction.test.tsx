@@ -22,6 +22,8 @@ import {
  */
 
 const geometry = vi.hoisted(() => ({
+  /** The frame the screen's content is given: the window, or a sheet's own frame. */
+  frame: null as { height: number; width: number } | null,
   insets: { bottom: 0, left: 0, right: 0, top: 0 },
   window: { height: 0, width: 0 },
 }));
@@ -36,7 +38,7 @@ vi.mock(
   async () => (await import("../../test-support/yoga-frames.js")).layoutReanimated,
 );
 vi.mock("react-native-safe-area-context", () => ({
-  useSafeAreaFrame: () => ({ ...geometry.window, x: 0, y: 0 }),
+  useSafeAreaFrame: () => ({ ...(geometry.frame ?? geometry.window), x: 0, y: 0 }),
   useSafeAreaInsets: () => geometry.insets,
 }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
@@ -99,6 +101,7 @@ const islandPhone: LayoutPhone = {
 async function draw(phone: LayoutPhone, screen: ReactNode, insets = phone.insets) {
   geometry.insets = insets;
   geometry.window = phone.window;
+  if (insets === phone.insets) geometry.frame = null;
   Object.assign(layoutWindow, phone.window, { fontScale: largest });
   const container = document.createElement("div");
   document.body.append(container);
@@ -190,6 +193,8 @@ describe("the screens a person meets when something is wrong, at the largest tex
   // bar and a 10 pt gap, its content's top inset zero, clipping what it holds.
   it("lets the connection sheet's way on be reached inside the sheet", async () => {
     const top = narrowest.insets.top + 10;
+    // Inside the sheet, the frame its content is given is the sheet's own.
+    geometry.frame = { height: narrowest.window.height - top, width: narrowest.window.width };
     const { container, frames } = await draw(
       narrowest,
       <View
