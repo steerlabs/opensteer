@@ -18,6 +18,7 @@ import {
   minThreadAccessMode,
   OpensteerError,
   type AgentGrant,
+  type AgentGrantResource,
   type RequestId,
   type AgentGrantTarget,
   type ResourceAccessLevel,
@@ -71,13 +72,19 @@ export interface AgentConnectionAuthority {
 
 /**
  * The grant a connection's lineage holds, the only one admission, its reach and the listing
- * read: a chat anyone may speak in holds what a selected grant with nothing in it holds (X15).
+ * read: a chat anyone may speak in holds what a selected grant with nothing in it holds (X15),
+ * its own tasks as its grant allows them (a chat's messages are delegated work) and no thing of
+ * the person's.
  */
 export function effectiveConnectionGrant(
   grant: AgentGrant,
   bridgeSenders: BridgeSenders | null | undefined,
 ): AgentGrant {
-  return bridgeSenders === "anyone" ? { scope: "selected", tasks: false, resources: [] } : grant;
+  // Such a chat is made holding only tasks and the plugins the person chose; an `everything`
+  // grant on one (it cannot be made so now) holds its tasks and nothing of the person's.
+  return bridgeSenders === "anyone" && grant.scope === "everything"
+    ? { scope: "selected", tasks: true, resources: [] }
+    : grant;
 }
 
 /** Whether work in this lineage may use the person's personal context (memory, tabs, apps). */
@@ -992,6 +999,28 @@ export interface CommandStoredFace {
   readonly face: EffectClass;
 }
 
+/**
+ * The subject a connection is admitted as: its direct session when it has one live (the one its
+ * `taskId` names, or its active one), so what it does in that task is its own work and its own
+ * asks are its own; otherwise the connection itself. Reads only for a connection.
+ */
+export async function connectionAdmissionSubject(
+  database: Kysely<DatabaseSchema>,
+  connectionId: string,
+  taskId?: string | null,
+): Promise<AuthoritySubject> {
+  let query = database
+    .selectFrom("agentSessions")
+    .select("id")
+    .where("connectionId", "=", connectionId)
+    .where("status", "=", "active");
+  if (taskId) query = query.where("threadId", "=", taskId as ThreadId);
+  const session = await query.orderBy("id").executeTakeFirst();
+  return session
+    ? { kind: "binding", bindingId: `session:${session.id}` }
+    : { kind: "connection", agentConnectionId: connectionId };
+}
+
 /** The subject an agent's credential speaks for: its connection, or the execution it is bound to. */
 export function commandSubject(callerKey: string): AuthoritySubject {
   return callerKey.startsWith("connection:")
@@ -1104,6 +1133,8 @@ export interface CommandHolder {
   readonly scope: "everything" | "selected" | null;
   readonly grant: AgentGrant | null;
   readonly mode: ThreadAccessMode;
+  /** A chat anyone in its conversation may message: it may have no automation (X15). */
+  readonly anyoneChat?: boolean;
 }
 
 /**
@@ -1124,38 +1155,33 @@ export function commandHolds(type: CommandType, holder: CommandHolder): boolean 
   if (holder.scope !== "selected" || grant?.scope !== "selected") return true;
   // A new thing has nothing to be outside of: admission reaches it, and a selected grant asks.
   if (row.scope === "new") return true;
+  // Otherwise what it governs must be a kind this grant reaches some thing of.
+  if (holder.anyoneChat && commandGovernedKinds(type).every((kind) => kind === "automation"))
+    return false;
   return commandGovernedKinds(type).some((kind) => selectedHoldsKind(kind, grant));
 }
 
-/** What a selected grant reaches of each kind, exactly as `commandReach` resolves it. */
+/**
+ * Whether a selected grant reaches any thing of this kind, by the rule `commandReach` applies to
+ * the thing itself: a kind it names through `grantNamed` (or through one, as a profile's tabs),
+ * task work through Tasks, and its own session's Requests, its sessions and its own connection
+ * (D9). A kind with no reach rule for a selected grant is not held.
+ */
 function selectedHoldsKind(
   kind: CommandResourceKind,
   grant: Extract<AgentGrant, { scope: "selected" }>,
 ): boolean {
-  const has = (resource: string) => grant.resources.some((entry) => entry.kind === resource);
-  const plugin = (target: string) =>
-    grant.resources.some((entry) => entry.kind === "plugin" && entry.target.kind === target);
+  const named = grantNamed[(reachedThrough[kind] ?? kind) as keyof typeof grantNamed];
+  if (named) return grant.resources.some((entry) => named.holds(entry));
   switch (kind) {
     case "task":
     case "assignment":
     case "automation":
       return agentGrantAllowsTasks(grant);
-    // Its own session's Requests and sessions, and its own connection (D9).
     case "request":
     case "agent-session":
     case "connection":
       return true;
-    case "browser-profile":
-    case "browser-session":
-    case "tabs":
-      return has("browser-profile");
-    case "chrome":
-      return has("chrome-tabs");
-    case "plugin":
-      return plugin("installed");
-    case "local-server":
-    case "device-plugin":
-      return plugin("local-server");
     default:
       return false;
   }
@@ -1178,6 +1204,7 @@ export async function commandCallerHolder(
       scope: connection?.grant.scope ?? null,
       grant: connection?.grant ?? null,
       mode: execution.mode,
+      ...(connection && !lineageAllowsPersonalContext(connection) ? { anyoneChat: true } : {}),
     };
   } catch (error) {
     if (error instanceof ConnectionWaiting) return "gone";
@@ -1426,7 +1453,9 @@ async function commandReach(
       return { reach: true, ownWork: used };
     }
     case "browser-profile": {
-      // A page with no profile is a Guest page: no selected grant names one.
+      // A new profile has nothing to be outside of; a page with no profile is a Guest page,
+      // which no selected grant names.
+      if (row.scope === "new" && resource.id === null) return inReach;
       const reach = resource.id === null ? !selected : await profile(resource.id);
       if (!reach) return outOfReach;
       if (resource.task !== undefined) return task(resource.task);
@@ -1495,20 +1524,46 @@ export function commandHeld(
   );
 }
 
+/**
+ * The kinds a selected grant names a thing of, and how: the one table both what is listed
+ * (`selectedHoldsKind`) and what is reached (`grantTargetOf`) read.
+ */
+const grantNamed = {
+  "browser-profile": {
+    target: (id: string): AgentGrantTarget => ({ kind: "browser-profile", profileId: id }),
+    holds: (entry: AgentGrantResource) => entry.kind === "browser-profile",
+  },
+  chrome: {
+    target: (id: string): AgentGrantTarget => ({ kind: "chrome-tabs", sourceId: id }),
+    holds: (entry: AgentGrantResource) => entry.kind === "chrome-tabs",
+  },
+  plugin: {
+    target: (id: string): AgentGrantTarget => ({
+      kind: "plugin",
+      target: { kind: "installed", pluginId: id },
+    }),
+    holds: (entry: AgentGrantResource) =>
+      entry.kind === "plugin" && entry.target.kind === "installed",
+  },
+  "local-server": {
+    target: (id: string): AgentGrantTarget => ({
+      kind: "plugin",
+      target: { kind: "local-server", serverId: id },
+    }),
+    holds: (entry: AgentGrantResource) =>
+      entry.kind === "plugin" && entry.target.kind === "local-server",
+  },
+} satisfies Partial<Record<CommandResourceKind, unknown>>;
+/** Kinds reached through a thing a grant names: a profile's sessions and tabs. */
+const reachedThrough: Partial<Record<CommandResourceKind, keyof typeof grantNamed>> = {
+  "browser-session": "browser-profile",
+  tabs: "browser-profile",
+};
+
 function grantTargetOf(resource: CommandResource): AgentGrantTarget | null {
   if (resource.id === null) return null;
-  switch (resource.kind) {
-    case "browser-profile":
-      return { kind: "browser-profile", profileId: resource.id };
-    case "chrome":
-      return { kind: "chrome-tabs", sourceId: resource.id };
-    case "plugin":
-      return { kind: "plugin", target: { kind: "installed", pluginId: resource.id } };
-    case "local-server":
-      return { kind: "plugin", target: { kind: "local-server", serverId: resource.id } };
-    default:
-      return null;
-  }
+  const named = grantNamed[resource.kind as keyof typeof grantNamed];
+  return named ? named.target(resource.id) : null;
 }
 
 export async function assertLineageCompatibleReuse(

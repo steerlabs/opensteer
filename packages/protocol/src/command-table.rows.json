@@ -2087,12 +2087,12 @@
             "a": "now",
             "b": "ask",
             "c": "now",
-            "d": "ask"
+            "d": "now"
           }
         }
       ],
       "step": "A",
-      "note": "(d): a new version is a changed target (architecture: \"A granted thing that changed is not granted\"); X11: what the plugin's schedules and workflows run from now on, so a connection asks unless that lineage is its own",
+      "note": "(d): a new version is a changed target (architecture: \"A granted thing that changed is not granted\"); X11: what the plugin's schedules and workflows run from now on, so a connection asks unless that lineage is its own; G2: it names a plugin that exists, so a selected grant holding it reaches it as admission does (no longer a new thing)",
       "effect": {
         "where": "outside",
         "why": "plugin-owner-api.ts:1079: the plugin engine's own work",

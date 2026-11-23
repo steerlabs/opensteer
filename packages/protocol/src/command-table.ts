@@ -187,6 +187,11 @@ export interface CommandRow<K extends CommandType = CommandType> {
    * decides at commit and the caller is held to the strictest face until it does.
    */
   readonly face?: (command: Command<K>) => number | undefined;
+  /**
+   * The kinds of thing `governs` names, as data: what a selected grant must hold of for the type
+   * to be listed, by the same reach rule admission applies to the thing itself.
+   */
+  readonly governsKinds: readonly CommandResourceKind[];
   readonly governs: (command: Command<K>) => CommandResource;
   /**
    * Input paths only the person types (dotted, nested included); an agent's command never
@@ -259,6 +264,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     faces: one("widen-self"),
+    governsKinds: ["task"],
     governs: (c) => ({
       ...resource("task", c.parentThreadId ?? null),
       ...(c.accessMode ? { mode: c.accessMode } : {}),
@@ -270,6 +276,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     faces: one("preference"),
+    governsKinds: ["task"],
     governs: task,
     effect: "database",
   },
@@ -278,6 +285,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "B",
     faces: one("preference"),
+    governsKinds: ["task"],
     governs: task,
     effect: "database",
   },
@@ -286,6 +294,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     faces: one("widen-self"),
+    governsKinds: ["task"],
     governs: task,
   },
   "thread.inputQueue.resume": {
@@ -294,6 +303,7 @@ export const commandTable: CommandTable = {
     step: "A",
     // The inputs it releases run in the task's lineage, or their own (X11).
     faces: one("widen-self", { lineage: true }),
+    governsKinds: ["task"],
     governs: task,
     effect: "database",
   },
@@ -303,6 +313,7 @@ export const commandTable: CommandTable = {
     step: "A",
     // A waiting input steers the running Run, in that Run's lineage (X11).
     faces: one("widen-self", { lineage: true }),
+    governsKinds: ["task"],
     governs: task,
     effect: "database",
   },
@@ -311,6 +322,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     faces: one("narrow"),
+    governsKinds: ["task"],
     governs: task,
     effect: "database",
   },
@@ -319,6 +331,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     faces: one("preference"),
+    governsKinds: ["task"],
     governs: task,
     effect: "database",
   },
@@ -327,6 +340,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "none",
     faces: [personView],
+    governsKinds: ["task"],
     governs: task,
     effect: "database",
   },
@@ -335,6 +349,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "none",
     faces: [personView],
+    governsKinds: ["task"],
     governs: task,
     effect: "database",
   },
@@ -343,6 +358,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "none",
     faces: [personView],
+    governsKinds: ["task"],
     governs: task,
     effect: "database",
   },
@@ -351,6 +367,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "B",
     faces: one("widen-self"),
+    governsKinds: ["task"],
     governs: task,
     effect: "database",
   },
@@ -359,6 +376,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "none",
     faces: [personView],
+    governsKinds: ["task"],
     governs: task,
     effect: "database",
   },
@@ -368,6 +386,7 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: two({ class: "narrow" }, { class: "widen-self" }),
     face: (c) => (c.done ? 0 : 1),
+    governsKinds: ["task"],
     governs: task,
     effect: "database",
   },
@@ -377,6 +396,7 @@ export const commandTable: CommandTable = {
     step: "A",
     // What engine and model the task's later Runs use, in the task's lineage (X11).
     faces: one("preference", { lineage: true }),
+    governsKinds: ["task"],
     governs: task,
     effect: "database",
   },
@@ -387,6 +407,7 @@ export const commandTable: CommandTable = {
     // Lower or equal to the stored mode narrows; higher lifts a gate.
     faces: two({ class: "narrow" }, { class: "approve" }),
     face: stored,
+    governsKinds: ["task"],
     governs: task,
   },
   "run.interrupt": {
@@ -394,6 +415,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     faces: one("narrow"),
+    governsKinds: ["task"],
     governs: task,
     effect: "database",
   },
@@ -402,6 +424,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     faces: one("narrow"),
+    governsKinds: ["task"],
     governs: task,
     effect: "database",
   },
@@ -410,6 +433,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     faces: one("narrow"),
+    governsKinds: ["assignment"],
     governs: (c) => resource("assignment", c.assignmentId),
     effect: "database",
   },
@@ -425,6 +449,7 @@ export const commandTable: CommandTable = {
       { class: "narrow", step: "B" },
     ],
     face: stored,
+    governsKinds: ["request"],
     governs: (c) => resource("request", c.requestId),
     answersAsk: { faces: [1], of: (c) => ({ kind: "request", id: c.requestId }) },
   },
@@ -434,6 +459,7 @@ export const commandTable: CommandTable = {
     step: "none",
     // The person's own approval of an agent's proposal: an agent sending it asks about an ask.
     faces: one("approve"),
+    governsKinds: ["request"],
     governs: (c) => resource("request", c.requestId),
     answersAsk: { faces: [0], of: (c) => ({ kind: "request", id: c.requestId }) },
     editor: null,
@@ -443,6 +469,7 @@ export const commandTable: CommandTable = {
     scope: "connection",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["agent-session"],
     governs: (c) => ({ ...resource("agent-session", c.agentSessionId), task: c.threadId }),
   },
   "attachment.upload.create": {
@@ -450,6 +477,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: [personView],
+    governsKinds: ["home"],
     governs: home("attachments"),
     effect: "database",
   },
@@ -458,6 +486,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: [personView],
+    governsKinds: ["home"],
     governs: home("attachments"),
   },
 
@@ -471,6 +500,7 @@ export const commandTable: CommandTable = {
     faces: two({ class: "preference" }, { class: "approve", step: "none" }),
     face: (c) =>
       c.accessMode === undefined || c.accessMode === "approval-required" ? 0 : undefined,
+    governsKinds: ["home"],
     governs: home("defaults"),
     effect: "database",
   },
@@ -479,6 +509,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "A",
     faces: one("preference"),
+    governsKinds: ["home"],
     governs: home("time-zone"),
     effect: "database",
   },
@@ -487,6 +518,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "A",
     faces: one("preference"),
+    governsKinds: ["home"],
     governs: home("quiet-tasks"),
     effect: "database",
   },
@@ -495,6 +527,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: one("identity"),
+    governsKinds: ["home"],
     governs: home("name"),
   },
   "settings.idleCompaction.set": {
@@ -502,6 +535,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "B",
     faces: one("preference"),
+    governsKinds: ["home"],
     governs: home("idle-compaction"),
   },
   "notification.preview.register": {
@@ -509,6 +543,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: [personView],
+    governsKinds: ["home"],
     governs: home("notification-key"),
   },
 
@@ -521,6 +556,7 @@ export const commandTable: CommandTable = {
     // this device's own (or a Google Cloud project it names) is another principal.
     faces: two({ class: "widen-self" }, { class: "widen-other", step: "none" }),
     face: (c) => (sendsTasksElsewhere(c.config) ? 1 : 0),
+    governsKinds: ["engine"],
     governs: () => resource("engine"),
     effect: "database",
   },
@@ -529,6 +565,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "B",
     faces: one("preference"),
+    governsKinds: ["engine"],
     governs: (c) => resource("engine", c.driverKind),
   },
   "harness.delete": {
@@ -536,6 +573,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "B",
     faces: one("destroy"),
+    governsKinds: ["engine"],
     governs: (c) => resource("engine", c.harnessInstanceId),
   },
   "harness.model.configure": {
@@ -543,6 +581,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "A",
     faces: one("preference"),
+    governsKinds: ["engine"],
     governs: (c) => resource("engine", c.harnessInstanceId),
     effect: "database",
   },
@@ -551,6 +590,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "A",
     faces: one("preference"),
+    governsKinds: ["engine"],
     governs: (c) => resource("engine", c.harnessInstanceId),
     effect: "database",
   },
@@ -560,6 +600,7 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: two({ class: "narrow" }, { class: "widen-self" }),
     face: (c) => (c.enabled ? 1 : 0),
+    governsKinds: ["engine"],
     governs: (c) => resource("engine", c.harnessInstanceId),
     effect: "database",
   },
@@ -568,6 +609,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "A",
     faces: one("preference"),
+    governsKinds: ["engine"],
     governs: (c) => resource("engine", c.harnessInstanceId),
     effect: "database",
   },
@@ -576,6 +618,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: one("secret"),
+    governsKinds: ["engine"],
     governs: (c) => resource("engine", c.harnessInstanceId),
   },
   "harness.authentication.submit": {
@@ -583,6 +626,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: one("secret"),
+    governsKinds: ["engine"],
     governs: (c) => resource("engine", c.harnessInstanceId),
     secretFields: ["value"],
   },
@@ -591,6 +635,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["engine"],
     governs: (c) => resource("engine", c.harnessInstanceId),
   },
   "harness.authentication.browse": {
@@ -598,6 +643,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: one("secret"),
+    governsKinds: ["engine"],
     governs: (c) => resource("engine", c.harnessInstanceId),
   },
   "harness.authentication.logout": {
@@ -605,6 +651,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["engine"],
     governs: (c) => resource("engine", c.harnessInstanceId),
   },
 
@@ -616,6 +663,7 @@ export const commandTable: CommandTable = {
     // Narrow only if no switch goes up against the stored policy.
     faces: two({ class: "narrow" }, { class: "approve" }),
     face: stored,
+    governsKinds: ["device"],
     governs: (c) => resource("device", "deviceId" in c ? c.deviceId : c.runnerId),
   },
   "machine.rename": {
@@ -623,6 +671,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "A",
     faces: one("preference"),
+    governsKinds: ["device"],
     governs: (c) => resource("device", c.machineId),
     effect: "database",
   },
@@ -631,6 +680,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "A",
     faces: one("destroy"),
+    governsKinds: ["device"],
     governs: (c) => resource("device", c.machineId),
   },
   "machine.access.session.stop": {
@@ -638,6 +688,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "A",
     faces: one("narrow"),
+    governsKinds: ["device-session"],
     governs: (c) => resource("device-session", c.sessionId),
   },
   "machine.session.bind": {
@@ -645,6 +696,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: [personView],
+    governsKinds: ["device"],
     governs: (c) => resource("device", c.machineId),
     effect: "database",
   },
@@ -653,6 +705,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: one("widen-self", { personSession: true }),
+    governsKinds: ["device"],
     governs: (c) => resource("device", c.target.kind === "existing" ? c.target.deviceId : null),
   },
   "iphone.screen.detach": {
@@ -660,6 +713,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["device"],
     governs: (c) => resource("device", c.deviceId),
   },
   "computer.view.close": {
@@ -667,6 +721,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: [personView],
+    governsKinds: ["home"],
     governs: home("live-view"),
   },
   "computer.view.renew": {
@@ -674,6 +729,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: [personView],
+    governsKinds: ["home"],
     governs: home("live-view"),
   },
   "runner.enrollment.createLocal": {
@@ -681,6 +737,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: one("widen-other", { also: "secret" }),
+    governsKinds: ["enrollment"],
     governs: () => resource("enrollment"),
   },
   "runner.enrollment.createPhone": {
@@ -688,6 +745,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: one("widen-other", { also: "secret" }),
+    governsKinds: ["enrollment"],
     governs: () => resource("enrollment"),
   },
   "runner.enrollment.retire": {
@@ -695,6 +753,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["enrollment"],
     governs: (c) => resource("enrollment", c.enrollmentId),
     effect: "database",
   },
@@ -705,6 +764,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "none",
     faces: one("approve"),
+    governsKinds: ["device-app"],
     governs: () => resource("device-app"),
   },
   "integration.computer.setup.respond": {
@@ -713,6 +773,7 @@ export const commandTable: CommandTable = {
     step: "B",
     faces: two({ class: "approve", step: "none" }, { class: "narrow" }),
     face: (c) => (c.decision === "allow" ? 0 : 1),
+    governsKinds: ["device-setup"],
     governs: (c) => resource("device-setup", c.setupRequestId),
     secretFields: ["secrets"],
     answersAsk: { faces: [0], of: (c) => ({ kind: "device-setup", id: c.setupRequestId }) },
@@ -722,6 +783,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "none",
     faces: one("approve"),
+    governsKinds: ["device-app"],
     governs: () => resource("device-app"),
   },
   "integration.computer.setup.cancel": {
@@ -729,6 +791,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["device-setup"],
     governs: (c) => resource("device-setup", c.requestId),
   },
   "integration.computer.session.stop": {
@@ -736,6 +799,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "none",
     faces: one("narrow"),
+    governsKinds: ["device-session"],
     governs: (c) => resource("device-session", c.sessionId),
   },
   "integration.computer.policy.set": {
@@ -743,6 +807,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["device"],
     governs: (c) => resource("device", c.input.runnerId),
   },
   "integration.computer.app.block": {
@@ -750,6 +815,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["device-app"],
     governs: (c) => resource("device-app", c.connectionId),
   },
   "integration.grant.create": {
@@ -757,6 +823,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "none",
     faces: one("approve"),
+    governsKinds: ["device-data"],
     governs: (c) => resource("device-data", c.input.connectionId),
   },
   "integration.grant.revoke": {
@@ -765,6 +832,7 @@ export const commandTable: CommandTable = {
     step: "A",
     stepFor: { selected: "B" },
     faces: one("narrow"),
+    governsKinds: ["device-data"],
     governs: (c) => resource("device-data", c.grantId),
   },
   "integration.disconnect": {
@@ -773,6 +841,7 @@ export const commandTable: CommandTable = {
     step: "A",
     stepFor: { selected: "B" },
     faces: one("narrow"),
+    governsKinds: ["device-app"],
     governs: (c) => resource("device-app", c.connectionId),
   },
   "plugin.remove": {
@@ -780,6 +849,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "A",
     faces: one("destroy"),
+    governsKinds: ["device-plugin"],
     governs: (c) => resource("device-plugin", c.pluginId),
   },
   "integration.server.secrets.set": {
@@ -787,6 +857,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "none",
     faces: one("secret"),
+    governsKinds: ["local-server"],
     governs: (c) => resource("local-server", c.serverId),
     secretFields: ["secrets"],
   },
@@ -796,6 +867,7 @@ export const commandTable: CommandTable = {
     step: "B",
     faces: two({ class: "narrow" }, { class: "approve" }),
     face: (c) => (c.enabled ? 1 : 0),
+    governsKinds: ["plugin-setting"],
     governs: (c) =>
       resource(
         "plugin-setting",
@@ -818,6 +890,7 @@ export const commandTable: CommandTable = {
       c.intent.action === "unlink" || (c.intent.action === "configure" && c.intent.mode === "off")
         ? 1
         : 0,
+    governsKinds: ["home"],
     governs: home("remote-access"),
   },
   "personal.remoteAccess.pairing.create": {
@@ -825,6 +898,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: one("widen-other", { also: "secret" }),
+    governsKinds: ["home"],
     governs: home("remote-access"),
   },
   "personal.accountLink.approve": {
@@ -832,6 +906,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: one("identity"),
+    governsKinds: ["home"],
     governs: home("account-link"),
   },
   "personal.accountLink.complete": {
@@ -839,6 +914,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: one("identity"),
+    governsKinds: ["home"],
     governs: home("account-link"),
   },
   "personal.accountLink.resume": {
@@ -846,6 +922,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: one("identity"),
+    governsKinds: ["home"],
     governs: home("account-link"),
   },
   "personal.accountLink.unlink": {
@@ -853,6 +930,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: one("identity"),
+    governsKinds: ["home"],
     governs: home("account-link"),
   },
   "session.revoke": {
@@ -860,6 +938,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["session"],
     governs: (c) => resource("session", c.sessionId),
   },
 
@@ -871,6 +950,7 @@ export const commandTable: CommandTable = {
     // Approving a consent gives an agent authority; denying it ends the ask.
     faces: two({ class: "widen-other" }, { class: "narrow" }),
     face: (c) => (c.decision.kind === "deny" ? 1 : 0),
+    governsKinds: ["connection"],
     governs: (c) => resource("connection", c.requestId),
     answersAsk: { faces: [0], of: (c) => ({ kind: "consent", id: c.requestId }) },
   },
@@ -881,6 +961,7 @@ export const commandTable: CommandTable = {
     // Narrow when the store finds the grant a subset and the mode no higher (its `narrowed`).
     faces: two({ class: "narrow" }, { class: "widen-other", step: "none" }),
     face: stored,
+    governsKinds: ["connection"],
     governs: (c) => resource("connection", c.connectionId),
   },
   "connection.revoke": {
@@ -888,6 +969,7 @@ export const commandTable: CommandTable = {
     scope: "connection",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["connection"],
     governs: (c) => resource("connection", c.connectionId),
   },
   "connection.remove": {
@@ -895,6 +977,7 @@ export const commandTable: CommandTable = {
     scope: "other-connection",
     step: "B",
     faces: one("preference"),
+    governsKinds: ["connection"],
     governs: (c) => resource("connection", c.connectionId),
     effect: "database",
   },
@@ -903,6 +986,7 @@ export const commandTable: CommandTable = {
     scope: "connection",
     step: "none",
     faces: [personView],
+    governsKinds: ["connection"],
     governs: (c) => resource("connection", c.connectionId),
     effect: "database",
   },
@@ -916,14 +1000,17 @@ export const commandTable: CommandTable = {
     faces: one("widen-self", { lineage: true }),
     // A folder is inside Agent home, which only your own agents' tasks have.
     ownAgentsOnly: [{ field: "source", kind: "folder" }],
+    governsKinds: ["plugin"],
     governs: () => resource("plugin"),
   },
   "plugins.version.activate": {
     family: "plugins",
-    scope: "new",
+    // It names a plugin that exists: what a selected grant holds of it, as admission reaches it.
+    scope: "nameable",
     step: "A",
     // What the plugin's schedules and workflows run from now on (X11).
     faces: one("widen-self", { lineage: true }),
+    governsKinds: ["plugin"],
     governs: (c) => resource("plugin", c.pluginId),
   },
   "plugins.remove": {
@@ -931,6 +1018,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "A",
     faces: one("destroy"),
+    governsKinds: ["plugin"],
     governs: (c) => resource("plugin", c.pluginId),
   },
   "plugins.access.set": {
@@ -940,6 +1028,7 @@ export const commandTable: CommandTable = {
     // Lower than the stored access narrows; higher lifts a gate.
     faces: two({ class: "narrow" }, { class: "approve", step: "none" }),
     face: (c) => (c.access === "off" ? 0 : undefined),
+    governsKinds: ["plugin"],
     governs: (c) => resource("plugin", c.pluginId),
   },
   "plugins.account.create": {
@@ -947,6 +1036,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "none",
     faces: one("secret"),
+    governsKinds: ["plugin-account"],
     governs: () => resource("plugin-account"),
     secretFields: ["fields"],
   },
@@ -955,6 +1045,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["plugin-account"],
     governs: (c) => resource("plugin-account", c.accountId),
   },
   "plugins.account.link": {
@@ -962,6 +1053,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "none",
     faces: one("approve"),
+    governsKinds: ["plugin"],
     governs: (c) => resource("plugin", c.pluginId),
   },
   "plugins.account.unlink": {
@@ -969,6 +1061,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["plugin"],
     governs: (c) => resource("plugin", c.pluginId),
   },
   "plugins.schedule.configure": {
@@ -992,6 +1085,7 @@ export const commandTable: CommandTable = {
         : c.enabled
           ? 0
           : 1,
+    governsKinds: ["plugin"],
     governs: (c) => resource("plugin", c.pluginId),
   },
   "plugins.schedule.answer": {
@@ -1000,6 +1094,7 @@ export const commandTable: CommandTable = {
     step: "none",
     faces: two({ class: "approve" }, { class: "narrow" }),
     face: (c) => (c.action === "decline" ? 1 : 0),
+    governsKinds: ["plugin"],
     governs: (c) => resource("plugin", c.pluginId),
     answersAsk: {
       faces: [0],
@@ -1013,6 +1108,7 @@ export const commandTable: CommandTable = {
     stepFor: { connections: "B" },
     // The workflow run goes on in the plugin engine, as the person's (X11).
     faces: one("widen-self", { lineage: true }),
+    governsKinds: ["plugin"],
     governs: (c) => resource("plugin", c.pluginId),
   },
   "plugins.workflow.stop": {
@@ -1021,6 +1117,7 @@ export const commandTable: CommandTable = {
     step: "A",
     stepFor: { connections: "B" },
     faces: one("narrow"),
+    governsKinds: ["plugin"],
     governs: (c) => resource("plugin", c.pluginId),
   },
   "plugins.webhook.remove": {
@@ -1029,6 +1126,7 @@ export const commandTable: CommandTable = {
     step: "A",
     stepFor: { connections: "B" },
     faces: one("narrow"),
+    governsKinds: ["plugin"],
     governs: (c) => resource("plugin", c.pluginId),
   },
   "plugins.webhook.removal.confirm": {
@@ -1036,6 +1134,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["plugin"],
     governs: (c) => resource("plugin", c.pluginId),
   },
   "plugins.webhook.setup.complete": {
@@ -1044,6 +1143,7 @@ export const commandTable: CommandTable = {
     step: "B",
     // A webhook set up delivers on, in the plugin engine, as the person's (AD4, X11).
     faces: one("widen-self", { lineage: true }),
+    governsKinds: ["plugin"],
     governs: (c) => resource("plugin", c.pluginId),
     // The signing secret the person copies from the provider.
     secretFields: ["secret"],
@@ -1053,6 +1153,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "none",
     faces: one("secret"),
+    governsKinds: ["plugin"],
     governs: (c) => resource("plugin", c.input.plugin),
   },
   "plugin.authorization.begin": {
@@ -1060,6 +1161,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "none",
     faces: one("secret"),
+    governsKinds: ["plugin-sign-in"],
     governs: () => resource("plugin-sign-in"),
     secretFields: ["input.client.clientSecret"],
   },
@@ -1068,6 +1170,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "none",
     faces: one("secret"),
+    governsKinds: ["plugin-sign-in"],
     governs: (c) => resource("plugin-sign-in", c.attemptId),
     // The proof the provider's redirect handed to the person's browser.
     secretFields: ["returnProof"],
@@ -1077,6 +1180,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["plugin-sign-in"],
     governs: (c) => resource("plugin-sign-in", c.attemptId),
   },
   "plugin.oauthApp.save": {
@@ -1084,6 +1188,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: one("secret"),
+    governsKinds: ["home"],
     governs: home("oauth-apps"),
     secretFields: ["input.clientSecret"],
   },
@@ -1092,6 +1197,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["home"],
     governs: home("oauth-apps"),
   },
 
@@ -1101,6 +1207,7 @@ export const commandTable: CommandTable = {
     scope: "other-connection",
     step: "none",
     faces: one("widen-other", { also: "secret" }),
+    governsKinds: ["chat-account"],
     governs: () => resource("chat-account"),
     secretFields: ["credentials"],
   },
@@ -1109,6 +1216,7 @@ export const commandTable: CommandTable = {
     scope: "other-connection",
     step: "none",
     faces: one("secret"),
+    governsKinds: ["chat-account"],
     governs: (c) => resource("chat-account", c.connectionId),
     secretFields: ["credentials"],
   },
@@ -1117,6 +1225,7 @@ export const commandTable: CommandTable = {
     scope: "other-connection",
     step: "none",
     faces: one("widen-other"),
+    governsKinds: ["chat-account"],
     governs: () => resource("chat-account"),
   },
   "channel.connection.status.set": {
@@ -1126,6 +1235,7 @@ export const commandTable: CommandTable = {
     // Paused or revoked narrows; connected lets the chat's senders reach the Home again.
     faces: two({ class: "narrow", step: "A" }, { class: "widen-other", step: "none" }),
     face: (c) => (c.status === "connected" ? 1 : 0),
+    governsKinds: ["chat-account"],
     governs: (c) => resource("chat-account", c.connectionId),
   },
   "channel.chat.create": {
@@ -1133,6 +1243,7 @@ export const commandTable: CommandTable = {
     scope: "other-connection",
     step: "none",
     faces: one("widen-other"),
+    governsKinds: ["chat-account"],
     governs: (c) => resource("chat-account", c.accountId),
   },
   "channel.me.link": {
@@ -1140,6 +1251,7 @@ export const commandTable: CommandTable = {
     scope: "other-connection",
     step: "none",
     faces: one("identity"),
+    governsKinds: ["chat-account"],
     governs: (c) => resource("chat-account", c.accountId),
   },
 
@@ -1150,6 +1262,7 @@ export const commandTable: CommandTable = {
     step: "B",
     // A browser session goes on after it starts, for the task it was started for (X11).
     faces: one("widen-self", { lineage: true }),
+    governsKinds: ["browser-profile"],
     governs: (c) => ({
       ...resource("browser-profile", "profileId" in c.input ? (c.input.profileId ?? null) : null),
       ...(c.input.threadId ? { task: c.input.threadId } : {}),
@@ -1160,6 +1273,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["browser-session"],
     governs: (c) => resource("browser-session", c.sessionId),
   },
   "browser.profile.create": {
@@ -1167,6 +1281,7 @@ export const commandTable: CommandTable = {
     scope: "new",
     step: "B",
     faces: one("widen-self"),
+    governsKinds: ["browser-profile"],
     governs: () => resource("browser-profile"),
   },
   "browser.profile.rename": {
@@ -1175,6 +1290,7 @@ export const commandTable: CommandTable = {
     step: "A",
     stepFor: { selected: "B" },
     faces: one("preference"),
+    governsKinds: ["browser-profile"],
     governs: (c) => resource("browser-profile", c.profileId),
   },
   "browser.profile.delete": {
@@ -1182,6 +1298,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "A",
     faces: one("destroy"),
+    governsKinds: ["browser-profile"],
     governs: (c) => resource("browser-profile", c.profileId),
   },
   "browser.history.remove": {
@@ -1191,6 +1308,7 @@ export const commandTable: CommandTable = {
     stepFor: { selected: "B" },
     // Removing for good, as the lead decided: a removed history entry cannot be put back.
     faces: one("destroy"),
+    governsKinds: ["browser-profile"],
     governs: (c) => resource("browser-profile", c.profileId),
   },
   "browser.history.clear": {
@@ -1198,6 +1316,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "A",
     faces: one("destroy"),
+    governsKinds: ["browser-profile"],
     governs: (c) => resource("browser-profile", c.profileId),
   },
   "browser.site.remove": {
@@ -1206,6 +1325,7 @@ export const commandTable: CommandTable = {
     step: "A",
     // Removing for good, as the lead decided: a removed site signs the person out and cannot be put back.
     faces: one("destroy"),
+    governsKinds: ["home"],
     governs: home("chrome-sign-ins"),
   },
   "browser.source.pair": {
@@ -1213,6 +1333,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: one("widen-other", { also: "secret" }),
+    governsKinds: ["chrome"],
     governs: () => resource("chrome"),
   },
   "browser.source.rename": {
@@ -1220,6 +1341,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "B",
     faces: one("preference"),
+    governsKinds: ["chrome"],
     governs: (c) => resource("chrome", c.sourceId),
   },
   "browser.source.revoke": {
@@ -1227,6 +1349,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "B",
     faces: one("narrow"),
+    governsKinds: ["chrome"],
     governs: (c) => resource("chrome", c.sourceId),
   },
   "browser.session.sign-in": {
@@ -1234,6 +1357,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "none",
     faces: one("approve"),
+    governsKinds: ["chrome"],
     governs: (c) => resource("chrome", c.sourceId),
   },
   "browser.sign-in.respond": {
@@ -1242,6 +1366,7 @@ export const commandTable: CommandTable = {
     step: "B",
     faces: two({ class: "approve", step: "none" }, { class: "narrow", step: "B" }),
     face: (c) => (c.decision.decision === "allow" ? 0 : 1),
+    governsKinds: ["request"],
     governs: (c) => resource("request", c.requestId),
     answersAsk: { faces: [0], of: (c) => ({ kind: "request", id: c.requestId }) },
   },
@@ -1252,6 +1377,7 @@ export const commandTable: CommandTable = {
     // Releasing a saved login or a card to a page lifts a gate; declining ends the ask.
     faces: two({ class: "approve", step: "none" }, { class: "narrow" }),
     face: (c) => (c.decision.kind === "decline" ? 1 : 0),
+    governsKinds: ["request"],
     governs: (c) => resource("request", c.requestId),
     answersAsk: { faces: [0], of: (c) => ({ kind: "request", id: c.requestId }) },
   },
@@ -1260,6 +1386,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "B",
     faces: one("destroy"),
+    governsKinds: ["device"],
     governs: (c) => resource("device", c.runnerId),
   },
   "browser.pool.notice.seen": {
@@ -1267,6 +1394,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "none",
     faces: [personView],
+    governsKinds: ["home"],
     governs: home("notices"),
   },
 
@@ -1277,6 +1405,7 @@ export const commandTable: CommandTable = {
     step: "A",
     // Today's tab_open refuses below the read-write ceiling (D0a recording, X12).
     faces: one("widen-self", { readWrite: true }),
+    governsKinds: ["browser-profile", "tabs"],
     governs: (c) =>
       c.target.kind === "page" && "profileId" in c.target
         ? resource("browser-profile", c.target.profileId)
@@ -1288,6 +1417,7 @@ export const commandTable: CommandTable = {
     step: "A",
     // A connection closes tabs from Auto up, as it opens them (approved C2 line).
     faces: one("narrow", { readWrite: "connections" }),
+    governsKinds: ["tabs"],
     governs: (c) => ({ ...resource("tabs"), ids: sorted(c.tabIds) }),
   },
   "tab.reopen": {
@@ -1295,6 +1425,8 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "B",
     faces: one("widen-self"),
+    // The last closed tab: it names no tab, so no selected grant reaches it.
+    governsKinds: [],
     governs: (c) => ({ ...resource("tabs"), ...(c.tabId ? { ids: [c.tabId] } : {}) }),
   },
   "tab.activate": {
@@ -1302,6 +1434,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "none",
     faces: [personView],
+    governsKinds: ["tabs"],
     governs: (c) => ({ ...resource("tabs"), ids: [c.tabId] }),
   },
   "tab.organize": {
@@ -1309,6 +1442,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     faces: one("preference"),
+    governsKinds: ["tabs"],
     governs: (c) => ({ ...resource("tabs"), ids: sorted(c.tabIds) }),
   },
   "tab.group.update": {
@@ -1316,6 +1450,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     faces: one("preference"),
+    governsKinds: ["tab-group"],
     governs: (c) => resource("tab-group", c.groupId),
   },
   "tab.group.delete": {
@@ -1323,6 +1458,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "B",
     faces: one("preference"),
+    governsKinds: ["tab-group"],
     governs: (c) => resource("tab-group", c.groupId),
   },
   "app.rename": {
@@ -1330,6 +1466,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "B",
     faces: one("preference"),
+    governsKinds: ["app"],
     governs: (c) => resource("app", c.appId),
   },
   "app.start": {
@@ -1338,6 +1475,7 @@ export const commandTable: CommandTable = {
     step: "A",
     // An app server runs on, in no connection's Disconnect set (X11).
     faces: one("widen-self", { lineage: true }),
+    governsKinds: ["app"],
     governs: (c) => resource("app", c.appId),
   },
   "app.stop": {
@@ -1345,6 +1483,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "A",
     faces: one("narrow"),
+    governsKinds: ["app"],
     governs: (c) => resource("app", c.appId),
   },
   "app.delete": {
@@ -1352,6 +1491,7 @@ export const commandTable: CommandTable = {
     scope: "home",
     step: "A",
     faces: one("destroy"),
+    governsKinds: ["app"],
     governs: (c) => resource("app", c.appId),
   },
 
@@ -1363,6 +1503,7 @@ export const commandTable: CommandTable = {
     // Today's tool requires Full access to create an automation (agent-tools triggers.ts:47).
     // It takes its anchor task's lineage (`trigger-store.ts:2437`), and runs on there (X11).
     faces: one("widen-self", { fullAccess: true, lineage: true }),
+    governsKinds: ["task"],
     governs: (c) => resource("task", c.input.anchorThreadId),
     effect: "database",
   },
@@ -1377,6 +1518,7 @@ export const commandTable: CommandTable = {
       { class: "widen-self", fullAccess: true, lineage: true },
     ],
     face: (c) => (c.input.program !== undefined || c.input.source !== undefined ? 1 : 0),
+    governsKinds: ["automation"],
     governs: (c) => resource("automation", c.triggerId),
     effect: "database",
   },
@@ -1392,6 +1534,7 @@ export const commandTable: CommandTable = {
       { class: "widen-self", lineage: true },
     ],
     face: (c) => (c.status === "paused" ? 0 : c.status === "archived" ? 1 : 2),
+    governsKinds: ["automation"],
     governs: (c) => resource("automation", c.triggerId),
     effect: "database",
   },
@@ -1401,6 +1544,7 @@ export const commandTable: CommandTable = {
     step: "A",
     // The occurrence is recorded as the automation's lineage's (`trigger-store.ts:1879`).
     faces: one("widen-self", { fullAccess: true, lineage: true }),
+    governsKinds: ["automation"],
     governs: (c) => resource("automation", c.triggerId),
     effect: "database",
   },
@@ -1409,6 +1553,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     faces: one("narrow"),
+    governsKinds: ["automation"],
     governs: (c) => resource("automation", c.triggerId),
     effect: "database",
   },
@@ -1445,14 +1590,9 @@ export function commandFaceStep(
  * The kinds of thing a command type can govern, read from its own `governs` (every kind it can
  * name, whichever its input selects): what a listing cut by kind asks a grant about.
  */
+/** The kinds of thing a type governs, as its row declares them. */
 export function commandGovernedKinds(type: CommandType): readonly CommandResourceKind[] {
-  const known = new Set<string>(commandResourceKinds);
-  const source = String((commandTable[type] as CommandRow).governs);
-  const named = [...source.matchAll(/"([a-z-]+)"/gu)].map((match) => match[1]!);
-  // The `task` helper names its kind inside itself.
-  const kinds = new Set(named.filter((name) => known.has(name)));
-  if (/\btask\b/u.test(source) && kinds.size === 0) kinds.add("task");
-  return [...kinds] as CommandResourceKind[];
+  return (commandTable[type] as CommandRow).governsKinds;
 }
 
 export function commandEffect(row: Pick<CommandRow, "effect">): "database" | "outside" {

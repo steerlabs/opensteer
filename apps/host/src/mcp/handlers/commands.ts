@@ -180,6 +180,7 @@ export class CommandTools {
     return agentCommandDoor({
       database: this.#database,
       registry: this.#registry,
+      ...(taskId ? { taskId } : {}),
       ...(requests
         ? {
             propose: async (agent, command, ask, face) => {

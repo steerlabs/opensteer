@@ -289,7 +289,13 @@ export class CommandRequestService {
             // As the connection the door admitted it under (`connection:<id>`), in the approval's
             // own transaction.
             stillAsks: (transaction) =>
-              this.#stillAsks(transaction, actor.userId, connectionId, command),
+              this.#stillAsks(
+                transaction,
+                actor.userId,
+                connectionId,
+                pending.originatingAgentSessionId ?? null,
+                command,
+              ),
           }
         : {}),
       requestId: input.requestId,
@@ -355,12 +361,16 @@ export class CommandRequestService {
     database: Kysely<DatabaseSchema>,
     owner: UserId,
     connectionId: string,
+    sessionId: string | null,
     command: HostApiCommand,
   ): Promise<boolean> {
     try {
+      // As the door admitted it: in its direct session when it asked from one (G2d).
       const admission = await admitCommand(database, {
         ownerUserId: owner,
-        subject: commandSubject(`connection:${connectionId}`),
+        subject: sessionId
+          ? { kind: "binding", bindingId: `session:${sessionId}` }
+          : commandSubject(`connection:${connectionId}`),
         command,
       });
       return admission.answer !== "not_found";

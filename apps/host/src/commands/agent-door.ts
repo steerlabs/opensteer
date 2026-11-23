@@ -48,11 +48,13 @@ export function agentCommandDoor(input: {
   readonly database: Kysely<DatabaseSchema>;
   readonly registry: CommandRegistry;
   readonly propose?: AgentCommandDoor["propose"];
+  /** A connection's direct-session task it named: what it does there is its own work. */
+  readonly taskId?: string;
 }): AgentCommandDoor {
   return {
     registry: input.registry,
-    admit: agentCommandAdmission(input.database),
-    scope: agentCommandScope(input.database),
+    admit: agentCommandAdmission(input.database, input.taskId),
+    scope: agentCommandScope(input.database, input.taskId),
     ...(input.propose ? { propose: input.propose } : {}),
   };
 }

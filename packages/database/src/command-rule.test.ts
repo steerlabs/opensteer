@@ -380,7 +380,7 @@ describe("the command rule, generated from the table", () => {
       d: nowInStepA("d"),
       // b is 19, not the data file's first 21: creating (D1) or changing (D0a) an automation
       // needs Full access, as today's tools say.
-    }).toEqual({ a: 51, b: 19, c: 46, d: 22 });
+    }).toEqual({ a: 51, b: 19, c: 46, d: 23 });
   });
 });
 

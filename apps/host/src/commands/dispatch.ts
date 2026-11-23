@@ -7,6 +7,7 @@ import {
   commandHolds,
   commandNotFoundMessage,
   commandSubject,
+  connectionAdmissionSubject,
   type CommandAdmission,
   type CommandAskReason,
   type CommandHolder,
@@ -86,17 +87,35 @@ export interface AgentCommandDoor extends CommandDoor {
   ) => Promise<CommandProposed>;
 }
 
+/**
+ * The subject an agent is admitted as: a connection as its live direct session when it has one
+ * (the task it names, or its active session), so that task is its own work (G2d); anyone else as
+ * its credential says.
+ */
+function admittedSubject(database: Kysely<DatabaseSchema>, caller: AgentCaller, taskId?: string) {
+  return caller.kind === "connection"
+    ? connectionAdmissionSubject(database, caller.connectionId, taskId)
+    : Promise.resolve(commandSubject(caller.key));
+}
+
 /** What the caller holds, from the one admission's own read of it. */
-export function agentCommandScope(database: Kysely<DatabaseSchema>): AgentCommandDoor["scope"] {
-  return (caller) => commandCallerHolder(database, caller.userId, commandSubject(caller.key));
+export function agentCommandScope(
+  database: Kysely<DatabaseSchema>,
+  taskId?: string,
+): AgentCommandDoor["scope"] {
+  return async (caller) =>
+    commandCallerHolder(database, caller.userId, await admittedSubject(database, caller, taskId));
 }
 
 /** `admitCommand` for an agent the Home authenticated, from its live execution. */
-export function agentCommandAdmission(database: Kysely<DatabaseSchema>): AgentCommandDoor["admit"] {
-  return (caller, command) =>
+export function agentCommandAdmission(
+  database: Kysely<DatabaseSchema>,
+  taskId?: string,
+): AgentCommandDoor["admit"] {
+  return async (caller, command) =>
     admitCommand(database, {
       ownerUserId: caller.userId,
-      subject: commandSubject(caller.key),
+      subject: await admittedSubject(database, caller, taskId),
       command,
     });
 }
