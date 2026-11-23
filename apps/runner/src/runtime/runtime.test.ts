@@ -5442,6 +5442,42 @@ describe("harness process environment", () => {
       USERPROFILE: "C:\\Users\\Ada",
     });
   });
+
+  it("hands the engine the person's proxy and certificates, for every task", () => {
+    const network = {
+      ALL_PROXY: "socks5://proxy.example.test:1080",
+      HTTPS_PROXY: "http://person:fake-proxy-password@proxy.example.test:8080",
+      HTTP_PROXY: "http://proxy.example.test:8080",
+      NODE_EXTRA_CA_CERTS: "/etc/company/ca.pem",
+      NO_PROXY: "localhost,127.0.0.1",
+      SSL_CERT_DIR: "/etc/company/certs",
+      SSL_CERT_FILE: "/etc/company/ca.pem",
+    };
+    expect(
+      harnessProcessEnvironment({ ...network, OPENSTEER_RUNNER_TOKEN: "private" }, [], "darwin"),
+    ).toEqual(network);
+  });
+
+  it("keeps a proxy password out of a Run's recorded failure", async () => {
+    const session = new ScriptedHarnessSession([
+      {
+        data: {
+          code: "engine_error",
+          message: "stream failed via http://person:fake-proxy-password@proxy.example.test:8080",
+          retryable: false,
+          status: "failed",
+        },
+        type: "run.failed",
+      },
+    ]);
+    const failure = (await eventsOfScriptedRun(session)).find(
+      (event) => event.type === "run.failed",
+    )!;
+    expect(JSON.stringify(failure)).not.toContain("fake-proxy-password");
+    expect(failure.data.message).toBe(
+      "stream failed via http://[REDACTED]@proxy.example.test:8080",
+    );
+  });
 });
 
 describe("Runner runtime test waits", () => {

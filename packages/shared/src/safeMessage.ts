@@ -16,3 +16,31 @@ export function safeMessage(error: unknown, options: SafeMessageOptions): string
   }
   return message.slice(0, maximumLength) || options.fallback;
 }
+
+/**
+ * The names that tell an engine how to reach the network: a proxy and the
+ * certificates it trusts. They come from the person's login shell so an engine
+ * works behind a company proxy as it does in their own terminal.
+ */
+export const networkEnvironmentNames = [
+  "ALL_PROXY",
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NODE_EXTRA_CA_CERTS",
+  "NO_PROXY",
+  "SSL_CERT_DIR",
+  "SSL_CERT_FILE",
+] as const;
+
+/**
+ * A URL's user and password, which a proxy address can carry. Every message an
+ * engine's error, a log line or a Run's failure can show passes this first.
+ */
+export const urlCredentialRedaction = Object.freeze({
+  pattern: /([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/giu,
+  replacement: "$1[REDACTED]@",
+});
+
+export function redactUrlCredentials(text: string): string {
+  return text.replace(urlCredentialRedaction.pattern, urlCredentialRedaction.replacement);
+}

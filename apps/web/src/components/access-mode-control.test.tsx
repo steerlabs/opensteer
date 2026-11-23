@@ -15,7 +15,7 @@ describe("AccessModeControl", () => {
     // Two of the four are refused, and each says so where its description was.
     expect(html.match(/aria-disabled="true"/gu)).toHaveLength(2);
     expect(html.match(/Codex cannot enforce this mode/gu)).toHaveLength(2);
-    expect(html).not.toContain("Auto-approve edits, ask before other actions.");
+    expect(html).not.toContain("Auto-approve edits, ask before other actions");
   });
 
   it("rules nothing out while the engine has not declared its modes", () => {

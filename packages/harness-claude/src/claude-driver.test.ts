@@ -5263,6 +5263,38 @@ describe("whose configuration Claude Code starts with", () => {
   });
 });
 
+describe("how Claude Code reaches the network", () => {
+  it("hands Claude Code the proxy and certificates and keeps a proxy password out of its errors", async () => {
+    const proxy = "http://person:fake-proxy-password@proxy.example.test:8080";
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        yield initMessage(providerSessionId(parameters.options));
+        throw new Error(`API connection failed through ${proxy}`);
+      }),
+    );
+    const fixture = await openSession(sdk, {
+      environment: {
+        HTTPS_PROXY: proxy,
+        NODE_EXTRA_CA_CERTS: "/etc/company/ca.pem",
+        NO_PROXY: "localhost",
+      },
+    });
+    const observer = observe(fixture.session.events);
+    await send(fixture.session, "Hello").catch(() => undefined);
+    await fixture.session.stop();
+    await observer.done;
+    expect(sdk.calls[0]!.options.env).toMatchObject({
+      HTTPS_PROXY: proxy,
+      NODE_EXTRA_CA_CERTS: "/etc/company/ca.pem",
+      NO_PROXY: "localhost",
+    });
+    const failure = observer.events.find((event) => event.type === "run.failed");
+    expect(failure).toBeDefined();
+    expect(JSON.stringify(observer.events)).not.toContain("fake-proxy-password");
+    await fixture.adapter.close();
+  });
+});
+
 describe("the mode guard for Claude Code's own configuration", () => {
   const workspace = "/agent-home";
   const decide = async (
@@ -5294,7 +5326,7 @@ describe("the mode guard for Claude Code's own configuration", () => {
   };
 
   it("asks in Supervised before anything that acts, whatever the person's settings allow", async () => {
-    for (const tool of ["Bash", "Edit", "Write", "WebFetch", "Monitor", "mcp__person__send"]) {
+    for (const tool of ["Bash", "Edit", "Write", "WebFetch", "Monitor"]) {
       expect(await decide("approval-required", tool, { file_path: "/agent-home/a" })).toBe("ask");
     }
     for (const tool of ["Read", "Grep", "WebSearch", "TodoWrite", "Agent", "Skill"]) {
@@ -5302,11 +5334,11 @@ describe("the mode guard for Claude Code's own configuration", () => {
     }
   });
 
-  it("lets only Opensteer's own server through, never a server of the person's named like it", async () => {
+  it("leaves MCP tools to Claude Code's own mode and the person's settings", async () => {
     const own = { mcp_server: { name: "opensteer", source: "dynamic" } };
-    const person = { mcp_server: { name: "opensteer", source: "user" } };
+    const person = { mcp_server: { name: "calendar", source: "user" } };
     expect(await decide("approval-required", "mcp__opensteer__task_read", {}, own)).toBeUndefined();
-    expect(await decide("approval-required", "mcp__opensteer__task_read", {}, person)).toBe("ask");
+    expect(await decide("approval-required", "mcp__calendar__create", {}, person)).toBeUndefined();
   });
 
   it("accepts edits inside the task's folders in Auto-accept edits and asks for the rest", async () => {

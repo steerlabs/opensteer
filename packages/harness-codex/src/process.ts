@@ -1,5 +1,5 @@
 import { supervisedExitCode } from "@opensteer/shared/processControl";
-import { safeMessage } from "@opensteer/shared/safeMessage";
+import { safeMessage, urlCredentialRedaction } from "@opensteer/shared/safeMessage";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { delay } from "@opensteer/shared/delay";
@@ -435,8 +435,9 @@ export class CodexStdioClient {
   }
 }
 
+// A proxy address can carry a password.
 const credentialNamePattern =
-  /(?:API_KEY|ACCESS_KEY|AUTHORIZATION|COOKIE|CREDENTIAL|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)/iu;
+  /(?:API_KEY|ACCESS_KEY|AUTHORIZATION|COOKIE|CREDENTIAL|PASSWORD|PRIVATE_KEY|PROXY|SECRET|TOKEN)/iu;
 
 const stderrSafeMessageOptions = {
   fallback: "Codex app-server stderr was unavailable",
@@ -444,6 +445,7 @@ const stderrSafeMessageOptions = {
   redactions: [
     { pattern: /Bearer\s+\S+/giu, replacement: "Bearer [REDACTED]" },
     { pattern: /os_secret_[A-Za-z0-9_-]+/gu, replacement: "[OPAQUE_CREDENTIAL]" },
+    urlCredentialRedaction,
   ],
 } as const;
 

@@ -14,6 +14,7 @@ import {
 } from "@opensteer/shared/processSecrets";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { ensurePrivateDirectory } from "@opensteer/shared/privateFiles";
+import { urlCredentialRedaction } from "@opensteer/shared/safeMessage";
 import type { EnvironmentId, RunnerId } from "@opensteer/core";
 import { harnessRuntimeBoundaryForRunner } from "@opensteer/harness";
 import { RunnerBootIdSchema, type RunnerDescriptor } from "@opensteer/protocol";
@@ -572,6 +573,7 @@ if (entryPath && import.meta.url === pathToFileURL(entryPath).href) {
         error: message
           .replace(/Bearer\s+[^\s]+/gi, "Bearer [redacted]")
           .replace(/os_secret_[A-Za-z0-9_-]+/g, "os_secret_[redacted]")
+          .replace(urlCredentialRedaction.pattern, urlCredentialRedaction.replacement)
           .slice(0, 2_000),
         level: "fatal",
         service: "opensteer-runner",

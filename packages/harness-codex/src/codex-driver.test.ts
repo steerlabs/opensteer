@@ -2696,12 +2696,10 @@ describe("Codex app-server harness", () => {
       }
       expect(config.features).toEqual({ multi_agent: false, multi_agent_v2: true });
       expect(config.allow_login_shell).toBe(false);
-      // The person's servers stay on, and in Supervised each of their tools asks.
+      // The person's servers stay on, approved as their own configuration says.
       expect(config).not.toHaveProperty('mcp_servers."company.docs".enabled');
-      expect(config).toMatchObject({
-        'mcp_servers."company.docs".default_tools_approval_mode': "prompt",
-        "mcp_servers.github.default_tools_approval_mode": "prompt",
-      });
+      expect(config).not.toHaveProperty('mcp_servers."company.docs".default_tools_approval_mode');
+      expect(config).not.toHaveProperty("mcp_servers.github.default_tools_approval_mode");
       // Opensteer's own server, exactly as without personal context.
       expect(config).toMatchObject({
         "mcp_servers.opensteer.default_tools_approval_mode": "approve",
@@ -2742,15 +2740,6 @@ describe("Codex app-server harness", () => {
         project_doc_max_bytes: 0,
         web_search: "disabled",
       });
-      await session.stop();
-      await fixture.adapter.close();
-    });
-
-    it("leaves the person's servers' approvals alone in Full access", async () => {
-      const fixture = await setup("ambient-extensions", { personalContext: true });
-      const session = await fixture.adapter.startSession(fixture.context);
-      const { config } = await threadStartOf(fixture);
-      expect(config).not.toHaveProperty("mcp_servers.github.default_tools_approval_mode");
       await session.stop();
       await fixture.adapter.close();
     });

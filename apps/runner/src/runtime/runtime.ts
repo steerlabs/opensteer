@@ -13,7 +13,11 @@ import { appHostingGuide } from "@opensteer/agent-tools";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { hostCommandPlatform } from "@opensteer/shared/command";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
-import { safeMessage } from "@opensteer/shared/safeMessage";
+import {
+  networkEnvironmentNames,
+  redactUrlCredentials,
+  safeMessage,
+} from "@opensteer/shared/safeMessage";
 import { selectEnvironment } from "@opensteer/shared/userEnvironment";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomUUID } from "node:crypto";
@@ -4014,7 +4018,9 @@ export function harnessProcessEnvironment(
         "LC_ALL",
         "LOCALAPPDATA",
         "LOGNAME",
-        "NODE_EXTRA_CA_CERTS",
+        // How the engine reaches the network, for every task: it is transport,
+        // not the person's configuration.
+        ...networkEnvironmentNames,
         "PATH",
         "SHELL",
         "TERM",
@@ -4163,7 +4169,8 @@ function fittedDurableEvent(event: HarnessDurableEvent): HarnessDurableEvent {
         ...event,
         data: {
           ...event.data,
-          message: fittedText(event.data.message, runFailureMessageMaxLength),
+          // An engine's error can quote a proxy address, which can carry a password.
+          message: fittedText(redactUrlCredentials(event.data.message), runFailureMessageMaxLength),
         },
       };
     default:

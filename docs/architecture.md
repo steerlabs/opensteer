@@ -271,8 +271,9 @@ The task's mode wins over the person's settings. Claude Code receives the permis
 command line, and in Supervised and Auto-accept edits an Opensteer PreToolUse hook asks before
 every call the mode would ask for (`claudeModeGuard`): Claude Code asks whenever any hook asks,
 whatever a settings rule, another hook, a skill or an agent file allows. Codex receives the
-approval policy and sandbox on every turn, and in those two modes each tool of the person's own MCP
-servers asks; a command a rule the person set in Codex already allows runs without asking.
+approval policy and sandbox on every turn. What the person's own Codex configuration approves in
+advance (a command rule, an MCP tool's approval) applies in their own task, as it would in their
+terminal.
 
 ## Stop and Disconnect
 

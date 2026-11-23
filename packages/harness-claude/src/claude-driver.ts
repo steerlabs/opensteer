@@ -11,6 +11,7 @@ import { workflowSessionRoot } from "./workflow-transcript.js";
 import { type ClaudeExecutableInspection } from "./executable.js";
 import { claudeSdkProcess } from "./sdk-process.js";
 import { isRecord } from "@opensteer/shared/isRecord";
+import { networkEnvironmentNames, redactUrlCredentials } from "@opensteer/shared/safeMessage";
 import { ClaudeContextMeasurement } from "./context-measurement.js";
 import { mergeEnvironment } from "@opensteer/shared/userEnvironment";
 import { randomUUID } from "node:crypto";
@@ -268,18 +269,11 @@ export function claudeModeGuard(input: {
         if (mode === "auto" || mode === "full-access") return {};
         const tool = hookInput.tool_name;
         if (claudeToolsWithoutEffect.has(tool)) return {};
-        // The Host authorizes every call of its own server against the Run. A
-        // server of the person's that is named `opensteer` is not it: Claude
-        // Code reports where a server's definition came from, and Opensteer's
-        // arrives on the command line (`dynamic`).
-        if (
-          tool.startsWith("mcp__opensteer__") &&
-          (hookInput.mcp_server === undefined ||
-            (hookInput.mcp_server.name === "opensteer" &&
-              hookInput.mcp_server.source === "dynamic"))
-        ) {
-          return {};
-        }
+        // MCP tools are left to Claude Code's own mode and the person's
+        // settings: the Host authorizes every call of Opensteer's server
+        // against the Run, and what the person's settings approve of their own
+        // servers is their answer, given in advance.
+        if (tool.startsWith("mcp__")) return {};
         const pathField = claudeEditTools.get(tool);
         if (
           mode === "auto-accept-edits" &&
@@ -407,23 +401,22 @@ const inheritedEnvironmentKeys = [
   "LANG",
   "LC_ALL",
   "LOGNAME",
-  "NODE_EXTRA_CA_CERTS",
-  "NO_PROXY",
   "PATH",
   "PATHEXT",
   "SHELL",
-  "SSL_CERT_DIR",
-  "SSL_CERT_FILE",
   "SYSTEMROOT",
   "TEMP",
   "TMP",
   "TMPDIR",
   "USER",
   "USERPROFILE",
+  // How the engine reaches the network: a proxy and the certificates it trusts.
+  ...networkEnvironmentNames,
 ] as const;
 
+// A proxy address can carry a password.
 const credentialNamePattern =
-  /(?:API_KEY|AUTH_TOKEN|ACCESS_KEY|SECRET|PASSWORD|PRIVATE_KEY|BEARER_TOKEN|CREDENTIAL)/iu;
+  /(?:API_KEY|AUTH_TOKEN|ACCESS_KEY|SECRET|PASSWORD|PRIVATE_KEY|BEARER_TOKEN|CREDENTIAL|PROXY)/iu;
 
 export function claudeAccessModeConfiguration(accessMode: ThreadAccessMode): {
   readonly allowDangerouslySkipPermissions: boolean;
@@ -4277,6 +4270,7 @@ function sanitizeErrorMessage(
     sanitized = sanitized.split(value).join("[REDACTED]");
   }
   sanitized = sanitized.replace(/os_secret_[A-Za-z0-9_-]+/gu, "[OPAQUE_CREDENTIAL]");
+  sanitized = redactUrlCredentials(sanitized);
   return clipUtf8(sanitized, maxBytes);
 }
 

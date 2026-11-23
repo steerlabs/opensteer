@@ -4286,25 +4286,10 @@ function codexOwnThreadRuntimeConfig(
     "shell_environment_policy.set": { ...context.commandEnvironment },
     features: { ...features },
   };
-  // In Supervised and Auto-accept edits every tool of the person's own MCP
-  // servers asks, whatever their configuration approves on its own: the
-  // task's mode decides, not a setting made for another use.
-  if (context.accessMode === "approval-required" || context.accessMode === "auto-accept-edits") {
-    const opensteerServers = new Set(codexMcpTools(context.agentTools.tools).keys());
-    for (const [name, value] of Object.entries(configuredMcpServers)) {
-      if (opensteerServers.has(name)) continue;
-      runtimeConfig[codexMcpConfigPath(name, "default_tools_approval_mode")] = "prompt";
-      const tools =
-        typeof value === "object" && value !== null && !Array.isArray(value)
-          ? (value as JsonObject).tools
-          : undefined;
-      if (typeof tools !== "object" || tools === null || Array.isArray(tools)) continue;
-      for (const tool of Object.keys(tools)) {
-        runtimeConfig[codexMcpConfigPath(name, `tools.${codexConfigSegment(tool)}.approval_mode`)] =
-          "prompt";
-      }
-    }
-  }
+  // The person's own MCP servers keep what their configuration says about
+  // approving their tools: in their own task that is their answer, given in
+  // advance. Opensteer sets the turn's mode and adds no prompt on top.
+
   // Codex merges these into a server of the person's with the same name
   // (Opensteer's own connection instructions name one `opensteer`): every
   // field set here wins, and a field only theirs sets stays, since a thread's

@@ -239,6 +239,9 @@ describe("Codex stdio process", () => {
       expect(stderr).toContain("Bearer [REDACTED]");
       expect(stderr).toContain("[OPAQUE_CREDENTIAL]");
       expect(stderr).not.toContain("deployment-secret");
+      // A proxy address the engine prints can carry a password.
+      expect(stderr).not.toContain("fake-proxy-password");
+      expect(stderr).toContain("http://[REDACTED]@proxy.example.test:8080");
       expect(stderr).not.toContain("bearer-secret");
       expect(stderr).not.toContain("os_secret_session");
       expect(stderr).not.toContain("z".repeat(20));

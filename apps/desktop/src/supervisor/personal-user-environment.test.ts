@@ -35,10 +35,17 @@ describe("Personal user environment", () => {
         "OPENSTEER_CLAUDE_EXECUTABLE=/opt/claude/claude",
         "OPENAI_API_KEY=must-not-cross",
         "CUSTOM_SECRET=must-not-cross",
+        "HTTPS_PROXY=http://person:fake-proxy-password@proxy.example.test:8080",
+        "NO_PROXY=localhost",
+        "NODE_EXTRA_CA_CERTS=/etc/company/ca.pem",
         "",
       ].join("\0"),
     );
     expect(parseLoginShellEnvironment(output)).toEqual({
+      // How engines reach the network, as in the person's own terminal.
+      HTTPS_PROXY: "http://person:fake-proxy-password@proxy.example.test:8080",
+      NO_PROXY: "localhost",
+      NODE_EXTRA_CA_CERTS: "/etc/company/ca.pem",
       CODEX_HOME: "/Users/person/.codex",
       OPENSTEER_CLAUDE_EXECUTABLE: "/opt/claude/claude",
       HOME: "/attacker-override",
