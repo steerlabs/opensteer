@@ -161,27 +161,6 @@ describe("HostCommandDispatcher Request responses", () => {
   });
 });
 describe("HostCommandDispatcher steering", () => {
-  it("never sends a message a chat queued before the update", async () => {
-    const runnersDispatch = vi.fn(async () => undefined);
-    const refuseSteer = vi.fn(async () => undefined);
-    const succeedCommand = vi.fn(async () => undefined);
-    const dispatcher = steerDispatcher({ runnersDispatch, refuseSteer, succeedCommand });
-    const command = {
-      ...steerCommand(),
-      authoritySource: {
-        kind: "channel-ingress",
-      },
-    };
-    await dispatcher.dispatch(command, new AbortController().signal);
-    // Refused through the inbox, which cancels the message; it never reaches the Runner.
-    expect(refuseSteer).toHaveBeenCalledWith(
-      command.id,
-      "Messages from before the update are not run.",
-      undefined,
-    );
-    expect(succeedCommand).not.toHaveBeenCalled();
-    expect(runnersDispatch).not.toHaveBeenCalled();
-  });
   it.each([undefined, "request-pending"])(
     "compensates through the Thread Inbox when the Runner refuses steering (%s)",
     async (reason) => {

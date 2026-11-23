@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   commitPersonalMutation,
   threadPendingRequestsCount,
@@ -1038,9 +1039,17 @@ export async function readTask(
   reader: TaskReader,
   threadId: ThreadId,
   ownerId: UserId,
-  options: { readonly lineageConnectionId?: string; readonly nativeOnly?: boolean } = {},
+  options: {
+    readonly lineageConnectionId?: string;
+    readonly nativeOnly?: boolean;
+    /**
+     * Only a task this connection's lineage may change: its own, or the person's. With Everything a
+     * connection reads every task but changes only those, so a change reads any other as missing.
+     */
+    readonly writableBy?: string;
+  } = {},
 ): Promise<Thread | null> {
-  const { lineageConnectionId, nativeOnly } = options;
+  const { lineageConnectionId, nativeOnly, writableBy } = options;
   return withPersonalReadTransaction(database, async (tx) => {
     await requirePersonalOwner(tx, ownerId);
     const row = await tx
@@ -1058,6 +1067,14 @@ export async function readTask(
       .$if(nativeOnly === true, (query) => query.where("threads.worker", "=", "native"))
       .$if(lineageConnectionId !== undefined, (query) =>
         query.where("threads.originConnectionId", "=", lineageConnectionId!),
+      )
+      .$if(writableBy !== undefined, (query) =>
+        query.where((eb) =>
+          eb.or([
+            eb("threads.originConnectionId", "=", writableBy!),
+            eb("threads.originConnectionId", "is", null),
+          ]),
+        ),
       )
       .$if(reader.kind === "work", (query) =>
         query.where(readerSees(reader, sql.ref("threads.origin_connection_id"))),
@@ -1194,7 +1211,8 @@ export async function createThreadInTransaction(
     parentThreadId: input.parentThreadId ?? null,
     purpose,
     status: "idle",
-    title: input.title,
+    // A title may come from a chat's message: it enters clean, as every name from outside.
+    title: outsideName(input.title, 240) || "Task",
     titleSource: input.generateTitle ? "provisional" : "chosen",
     icon: input.icon ?? null,
     iconSource: input.icon ? "chosen" : "provisional",
@@ -1575,6 +1593,9 @@ export async function updateThreadExecutionSelection(
             leaseExpiresAt: null,
             leaseTokenHash: null,
             providerSessionReference: null,
+            // Whether it may use the person's personal context, from its first row: from the
+            // task's lineage, never the column's default until a Run binds it.
+            personalContext: await lineagePersonalContext(transaction, thread.originConnectionId),
             runnerBootId: null,
             runnerId: null,
             status: "starting",
@@ -1866,7 +1887,7 @@ export async function renameThread(
       const row = await transaction
         .updateTable("threads")
         .set({
-          title,
+          title: outsideName(title, 240) || thread.title,
           titleSource: "chosen",
           updatedAt: new Date(),
         })
@@ -2080,7 +2101,7 @@ export async function applyGeneratedThreadName(
           : await transaction
               .updateTable("threads")
               .set({
-                title,
+                title: outsideName(title, 240) || "Task",
                 titleSource: "generated",
                 updatedAt: new Date(),
               })

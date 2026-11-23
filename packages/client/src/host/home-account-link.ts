@@ -1,3 +1,4 @@
+import { homeFailureText } from "./failure-text.js";
 import type { PersonalAccountLinkStatus } from "@opensteer/protocol";
 import type { HostClient } from "./client.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "./host-session-client.js";
@@ -164,5 +165,5 @@ export function homeAccountLinkView(snapshot: HomeAccountLinkSnapshot): HomeAcco
 }
 
 function words(cause: unknown, fallback: string): string {
-  return cause instanceof Error && cause.message ? cause.message : fallback;
+  return homeFailureText(cause, fallback);
 }

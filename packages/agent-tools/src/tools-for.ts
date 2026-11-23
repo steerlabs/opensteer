@@ -159,10 +159,16 @@ export function toolsFor(caller: {
   readonly accessMode: ThreadAccessMode;
   /** The grant of the connection whose lineage this work is in. */
   readonly grant?: AgentGrant;
+  /**
+   * False for work without the person's personal context (a chat anyone in the conversation can
+   * message): it is offered no automation, whose program would run as the person.
+   */
+  readonly personalContext?: boolean;
 }) {
   return (caller.kind === "connection" ? connectedTools : agentTools).filter(
     (tool) =>
       tool.callers.some((kind) => kind === caller.kind) &&
+      (caller.personalContext !== false || !tool.name.startsWith("opensteer_automation_")) &&
       (!("capability" in tool) ||
         !caller.capabilities ||
         caller.capabilities[tool.capability] === true) &&

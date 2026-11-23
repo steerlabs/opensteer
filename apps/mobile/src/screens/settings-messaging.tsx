@@ -1,20 +1,27 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  agentText,
   agentWords,
   chatsOfAccount,
   connectedAgentRow,
   connectionsRead,
   messagingAccountView,
-  messagingComputers,
   mutationIdempotencyKey,
   unwrapRpcResult,
   type HostClient,
 } from "@opensteer/client/host";
-import type { ClientCommandInput } from "@opensteer/client/host";
+import {
+  chatScreenHost,
+  messagingAccountPart,
+  phoneSentence,
+  sentenceWith,
+  type ChatScreenCommand,
+} from "@opensteer/client/host";
 import { Alert } from "react-native";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { Sheet } from "../ui/sheet.js";
+import { readGateSections } from "./read-gate-sections.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 import { useClientRead, useConnectedAgents } from "@opensteer/client/react";
@@ -51,6 +58,8 @@ function Messaging({
 }) {
   const navigation = useNavigation();
   const agents = useConnectedAgents(host);
+  // What this screen sends and reads is what the chat parity script covers.
+  const chatHost = chatScreenHost(host);
   const [shownCode, setShownCode] = useState<{
     readonly accountId: string;
     readonly code: string;
@@ -61,9 +70,9 @@ function Messaging({
       createClientRead(host, {
         key: "channels",
         label: "messaging",
-        read: async () => unwrapRpcResult(await host.rpc["channels.get"]({})),
+        read: async () => unwrapRpcResult(await chatHost.rpc["channels.get"]({})),
       }),
-    [host],
+    [chatHost, host],
   );
   const dashboard = useClientRead(resource);
   // While a code is shown, read again every ten seconds, as the web does, so the account shows
@@ -86,13 +95,26 @@ function Messaging({
   const [providerId, setProvider] = useState<string | null>(null);
   const [repair, setRepair] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
-  const [runnerId, setRunner] = useState("");
+  // The last read of either thing this page shows (its accounts, their chats) failed: what is
+  // shown is the answer before it, never as current, and nothing on it changes anything; one
+  // Try again reads both again (`readGateSections`, the one rule for every phone page drawn from
+  // a read). A sheet open when it fails closes without keeping what it held.
+  const loaded = readLine(dashboard, dashboard.refresh);
+  const readFailed =
+    (loaded !== null && dashboard.data !== null) ||
+    (agents.readFailed && agents.connections !== null);
+  useEffect(() => {
+    if (!readFailed) return;
+    setCredentials({});
+    setProvider(null);
+    setRepair(null);
+  }, [readFailed]);
   const change = useScreenAction(host, "channel-change", {
     label: "save the change",
     done: "saved",
     happened: "the change was saved",
-    execute: async (command: ClientCommandInput) => {
-      const result = (await host.dispatch(command)) as {
+    execute: async (command: ChatScreenCommand) => {
+      const result = (await chatHost.dispatch(command)) as {
         readonly type: string;
         readonly code?: string;
         readonly expiresAt?: string;
@@ -123,14 +145,15 @@ function Messaging({
     done: "checked",
     happened: "the connection was checked",
     execute: async (connectionId: string) =>
-      unwrapRpcResult(await host.rpc["channel.connection.check"]({ connectionId })).ready,
+      unwrapRpcResult(await chatHost.rpc["channel.connection.check"]({ connectionId })).ready,
     reconcile: async (connectionId) => ({
       kind: "confirmed",
-      value: unwrapRpcResult(await host.rpc["channel.connection.check"]({ connectionId })).ready,
+      value: unwrapRpcResult(await chatHost.rpc["channel.connection.check"]({ connectionId }))
+        .ready,
     }),
   });
   const pending = change.running || check.running;
-  const dispatch = (command: ClientCommandInput, section: string) => {
+  const dispatch = (command: ChatScreenCommand, section: string) => {
     if (pending) return;
     setActedOn(section);
     setNote(null);
@@ -184,7 +207,6 @@ function Messaging({
     secure = false,
   ): NativeSettingsRow => ({ key, kind: "input", label, value, onChange, secure });
   const sections: NativeSettingsSection[] = [];
-  const loaded = readLine(dashboard, dashboard.refresh);
   sections.push({
     key: "refresh",
     title: "Messaging",
@@ -202,8 +224,9 @@ function Messaging({
           }))
         : []),
     ],
-    // A read that failed says so in the web's words; a refusal keeps the Home's own.
-    ...(loaded
+    // A read that failed says so in the web's words; a refusal keeps the Home's own. Once the
+    // page was read, the gate below says it with its one Try again.
+    ...(loaded && !readFailed
       ? {
           footer: settingsFooter(
             loaded.tone === "danger"
@@ -219,14 +242,23 @@ function Messaging({
     sections.push({
       key: "providers",
       title: agentWords("messaging.add"),
+      // One rule for every provider: the phone opens a setup only it can finish here (an app's
+      // tokens). One added through a computer (iMessage, on a Mac) says where to add it instead.
       rows: data.providers
         .filter((p) => p.availability === "available")
-        .map((p) =>
-          button(p.provider, p.label, () => {
-            setCredentials({});
-            setRepair(null);
-            setProvider(p.provider);
-          }),
+        .map((p): NativeSettingsRow =>
+          p.connectionMethods.includes("bring-your-own")
+            ? button(p.provider, p.label, () => {
+                setCredentials({});
+                setRepair(null);
+                setProvider(p.provider);
+              })
+            : {
+                key: p.provider,
+                kind: "text",
+                label: p.label,
+                detail: agentWords("messaging.phone.computer", { provider: p.label }),
+              },
         ),
     });
     if (provider) {
@@ -239,27 +271,8 @@ function Messaging({
           field.secret,
         ),
       );
-      const computer = provider.transportKinds.includes("computer");
-      // The Mac a computer provider is set up on; empty when none can do it.
-      let chosen = "";
-      if (computer) {
-        rows.push(
-          text(
-            "how",
-            "Choose the Mac signed into Messages with the bot's Apple account. Once it is connected, link your own iMessage account with a code, then add a chat.",
-          ),
-        );
-        // Which Mac can do it: the web's rule, shared. None says what to do.
-        const eligible = messagingComputers(host.getSnapshot().machines, provider);
-        chosen = eligible.some((m) => m.id === runnerId) ? runnerId : (eligible[0]?.id ?? "");
-        rows.push(
-          ...(eligible.length === 0
-            ? [text("no-mac", agentWords("messaging.computer.none"))]
-            : eligible.map((m) =>
-                button(m.id, `${m.id === chosen ? "✓ " : ""}${m.name}`, () => setRunner(m.id)),
-              )),
-        );
-      }
+      // The phone sets up only an app's tokens (adding one, or replacing them on one that needs
+      // it); an account added through a computer is added and fixed on that computer.
       const connect = button("save", repair ? "Replace credentials" : "Connect", () => {
         const idempotencyKey = mutationIdempotencyKey("channel-connect");
         const section = `setup:${provider.provider}:${repair ?? "new"}`;
@@ -269,16 +282,6 @@ function Messaging({
               type: "channel.connection.credentials.replace",
               connectionId: repair,
               credentials,
-              idempotencyKey,
-            },
-            section,
-          );
-        else if (computer)
-          dispatch(
-            {
-              type: "channel.connection.computer.create",
-              provider: provider.provider,
-              runnerId: chosen,
               idempotencyKey,
             },
             section,
@@ -295,8 +298,7 @@ function Messaging({
             section,
           );
       });
-      // Nothing is sent without a Mac that can do it.
-      rows.push(computer && !repair && chosen === "" ? { ...connect, disabled: true } : connect);
+      rows.push(connect);
       rows.push(
         button("cancel", "Cancel", () => {
           setCredentials({});
@@ -308,8 +310,6 @@ function Messaging({
       const footer = footerFor(section);
       sections.push({ key: section, title: provider.label, rows, ...(footer ? { footer } : {}) });
     }
-    // The last read failed: what is shown is the answer before it.
-    const stale = loaded !== null;
     for (const account of data.accounts) {
       const manifest = data.providers.find((p) => p.provider === account.provider);
       const providerLabel = manifest?.label ?? account.provider;
@@ -363,22 +363,38 @@ function Messaging({
           kind: "text",
           label: agentWords("messaging.me.title", { provider: providerLabel }),
           detail: me
-            ? `${agentWords("messaging.me.linked", { identity: me.displayName })} ${agentWords("messaging.me.replaces", { identity: me.displayName })}`
+            ? phoneSentence([
+                ...sentenceWith(
+                  (slot) => agentWords("messaging.me.linked", { identity: slot("me") }),
+                  { me: { name: me.displayName } },
+                ),
+                " ",
+                ...sentenceWith(
+                  (slot) => agentWords("messaging.me.replaces", { identity: slot("me") }),
+                  { me: { name: me.displayName } },
+                ),
+              ])
             : agentWords("messaging.me.none", { provider: providerLabel }),
         },
         ...(code
           ? [
               text(
                 "code",
-                agentWords("messaging.me.code", {
-                  code: code.code,
-                  account: account.handle ?? account.displayName,
-                  provider: providerLabel,
-                  time: new Date(code.expiresAt).toLocaleTimeString(undefined, {
-                    hour: "numeric",
-                    minute: "2-digit",
-                  }),
-                }),
+                phoneSentence(
+                  sentenceWith(
+                    (slot) =>
+                      agentWords("messaging.me.code", {
+                        code: code.code,
+                        account: slot("account"),
+                        provider: providerLabel,
+                        time: new Date(code.expiresAt).toLocaleTimeString(undefined, {
+                          hour: "numeric",
+                          minute: "2-digit",
+                        }),
+                      }),
+                    { account: messagingAccountPart(account) },
+                  ),
+                ),
               ),
               ...(view?.canResume
                 ? [text("whenResumed", agentWords("messaging.me.whenResumed"))]
@@ -406,7 +422,7 @@ function Messaging({
           agentWords("messaging.remove"),
           () =>
             Alert.alert(
-              agentWords("messaging.remove.title", { account: account.displayName }),
+              agentText("messaging.remove.title", { account: { name: account.displayName } }),
               agentWords("messaging.remove.body"),
               [
                 { text: agentWords("common.cancel"), style: "cancel" },
@@ -432,25 +448,9 @@ function Messaging({
       const footer = footerFor(account.id);
       sections.push({
         key: account.id,
-        title: account.displayName,
-        // A read that failed leaves the last answer on screen, never as current, and offers
-        // nothing to press on it, as the web does.
-        rows: stale
-          ? rows.flatMap((row): NativeSettingsRow[] =>
-              row.key === "status"
-                ? [
-                    {
-                      key: "status",
-                      kind: "status",
-                      tone: "neutral",
-                      label: agentWords("messaging.status.stale"),
-                    },
-                  ]
-                : row.kind === "button"
-                  ? []
-                  : [row],
-            )
-          : rows,
+        // Its handle an address (never cut or hyphenated inside a part), else its name.
+        title: phoneSentence([messagingAccountPart(account)]),
+        rows,
         ...(footer ? { footer } : {}),
       });
       // Only a read answer says an account has no chat.
@@ -479,9 +479,11 @@ function Messaging({
                     key: chat.id,
                     kind: "button",
                     label: chat.label,
-                    detail: connectedAgentRow(chat, {
-                      profiles: host.getSnapshot().browserProfiles,
-                    }).line,
+                    detail: phoneSentence(
+                      connectedAgentRow(chat, {
+                        profiles: host.getSnapshot().browserProfiles,
+                      }).lineParts,
+                    ),
                     opens: true,
                     onPress: () =>
                       navigation.navigate("ConnectedAgent", {
@@ -493,14 +495,25 @@ function Messaging({
       });
     }
   }
-  const setup = sections.filter((section) => section.key.startsWith("setup:"));
+  const drawn = readGateSections(sections, {
+    failed: readFailed,
+    retry: {
+      message: agentWords("messaging.readFailed"),
+      onRetry: () => {
+        dashboard.refresh();
+        void agents.refresh?.();
+      },
+    },
+  }).filter(
+    (section) =>
+      (section.key === "refresh" && !readFailed) || section.rows.length > 0 || section.footer,
+  );
+  const setup = drawn.filter((section) => section.key.startsWith("setup:"));
   return (
     <>
-      <NativeSettingsPage
-        sections={sections.filter((section) => !section.key.startsWith("setup:"))}
-      />
+      <NativeSettingsPage sections={drawn.filter((section) => !section.key.startsWith("setup:"))} />
       <Sheet
-        open={providerId !== null}
+        open={providerId !== null && !readFailed}
         title={
           dashboard.data?.providers.find((provider) => provider.provider === providerId)?.label ??
           "Messaging"
@@ -518,7 +531,7 @@ function Messaging({
 }
 
 /** Whether the messaging settings show a change took: null where they can't tell. */
-function changeSettled(data: Dashboard, command: ClientCommandInput): boolean | null {
+function changeSettled(data: Dashboard, command: ChatScreenCommand): boolean | null {
   switch (command.type) {
     case "channel.connection.status.set": {
       const account = data.accounts.find((row) => row.connectionId === command.connectionId);

@@ -20,6 +20,10 @@ import {
   type PluginChoice,
   type PluginOption,
   type PluginOptions,
+  agentSentence,
+  phoneSentence,
+  type ConnectionModeDescription,
+  type SentencePart,
 } from "@opensteer/client/host";
 import type { AgentOptionsRead } from "@opensteer/client/react";
 import type { WorkPolicy } from "@opensteer/control-plane-protocol";
@@ -38,7 +42,8 @@ import type {
 export type AgentGrantSheet = "browser" | "apps" | "plugins";
 
 export interface AgentGrantContext {
-  readonly agent: string;
+  /** Its name (a `{ name }`), or Opensteer's words for an agent with none. */
+  readonly agent: SentencePart;
   readonly home: string;
   readonly browser: BrowserOptions;
   readonly chromeTabs?: ChromeTabGrantCatalog | undefined;
@@ -107,12 +112,26 @@ export function agentGrantSections(
   const offline = draftNewProfileHome(draft, context.browser);
   const resourcesFooter: NativeSettingsFooter | null =
     shared.length > 0
-      ? { text: agentWords("consent.browser.shareWarning", { agent, profile: shared.join(", ") }) }
+      ? {
+          text: phoneSentence(
+            agentSentence(
+              "consent.browser.shareWarning",
+              { agent },
+              { profile: shared.join(", ") },
+            ),
+          ),
+        }
       : draft.newProfile && offline && !offline.online
-        ? { text: agentWords("consent.edge.noDeviceOnline", { agent, device: offline.name }) }
+        ? {
+            text: phoneSentence(
+              agentSentence("consent.edge.noDeviceOnline", { agent }, { device: offline.name }),
+            ),
+          }
         : draft.tasks || draft.resources.length > 0 || draft.newProfile
           ? null
-          : { text: agentWords("consent.scope.nothingChosen", { agent }) };
+          : {
+              text: phoneSentence(agentSentence("consent.scope.nothingChosen", { agent })),
+            };
   return [
     scope,
     {
@@ -214,9 +233,16 @@ export function agentGrantSections(
   ];
 }
 
+/** A mode's words as the phone draws them, a name from outside as a name. */
+function drawnDescription(description: ConnectionModeDescription): string {
+  return typeof description === "string" ? description : phoneSentence(description);
+}
+
 /** The four safety modes, in the words a connection's mode is chosen by. */
 export function agentModeSection(props: {
   readonly mode: ThreadAccessMode;
+  /** What each mode means for this connection (a chat for anyone has its own). */
+  readonly descriptions?: Readonly<Record<ThreadAccessMode, ConnectionModeDescription>>;
   readonly disabled: boolean;
   readonly onMode: (mode: ThreadAccessMode) => void;
   /** A work Home's effective policy, once the Home reports it; it caps the mode. */
@@ -230,7 +256,9 @@ export function agentModeSection(props: {
       key: option.mode,
       kind: "choice",
       label: option.label,
-      detail: limits.mode(option.mode) ?? connectionModeDescriptions[option.mode],
+      detail:
+        limits.mode(option.mode) ??
+        drawnDescription((props.descriptions ?? connectionModeDescriptions)[option.mode]),
       selected: props.mode === option.mode,
       disabled: props.disabled || (limits.mode(option.mode) !== null && props.mode !== option.mode),
       onPress: () => props.onMode(option.mode),
@@ -277,7 +305,9 @@ export function agentGrantSheetSections(
                 onChange: (on) =>
                   context.onChange(toggleDraftResource(context.draft, option.resource, on)),
               })),
-              footer: { text: agentWords("consent.apps.footer", { agent: context.agent }) },
+              footer: {
+                text: phoneSentence(agentSentence("consent.apps.footer", { agent: context.agent })),
+              },
             },
           ],
     );
@@ -370,7 +400,9 @@ function browserSections(
                   toggleDraftResource(draft, profile.resource, !draftHas(draft, profile.resource)),
                 ),
             })),
-            footer: { text: agentWords("consent.browser.pickerFooter", { agent }) },
+            footer: {
+              text: phoneSentence(agentSentence("consent.browser.pickerFooter", { agent })),
+            },
           },
         ]
       : []),

@@ -1,3 +1,4 @@
+import type { ThreadServiceStore } from "../threads/thread-service.js";
 import { injectTestResource } from "./test-host-api-request.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
@@ -793,6 +794,22 @@ describe("rpc envelope", () => {
         ok: false,
       });
       expect(response.body).not.toContain("hunter2");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("answers a request it cannot read as invalid-request, through its own HTTP mapping", async () => {
+    const app = await machinesServer();
+    try {
+      // A body the declared schema refuses: a person's app never draws what follows.
+      const response = await injectRpcRequest(app, "machines.list", { unexpected: true });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        error: { code: "bad_request", reason: "invalid-request", retryable: false },
+        ok: false,
+      });
+      expect(response.json().error.message).toMatch(/^Request is invalid: /u);
     } finally {
       await app.close();
     }
@@ -2650,6 +2667,7 @@ describe("durable harness catalogs", () => {
         harnessInstanceId,
         id: threadId,
       }),
+      hasAcceptedThreadInput: async () => false,
       // A command on a task reads it through the reader rule (`readTask`), as the real store does.
       readTask: async () => ({
         accessMode: "full-access" as const,
@@ -2689,6 +2707,11 @@ describe("durable harness catalogs", () => {
         window: { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
       }),
     };
+    // A ThreadService runs on this stand-in: it has every method the service reads.
+    const threadStore: {
+      readonly [Name in keyof ThreadServiceStore]: (...args: never[]) => unknown;
+    } = store;
+    void threadStore;
     const authenticateSession = vi.fn(
       async () =>
         ({
@@ -2797,6 +2820,7 @@ describe("durable harness catalogs", () => {
         realtime: testRealtime(),
         runnerAuthenticator: {} as never,
         runners: runners as never,
+        // Cast for the rest of the server; checked below for every method a ThreadService reads.
         store: store as never,
       } satisfies HostServerTestOverrides),
     };

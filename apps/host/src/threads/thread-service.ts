@@ -49,9 +49,23 @@ type Command<K extends HostApiCommand["type"]> = Extract<
     readonly type: K;
   }
 >;
+/**
+ * What a ThreadService reads of the store, and nothing more. A stand-in store implements these
+ * (host.integration.test.ts checks its stand-in against this), so a method the service starts
+ * using fails the typecheck there, not a test run.
+ */
+export type ThreadServiceStore = Pick<
+  OpensteerStore,
+  | "findThreadCreationByIdempotency"
+  | "getEnvironment"
+  | "getHarnessCatalog"
+  | "getHarnessInstance"
+  | "hasAcceptedThreadInput"
+  | "readTask"
+>;
 export class ThreadService {
   readonly options: {
-    readonly store: OpensteerStore;
+    readonly store: ThreadServiceStore;
     readonly commands: CommandService;
     readonly runners: Pick<
       RunnerRegistry,
@@ -72,7 +86,7 @@ export class ThreadService {
     if (!thread)
       throw new OpensteerError({
         code: "not_found",
-        message: "Thread not found",
+        message: "Task not found",
       });
     if (actor.kind !== "person") assertThreadAccess(actor, [thread]);
     return thread;
@@ -104,7 +118,7 @@ export class ThreadService {
     if (command.parentThreadId && !parent) {
       throw new OpensteerError({
         code: "not_found",
-        message: "Parent thread not found",
+        message: "Parent task not found",
       });
     }
     const input = {
@@ -217,7 +231,7 @@ export class ThreadService {
           if (!thread)
             throw new OpensteerError({
               code: "not_found",
-              message: "Thread not found",
+              message: "Task not found",
             });
           await this.options.placeContext.assertIncludable({
             ownerId: actor.userId,

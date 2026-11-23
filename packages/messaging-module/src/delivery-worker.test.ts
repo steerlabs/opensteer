@@ -27,21 +27,6 @@ describe("ChannelDeliveryWorker", () => {
     await worker.close();
   });
 
-  it("never sends again what an earlier attempt may have sent", async () => {
-    const outbound = adapter();
-    const client = host({ claim: claimed({ mayHaveBeenSent: true }) });
-
-    await run(client, outbound);
-
-    expect(outbound.outbound.send).not.toHaveBeenCalled();
-    expect(client.finishDelivery).toHaveBeenCalledWith(
-      expect.objectContaining({
-        error: "An earlier attempt may already have sent this, so it is not sent again.",
-        outcome: "unknown",
-      }),
-    );
-  });
-
   it("clamps a provider's retry delay to what the wire accepts", async () => {
     const outbound = adapter({
       send: vi.fn(async () => {
@@ -143,7 +128,6 @@ function claimed(overrides: Partial<ClaimedChannelDelivery> = {}): ClaimedChanne
       purpose: "delivery",
       secrets: { botToken: "xoxb-test" },
     },
-    mayHaveBeenSent: false,
     provider: "slack",
     ...overrides,
   };

@@ -304,9 +304,6 @@ async function measure(events: number) {
       receipts: await explain(
         sql`select reported_digest from runner_event_receipts where run_id=${run.runId} and ordinal=0 limit 1`,
       ),
-      channelAuthority:
-        await explain(sql`select 1 from thread_inputs where thread_id=${run.threadId}
-        and state in ('pending','claimed','unknown') and authority_source->>'kind'='channel-ingress'`),
       // A Run with no reply is the worst case: nothing stops the scan early.
       runReply:
         await explain(sql`select content,id,sequence from messages where thread_id=${run.threadId}
@@ -327,7 +324,6 @@ async function measure(events: number) {
       // What the placed-count check must catch: a scan that reads every task and returns none.
       fullScan: await explain(sql`select 1 from threads where title = '' limit 1`),
     };
-    expect(JSON.stringify(plans.channelAuthority)).toContain("thread_inputs_channel_authority");
     expect(JSON.stringify(plans.runReply)).toContain("messages_run_sequence");
     expect(JSON.stringify(plans.toolCard)).toContain("transcript_tool_call");
     // With a long history the bounded counts read the owner's partial index, not the table.

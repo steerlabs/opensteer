@@ -1,10 +1,11 @@
 import {
   agentWhoName,
-  agentWhoOriginLine,
+  agentWhoOriginParts,
   agentWithdrawnLine,
   workWords,
   type AgentWho,
 } from "@opensteer/client/host";
+import { SentenceText } from "../../ui/address-text.js";
 import { Icon } from "../icon.js";
 
 /**
@@ -41,11 +42,13 @@ export function AgentWhoLine({
         {who.origins.length ? (
           who.origins.map((origin) => (
             <span className="agent-who__detail" key={origin.role}>
-              {agentWhoOriginLine(origin)}
+              <SentenceText parts={agentWhoOriginParts(origin)} />
             </span>
           ))
         ) : (
-          <span className="agent-who__detail">{who.detail}</span>
+          <span className="agent-who__detail">
+            <SentenceText parts={who.detailParts} />
+          </span>
         )}
       </span>
     </p>

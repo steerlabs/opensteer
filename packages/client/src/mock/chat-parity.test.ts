@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { mutationIdempotencyKey } from "../host/index.js";
 import {
   chatParityChat,
+  chatParityProvider,
   chatParityRefusal,
   chatParityViews,
   type ChatParityAnswer,
@@ -27,6 +28,8 @@ describe("the preview Home answers as the Home does", () => {
       latencyMs: 0,
       channels: record.seed.channels,
       connections: record.seed.connections.map((row) => ({ ...row, userId: person })),
+      // The provider the Home's messaging runtime reached when the script was recorded.
+      messagingProvider: chatParityProvider,
     });
     try {
       const read = async () => {
@@ -35,12 +38,21 @@ describe("the preview Home answers as the Home does", () => {
         if (!channels.ok || !connections.ok) throw new Error("The preview could not be read");
         return { channels: channels.data, connections: connections.data.connections };
       };
+      const stopRuns = new Map<string, string>();
       let current = await read();
       expect(chatParityViews(current.channels, current.connections)).toEqual(record.start);
       const accountIds = new Map(current.channels.accounts.map((row) => [row.displayName, row.id]));
       const connectionIds = new Map(
         current.channels.accounts.map((row) => [row.displayName, row.connectionId]),
       );
+      // A chat by the name the person sees it under, on its account, in the views just read.
+      const chatOf = (account: string, label: string) =>
+        current.connections.find(
+          (row) => row.label === label && row.bridge?.accountName === account,
+        );
+      const connectionOf = (account: string) =>
+        connectionIds.get(account) ?? `con_${crypto.randomUUID()}`;
+      const key = () => mutationIdempotencyKey("parity");
       for (const step of record.steps) {
         const command = step.command;
         let answer: ChatParityAnswer;
@@ -53,7 +65,7 @@ describe("the preview Home answers as the Home does", () => {
               senders: command.senders,
               accessMode: command.accessMode,
               grant: command.grant,
-              idempotencyKey: mutationIdempotencyKey("parity"),
+              idempotencyKey: key(),
             });
             answer = {
               ok: true,
@@ -64,29 +76,110 @@ describe("the preview Home answers as the Home does", () => {
           } else if (command.kind === "account.status") {
             await client.dispatch({
               type: "channel.connection.status.set",
-              connectionId: connectionIds.get(command.account)! as never,
+              connectionId: connectionOf(command.account) as never,
               status: command.status,
-              idempotencyKey: mutationIdempotencyKey("parity"),
+              idempotencyKey: key(),
+            });
+            answer = { ok: true };
+          } else if (command.kind === "task.stop") {
+            const task = chatOf(command.account, command.chat)!.bridge!.tasks!.find(
+              ({ title }) => title === command.task,
+            )!;
+            // What a chat's page sends: Stop of the Run its list names, or of one it named before.
+            if (task.runId) stopRuns.set(command.task, task.runId);
+            const runId = command.run === "listed" ? task.runId : stopRuns.get(command.task);
+            await client.dispatch({
+              type: "run.interrupt",
+              threadId: task.id,
+              runId: runId!,
+              idempotencyKey: key(),
+            } as never);
+            answer = { ok: true };
+          } else if (command.kind === "connection.update") {
+            const chat = chatOf(command.account, command.chat)!;
+            const revision = chat.grantRevision ?? 1;
+            const result = await client.dispatch({
+              type: "connection.update",
+              connectionId: chat.id,
+              expectedRevision: command.revision === "current" ? revision : revision - 1,
+              ...(command.accessMode !== undefined ? { accessMode: command.accessMode } : {}),
+              ...(command.grant !== undefined ? { grant: command.grant } : {}),
+              ...(command.label !== undefined ? { label: command.label } : {}),
+              idempotencyKey: key(),
+            } as never);
+            answer = {
+              ok: true,
+              chat: chatParityChat(
+                (result as { connection: Parameters<typeof chatParityChat>[0] }).connection,
+              ),
+            };
+          } else if (command.kind === "connection.revoke" || command.kind === "connection.remove") {
+            await client.dispatch({
+              type: command.kind,
+              connectionId: chatOf(command.account, command.chat)!.id,
+              idempotencyKey: key(),
+            } as never);
+            answer = { ok: true };
+          } else if (command.kind === "me.link") {
+            await client.dispatch({
+              type: "channel.me.link",
+              accountId: (accountIds.get(command.account) ?? `cha_${crypto.randomUUID()}`) as never,
+              idempotencyKey: key(),
+            });
+            answer = { ok: true };
+          } else if (command.kind === "account.check") {
+            const checked = await client.rpc["channel.connection.check"]({
+              connectionId: connectionOf(command.account) as never,
+            });
+            answer = checked.ok
+              ? { ok: true }
+              : {
+                  ok: false,
+                  code: checked.error.code,
+                  reason: checked.error.reason ?? null,
+                  message: checked.error.message,
+                };
+          } else if (command.kind === "account.create") {
+            await client.dispatch({
+              type: "channel.connection.create",
+              provider: command.provider,
+              routingMode: "dedicated",
+              credentials: { botToken: `xoxb-${command.token}`, appToken: "xapp-parity" },
+              idempotencyKey: key(),
+            });
+            answer = { ok: true };
+          } else if (command.kind === "account.computer.create") {
+            await client.dispatch({
+              type: "channel.connection.computer.create",
+              provider: command.provider,
+              runnerId: `rnr_${crypto.randomUUID()}` as never,
+              idempotencyKey: key(),
             });
             answer = { ok: true };
           } else {
-            const chat = current.connections.find(
-              ({ label, bridge }) =>
-                label === command.chat && bridge?.accountName === command.account,
-            )!;
-            const task = chat.bridge?.tasks?.find(({ title }) => title === command.task);
-            await client.stopRun(task!.id);
+            await client.dispatch({
+              type: "channel.connection.credentials.replace",
+              connectionId: connectionOf(command.account) as never,
+              credentials: { botToken: `xoxb-${command.token}`, appToken: "xapp-parity" },
+              idempotencyKey: key(),
+            });
             answer = { ok: true };
           }
         } catch (error) {
           answer = chatParityRefusal(error);
         }
         current = await read();
-        expect({
-          step: step.name,
-          answer,
-          views: chatParityViews(current.channels, current.connections),
-        }).toEqual({
+        const views = chatParityViews(current.channels, current.connections);
+        if (step.notComparable) {
+          // What can be compared is: the answer's shape (done or refused) and the views after.
+          expect({ step: step.name, ok: answer.ok, views }).toEqual({
+            step: step.name,
+            ok: step.answer.ok,
+            views: step.views,
+          });
+          continue;
+        }
+        expect({ step: step.name, answer, views }).toEqual({
           step: step.name,
           answer: step.answer,
           views: step.views,

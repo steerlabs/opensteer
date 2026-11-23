@@ -1,5 +1,6 @@
 import type { ThreadAccessMode } from "@opensteer/core";
 import { agentConnectionVerificationChangedMessage } from "@opensteer/protocol";
+import { plainSentence, sentenceWith, type SentencePart } from "./sentence-parts.js";
 
 /**
  * Every word Connected agents and agent consent show, by stable id. Web, desktop and
@@ -94,7 +95,7 @@ export const connectedAgentsCopy = {
   "consent.plugins.more": "Only your first plugins are listed here.",
   "consent.tasks.title": "Tasks",
   "consent.tasks.detail":
-    "Lets it ask your own agents to work on {home}: read and change files and run commands there.",
+    "Lets it ask your own agents to work on {home}: read and change files and run commands there. The tasks it starts work in your Agent home. From Auto-accept edits up, they can change files there without asking you, your own agents’ instructions and skills among them.",
   "consent.tasks.warning":
     "This is the most powerful choice. Work it starts can change anything on {home} that your own agents can, inside the safety mode below. Opensteer can stop what happens next, but can’t undo what an agent already did.",
   "consent.safety.title": "Safety mode",
@@ -121,7 +122,6 @@ export const connectedAgentsCopy = {
   "consent.error.denyUnknown": "Couldn’t confirm the request was denied.",
   "consent.error.newProfile": "The new profile couldn’t be created. Try again.",
   "consent.edge.expired.title": "This request expired",
-  "consent.edge.expired.detail": "Start connecting again from {agent}.",
   "consent.edge.expired.detailUnnamed": "Start connecting again from the agent.",
   "consent.edge.answered.title": "Already answered",
   "consent.edge.answered.detail": "You answered this on another device.",
@@ -183,7 +183,7 @@ export const connectedAgentsCopy = {
     "No {provider} account is linked as you yet. Link yours on Messaging; until then, nothing sent here gives this agent work.",
   "chat.speakers.anyone": "Anyone who can write in {conversation}",
   "chat.speakers.anyoneDetail":
-    "Anyone who can write there can give this agent work. Tasks they start run without your personal context.",
+    "Anyone who can write there can give this agent work. Their tasks run without your personal context, in a folder of their own instead of your Agent home. That folder is not a wall: a task can still reach other files on that computer, as far as its safety mode allows.",
   "chat.speakers.fixed":
     "This is chosen when the chat is added and can’t be changed. To change it, disconnect this chat and add it again.",
   "chat.ended.you": "You disconnected it.",
@@ -258,13 +258,14 @@ export const connectedAgentsCopy = {
   "messaging.chat.meDetail": "Messages you send from your linked account.",
   "messaging.chat.anyone": "Anyone in the channel",
   "messaging.chat.anyoneDetail":
-    "Anyone who can write there can give this agent work. Tasks they start run without your personal context.",
+    "Anyone who can write there can give this agent work. Their tasks run without your personal context, in a folder of their own instead of your Agent home. That folder is not a wall: a task can still reach other files on that computer, as far as its safety mode allows.",
   "messaging.chat.fixed":
     "This can’t be changed later; to change it, disconnect the chat and add it again.",
   "messaging.chat.grant": "It starts with Tasks only. Choose what else it can use on its page.",
   "messaging.chat.create": "Add chat",
   "messaging.chat.creating": "Adding…",
   "messaging.chat.cancel": "Cancel",
+  "messaging.phone.computer": "Add {provider} from Opensteer on the Mac it will use.",
   "messaging.phone":
     "Add a chat from Opensteer on your computer: there you choose where it listens and who can give it work. Here you can see each chat, pause or resume its account, stop its work and disconnect it.",
   "agent.watch": "Watch",
@@ -285,7 +286,7 @@ export const connectedAgentsCopy = {
   "agent.about.says": "Calls itself",
   "agent.about.origin": "Address it uses",
   "agent.about.originUnknown": "Not proven",
-  "agent.about.connected": "Connected",
+  "agent.about.connected": "Added",
   "agent.about.expires": "Expires",
   "agent.legacy":
     "Update Opensteer on your Home to choose what this agent can use. Until then it can do everything your own agents can.",
@@ -331,13 +332,91 @@ export function agentWords(
 }
 
 /**
- * How the safety mode reads where a connection's mode is chosen. Task composers keep
- * `accessModeOptions`; these say what the mode means for an agent's own direct actions too.
- * Auto-accept edits behaves like Supervised for those.
+ * A copy sentence with values from outside Opensteer in it as parts: each name someone else gave
+ * (an agent's, an account's, a conversation's) a `{ name }`, drawn as a name and never as
+ * Opensteer's words (`SentenceText`, `phoneSentence`). A value that is Opensteer's own words
+ * ("This connected agent") is a plain string, as in any `SentencePart`. `values` are Opensteer's
+ * own too (a count, a device's name the person gave on this Home, a provider's label).
+ */
+export function agentSentence(
+  id: ConnectedAgentsCopyId,
+  outside: Readonly<Record<string, SentencePart>>,
+  values: Readonly<Record<string, string | number>> = {},
+): readonly SentencePart[] {
+  const words: Record<string, string | number> = { ...values };
+  const parts: Record<string, { readonly name: string } | { readonly address: string }> = {};
+  for (const [key, part] of Object.entries(outside))
+    if (typeof part === "string") words[key] = part;
+    else parts[key] = part;
+  return sentenceWith(
+    (slot) =>
+      agentWords(id, {
+        ...words,
+        ...Object.fromEntries(Object.keys(parts).map((key) => [key, slot(key)])),
+      }),
+    parts,
+  );
+}
+
+/** The same as plain text, for a title, an alert or a label: each name cleaned and quoted. */
+export function agentText(
+  id: ConnectedAgentsCopyId,
+  outside: Readonly<Record<string, SentencePart>>,
+  values: Readonly<Record<string, string | number>> = {},
+): string {
+  return plainSentence(agentSentence(id, outside, values));
+}
+
+/**
+ * How the safety mode reads where a connection's mode is chosen: for a connected agent, and for
+ * a chat that answers only you, whose tasks work in your Agent home. Task composers keep
+ * `accessModeOptions`. A safety check is the engine's own, never Opensteer's.
  */
 export const connectionModeDescriptions: Readonly<Record<ThreadAccessMode, string>> = {
   "approval-required": "Asks you before anything that changes something.",
-  "auto-accept-edits": "Edits files in its tasks without asking. Asks before anything else.",
-  auto: "Opensteer checks each action and asks you when it isn’t sure.",
-  "full-access": "Never asks. Only for an agent you trust completely.",
+  "auto-accept-edits":
+    "Its tasks edit files in their own folder without asking, and the engine asks before what it counts as riskier. Its own direct actions ask you before anything that changes something.",
+  auto: "Its tasks run under the engine’s own safety check. Its own direct actions ask you before anything that changes something.",
+  "full-access":
+    "Never asks. It can change anything in your Agent home, and anything else on that computer that your user account can.",
 };
+
+/** A chat has no direct actions: what Auto-accept edits means for the tasks it starts. */
+const chatAutoAcceptEdits =
+  "Edits files in the task’s own folder without asking; the engine asks you before what it counts as riskier.";
+
+/** The same, for a chat that answers only you: its tasks work in your Agent home. */
+export const ownerChatModeDescriptions: Readonly<Record<ThreadAccessMode, string>> = {
+  "approval-required": connectionModeDescriptions["approval-required"],
+  "auto-accept-edits": chatAutoAcceptEdits,
+  auto: "Acts without asking whenever the engine’s own safety check allows it, and can change files in your Agent home.",
+  "full-access": connectionModeDescriptions["full-access"],
+};
+
+/** What a safety mode means for one connection: Opensteer's words, or a sentence with a name. */
+export type ConnectionModeDescription = string | readonly SentencePart[];
+
+/**
+ * The same, for a chat that anyone in a conversation can give work: what each mode lets the
+ * people there have its tasks do. The conversation's name is someone else's, so it is a name
+ * part (`SentenceText`, `phoneSentence`), never words of Opensteer's.
+ */
+export function anyoneChatModeDescriptions(
+  conversation: string,
+): Readonly<Record<ThreadAccessMode, ConnectionModeDescription>> {
+  const name = { name: conversation };
+  return {
+    "approval-required": connectionModeDescriptions["approval-required"],
+    "auto-accept-edits": chatAutoAcceptEdits,
+    auto: [
+      "People in ",
+      name,
+      " can have it act without asking you whenever the engine’s own safety check allows it. That can reach files outside its folder.",
+    ],
+    "full-access": [
+      "Never asks. People in ",
+      name,
+      " can have it do anything on its computer that your user account can.",
+    ],
+  };
+}

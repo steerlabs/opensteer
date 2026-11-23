@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { publishThreadCard } from "./message-visibility.js";
 import { itemView } from "./personal-sync-store.js";
 import { transcriptPreview } from "./transcript-store.js";
@@ -416,7 +417,7 @@ export class AppStore {
       const now = new Date();
       await tx
         .updateTable("apps")
-        .set({ name, latestVersion: version, updatedAt: now })
+        .set({ name: outsideName(name, 160) || "App", latestVersion: version, updatedAt: now })
         .where("id", "=", app.id)
         .execute();
       await tx
@@ -487,7 +488,7 @@ export class AppStore {
       const app = await lockApp(tx, ownerId, appId);
       await tx
         .updateTable("apps")
-        .set({ name: parsed, updatedAt: mutation.state.now })
+        .set({ name: outsideName(parsed, 160) || "App", updatedAt: mutation.state.now })
         .where("id", "=", app.id)
         .execute();
       await tx
@@ -748,7 +749,8 @@ async function createApp(
       computerId: input.computerId,
       threadId: input.scope.threadId,
       runId: input.scope.runId,
-      name: input.name,
+      // An agent names its app: the name enters clean, as every name from outside.
+      name: outsideName(input.name, 160) || "App",
       creationKey: input.creationKey,
       latestVersion: 0,
       createdAt: now,

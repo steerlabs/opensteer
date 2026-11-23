@@ -1,3 +1,4 @@
+import { homeFailureText } from "./failure-text.js";
 import type {
   PersonalRemoteAdministrationIntent,
   PersonalRemoteAdministrationOperation,
@@ -347,9 +348,8 @@ function stepFailureSentence(step: RemoteAccessRunStep, name: string): string {
 
 /** The sentence a failure shows: the Host's or the port's own words, never a raw fault. */
 export function remoteAccessFailureMessage(error: unknown): string {
-  if (error instanceof HostClientRequestError) return error.message;
   if (error instanceof RemoteAccessPortError) return error.message;
-  return somethingWentWrong;
+  return homeFailureText(error, somethingWentWrong);
 }
 
 /** A port failure whose message is already written for a person. */

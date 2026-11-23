@@ -4,7 +4,9 @@ import {
   chromeTabGrantOptions,
   type ChromeTabGrantCatalog,
   agentWords,
+  agentSentence,
   connectionModeDescriptions,
+  type ConnectionModeDescription,
   accessModeOptions,
   draftAppsSummary,
   draftBrowserSummary,
@@ -22,6 +24,7 @@ import {
   type HostClient,
   type PluginChoice,
   type PluginOption,
+  type SentencePart,
 } from "@opensteer/client/host";
 import {
   useAgentAppOptions,
@@ -31,6 +34,7 @@ import {
 import type { WorkPolicy } from "@opensteer/control-plane-protocol";
 import type { ChatGrantShape, ThreadAccessMode } from "@opensteer/core";
 import { Icon } from "../icon.js";
+import { SentenceText } from "../../ui/address-text.js";
 import { SettingsSegmented } from "./primitives.js";
 
 type Disclosure = "browser" | "apps" | "plugins" | null;
@@ -53,7 +57,8 @@ export function AgentGrantEditor({
   workPolicy,
   chat,
 }: {
-  readonly agent: string;
+  /** Its name (a `{ name }`), or Opensteer's words for an agent with none. */
+  readonly agent: SentencePart;
   readonly browser: BrowserOptions;
   readonly chromeTabs?: ChromeTabGrantCatalog | undefined;
   readonly client: HostClient;
@@ -202,7 +207,9 @@ export function AgentGrantEditor({
                               />
                             ))}
                             <p className="settings-footnote">
-                              {agentWords("consent.apps.footer", { agent })}
+                              <SentenceText
+                                parts={agentSentence("consent.apps.footer", { agent })}
+                              />
                             </p>
                           </>
                         )
@@ -297,20 +304,29 @@ export function AgentGrantEditor({
           ) : null}
           {shared.length > 0 ? (
             <p className="settings-footnote agent-grant__caution" role="note">
-              {agentWords("consent.browser.shareWarning", { agent, profile: shared.join(", ") })}
+              <SentenceText
+                parts={agentSentence(
+                  "consent.browser.shareWarning",
+                  { agent },
+                  { profile: shared.join(", ") },
+                )}
+              />
             </p>
           ) : null}
           {draft.newProfile !== null && draftNewProfileHome(draft, browser)?.online === false ? (
             <p className="settings-footnote">
-              {agentWords("consent.edge.noDeviceOnline", {
-                agent,
-                device: draftNewProfileHome(draft, browser)?.name ?? home,
-              })}
+              <SentenceText
+                parts={agentSentence(
+                  "consent.edge.noDeviceOnline",
+                  { agent },
+                  { device: draftNewProfileHome(draft, browser)?.name ?? home },
+                )}
+              />
             </p>
           ) : null}
           {draft.tasks || draft.resources.length > 0 || draft.newProfile ? null : (
             <p className="settings-footnote">
-              {agentWords("consent.scope.nothingChosen", { agent })}
+              <SentenceText parts={agentSentence("consent.scope.nothingChosen", { agent })} />
             </p>
           )}
         </section>
@@ -319,14 +335,22 @@ export function AgentGrantEditor({
   );
 }
 
+/** A mode's words, with a name from outside drawn as a name. */
+function sentenceOrWords(description: ConnectionModeDescription): ReactNode {
+  return typeof description === "string" ? description : <SentenceText parts={description} />;
+}
+
 /** The four safety modes, in the words a connection's mode is chosen by. */
 export function ConnectionModeChoices({
+  descriptions = connectionModeDescriptions,
   disabled,
   mode,
   onChange,
   showSettingsNote,
   workPolicy,
 }: {
+  /** What each mode means for this connection (a chat for anyone has its own). */
+  readonly descriptions?: Readonly<Record<ThreadAccessMode, ConnectionModeDescription>>;
   readonly disabled: boolean;
   readonly mode: ThreadAccessMode;
   readonly onChange: (mode: ThreadAccessMode) => void;
@@ -342,7 +366,7 @@ export function ConnectionModeChoices({
         {accessModeOptions.map((option) => (
           <Choice
             checked={mode === option.mode}
-            detail={connectionModeDescriptions[option.mode]}
+            detail={sentenceOrWords(descriptions[option.mode])}
             key={option.mode}
             label={option.label}
             name="agent-consent-mode"
@@ -369,7 +393,7 @@ function Choice({
   value,
 }: {
   readonly checked: boolean;
-  readonly detail: string;
+  readonly detail: ReactNode;
   readonly label: string;
   readonly name: string;
   readonly onSelect: () => void;
@@ -448,7 +472,8 @@ function BrowserChoices({
   draft,
   onChange,
 }: {
-  readonly agent: string;
+  /** Its name (a `{ name }`), or Opensteer's words for an agent with none. */
+  readonly agent: SentencePart;
   readonly browser: BrowserOptions;
   readonly disabled: boolean;
   readonly draft: AgentGrantDraft;
@@ -536,7 +561,9 @@ function BrowserChoices({
           </span>
         </label>
       ))}
-      <p className="settings-footnote">{agentWords("consent.browser.pickerFooter", { agent })}</p>
+      <p className="settings-footnote">
+        <SentenceText parts={agentSentence("consent.browser.pickerFooter", { agent })} />
+      </p>
     </div>
   );
 }

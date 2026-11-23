@@ -3,21 +3,30 @@ import { failureWords } from "../ui/client-feedback.js";
 import {
   agentBrowserOptions,
   agentHomeName,
+  agentSentence,
+  agentText,
   agentWords,
   workWords,
   chatFacts,
+  chatStopFoundRunEnded,
+  chatTaskStop,
+  chatTasksNow,
   connectedAgentConnected,
   connectionsRead,
   connectedAgentDetail,
+  chatScreenHost,
   createDedicatedProfile,
+  mutationIdempotencyKey,
   chatDraftRefusal,
   draftFromGrant,
   grantFromDraft,
-  agentWhoOriginLine,
+  agentWhoOriginParts,
+  phoneSentence,
   toggleDraftResource,
   sameGrant,
   type AgentGrantDraft,
   type ConnectedAgentDetail,
+  type ChatTaskNow,
   type HostClient,
 } from "@opensteer/client/host";
 import {
@@ -26,6 +35,7 @@ import {
   useChromeTabGrantCatalog,
   useConnectedAgentLive,
   useConnectedAgents,
+  useLiveTasks,
   useWorkPolicy,
 } from "@opensteer/client/react";
 import { type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
@@ -39,6 +49,7 @@ import {
   type AgentGrantSheet,
 } from "./agent-grant-sections.js";
 import { AgentGrantSheetPage } from "./agent-grant-sheet.js";
+import { readGateSections } from "./read-gate-sections.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
@@ -70,7 +81,10 @@ export function ConnectedAgentController(props: {
   const { host, connectionId, deploymentId } = props;
   const navigation = useNavigation();
   const agents = useConnectedAgents(host);
+  // What this screen sends is what the chat parity script covers.
+  const chatHost = chatScreenHost(host);
   const live = useConnectedAgentLive(host, connectionId);
+  const liveTasks = useLiveTasks(host);
   const chromeTabs = useChromeTabGrantCatalog(host, true);
   const workPolicy = useWorkPolicy(host);
   const [sheet, setSheet] = useState<{
@@ -79,9 +93,18 @@ export function ConnectedAgentController(props: {
   } | null>(null);
   const [note, setNote] = useState<"saved" | "profile-failed" | null>(null);
   const [creating, setCreating] = useState(false);
-  // The task whose Stop is in flight: shown as Stopping, and no second Stop is sent meanwhile.
-  const [stopping, setStopping] = useState<string | null>(null);
+  // A Run whose Stop was asked reads Stopping… until the Home says the task no longer runs (its
+  // device answers), never Stop again beside Running, and no second Stop is sent meanwhile; a
+  // Stop the Home refused says why. A later Run of the task is a new Run, with a Stop of its own.
+  const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
   const connection = agents.connections?.find((row) => row.id === connectionId) ?? null;
+  // A chat's tasks as the Home's live task updates say they are now; its list is read again
+  // when one of them moved past it, so a Stop names the Run that is at work.
+  const chatTasks = chatTasksNow(connection?.bridge?.tasks ?? [], liveTasks);
+  const refreshAgents = agents.refresh;
+  useEffect(() => {
+    if (chatTasks.behind !== null) void refreshAgents?.();
+  }, [chatTasks.behind, refreshAgents]);
   const snapshot = host.getSnapshot();
   const names = { profiles: snapshot.browserProfiles };
   const detail =
@@ -96,6 +119,10 @@ export function ConnectedAgentController(props: {
   useEffect(() => {
     if (agent !== null) navigation.setOptions({ title: agent });
   }, [agent, navigation]);
+  // A sheet open when a refresh fails closes without saving what it held.
+  useEffect(() => {
+    if (agents.readFailed) setSheet(null);
+  }, [agents.readFailed]);
   const hasKind = (kind: "computer-app" | "plugin") =>
     detail?.grant.scope === "selected" &&
     detail.grant.resources.some((resource) => resource.kind === kind);
@@ -145,7 +172,7 @@ export function ConnectedAgentController(props: {
   const chatShape = connection.bridge?.grantShape as ChatGrantShape | undefined;
   const context = {
     ...(chatShape ? { chat: chatShape } : {}),
-    agent,
+    agent: { name: agent },
     home: agentHomeName(snapshot),
     chromeTabs,
     browser,
@@ -172,7 +199,7 @@ export function ConnectedAgentController(props: {
     if (draft.scope === "selected" && draft.newProfile) {
       setCreating(true);
       try {
-        created = await createDedicatedProfile(host, {
+        created = await createDedicatedProfile(chatHost, {
           name: agent,
           homeRunnerId: draft.newProfile.homeRunnerId,
         });
@@ -204,21 +231,25 @@ export function ConnectedAgentController(props: {
       void save({ draft: { ...current, scope } });
       return;
     }
-    Alert.alert(agentWords("agent.narrow.title", { agent }), agentWords("agent.narrow.body"), [
-      { text: agentWords("common.cancel"), style: "cancel" },
-      {
-        text: agentWords("agent.narrow.confirm"),
-        onPress: () =>
-          void save({
-            // A chat always holds Tasks: limiting it keeps that (the same draft function).
-            draft: draftFromGrant({ scope: "selected", tasks: false, resources: [] }, chatShape),
-          }),
-      },
-    ]);
+    Alert.alert(
+      agentText("agent.narrow.title", { agent: { name: agent } }),
+      agentWords("agent.narrow.body"),
+      [
+        { text: agentWords("common.cancel"), style: "cancel" },
+        {
+          text: agentWords("agent.narrow.confirm"),
+          onPress: () =>
+            void save({
+              // A chat always holds Tasks: limiting it keeps that (the same draft function).
+              draft: draftFromGrant({ scope: "selected", tasks: false, resources: [] }, chatShape),
+            }),
+        },
+      ],
+    );
   };
   const disconnect = () =>
     Alert.alert(
-      agentWords("agent.disconnect.title", { agent }),
+      agentText("agent.disconnect.title", { agent: { name: agent } }),
       agentWords("agent.disconnect.body"),
       [
         { text: agentWords("common.cancel"), style: "cancel" },
@@ -240,44 +271,63 @@ export function ConnectedAgentController(props: {
   return (
     <>
       <NativeSettingsPage
-        sections={connectedAgentSections({
-          busy,
-          conflict: agents.conflict === connection.id,
-          context,
-          workPolicyRead: workPolicy !== undefined,
-          current,
-          detail,
-          error: agents.error,
-          note,
-          onDisconnect: disconnect,
-          onMode: (mode) => void save({ mode }),
-          onOpen: (which) => setSheet({ which, draft: current }),
-          onRemove: remove,
-          onScope: changeScope,
-          onWatch: (threadId) => navigation.navigate("Thread", { deploymentId, threadId }),
-          onStop: (threadId) => {
-            if (stopping !== null) return;
-            setStopping(threadId);
-            void host
-              .stopRun(threadId)
-              .catch((error: unknown) => {
-                const words = failureWords(error, {
-                  label: "stop this task",
-                  done: "stopped",
-                  happened: "the task was stopped",
+        // A refresh that failed after the page was read: only Try again works until it is read.
+        sections={readGateSections(
+          connectedAgentSections({
+            busy,
+            conflict: agents.conflict === connection.id,
+            context,
+            workPolicyRead: workPolicy !== undefined,
+            current,
+            detail,
+            error: agents.error,
+            note,
+            onDisconnect: disconnect,
+            onMode: (mode) => void save({ mode }),
+            onOpen: (which) => setSheet({ which, draft: current }),
+            onRemove: remove,
+            onScope: changeScope,
+            onWatch: (threadId) => navigation.navigate("Thread", { deploymentId, threadId }),
+            onStop: (task) => {
+              if (stopping.has(task.runId)) return;
+              setStopping((current) => new Set([...current, task.runId]));
+              void chatHost
+                .dispatch(chatTaskStop(task, mutationIdempotencyKey("chat-stop")))
+                .catch((error: unknown) => {
+                  setStopping(
+                    (current) => new Set([...current].filter((run) => run !== task.runId)),
+                  );
+                  // The Run had already ended: read the chat's list again, say nothing.
+                  if (chatStopFoundRunEnded(error)) {
+                    void agents.refresh?.();
+                    return;
+                  }
+                  const words = failureWords(error, {
+                    label: "stop this task",
+                    done: "stopped",
+                    happened: "the task was stopped",
+                  });
+                  if (words !== null) Alert.alert(agentWords("chat.tasks.stop"), words);
                 });
-                if (words !== null) Alert.alert(agentWords("chat.tasks.stop"), words);
-              })
-              .finally(() => setStopping(null));
+            },
+            stopping,
+            chatTasks: chatTasks.tasks,
+            onChromeTab: (resource, on) =>
+              void save({ draft: toggleDraftResource(current, resource, on) }),
+            onTasks: (tasks) => void save({ draft: { ...current, tasks } }),
+            pending,
+          }),
+          {
+            failed: agents.readFailed,
+            retry: {
+              message: agentWords("agent.readFailed"),
+              onRetry: () => void agents.refresh?.(),
+            },
           },
-          stopping,
-          onChromeTab: (resource, on) =>
-            void save({ draft: toggleDraftResource(current, resource, on) }),
-          onTasks: (tasks) => void save({ draft: { ...current, tasks } }),
-          pending,
-        })}
+        )}
       />
-      {sheet === null ? null : (
+      {/* No sheet over a page whose last read failed: it closes without acting. */}
+      {sheet === null || agents.readFailed ? null : (
         <AgentGrantSheetPage
           context={context}
           draft={sheet.draft}
@@ -316,10 +366,12 @@ export function connectedAgentSections(props: {
   readonly onChromeTab: Parameters<typeof agentGrantSections>[0]["onChromeTab"];
   readonly onTasks: (on: boolean) => void;
   readonly onWatch: (threadId: string) => void;
-  /** Stops a chat's running task; one it can't stop says why. */
-  readonly onStop?: (threadId: string) => void;
-  /** The task whose Stop is in flight. */
-  readonly stopping?: string | null;
+  /** Stops the Run a chat's task is doing; one it can't stop says why. */
+  readonly onStop?: (task: ChatTaskNow & { readonly runId: string }) => void;
+  /** The Runs whose Stop was asked: their task reads Stopping… while it still runs them. */
+  readonly stopping?: ReadonlySet<string>;
+  /** A chat's recent tasks as the Home's live task updates say they are now (`chatTasksNow`). */
+  readonly chatTasks?: readonly ChatTaskNow[];
   readonly pending: "revoke" | "update" | "remove" | null;
   /** Under a work Home's ceiling the choices wait for it, so none is offered and then refused. */
   readonly workPolicyRead?: boolean;
@@ -332,13 +384,14 @@ export function connectedAgentSections(props: {
   const active = connectedAgentConnected(detail.row.phase);
   // A chat is a connected agent with two facts of its own: where it listens, who may speak.
   const chat = chatFacts(detail.row.connection, detail.row.phase);
+  const chatTasks = chat ? (props.chatTasks ?? chat.tasks) : [];
   const disconnectRow = (): NativeSettingsRow => ({
     key: "disconnect",
     kind: "button",
     label:
       props.pending === "revoke"
         ? agentWords("agent.disconnecting")
-        : agentWords("agent.disconnect", { agent }),
+        : phoneSentence(agentSentence("agent.disconnect", { agent: { name: agent } })),
     destructive: true,
     disabled: props.busy,
     onPress: props.onDisconnect,
@@ -371,7 +424,7 @@ export function connectedAgentSections(props: {
               ...detail.row.identity.who.origins.map((origin): NativeSettingsRow => ({
                 key: origin.role,
                 kind: "text",
-                label: agentWhoOriginLine(origin),
+                label: phoneSentence(agentWhoOriginParts(origin)),
               })),
             ],
           },
@@ -444,7 +497,7 @@ export function connectedAgentSections(props: {
       {
         key: "chat-where",
         title: agentWords("chat.where.title"),
-        rows: [{ key: "where", kind: "text", label: chat.where }],
+        rows: [{ key: "where", kind: "text", label: phoneSentence(chat.whereParts) }],
       },
       {
         key: "chat-speakers",
@@ -453,8 +506,8 @@ export function connectedAgentSections(props: {
           {
             key: "speakers",
             kind: "text",
-            label: chat.speakers.title,
-            detail: chat.speakers.detail,
+            label: phoneSentence(chat.speakers.titleParts),
+            detail: phoneSentence(chat.speakers.detailParts),
           },
         ],
         footer: { text: chat.fixed },
@@ -463,9 +516,9 @@ export function connectedAgentSections(props: {
         key: "chat-tasks",
         title: agentWords("chat.tasks.title"),
         rows:
-          chat.tasks.length === 0
+          chatTasks.length === 0
             ? [{ key: "none", kind: "text", label: agentWords("chat.tasks.empty") }]
-            : chat.tasks.flatMap((task): NativeSettingsRow[] => [
+            : chatTasks.flatMap((task): NativeSettingsRow[] => [
                 {
                   key: task.id,
                   kind: "button",
@@ -474,18 +527,18 @@ export function connectedAgentSections(props: {
                   opens: true,
                   onPress: () => props.onWatch(task.id),
                 },
-                ...(active && task.running && props.onStop
+                ...(active && task.running && task.runId !== null && props.onStop
                   ? [
                       {
                         key: `${task.id}-stop`,
                         kind: "button" as const,
                         label:
-                          props.stopping === task.id
+                          props.stopping?.has(task.runId) === true
                             ? agentWords("chat.tasks.stopping")
                             : agentWords("chat.tasks.stop"),
                         destructive: true,
-                        disabled: props.busy || (props.stopping ?? null) !== null,
-                        onPress: () => props.onStop?.(task.id),
+                        disabled: props.busy || props.stopping?.has(task.runId) === true,
+                        onPress: () => props.onStop?.({ ...task, runId: task.runId! }),
                       },
                     ]
                   : []),
@@ -530,6 +583,7 @@ export function connectedAgentSections(props: {
       ...grant,
       agentModeSection({
         mode: detail.accessMode,
+        descriptions: detail.modeDescriptions,
         disabled: props.busy,
         onMode: props.onMode,
         workPolicy: props.context.workPolicy,
@@ -542,7 +596,7 @@ export function connectedAgentSections(props: {
         rows: [],
         footer:
           props.note === "saved"
-            ? { text: agentWords("agent.saved", { agent }) }
+            ? { text: phoneSentence(agentSentence("agent.saved", { agent: { name: agent } })) }
             : { text: agentWords("consent.error.newProfile"), tone: "danger" },
       });
   }
@@ -568,7 +622,7 @@ export function connectedAgentSections(props: {
       key: row.label,
       kind: "text",
       label: row.label,
-      detail: row.value,
+      detail: phoneSentence(row.valueParts),
     })),
   });
   if (active && who.withdrawn === null)

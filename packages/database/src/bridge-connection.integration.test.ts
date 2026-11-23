@@ -585,45 +585,6 @@ describeStore('"me" is one identity, enforced by the database', (it) => {
         .execute(),
     ).rejects.toMatchObject({ constraint: "channel_identities_one_me" });
   });
-
-  it("keeps only the most recently used of several identities linked before the update", async ({
-    storeFixture,
-  }) => {
-    const bridge = await storeFixture.createBridgeFixture("one-me-legacy");
-    const { database } = storeFixture;
-    const accountId = bridge.configured.account.id;
-    const owner = await database
-      .selectFrom("channelIdentities")
-      .select("linkedUserId")
-      .where("accountId", "=", accountId)
-      .where("status", "=", "linked")
-      .executeTakeFirstOrThrow();
-    // What the image before this one allowed: the phone and the email address both "me".
-    await sql`drop index channel_identities_one_me`.execute(database);
-    const email = await identity(database, accountId, "owner@example.com");
-    await database
-      .updateTable("channelIdentities")
-      .set({
-        status: "linked",
-        linkedUserId: owner.linkedUserId,
-        updatedAt: new Date(Date.now() + 60_000),
-      })
-      .where("id", "=", email as never)
-      .execute();
-    const { applyBridgeConversion } = await import("./bridge-conversion-migration.js");
-    await applyBridgeConversion(database as never);
-    expect(
-      await database
-        .selectFrom("channelIdentities")
-        .select("externalUserId")
-        .where("accountId", "=", accountId)
-        .where("status", "=", "linked")
-        .execute(),
-    ).toEqual([{ externalUserId: "owner@example.com" }]);
-    const { rows } = await sql<{ indexname: string }>`select indexname from pg_indexes
-      where indexname = 'channel_identities_one_me'`.execute(database);
-    expect(rows).toHaveLength(1);
-  });
 });
 
 /** An identity on the account, as the first message from it makes one. */

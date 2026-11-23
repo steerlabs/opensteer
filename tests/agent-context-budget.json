@@ -40,9 +40,9 @@
   "runPlan.limited-codex.injectedTextBytes": 10047,
   "runPlan.limited-codex.advertisedSchemaBytes": 59557,
   "runPlan.no-personal-context.injectedTextBytes": 7106,
-  "runPlan.no-personal-context.advertisedSchemaBytes": 58202,
+  "runPlan.no-personal-context.advertisedSchemaBytes": 53007,
   "bundledSkills.catalogBytes": 2426,
   "bundledSkills.bodyBytes": 30570,
-  "bundledSkills.referenceBytes": 114848,
+  "bundledSkills.referenceBytes": 115059,
   "bundledSkills.openaiMetadataBytes": 2587
 }

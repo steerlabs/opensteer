@@ -4,13 +4,13 @@ import {
   agentWords,
   messagingComputers,
   mutationIdempotencyKey,
-  type HostClient,
+  type ChatScreenHost,
 } from "@opensteer/client/host";
 import type { MachineSummary } from "@opensteer/protocol";
 import { act, failureWords } from "./use-action.js";
 
 type Created = Extract<
-  Awaited<ReturnType<HostClient["dispatch"]>>,
+  Awaited<ReturnType<ChatScreenHost["dispatch"]>>,
   { readonly type: "channel.connection.computer.create" }
 >;
 
@@ -27,7 +27,7 @@ export function ComputerChannelSetup({
   onCreated,
   provider,
 }: {
-  readonly hostClient: Pick<HostClient, "dispatch">;
+  readonly hostClient: Pick<ChatScreenHost, "dispatch">;
   readonly machines: readonly MachineSummary[];
   readonly onCancel: () => void;
   readonly onCreated: (created: Created) => void;

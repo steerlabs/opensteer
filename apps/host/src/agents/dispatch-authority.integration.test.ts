@@ -6,6 +6,7 @@ import { OpensteerError, type AgentGrant, type ThreadAccessMode } from "@openste
 import {
   AgentConnectionStore,
   ChannelStore,
+  OpensteerStore,
   TriggerStore,
   wakeChatQueues,
 } from "@opensteer/database";
@@ -311,6 +312,63 @@ describeStore("a connected agent's authority at the send", (it) => {
         .where("id", "=", occurrence.id)
         .executeTakeFirstOrThrow(),
     ).toEqual({ status: "running" });
+  });
+
+  it("reads a chat's standing once when its Run is claimed: resumed between two reads, it is never failed", async ({
+    storeFixture,
+  }) => {
+    const { bridgeId, channels, configured, fixture } =
+      await storeFixture.createChannelDeliveryFixture("claim-once");
+    const { database, store } = storeFixture;
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridgeId })
+      .where("id", "=", fixture.thread.id)
+      .execute();
+    const queued = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: fixture.thread.id,
+      content: [{ type: "text", text: "From the chat" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "claim-once",
+    });
+    if (!queued.command) throw new Error("Expected a queued Run");
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+    // Right after the claim's first read of the chat's standing, the chat is resumed (by its
+    // person, on another device). A second read would now see it live, and its "not live, not
+    // waiting" would fail the Run; one read answers "waiting" and the Run is held.
+    const standingReads = new Set<unknown>();
+    let resumed = false;
+    const resume = async () => {
+      await sql`update channel_accounts set status = 'connected' where id = ${configured.account.id}`.execute(
+        database,
+      );
+      await sql`update integration_connections set status = 'connected' where id = ${configured.connection.id}`.execute(
+        database,
+      );
+    };
+    const observed = database.withPlugin({
+      transformQuery: (args) => {
+        const text = JSON.stringify(args.node);
+        if (text.includes('"agent_connections"') && text.includes('"connection_state"'))
+          standingReads.add(args.queryId);
+        return args.node;
+      },
+      transformResult: async (args) => {
+        if (!resumed && standingReads.has(args.queryId)) {
+          resumed = true;
+          await resume();
+        }
+        return args.result;
+      },
+    });
+    const claimed = await new OpensteerStore(observed).claimCommand(
+      queued.command.id,
+      "claim-once",
+    );
+    expect(resumed).toBe(true);
+    expect(claimed?.terminalFailure ?? null).toBeNull();
   });
 
   it("holds a chat's queued Run while the chat is paused, and never fails it for that", async ({
@@ -651,22 +709,29 @@ describeStore("a connected agent's authority at the send", (it) => {
     );
   });
 
-  /** A chat anyone in #team may speak to, and a task one of them started, as the chat. */
-  async function anyoneChat(storeFixture: Fixture, suffix: string) {
+  /**
+   * A chat in #team and a task it started, as the chat. Its automations are made by the chat's
+   * own agent (`actorConnectionId`); one that anyone may speak in can have none.
+   */
+  async function chatWithTask(
+    storeFixture: Fixture,
+    suffix: string,
+    senders: "owner" | "anyone" = "owner",
+  ) {
     const f = await storeFixture.createChannelDeliveryFixture(suffix, { bridge: false });
     const { database, store } = storeFixture;
-    const anyone = await new AgentConnectionStore(database).createBridge({
+    const chat = await new AgentConnectionStore(database).createBridge({
       userId: f.fixture.userId,
       accountId: f.configured.account.id,
       conversation: { id: `C-${suffix}`, name: "#team" },
-      senders: "anyone",
+      senders,
       accessMode: "full-access",
       grant: { scope: "selected", tasks: true, resources: [] },
     });
     const { thread } = await store.createThread({
       authority: {
         kind: "connection",
-        connectionId: anyone.id,
+        connectionId: chat.id,
         userId: f.fixture.userId,
         accessMode: "full-access",
       },
@@ -683,7 +748,7 @@ describeStore("a connected agent's authority at the send", (it) => {
       .set({ capabilities: sql`capabilities || '["automation-script-v1"]'::jsonb` })
       .where("id", "=", f.fixture.runnerId as never)
       .execute();
-    return { ...f, anyone, thread };
+    return { ...f, chat, thread };
   }
   const originOf = async (storeFixture: Fixture, triggerId: string) =>
     (
@@ -701,14 +766,325 @@ describeStore("a connected agent's authority at the send", (it) => {
     },
   } as const;
 
-  for (const who of [
-    "made by the chat's own agent",
-    "made by the person on the chat's task",
-  ] as const)
+  it("refuses an automation in a chat anyone can message: by its agent, by the person on its task, or a new program", async ({
+    storeFixture,
+  }) => {
+    const anyone = await chatWithTask(storeFixture, "auto-anyone", "anyone");
+    const triggers = new TriggerStore(storeFixture.database);
+    const refusal = {
+      code: "forbidden",
+      message: "A chat that anyone in the conversation can message can't have an automation.",
+    };
+    const make = (input: Partial<Parameters<TriggerStore["create"]>[0]>) =>
+      triggers.create({
+        actorThreadId: null,
+        anchorThreadId: anyone.thread.id,
+        createdBy: anyone.fixture.userId,
+        idempotencyKey: `auto-anyone-${crypto.randomUUID()}`,
+        name: "Every minute",
+        ...everyMinute,
+        ...input,
+      });
+    // Its program would run as the person, in their Agent home.
+    await expect(
+      make({ actorConnectionId: anyone.chat.id, actorAccessMode: "full-access" }),
+    ).rejects.toMatchObject(refusal);
+    await expect(make({})).rejects.toMatchObject(refusal);
+    // One of an owner chat whose lineage is then the anyone chat's can't be given a program.
+    const owner = await chatWithTask(storeFixture, "auto-owner");
+    const { trigger, revision } = await triggers.create({
+      actorThreadId: null,
+      actorConnectionId: owner.chat.id,
+      actorAccessMode: "full-access",
+      anchorThreadId: owner.thread.id,
+      createdBy: owner.fixture.userId,
+      idempotencyKey: "auto-owner",
+      name: "Every minute",
+      ...everyMinute,
+    });
+    await storeFixture.database
+      .updateTable("triggers")
+      .set({ originConnectionId: anyone.chat.id })
+      .where("id", "=", trigger.id)
+      .execute();
+    await expect(
+      triggers.update({
+        actorThreadId: null,
+        ownerId: owner.fixture.userId,
+        triggerId: trigger.id,
+        expectedRevisionId: revision.id,
+        program: everyMinute.program,
+      }),
+    ).rejects.toMatchObject(refusal);
+  });
+
+  it("holds a message steered into a paused chat's Run, and returns it to the task's queue if that Run ended meanwhile", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const { channels, configured, fixture, thread } = await chatWithTask(
+      storeFixture,
+      "steer-held",
+    );
+    const first = await store.enqueueThreadInput({
+      threadId: thread.id,
+      requestedBy: fixture.userId,
+      idempotencyKey: "steer-held-first",
+      content: [{ type: "text", text: "Start" }],
+      policy: "queue",
+      source: { kind: "human" },
+    });
+    if (!first.run) throw new Error("Expected a queued Run");
+    await startPersonalQueuedRunFixture(store, first.run.id);
+    const followUp = await store.enqueueThreadInput({
+      threadId: thread.id,
+      requestedBy: fixture.userId,
+      idempotencyKey: "steer-held-follow-up",
+      content: [{ type: "text", text: "One more thing" }],
+      policy: "queue",
+      source: { kind: "human" },
+    });
+    const steer = await store.steerThreadInput({
+      threadId: thread.id,
+      requestedBy: fixture.userId,
+      expectedRunId: first.run.id,
+      messageId: followUp.message.id,
+      idempotencyKey: "steer-held",
+    });
+    if (!steer.command) throw new Error("Expected a pending steer command");
+    const commandId = steer.command.id;
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+    // Paused: held, never failed, its message kept with it.
+    expect(await listed(storeFixture, commandId)).toBe(false);
+    expect(await store.claimCommand(commandId, "steer-held")).toBeNull();
+    const input = () =>
+      database
+        .selectFrom("threadInputs")
+        .select(["state", "policy"])
+        .where("messageId", "=", followUp.message.id)
+        .executeTakeFirstOrThrow();
+    expect((await input()).state).toBe("claimed");
+    // Meanwhile the Run it was for ends; the chat comes back.
+    await database
+      .updateTable("runs")
+      .set({ status: "interrupted", completedAt: new Date() })
+      .where("id", "=", first.run.id)
+      .execute();
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "connected");
+    const claimed = await store.claimCommand(commandId, "steer-held-2");
+    expect(claimed?.terminalFailure).toBeDefined();
+    expect(claimed?.terminalFailure).not.toMatch(/access ended/u);
+    await store.refuseSteer(commandId, claimed!.terminalFailure!);
+    expect(await input()).toEqual({ state: "pending", policy: "queue" });
+  });
+
+  it("refuses at once a person's message to a task whose chat has ended, in a chat's words, and holds it while the chat waits", async ({
+    storeFixture,
+  }) => {
+    const { store } = storeFixture;
+    const send = (thread: string, userId: string, key: string) =>
+      store.enqueueThreadInput({
+        requestedBy: userId as never,
+        threadId: thread as never,
+        content: [{ type: "text", text: key }],
+        source: { kind: "human" },
+        policy: "queue",
+        idempotencyKey: key,
+      });
+    // Paused: the message is the person's, held until the chat is back.
+    const paused = await chatWithTask(storeFixture, "person-paused");
+    await paused.channels.setConnectionStatus(
+      paused.configured.connection.id,
+      paused.fixture.userId,
+      "paused",
+    );
+    await expect(
+      send(paused.thread.id, paused.fixture.userId, "while-paused"),
+    ).resolves.toMatchObject({ disposition: "pending" });
+    // Ended: nothing more goes in, and the person reads why.
+    const ended = await chatWithTask(storeFixture, "person-ended");
+    expect(
+      await new AgentConnectionStore(storeFixture.database).revoke(
+        ended.fixture.userId,
+        ended.chat.id,
+      ),
+    ).toBe(true);
+    await expect(send(ended.thread.id, ended.fixture.userId, "after-end")).rejects.toMatchObject({
+      code: "forbidden",
+      message:
+        "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging.",
+    });
+  });
+
+  it("refuses at once a person's message to a task whose connected agent was disconnected, in its words", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const fixture = await storeFixture.createRunFixture("person-agent-ended");
+    const connections = new AgentConnectionStore(database);
+    const agent = await connections.create({
+      userId: fixture.userId,
+      label: "Test agent",
+      clientName: "Test agent",
+      accessMode: "full-access",
+      grant: { scope: "selected", tasks: true, resources: [] },
+      resource: "https://home.example/mcp",
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await connections.activate(agent.id, "person-agent-ended-hash");
+    const { thread } = await store.createThread({
+      authority: {
+        kind: "connection",
+        connectionId: agent.id,
+        userId: fixture.userId,
+        accessMode: "full-access",
+      },
+      createdBy: fixture.userId,
+      environmentId: fixture.environmentId,
+      harnessInstanceId: fixture.harnessInstance.id,
+      idempotencyKey: "person-agent-ended-task",
+      modelSelection: fixture.thread.modelSelection,
+      title: "The agent's task",
+    });
+    expect(await connections.revoke(fixture.userId, agent.id)).toBe(true);
+    await expect(
+      store.enqueueThreadInput({
+        requestedBy: fixture.userId,
+        threadId: thread.id,
+        content: [{ type: "text", text: "Go on" }],
+        source: { kind: "human" },
+        policy: "queue",
+        idempotencyKey: "person-agent-ended-send",
+      }),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+      message:
+        "This connected agent's access ended, so this task takes no new messages. Start a new task, or reconnect it from Connected agents.",
+    });
+  });
+
+  it("refuses at once to resume, reschedule or edit an automation in a chat anyone can message", async ({
+    storeFixture,
+  }) => {
+    const anyone = await chatWithTask(storeFixture, "change-anyone", "anyone");
+    const owner = await chatWithTask(storeFixture, "change-owner");
+    const triggers = new TriggerStore(storeFixture.database);
+    // Made before such a chat could not have one, and paused: an owner chat's, moved over.
+    const { trigger } = await triggers.create({
+      actorThreadId: null,
+      actorConnectionId: owner.chat.id,
+      actorAccessMode: "full-access",
+      anchorThreadId: owner.thread.id,
+      createdBy: owner.fixture.userId,
+      idempotencyKey: "change-anyone",
+      name: "Every minute",
+      ...everyMinute,
+    });
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: owner.fixture.userId,
+      status: "paused",
+      triggerId: trigger.id,
+    });
+    await storeFixture.database
+      .updateTable("triggers")
+      .set({ originConnectionId: anyone.chat.id })
+      .where("id", "=", trigger.id)
+      .execute();
+    const before = await storeFixture.database
+      .selectFrom("triggers")
+      .select(["status", "nextFireAt", "name", "currentRevisionId"])
+      .where("id", "=", trigger.id)
+      .executeTakeFirstOrThrow();
+    const refusal = {
+      code: "forbidden",
+      message: "A chat that anyone in the conversation can message can't have an automation.",
+    };
+    const base = { actorThreadId: null, ownerId: owner.fixture.userId, triggerId: trigger.id };
+    await expect(triggers.setStatus({ ...base, status: "active" })).rejects.toMatchObject(refusal);
+    await expect(
+      triggers.setNextFire({
+        ...base,
+        nextFireAt: new Date(Date.now() + 3_600_000).toISOString(),
+      }),
+    ).rejects.toMatchObject(refusal);
+    await expect(
+      triggers.update({ ...base, expectedRevisionId: before.currentRevisionId!, name: "Renamed" }),
+    ).rejects.toMatchObject(refusal);
+    // Nothing of it moved; it can still be stopped for good.
+    expect(
+      await storeFixture.database
+        .selectFrom("triggers")
+        .select(["status", "nextFireAt", "name", "currentRevisionId"])
+        .where("id", "=", trigger.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual(before);
+    await expect(triggers.setStatus({ ...base, status: "archived" })).resolves.toMatchObject({
+      status: "archived",
+    });
+  });
+
+  it("launches no automation that already exists in a chat anyone can message, however it fires", async ({
+    storeFixture,
+  }) => {
+    const anyone = await chatWithTask(storeFixture, "existing-anyone", "anyone");
+    const owner = await chatWithTask(storeFixture, "existing-owner");
+    const triggers = new TriggerStore(storeFixture.database);
+    // Made before such a chat could not have one: an owner chat's, moved to the anyone chat.
+    const { trigger } = await triggers.create({
+      actorThreadId: null,
+      actorConnectionId: owner.chat.id,
+      actorAccessMode: "full-access",
+      anchorThreadId: owner.thread.id,
+      createdBy: owner.fixture.userId,
+      idempotencyKey: "existing-anyone",
+      name: "Every minute",
+      ...everyMinute,
+    });
+    await storeFixture.database
+      .updateTable("triggers")
+      .set({ originConnectionId: anyone.chat.id, nextFireAt: new Date(Date.now() - 60_000) })
+      .where("id", "=", trigger.id)
+      .execute();
+    const refusal = {
+      code: "forbidden",
+      message: "A chat that anyone in the conversation can message can't have an automation.",
+    };
+    // Run now: refused, nothing queued.
+    await expect(
+      triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId: owner.fixture.userId,
+        triggerId: trigger.id,
+      }),
+    ).rejects.toMatchObject(refusal);
+    // Due: nothing fires, and it is paused saying why.
+    const claimed = await triggers.claimDueSchedules(new Date());
+    expect(claimed.occurrences).toEqual([]);
+    const row = await storeFixture.database
+      .selectFrom("triggers")
+      .select(["status", "pauseReason"])
+      .where("id", "=", trigger.id)
+      .executeTakeFirstOrThrow();
+    expect(row).toEqual({
+      status: "paused",
+      pauseReason:
+        "Paused because a chat that anyone in the conversation can message can't have an automation.",
+    });
+    expect(
+      await storeFixture.database
+        .selectFrom("triggerOccurrences")
+        .select("id")
+        .where("triggerId", "=", trigger.id)
+        .execute(),
+    ).toEqual([]);
+  });
+
+  for (const who of ["made by the chat's own agent"] as const)
     it(`fires no automation of a paused chat (${who}): no occurrence, no error, still active, and once when it is back`, async ({
       storeFixture,
     }) => {
-      const { anyone, channels, configured, fixture, thread } = await anyoneChat(
+      const { chat, channels, configured, fixture, thread } = await chatWithTask(
         storeFixture,
         `auto-${who === "made by the chat's own agent" ? "agent" : "person"}`,
       );
@@ -717,7 +1093,7 @@ describeStore("a connected agent's authority at the send", (it) => {
       const { trigger } = await triggers.create({
         actorThreadId: null,
         ...(who === "made by the chat's own agent"
-          ? { actorConnectionId: anyone.id, actorAccessMode: "full-access" as const }
+          ? { actorConnectionId: chat.id, actorAccessMode: "full-access" as const }
           : {}),
         anchorThreadId: thread.id,
         createdBy: fixture.userId,
@@ -725,7 +1101,7 @@ describeStore("a connected agent's authority at the send", (it) => {
         name: "Every minute",
         ...everyMinute,
       });
-      expect(await originOf(storeFixture, trigger.id)).toBe(anyone.id);
+      expect(await originOf(storeFixture, trigger.id)).toBe(chat.id);
       const due = (at: number) =>
         database
           .updateTable("triggers")
@@ -797,7 +1173,7 @@ describeStore("a connected agent's authority at the send", (it) => {
   it("skips, never pauses, an automation whose chat started waiting between the due read and its authority", async ({
     storeFixture,
   }) => {
-    const { anyone, channels, configured, fixture, thread } = await anyoneChat(
+    const { chat, channels, configured, fixture, thread } = await chatWithTask(
       storeFixture,
       "auto-race",
     );
@@ -805,13 +1181,15 @@ describeStore("a connected agent's authority at the send", (it) => {
     const triggers = new TriggerStore(database);
     const { trigger } = await triggers.create({
       actorThreadId: null,
+      actorConnectionId: chat.id,
+      actorAccessMode: "full-access",
       anchorThreadId: thread.id,
       createdBy: fixture.userId,
       idempotencyKey: "auto-race",
       name: "Every minute",
       ...everyMinute,
     });
-    expect(await originOf(storeFixture, trigger.id)).toBe(anyone.id);
+    expect(await originOf(storeFixture, trigger.id)).toBe(chat.id);
     const at = new Date(Date.now() - 60_000);
     await database
       .updateTable("triggers")
@@ -848,10 +1226,12 @@ describeStore("a connected agent's authority at the send", (it) => {
 
   /** A chat automation due a minute ago, for a claim whose seams the test forces. */
   async function dueChatAutomation(storeFixture: Fixture, suffix: string) {
-    const chat = await anyoneChat(storeFixture, suffix);
+    const chat = await chatWithTask(storeFixture, suffix);
     const triggers = new TriggerStore(storeFixture.database);
     const { trigger } = await triggers.create({
       actorThreadId: null,
+      actorConnectionId: chat.chat.id,
+      actorAccessMode: "full-access",
       anchorThreadId: chat.thread.id,
       createdBy: chat.fixture.userId,
       idempotencyKey: suffix,
@@ -932,10 +1312,12 @@ describeStore("a connected agent's authority at the send", (it) => {
 
   /** An automation of an "anyone" chat with one tick enqueued while the chat was live. */
   async function liveTick(storeFixture: Fixture, suffix: string) {
-    const chat = await anyoneChat(storeFixture, suffix);
+    const chat = await chatWithTask(storeFixture, suffix);
     const triggers = new TriggerStore(storeFixture.database);
     const { trigger } = await triggers.create({
       actorThreadId: null,
+      actorConnectionId: chat.chat.id,
+      actorAccessMode: "full-access",
       anchorThreadId: chat.thread.id,
       createdBy: chat.fixture.userId,
       idempotencyKey: suffix,
@@ -1064,10 +1446,92 @@ describeStore("a connected agent's authority at the send", (it) => {
     }
   });
 
+  it("holds a tick its one read found paused, even if the chat is back before anything else is read", async ({
+    storeFixture,
+  }) => {
+    const { store } = storeFixture;
+    const { fixture, occurrence, pause, resume } = await liveTick(storeFixture, "tick-race");
+    const claimed = await store.claimCommand(occurrence.commandId, "tick-race");
+    if (!claimed || claimed.terminalFailure) throw new Error("Expected the automation's command");
+    await pause();
+    // The chat is back the moment its standing has been read once.
+    const original = TriggerStore.prototype.loadDispatchContext;
+    const load = vi
+      .spyOn(TriggerStore.prototype, "loadDispatchContext")
+      .mockImplementation(async function (this: TriggerStore, ...input) {
+        try {
+          return await original.apply(this, input);
+        } finally {
+          await resume();
+        }
+      });
+    try {
+      const failure = await dispatcher(
+        storeFixture,
+        fixture.runnerId,
+        { planning: async () => {} },
+        [],
+        [],
+      )
+        .dispatch(claimed.command, new AbortController().signal)
+        .then(
+          () => null,
+          (error: unknown) => error,
+        );
+      expect((failure as { disposition?: string }).disposition).toBe("held");
+    } finally {
+      load.mockRestore();
+    }
+  });
+
+  it("fails, never holds, an automation of a paused chat anyone in the conversation can message", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const { fixture, occurrence } = await liveTick(storeFixture, "tick-anyone");
+    const claimed = await store.claimCommand(occurrence.commandId, "tick-anyone");
+    if (!claimed || claimed.terminalFailure) throw new Error("Expected the automation's command");
+    // Made before such a chat could not have one: moved to a chat anyone can message, then paused.
+    const anyone = await chatWithTask(storeFixture, "tick-anyone-chat", "anyone");
+    await database
+      .updateTable("triggers")
+      .set({ originConnectionId: anyone.chat.id })
+      .where(
+        "id",
+        "=",
+        database
+          .selectFrom("triggerOccurrences")
+          .select("triggerId")
+          .where("id", "=", occurrence.id),
+      )
+      .execute();
+    await anyone.channels.setConnectionStatus(
+      anyone.configured.connection.id,
+      anyone.fixture.userId,
+      "paused",
+    );
+    const failure = await dispatcher(
+      storeFixture,
+      fixture.runnerId,
+      { planning: async () => {} },
+      [],
+      [],
+    )
+      .dispatch(claimed.command, new AbortController().signal)
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(failure).toMatchObject({
+      message: "A chat that anyone in the conversation can message can't have an automation.",
+    });
+    expect((failure as { disposition?: string }).disposition).not.toBe("held");
+  });
+
   it("never turns a dispatch that may have reached the Runner into held, even if the chat is paused meanwhile", async ({
     storeFixture,
   }) => {
-    const { anyone, channels, configured, fixture, thread } = await anyoneChat(
+    const { chat, channels, configured, fixture, thread } = await chatWithTask(
       storeFixture,
       "auto-uncertain",
     );
@@ -1075,13 +1539,15 @@ describeStore("a connected agent's authority at the send", (it) => {
     const triggers = new TriggerStore(database);
     const { trigger } = await triggers.create({
       actorThreadId: null,
+      actorConnectionId: chat.id,
+      actorAccessMode: "full-access",
       anchorThreadId: thread.id,
       createdBy: fixture.userId,
       idempotencyKey: "auto-uncertain",
       name: "Every minute",
       ...everyMinute,
     });
-    expect(await originOf(storeFixture, trigger.id)).toBe(anyone.id);
+    expect(await originOf(storeFixture, trigger.id)).toBe(chat.id);
     const occurrence = await triggers.enqueueManual({
       actorThreadId: null,
       ownerId: fixture.userId,

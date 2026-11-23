@@ -4,7 +4,7 @@ import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutati
 import { executionDate } from "./personal-transaction.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { recordPersonWaited } from "./run-visibility.js";
-import { refreshInputQueue } from "./waiting-inputs.js";
+
 import { recoverLostRunTransaction } from "./run-recovery.js";
 import { lockRunProjectionRows, lockThreadProviderSession } from "./run-projection-locks.js";
 import "./connection.js";
@@ -273,7 +273,6 @@ export async function failRunForRefusedRunnerEvent(
   });
 }
 export async function recoverThreadWorkQueues(database: Kysely<DatabaseSchema>): Promise<void> {
-  await cancelLegacyChatInputs(database);
   const obsolete = await database
     .selectFrom("runs")
     .innerJoin("threadInputs", "threadInputs.messageId", "runs.seedInputId")
@@ -1299,63 +1298,4 @@ function lostExecutionRecovery(facts: {
             status: "failed",
           },
   };
-}
-
-/**
- * Messages a chat queued before the update were admitted by routes that no longer exist; they
- * never run. Each start cancels any still waiting (`pending` only: one whose outcome is unknown
- * may already have been acted on, and stays unknown), a batch per transaction, refreshing their
- * task's queue like any other cancellation. Nothing writes such an input any more.
- */
-export async function cancelLegacyChatInputs(database: Kysely<DatabaseSchema>): Promise<void> {
-  for (;;) {
-    const retired = await commitPersonalMutation(database, async (tx) => {
-      const rows = await tx
-        .selectFrom("threadInputs")
-        .select(["messageId", "threadId"])
-        .where("state", "=", "pending")
-        .where(sql<boolean>`thread_inputs.authority_source->>'kind' = 'channel-ingress'`)
-        .orderBy("messageId")
-        .limit(32)
-        .execute();
-      if (!rows.length) return 0;
-      await tx
-        .selectFrom("threads")
-        .select("id")
-        .where(
-          "id",
-          "in",
-          rows.map(({ threadId }) => threadId),
-        )
-        .orderBy("id")
-        .forNoKeyUpdate()
-        .execute();
-      const waiting = await tx
-        .selectFrom("threadInputs")
-        .select("messageId")
-        .where(
-          "messageId",
-          "in",
-          rows.map(({ messageId }) => messageId),
-        )
-        .where("state", "=", "pending")
-        .orderBy("messageId")
-        .forNoKeyUpdate()
-        .execute();
-      if (!waiting.length) return 0;
-      const cancelled = await tx
-        .updateTable("threadInputs")
-        .set({ state: "cancelled", cancelReason: "channel-access-changed", updatedAt: new Date() })
-        .where(
-          "messageId",
-          "in",
-          waiting.map(({ messageId }) => messageId),
-        )
-        .returning(["threadId", "messageId"])
-        .execute();
-      for (const row of cancelled) await refreshInputQueue(tx, row.threadId, row.messageId);
-      return cancelled.length;
-    });
-    if (!retired) return;
-  }
 }

@@ -14,8 +14,16 @@ import type { AgentConnection } from "@opensteer/protocol";
 import { accessModeOptions } from "./access-modes.js";
 import { agentWho, agentWithdrawnLine, type AgentWho } from "./agent-identity.js";
 import type { ThreadSummary } from "./client.js";
-import { agentWords } from "./connected-agents-copy.js";
-import { chatFacts } from "./chat-view.js";
+import {
+  agentText,
+  agentWords,
+  anyoneChatModeDescriptions,
+  type ConnectionModeDescription,
+  connectionModeDescriptions,
+  ownerChatModeDescriptions,
+} from "./connected-agents-copy.js";
+import { chatAccountPart, chatFacts } from "./chat-view.js";
+import { plainSentence, sentenceWith, siteOrigin, type SentencePart } from "./sentence-parts.js";
 import { formatRelativeTime } from "./thread-list-model.js";
 
 /**
@@ -55,6 +63,8 @@ export interface ConnectedAgentRow {
   readonly uncertain: boolean;
   /** The one line under its name. */
   readonly line: string;
+  /** `line` as parts: a chat's address a part of its own. */
+  readonly lineParts: readonly SentencePart[];
   readonly tone: ConnectedAgentTone;
   /** It has ended, so it may come off the list. */
   readonly removable: boolean;
@@ -135,9 +145,16 @@ export interface ConnectedAgentDetail {
   readonly grant: AgentGrant;
   readonly revision: number;
   readonly accessMode: ThreadAccessMode;
+  /** What each safety mode means for it, where its mode is chosen (web and phone). */
+  readonly modeDescriptions: Readonly<Record<ThreadAccessMode, ConnectionModeDescription>>;
   readonly live: ConnectedAgentLive | null;
   readonly activity: ConnectedAgentActivity;
-  readonly about: readonly { readonly label: string; readonly value: string }[];
+  /** `valueParts`: the value as parts, an address a part of its own when it is one. */
+  readonly about: readonly {
+    readonly label: string;
+    readonly value: string;
+    readonly valueParts: readonly SentencePart[];
+  }[];
 }
 
 /** Names this client can put to granted things without reading anything more. */
@@ -166,21 +183,13 @@ export function connectedAgentIdentity(
   return {
     label,
     clientName: source.clientName,
-    origin: hostOf(redirect),
+    // Where it signed in from is a site a person decides about: its origin, parsed.
+    origin: redirect === null ? null : siteOrigin(redirect),
     local: who.local,
     providerId: who.providerId,
     initial,
     who,
   };
-}
-
-function hostOf(value: string | null): string | null {
-  if (!value) return null;
-  try {
-    return new URL(value).hostname || null;
-  } catch {
-    return null;
-  }
 }
 
 export function connectedAgentPhase(
@@ -256,7 +265,11 @@ function rowLine(
   connection: AgentConnection,
   phase: ConnectedAgentPhase,
   names: GrantNames,
-): { readonly line: string; readonly tone: ConnectedAgentTone } {
+): {
+  readonly line: string;
+  readonly lineParts?: readonly SentencePart[];
+  readonly tone: ConnectedAgentTone;
+} {
   if (phase === "active" || phase === "revoked") {
     if (phase === "revoked") return { line: agentWords("agents.row.stopping"), tone: "neutral" };
     const summary = agentWords("agents.row.summary", {
@@ -264,11 +277,12 @@ function rowLine(
       mode: modeLabel(connection.accessMode),
     });
     // A chat says where it listens first, beside what it can use like any connected agent.
-    const where = connection.bridge ? chatFacts(connection, phase)?.where : undefined;
-    return {
-      line: where ? agentWords("chat.row", { where, summary }) : summary,
-      tone: "neutral",
-    };
+    const where = connection.bridge ? chatFacts(connection, phase)?.whereParts : undefined;
+    if (!where) return { line: summary, tone: "neutral" };
+    const slot = String.fromCharCode(0);
+    const [before = "", after = ""] = agentWords("chat.row", { where: slot, summary }).split(slot);
+    const lineParts = [before, ...where, after].filter((part) => part !== "");
+    return { line: plainSentence(lineParts), lineParts, tone: "neutral" };
   }
   if (phase === "paused") return { line: agentWords("agents.row.paused"), tone: "attention" };
   if (phase === "unknown") return { line: agentWords("agents.row.unknown"), tone: "attention" };
@@ -290,8 +304,12 @@ export function connectedAgentRow(
   const phase = connectedAgentPhase(connection, revoked, now);
   const identity = connectedAgentIdentity(connection, undefined, withdrawnAt);
   const withdrawn = phase === "active" ? agentWithdrawnLine(identity.who) : null;
-  const { line, tone } = withdrawn
-    ? { line: `${withdrawn} ${workWords("who.withdrawnDetail")}`, tone: "attention" as const }
+  const { line, lineParts, tone } = withdrawn
+    ? {
+        line: `${withdrawn} ${workWords("who.withdrawnDetail")}`,
+        lineParts: undefined,
+        tone: "attention" as const,
+      }
     : rowLine(connection, phase, names);
   return {
     id: connection.id,
@@ -299,6 +317,7 @@ export function connectedAgentRow(
     phase,
     uncertain: connection.lastActionUncertain === true,
     line,
+    lineParts: lineParts ?? [line],
     tone,
     removable: phase === "stopped" || phase === "expired",
     connection,
@@ -350,9 +369,12 @@ export function pausedDetail(connection: Pick<AgentConnection, "bridge">): strin
   const by = bridge?.pausedBy;
   const cause =
     by === "needs-attention"
-      ? agentWords("chat.paused.attention", {
-          account: bridge?.accountName ?? bridge?.provider ?? "",
-        })
+      ? plainSentence(
+          sentenceWith(
+            (slot) => agentWords("chat.paused.attention", { account: slot("account") }),
+            { account: chatAccountPart(bridge!) },
+          ),
+        )
       : by === "you"
         ? agentWords("chat.paused.you")
         : agentWords("chat.paused.unknown");
@@ -384,10 +406,19 @@ export function connectedAgentStatus(
   const { connection } = row;
   const agent = row.identity.label;
   const ended = connection.revokedAt ?? null;
+  // A chat's work is the task list its page draws (the Home's `bridge.tasks`): one source, so the
+  // status never says "Not doing anything" above a task it lists as running.
+  const chatWork = connection.bridge?.tasks?.find(({ running }) => running);
+  const working = live ?? (chatWork ? { what: chatWork.title, threadId: chatWork.id } : null);
   switch (row.phase) {
     case "active":
-      return live
-        ? { label: agentWords("agent.status.working"), detail: live.what, tone: "good", steps: [] }
+      return working
+        ? {
+            label: agentWords("agent.status.working"),
+            detail: working.what,
+            tone: "good",
+            steps: [],
+          }
         : {
             label: agentWords("agent.status.idle"),
             detail: usedLine(connection.lastUsedAt, now),
@@ -410,7 +441,7 @@ export function connectedAgentStatus(
       };
     case "revoked":
       return {
-        label: agentWords("disconnect.revoked.label", { agent }),
+        label: agentText("disconnect.revoked.label", { agent: { name: agent } }),
         detail: agentWords("disconnect.revoked.detail", {
           time: formatClock(ended ?? now.toISOString()),
         }),
@@ -424,7 +455,7 @@ export function connectedAgentStatus(
     case "stopping":
       return {
         label: agentWords("disconnect.stopping.label"),
-        detail: agentWords("disconnect.stopping.detailGeneric", { agent }),
+        detail: agentText("disconnect.stopping.detailGeneric", { agent: { name: agent } }),
         tone: "neutral",
         steps: [
           { label: agentWords("disconnect.step.removed"), state: "done" },
@@ -444,10 +475,11 @@ export function connectedAgentStatus(
     case "expired":
       return {
         label: agentWords("disconnect.expired.label"),
-        detail: agentWords("disconnect.expired.detail", {
-          time: connection.expiresAt ? `on ${formatDay(connection.expiresAt)}` : "",
-          agent,
-        }),
+        detail: agentText(
+          "disconnect.expired.detail",
+          { agent: { name: agent } },
+          { time: connection.expiresAt ? `on ${formatDay(connection.expiresAt)}` : "" },
+        ),
         tone: "neutral",
         steps: [],
       };
@@ -478,7 +510,9 @@ export function connectedAgentDetail(
     uncertain: row.uncertain
       ? {
           label: agentWords("disconnect.uncertain.label"),
-          detail: agentWords("disconnect.uncertain.detailGeneric", { agent: identity.label }),
+          detail: agentText("disconnect.uncertain.detailGeneric", {
+            agent: { name: identity.label },
+          }),
         }
       : null,
     legacy,
@@ -489,25 +523,35 @@ export function connectedAgentDetail(
     grant: connectionGrant(connection),
     revision: connection.grantRevision ?? 1,
     accessMode: connection.accessMode,
+    modeDescriptions:
+      connection.bridge?.senders === "anyone"
+        ? anyoneChatModeDescriptions(
+            connection.bridge.conversationName ?? connection.bridge.conversationId ?? "",
+          )
+        : connection.bridge
+          ? ownerChatModeDescriptions
+          : connectionModeDescriptions,
     live,
     activity: options.activity ?? { kind: "unavailable" },
     // What it calls itself and the address it signed in from are facts of an agent that signed
     // in; a chat did neither, so it shows neither.
+    // Each value by what it is: the name it gave itself, the origin it signed in from, a date.
     about: [
       ...(connection.bridge
         ? []
         : [
             ...(identity.clientName !== identity.label
-              ? [{ label: agentWords("agent.about.says"), value: identity.clientName }]
+              ? [aboutRow(agentWords("agent.about.says"), [{ name: identity.clientName }])]
               : []),
-            {
-              label: agentWords("agent.about.origin"),
-              value: identity.origin ?? agentWords("agent.about.originUnknown"),
-            },
+            aboutRow(agentWords("agent.about.origin"), [
+              identity.origin === null
+                ? agentWords("agent.about.originUnknown")
+                : { address: identity.origin },
+            ]),
           ]),
-      { label: agentWords("agent.about.connected"), value: formatDay(connection.createdAt) },
+      aboutRow(agentWords("agent.about.connected"), [formatDay(connection.createdAt)]),
       ...(row.phase === "active" && connection.expiresAt
-        ? [{ label: agentWords("agent.about.expires"), value: formatDay(connection.expiresAt) }]
+        ? [aboutRow(agentWords("agent.about.expires"), [formatDay(connection.expiresAt)])]
         : []),
     ],
   };
@@ -663,4 +707,8 @@ export function sameGrant(left: AgentGrant, right: AgentGrant): boolean {
       )
       .join("|");
   return keyed(left) === keyed(right);
+}
+
+function aboutRow(label: string, valueParts: readonly SentencePart[]) {
+  return { label, value: plainSentence(valueParts), valueParts };
 }

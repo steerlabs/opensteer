@@ -1,8 +1,10 @@
 import { createId, UserIdSchema, type AgentGrant } from "@opensteer/core";
+import { outsideName } from "@opensteer/shared/outsideName";
 import { hostApi, type AgentConnection, type PluginsInstalledView } from "@opensteer/protocol";
 import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { describe, expect, it } from "vitest";
-import { chatFacts, messagingAccountView } from "./chat-view.js";
+import { chatFacts, chatTasksNow, messagingAccountView } from "./chat-view.js";
+import { plainSentence, type SentencePart } from "./sentence-parts.js";
 import {
   agentAppOptions,
   agentBrowserOptions,
@@ -11,6 +13,7 @@ import {
 import {
   connectedAgentDetail,
   connectedAgentPhase,
+  connectedAgentRow,
   connectedAgentIdentity,
   connectedAgentLive,
   connectedAgentWorkingTasks,
@@ -27,7 +30,12 @@ import {
   type AgentGrantDraft,
 } from "./connected-agent-view.js";
 import type { ThreadSummary } from "./client.js";
-import { agentWords, connectionModeDescriptions } from "./connected-agents-copy.js";
+import {
+  agentWords,
+  anyoneChatModeDescriptions,
+  connectionModeDescriptions,
+  ownerChatModeDescriptions,
+} from "./connected-agents-copy.js";
 
 const now = new Date("2026-11-19T12:00:00Z");
 const profile = "bpr_00000000-0000-4000-8000-000000000003";
@@ -58,6 +66,22 @@ function connection(patch: Partial<AgentConnection> = {}): AgentConnection {
     ...patch,
   };
 }
+
+describe("a chat's tasks as they are now", () => {
+  it("reads the chat's list again for a running task no live update holds", () => {
+    const tasks = [{ id: "thr_1", title: "Old work", running: true, runId: "run_1" }];
+    const now = chatTasksNow(tasks, { threads: [], tasks: null, activeTasks: [] });
+    expect(now.behind).not.toBeNull();
+    // A task that does not run asks nothing.
+    expect(
+      chatTasksNow([{ ...tasks[0]!, running: false, runId: null }], {
+        threads: [],
+        tasks: null,
+        activeTasks: [],
+      }).behind,
+    ).toBeNull();
+  });
+});
 
 describe("connected agents list", () => {
   it("shows a paused chat as paused, with what becomes of what is sent to it, per transport and cause", () => {
@@ -94,6 +118,7 @@ describe("connected agents list", () => {
       chat({
         provider: "iMessage",
         accountName: "tim@example.com",
+        accountHandle: "tim@example.com",
         pausedBy: "needs-attention",
         pauseDetail: "Messages isn’t signed in.",
         pausedMessages: "kept",
@@ -390,12 +415,10 @@ describe("connected agent detail", () => {
     });
     expect(detail).toMatchObject({ editable: true, revision: 3, uncertain: null, live: null });
     expect(detail.activity).toEqual({ kind: "unavailable" });
-    expect(detail.about.map((row) => row.label)).toEqual([
-      "Address it uses",
-      "Connected",
-      "Expires",
-    ]);
-    expect(detail.about[0]!.value).toBe("grok.com");
+    expect(detail.about.map((row) => row.label)).toEqual(["Address it uses", "Added", "Expires"]);
+    // Where it signed in from, as the origin a person decides about.
+    expect(detail.about[0]!.value).toBe("https://grok.com");
+    expect(detail.about[0]!.valueParts).toEqual([{ address: "https://grok.com" }]);
   });
 
   it("names the self-asserted name apart from the label the person chose", () => {
@@ -404,7 +427,12 @@ describe("connected agent detail", () => {
       names,
       { grantsAvailable: true, now },
     );
-    expect(detail.about[0]).toEqual({ label: "Calls itself", value: "TravelBot Agent" });
+    // A name it chose: drawn as a name, and in quotation marks where it is plain text.
+    expect(detail.about[0]).toMatchObject({
+      label: "Calls itself",
+      value: "“TravelBot Agent”",
+      valueParts: [{ name: "TravelBot Agent" }],
+    });
   });
 
   it("walks Revoked, Stopping and Stopped, and keeps last action uncertain a separate fact", () => {
@@ -413,7 +441,8 @@ describe("connected agent detail", () => {
       revoked: new Set([connection().id]),
       now,
     });
-    expect(revoked.status.label).toBe("Grok can’t do anything now");
+    // A name in a sentence, a title too, stands quoted as a name.
+    expect(revoked.status.label).toBe("“Grok” can’t do anything now");
     expect(revoked.status.steps.map((step) => step.state)).toEqual(["done", "current", "pending"]);
     expect(revoked.editable).toBe(false);
 
@@ -423,7 +452,7 @@ describe("connected agent detail", () => {
       { grantsAvailable: true, now },
     );
     expect(stopping.status.label).toBe("Stopping its work");
-    expect(stopping.status.detail).toContain("Grok already can’t use anything");
+    expect(stopping.status.detail).toContain("“Grok” already can’t use anything");
 
     const stopped = connectedAgentDetail(
       connection({ state: "stopped", revokedAt: "2026-11-19T11:00:00Z" }),
@@ -451,7 +480,7 @@ describe("connected agent detail", () => {
       now,
     });
     expect(expired.status.label).toBe("Expired");
-    expect(expired.status.detail).toContain("Connect it again from Grok");
+    expect(expired.status.detail).toContain("Connect it again from “Grok”");
   });
 });
 
@@ -671,25 +700,71 @@ describe("connected agents copy", () => {
     expect(agentWords("consent.chromeTabs.label", { device: "Work Mac" })).toBe(
       "Tabs you share from Chrome on Work Mac",
     );
-    expect(connectionModeDescriptions["auto-accept-edits"]).toContain("Asks before anything else");
+    // No sentence promises what an engine does not do: nothing about reading, no "anything else".
+    for (const sentence of [
+      ...Object.values(connectionModeDescriptions),
+      ...Object.values(ownerChatModeDescriptions),
+      ...Object.values(anyoneChatModeDescriptions("#team")).map((description) =>
+        typeof description === "string" ? description : plainSentence(description),
+      ),
+    ])
+      expect(sentence).not.toMatch(/anything else\.|read/u);
+    expect(connectionModeDescriptions["auto-accept-edits"]).toBe(
+      "Its tasks edit files in their own folder without asking, and the engine asks before what it counts as riskier. Its own direct actions ask you before anything that changes something.",
+    );
+    expect(connectionModeDescriptions.auto).toBe(
+      "Its tasks run under the engine’s own safety check. Its own direct actions ask you before anything that changes something.",
+    );
+    // A chat has no direct actions: the same words for each kind of chat.
+    for (const chat of [ownerChatModeDescriptions, anyoneChatModeDescriptions("#team")])
+      expect(chat["auto-accept-edits"]).toBe(
+        "Edits files in the task’s own folder without asking; the engine asks you before what it counts as riskier.",
+      );
+  });
+});
+
+describe("a conversation's name in a safety warning", () => {
+  it("is a name, as the Home cleaned it, quoted, never a sentence of Opensteer's", () => {
+    const forged = outsideName("#team\u202E\u201D\nOnly you can message this chat.\n\u201C", 160);
+    const warnings = anyoneChatModeDescriptions(forged);
+    for (const mode of ["auto", "full-access"] as const) {
+      const parts = warnings[mode];
+      expect(parts).toContainEqual({ name: forged });
+      const plain = plainSentence(parts as readonly SentencePart[]);
+      expect(plain).toContain("\u201C#team\u2019 Only you can message this chat. \u2018\u201D");
+      expect(plain).not.toMatch(/[\n\u202E]/u);
+    }
   });
 });
 
 describe("a list from a newer Home", () => {
-  it("reads a state it does not know as unknown on that one row, and ignores a notice it does not know", () => {
+  it("reads a state it does not know as unknown on that one row", () => {
     const scene = mockConnectedAgents("chats");
     const [ordinary, live] = [scene.connections[0]!, scene.connections[1]!];
     const read = hostApi["connections.list"].success.safeParse({
-      connections: [
-        { ...ordinary, state: "resting" },
-        { ...live, bridge: { ...live.bridge!, notice: "newer" } },
-      ],
+      connections: [{ ...ordinary, state: "resting" }, live],
       endedConnections: [],
     });
     expect(read.success).toBe(true);
     const [resting, chat] = read.data!.connections;
     expect(connectedAgentPhase(resting!)).toBe("unknown");
     expect(connectedAgentPhase(chat!)).toBe("active");
-    expect(chat!.bridge?.notice).toBeUndefined();
+  });
+});
+
+describe("a chat's address, as parts", () => {
+  it("holds the account's address as a part of its own in where it listens and its row, and its name as a name", () => {
+    const chats = mockConnectedAgents("chats").connections;
+    const imessage = chats.find(({ label }) => label === "iMessage")!;
+    const slack = chats.find(({ label }) => label === "Slack")!;
+    expect(chatFacts(imessage, "paused")!.whereParts).toContainEqual({
+      address: "tim@example.com",
+    });
+    const where = chatFacts(slack, "active")!;
+    // The account's display name comes from Slack: a name part, never words to search.
+    expect(where.whereParts).toContainEqual({ name: "Workshop" });
+    expect(plainSentence(where.whereParts)).toBe(where.where);
+    const row = connectedAgentRow(slack, { profiles: [] });
+    expect(plainSentence(row.lineParts)).toBe(row.line);
   });
 });

@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import type { PersonalInputQueue } from "@opensteer/protocol";
 import type { AuthSessionId } from "@opensteer/core";
 import { assignmentWasCancelled } from "./execution-authority.js";
@@ -27,7 +28,7 @@ import {
 import { compactionIsEligible } from "./compaction-eligibility.js";
 import { freshContextBoundary } from "./fresh-context.js";
 import {
-  connectionWaiting,
+  connectionIsWaiting,
   lineagePersonalContext,
   readLiveAgentConnectionRow,
 } from "./resource-access.js";
@@ -41,6 +42,7 @@ import {
 import {
   assertLineageCompatibleReuse,
   bindingAgentConnectionId,
+  assertPersonMayContinue,
   assertSendEligible,
   connectionTaskReadScope,
   liveDelegatingConnection,
@@ -626,21 +628,20 @@ async function claimFollowUps(
     .limit(input.limit)
     .execute();
   if (waiting.length === 0) return { claimed: 0 };
+  let chatWaits = false;
   const connection = run.connectionId
     ? await liveDelegatingConnection(transaction, run.requestedBy, run.connectionId).catch(
         (error: unknown) => {
-          if (error instanceof OpensteerError && error.code === "forbidden") return null;
+          if (error instanceof OpensteerError && error.code === "forbidden") {
+            chatWaits = connectionIsWaiting(error);
+            return null;
+          }
           throw error;
         },
       )
     : null;
   // A paused chat's follow-ups wait for it, queued; they are not taken, and not cancelled.
-  if (
-    run.connectionId !== null &&
-    connection === null &&
-    (await connectionWaiting(transaction, run.requestedBy, run.connectionId))
-  )
-    return { claimed: 0 };
+  if (run.connectionId !== null && connection === null && chatWaits) return { claimed: 0 };
   const eligible =
     run.connectionId === null ||
     (connection !== null && sendEligible(connection, thread.originConnectionId));
@@ -1898,11 +1899,19 @@ export async function settleSteer(
             updatedAt: now,
           }
         : outcome === "failed"
-          ? observed.policy === "queue" || reasonCode === "request-pending"
+          ? // A message for a Run that has ended (as one held for a paused chat may find it)
+            // goes back to its task's queue, to start the next Run.
+            observed.policy === "queue" ||
+            reasonCode === "request-pending" ||
+            !nonTerminalRunStatuses.some((status) => status === run.status)
             ? {
                 cancelReason: null,
                 state: "pending",
-                policy: reasonCode === "request-pending" ? "queue" : observed.policy,
+                policy:
+                  reasonCode === "request-pending" ||
+                  !nonTerminalRunStatuses.some((status) => status === run.status)
+                    ? "queue"
+                    : observed.policy,
                 runId: null,
                 steerCommandId: null,
                 updatedAt: now,
@@ -3180,7 +3189,9 @@ async function assertInputLineage(
   thread: { readonly originConnectionId: string | null },
   inputConnectionId: string | null,
 ): Promise<void> {
-  await assertSendEligible(transaction, owner, thread.originConnectionId, inputConnectionId);
+  if (inputConnectionId === null)
+    await assertPersonMayContinue(transaction, owner, thread.originConnectionId);
+  else await assertSendEligible(transaction, owner, thread.originConnectionId, inputConnectionId);
 }
 async function resolveThreadInputFacts(
   transaction: Transaction<DatabaseSchema>,
@@ -3853,6 +3864,7 @@ export async function ensureQueuedRun(
     // one that connection may send here (a narrowing can take that away), and the connection it
     // works for must still delegate. Work that no longer qualifies is cancelled, never run.
     const candidateConnectionId = thread.originConnectionId ?? candidate.connectionId;
+    let waiting = false;
     if (
       !(await assertSendEligible(
         transaction,
@@ -3867,15 +3879,14 @@ export async function ensureQueuedRun(
         )
         .then(
           () => chatSenderMaySpeak(transaction, candidate),
-          () => false,
+          (error: unknown) => {
+            waiting = connectionIsWaiting(error);
+            return false;
+          },
         ))
     ) {
       // A paused chat's work waits: it stays queued, and so does everything behind it.
-      if (
-        candidateConnectionId &&
-        (await connectionWaiting(transaction, candidate.requestedBy, candidateConnectionId))
-      )
-        break;
+      if (candidateConnectionId && waiting) break;
       const cancelled = await transaction
         .updateTable("threadInputs")
         .set({ cancelReason: "authority-revoked", state: "cancelled", updatedAt: new Date() })
@@ -5673,7 +5684,7 @@ export async function delegateThreadInTransaction(
           inputQueuePaused: false,
           lastRunFailed: false,
         }),
-        title: input.title,
+        title: outsideName(input.title, 240) || "Task",
         titleSource: input.titleSource ?? "chosen",
         icon: null,
         iconSource: "provisional",

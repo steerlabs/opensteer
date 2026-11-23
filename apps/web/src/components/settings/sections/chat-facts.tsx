@@ -1,35 +1,58 @@
 import { useState } from "react";
 import { Link } from "react-router";
-import { agentWords, type ChatFacts, type HostClient } from "@opensteer/client/host";
+import {
+  agentWords,
+  chatStopFoundRunEnded,
+  chatTaskStop,
+  mutationIdempotencyKey,
+  type ChatFacts,
+  type ChatScreenHost,
+  type ChatTaskNow,
+} from "@opensteer/client/host";
+import { SentenceText } from "../../../ui/address-text.js";
 import { presentFailure } from "../../use-action.js";
 import { SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
 
 /**
  * What only a chat has beside any connected agent's page: where it listens, who can give it
  * work and how that is changed, why it ended, replies that may have been sent, and its recent
- * tasks with Stop. Every sentence comes from `chatFacts`, read from the Home.
+ * tasks with Stop. Every sentence comes from `chatFacts`, read from the Home; whether a task runs
+ * comes from the Home's live task updates (`chatTasksNow`).
  */
 export function ChatFactsSection({
   client,
   facts,
   live,
+  onRunEnded,
+  tasks,
 }: {
-  readonly client: HostClient;
+  readonly client: Pick<ChatScreenHost, "dispatch">;
   readonly facts: ChatFacts;
   /** Still connected: its running tasks can be stopped from here. */
   readonly live: boolean;
+  /** Its recent tasks as they are now. */
+  readonly tasks: readonly ChatTaskNow[];
+  /** A Stop found its Run already ended: the chat's list is read again. */
+  readonly onRunEnded: () => void;
 }) {
-  const [stopping, setStopping] = useState<string | null>(null);
+  // A Run whose Stop was asked reads Stopping… until the Home says the task no longer runs (its
+  // device answers), never Stop again beside Running; a Stop the Home refused says why. A later
+  // Run of the task is a new Run, with a Stop of its own.
+  const [asked, setAsked] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
-  const stop = async (threadId: string) => {
-    setStopping(threadId);
+  const stop = async (task: ChatTaskNow & { readonly runId: string }) => {
+    setAsked((current) => new Set([...current, task.runId]));
     setError(null);
     try {
-      await client.stopRun(threadId);
+      await client.dispatch(chatTaskStop(task, mutationIdempotencyKey("chat-stop")));
     } catch (reason) {
-      setError(presentFailure(reason, "stop this task", "stopped"));
-    } finally {
-      setStopping(null);
+      // The Run had already ended: read the chat's list again, say nothing.
+      if (chatStopFoundRunEnded(reason)) {
+        onRunEnded();
+        return;
+      }
+      setError(presentFailure(reason, "stop this task", "stopped", "the task was stopped"));
+      setAsked((current) => new Set([...current].filter((run) => run !== task.runId)));
     }
   };
   return (
@@ -45,15 +68,18 @@ export function ChatFactsSection({
         </p>
       ) : null}
       <SettingsGroup heading={agentWords("chat.where.title")} headingId="chat-where">
-        <SettingsRow title={facts.where} />
+        <SettingsRow title={<SentenceText parts={facts.whereParts} />} />
       </SettingsGroup>
       <SettingsGroup heading={agentWords("chat.speakers.title")} headingId="chat-speakers">
-        <SettingsRow title={facts.speakers.title} detail={facts.speakers.detail} />
+        <SettingsRow
+          title={<SentenceText parts={facts.speakers.titleParts} />}
+          detail={<SentenceText parts={facts.speakers.detailParts} />}
+        />
         <SettingsRow title={facts.fixed} />
       </SettingsGroup>
       <SettingsGroup heading={agentWords("chat.tasks.title")} headingId="chat-tasks">
-        {facts.tasks.length === 0 ? <SettingsRow title={agentWords("chat.tasks.empty")} /> : null}
-        {facts.tasks.map((task) => (
+        {tasks.length === 0 ? <SettingsRow title={agentWords("chat.tasks.empty")} /> : null}
+        {tasks.map((task) => (
           <SettingsRow
             key={task.id}
             title={task.title}
@@ -63,14 +89,14 @@ export function ChatFactsSection({
                 <Link className="btn btn--small" to={`/tasks/${task.id}`}>
                   {agentWords("chat.tasks.open")}
                 </Link>
-                {live && task.running ? (
+                {live && task.running && task.runId !== null ? (
                   <button
                     className="btn btn--small btn--danger"
-                    disabled={stopping !== null}
-                    onClick={() => void stop(task.id)}
+                    disabled={asked.has(task.runId)}
+                    onClick={() => void stop({ ...task, runId: task.runId! })}
                     type="button"
                   >
-                    {stopping === task.id
+                    {asked.has(task.runId)
                       ? agentWords("chat.tasks.stopping")
                       : agentWords("chat.tasks.stop")}
                   </button>

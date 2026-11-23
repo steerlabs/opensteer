@@ -42,7 +42,6 @@ import {
 import {
   admitExecution,
   bindingAgentConnectionId,
-  connectionWaiting,
   resolveResourceAccess,
   type ResourceAccessInput,
 } from "./resource-access.js";
@@ -969,10 +968,6 @@ export class OpensteerStore {
     return recoverConnectionCdpAttempts(this.#database);
   }
 
-  /** A chat that is paused, not ended: its work waits instead of failing. */
-  connectionWaiting(ownerUserId: UserId, connectionId: string): Promise<boolean> {
-    return connectionWaiting(this.#database, ownerUserId, connectionId);
-  }
   recordConnectionRunHandoff(input: Parameters<typeof recordConnectionRunHandoff>[1]) {
     return recordConnectionRunHandoff(this.#database, input);
   }
@@ -1441,7 +1436,7 @@ export class OpensteerStore {
     reader: TaskReader,
     threadId: ThreadId,
     ownerId: UserId,
-    options?: { readonly lineageConnectionId?: string; readonly nativeOnly?: boolean },
+    options?: Parameters<typeof threadStore.readTask>[4],
   ): Promise<Thread | null> {
     return threadStore.readTask(this.#database, reader, threadId, ownerId, options);
   }

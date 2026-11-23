@@ -603,6 +603,29 @@ describe("NativePersonalRemoteHostControl Account-link failures", () => {
     await expect(internal).resolves.not.toBeInstanceOf(PersonalHostRefusalError);
     await expect(internal).resolves.toMatchObject({ message: "Account-link completion failed." });
   });
+
+  it.each([
+    [
+      "a validator's report",
+      {
+        code: "bad_request",
+        reason: "invalid-request",
+        message: "Request is invalid: expected string at input.grant",
+      },
+      400,
+    ],
+    [
+      "a code that is not a refusal written for a person",
+      { code: "harness_error", message: "spawn ENOENT /usr/local/bin/codex" },
+      409,
+    ],
+  ])("never passes on %s as the Home's words", async (_what, error, status) => {
+    const failed = control({ error }, status)
+      .consumeAccountLink(runtime, consumeInput)
+      .catch((reason: unknown) => reason);
+    await expect(failed).resolves.not.toBeInstanceOf(PersonalHostRefusalError);
+    await expect(failed).resolves.toMatchObject({ message: "Account-link completion failed." });
+  });
 });
 
 function json(value: unknown, status = 200): Response {

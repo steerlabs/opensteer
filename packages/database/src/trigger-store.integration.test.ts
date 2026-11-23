@@ -3331,6 +3331,45 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect(afterReconnect?.activation?.contactLostAt).toBeNull();
   });
 
+  it("cleans automation names from outside at TriggerStore.create and update via outsideName", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, triggers } = storeFixture;
+    const fixture = await createFixture("outside-name-automation");
+    const created = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: `outside-name-${randomUUID()}`,
+      name: "Helper\u202E\nDisconnected\tWork\u200DOps",
+      script: { interpreter: null, text: "console.log('ok')" },
+      source: { kind: "webhook" },
+      webhookRouteKey: `whk_${randomUUID().replaceAll("-", "")}`,
+    });
+    expect(created.trigger.name).toBe("Helper Disconnected WorkOps");
+
+    const updated = await triggers.update({
+      actorThreadId: null,
+      expectedRevisionId: created.trigger.currentRevisionId,
+      name: "x".repeat(5_000),
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    expect(updated.trigger.name).toHaveLength(160);
+
+    const blankFallback = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: `outside-name-blank-${randomUUID()}`,
+      name: "\u202E\u200D\n\t",
+      script: { interpreter: null, text: "console.log('ok')" },
+      source: { kind: "webhook" },
+      webhookRouteKey: `whk_${randomUUID().replaceAll("-", "")}`,
+    });
+    expect(blankFallback.trigger.name).toBe("Automation");
+  });
+
   /**
    * Marks a Run running without dispatching it, with the grant a dispatched
    * Run holds: only a Run whose authority stands takes a steer.

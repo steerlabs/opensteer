@@ -41,10 +41,7 @@ import {
   applyBridgeConnections,
   bridgeConnectionsMigrationName,
 } from "./bridge-connections-migration.js";
-import {
-  applyBridgeConversion,
-  bridgeConversionMigrationName,
-} from "./bridge-conversion-migration.js";
+import { applyChatRoutesEnd, chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
 import {
   applyAutomationsContract,
   automationsContractMigrationName,
@@ -664,7 +661,7 @@ export function migrationProvider(options?: {
                 },
               },
               [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
-              [bridgeConversionMigrationName]: { up: applyBridgeConversion },
+              [chatRoutesEndMigrationName]: { up: applyChatRoutesEnd },
               [commandRequestsMigrationName]: {
                 /**
                  * An agent's proposed Home command rides an ordinary Request, with its parts in one

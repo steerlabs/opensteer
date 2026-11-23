@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
 import {
   commitPersonalMutation,
@@ -64,13 +65,14 @@ import {
 } from "@opensteer/triggers";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import {
+  connectionIsWaiting,
   lineagePersonalContext,
   liveDelegatingConnection,
   meetsConnectionFloor,
   sendEligible,
   type AgentConnectionAuthority,
 } from "./resource-access.js";
-import { admitLineageExecution, lineageExecutionStanding } from "./execution-authority.js";
+import { lineageExecutionStanding } from "./execution-authority.js";
 import { PrincipalIdSchema } from "@opensteer/channel-core";
 import type {
   DatabaseSchema,
@@ -90,6 +92,8 @@ type TriggerRevisionRow = Selectable<DatabaseSchema["triggerRevisions"]>;
 type TriggerOccurrenceRow = Selectable<TriggerOccurrenceTable>;
 type TriggerWatchActivationRow = Selectable<TriggerWatchActivationTable>;
 const executableProgram = sql<boolean>`trigger_revisions.script is not null`;
+const noAutomationPauseReason =
+  "Paused because a chat that anyone in the conversation can message can't have an automation.";
 const triggerAuthorityLossPauseReason =
   "Paused because its conversation could not run when it was due.";
 interface CreateTriggerInput {
@@ -253,12 +257,31 @@ export async function assertActiveTriggerExecutionBinding(
     .where("triggers.anchorThreadId", "=", input.threadId)
     .where("triggers.createdBy", "=", input.requestedBy)
     .executeTakeFirst();
-  if (!row || !(await triggerBindingAuthorityHolds(database, row))) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Automation execution is no longer active",
-    });
-  }
+  const ended = () =>
+    new OpensteerError({ code: "forbidden", message: "Automation execution is no longer active" });
+  if (
+    !row ||
+    row.triggerStatus !== "active" ||
+    row.threadStatus === "archived" ||
+    row.threadDoneAt !== null ||
+    row.threadRemovedAt !== null
+  )
+    throw ended();
+  // Its chat's standing, read once: one that waits holds the automation (`triggerChatIsWaiting`),
+  // anything else that is not live ends it.
+  const connection = row.originConnectionId
+    ? await liveDelegatingConnection(database, row.createdBy, row.originConnectionId).catch(
+        (error: unknown) => {
+          throw connectionIsWaiting(error) ? new TriggerChatWaiting() : ended();
+        },
+      )
+    : null;
+  if (
+    !(await admitThreadExecution(database, row.anchorThreadId, row.createdBy)) ||
+    (connection &&
+      !meetsConnectionFloor(connection, row.admittedGrantRevision, row.admittedAccessMode))
+  )
+    throw ended();
 }
 
 /** Validates every fact carried by a continuously running watch capability. */
@@ -292,36 +315,32 @@ export async function assertActiveWatchBinding(
     .where("triggers.kind", "=", "watch")
     .where(executableProgram)
     .executeTakeFirst();
-  const admission =
-    row &&
-    row.threadStatus !== "archived" &&
-    row.threadDoneAt === null &&
-    row.threadRemovedAt === null
-      ? await admitLineageExecution(database, {
-          threadId: row.anchorThreadId,
-          userId: row.createdBy,
-          agentConnectionId: row.originConnectionId,
-        })
-      : null;
+  const ended = () =>
+    new OpensteerError({ code: "forbidden", message: "Watch activation is no longer active" });
   if (
     !row ||
+    row.threadStatus === "archived" ||
+    row.threadDoneAt !== null ||
+    row.threadRemovedAt !== null ||
     row.anchorThreadId !== input.anchorThreadId ||
     row.createdBy !== input.createdBy ||
-    row.environmentId !== input.environmentId ||
+    row.environmentId !== input.environmentId
+  )
+    throw ended();
+  // Its lineage's standing, read once, as the execution binding reads it.
+  const connection = row.originConnectionId
+    ? await liveDelegatingConnection(database, row.createdBy, row.originConnectionId).catch(() => {
+        throw ended();
+      })
+    : null;
+  const admission = await admitThreadExecution(database, row.anchorThreadId, row.createdBy);
+  if (
     !admission ||
     admission.environmentId !== input.environmentId ||
-    (row.originConnectionId !== null &&
-      !meetsConnectionFloor(
-        await liveDelegatingConnection(database, row.createdBy, row.originConnectionId),
-        row.admittedGrantRevision,
-        row.admittedAccessMode,
-      ))
-  ) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Watch activation is no longer active",
-    });
-  }
+    (connection &&
+      !meetsConnectionFloor(connection, row.admittedGrantRevision, row.admittedAccessMode))
+  )
+    throw ended();
 }
 class TriggerOccurrenceSetChanged extends TransactionScopeChanged {}
 export async function createTriggerInTransaction(
@@ -333,13 +352,14 @@ export async function createTriggerInTransaction(
     readonly pauseReason: string | null;
   },
 ) {
+  const name = outsideName(input.name, 160) || "Automation";
   const source = TriggerSourceSchema.parse(input.source);
   const script = AutomationScriptSchema.parse(input.script);
   validateSource(source);
   // The caller's intent, so a replay of an own-task create matches its receipt.
   const requestFingerprint = fingerprint({
     anchorThreadId: input.anchorThreadId,
-    name: input.name,
+    name,
     script,
     source,
     ...(input.ownTask ? { ownTask: true } : {}),
@@ -392,7 +412,9 @@ export async function createTriggerInTransaction(
       wasDuplicate: true,
     };
   }
-  const ownTask = input.ownTask ? await createOwnTask(transaction, input, source) : null;
+  const ownTask = input.ownTask
+    ? await createOwnTask(transaction, { ...input, name }, source)
+    : null;
   const anchorThreadId = ownTask?.thread.id ?? input.anchorThreadId;
   if (source.kind === "watch") {
     const anchor = await transaction
@@ -421,6 +443,16 @@ export async function createTriggerInTransaction(
   const now = new Date();
   const nextFireAt =
     !managed?.paused && source.kind === "schedule" ? firstTriggerFireAt(source.schedule) : null;
+  // A program runs as the person, in their Agent home, outside any engine's sandbox: a lineage
+  // without personal context (a chat anyone in the conversation can message) never defines one.
+  if (
+    !managed &&
+    ((input.actorConnectionId !== undefined &&
+      !(await lineagePersonalContext(transaction, input.actorConnectionId))) ||
+      (anchor.originConnectionId !== null &&
+        !(await lineagePersonalContext(transaction, anchor.originConnectionId))))
+  )
+    throw noProgramWithoutPersonalContext();
   // An automation works for whoever defined it: the authenticated actor's connection, if any.
   // One the person makes on a task without their personal context (from a chat anyone may
   // speak in) works in that task's lineage, so what its program starts never gains it.
@@ -443,7 +475,7 @@ export async function createTriggerInTransaction(
       id: triggerId,
       idempotencyKey: input.idempotencyKey,
       kind: source.kind,
-      name: input.name,
+      name,
       nextFireAt,
       pauseReason: managed?.pauseReason ?? null,
       requestFingerprint,
@@ -622,6 +654,13 @@ export class TriggerStore {
           message:
             "A connected agent cannot replace the program of an automation it did not create.",
         });
+      // Its program would run in the person's Agent home: nothing of it is set, or made to run
+      // again, from such a lineage.
+      if (
+        trigger.originConnectionId !== null &&
+        !(await lineagePersonalContext(transaction, trigger.originConnectionId))
+      )
+        throw noProgramWithoutPersonalContext();
       if (!systemProgram) await requireTriggerExecutionAuthority(transaction, trigger);
       if (systemProgram && !trigger.systemRole)
         throw conflict("Only system automations can regenerate programs");
@@ -703,7 +742,7 @@ export class TriggerStore {
           ...(input.name === undefined
             ? {}
             : {
-                name: input.name,
+                name: outsideName(input.name, 160) || trigger.name,
               }),
           ...rearmed,
           updatedAt: now,
@@ -790,6 +829,13 @@ export class TriggerStore {
           input.status === "archived" ? "define" : "control",
         );
         await requireTriggerExecutionAuthority(transaction, trigger);
+        // Resumed, it would launch in the person's Agent home: refused now, in the launch's words.
+        if (
+          input.status === "active" &&
+          trigger.originConnectionId !== null &&
+          !(await lineagePersonalContext(transaction, trigger.originConnectionId))
+        )
+          throw noProgramWithoutPersonalContext();
         if (trigger.systemRole && input.status === "archived")
           throw conflict(MANAGED_MEMORY_REFUSAL);
         if (trigger.status === "archived") {
@@ -1056,6 +1102,11 @@ export class TriggerStore {
       input = (await admitTriggerActor(transaction, input.ownerId, input)).input;
       const trigger = await lockTriggerForMutation(transaction, input, "control");
       await requireTriggerExecutionAuthority(transaction, trigger);
+      if (
+        trigger.originConnectionId !== null &&
+        !(await lineagePersonalContext(transaction, trigger.originConnectionId))
+      )
+        throw noProgramWithoutPersonalContext();
       if (nextFireAt.getTime() <= Date.now()) {
         throw new OpensteerError({
           code: "bad_request",
@@ -1087,16 +1138,6 @@ export class TriggerStore {
       await wakeTriggerSchedules(transaction);
       return triggerFromRow(updated);
     });
-  }
-  /** The command runs an automation whose chat is paused: its work is held until it is back. */
-  async commandChatWaiting(commandId: CommandId): Promise<boolean> {
-    const trigger = await this.#database
-      .selectFrom("triggerOccurrences")
-      .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
-      .select(["triggers.originConnectionId"])
-      .where("triggerOccurrences.commandId", "=", commandId)
-      .executeTakeFirst();
-    return trigger ? triggerChatWaiting(this.#database, trigger) : false;
   }
   async listForOwner(input: {
     readonly anchorThreadId?: ThreadId;
@@ -1308,16 +1349,12 @@ export class TriggerStore {
           .selectAll()
           .where("id", "=", row.triggerId)
           .executeTakeFirstOrThrow();
-        const admission = await admitLineageExecution(transaction, {
-          threadId: row.anchorThreadId,
-          userId: row.createdBy,
-          agentConnectionId: trigger.originConnectionId,
-        });
+        const admission = await triggerLaunchStanding(transaction, trigger);
         if (
           trigger.status !== "active" ||
           trigger.currentRevisionId !== row.revisionId ||
           !row.executable ||
-          !admission ||
+          admission.kind !== "admitted" ||
           admission.environmentId !== row.environmentId
         ) {
           await transaction
@@ -2291,6 +2328,19 @@ export class TriggerStore {
         const standing = await triggerLaunchStanding(transaction, trigger);
         await seam?.afterAuthority?.();
         if (standing.kind === "waiting") return held;
+        if (standing.kind === "refused") {
+          await transaction
+            .updateTable("triggers")
+            .set({
+              nextFireAt: null,
+              pauseReason: noAutomationPauseReason,
+              status: "paused",
+              updatedAt: new Date(),
+            })
+            .where("id", "=", trigger.id)
+            .execute();
+          return undefined;
+        }
         if (standing.kind === "lost") {
           // Authority can be unavailable transiently — an offline Runner. Pausing keeps the Trigger recoverable by
           // its owner; archiving would be a permanent answer to a temporary
@@ -3914,29 +3964,22 @@ async function automationHandoffWitness(
  */
 /**
  * The automation belongs to a chat (by its own lineage, `triggers.origin_connection_id`, as
- * authority and Disconnect read it) that is paused, asked of the one state function. Its schedule
- * does not fire and its work is held until the chat is back.
+ * authority and Disconnect read it) that is paused, as SQL over the unaliased `triggers` row, for
+ * the schedule's claim and deadline. Its schedule does not fire until the chat is back.
  */
-export async function triggerChatWaiting(
-  database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
-  trigger: Pick<TriggerRow, "originConnectionId">,
-): Promise<boolean> {
-  if (trigger.originConnectionId === null) return false;
-  const { rows } = await sql<{ waiting: boolean }>`
-    select ${connectionState(database)} = 'waiting' as waiting
-    from agent_connections
-    where agent_connections.bridge_account_id is not null
-      and agent_connections.id = ${trigger.originConnectionId}`.execute(database);
-  return rows[0]?.waiting === true;
-}
-
-/** The same, as SQL over the unaliased `triggers` row, for the schedule's claim and deadline. */
 function triggerChatHeld(database: object) {
   return sql<boolean>`exists (
     select 1 from agent_connections
     where agent_connections.id = triggers.origin_connection_id
       and agent_connections.bridge_account_id is not null
       and ${connectionState(database)} = 'waiting')`;
+}
+/** The refusal of a program for a lineage without personal context. */
+function noProgramWithoutPersonalContext(): OpensteerError {
+  return new OpensteerError({
+    code: "forbidden",
+    message: "A chat that anyone in the conversation can message can't have an automation.",
+  });
 }
 /** A claim's answer for a schedule whose chat is waiting: nothing created, nothing moved. */
 const held = Symbol("held");
@@ -3951,11 +3994,31 @@ class TriggerChatWaiting extends OpensteerError {
   }
 }
 
-/** Admitted, held (its chat is waiting) or lost, as one fact (`lineageExecutionStanding`). */
-function triggerLaunchStanding(
+/**
+ * Whether a launch refusal is the one a waiting chat causes, from the same read that refused it:
+ * its work is held, never failed. A lineage without personal context is refused as itself, paused
+ * or not.
+ */
+export function triggerChatIsWaiting(error: unknown): boolean {
+  return error instanceof TriggerChatWaiting;
+}
+
+/**
+ * Whether an automation may launch now: the one check every firing passes (a schedule's claim,
+ * run now, a webhook, a resume or a change that queues an occurrence, its dispatch to a Runner,
+ * and a watch's activation). A lineage without personal context (a chat anyone in the
+ * conversation can message) never launches one: its program would run as the person, in their
+ * Agent home. Its connection's senders never change, so this reads apart from the standing.
+ */
+async function triggerLaunchStanding(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy" | "originConnectionId">,
-) {
+): Promise<
+  | Awaited<ReturnType<typeof lineageExecutionStanding>>
+  | { readonly kind: "refused"; readonly reason: string }
+> {
+  if (!(await lineagePersonalContext(database, trigger.originConnectionId)))
+    return { kind: "refused", reason: noProgramWithoutPersonalContext().message };
   return lineageExecutionStanding(database, {
     threadId: trigger.anchorThreadId,
     userId: trigger.createdBy,
@@ -3968,6 +4031,7 @@ async function requireTriggerLaunchAuthority(
 ) {
   const standing = await triggerLaunchStanding(database, trigger);
   if (standing.kind === "waiting") throw new TriggerChatWaiting();
+  if (standing.kind === "refused") throw noProgramWithoutPersonalContext();
   if (standing.kind === "lost")
     throw new OpensteerError({
       code: "forbidden",

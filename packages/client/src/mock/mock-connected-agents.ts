@@ -2,6 +2,7 @@ import {
   chatGrantShape,
   BrowserProfileIdSchema,
   BrowserSourceIdSchema,
+  RunIdSchema,
   UserIdSchema,
   type AgentGrant,
   type ThreadAccessMode,
@@ -234,15 +235,22 @@ function mockChannels(now: Date): ChannelDashboard {
       account(pagerAccount, pagerChannel, "slack", "On-call", "needs-attention"),
     ],
     connections: [
-      channel(slackChannel, "slack", "Workshop", "connected"),
+      // Each account is its connection's, as on a Home: the provider names the same tenant.
+      {
+        ...channel(slackChannel, "slack", "Workshop", "connected"),
+        externalTenantId: `T-${slackAccount.slice(-2)}`,
+      },
       channel(messagesChannel, "imessage", "Messages on Studio Mac", "paused"),
-      channel(
-        pagerChannel,
-        "slack",
-        "On-call",
-        "needs-attention",
-        "Slack says the token was revoked.",
-      ),
+      {
+        ...channel(
+          pagerChannel,
+          "slack",
+          "On-call",
+          "needs-attention",
+          "Slack says the token was revoked.",
+        ),
+        externalTenantId: `T-${pagerAccount.slice(-2)}`,
+      },
     ],
     deliveriesNeedingAttention: 0,
     me: [
@@ -272,6 +280,7 @@ function mockChats(now: Date): readonly AgentConnection[] {
     readonly provider: string;
     readonly accountId: string;
     readonly accountName: string;
+    readonly accountHandle?: string;
     readonly channelConnectionId: string;
     readonly conversation?: { readonly id: string; readonly name: string };
     readonly senders: "owner" | "anyone";
@@ -300,6 +309,7 @@ function mockChats(now: Date): readonly AgentConnection[] {
       senders: input.senders,
       grantShape: wireGrantShape(input.senders),
       accountName: input.accountName,
+      ...(input.accountHandle ? { accountHandle: input.accountHandle } : {}),
       conversationName: input.conversation?.name ?? null,
       channelConnectionId: input.channelConnectionId,
       me: input.me ?? null,
@@ -326,11 +336,13 @@ function mockChats(now: Date): readonly AgentConnection[] {
             id: "thr_00000000-0000-4000-8000-0000000000c1",
             title: "Summarize my week",
             running: true,
+            runId: RunIdSchema.parse("run_00000000-0000-4000-8000-0000000000c1"),
           },
           {
             id: "thr_00000000-0000-4000-8000-0000000000c2",
             title: "Book the dentist",
             running: false,
+            runId: null,
           },
         ],
       },
@@ -355,6 +367,7 @@ function mockChats(now: Date): readonly AgentConnection[] {
       provider: "iMessage",
       accountId: messagesAccount,
       accountName: "tim@example.com",
+      accountHandle: "tim@example.com",
       channelConnectionId: messagesChannel,
       senders: "owner",
       me: { displayName: "+1 415 555 0100", externalUserId: "+14155550100" },
@@ -394,6 +407,9 @@ function mockChats(now: Date): readonly AgentConnection[] {
   ];
 }
 
+/** On-call's token was revoked: its provider no longer accepts what it holds. */
+const mockChannelTokens = { [pagerChannel]: { botToken: "", appToken: "" } };
+
 export function mockConnectedAgents(
   scene: MockConnectedAgentScene,
   now = new Date(),
@@ -401,6 +417,8 @@ export function mockConnectedAgents(
   readonly connections: readonly AgentConnection[];
   /** The Messaging accounts behind the scene's chats. */
   readonly channels?: ChannelDashboard;
+  /** The tokens the scene's messaging connections hold, as their provider reads them. */
+  readonly channelTokens?: Readonly<Record<string, Readonly<Record<string, string>>>>;
   readonly connectionConsent?: AgentConnectionConsent;
   readonly chromeTabs?: ChromeTabGrantCatalog;
   readonly connectionConsentChange?: AgentConnectionConsent;
@@ -495,12 +513,17 @@ export function mockConnectedAgents(
   if (scene === "expired") return { connections };
   // Chats are listed beside an ordinary connected agent, as on a real Home.
   if (scene === "chats")
-    return { connections: [connections[1]!, ...mockChats(now)], channels: mockChannels(now) };
+    return {
+      connections: [connections[1]!, ...mockChats(now)],
+      channels: mockChannels(now),
+      channelTokens: mockChannelTokens,
+    };
   if (scene === "chats-empty") return { connections: [], channels: mockChannels(now) };
   if (scene === "chats-unreadable")
     return {
       connections: [connections[1]!, ...mockChats(now)],
       channels: mockChannels(now),
+      channelTokens: mockChannelTokens,
       unreadable: true,
     };
   const chrome = (computerName: string, n: number, paired = true) => ({

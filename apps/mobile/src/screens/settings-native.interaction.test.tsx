@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 import { act, useId, useEffect, type ReactNode } from "react";
+import { readAsDrawn } from "./read-as-drawn.test-support.js";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import { hostApi } from "@opensteer/protocol";
-import type { HostClient } from "@opensteer/client/host";
+import { HostClientRequestError, type HostClient } from "@opensteer/client/host";
 import type { NativeSettingsPageProps } from "./native-settings-page.types.js";
 const state = vi.hoisted(() => ({
   os: "ios",
@@ -12,6 +13,8 @@ const state = vi.hoisted(() => ({
   host: null as HostClient | null,
   page: null as NativeSettingsPageProps | null,
   pages: new Map<string, NativeSettingsPageProps>(),
+  /** The pages as given, before `readAsDrawn` takes out the marks the phone does not draw. */
+  given: new Map<string, NativeSettingsPageProps>(),
 }));
 vi.mock("react-native", () => ({
   Platform: {
@@ -31,11 +34,13 @@ vi.mock("./device-app-setup-sheet.js", () => ({ DeviceAppSetupSheet: () => null 
 vi.mock("./native-settings-page.js", () => ({
   NativeSettingsPage: (props: NativeSettingsPageProps) => {
     const id = useId();
-    state.page = props;
-    state.pages.set(id, props);
+    state.page = readAsDrawn(props);
+    state.pages.set(id, readAsDrawn(props));
+    state.given.set(id, props);
     useEffect(
       () => () => {
         state.pages.delete(id);
+        state.given.delete(id);
       },
       [id],
     );
@@ -214,22 +219,11 @@ it.each(["ios", "android"])("sends every Messaging change from the phone on %s",
     status: "revoked",
     connectionId,
   });
-  await press("iMessage");
-  // Nothing is asked that the Home would throw away: who "me" is comes after, by a code.
-  expect(rows().some((candidate) => candidate.kind === "input")).toBe(false);
-  expect(
-    row(
-      "Choose the Mac signed into Messages with the bot's Apple account. Once it is connected, link your own iMessage account with a code, then add a chat.",
-    ).kind,
-  ).toBe("text");
-  // No Mac here can run it: the page says what to do, and Connect sends nothing.
-  expect(
-    row(
-      "No online Mac of yours has Messages turned on yet. Turn it on from that Mac’s Devices page first.",
-    ).kind,
-  ).toBe("text");
-  expect(row("Connect")).toMatchObject({ disabled: true });
-  await press("Cancel");
+  // iMessage is added on the Mac it will use: the phone says so, and opens nothing for it.
+  expect(row("iMessage")).toMatchObject({
+    kind: "text",
+    detail: "Add iMessage from Opensteer on the Mac it will use.",
+  });
   await press("Fix setup");
   await input("Bot user OAuth token", "replacement");
   await input("App-level token", "replacement-app");
@@ -264,8 +258,13 @@ it.each(["ios", "android"])(
     await vi.waitFor(() => expect(rows().some((r) => r.label === "Slack · #team")).toBe(true));
     const chat = row("Slack · #team");
     expect(chat.kind === "button" && chat.detail).toBe(
-      "#team on Slack, through Workshop · Tasks · Supervised",
+      "“#team” on Slack, through “Workshop” · Tasks · Supervised",
     );
+    // Each name in the line stands isolated from the words around it, as every phone sentence.
+    const given = [...state.given.values()]
+      .flatMap((page) => page.sections.flatMap((section) => section.rows))
+      .find((candidate) => candidate.label === "Slack · #team");
+    expect(given && "detail" in given ? given.detail : null).toContain("“\u2068#team\u2069”");
     if (chat.kind !== "button") throw new Error("Not a button");
     await act(async () => chat.onPress());
     expect(state.navigate).toHaveBeenCalledWith("ConnectedAgent", {
@@ -287,7 +286,7 @@ it.each(["ios", "android"])(
     expect(rows().filter((candidate) => candidate.label === "Fix setup")).toHaveLength(1);
     const me = rows().find((candidate) => candidate.label === "You on Slack");
     expect(me && "detail" in me ? me.detail : null).toBe(
-      "Tim is you. Messages from it count as you in your chats. Linking another account replaces Tim as you.",
+      "“Tim” is you. Messages from it count as you in your chats. Linking another account replaces “Tim” as you.",
     );
     const sections = [...state.pages.values()].flatMap((page) => page.sections);
     expect(
@@ -302,7 +301,7 @@ it.each(["ios", "android"])(
     await vi.waitFor(() =>
       expect(
         rows().some((candidate) =>
-          /^Send MOCKCODE to Workshop in a direct message from your own Slack account\. It works once, until .+\. Nothing is said in the chat; this page shows your account once it’s linked\.$/u.test(
+          /^Send MOCKCODE to “Workshop” in a direct message from your own Slack account\. It works once, until .+\. Nothing is said in the chat; this page shows your account once it’s linked\.$/u.test(
             candidate.label,
           ),
         ),
@@ -386,6 +385,100 @@ it.each(["ios", "android"])(
     expect(footer?.link?.label).toBe("Try again");
     expect(rows().some((r) => r.label === "Workshop" || r.label === "Connected")).toBe(false);
     expect(rows().some((r) => r.label.startsWith("No messaging account yet"))).toBe(false);
+  },
+);
+
+/** Every control on the drawn pages that acts (not one that only opens another page). */
+function acting() {
+  return rows()
+    .filter(
+      (candidate) =>
+        (candidate.kind === "button" && !candidate.opens) ||
+        candidate.kind === "toggle" ||
+        candidate.kind === "input" ||
+        candidate.kind === "choice" ||
+        candidate.kind === "chips",
+    )
+    .map((candidate) => candidate.label);
+}
+/** The page's Try again, a row or a footer's link. */
+async function tryAgain() {
+  const control =
+    rows().find((candidate) => candidate.kind === "button" && candidate.label === "Try again") ??
+    footers().find((footer) => footer.link?.label === "Try again")?.link;
+  expect(control, "Missing control: Try again").toBeDefined();
+  await act(async () =>
+    "onPress" in control! ? (control as { onPress: () => void }).onPress() : undefined,
+  );
+}
+/** Makes `read` refuse, or answer as before once `failing` is false. */
+function failable(rpc: HostClient["rpc"], read: "channels.get" | "connections.list") {
+  const real = rpc[read] as (input: unknown) => Promise<unknown>;
+  const control = { failing: false, calls: 0 };
+  Object.defineProperty(rpc, read, {
+    value: async (input: unknown) => {
+      control.calls += 1;
+      if (control.failing)
+        throw new HostClientRequestError({ code: "internal", message: "down", status: 503 });
+      return real(input);
+    },
+    configurable: true,
+  });
+  return control;
+}
+
+it.each(["ios", "android"])(
+  "closes an open setup when a read fails, and opens nothing of it again once read, on %s",
+  async (os) => {
+    state.os = os;
+    let accounts!: ReturnType<typeof failable>;
+    await openChats("chats", (rpc) => (accounts = failable(rpc, "channels.get")));
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "Slack")).toBe(true));
+    await press("Slack");
+    await input("Bot user OAuth token", "typed-before-the-failure");
+    accounts.failing = true;
+    await press("Refresh");
+    await vi.waitFor(() =>
+      expect(rows().some((r) => r.label === "Bot user OAuth token")).toBe(false),
+    );
+    accounts.failing = false;
+    await tryAgain();
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "Slack")).toBe(true));
+    // Read again: no sheet came back, and none holds what was typed.
+    expect(rows().some((r) => r.label === "Bot user OAuth token")).toBe(false);
+    await press("Slack");
+    expect(row("Bot user OAuth token")).toMatchObject({ value: "" });
+  },
+);
+
+it.each(["ios", "android"])(
+  "after its chats could not be read again, offers one Try again that reads both, on %s",
+  async (os) => {
+    state.os = os;
+    let accounts!: ReturnType<typeof failable>;
+    let chats!: ReturnType<typeof failable>;
+    const changed: (() => void)[] = [];
+    await openChats("chats", (rpc) => {
+      accounts = failable(rpc, "channels.get");
+      chats = failable(rpc, "connections.list");
+      const subscribe = host.subscribeConnectionsChanged.bind(host);
+      vi.spyOn(host, "subscribeConnectionsChanged").mockImplementation((listener) => {
+        changed.push(listener);
+        return subscribe(listener);
+      });
+    });
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "Slack · #team")).toBe(true));
+    chats.failing = true;
+    await act(async () => {
+      for (const listener of changed) listener();
+    });
+    await vi.waitFor(() => expect(acting()).toEqual(["Try again"]));
+    chats.failing = false;
+    const before = { accounts: accounts.calls, chats: chats.calls };
+    await tryAgain();
+    await vi.waitFor(() => expect(acting()).toContain("Refresh"));
+    expect(accounts.calls).toBeGreaterThan(before.accounts);
+    expect(chats.calls).toBeGreaterThan(before.chats);
   },
 );
 
@@ -498,7 +591,7 @@ it.each(["ios", "android"])(
     fail = true;
     await press("Refresh");
     await vi.waitFor(() =>
-      expect(footers().map((f) => f.text)).toContain("Couldn’t read your messaging accounts."),
+      expect(rows().map((r) => r.label)).toContain("Couldn’t read your messaging accounts."),
     );
     const statuses = rows().filter((r) => r.kind === "status");
     expect(statuses.map((r) => r.label)).toEqual([
@@ -506,58 +599,29 @@ it.each(["ios", "android"])(
       "Not read just now",
       "Not read just now",
     ]);
-    const controls = [
-      "Pause",
-      "Resume",
-      "Check again",
-      "Fix setup",
-      "Remove account",
-      "Link my account",
-      "Link another account",
-    ];
-    expect(rows().filter((r) => controls.includes(r.label))).toEqual([]);
+    // Every row that acts, by enumeration: only the one Try again, and moving around, stay.
+    expect(acting()).toEqual(["Try again"]);
   },
 );
 
 it.each(["ios", "android"])(
-  "offers iMessage only on a Mac that can run it, and sends no empty Mac, on %s",
+  "opens a setup only for a provider the phone can finish, and says where to add the others, on %s",
   async (os) => {
     state.os = os;
     await openChats("chats");
-    const app = mockConnectedAgents("chats").channels!.providers.find(
-      ({ provider }) => provider === "imessage",
-    )!.computerApp!;
-    const mac = (id: string, name: string, extra: object) => ({
-      ...host.getSnapshot().machines[0],
-      id,
-      name,
-      status: "online",
-      allowedModules: ["messaging"],
-      modules: { messaging: {} },
-      apps: [{ definitionId: app }],
-      ...extra,
-    });
-    const snapshot = host.getSnapshot();
-    vi.spyOn(host, "getSnapshot").mockReturnValue({
-      ...snapshot,
-      machines: [
-        mac("rnr_00000000-0000-4000-8000-0000000000a1", "Studio Mac", {}),
-        mac("rnr_00000000-0000-4000-8000-0000000000a2", "Asleep Mac", { status: "offline" }),
-        mac("rnr_00000000-0000-4000-8000-0000000000a3", "Mac without Messages", { apps: [] }),
-      ],
-    } as never);
     await vi.waitFor(() => expect(rows().some((r) => r.label === "iMessage")).toBe(true));
-    await press("iMessage");
-    const macs = rows().filter((r) => r.kind === "button" && r.label.includes("Mac"));
-    expect(macs.map((r) => r.label.replace("✓ ", ""))).toEqual(["Studio Mac"]);
-    const dispatch = vi.spyOn(host, "dispatch").mockRejectedValue(new Error("Keep the state"));
-    await press("Connect");
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "channel.connection.computer.create",
-        runnerId: "rnr_00000000-0000-4000-8000-0000000000a1",
-      }),
-    );
+    // Every provider offered is one rule: a sheet to finish here, or one sentence where to go.
+    expect(row("iMessage")).toMatchObject({
+      kind: "text",
+      detail: "Add iMessage from Opensteer on the Mac it will use.",
+    });
+    await press("Slack");
+    expect(
+      rows()
+        .filter((r) => r.kind === "input")
+        .map((r) => r.label),
+    ).toEqual(["Bot user OAuth token", "App-level token"]);
+    expect(row("Connect").kind).toBe("button");
   },
 );
 
@@ -571,7 +635,7 @@ it.each(["ios", "android"])(
     );
     await press("Link my account");
     await vi.waitFor(() =>
-      expect(rows().some((r) => r.label.startsWith("Send MOCKCODE to On-call"))).toBe(true),
+      expect(rows().some((r) => r.label.startsWith("Send MOCKCODE to “On-call”"))).toBe(true),
     );
     expect(
       rows().some(

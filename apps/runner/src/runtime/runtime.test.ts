@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { AttachmentCache } from "../attachments/attachment-cache.js";
+import { RunFileError, RunFiles } from "../attachments/run-files.js";
 import { agentTools, appHostingGuide } from "@opensteer/agent-tools";
 import { hostCommandPlatform } from "@opensteer/shared/command";
 import {
@@ -701,6 +702,55 @@ describe("RunnerRuntime", () => {
       await runtime.close();
     }
   });
+
+  it.each([false, true])(
+    "hands a Run without personal context nothing of Agent home (personal context: %s)",
+    async (personalContext) => {
+      const driver = new FakeHarnessDriver();
+      const registry = new HarnessRegistry();
+      registry.registerDriver(driver);
+      const environmentId = createId("environment");
+      const plans: HarnessSandboxRunPlan[] = [];
+      const runtime = configuredRuntime({
+        environmentId,
+        harnessSandbox: {
+          plan: async (plan) => {
+            plans.push(plan);
+            return (launch) => launch;
+          },
+          planProgram: async () => (launch) => launch,
+        },
+        registry,
+      });
+      const base = executeCommand(environmentId);
+      const execute = { ...base, context: { ...base.context, personalContext } };
+      const agentHome = base.agentHome!.path;
+      const underHome = (value: string | undefined) =>
+        value !== undefined && (value === agentHome || value.startsWith(`${agentHome}/`));
+      try {
+        await reconcile(registry, execute);
+        await runtime.handleCommand(execute, { send: async () => undefined });
+        await waitUntil(() => driver.contexts.length === 1);
+        const context = driver.context!;
+        const handed = [
+          ...context.writableRoots,
+          context.workspacePath,
+          ...Object.values(context.commandEnvironment),
+          ...plans.flatMap((plan) => [...plan.writableRoots, plan.workspacePath]),
+        ];
+        if (personalContext) {
+          // The person's own Run works in Agent home, as before.
+          expect(context.workspacePath).toBe(agentHome);
+          expect(context.writableRoots).toContain(agentHome);
+        } else {
+          expect(handed.filter(underHome)).toEqual([]);
+          expect(context.writableRoots).toEqual([context.workspacePath]);
+        }
+      } finally {
+        await runtime.close();
+      }
+    },
+  );
 
   it("gives its engine a Run-local proxy, never a Host token, and cuts it on interrupt", async () => {
     const seenAuthorization: (string | undefined)[] = [];
@@ -4052,6 +4102,68 @@ describe("RunnerRuntime", () => {
     }
   });
 
+  it("scans no Agent home skills for a Run without personal context, before it or after it ends", async () => {
+    const temporaryRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "opensteer-skill-scan-none-test-")),
+    );
+    const workspacePath = join(temporaryRoot, "workspace");
+    const stateRoot = join(temporaryRoot, "private", "harness-state");
+    await writeWorkspaceSkill(workspacePath, "release-notes");
+    const driver = new FakeHarnessDriver("test-driver", () => new FakeHarnessSession());
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const runtime = runtimeWithLeaseGrants({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
+      nodeExecutable: process.execPath,
+      agentSkills: testAgentSkills,
+      bootId: "boot-skill-scan-none-test",
+      browserHarnessExecutable: testBrowserHarnessExecutable,
+      deploymentShape: testDeploymentShape,
+      environmentId,
+      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
+      harnesses: registry,
+      plugins: async () => ({
+        cleanup: async () => undefined,
+        digest: "none",
+        directories: [],
+        skills: [],
+      }),
+      logger: { error: () => undefined, info: () => undefined },
+      maxConcurrentRuns: 1,
+      dataDirectory: dirname(stateRoot),
+      privateStateDirectory: stateRoot,
+      projectContinuationIdentity,
+      agentHome: {
+        folder: async ({ path }: { readonly path: string }) => path,
+        prepare: async () => ({ instructions: undefined, path: workspacePath }),
+      },
+    });
+    const scans: unknown[] = [];
+    runtime.observeAgentHomeSkills(async (_generation, scan) => {
+      scans.push(scan);
+    });
+    try {
+      const base = executeCommand(environmentId);
+      const command = {
+        ...base,
+        agentHome: { ...base.agentHome!, path: workspacePath },
+        context: { ...base.context, personalContext: false },
+      };
+      await reconcile(registry, command);
+      await expect(
+        runtime.handleCommand(command, { send: async () => undefined }),
+      ).resolves.toEqual({ status: "accepted" });
+      await waitUntil(() => runtime.activeRunIds().length === 0);
+      expect(driver.context).toBeDefined();
+      // The Run had no Agent home, so nothing of it was read for the Home's skill catalog.
+      expect(scans).toEqual([]);
+    } finally {
+      await runtime.close();
+      await rm(temporaryRoot, { force: true, recursive: true });
+    }
+  });
+
   it.each([false, true])("resolves skill layers with disabled=%s", async (disabled) => {
     const temporaryRoot = await realpath(
       await mkdtemp(join(tmpdir(), "opensteer-skill-layer-test-")),
@@ -6696,6 +6808,74 @@ it("creates the attachment directory before launch and drains file work before R
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it.each([false, true])(
+  "sends a file by a relative path from the Run's own folder, never from Agent home without personal context (personal context: %s)",
+  async (personalContext) => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "runtime-run-files-")));
+    const agentHome = join(root, "agent-home");
+    await mkdir(agentHome);
+    await writeFile(join(agentHome, "AGENTS.md"), "the person's own instructions");
+    const cache = new AttachmentCache({
+      root: join(root, "cache"),
+      transport: { mode: "development", hostOrigin: new URL("http://localhost") },
+    });
+    const registry = new HarnessRegistry();
+    const driver = new FakeHarnessDriver("test-driver", () => new HeldHarnessSession());
+    Object.defineProperty(driver, "capabilities", {
+      value: {
+        ...fakeHarnessCapabilities,
+        messageAttachments: { darwinIsolatedServiceSandbox: true },
+      },
+    });
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const base = executeCommand(environmentId);
+    const command = {
+      ...base,
+      agentHome: { ...base.agentHome!, path: agentHome },
+      context: { ...base.context, personalContext },
+    };
+    const runtime = configuredRuntime({
+      environmentId,
+      registry,
+      attachmentCache: cache,
+      workspacePrepare: async () => ({ instructions: undefined, path: agentHome }),
+    });
+    const files = new RunFiles({
+      dataDirectory: join(root, "private"),
+      helperBinary: testNativeFsHelperBinary,
+      transport: { mode: "development", hostOrigin: new URL("http://localhost") },
+    });
+    await reconcile(registry, command);
+    try {
+      await runtime.handleCommand(command, { send: async () => undefined });
+      await vi.waitFor(() => expect(driver.context).toBeDefined(), { timeout: 2_000 });
+      const execution = {
+        runId: command.context.runId,
+        bindingGeneration: command.context.bindingGeneration,
+      };
+      const send = (path: string) =>
+        runtime.withRunFiles(execution, new AbortController().signal, async (access) => {
+          const source = await files.source(path, access);
+          const chunks: Buffer[] = [];
+          for await (const chunk of source.body) chunks.push(Buffer.from(chunk as Uint8Array));
+          return Buffer.concat(chunks).toString("utf8");
+        });
+      if (personalContext) {
+        await expect(send("AGENTS.md")).resolves.toBe("the person's own instructions");
+      } else {
+        // A relative path is read from the Run's own folder, where there is no AGENTS.md.
+        await expect(send("AGENTS.md")).rejects.toThrow();
+        // And Agent home is not one of its roots at all.
+        await expect(send(join(agentHome, "AGENTS.md"))).rejects.toThrow(RunFileError);
+      }
+    } finally {
+      await runtime.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 describe("this computer's own view and Stop of its Runs", () => {
   function blockingRuntime() {

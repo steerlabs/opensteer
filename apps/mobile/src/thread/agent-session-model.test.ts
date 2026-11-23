@@ -1,3 +1,4 @@
+import { readAsDrawn } from "../screens/read-as-drawn.test-support.js";
 import { connectedAgentIdentity, type HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import type { Request } from "@opensteer/core";
@@ -178,30 +179,30 @@ describe("who the agent is, on the phone", () => {
     connectedAgentIdentity(named(label), redirect, withdrawnAt ?? null).who;
 
   it("says a verified pair or platform in the Home's words, and a self-given name as such", () => {
-    expect(whoLines(who("Errand"), { consent: true })).toMatchObject({
+    expect(readAsDrawn(whoLines(who("Errand"), { consent: true }))).toMatchObject({
       heading: "Errand via AgentPay",
       verified: true,
       warning: "Only allow this if you started it yourself.",
     });
-    expect(whoLines(who("Claude"), { consent: false })).toMatchObject({
+    expect(readAsDrawn(whoLines(who("Claude"), { consent: false }))).toMatchObject({
       heading: "Claude",
       detail: "https://claude.ai",
       verified: true,
       warning: null,
     });
-    expect(whoLines(who("Grok"), { consent: true })).toMatchObject({
+    expect(readAsDrawn(whoLines(who("Grok"), { consent: true }))).toMatchObject({
       heading: "Says it is Grok",
       detail: "https://grok.com",
       verified: false,
     });
-    expect(whoLines(who("Claude Code"), { consent: true })).toMatchObject({
+    expect(readAsDrawn(whoLines(who("Claude Code"), { consent: true }))).toMatchObject({
       heading: "Says it is Claude Code",
       detail: "an app on this computer",
     });
   });
 
   it("guesses nothing from a domain for an older Home, and says when verification was withdrawn", () => {
-    expect(whoLines(who("Shop helper"), { consent: true })).toMatchObject({
+    expect(readAsDrawn(whoLines(who("Shop helper"), { consent: true }))).toMatchObject({
       heading: "Says it is Shop helper",
       detail: "https://shophelper.example",
       verified: false,

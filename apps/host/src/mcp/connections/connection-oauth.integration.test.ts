@@ -1407,5 +1407,12 @@ integration("external MCP OAuth over HTTP", () => {
     // `everything` is the person's whole authority, so it still reaches that profile.
     const everything = await update("everything", { scope: "everything" });
     expect(everything.statusCode, everything.body).toBe(200);
+    // Its answer is the connection as the list draws it, who it is included.
+    const listed = await injectRpcRequest(f.app, "connections.list", {}, f.headers);
+    const row = listed
+      .json()
+      .data.connections.find((connection: { readonly id: string }) => connection.id === id);
+    expect(row.identity).toBeDefined();
+    expect(everything.json().data.connection).toEqual(row);
   });
 });

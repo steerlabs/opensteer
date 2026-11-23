@@ -28,14 +28,15 @@ import {
 } from "@opensteer/control-plane-protocol";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { outsideName } from "@opensteer/shared/outsideName";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
+import type { RunId } from "@opensteer/core";
 import type { AgentConnectionTable, DatabaseSchema } from "./schema.js";
 import { isIdentityStillVerified } from "./agent-directory-verification.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { databaseOperation } from "./operation-budget.js";
 import {
   connectionAttempts,
-  endConvertedRoutes,
   latestConnectionUncertainty,
   outstandingAttempts,
 } from "./connection-disconnect.js";
@@ -128,8 +129,9 @@ export class AgentConnectionStore {
         .values({
           id: `mcn_${randomUUID()}`,
           userId: input.userId,
-          label: input.label,
-          clientName: input.clientName,
+          // Names from outside enter clean (`outsideName`): never stored or served dirty.
+          label: outsideName(input.label, 120) || outsideName(input.clientName, 100) || "Agent",
+          clientName: outsideName(input.clientName, 100) || "Agent",
           accessMode,
           resource: input.resource,
           createdAt: this.now(),
@@ -142,7 +144,11 @@ export class AgentConnectionStore {
           clientFingerprint: input.clientFingerprint ?? null,
           redirectUri: input.redirectUri ?? null,
           identityAtConsent: input.identityAtConsent
-            ? jsonValue(AgentConnectionIdentityAtConsentSchema.parse(input.identityAtConsent))
+            ? jsonValue(
+                cleanIdentityNames(
+                  AgentConnectionIdentityAtConsentSchema.parse(input.identityAtConsent),
+                ),
+              )
             : null,
         })
         .returningAll()
@@ -180,12 +186,17 @@ export class AgentConnectionStore {
       const accessMode = await connectionPolicyMode(tx, grant, input.accessMode);
       await assertGrantable(tx, input.userId, grant);
       const provider = bridgeProviderLabel(account.provider);
+      const conversationName = input.conversation
+        ? outsideName(input.conversation.name, 160) || null
+        : null;
       const row = await tx
         .insertInto("agentConnections")
         .values({
           id: `mcn_${randomUUID()}`,
           userId: input.userId,
-          label: (input.label ?? bridgeLabel(provider, input.conversation?.name)).slice(0, 120),
+          label:
+            outsideName(input.label ?? bridgeLabel(provider, conversationName ?? undefined), 120) ||
+            provider,
           clientName: provider,
           accessMode,
           resource: bridgeResource,
@@ -199,7 +210,7 @@ export class AgentConnectionStore {
           bridgeAccountId: input.accountId,
           bridgeConversationId: input.conversation?.id ?? null,
           bridgeSenders: input.senders,
-          bridgeConversationName: input.conversation?.name ?? null,
+          bridgeConversationName: conversationName,
         })
         .returningAll()
         .executeTakeFirstOrThrow()
@@ -470,16 +481,12 @@ export class AgentConnectionStore {
         const changed =
           change.kind === "revoke"
             ? await store.revoke(change.userId, change.connectionId, {
-                routes: "later",
                 endedBy: change.endedBy ?? "organization",
               })
             : (await this.#writeUpdate(tx, change.userId, change, "organization")).changed;
         if (changed) changedIds.push(change.connectionId);
         if (changed && change.kind === "revoke") revokedIds.push(change.connectionId);
       }
-      // Every connection first, in id order; then the old routes of the converted chats among
-      // them, in one ordered statement.
-      await endConvertedRoutes(tx, revokedIds, this.now());
       await closeObsoleteAgentOperationRequests(tx, changedIds, this.now());
     });
   }
@@ -544,7 +551,10 @@ export class AgentConnectionStore {
     const row = await tx
       .updateTable("agentConnections")
       .set({
-        label: input.label ?? current.label,
+        label:
+          input.label === undefined
+            ? current.label
+            : outsideName(input.label, 120) || current.label,
         accessMode,
         grant: jsonValue(grant),
         grantRevision: current.grantRevision + Number(changed),
@@ -587,7 +597,7 @@ export class AgentConnectionStore {
   async revoke(
     userId: UserId,
     id: string,
-    options: { readonly routes?: "now" | "later"; readonly endedBy?: BridgeEndedBy } = {},
+    options: { readonly endedBy?: BridgeEndedBy } = {},
   ): Promise<boolean> {
     return commitPersonalMutation(this.database, async (tx) => {
       await requirePersonalOwner(tx, userId);
@@ -616,7 +626,6 @@ export class AgentConnectionStore {
         })
         .where("id", "=", row.id)
         .execute();
-      if (options.routes !== "later") await endConvertedRoutes(tx, [row.id], this.now());
       return true;
     });
   }
@@ -677,6 +686,7 @@ export class AgentConnectionStore {
 /** What a person reads about a chat beside its row: where, who "me" is, why it is paused or ended. */
 interface ChatFacts {
   readonly accountName: string;
+  readonly accountHandle: string | null;
   readonly channelConnectionId: string;
   readonly me: { readonly displayName: string; readonly externalUserId: string } | null;
   readonly pausedBy: "you" | "needs-attention";
@@ -689,6 +699,7 @@ interface ChatFacts {
     readonly id: string;
     readonly title: string;
     readonly running: boolean;
+    readonly runId: RunId | null;
   }[];
 }
 
@@ -733,6 +744,12 @@ async function chatFacts(
   const tasks = await database
     .selectFrom("threads")
     .select(["id", "title", "status", "originConnectionId"])
+    // The Run it is doing, which Stop interrupts: its newest one not ended.
+    .select(
+      sql<RunId | null>`(select runs.id from runs where runs.thread_id = threads.id
+        and runs.maintenance is null and runs.status in ('starting', 'running', 'waiting')
+        order by runs.run_ordinal desc limit 1)`.as("runId"),
+    )
     .where("originConnectionId", "in", chatIds)
     .where("removedAt", "is", null)
     .where("parentThreadId", "is", null)
@@ -743,12 +760,16 @@ async function chatFacts(
     tasks
       .filter((task) => task.originConnectionId === id)
       .slice(0, 5)
-      .map((task) => ({ id: task.id, title: task.title, running: task.status === "running" }));
+      .map((task) => {
+        const running = task.status === "running";
+        return { id: task.id, title: task.title, running, runId: running ? task.runId : null };
+      });
   return new Map(
     rows.map((row) => [
       row.id,
       {
-        accountName: (row.handle ?? row.displayName).slice(0, 160),
+        accountName: row.displayName.slice(0, 160),
+        accountHandle: row.handle?.slice(0, 160) ?? null,
         channelConnectionId: row.connectionId,
         me:
           row.meName !== null && row.meId !== null
@@ -823,11 +844,11 @@ function connectionView(
             grantShape: (({ resources, ...shape }) => ({ ...shape, resources: [...resources] }))(
               chatGrantShape(row.bridgeSenders),
             ),
-            ...(row.bridgeNotice ? { notice: row.bridgeNotice } : {}),
             conversationName: row.bridgeConversationName,
             ...(chat
               ? {
                   accountName: chat.accountName,
+                  ...(chat.accountHandle ? { accountHandle: chat.accountHandle } : {}),
                   channelConnectionId: chat.channelConnectionId,
                   me: chat.me,
                   unknownReplies: chat.unknownReplies,
@@ -914,4 +935,16 @@ function identityAtConsent(
 function detailText(detail: Readonly<Record<string, unknown>> | null, key: string): string | null {
   const value = detail?.[key];
   return typeof value === "string" ? value : null;
+}
+
+/** The names in who an agent is (its own, its platform's, its embedder's) enter clean too. */
+function cleanIdentityNames<Identity extends object>(identity: Identity): Identity {
+  return Object.fromEntries(
+    Object.entries(identity).map(([key, value]) => [
+      key,
+      typeof value === "string" && key.endsWith("Name")
+        ? outsideName(value, 100) || "Agent"
+        : value,
+    ]),
+  ) as Identity;
 }

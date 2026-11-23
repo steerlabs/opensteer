@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
-import { createId } from "@opensteer/core";
+import { createId, ThreadIdSchema } from "@opensteer/core";
+import { readAsDrawn } from "./read-as-drawn.test-support.js";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
@@ -48,7 +49,7 @@ vi.mock("./native-settings-page.js", async () => {
     NativeSettingsPage: (props: NativeSettingsPageProps) => {
       const sheet = props.sheet !== undefined;
       if (sheet) state.sheet = props;
-      else state.page = props;
+      else state.page = readAsDrawn(props);
       useEffect(
         () => () => {
           if (sheet) state.sheet = null;
@@ -174,10 +175,10 @@ describe("one connected agent on the phone", () => {
       expect(row("withdrawn", "withdrawn").label).toMatch(/^No longer verified since /u);
       // Its name is the title; the who rows add only where its access goes.
       expect(section("who")?.rows.map(({ label }) => label)).toEqual([
-        "Holds the access: ChatGPT · https://chatgpt.com",
+        "Holds the access: “ChatGPT” · https://chatgpt.com",
       ]);
       expect(section("withdrawn")?.footer?.text).toBe("Check its last action or disconnect it.");
-      expect(row("withdrawn", "disconnect").label).toBe("Disconnect ChatGPT");
+      expect(readAsDrawn(row("withdrawn", "disconnect").label)).toBe("Disconnect “ChatGPT”");
       const option = row("resources", sourceId);
       expect(option.label).toBe("Tabs you share from Chrome on Work Mac");
       expect(section("chrome-pairing")?.footer?.text).toBe(
@@ -225,13 +226,14 @@ describe("one connected agent on the phone", () => {
         "detail" in candidate ? candidate.detail : null,
       ]),
     ).toEqual([
-      ["Calls itself", "TravelBot Agent"],
-      ["Address it uses", "trips.example"],
-      ["Connected", expect.any(String)],
+      ["Calls itself", "“TravelBot Agent”"],
+      ["Address it uses", "https://trips.example"],
+      // The day it was added, never read as where it stands now.
+      ["Added", expect.any(String)],
       ["Expires", expect.any(String)],
     ]);
-    expect(row("end", "disconnect")).toMatchObject({
-      label: "Disconnect Trip planner",
+    expect(readAsDrawn(row("end", "disconnect"))).toMatchObject({
+      label: "Disconnect “Trip planner”",
       destructive: true,
     });
   });
@@ -255,7 +257,9 @@ describe("one connected agent on the phone", () => {
       }),
     );
     await vi.waitFor(() =>
-      expect(section("note")?.footer?.text).toBe("Saved. Grok uses this from its next action."),
+      expect(readAsDrawn(section("note")?.footer?.text)).toBe(
+        "Saved. “Grok” uses this from its next action.",
+      ),
     );
     await press(row("mode", "full-access"));
     expect(dispatch).toHaveBeenLastCalledWith(
@@ -291,7 +295,7 @@ describe("one connected agent on the phone", () => {
     const dispatch = vi.spyOn(client, "dispatch");
     await press(row("scope", "selected"));
     expect(state.alerts.at(-1)).toMatchObject({
-      title: "Limit Claude to what you choose?",
+      title: "Limit “Claude” to what you choose?",
       body: "It stops being able to use anything you don’t pick.",
     });
     expect(dispatch).not.toHaveBeenCalled();
@@ -350,7 +354,7 @@ describe("one connected agent on the phone", () => {
     const dispatch = vi.spyOn(client, "dispatch");
     await press(row("end", "disconnect"));
     expect(state.alerts.at(-1)).toMatchObject({
-      title: "Disconnect Grok?",
+      title: "Disconnect “Grok”?",
       body: "It stops right away and can’t use anything again unless you connect it again. Tabs it was using stay open so you can check them.",
     });
     expect(dispatch).not.toHaveBeenCalled();
@@ -429,7 +433,7 @@ describe("one connected agent on the phone", () => {
       "Update Opensteer on your Home to choose what this agent can use. Until then it can do everything your own agents can.",
     );
     expect(section("scope")).toBeUndefined();
-    expect(row("end", "disconnect").label).toBe("Disconnect Grok");
+    expect(readAsDrawn(row("end", "disconnect").label)).toBe("Disconnect “Grok”");
   });
 });
 
@@ -451,37 +455,107 @@ async function pauseWorkshop(client: MockHostClient) {
 describe("a chat on the phone", () => {
   const chat = (n: number) => `mcn_00000000-0000-4000-8000-0000000000c${n}`;
   const chats = () => new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
+  /** The Home takes each Stop of a Run; the Run ends only when the test lets it. */
+  const holdInterrupts = (client: MockHostClient) => {
+    const held: Extract<Parameters<MockHostClient["dispatch"]>[0], { type: "run.interrupt" }>[] =
+      [];
+    const real = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+      if (command.type !== "run.interrupt") return real(command);
+      held.push(command);
+      return { type: "run.interrupt", wasDuplicate: false };
+    });
+    return held;
+  };
 
   it("shows where a live chat listens, who can give it work, its work with Stop, and Disconnect", async () => {
     const client = await open(chat(1), chats());
-    expect(row("chat-where", "where").label).toBe("Direct messages to Workshop on Slack");
+    expect(row("chat-where", "where").label).toBe("Direct messages to “Workshop” on Slack");
     expect(row("chat-speakers", "speakers")).toMatchObject({
-      label: "You, as Tim",
+      label: "You, as “Tim”",
       detail:
-        "Only messages you send as Tim give this agent work. To use another account, link it on Messaging: the new one replaces this one.",
+        "Only messages you send as “Tim” give this agent work. To use another account, link it on Messaging: the new one replaces this one.",
     });
     expect(section("chat-speakers")?.footer?.text).toBe(
       "This is chosen when the chat is added and can’t be changed. To change it, disconnect this chat and add it again.",
     );
-    const stop = vi.spyOn(client, "stopRun").mockResolvedValue(undefined);
+    const interrupts = holdInterrupts(client);
     await press(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop"));
-    expect(stop).toHaveBeenCalledWith("thr_00000000-0000-4000-8000-0000000000c1");
-    expect(row("end", "disconnect").label).toBe("Disconnect Slack");
+    expect(interrupts).toEqual([
+      expect.objectContaining({
+        threadId: "thr_00000000-0000-4000-8000-0000000000c1",
+        runId: "run_00000000-0000-4000-8000-0000000000c1",
+      }),
+    ]);
+    // Taken, and the task still runs until its device answers: it says so, and asks no second time.
+    expect(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop")).toMatchObject({
+      label: "Stopping…",
+      disabled: true,
+    });
+    expect(readAsDrawn(row("end", "disconnect").label)).toBe("Disconnect “Slack”");
+  });
+
+  it("ends Stopping… when the Run ends, as the task's own updates say, and gives its next Run a Stop of its own", async () => {
+    const client = await open(chat(1), chats());
+    const task = "thr_00000000-0000-4000-8000-0000000000c1";
+    const key = `${task}-stop`;
+    const real = client.dispatch.bind(client);
+    const interrupts = holdInterrupts(client);
+    await press(row("chat-tasks", key));
+    expect(row("chat-tasks", key)).toMatchObject({ label: "Stopping…", disabled: true });
+    // Its device answers: the Run ends, and nothing about the connection changes.
+    const changed = vi.fn();
+    const unsubscribe = client.subscribeConnectionsChanged(changed);
+    await act(async () => void (await real(interrupts[0]!)));
+    await vi.waitFor(() =>
+      expect(section("chat-tasks")?.rows.map(({ key }) => key)).not.toContain(key),
+    );
+    expect(row("chat-tasks", task)).toMatchObject({ detail: "Not running" });
+    expect(changed).not.toHaveBeenCalled();
+    unsubscribe();
+    // The task is given more work: a new Run, which has a Stop of its own. The preview's reply
+    // waits on a timer that is held here, so the Run is still at work when it is stopped.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    await act(async () => client.resumeThreadInputQueue(task));
+    void real({
+      type: "thread.sendMessage",
+      threadId: ThreadIdSchema.parse(task),
+      content: [{ type: "text", text: "One more thing" }],
+      delivery: "queue",
+      idempotencyKey: "chat-next-run",
+    });
+    const stoppable = () =>
+      section("chat-tasks")?.rows.some((candidate) => candidate.key === key) === true;
+    for (let step = 0; step < 50 && !stoppable(); step++)
+      await act(async () => void (await vi.advanceTimersToNextTimerAsync()));
+    expect(row("chat-tasks", key)).toMatchObject({ label: "Stop", disabled: false });
+    await press(row("chat-tasks", key));
+    vi.useRealTimers();
+    expect(interrupts).toHaveLength(2);
+    expect(new Set(interrupts.map(({ runId }) => runId)).size).toBe(2);
   });
 
   it("shows a Stop in flight as Stopping and sends no second one", async () => {
     const client = await open(chat(1), chats());
     let finish = () => {};
+    const real = client.dispatch.bind(client);
     const stop = vi
-      .spyOn(client, "stopRun")
-      .mockImplementation(() => new Promise<void>((done) => (finish = done)));
+      .spyOn(client, "dispatch")
+      .mockImplementation((command) =>
+        command.type === "run.interrupt"
+          ? new Promise(
+              (done) => (finish = () => done({ type: "run.interrupt", wasDuplicate: false })),
+            )
+          : real(command),
+      );
     const key = "thr_00000000-0000-4000-8000-0000000000c1-stop";
     await press(row("chat-tasks", key));
     expect(row("chat-tasks", key)).toMatchObject({ label: "Stopping…", disabled: true });
     await press(row("chat-tasks", key));
-    expect(stop).toHaveBeenCalledOnce();
+    expect(stop.mock.calls.filter(([command]) => command.type === "run.interrupt")).toHaveLength(1);
     await act(async () => finish());
-    expect(row("chat-tasks", key)).toMatchObject({ label: "Stop", disabled: false });
+    // Taken: it reads Stopping… until the Home says the task no longer runs.
+    expect(row("chat-tasks", key)).toMatchObject({ label: "Stopping…", disabled: true });
   });
 
   it("keeps what a paused chat holds on screen when an edit met a newer one", async () => {
@@ -554,6 +628,30 @@ describe("a chat on the phone", () => {
     );
   });
 
+  it("says, where an anyone chat's mode is chosen, what the people there can have it do", async () => {
+    await open(chat(2), chats());
+    // The conversation's name is someone else's: drawn as a name, in quotation marks.
+    expect(readAsDrawn(row("mode", "auto"))).toMatchObject({
+      detail:
+        "People in “#team” can have it act without asking you whenever the engine’s own safety check allows it. That can reach files outside its folder.",
+    });
+    expect(readAsDrawn(row("mode", "full-access"))).toMatchObject({
+      detail:
+        "Never asks. People in “#team” can have it do anything on its computer that your user account can.",
+    });
+    expect(row("mode", "approval-required")).toMatchObject({
+      detail: "Asks you before anything that changes something.",
+    });
+    // A chat that answers only you reads as a connected agent does: its tasks work in Agent home.
+    host?.dispose();
+    act(() => root?.unmount());
+    await open(chat(1), chats());
+    expect(row("mode", "full-access")).toMatchObject({
+      detail:
+        "Never asks. It can change anything in your Agent home, and anything else on that computer that your user account can.",
+    });
+  });
+
   it("says a chat's page could not be read when the read failed, never that it is gone", async () => {
     const client = chats();
     Object.defineProperty(client.rpc, "connections.list", {
@@ -576,6 +674,42 @@ describe("a chat on the phone", () => {
     await vi.waitFor(() => expect(section("unreadable")).toBeDefined());
     expect(row("unreadable", "unreadable").label).toBe("Couldn’t read your connected agents.");
     expect(section("gone")).toBeUndefined();
+  });
+
+  it("after a refresh fails on a page read before, offers only Try again", async () => {
+    const client = chats();
+    const changed: (() => void)[] = [];
+    const subscribe = client.subscribeConnectionsChanged.bind(client);
+    vi.spyOn(client, "subscribeConnectionsChanged").mockImplementation((listener) => {
+      changed.push(listener);
+      return subscribe(listener);
+    });
+    await open(chat(1), client);
+    expect(section("chat-where")).toBeDefined();
+    Object.defineProperty(client.rpc, "connections.list", {
+      value: vi.fn(async () => {
+        throw new HostClientRequestError({ code: "internal", message: "down", status: 503 });
+      }),
+      configurable: true,
+    });
+    await act(async () => {
+      for (const listener of changed) listener();
+    });
+    await vi.waitFor(() => expect(section("read-failed")).toBeDefined());
+    // Every row that acts, found by enumeration: only Try again.
+    const acting = (state.page?.sections ?? []).flatMap((candidate) =>
+      candidate.rows
+        .filter(
+          (candidateRow) =>
+            (candidateRow.kind === "button" && !candidateRow.opens) ||
+            candidateRow.kind === "toggle" ||
+            candidateRow.kind === "input" ||
+            candidateRow.kind === "choice" ||
+            candidateRow.kind === "chips",
+        )
+        .map((candidateRow) => candidateRow.label),
+    );
+    expect(acting).toEqual(["Try again"]);
   });
 
   it("shows a chat none of a signed-in agent's identity lines", async () => {
@@ -635,9 +769,11 @@ describe("a chat on the phone", () => {
 
   it("says why a task could not be stopped, in words, never the raw error", async () => {
     const client = await open(chat(1), chats());
-    vi.spyOn(client, "stopRun").mockRejectedValue(
-      new HostClientRequestError({ code: "unavailable", message: "down", status: 503 }),
-    );
+    const real = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+      if (command.type !== "run.interrupt") return real(command);
+      throw new HostClientRequestError({ code: "unavailable", message: "down", status: 503 });
+    });
     await press(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop"));
     await vi.waitFor(() => expect(state.alerts.at(-1)?.title).toBe("Stop"));
     expect(state.alerts.at(-1)?.body).toBeTruthy();
@@ -719,5 +855,26 @@ describe("a chat on the phone", () => {
     act(() => root?.unmount());
     await open("mcn_00000000-0000-4000-8000-000000000003");
     expect(footers().some((text) => text.startsWith(warning))).toBe(true);
+  });
+
+  it("offers Remove from list on an ended chat only, never on a live or paused one", async () => {
+    for (const [n, removable] of [
+      [1, false],
+      [2, false],
+      [3, false],
+      [4, false],
+      [5, true],
+    ] as const) {
+      await open(chat(n), chats());
+      const labels = (state.page?.sections ?? []).flatMap((s) => s.rows.map((r) => r.label));
+      expect(labels.includes("Remove from list"), `chat ${n}`).toBe(removable);
+      act(() => root?.unmount());
+    }
+  });
+
+  it("says a chat is at work when its page lists a task running, from that one list", async () => {
+    await open(chat(1), chats());
+    expect(status().label).not.toBe("Not doing anything");
+    expect(section("status")?.footer?.text).toContain("Summarize my week");
   });
 });

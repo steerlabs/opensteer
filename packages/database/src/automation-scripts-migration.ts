@@ -214,5 +214,14 @@ export async function applyAutomationsContract(database: Kysely<DatabaseSchema>)
       );
 
     drop table if exists watch_control_requests;
+
+    create function pg_temp.outside_name(value text, maximum integer, fallback text) returns text
+    language sql immutable as $clean$
+      select coalesce(nullif(rtrim(left(btrim(regexp_replace(regexp_replace(
+        regexp_replace(value, '\r\n|[\n\r\t\v\f\u0085\u2028\u2029]', ' ', 'g'),
+        '[\x01-\x1f\x7f-\x9f\u00ad\u0600-\u0605\u061c\u06dd\u070f\u0890-\u0891\u08e2\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0001\U000e0020-\U000e007f]', '', 'g'), '\s+', ' ', 'g')), maximum)), ''), fallback)
+    $clean$;
+    update triggers set name = pg_temp.outside_name(name, 160, 'Automation');
+    drop function pg_temp.outside_name(text, integer, text);
   `.execute(database);
 }

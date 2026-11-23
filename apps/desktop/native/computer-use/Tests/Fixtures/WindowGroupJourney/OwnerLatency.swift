@@ -77,10 +77,18 @@ import CoreMedia
           $0["event"] as? String == "owner-input-dispatch" && $0["streamId"] as? String == stream
             && ($0["inputSequence"] as? NSNumber)?.intValue == sequence
         }).unwrap("native dispatch timestamp")
+        // The header carries the encoder's timestamp, which a refreshed key
+        // advances past the capture it re-encodes; the helper names that capture.
+        let encoded = try rows.first(where: {
+          $0["event"] as? String == "encode-pts" && $0["streamId"] as? String == stream
+            && ($0["generation"] as? NSNumber)?.intValue == generation
+            && ($0["ptsUs"] as? NSNumber)?.int64Value == pts
+        }).unwrap("encoder timestamp for decoded frame")
+        let capturePTS = try (encoded["capturePtsUs"] as? NSNumber).unwrap("encoded capture PTS").int64Value
         let capture = try rows.first(where: {
           $0["event"] as? String == "capture-sample" && $0["streamId"] as? String == stream
             && ($0["generation"] as? NSNumber)?.intValue == generation
-            && ($0["ptsUs"] as? NSNumber)?.int64Value == pts
+            && ($0["ptsUs"] as? NSNumber)?.int64Value == capturePTS
         }).unwrap("capture timestamp for decoded frame")
         let dispatchedAt = try (dispatch["uptimeUs"] as? NSNumber).unwrap("dispatch uptime").int64Value
         let capturedAt = try (capture["uptimeUs"] as? NSNumber).unwrap("capture uptime").int64Value
@@ -90,7 +98,8 @@ import CoreMedia
         try bitmap.representation(using: .png, properties: [:]).unwrap("latency PNG")
           .write(to: out.appendingPathComponent(name))
         samples.append(["sequence": sequence, "generation": generation, "eventUs": eventAt,
-          "dispatchUs": dispatchedAt, "capturePTSUs": pts, "captureCallbackUs": capturedAt,
+          "dispatchUs": dispatchedAt, "capturePTSUs": capturePTS, "encodePTSUs": pts,
+          "captureCallbackUs": capturedAt,
           "decodeUs": decodedAt, "drawUs": drawnAt, "latencyMs": Double(drawnAt - eventAt) / 1000,
           "png": name])
         measured = true

@@ -12,7 +12,7 @@ import {
 import type { Kysely, Transaction } from "kysely";
 import {
   bindingAgentConnectionId,
-  connectionWaiting,
+  connectionIsWaiting,
   lineageEndedMessage,
   liveAgentConnection,
   chatTasksWithdrawnMessage,
@@ -166,13 +166,10 @@ export async function assertThreadCaller(
   if (lineageId) {
     try {
       lineage = await liveAgentConnection(tx, caller.userId, lineageId);
-    } catch {
-      // A chat's message that finds its chat paused waits for it; it is not refused.
-      if (
-        caller.kind === "connection" &&
-        caller.chat &&
-        (await connectionWaiting(tx, caller.userId, lineageId))
-      )
+    } catch (error) {
+      // A chat's message that finds its chat paused waits for it; it is not refused. The read
+      // that found it not live said so.
+      if (caller.kind === "connection" && caller.chat && connectionIsWaiting(error))
         throw chatWaitingError();
       throw forbidden(
         caller.kind === "connection"

@@ -1401,7 +1401,7 @@ describeStore("managed memory passes", (it) => {
     await sql`insert into agent_connections (id, user_id, label, client_name, access_mode,
         resource, token_hash, created_at, expires_at, revoked_at, "grant", grant_revision,
         consent_version, cleanup_reason, cleanup_requested_at, bridge_senders)
-      values (${legacyId}, ${base.userId}, 'Messages before the update', 'Messaging',
+      values (${legacyId}, ${base.userId}, 'Chats from before the update', 'Messaging',
         'approval-required', 'opensteer:bridge', null, now(), now(), now(),
         '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2, 'revoked', now(),
         'anyone')`.execute(f.database);
@@ -1483,9 +1483,11 @@ describeStore("managed memory passes", (it) => {
       task: [{ type: "text", text: "Work for #tools" }],
       title: "Worker for #tools",
     });
+    // An automation in the chat's task, as one made before such lineages were refused one: made
+    // on the person's task, then held in the chat's task and lineage, as its row would be.
     const automation = await new TriggerStore(f.database).create({
       actorThreadId: null,
-      anchorThreadId: fromStrangers.id,
+      anchorThreadId: own.id,
       createdBy: base.userId,
       idempotencyKey: "tools-strangers-automation",
       name: "Briefing for #tools",
@@ -1498,6 +1500,11 @@ describeStore("managed memory passes", (it) => {
         schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
       },
     });
+    await f.database
+      .updateTable("triggers")
+      .set({ anchorThreadId: fromStrangers.id, originConnectionId: anyone.id })
+      .where("id", "=", automation.trigger.id)
+      .execute();
     const hiddenTasks = [fromStrangers, under, legacy, strangersWorker.thread];
     // A person's automation on their own task, one of whose downstream Runs is in the chat's task.
     const ownAutomation = await new TriggerStore(f.database).create({

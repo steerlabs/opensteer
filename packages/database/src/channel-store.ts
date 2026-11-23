@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import { getDeviceSelfRunnerId, getSelfDeviceId } from "./device-inventory-store.js";
@@ -33,7 +34,13 @@ import {
   type NormalizedChannelEvent,
 } from "@opensteer/channel-core";
 import type { IntegrationConnectionMethod } from "@opensteer/integration-core/models";
-import { OpensteerError, type CredentialId, type RunnerId, type UserId } from "@opensteer/core";
+import {
+  chatAddRefusals,
+  OpensteerError,
+  type CredentialId,
+  type RunnerId,
+  type UserId,
+} from "@opensteer/core";
 import { type Kysely, type Selectable, sql, type Transaction } from "kysely";
 import type { ChannelAccountTable, DatabaseSchema, IntegrationConnectionTable } from "./schema.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
@@ -104,7 +111,6 @@ interface ClaimedDeliveryRecord {
   };
   readonly externalAccountId: string;
   /** The previous attempt lost its outcome, so the provider may already hold this message. */
-  readonly mayHaveBeenSent: boolean;
 }
 
 const atIngressLaneHead = sql<boolean>`not exists (
@@ -325,7 +331,7 @@ export class ChannelStore {
           connectionKind: "channel",
           connectionMethod: input.connection.connectionMethod,
           credentialId: input.credential?.id ?? null,
-          displayName: input.connection.displayName,
+          displayName: outsideName(input.connection.displayName, 160) || input.connection.provider,
           externalIdentityId,
           externalTenantId: input.connection.externalTenantId ?? null,
           id: createChannelId("connection"),
@@ -344,9 +350,10 @@ export class ChannelStore {
         .insertInto("channelAccounts")
         .values({
           connectionId: connectionRow.id,
-          displayName: input.account.displayName,
+          displayName:
+            outsideName(input.account.displayName, 160) || input.account.externalAccountId,
           externalAccountId: input.account.externalAccountId,
-          handle: input.account.handle ?? null,
+          handle: input.account.handle ? outsideName(input.account.handle, 160) || null : null,
           id: createChannelId("account"),
           metadata: jsonValue(input.account.metadata ?? {}),
           provider: input.connection.provider,
@@ -381,7 +388,7 @@ export class ChannelStore {
           .forNoKeyUpdate()
           .executeTakeFirst();
         if (!connection) {
-          throw new OpensteerError({ code: "not_found", message: "Channel connection not found" });
+          throw new OpensteerError({ code: "not_found", message: chatAddRefusals.accountGone });
         }
         if (status === "revoked") {
           await revokeChannelConnectionsInTransaction(transaction, [connectionId]);
@@ -437,15 +444,6 @@ export class ChannelStore {
       .deleteFrom("channelIngressEvents")
       .where("status", "in", ["adopted", "ignored", "dead"])
       .where("processedAt", "<", horizon)
-      .where(({ not, exists, selectFrom }) =>
-        not(
-          exists(
-            selectFrom("channelDeliveries")
-              .select("channelDeliveries.id")
-              .whereRef("channelDeliveries.ingressId", "=", "channelIngressEvents.id"),
-          ),
-        ),
-      )
       .executeTakeFirst();
     return {
       deliveries: Number(deliveries.numDeletedRows),
@@ -453,18 +451,25 @@ export class ChannelStore {
     };
   }
 
-  /** One of the owner's channel connections as a check of it needs it. */
+  /**
+   * One of the owner's channel connections as a check of it needs it: null when the owner has no
+   * such account (removed, revoked or never theirs), "unplaced" while it has no computer yet.
+   */
   async connectionForCheck(
     connectionId: IntegrationConnectionId,
     ownerUserId: UserId,
-  ): Promise<{
-    /** Null for a computer transport, which holds no secret. */
-    readonly credentialId: CredentialId | null;
-    readonly externalTenantId: string | null;
-    readonly provider: ChannelProvider;
-    readonly runnerId: RunnerId;
-    readonly transportKind: ChannelTransportKind;
-  } | null> {
+  ): Promise<
+    | {
+        /** Null for a computer transport, which holds no secret. */
+        readonly credentialId: CredentialId | null;
+        readonly externalTenantId: string | null;
+        readonly provider: ChannelProvider;
+        readonly runnerId: RunnerId;
+        readonly transportKind: ChannelTransportKind;
+      }
+    | "unplaced"
+    | null
+  > {
     const row = await this.#database
       .selectFrom("integrationConnections")
       .select(["credentialId", "externalTenantId", "provider", "runnerId", "transportKind"])
@@ -473,7 +478,8 @@ export class ChannelStore {
       .where("connectionKind", "=", "channel")
       .where("status", "!=", "revoked")
       .executeTakeFirst();
-    if (!row?.runnerId || !row.transportKind) return null;
+    if (!row) return null;
+    if (!row.runnerId || !row.transportKind) return "unplaced";
     return {
       credentialId: row.credentialId,
       externalTenantId: row.externalTenantId,
@@ -725,8 +731,21 @@ export class ChannelStore {
           claimExpiresAt: null,
           claimOwner: null,
           claimTokenHash: null,
-          conversationId: null,
-          event: jsonValue(event),
+          // The names a message brings enter clean (`outsideName`), as every name from outside.
+          event: jsonValue({
+            ...event,
+            actor: {
+              ...event.actor,
+              displayName: outsideName(event.actor.displayName, 160) || event.actor.externalUserId,
+            },
+            conversation: {
+              ...event.conversation,
+              displayName:
+                event.conversation.displayName === null
+                  ? null
+                  : outsideName(event.conversation.displayName, 240) || null,
+            },
+          }),
           id,
           laneKey,
           lastError: null,
@@ -1154,8 +1173,6 @@ export class ChannelStore {
           externalUserId: null,
         },
         externalAccountId: row.externalAccountId,
-        // Never: a send that may have happened is not handed out again.
-        mayHaveBeenSent: false,
       };
     });
   }
@@ -1328,6 +1345,7 @@ export async function upsertChannelIdentity(
     readonly externalUserId: string;
   },
 ) {
+  input = { ...input, displayName: outsideName(input.displayName, 160) || input.externalUserId };
   const existing = await transaction
     .selectFrom("channelIdentities")
     .selectAll()

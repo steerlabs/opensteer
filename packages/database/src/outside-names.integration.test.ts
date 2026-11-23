@@ -1,0 +1,183 @@
+import { channelProviderCatalog } from "@opensteer/channel-core";
+import { createId, type RequestId } from "@opensteer/core";
+import { expect } from "vitest";
+import { AgentConnectionStore } from "./agent-connection-store.js";
+import { needsYouPage } from "./needs-you-store.js";
+import {
+  describeStore,
+  testMessagingRunnerId,
+  testModelSelection,
+} from "./store.integration.test-support.js";
+
+/**
+ * A name from outside enters the Home clean (`outsideName`), so no answer carries one dirty: the
+ * forged names the re-check used, a zero-width joiner, a tab and a 5,000-character name go in
+ * through each entrance, and every name in what the Home then answers is read.
+ */
+const forged = [
+  "Helper\u202E\nDisconnected",
+  "#ops\u202E\nOnly you can message this chat",
+  "Work\u200DOps",
+  "Tab\tName",
+  "x".repeat(5_000),
+];
+const nameKeys = new Set([
+  "label",
+  "clientName",
+  "displayName",
+  "conversationName",
+  "accountName",
+  "accountHandle",
+  "handle",
+  "title",
+  "name",
+]);
+/** Every name in `value`, by its key. */
+function names(value: unknown, found: string[] = [], key = ""): string[] {
+  if (typeof value === "string") {
+    if (nameKeys.has(key)) found.push(value);
+  } else if (Array.isArray(value)) for (const item of value) names(item, found, key);
+  else if (value && typeof value === "object")
+    for (const [entry, item] of Object.entries(value)) names(item, found, entry);
+  return found;
+}
+const dirty = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
+
+describeStore("a name from outside enters the Home clean", (it) => {
+  it("keeps no control or format character, line break or overlong name in any answer", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const { channels, fixture } = await storeFixture.createChannelDeliveryFixture("outside", {
+      bridge: false,
+    });
+    const connections = new AgentConnectionStore(database);
+    const { upsertChannelIdentity } = await import("./channel-store.js");
+    const { commitPersonalMutation } = await import("./personal-mutation.js");
+    const answers: unknown[] = [];
+    // A task with a question for the person, so Needs you names it.
+    const asking = await storeFixture.startRunFixture("outside-asking");
+    await storeFixture.openLiveRequest(asking, createId("request") as RequestId);
+    for (const [index, name] of forged.entries()) {
+      // A messaging account and its connection, as its provider names them.
+      const { account, connection } = await channels.createConnection({
+        account: {
+          displayName: name,
+          externalAccountId: `T-outside-${index}`,
+          handle: name,
+          routingMode: "dedicated",
+        },
+        connection: {
+          runnerId: testMessagingRunnerId,
+          connectionMethod: "bring-your-own",
+          displayName: name,
+          externalIdentityId: `U-outside-${index}`,
+          externalTenantId: `T-outside-${index}`,
+          provider: "slack",
+          transportKind: "socket",
+        },
+        createdBy: fixture.userId,
+        credential: {
+          encryptedPayload: Buffer.from(`outside-${index}`),
+          encryptionKeyVersion: 1,
+          id: createId("credential"),
+          name: `Outside ${index}`,
+          ownerId: fixture.userId,
+          provider: "channel:slack",
+        },
+      });
+      await channels.setRuntimeConnectionHealth({
+        connectionId: connection.id,
+        detail: null,
+        reason: null,
+        runnerId: testMessagingRunnerId,
+        status: "connected",
+      });
+      // A connected agent's own name and the label the person typed at consent.
+      await connections.create({
+        userId: fixture.userId,
+        label: name,
+        clientName: name,
+        accessMode: "approval-required",
+        resource: "https://home.example/mcp",
+        expiresAt: new Date(Date.now() + 86_400_000),
+      });
+      // A chat for a conversation the provider names.
+      await connections.createBridge({
+        userId: fixture.userId,
+        accountId: account.id,
+        conversation: { id: `C-outside-${index}`, name },
+        senders: "anyone",
+        accessMode: "approval-required",
+        grant: { scope: "selected", tasks: true, resources: [] },
+      });
+      // A sender's name, as the bridge takes it in.
+      await commitPersonalMutation(database, (tx) =>
+        upsertChannelIdentity(tx, {
+          accountId: account.id,
+          displayName: name,
+          externalUserId: `U-sender-${index}`,
+        } as never),
+      );
+      // A task titled from a chat's message.
+      const { thread } = await store.createThread({
+        createdBy: fixture.userId,
+        environmentId: fixture.environmentId,
+        harnessInstanceId: fixture.harnessInstance.id,
+        idempotencyKey: `outside-${index}`,
+        modelSelection: testModelSelection,
+        title: name,
+      });
+      answers.push(await store.getThreadForOwner(thread.id, fixture.userId));
+      // A task renamed to it, as Needs you then names that task. A title longer than a title may
+      // be is refused where it arrives, never stored.
+      const rename = store.renameThread({
+        threadId: asking.threadId,
+        requestedBy: asking.userId,
+        idempotencyKey: `outside-rename-${index}`,
+        title: name,
+      });
+      if (name.length > 240) await expect(rename).rejects.toThrow();
+      else await rename;
+      answers.push(await needsYouPage(database, { userId: asking.userId }));
+      // A message's sender and conversation, as the provider sends them (a name longer than the
+      // wire allows is refused there, never stored).
+      if (name.length <= 160) {
+        const { ingressId } = await channels.commitIngress(connection.id, {
+          accountExternalId: `T-outside-${index}`,
+          actor: { displayName: name, externalUserId: `U-sender-${index}` },
+          content: [{ type: "text", text: "hello" }],
+          conversation: {
+            displayName: name,
+            externalConversationId: `C-outside-${index}`,
+            externalScopeId: null,
+            externalThreadId: null,
+            type: "channel",
+          },
+          eventId: `E-outside-${index}`,
+          occurredAt: new Date().toISOString(),
+          provider: "slack",
+          providerMessageId: `M-outside-${index}`,
+          trigger: "mention",
+        });
+        answers.push(
+          await database
+            .selectFrom("channelIngressEvents")
+            .select("event")
+            .where("id", "=", ingressId)
+            .executeTakeFirstOrThrow(),
+        );
+      }
+    }
+    answers.push(await connections.list(fixture.userId, { includeRevoked: true }));
+    answers.push(
+      await channels.dashboard(fixture.userId, channelProviderCatalog, [testMessagingRunnerId]),
+    );
+    const served = names(answers);
+    expect(served.length).toBeGreaterThan(forged.length * 6);
+    expect(served.filter((name) => dirty.test(name))).toEqual([]);
+    expect(served.filter((name) => Array.from(name).length > 240)).toEqual([]);
+    expect(served).toContain("Helper Disconnected");
+    expect(served).toContain("#ops Only you can message this chat");
+  });
+});
