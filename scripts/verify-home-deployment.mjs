@@ -432,14 +432,20 @@ const launchProof = `
   printf '%s' launched > home-proof-result
 `;
 
-const verifyHarnessLaunch = `function verifyHarnessLaunch() {
+// One shared app-server serves every conversation of the account, so its own
+// folder and environment are not the conversation's: Codex runs a
+// conversation's commands in the folder the driver opened it with and with the
+// environment its shell policy sets, and so does the proof.
+const verifyHarnessLaunch = `let proofCwd;
+let proofEnv;
+function verifyHarnessLaunch() {
   const home = process.env.CODEX_HOME;
   if (!home?.startsWith("/var/lib/opensteer/private/harness-state/harness-profiles/")) {
     throw new Error("The test engine did not receive its isolated provider home");
   }
   writeFileSync(home + "/auth.json", '{"homeProof":"synthetic"}', { mode: 0o600 });
   writeFileSync(home + "/sessions/home-proof-state", "synthetic engine state", { mode: 0o600 });
-  const proof = launchProofShell("/bin/sh", ["-ec", launchProof], { encoding: "utf8" });
+  const proof = launchProofShell("/bin/sh", ["-ec", launchProof], { cwd: proofCwd, env: proofEnv, encoding: "utf8" });
   if (proof.status !== 0) {
     const reason = proof.stderr?.trim() || proof.error?.message || \`exit \${proof.status}\`;
     writeFileSync("/workspaces/home-proof-result", \`failed: \${reason}\`);
@@ -1777,10 +1783,15 @@ try {
       readFileSync(resolve(fixtures, captureFile)),
     );
     assert.match(original, /case "turn\/start":/u);
+    assert.match(original, /case "thread\/start": \{/u);
     writeFileSync(
       resolve(fixtureDirectory, "engine.mjs"),
       `import { spawnSync as launchProofShell } from 'node:child_process';\n${verifyHarnessLaunch}\nconst launchProof = ${JSON.stringify(launchProof)};\n${original
         .replace("createRequire(import.meta.url)", 'createRequire("/app/package.json")')
+        .replace(
+          'case "thread/start": {',
+          'case "thread/start": {\n      if (!message.params.ephemeral) { proofCwd = message.params.cwd; proofEnv = { ...process.env, ...message.params.config?.["shell_environment_policy.set"] }; }',
+        )
         .replace(
           'case "turn/start":',
           'case "turn/start":\n      if (!ephemeralThreads.has(message.params.threadId)) verifyHarnessLaunch();',
