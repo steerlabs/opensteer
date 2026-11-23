@@ -686,7 +686,7 @@ export async function acquireExecutionBinding(
     if (!thread)
       throw new OpensteerError({
         code: "not_found",
-        message: "Thread not found",
+        message: "Task not found",
       });
     if (thread.runnerId !== input.runnerId) {
       throw new OpensteerError({

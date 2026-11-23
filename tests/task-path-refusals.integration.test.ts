@@ -121,7 +121,7 @@ integration("the task path's refusals on a real Home", () => {
         harnessInstanceId: caller.harnessInstanceId,
         modelSelection: model,
       }),
-      answer: refused(404, "not_found", "Thread not found"),
+      answer: refused(404, "not_found", "Task not found"),
     },
     {
       what: "change a task's AI engine to one its computer does not have",
@@ -141,12 +141,12 @@ integration("the task path's refusals on a real Home", () => {
         messageId: `msg_${randomUUID()}`,
         expectedRunId: `run_${randomUUID()}`,
       }),
-      answer: refused(404, "not_found", "Thread not found"),
+      answer: refused(404, "not_found", "Task not found"),
     },
     {
       what: "rename a task that does not exist",
       command: () => ({ type: "thread.rename", threadId: missingTask(), title: "Renamed" }),
-      answer: refused(404, "not_found", "Thread not found"),
+      answer: refused(404, "not_found", "Task not found"),
     },
     {
       what: "mark a task that does not exist Done",
@@ -168,7 +168,7 @@ integration("the task path's refusals on a real Home", () => {
         parentThreadId: missingTask(),
         title: "A child",
       }),
-      answer: refused(404, "not_found", "Parent thread not found"),
+      answer: refused(404, "not_found", "Parent task not found"),
     },
     {
       what: "send a browser page to a task that does not exist",
@@ -186,7 +186,7 @@ integration("the task path's refusals on a real Home", () => {
           },
         ],
       }),
-      answer: refused(404, "not_found", "Thread not found"),
+      answer: refused(404, "not_found", "Task not found"),
     },
   ])("you: $what", async ({ command, answer }) => {
     expect(await person(command())).toEqual(answer);
@@ -286,7 +286,9 @@ integration("the task path's refusals on a real Home", () => {
       async ({ name, args }) => {
         const { outside, absent } = await outsideAndMissing(run, name, args);
         expect(outside).toBe(JSON.stringify(absent));
-        // A Run is told access_denied where the connected agent itself is told not_found.
+        // A Run is told access_denied where the connected agent itself is told not_found. Not a
+        // leak (outside and missing are the same bytes, above); the code is made one for every
+        // caller under a connection's grant on the agent-control branch.
         expect(absent).toEqual(unavailable("access_denied"));
       },
     );

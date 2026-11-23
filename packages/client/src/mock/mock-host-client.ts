@@ -2815,7 +2815,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         return mockRefusal(
           new HostClientRequestError({
             code: "not_found",
-            message: "Thread not found",
+            message: "Task not found",
             status: 404,
           }),
         );
@@ -2911,7 +2911,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         return mockRefusal(
           new HostClientRequestError({
             code: "not_found",
-            message: "Thread not found",
+            message: "Task not found",
             status: 404,
           }),
         );
@@ -6298,7 +6298,7 @@ class MockHostState {
     if (!this.snapshot.threads.some((thread) => thread.id === threadId))
       throw new HostClientRequestError({
         code: "not_found",
-        message: "Thread not found",
+        message: "Task not found",
         status: 404,
       });
     const hidden = new Set<string>(
@@ -6719,7 +6719,7 @@ class MockHostState {
     if (!thread)
       throw new HostClientRequestError({
         code: "not_found",
-        message: "Thread not found.",
+        message: "Task not found",
         status: 404,
       });
     for (const part of content) {

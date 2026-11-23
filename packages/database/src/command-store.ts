@@ -892,7 +892,7 @@ export async function enqueueRunnerControlInTransaction(
   if (!thread)
     throw new OpensteerError({
       code: "not_found",
-      message: "Thread not found",
+      message: "Task not found",
     });
   let targetRunStatus: RunRow["status"] | null = null;
   let targetRunMayHaveBeenSent = false;

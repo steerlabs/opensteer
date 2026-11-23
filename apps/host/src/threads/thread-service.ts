@@ -86,7 +86,7 @@ export class ThreadService {
     if (!thread)
       throw new OpensteerError({
         code: "not_found",
-        message: "Thread not found",
+        message: "Task not found",
       });
     if (actor.kind !== "person") assertThreadAccess(actor, [thread]);
     return thread;
@@ -118,7 +118,7 @@ export class ThreadService {
     if (command.parentThreadId && !parent) {
       throw new OpensteerError({
         code: "not_found",
-        message: "Parent thread not found",
+        message: "Parent task not found",
       });
     }
     const input = {
@@ -231,7 +231,7 @@ export class ThreadService {
           if (!thread)
             throw new OpensteerError({
               code: "not_found",
-              message: "Thread not found",
+              message: "Task not found",
             });
           await this.options.placeContext.assertIncludable({
             ownerId: actor.userId,

@@ -1543,7 +1543,7 @@ export async function createHostServer(
         ...(input.aroundMessageId ? { aroundMessageId: input.aroundMessageId } : {}),
         maxItems: input.limit ?? 100,
       });
-      if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+      if (!page) throw new OpensteerError({ code: "not_found", message: "Task not found" });
       return rpcSuccess({
         ...page,
         messages: await withClientSendKeys(page.messages, readSendKeys(requireRpcSession(context))),
@@ -1568,7 +1568,7 @@ export async function createHostServer(
     "thread.browserUsage.get": async (input, context) => {
       const ownerId = requireRpcSession(context).user.id;
       const thread = await dependencies.store.getThreadForOwner(input.threadId, ownerId);
-      if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+      if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
       return rpcSuccess(
         hostApi["thread.browserUsage.get"].success.parse({
           threadId: thread.id,
@@ -1600,7 +1600,7 @@ export async function createHostServer(
       const session = requireRpcSession(context);
       const requestedBy = session.user.id;
       const thread = await dependencies.store.getThreadForOwner(input.threadId, requestedBy);
-      if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+      if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
       const queue = await dependencies.store.getThreadInputQueue({
         threadId: thread.id,
         requestedBy,
@@ -1638,7 +1638,7 @@ export async function createHostServer(
         ...(input.before ? { before: input.before } : {}),
         ...(input.open ? { open: true } : {}),
       });
-      if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+      if (!page) throw new OpensteerError({ code: "not_found", message: "Task not found" });
       return rpcSuccess(
         hostApi["thread.assignments.list"].success.parse({ ...page, threadId: input.threadId }),
       );
@@ -1880,7 +1880,7 @@ export async function createHostServer(
 
       case "thread.rename": {
         const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
-        if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+        if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
         return {
           ...(await dependencies.commands.renameThread({
             idempotencyKey: command.idempotencyKey,
@@ -1893,7 +1893,7 @@ export async function createHostServer(
       }
       case "thread.icon.set": {
         const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
-        if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+        if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
         return {
           ...(await dependencies.commands.setThreadIcon({
             idempotencyKey: command.idempotencyKey,
@@ -1906,7 +1906,7 @@ export async function createHostServer(
       }
       case "thread.access.update": {
         const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
-        if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+        if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
         const harness = await dependencies.store.getHarnessInstance(thread.harnessInstanceId);
         if (harness) {
           assertAccessModeEnforceable(

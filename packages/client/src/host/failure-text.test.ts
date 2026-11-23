@@ -19,8 +19,8 @@ describe("the words a person reads for a failed call to a Home", () => {
         "x",
       ),
     ).toBe("Another chat already answers in this conversation.");
-    expect(homeFailureText(refusal("not_found", "Thread not found", { status: 404 }), "x")).toBe(
-      "Thread not found",
+    expect(homeFailureText(refusal("not_found", "Task not found", { status: 404 }), "x")).toBe(
+      "Task not found",
     );
   });
 
