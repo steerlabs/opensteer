@@ -2630,6 +2630,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       runnerBootId: "boot-before-remove",
       runnerId: fixture.runnerId,
     });
+    await store.markCommandFrameSent(runningBeforeRemove.commandId);
     await store.revokeRunner(fixture.runnerId, fixture.userId);
     const pausedByRemove = await database
       .selectFrom("triggers")
