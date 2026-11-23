@@ -31,7 +31,13 @@ import { NeedsYouTag } from "../threads/task-row.js";
 import { RowSubtitle } from "../ui/action-line.js";
 import { screenAction, useScreenAction } from "../ui/client-feedback.js";
 import { AppText, Field, SecondaryButton } from "../ui/primitives.js";
-import { closeTabs, tabActionKey, tabActionSpecs, type TabActionKind } from "./tab-actions.js";
+import {
+  closeTabGroup,
+  closeTabs,
+  tabActionKey,
+  tabActionSpecs,
+  type TabActionKind,
+} from "./tab-actions.js";
 import { Symbol } from "../ui/symbol.js";
 import { MacAppIcon } from "../computers/app-mark.js";
 import { TabPicture } from "../screens/tab-picture.js";
@@ -224,18 +230,14 @@ export function TabList(props: TabListProps): ReactNode {
           onPress: () =>
             act("changeGroup", group.groupId, () => client.deleteTabGroup(group.groupId)),
         },
-        ...(group.tabIds.length === 0
-          ? []
-          : [
-              {
-                destructive: true,
-                icon: "xmark.circle" as const,
-                id: "close",
-                label: "Close tabs in group",
-                onPress: () =>
-                  act("closeGroup", group.groupId, () => closeTabs(client, group.tabIds)),
-              },
-            ]),
+        {
+          destructive: true,
+          icon: "xmark.circle" as const,
+          id: "close",
+          label: "Close group",
+          onPress: () =>
+            act("closeGroup", group.groupId, () => closeTabGroup(client, group.groupId)),
+        },
       ],
     ],
     [act, client],

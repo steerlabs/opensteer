@@ -8627,60 +8627,67 @@ it("person activation resumes the exact suspended workspace tab in its existing 
   expect(await activated).toEqual({ kind: "page", sessionId, surfaceId: row.id });
 });
 
-it("a tab closed while activation reopens it in a new session leaves no page running", async () => {
-  const keys = generateKeyPairSync("ed25519"),
-    runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
-    ownerId = createId("user"),
-    repository = new MemoryBrowserRepository(ownerId),
-    memory = memoryTabs(),
-    service = freshService({
-      keys,
-      runtime,
-      repository,
-      tabs: memory.store,
-      surfaceState: true,
-      tabRestoreVersion: true,
+it.each([
+  ["confirmed", { outcome: "tab-closed" }, { code: "not_found" }],
+  ["not confirmed", { outcome: "unexpected" }, { code: "conflict", reason: "outcome-unknown" }],
+] as const)(
+  "a tab closed while activation reopens it closes its new page once, and says so only when %s",
+  async (_case, answer, refusal) => {
+    const keys = generateKeyPairSync("ed25519"),
+      runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+      ownerId = createId("user"),
+      repository = new MemoryBrowserRepository(ownerId),
+      memory = memoryTabs(),
+      service = freshService({
+        keys,
+        runtime,
+        repository,
+        tabs: memory.store,
+        surfaceState: true,
+        tabRestoreVersion: true,
+        onError: () => {},
+      });
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", guest: true, url: "about:blank" },
+      "sleep",
+    );
+    await memory.add(descriptor);
+    const row = memory.rows.get(descriptor.id)!;
+    // Its browser ended while it slept: activation starts a session of its own for it.
+    row.pageBinding = { ...row.pageBinding!, sessionId: createBrowserSessionId() };
+    row.url = "https://example.test/f1";
+    // The person closes the tab once the restore has read it, while its page is starting.
+    const get = memory.store.get.bind(memory.store);
+    let reads = 0;
+    (memory.store as { get: typeof get }).get = async (owner, id, closed) => {
+      const current = await get(owner, id, closed);
+      if (id === row.id && ++reads === 1) row.closedAt = new Date();
+      return current;
+    };
+    const activation = service.pageTabs.activate!(ownerId, row, "activate");
+    void activation.catch(() => undefined);
+    const sent = (method: string) =>
+      runtime.receivedCommands().filter((message) => {
+        const command = message.command as
+          { method?: string; parameters?: { surfaceId?: string } } | undefined;
+        return (
+          message.type === "cdp.command" &&
+          command?.method === method &&
+          command.parameters?.surfaceId === row.id
+        );
+      });
+    // The page that started for it is closed, in one attempt the refusal waits for.
+    await vi.waitFor(() => expect(sent(browserHostMethods.closeTab)).toHaveLength(1));
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: sent(browserHostMethods.closeTab)[0]!.requestId,
+      result: answer,
     });
-  const descriptor = await service.pageTabs.open(
-    { kind: "person", ownerId },
-    { kind: "page", guest: true, url: "about:blank" },
-    "sleep",
-  );
-  await memory.add(descriptor);
-  const row = memory.rows.get(descriptor.id)!;
-  // Its browser ended while it slept: activation starts a session of its own for it.
-  row.pageBinding = { ...row.pageBinding!, sessionId: createBrowserSessionId() };
-  row.url = "https://example.test/f1";
-  // The person closes the tab once the restore has read it, while its page is starting.
-  const get = memory.store.get.bind(memory.store);
-  let reads = 0;
-  (memory.store as { get: typeof get }).get = async (owner, id, closed) => {
-    const current = await get(owner, id, closed);
-    if (id === row.id && ++reads === 1) row.closedAt = new Date();
-    return current;
-  };
-  await expect(service.pageTabs.activate!(ownerId, row, "activate")).rejects.toMatchObject({
-    code: "not_found",
-  });
-  // The page that started for it is fenced and closed, as any closed tab's page is.
-  const sent = (method: string) =>
-    runtime.receivedCommands().find((message) => {
-      const command = message.command as
-        { method?: string; parameters?: { surfaceId?: string } } | undefined;
-      return (
-        message.type === "cdp.command" &&
-        command?.method === method &&
-        command.parameters?.surfaceId === row.id
-      );
-    });
-  await vi.waitFor(() => expect(sent(browserHostMethods.fenceTab)).toBeDefined());
-  runtime.sendServer({
-    type: "cdp.result",
-    requestId: sent(browserHostMethods.fenceTab)!.requestId,
-    result: {},
-  });
-  await vi.waitFor(() => expect(sent(browserHostMethods.closeTab)).toBeDefined());
-});
+    await expect(activation).rejects.toMatchObject(refusal);
+    expect(sent(browserHostMethods.closeTab)).toHaveLength(1);
+  },
+);
 
 it("a reopening whose last read fails for another reason keeps the open tab and its new page", async () => {
   const keys = generateKeyPairSync("ed25519"),

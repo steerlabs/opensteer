@@ -853,14 +853,15 @@ async function releaseRace(
     const reloaded =
       action === "reload"
         ? new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(
-              () => reject(new Error("Timed out: the reloaded document finished loading")),
-              12_000,
-            );
-            h.contents.once("did-finish-load", () => {
+            const loaded = () => {
               clearTimeout(timer);
               resolve();
-            });
+            };
+            const timer = setTimeout(() => {
+              h.contents.removeListener("did-finish-load", loaded);
+              reject(new Error("Timed out: the reloaded document finished loading"));
+            }, 12_000);
+            h.contents.once("did-finish-load", loaded);
           })
         : undefined;
     fixture.signal(id);

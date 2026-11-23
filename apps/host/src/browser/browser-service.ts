@@ -2685,19 +2685,23 @@ export class BrowserService {
     broker: HostedBrowserBroker,
     surfaceId: BrowserSurfaceId,
     durable: boolean,
+    signal?: AbortSignal,
   ) {
-    return broker.requestCdp({
-      type: "cdp.command",
-      requestId: randomUUID(),
-      command: {
-        method: browserHostMethods.closeTab,
-        parameters: {
-          surfaceId,
-          inventoryRevision: broker.inventoryRevision,
-          ...(durable ? { durable: true } : {}),
+    return broker.requestCdp(
+      {
+        type: "cdp.command",
+        requestId: randomUUID(),
+        command: {
+          method: browserHostMethods.closeTab,
+          parameters: {
+            surfaceId,
+            inventoryRevision: broker.inventoryRevision,
+            ...(durable ? { durable: true } : {}),
+          },
         },
       },
-    });
+      signal,
+    );
   }
 
   #queuePhysicalPageClose(
@@ -2783,6 +2787,41 @@ export class BrowserService {
         }
       });
     return initial.promise;
+  }
+
+  /** One bounded close of a page no tab shows; true only when the browser confirmed it. */
+  async #endOrphanedPage(
+    sessionId: BrowserSessionId,
+    surfaceId: BrowserSurfaceId,
+    bound: TabRecord | undefined,
+    ownerId: UserId,
+  ): Promise<boolean> {
+    const broker = this.#brokers.get(sessionId);
+    if (!broker?.live) return true;
+    try {
+      if (broker.pooled)
+        await this.#closePooledPage(
+          broker,
+          sessionId,
+          surfaceId,
+          bound ? { ownerId, row: bound } : undefined,
+        );
+      else
+        z.object({ outcome: z.enum(["tab-closed", "session-closed"]) }).parse(
+          (
+            await this.#requestPhysicalTabClose(
+              broker,
+              surfaceId,
+              true,
+              AbortSignal.timeout(browserOpenWorkMs),
+            )
+          ).result,
+        );
+      return true;
+    } catch (error) {
+      this.#onError(error);
+      return false;
+    }
   }
 
   async #closePooledPage(
@@ -4098,18 +4137,22 @@ export class BrowserService {
           try {
             row = await this.#requireWorkspaceGeneration(ownerId, initial);
           } catch (error) {
-            this.#pagesAwaitingNavigation.delete(initial.id);
             // Only the tab's own verdict that it is gone ends the page that started for it: no
             // tab shows that page and no one could close it. Any other failure leaves the person's
             // open tab bound to its live session for the next activation. The witness is the row
-            // as the bind wrote it; the refusal does not wait on the close.
-            if (error instanceof OpensteerError && error.code === "not_found")
-              void this.#queuePhysicalPageClose(
-                sessionId,
-                initial.id,
-                undefined,
-                bound ? { ownerId, row: bound } : undefined,
-              ).catch((closeError: unknown) => this.#onError(closeError));
+            // as the bind wrote it. One bounded attempt, never retried: a close it cannot confirm
+            // is reported as unknown, never as the tab simply having closed.
+            if (
+              error instanceof OpensteerError &&
+              error.code === "not_found" &&
+              !(await this.#endOrphanedPage(sessionId, initial.id, bound, ownerId))
+            )
+              throw new OpensteerError({
+                code: "conflict",
+                reason: "outcome-unknown",
+                message:
+                  "This tab has closed. Whether the page it was reopening in closed is not known.",
+              });
             throw error;
           }
           const record = row.pageBinding
@@ -4120,6 +4163,10 @@ export class BrowserService {
           if (agent)
             await this.#admitAgentBackend({ ...agent, sessionId: record.id }, undefined, true);
           return record;
+        } catch (error) {
+          // A reopening that did not finish leaves no page waiting for its navigation.
+          this.#pagesAwaitingNavigation.delete(initial.id);
+          throw error;
         } finally {
           budget?.pool?.reservation.release();
         }
