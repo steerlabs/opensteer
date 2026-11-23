@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  isRaisedBeforeEffect,
   OpensteerError,
   raisedBeforeEffect,
   type AgentGrant,
@@ -753,6 +754,73 @@ describeStore("command Requests at the Home", (it) => {
     expect(await store.requests.get(proposed.requestId as never)).toMatchObject({
       status: "cancelled",
     });
+  });
+
+  it("admits the proposing connection again where the change is written, after the approval began (K2)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, service, store, ran, approve } = await setup(storeFixture);
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: f.userId,
+      label: "Agent",
+      clientName: "Agent",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+      grant: { scope: "everything" },
+    });
+    await connections.activate(connection.id, `hash-${randomUUID()}`);
+    const { session } = await beginAgentSession(database, {
+      userId: f.userId,
+      agentConnectionId: connection.id,
+    });
+    const proposed = (await service.propose({
+      ownerUserId: f.userId,
+      command: {
+        type: "harness.rename",
+        idempotencyKey: randomUUID(),
+        environmentId: f.environmentId,
+        harnessInstanceId: "hin_00000000-0000-4000-8000-000000001601",
+        name: "Late",
+      } as unknown as HostApiCommand,
+      ask: { status: "ask", reason: "step" },
+      face: 0,
+      proposer: {
+        kind: "connection",
+        name: "Agent",
+        taskTitle: null,
+        key: `connection:${connection.id}` as ProposerLineageKey,
+        connectionId: connection.id,
+        grantRevision: 1,
+      },
+      origin: { agentSessionId: session.id },
+      originatingThreadId: session.threadId,
+      callKey: randomUUID(),
+    })) as { requestId: string };
+    expect(
+      await approve(
+        proposed.requestId,
+        (await store.requests.get(proposed.requestId as never))!.command!.command,
+      ),
+    ).toMatchObject({ status: "done" });
+    // The person's handler is given the proposer's last admission, for the transaction that
+    // writes its change: it admits while the connection may still ask for this.
+    const readmit = ran[0]!.actor.proposal?.readmit;
+    expect(typeof readmit).toBe("function");
+    await database.transaction().execute((transaction) => readmit!(transaction));
+    // Disconnected after the approval began: where the change would be written, it is refused,
+    // as raised before anything happened.
+    await connections.revoke(f.userId, connection.id);
+    const refused = await database
+      .transaction()
+      .execute((transaction) => readmit!(transaction))
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+    expect(refused).toMatchObject({ code: "forbidden", reason: "proposer-gone" });
+    expect(isRaisedBeforeEffect(refused)).toBe(true);
   });
 
   it("refuses an approval once the proposing connection is Disconnected, and closes it (X9)", async ({

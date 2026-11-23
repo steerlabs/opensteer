@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   OpensteerError,
+  raisedBeforeEffect,
   RequestJsonObjectSchema,
   requestTitleMaxLength,
   type CommandRequestOutcome,
@@ -325,6 +326,31 @@ export class CommandRequestService {
       requestId: input.requestId,
       revision: input.expectedRevision,
       proposedBy: { ...pending.command.proposer },
+      // Where the store makes the change in a transaction it shares (a tab group's), the
+      // proposer's admission is run once more there: a group that gained a tab it does not hold
+      // since is refused, and nothing changes.
+      ...(connectionId
+        ? {
+            readmit: async (transaction: Kysely<DatabaseSchema>) => {
+              if (
+                !(await this.#stillAsks(
+                  transaction,
+                  actor.userId,
+                  connectionId,
+                  pending.originatingAgentSessionId ?? null,
+                  command,
+                ))
+              )
+                throw raisedBeforeEffect(
+                  new OpensteerError({
+                    code: "forbidden",
+                    reason: "proposer-gone",
+                    message: "The agent that asked can no longer ask for this, so nothing changed.",
+                  }),
+                );
+            },
+          }
+        : {}),
     });
     // The one way a command acts (G4): its attempt in the proposer's Disconnect set, the act,
     // then what is known of it. Its last admission is the approval's own (#stillAsks above).

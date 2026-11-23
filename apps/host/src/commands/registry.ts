@@ -26,7 +26,7 @@ import {
 import { requireSession } from "../server/rpc-context.js";
 import { handleTriggerCommand } from "../triggers/trigger-routes.js";
 import type { TriggerService } from "../triggers/trigger-service.js";
-import type { Actor, PersonActor } from "./actor.js";
+import type { Actor, CommandProposal, PersonActor } from "./actor.js";
 import type { CommandAuthority } from "./dispatch.js";
 
 /**
@@ -87,6 +87,7 @@ export interface CommandFamilies {
   readonly handleCoreCommand: (
     command: CoreCommand,
     context: HostApiServerContext,
+    readmit?: CommandProposal["readmit"],
   ) => Promise<HostApiCommandOutput>;
   readonly computerViews?: ComputerViewService | undefined;
   readonly plugins?: PluginOwnerApi | undefined;
@@ -161,7 +162,8 @@ function familyHandler(
   if (type.startsWith("channel."))
     return (_actor, command, context) =>
       handleChannelCommand(families.channels, command as ChannelCommand, context);
-  return (_actor, command, context) => families.handleCoreCommand(command as CoreCommand, context);
+  return (actor, command, context) =>
+    families.handleCoreCommand(command as CoreCommand, context, actor.proposal?.readmit);
 }
 
 function isDeviceCommand(type: CommandType): boolean {

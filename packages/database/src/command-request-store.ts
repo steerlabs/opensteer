@@ -394,7 +394,9 @@ export class CommandRequestStore {
       // narrowing or a Disconnect waits for the approval or is seen by it (lock order: the
       // connection before the task and the Request).
       const asks = input.stillAsks ? await input.stillAsks(transaction) : true;
-      const row = await this.#lockPending(transaction, input);
+      // An answer passes the Request's origin rule; closing the ask of a proposer that may no
+      // longer ask only takes authority away, so it closes even once that origin has ended.
+      const row = await this.#lockPending(transaction, input, { checkConnection: asks });
       const part = CommandRequestPartSchema.parse(row.command);
       input.accept(part);
       const now = this.#now();
@@ -520,6 +522,7 @@ export class CommandRequestStore {
       readonly expectedRevision: string;
       readonly resolvedBy: UserId;
     },
+    options?: { readonly checkConnection?: boolean },
   ) {
     const origin = await transaction
       .selectFrom("requests")
@@ -538,7 +541,7 @@ export class CommandRequestStore {
     if (row.status !== "pending")
       throw new OpensteerError({ code: "conflict", message: "Request is no longer pending" });
     assertRequestRevision(row, input.expectedRevision);
-    await lockActiveDurableRequestAuthority(transaction, requestFromRow(row));
+    await lockActiveDurableRequestAuthority(transaction, requestFromRow(row), options);
     return row;
   }
 }
