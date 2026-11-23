@@ -25,7 +25,7 @@ describeStore("a connection verified through a platform reads as verified by its
       );
       insert into agent_embedder_assertion_claims values ('https://errand.example', 'jti-1', now());
     `.execute(database);
-    await sql`delete from kysely_migration where name = ${removePlatformVerificationMigrationName}`.execute(
+    await sql`delete from kysely_migration where name >= ${removePlatformVerificationMigrationName}`.execute(
       database,
     );
     const connections = new AgentConnectionStore(database);

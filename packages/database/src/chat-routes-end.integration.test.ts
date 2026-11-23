@@ -929,8 +929,8 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
     expect(cleanedFallback.label).toContain(persian);
     expect(cleanedFallback.label).toContain(england);
     expect(cleanedFallback.identityAtConsent).toMatchObject({
-      platformName: outsideName(rloWithWriting, 100),
-      embedderName: "Agent",
+      kind: "verified",
+      displayName: outsideName(rloWithWriting, 100),
     });
 
     const cleanedEmoji = listedAgents.find(({ id }) => id === emojiAgent.id)!;

@@ -106,8 +106,7 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
               or ${needsClean(sql`client_name`, 100)}
               or ${needsClean(sql`bridge_conversation_name`, 160)}
               or ${needsClean(sql`identity_at_consent->>'clientName'`, 100)}
-              or ${needsClean(sql`identity_at_consent->>'platformName'`, 100)}
-              or ${needsClean(sql`identity_at_consent->>'embedderName'`, 100)})
+              or ${needsClean(sql`identity_at_consent->>'platformName'`, 100)})
           order by id
           limit ${cleanBatchSize}
         `.execute(database)
