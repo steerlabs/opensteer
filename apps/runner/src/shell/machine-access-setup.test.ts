@@ -214,6 +214,36 @@ describe("machine access launch setup", () => {
     await expect(stat(launch)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it.skipIf(!hasSsh())("sets up Codex at Full access on the Runner's own user", async () => {
+    // Codex's own sandbox allows the relay socket once Full access turns its
+    // network on, so the combination is set up and proven like any other.
+    const root = await shortTemporaryDirectory("opensteer-codex-full-");
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    const setup = ready(
+      await setupInWorkspace({
+        accessMode: "full-access",
+        driverKind: "codex",
+        environment: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+        helperBinary: nativeFsHelper,
+        machineAccess: machineContext(),
+        platform: process.platform === "linux" ? "linux" : "darwin",
+        privateStateRoot: join(root, "private"),
+        temporaryDirectory: root,
+        transport: {
+          controlCaPath: undefined,
+          hostUrl: new URL("http://127.0.0.1:1"),
+          mode: "development",
+        },
+        validationHook: { execute: executeValidationCommand },
+        workspacePath: workspace,
+      }),
+    );
+
+    expect(setup.machineAccessNotice).toContain("alpha");
+    await setup.close();
+  });
+
   it.skipIf(!hasSsh())("validates the launch surface with the production hook", async () => {
     const root = await shortTemporaryDirectory("opensteer-default-hook-");
     const workspace = join(root, "workspace");

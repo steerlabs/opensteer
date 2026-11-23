@@ -125,6 +125,43 @@ try {
   relay.kill("SIGTERM");
 }
 
+// Stop reaps a Run's descendants with the Runner's own containment, the module
+// that ships: one that left the process group, and one in a session of its own.
+const { ExecutionContainment } = await import("/tmp/execution-containment.mjs");
+mkdirSync("/workspace/runner-data", { mode: 0o700, recursive: true });
+const containment = new ExecutionContainment({
+  bootId: "rbt_smoke",
+  dataDirectory: "/workspace/runner-data",
+});
+const launch = containment.wrap(
+  "smoke-run",
+  (input) => input,
+)({
+  args: ["-c", "sleep 300 & setsid sleep 301 & wait"],
+  cwd: "/workspace",
+  environment: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+  executable: "/bin/sh",
+});
+const run = spawn(launch.executable, launch.args, {
+  cwd: launch.cwd,
+  env: launch.environment,
+  stdio: "ignore",
+});
+await new Promise((resolve) => setTimeout(resolve, 500));
+if ((await containment.liveRoots("smoke-run")) < 1) {
+  throw new Error("The smoke Run's processes did not carry its scope");
+}
+const termination = await containment.terminate("smoke-run", async () => {
+  run.kill("SIGTERM");
+});
+if (termination !== "proven") {
+  throw new Error(`Stop did not prove a Run's descendants gone: ${termination}`);
+}
+const survivors = spawnSync("/bin/sh", ["-c", "ps -eo args | grep -c '^sleep 30[01]$' || true"], {
+  encoding: "utf8",
+});
+if (survivors.stdout.trim() !== "0") throw new Error("A Run's descendant outlived its Stop");
+
 console.log("Runner container runtime smoke passed");
 
 async function waitForSocket(path) {
