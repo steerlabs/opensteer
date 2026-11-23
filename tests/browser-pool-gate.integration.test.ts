@@ -4256,7 +4256,6 @@ it("refuses to write a hold and still parks when device access is turned off dur
         {
           agentBindingId: `run:${j.task.runId}`,
           ownerId: j.task.userId,
-          environmentId: j.task.environmentId,
           threadId: j.task.threadId,
         },
       );
