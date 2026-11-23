@@ -118,43 +118,39 @@ describeStore("a connected agent's reads stay within their statement budgets", (
       const waitTimeoutMarkerMs = 29_999;
       let fireTimeout: (() => void) | undefined;
       const realSetTimeout = globalThis.setTimeout;
-      const timerSpy = vi
-        .spyOn(globalThis, "setTimeout")
-        .mockImplementation(((
-          callback: (...args: unknown[]) => void,
-          delay?: number,
-          ...args: unknown[]
-        ) => {
-          if (delay === waitTimeoutMarkerMs && typeof callback === "function") {
-            fireTimeout = () => callback(...args);
-            return realSetTimeout(() => undefined, waitTimeoutMarkerMs);
-          }
-          return realSetTimeout(callback, delay, ...args);
-        }) as typeof setTimeout);
+      const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+        callback: (...args: unknown[]) => void,
+        delay?: number,
+        ...args: unknown[]
+      ) => {
+        if (delay === waitTimeoutMarkerMs && typeof callback === "function") {
+          fireTimeout = () => callback(...args);
+          return realSetTimeout(() => undefined, waitTimeoutMarkerMs);
+        }
+        return realSetTimeout(callback, delay, ...args);
+      }) as typeof setTimeout);
       const originalWait = ThreadWaitService.prototype.wait;
-      const waitSpy = vi
-        .spyOn(ThreadWaitService.prototype, "wait")
-        .mockImplementation(function (
-          this: ThreadWaitService,
-          ...args: Parameters<ThreadWaitService["wait"]>
-        ) {
-          const originalRead = this.options.read;
-          let fired = false;
-          const mutableOptions = this.options as {
-            read: ThreadWaitService["options"]["read"];
-          };
-          mutableOptions.read = async (readInput) => {
-            const snapshot = await originalRead(readInput);
-            if (!fired) {
-              fired = true;
-              queueMicrotask(() => {
-                queueMicrotask(() => fireTimeout?.());
-              });
-            }
-            return snapshot;
-          };
-          return originalWait.apply(this, args);
-        });
+      const waitSpy = vi.spyOn(ThreadWaitService.prototype, "wait").mockImplementation(function (
+        this: ThreadWaitService,
+        ...args: Parameters<ThreadWaitService["wait"]>
+      ) {
+        const originalRead = this.options.read;
+        let fired = false;
+        const mutableOptions = this.options as {
+          read: ThreadWaitService["options"]["read"];
+        };
+        mutableOptions.read = async (readInput) => {
+          const snapshot = await originalRead(readInput);
+          if (!fired) {
+            fired = true;
+            queueMicrotask(() => {
+              queueMicrotask(() => fireTimeout?.());
+            });
+          }
+          return snapshot;
+        };
+        return originalWait.apply(this, args);
+      });
       try {
         return await selected.client.callTool({
           name: "opensteer_task_wait",

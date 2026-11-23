@@ -26,11 +26,7 @@ function dummyDatabase(): Kysely<DatabaseSchema> {
 describe("keptMessageSql alias parameter (P5)", () => {
   it("defaults to 'messages' and accepts a custom table alias", () => {
     const db = dummyDatabase();
-    const defaultSql = db
-      .selectFrom("messages")
-      .select("id")
-      .where(keptMessageSql())
-      .compile().sql;
+    const defaultSql = db.selectFrom("messages").select("id").where(keptMessageSql()).compile().sql;
     const aliasedSql = db
       .selectFrom("messages as message")
       .select("message.id")
