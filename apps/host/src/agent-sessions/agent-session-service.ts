@@ -70,7 +70,7 @@ export interface AgentReviewerPort {
     signal: AbortSignal,
   ): Promise<"allow" | "ask">;
 }
-/** The reviewer this Home ships with until a model-backed one is configured. */
+/** The Home's reviewer: in `auto`, a connected agent's direct effect asks the person. */
 export const alwaysAskReviewer: AgentReviewerPort = { review: async () => "ask" };
 export const reviewerTimeoutMs = 15_000;
 /** How long one executor call may take before its signal aborts. */

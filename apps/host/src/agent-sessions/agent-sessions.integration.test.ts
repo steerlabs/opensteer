@@ -2,11 +2,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
-  BackgroundModelChoiceSchema,
   BrowserSessionIdSchema,
   DeviceIdSchema,
   OpensteerError,
-  HarnessIdSchema,
   ToolBlockedError,
   agentSessionIdleMs,
   createId,
@@ -32,9 +30,7 @@ import {
 } from "@opensteer/database";
 import { createStoreFixture, describeStore } from "@opensteer/database/test-support/store";
 import { expect, vi } from "vitest";
-import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
-import { createAgentReviewer } from "./agent-reviewer.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { BrowserReplService } from "../browser-use/browser-repl-service.js";
 import { BrowserPoolGate } from "../browser/browser-pool-gate.js";
@@ -527,87 +523,6 @@ describeStore("an external agent's direct work through sessions", (it) => {
       gate.set({ hold: null });
       expect(gate.held).toBe(0);
     });
-
-  it("records a fake background model's allow decision before executing an Auto effect", async ({
-    storeFixture,
-  }) => {
-    const backgroundText = vi
-      .fn<Parameters<typeof createAgentReviewer>[0]["runners"]["backgroundText"]>()
-      .mockResolvedValue({ ok: true, text: "allow" });
-    const f = await storeFixture.startRunFixture("reviewer-model");
-    const harness = {
-      ...(await storeFixture.database
-        .selectFrom("harnessInstances")
-        .selectAll()
-        .where("environmentId", "=", f.environmentId)
-        .executeTakeFirstOrThrow()),
-      driverKind: HarnessIdSchema.parse("codex"),
-      sourceId: "codex",
-    };
-    const catalog = HarnessInstanceCatalogSchema.parse({
-      driverKind: harness.driverKind,
-      harnessInstanceId: harness.id,
-      status: "ready",
-      continuationIdentity: {
-        driverKind: harness.driverKind,
-        continuationKey: "runner:v1:" + "a".repeat(43),
-      },
-      connections: [],
-      models: [
-        {
-          providerId: "openai",
-          modelId: "review-model",
-          nativeModelId: "review-model",
-          displayName: "Review model",
-          isDefault: false,
-          options: [],
-        },
-      ],
-    });
-    const reviewer = createAgentReviewer({
-      model: BackgroundModelChoiceSchema.parse({
-        engine: harness.driverKind,
-        account: harness.id,
-        model: "review-model",
-      }),
-      store: {
-        getAgentHomeSettings: storeFixture.store.getAgentHomeSettings.bind(storeFixture.store),
-        listEnvironmentsForUser: storeFixture.store.listEnvironmentsForUser.bind(
-          storeFixture.store,
-        ),
-        listHarnessInstances: async () => [harness],
-        listHarnessCatalogs: async () => [
-          {
-            environmentId: f.environmentId,
-            harnessInstanceId: harness.id,
-            catalog,
-            capturedAt: new Date(),
-          },
-        ],
-      },
-      runners: {
-        isAvailable: () => true,
-        canRunHarness: () => true,
-        identityForEnvironment: () =>
-          ({ capabilities: ["background-text-v1"] }) as ReturnType<
-            Parameters<typeof createAgentReviewer>[0]["runners"]["identityForEnvironment"]
-          >,
-        backgroundText,
-      },
-    });
-    const s = await setUp(storeFixture, "session-auto", { accessMode: "auto", reviewer, run: f });
-    // The resolver must use the connection owner's authorized environment.
-    const result = await s.ok("browser_use", { ...script, operationKey: "reviewed-open" });
-    expect(result).toMatchObject({ status: "completed" });
-    expect(backgroundText).toHaveBeenCalledOnce();
-    expect(s.runBrowserScript).toHaveBeenCalledOnce();
-    const receipt = await storeFixture.database
-      .selectFrom("agentOperations")
-      .select(["decision", "requestId", "state"])
-      .where("operationKey", "=", "reviewed-open")
-      .executeTakeFirstOrThrow();
-    expect(receipt).toEqual({ decision: { by: "reviewer" }, requestId: null, state: "completed" });
-  });
 
   it("asks the person when the reviewer never returns or observes cancellation", async ({
     storeFixture,

@@ -205,14 +205,12 @@ const probe = await client.callTool({ name: "discover", arguments: { id: "bpr_do
 
 Every connected agent has a mode ceiling chosen at consent (editable later):
 
-| Mode                | Tasks run by the person's own agents                                | Connected agent's direct tool calls                                                                                                                                                                                                   |
-| :------------------ | :------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `approval-required` | Asks the person before actions with side effects.                   | Reads run directly. Every write asks the person first.                                                                                                                                                                                |
-| `auto-accept-edits` | Edits files in its tasks without asking; asks before anything else. | Same as `approval-required`: reads run directly; every write asks the person first.                                                                                                                                                   |
-| `auto`              | Automatic review; asks the person when unsure.                      | Reads run directly. Writes ask the person unless the Home has a review model configured (`OPENSTEER_AGENT_REVIEW_MODEL`), which has 15 seconds to allow low-risk calls and asks on credential-like inputs, errors, timeout, or doubt. |
-| `full-access`       | Never asks for routine actions.                                     | Reads and writes inside the grant run without asking.                                                                                                                                                                                 |
-
-In `auto` mode with a review model, ordinary URL query strings (such as `?page=2`) are reviewed normally, while credential keywords, private keys, credential-named query/fragment parameters (`token`, `key`, `secret`, `password`, `auth`, `sig`, `session`, `code`, `otp`), or high-entropy opaque parameter values (24+ characters) always fall back to asking the person.
+| Mode                | Tasks run by the person's own agents                                | Connected agent's direct tool calls                                                 |
+| :------------------ | :------------------------------------------------------------------ | :---------------------------------------------------------------------------------- |
+| `approval-required` | Asks the person before actions with side effects.                   | Reads run directly. Every write asks the person first.                              |
+| `auto-accept-edits` | Edits files in its tasks without asking; asks before anything else. | Same as `approval-required`: reads run directly; every write asks the person first. |
+| `auto`              | Automatic review; asks the person when unsure.                      | Reads run directly. Every write asks the person first.                              |
+| `full-access`       | Never asks for routine actions.                                     | Reads and writes inside the grant run without asking.                               |
 
 Two rules always hold:
 

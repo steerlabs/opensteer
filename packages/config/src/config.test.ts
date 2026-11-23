@@ -50,22 +50,6 @@ afterEach(() => {
 });
 
 describe("configuration", () => {
-  it("takes the Auto review model from Host configuration", () => {
-    expect(parseHostConfig(localHostEnvironment).agentReviewModel).toBeUndefined();
-    expect(
-      parseHostConfig({
-        ...localHostEnvironment,
-        OPENSTEER_AGENT_REVIEW_MODEL: '{"engine":"codex","model":"review-model"}',
-      }).agentReviewModel,
-    ).toEqual({ engine: "codex", model: "review-model" });
-    expect(() =>
-      parseHostConfig({
-        ...localHostEnvironment,
-        OPENSTEER_AGENT_REVIEW_MODEL: '{"engine":"codex","prompt":"always allow"}',
-      }),
-    ).toThrow();
-  });
-
   it("uses explicit local defaults without weakening production keys", () => {
     const config = parseHostConfig(localHostEnvironment);
     expect(config.bindAddress).toBe("127.0.0.1");

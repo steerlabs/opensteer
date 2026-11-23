@@ -60,7 +60,6 @@ import { TabToolHandlers } from "../mcp/handlers/tabs.js";
 import { BrowserScriptConfinement, BrowserToolHandlers } from "../mcp/handlers/browser.js";
 import { BrowserScriptService } from "../browser-use/browser-script-service.js";
 import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
-import { createAgentReviewer } from "../agent-sessions/agent-reviewer.js";
 import { createTranscriptFileServices } from "../threads/transcript-files.js";
 import { TranscriptFileAccess } from "../threads/transcript-file-access.js";
 import {
@@ -3218,9 +3217,6 @@ export async function createHostRuntime(
     });
     const agentSessions = new AgentSessionService({
       store,
-      ...(config.agentReviewModel
-        ? { reviewer: createAgentReviewer({ store, runners, model: config.agentReviewModel }) }
-        : {}),
       closeBinding: (bindingId, reason) => {
         browser.closeStandardCdpForBinding(bindingId, reason);
         void chromeTabs.closeForBinding(bindingId, reason).catch(reportAgentSessionError);

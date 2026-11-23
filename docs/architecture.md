@@ -210,13 +210,8 @@ Each call is one reviewed **operation** of an **agent session**:
    `browser_connect`, every CDP command, every frame from the browser and a timer once a second
    re-check the same facts; any change closes the socket.
 3. **Held when the mode says so.** A read runs in any mode. An effect runs at once in Full
-   access. In Supervised and Auto-accept edits the person is asked. In Auto a reviewer on the
-   Home may allow it; anything other than a clear allow within 15 seconds (no model, an error, a
-   timeout, an odd answer, a prompt too long, text that looks like a credential) asks the person.
-   The reviewer runs only when a review model is configured (`OPENSTEER_AGENT_REVIEW_MODEL`);
-   without one, Auto asks the person. The reviewer is told that page titles, app names, the
-   calls and the agent's own reason are untrusted. The person sees a page title or an app's own
-   name as a labelled plain line ("The app calls itself: …").
+   access. In Supervised, Auto-accept edits and Auto the person is asked. The person sees a page
+   title or an app's own name as a labelled plain line ("The app calls itself: …").
 4. **The answer applies only to what the person saw.** The Request shows the exact script or
    calls; a script longer than a Request's plain text can show in full (18,956 characters, which
    leaves room for the Home's own first lines, so that an older app shows all of it too) is
@@ -547,7 +542,7 @@ public certificates, real IPv6, a pristine Ubuntu install or a VM reboot.
   time. It does not hide the value afterwards.
 - **Saved logins and cards work only in the browser of the person's own Mac that hosts the Home.**
   Not on a Cloud Computer, not on another device, not over `browser_connect`.
-- **Auto asks the person unless a review model is configured** on the Home.
+- **Auto asks the person** before a connected agent's direct effect.
 - **A repeat is recognised only with the same `operationKey` or `operationId`.** Without either,
   the key is the MCP call id, and a retried call is a new operation.
 - **Disconnect can stay Stopping** for as long as a Runner cannot prove an end. A Runner too old to

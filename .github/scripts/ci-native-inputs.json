@@ -243,7 +243,6 @@
     "apps/host/src/administration/owner-profile.ts",
     "apps/host/src/agent-phone/update-hub.ts",
     "apps/host/src/agent-phone/update-release.ts",
-    "apps/host/src/agent-sessions/agent-reviewer.ts",
     "apps/host/src/agent-sessions/agent-session-service.ts",
     "apps/host/src/agents/agent-tools-plan.ts",
     "apps/host/src/agents/automatic-models.ts",
