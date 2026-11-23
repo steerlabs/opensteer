@@ -43,6 +43,30 @@ describe("the expiry of agents' asks (X16)", () => {
   });
 });
 
+describe("the expiry after an error (AD7)", () => {
+  it("arms again after a pass that failed", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const store = {
+      expire: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("The database went away");
+        return [];
+      },
+      nextExpiry: async () => null,
+    } as unknown as CommandRequestStore;
+    const errors: unknown[] = [];
+    const expiry = new CommandRequestExpiry(store, (error) => errors.push(error));
+    expiry.arm(new Date(Date.now() + 1_000));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(errors).toHaveLength(1);
+    expect(expiry.armed).toBe(true);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(calls).toBe(2);
+    expiry.stop();
+  });
+});
+
 describe("a command Request's title (X3)", () => {
   it("keeps the Home's sentence whole and cuts only what follows", () => {
     const sentence = "Rename an AI engine account";

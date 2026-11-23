@@ -525,6 +525,8 @@ export class CommandRequestExpiry {
       this.arm(await this.#store.nextExpiry());
     } catch (error) {
       this.#onError(error);
+      // A failed pass is tried again; it never leaves asks unexpired for good.
+      this.arm(new Date(Date.now() + 60_000));
     }
   }
 }

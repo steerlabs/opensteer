@@ -113,6 +113,45 @@ describeStore("command Requests in the store", (it) => {
     });
   });
 
+  it("counts toward the cap only asks still open by their own time, and expires in order (AD7)", async ({
+    storeFixture,
+  }) => {
+    const { f, store, open, database } = await setup(storeFixture);
+    const opened = [];
+    for (let index = 0; index < commandRequestsPerProposer; index++)
+      opened.push(await open({ askKey: `stale${index}` }));
+    // The Mac slept past their lifetime: unswept, but no longer open by their own time.
+    await database
+      .updateTable("requests")
+      .set({ createdAt: new Date(Date.now() - commandRequestLifetimeMs - 60_000) })
+      .where("id", "in", opened.map(idOf))
+      .execute();
+    const fresh = await open({ askKey: "fresh" });
+    expect(fresh).toMatchObject({ status: "pending", replayed: false });
+    for (const id of opened.map(idOf))
+      expect(await storeFixture.store.requests.get(id)).toMatchObject({
+        status: "cancelled",
+        command: { expired: true },
+      });
+    // Several due at once, across tasks: swept under the enforced lock order.
+    const other = await storeFixture.startRunFixture(`expire-${randomUUID().slice(0, 8)}`);
+    const elsewhere = await store.open({
+      ownerUserId: other.userId,
+      callId: randomUUID(),
+      origin: { runId: other.run.id },
+      originatingThreadId: other.threadId,
+      part: part({ askKey: "elsewhere" }),
+      presentation,
+    });
+    await database
+      .updateTable("requests")
+      .set({ createdAt: new Date(Date.now() - commandRequestLifetimeMs - 60_000) })
+      .where("id", "in", [idOf(elsewhere), idOf(fresh)])
+      .execute();
+    expect((await store.expire()).toSorted()).toEqual([idOf(elsewhere), idOf(fresh)].toSorted());
+    void f;
+  });
+
   it("remembers a decline for a day and answers it at once", async ({ storeFixture }) => {
     const { f, store, open, database } = await setup(storeFixture);
     const first = await open({ askKey: "d1" });

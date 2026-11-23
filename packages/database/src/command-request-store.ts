@@ -165,6 +165,9 @@ export class CommandRequestStore {
     readonly part: CommandRequestPart;
     readonly presentation: RequestPresentation;
   }): Promise<CommandRequestOpened> {
+    // Asks past their own time (a Mac that slept, a clock that jumped) end first, in their own
+    // transaction: they hold no place in the cap and no ask open.
+    await this.expire();
     const opened = await this.#open(input);
     // Held back: the person's oldest ask says so, committed, and the agent is told only to wait.
     if (opened.status === "full") {
@@ -608,42 +611,58 @@ export class CommandRequestStore {
 
   /** Asks no one answered within their lifetime end; the agent is told, and may ask again. */
   async expire(now = this.#now()): Promise<readonly RequestId[]> {
-    return commitPersonalMutation(this.#database, async (transaction) => {
-      const rows = await transaction
-        .selectFrom("requests")
-        .select(["id", "originatingThreadId"])
-        .where("status", "=", "pending")
-        .where("command", "is not", null)
-        .where("createdAt", "<=", new Date(now.getTime() - commandRequestLifetimeMs))
-        .orderBy("id")
-        .execute();
-      if (rows.length === 0) return [];
-      await lockRequestThreads(
-        transaction,
-        rows.map((row) => row.originatingThreadId),
-      );
-      const expired = await transaction
-        .updateTable("requests")
-        .set({
-          status: "cancelled",
-          cancellationReason: "source-closed",
-          resolvedAt: now,
-          resolvedBy: null,
-          command: sql`command || '{"expired": true}'::jsonb`,
-        })
-        .where(
-          "id",
-          "in",
-          rows.map((row) => row.id),
-        )
-        .where("status", "=", "pending")
-        .returningAll()
-        .execute();
-      for (const row of expired) {
-        if (row.originatingAgentSessionId) {
-          await refreshRequestState(transaction, row.id);
-          continue;
-        }
+    return commitPersonalMutation(this.#database, (transaction) =>
+      this.#expireDue(transaction, now),
+    );
+  }
+
+  /** Ends what is due: their tasks first, then the Requests in id order, then the change. */
+  async #expireDue(transaction: Transaction<DatabaseSchema>, now: Date) {
+    const cutoff = new Date(now.getTime() - commandRequestLifetimeMs);
+    const due = await transaction
+      .selectFrom("requests")
+      .select(["id", "originatingThreadId"])
+      .where("status", "=", "pending")
+      .where("command", "is not", null)
+      .where("createdAt", "<=", cutoff)
+      .orderBy("id")
+      .execute();
+    if (due.length === 0) return [];
+    await lockRequestThreads(
+      transaction,
+      due.map((row) => row.originatingThreadId),
+    );
+    const locked = await transaction
+      .selectFrom("requests")
+      .select("id")
+      .where(
+        "id",
+        "in",
+        due.map((row) => row.id),
+      )
+      .where("status", "=", "pending")
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+    if (locked.length === 0) return [];
+    const expired = await transaction
+      .updateTable("requests")
+      .set({
+        status: "cancelled",
+        cancellationReason: "source-closed",
+        resolvedAt: now,
+        resolvedBy: null,
+        command: sql`command || '{"expired": true}'::jsonb`,
+      })
+      .where(
+        "id",
+        "in",
+        locked.map((row) => row.id),
+      )
+      .returningAll()
+      .execute();
+    for (const row of expired) {
+      if (!row.originatingAgentSessionId)
         await transaction
           .insertInto("requestContinuations")
           .values({
@@ -656,10 +675,9 @@ export class CommandRequestStore {
           })
           .onConflict((conflict) => conflict.column("requestId").doNothing())
           .execute();
-        await refreshRequestState(transaction, row.id);
-      }
-      return expired.map((row) => row.id);
-    });
+      await refreshRequestState(transaction, row.id);
+    }
+    return expired.map((row) => row.id);
   }
 
   async #lockPending(
