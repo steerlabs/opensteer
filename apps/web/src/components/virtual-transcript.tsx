@@ -62,6 +62,19 @@ export function useVirtualTranscript({
   const scroll = useRef({ top: 0, height: 0, offsetTop: 0 });
   const anchorRef = useRef<VisualAnchor | null>(null);
   const programmaticScrollTop = useRef<number | null>(null);
+  const tailBroken = useRef(false);
+  const prevFollowTail = useRef(followTail);
+  if (followTail && !prevFollowTail.current) {
+    tailBroken.current = false;
+  } else if (!followTail) {
+    tailBroken.current = false;
+  }
+  prevFollowTail.current = followTail;
+  const lastTailGeometry = useRef<{
+    readonly height: number;
+    readonly viewport: number;
+    readonly scrollTop: number;
+  } | null>(null);
   const [view, setView] = useState({ gap: 4, version: 0 });
 
   const sizes = useMemo(
@@ -74,16 +87,19 @@ export function useVirtualTranscript({
     [estimate, keys, view.gap, view.version],
   );
 
-  // Before the first real scroll measurement, assume the reader opens at the tail so frame 1
-  // mounts the newest rows immediately instead of mounting rows 0..N and jumping.
+  // While following the tail (or before the first real scroll measurement on initial tail open),
+  // target the true bottom of the measured/estimated list so height updates mount tail rows in
+  // one pass instead of lagging behind an old scrollTop.
   const effectiveTop = useMemo(() => {
-    if (initialized.current || !initialAtTail) return scroll.current.top;
-    const viewport =
-      scroll.current.height || (typeof window !== "undefined" ? window.innerHeight : 900);
-    let total = 0;
-    for (const size of sizes) total += size;
-    return Math.max(0, total - viewport);
-  }, [initialAtTail, sizes]);
+    if ((followTail && !tailBroken.current) || (!initialized.current && initialAtTail)) {
+      const viewport =
+        scroll.current.height || (typeof window !== "undefined" ? window.innerHeight : 900);
+      let total = 0;
+      for (const size of sizes) total += size;
+      return Math.max(0, total - viewport);
+    }
+    return scroll.current.top;
+  }, [followTail, initialAtTail, sizes]);
 
   const effectiveHeight =
     scroll.current.height || (typeof window !== "undefined" ? window.innerHeight : 900);
@@ -135,7 +151,9 @@ export function useVirtualTranscript({
 
   /** Captures the top-most visible mounted row's pixel offset from the scrollport top. */
   const captureAnchor = useRef((scrollerEl: HTMLElement): VisualAnchor | null => {
-    if (latest.current.followTail || scrollerEl.scrollTop <= 0) return null;
+    if ((latest.current.followTail && !tailBroken.current) || scrollerEl.scrollTop <= 0) {
+      return null;
+    }
     const rect = scrollerEl.getBoundingClientRect();
     let best: { key: string; offset: number } | null = null;
     for (const [key, element] of elements.current) {
@@ -187,12 +205,52 @@ export function useVirtualTranscript({
 
   /** Measures mounted rows, compensates any height drift above the viewport, and schedules updates. */
   const commitMeasurements = useRef(() => {
-    const { enabled: isEnabled, gap, scroller: getScroller } = latest.current;
+    const {
+      enabled: isEnabled,
+      followTail: isFollowingTail,
+      gap,
+      scroller: getScroller,
+    } = latest.current;
     if (!isEnabled) return;
     const scrollerEl = getScroller?.() ?? null;
 
-    // First, restore the visual anchor if the newly committed DOM shifted the row in view.
-    if (scrollerEl) restoreAnchor.current(scrollerEl);
+    if (scrollerEl) {
+      if (isFollowingTail && !tailBroken.current) {
+        const previous = lastTailGeometry.current;
+        const userMovedUp =
+          previous !== null &&
+          previous.height === scrollerEl.scrollHeight &&
+          previous.viewport === scrollerEl.clientHeight &&
+          scrollerEl.scrollTop < previous.scrollTop - 1;
+        if (userMovedUp) {
+          tailBroken.current = true;
+          lastTailGeometry.current = null;
+        } else {
+          // Pin the scroller to the tail synchronously before paint so spacer/row height
+          // adjustments never leave scrollTop short of scrollHeight or trigger a shrink+grow
+          // clamp that detaches tail-follow.
+          const maxTop = Math.max(0, scrollerEl.scrollHeight - scrollerEl.clientHeight);
+          if (Math.abs(scrollerEl.scrollTop - maxTop) >= 0.5) {
+            programmaticScrollTop.current = maxTop;
+            scrollerEl.scrollTop = scrollerEl.scrollHeight;
+            programmaticScrollTop.current = scrollerEl.scrollTop;
+          }
+          scroll.current = {
+            ...scroll.current,
+            top: Math.max(0, scrollerEl.scrollTop - scroll.current.offsetTop),
+          };
+          lastTailGeometry.current = {
+            height: scrollerEl.scrollHeight,
+            viewport: scrollerEl.clientHeight,
+            scrollTop: scrollerEl.scrollTop,
+          };
+        }
+      } else {
+        lastTailGeometry.current = null;
+        // Restore the visual anchor if the newly committed DOM shifted the row in view.
+        restoreAnchor.current(scrollerEl);
+      }
+    }
 
     let changed = false;
     for (const [key, element] of elements.current) {
@@ -245,6 +303,18 @@ export function useVirtualTranscript({
     },
     [],
   );
+
+  // Mark the scroller as virtualized before first paint so browser heuristic scroll anchoring
+  // never fights our own pre-paint tail/anchor pinning on frame 1.
+  useLayoutEffect(() => {
+    if (!enabled) return;
+    const node = scroller?.() ?? null;
+    if (!node) return;
+    node.dataset.virtualized = "true";
+    return () => {
+      delete node.dataset.virtualized;
+    };
+  }, [enabled, scroller]);
 
   // Measure mounted rows and lock visual anchor synchronously before paint after every commit.
   useLayoutEffect(() => {
@@ -303,7 +373,10 @@ export function useVirtualTranscript({
       }
     };
     const schedule = () => {
-      // Ignore the scroll event fired by our own anchor-restoration write so we never
+      if (frame === 0) frame = requestAnimationFrame(read);
+    };
+    const onScroll = () => {
+      // Ignore the scroll event fired by our own anchor/tail restoration write so we never
       // drop the anchor before a following ResizeObserver pass finishes.
       if (
         programmaticScrollTop.current !== null &&
@@ -313,19 +386,29 @@ export function useVirtualTranscript({
         return;
       }
       programmaticScrollTop.current = null;
+      if (latest.current.followTail && !tailBroken.current) {
+        const previous = lastTailGeometry.current;
+        const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
+        const sameGeometry =
+          previous !== null &&
+          previous.height === node.scrollHeight &&
+          previous.viewport === node.clientHeight;
+        if (sameGeometry && node.scrollTop < maxTop - 1) {
+          tailBroken.current = true;
+          lastTailGeometry.current = null;
+        }
+      }
       // Keep the anchor tracking the reader's current post-scroll position immediately.
       anchorRef.current = captureAnchor.current(node);
-      if (frame === 0) frame = requestAnimationFrame(read);
+      schedule();
     };
-    node.dataset.virtualized = "true";
     read();
-    node.addEventListener("scroll", schedule, { passive: true });
+    node.addEventListener("scroll", onScroll, { passive: true });
     const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
     resize?.observe(node);
     return () => {
-      delete node.dataset.virtualized;
       if (frame !== 0) cancelAnimationFrame(frame);
-      node.removeEventListener("scroll", schedule);
+      node.removeEventListener("scroll", onScroll);
       resize?.disconnect();
     };
   }, [enabled, scroller]);

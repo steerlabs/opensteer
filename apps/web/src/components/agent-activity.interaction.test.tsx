@@ -1342,4 +1342,80 @@ describe("a long transcript's bodies", () => {
       expect(container.textContent).not.toContain("Show full message");
     }
   });
+
+  it("pins tail scrollTop across height resizes while following, and yields immediately when the user scrolls up", async () => {
+    const callbacks: ResizeObserverCallback[] = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(cb: ResizeObserverCallback) {
+          callbacks.push(cb);
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    const entries: MessageEntry[] = Array.from({ length: 100 }, (_, index) => ({
+      ...note,
+      runId: null,
+      body: `Message ${index}`,
+      createdAt: new Date(Date.UTC(2026, 7, 16, 10, index)).toISOString(),
+      id: `message-${index}`,
+    }));
+    const scroller = document.createElement("div");
+    let scrollHeight = 10_000;
+    const clientHeight = 800;
+    let scrollTop = 0;
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, get: () => clientHeight },
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = Math.max(0, Math.min(scrollHeight - clientHeight, value));
+        },
+      },
+    });
+    document.body.append(scroller);
+    const root = createRoot(scroller);
+    roots.push(root);
+    try {
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={["/tasks/thread-tail"]}>
+            <AgentTranscript entries={entries} followTail scroller={() => scroller} />
+          </MemoryRouter>,
+        );
+        await import("./markdown.js");
+      });
+      expect(scroller.dataset.virtualized).toBe("true");
+      expect(scrollTop).toBe(scrollHeight - clientHeight);
+
+      // Simulate height shrink followed by height growth while following tail.
+      scrollHeight = 9_400;
+      scrollTop = Math.min(scrollTop, scrollHeight - clientHeight);
+      await act(async () => {
+        for (const cb of callbacks) cb([], {} as ResizeObserver);
+      });
+      expect(scrollTop).toBe(scrollHeight - clientHeight);
+
+      scrollHeight = 10_600;
+      await act(async () => {
+        for (const cb of callbacks) cb([], {} as ResizeObserver);
+      });
+      expect(scrollTop).toBe(scrollHeight - clientHeight);
+
+      // User scrolls up while scrollHeight and clientHeight are unchanged: must not snap back.
+      scrollTop = 8_500;
+      scroller.dispatchEvent(new Event("scroll"));
+      await act(async () => {
+        for (const cb of callbacks) cb([], {} as ResizeObserver);
+      });
+      expect(scrollTop).toBe(8_500);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
