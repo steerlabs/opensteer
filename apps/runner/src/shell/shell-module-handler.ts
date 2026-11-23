@@ -653,10 +653,24 @@ async function lifecycleWithin(promise: Promise<void>, timeoutMs: number): Promi
   );
 }
 
+/**
+ * The certificate switch every Runner is started with
+ * (`deploy/container/opensteer-node-trust.mjs`, `nodeTrustVariable`), named
+ * here because the Runner's image builds without that directory.
+ */
+export const runnerTrustVariable = "NODE_USE_SYSTEM_CA";
+
+/**
+ * The person's own environment, without what Opensteer set for itself: its
+ * configuration and the Runner's certificate switch, which is the Runner's,
+ * not their shells'.
+ */
 export function shellHelperEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const output: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(environment)) {
-    if (value !== undefined && !name.startsWith("OPENSTEER_")) output[name] = value;
+    if (value === undefined || name.startsWith("OPENSTEER_") || name === runnerTrustVariable)
+      continue;
+    output[name] = value;
   }
   return output;
 }

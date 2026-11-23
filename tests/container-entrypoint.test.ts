@@ -8,10 +8,49 @@ import {
   immutablePackageManifestPath,
   immutableReleaseRecordPath,
   rejectRuntimeInjectionEnvironment,
+  serviceEnvironment,
   verifyReleaseIdentity,
 } from "../deploy/container/opensteer-entrypoint.mjs";
 
 describe("container entrypoint", () => {
+  it.each(["@opensteer/host", "@opensteer/runner", "@opensteer/channel-runtime"])(
+    "starts %s trusting its container's certificates and keeping its operator's",
+    (service) => {
+      const started = serviceEnvironment(service, {
+        NODE_EXTRA_CA_CERTS: "/home-proof-account-ca.pem",
+        OPENSTEER_MODE: "production",
+        SSL_CERT_DIR: "/etc/ssl/certs",
+      });
+      expect(started).toEqual({
+        NODE_EXTRA_CA_CERTS: "/home-proof-account-ca.pem",
+        NODE_USE_SYSTEM_CA: "1",
+        OPENSTEER_MODE: "production",
+        SSL_CERT_DIR: "/etc/ssl/certs",
+      });
+    },
+  );
+
+  it.each([
+    "@opensteer/control-plane",
+    "@opensteer/home-provisioner",
+    "@opensteer/browser-runtime",
+    null,
+  ])("leaves the trust of %s, which is not a Home service, as it was", (service) => {
+    const environment = { OPENSTEER_MODE: "production" };
+    expect(serviceEnvironment(service, environment)).toEqual({ OPENSTEER_MODE: "production" });
+  });
+
+  it("names the service its package stamp is for", async () => {
+    await expect(
+      verifyReleaseIdentity(
+        {},
+        async () =>
+          JSON.stringify({ schemaVersion: 1, sourceRevision: "a".repeat(40), version: "1.2.3" }),
+        async () => packageStamp("1.2.3", "a".repeat(40)),
+      ),
+    ).resolves.toBe("@opensteer/service");
+  });
+
   it("loads the immutable image release record into the child process", async () => {
     const directory = join(tmpdir(), `opensteer-release-record-${randomUUID()}`);
     await mkdir(directory, { mode: 0o700 });

@@ -89,6 +89,18 @@ has no switch from `--local` to a public certificate.
 
 ## Network and storage
 
+The Host, Runner and Channel Runtime trust Node's certificate authorities and
+the ones in their container's system store (`/etc/ssl/certs`), so a network
+that inspects TLS lets the Home reach the Opensteer account once its root is
+there. That store is the image's, not the server's: a root added only to the
+server's own store does not reach them. A Compose layer that names the root
+with `NODE_EXTRA_CA_CERTS`, or points `SSL_CERT_FILE` at a mounted bundle,
+does. The Opensteer app starts its Home the same way and reads the computer's
+own store: on a Mac its keychains, where a new root counts only with a trust
+setting made with the person's or an administrator's password, and on Windows
+its certificate stores. `OPENSTEER_SYSTEM_CERTIFICATES=off`, in the Home's
+environment or the app's, leaves Node's own list only.
+
 The Host owns the Docker namespace and publishes the Caddy ports. Caddy, Runner,
 Browser Runtime, egress proxy and Channel Runtime share its namespace. The Host
 API and the internal listeners bind to loopback. PostgreSQL has its own network

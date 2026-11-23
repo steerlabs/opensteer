@@ -67,6 +67,22 @@ describe("container build context", () => {
     ).resolves.toMatchObject({ stderr: "" });
   });
 
+  it("ships the trust module beside every copy of the container entrypoint, which imports it", async () => {
+    const containerfile = await readFile(resolve("deploy/container/Containerfile"), "utf8");
+    const stages = containerfile.split(/^FROM /mu);
+    let copies = 0;
+    for (const stage of stages) {
+      const name = stage.split("\n", 1)[0] ?? "";
+      for (const match of stage.matchAll(/(\/[^\s]*\/)opensteer-entrypoint\.mjs/gu)) {
+        copies += 1;
+        expect(stage, `${name}: ${match[1]}`).toContain(`${match[1]}opensteer-node-trust.mjs`);
+      }
+    }
+    expect(copies).toBeGreaterThan(0);
+    const entrypoint = await readFile(resolve("deploy/container/opensteer-entrypoint.mjs"), "utf8");
+    expect(entrypoint).toContain('from "./opensteer-node-trust.mjs"');
+  });
+
   it("verifies every shipped harness runtime through the Runner's own resolution", async () => {
     // The Runner's verifier resolves each engine exactly as the Runner will
     // launch it and compares `--version` with the harness catalog, so the

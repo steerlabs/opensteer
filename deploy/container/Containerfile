@@ -413,6 +413,7 @@ RUN apt-get update && \
     install --directory --owner 10001 --group 10001 --mode 0700 /workspaces && \
     install --directory --owner root --group root --mode 0755 /usr/local/share/opensteer
 COPY --chmod=0555 deploy/container/opensteer-entrypoint.mjs /usr/local/bin/opensteer-entrypoint.mjs
+COPY --chmod=0444 deploy/container/opensteer-node-trust.mjs /usr/local/bin/opensteer-node-trust.mjs
 ENTRYPOINT ["tini", "--", "node", "/usr/local/bin/opensteer-entrypoint.mjs"]
 
 FROM node-runtime AS host
@@ -485,7 +486,10 @@ RUN apt-get update && \
     install --directory --owner root --group root --mode 0755 /opt/opensteer/control && \
     install --owner root --group root --mode 0555 \
       /usr/local/bin/opensteer-entrypoint.mjs \
-      /opt/opensteer/control/opensteer-entrypoint.mjs
+      /opt/opensteer/control/opensteer-entrypoint.mjs && \
+    install --owner root --group root --mode 0444 \
+      /usr/local/bin/opensteer-node-trust.mjs \
+      /opt/opensteer/control/opensteer-node-trust.mjs
 COPY --from=claude-code --chmod=0555 /output/claude /usr/local/bin/claude
 COPY --from=claude-code --chmod=0444 /output/LICENSE.md /usr/local/share/licenses/claude-code/LICENSE.md
 COPY --from=bubblewrap-build --chmod=0555 /output/bwrap /usr/local/bin/bwrap
@@ -574,6 +578,7 @@ RUN ln -sf /usr/local/bin/node /usr/bin/node && \
 WORKDIR /app
 COPY --from=browser-runtime-build --chown=10001:10001 /output/browser-runtime ./
 COPY --chmod=0555 deploy/container/opensteer-entrypoint.mjs /usr/local/bin/opensteer-entrypoint.mjs
+COPY --chmod=0444 deploy/container/opensteer-node-trust.mjs /usr/local/bin/opensteer-node-trust.mjs
 # The host container supervisor extracts this exact profile before starting the
 # Runtime. Keeping the policy with the image prevents deployment drift between
 # the Chromium build and the syscalls its sandbox is allowed to use.
