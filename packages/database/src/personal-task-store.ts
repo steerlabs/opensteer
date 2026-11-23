@@ -86,7 +86,6 @@ export function currentTasks(tx: PersonalMutationTransaction, viewerId: UserId) 
     .selectFrom("threads")
     .select(taskFields)
     .select(threadRunQueued.as("runQueued"))
-    .select(threadStartedByOtherSelection)
     .select(taskExternalWorkSelection)
     .where("createdBy", "=", viewerId)
     .where("removedAt", "is", null);
