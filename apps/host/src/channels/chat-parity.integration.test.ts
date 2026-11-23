@@ -29,6 +29,7 @@ import { ChannelService } from "./channel-service.js";
 import { CredentialService } from "../identity/credential-service.js";
 import { createChannelRpcHandlers, handleChannelCommand } from "./channel-handlers.js";
 import { handleConnectionCommand } from "../mcp/connections/connection-routes.js";
+import { normalizeHostError } from "../server/http-errors.js";
 
 const fixturePath = fileURLToPath(
   new URL("../../../../packages/client/src/mock/chat-parity.fixture.json", import.meta.url),
@@ -149,12 +150,24 @@ const script: readonly ChatParityStep[] = [
     },
   },
   {
-    name: "stop a task with nothing running",
-    command: { kind: "task.stop", account: "Workshop", chat: "Slack", task: "Book the dentist" },
+    name: "stop the running task, and its device answers",
+    command: {
+      kind: "task.stop",
+      account: "Workshop",
+      chat: "Slack",
+      task: "Summarize my week",
+      run: "listed",
+    },
   },
   {
-    name: "stop the running task",
-    command: { kind: "task.stop", account: "Workshop", chat: "Slack", task: "Summarize my week" },
+    name: "stop it again from a page read before its Run ended",
+    command: {
+      kind: "task.stop",
+      account: "Workshop",
+      chat: "Slack",
+      task: "Summarize my week",
+      run: "ended",
+    },
   },
   {
     name: "change #team's safety mode and give it a plugin",
@@ -440,6 +453,7 @@ describe("the preview Home answers as the Home does", () => {
         await store.driveConnectionCleanups({ stopper: { stop: async () => undefined } });
       },
     };
+    const stopRuns = new Map<string, string>();
     let current = await read();
     remember(current.channels);
     const seed = chatParityNormalized(current);
@@ -486,25 +500,44 @@ describe("the preview Home answers as the Home does", () => {
           answer = { ok: true };
         } else if (command.kind === "task.stop") {
           const chat = chatOf(command)!;
-          const task = chat.bridge?.tasks?.find(({ title }) => title === command.task);
-          // A task with nothing running has nothing to stop: both clients say so before asking
-          // the Home (`threadStopTarget`). A running one is stopped the way the Home stops it.
-          if (!task?.running) throw new Error("This Thread has nothing to stop.");
-          const runId = await database
-            .selectFrom("runs")
-            .select("id")
-            .where("threadId", "=", task.id as never)
-            .orderBy("createdAt", "desc")
-            .executeTakeFirstOrThrow();
+          const task = chat.bridge!.tasks!.find(({ title }) => title === command.task)!;
+          // What a chat's page sends: Stop of the Run its list names, or of one it named before.
+          if (task.runId) stopRuns.set(command.task, task.runId);
+          const runId = command.run === "listed" ? task.runId : stopRuns.get(command.task);
+          if (!runId) throw new Error(`The script names no Run of ${command.task} to stop.`);
           await store.enqueueRunnerControl({
             type: "run.interrupt",
             threadId: task.id as never,
-            runId: runId.id,
+            runId: runId as never,
             requestedBy: userId,
             auditOwnerStop: true,
             idempotencyKey: createId("command"),
           });
           answer = { ok: true };
+          // Its device answers: the Run ends, interrupted, as the Runner reports it. Only the
+          // task's own update says so; nothing about the chat changes.
+          if (command.run === "listed") {
+            const run = await database
+              .selectFrom("runs")
+              .select(["bindingGeneration", "nextRunnerOrdinal"])
+              .where("id", "=", runId as never)
+              .executeTakeFirstOrThrow();
+            await store.commitRunnerEvent({
+              environmentId: running.environmentId,
+              runnerBootId: running.runnerBootId,
+              runnerId: running.runnerId,
+              event: {
+                bindingGeneration: run.bindingGeneration,
+                data: { status: "interrupted" },
+                emittedAt: new Date().toISOString(),
+                environmentId: running.environmentId,
+                ordinal: run.nextRunnerOrdinal,
+                runId,
+                threadId: task.id,
+                type: "run.interrupted",
+              } as never,
+            });
+          }
         } else if (command.kind === "connection.update") {
           const chat = chatOf(command)!;
           const revision = chat.grantRevision ?? 1;
@@ -599,7 +632,8 @@ describe("the preview Home answers as the Home does", () => {
           answer = { ok: true };
         }
       } catch (error) {
-        answer = chatParityRefusal(error);
+        // As a client receives it: the Home's one HTTP mapping of what was thrown.
+        answer = chatParityRefusal(normalizeHostError(error).error);
       }
       current = await read();
       remember(current.channels);

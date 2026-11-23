@@ -91,7 +91,8 @@ describe("the chats preview", () => {
       });
       expect(broken).toMatchObject({
         ok: true,
-        data: { ready: false, issues: [{ message: "Slack says the token was revoked." }] },
+        // Its provider no longer accepts the token it holds, and says so.
+        data: { ready: false, issues: [{ message: "The provider did not accept these tokens." }] },
       });
     } finally {
       client.dispose();

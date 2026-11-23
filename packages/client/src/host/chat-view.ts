@@ -1,6 +1,10 @@
 import type { ChannelProviderManifest } from "@opensteer/channel-core";
 import type { AgentConnection, MachineSummary } from "@opensteer/protocol";
+import { RunIdSchema, ThreadIdSchema } from "@opensteer/core";
+import type { ChatScreenCommand } from "./chat-screen-host.js";
+import type { HostSnapshot } from "./client.js";
 import type { ConnectedAgentPhase } from "./connected-agent-view.js";
+import { threadInDirectory } from "./host-snapshot-selectors.js";
 import { agentWords } from "./connected-agents-copy.js";
 import { plainSentence as plain, sentenceWith, type SentencePart } from "./sentence-parts.js";
 
@@ -28,6 +32,7 @@ export interface ChatFacts {
     readonly id: string;
     readonly title: string;
     readonly running: boolean;
+    readonly runId: string | null;
   }[];
 }
 
@@ -104,6 +109,60 @@ export function chatFacts(
           ? agentWords("chat.unknownReply")
           : agentWords("chat.unknownReplies", { count: unknown }),
     tasks: bridge.tasks ?? [],
+  };
+}
+
+/** A chat's recent task as it is now. */
+export interface ChatTaskNow {
+  readonly id: string;
+  readonly title: string;
+  readonly running: boolean;
+  /**
+   * The Run it is doing, which Stop interrupts: a Stop is asked of that Run, and a later Run of
+   * the task is a new one with a Stop of its own. Null while the chat's list has not caught up.
+   */
+  readonly runId: string | null;
+}
+
+/**
+ * A chat's recent tasks as the Home's live task updates say they are now: running while the task
+ * runs, as the Home's list counts it (`status` "running"). The chat's own list names its recent
+ * tasks and the Run each is doing, and is read when the connection changes; `behind` says a live
+ * update moved a task past it, so the page reads it again: once per such change, never on a timer.
+ */
+export function chatTasksNow(
+  tasks: ChatFacts["tasks"],
+  directory: Pick<HostSnapshot, "threads" | "tasks" | "activeTasks">,
+): {
+  readonly tasks: readonly ChatTaskNow[];
+  /** What the live updates say that the list does not yet, as a key; null when it agrees. */
+  readonly behind: string | null;
+} {
+  const moved: string[] = [];
+  const now = tasks.map((task) => {
+    const live = threadInDirectory(task.id, directory);
+    const running = live ? live.status === "running" : task.running;
+    if (running !== task.running) moved.push(`${task.id}:${running}`);
+    return {
+      id: task.id,
+      title: live?.title ?? task.title,
+      running,
+      runId: running && task.running ? task.runId : null,
+    };
+  });
+  return { tasks: now, behind: moved.length === 0 ? null : moved.join(",") };
+}
+
+/** Stop, of the one Run the task is doing: the Home interrupts that Run and no later one. */
+export function chatTaskStop(
+  task: ChatTaskNow & { readonly runId: string },
+  idempotencyKey: string,
+): ChatScreenCommand {
+  return {
+    type: "run.interrupt",
+    threadId: ThreadIdSchema.parse(task.id),
+    runId: RunIdSchema.parse(task.runId),
+    idempotencyKey,
   };
 }
 

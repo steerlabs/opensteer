@@ -53,3 +53,17 @@ export function homeRefusalText(
   const text = refusal.message.trim();
   return text === "" ? fallback : text;
 }
+
+/**
+ * The same rule for an issue a Home reports about a messaging account it checked
+ * (`channel.connection.check`): the Home writes each one as a sentence for the person, the same
+ * text the account shows as its status detail. It stands on one line, never longer than a
+ * sentence; with none, `fallback`.
+ */
+export function homeIssueText(
+  issue: { readonly message: string } | undefined,
+  fallback: string,
+): string {
+  const text = (issue?.message ?? "").replace(/\s+/gu, " ").trim().slice(0, 300);
+  return text === "" ? fallback : text;
+}

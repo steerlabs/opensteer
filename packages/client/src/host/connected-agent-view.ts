@@ -18,7 +18,9 @@ import type { ThreadSummary } from "./client.js";
 import {
   agentWords,
   anyoneChatModeDescriptions,
+  type ConnectionModeDescription,
   connectionModeDescriptions,
+  ownerChatModeDescriptions,
 } from "./connected-agents-copy.js";
 import { chatAccountPart, chatFacts } from "./chat-view.js";
 import { plainSentence, sentenceWith, siteOrigin, type SentencePart } from "./sentence-parts.js";
@@ -160,7 +162,7 @@ export interface ConnectedAgentDetail {
   readonly revision: number;
   readonly accessMode: ThreadAccessMode;
   /** What each safety mode means for it, where its mode is chosen (web and phone). */
-  readonly modeDescriptions: Readonly<Record<ThreadAccessMode, string>>;
+  readonly modeDescriptions: Readonly<Record<ThreadAccessMode, ConnectionModeDescription>>;
   readonly live: ConnectedAgentLive | null;
   readonly activity: ConnectedAgentActivity;
   /** `valueParts`: the value as parts, an address a part of its own when it is one. */
@@ -539,7 +541,9 @@ export function connectedAgentDetail(
         ? anyoneChatModeDescriptions(
             connection.bridge.conversationName ?? connection.bridge.conversationId ?? "",
           )
-        : connectionModeDescriptions,
+        : connection.bridge
+          ? ownerChatModeDescriptions
+          : connectionModeDescriptions,
     live,
     activity: options.activity ?? { kind: "unavailable" },
     // What it calls itself and the address it signed in from are facts of an agent that signed

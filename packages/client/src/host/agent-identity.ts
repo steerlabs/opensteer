@@ -15,8 +15,10 @@ export interface AgentWho {
    * show on one line. Beside a mark only when `verified`; otherwise only inside a claim.
    */
   readonly heading: string;
-  /** The verified origin, the redirect origin, or "an app on this computer". */
+  /** The verified origin, the redirect origin, or "an app on this computer", as plain text. */
   readonly detail: string;
+  /** `detail` as parts: each origin an address, each name someone else gave a name. */
+  readonly detailParts: readonly SentencePart[];
   readonly verified: boolean;
   /** The heading is only what the client calls itself. */
   readonly selfAsserted: boolean;
@@ -96,10 +98,27 @@ export function agentWho(input: {
     const verified = presented.verified && withdrawnSince === null;
     // An unverified heading is the client's own name: only ever a claim, made safe to show.
     const claim = presented.verified ? null : agentClaim(input.clientName);
+    // The line under the heading, from what the Home recorded, each value by what it is.
+    const named = (role: "embedder" | "platform") =>
+      presented.origins.find((origin) => origin.role === role);
+    const embedder = named("embedder");
+    const platform = named("platform");
+    const detailParts: readonly SentencePart[] = local
+      ? [workWords("who.local")]
+      : embedder && platform
+        ? sentenceWith(
+            (slot) =>
+              workWords("who.pairDetail", {
+                embedder: slot("embedder"),
+                platform: slot("platform"),
+              }),
+            { embedder: { name: embedder.label }, platform: { name: platform.label } },
+          )
+        : originParts(platform?.origin ?? input.redirect);
     return {
       heading: claim ?? presented.heading,
-      detail:
-        presented.detail || (local ? workWords("who.local") : (originOf(input.redirect) ?? "")),
+      detail: plainSentence(detailParts),
+      detailParts,
       verified,
       selfAsserted: presented.selfAsserted,
       providerId:
@@ -142,7 +161,8 @@ export function agentWho(input: {
             platform: recorded.platformName,
           })
         : recorded.platformName,
-      detail: recorded.platformOrigin,
+      detail: plainSentence(originParts(recorded.platformOrigin)),
+      detailParts: originParts(recorded.platformOrigin),
       verified: withdrawnSince === null,
       selfAsserted: false,
       providerId:
@@ -155,10 +175,13 @@ export function agentWho(input: {
     };
   }
   const claim = agentClaim(input.clientName);
-  const redirectOrigin = local ? null : originOf(input.redirect);
+  const redirectOrigin = local || input.redirect === null ? null : siteOrigin(input.redirect);
+  const detailParts: readonly SentencePart[] =
+    local || input.redirect === null ? [workWords("who.local")] : originParts(input.redirect);
   return {
     heading: claim,
-    detail: local ? workWords("who.local") : (originOf(input.redirect) ?? workWords("who.local")),
+    detail: plainSentence(detailParts),
+    detailParts,
     verified: false,
     selfAsserted: true,
     providerId: null,
@@ -202,9 +225,13 @@ export function agentWhoOriginLine(origin: AgentWhoOrigin): string {
   return plainSentence(agentWhoOriginParts(origin));
 }
 
-/** The same line as parts: the Home's verified name a name, the origin an address. */
+/**
+ * The same line as parts: the Home's verified name a name, the origin an address. An origin that
+ * does not parse as one is never drawn as an address: it stands as text from outside, a name.
+ */
 export function agentWhoOriginParts(origin: AgentWhoOrigin): readonly SentencePart[] {
-  const address = { address: siteOrigin(origin.origin) ?? origin.origin };
+  const parsed = siteOrigin(origin.origin);
+  const address = parsed === null ? { name: origin.origin } : { address: parsed };
   return origin.name
     ? sentenceWith(
         (slot) =>
@@ -252,12 +279,8 @@ function hostOf(value: string | null): string | null {
   }
 }
 
-function originOf(value: string | null): string | null {
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    return url.origin === "null" ? null : url.origin;
-  } catch {
-    return null;
-  }
+/** An origin as an address, from URL parsing (`siteOrigin`); nothing for one that does not parse. */
+function originParts(value: string | null): readonly SentencePart[] {
+  const origin = value === null ? null : siteOrigin(value);
+  return origin === null ? [] : [{ address: origin }];
 }

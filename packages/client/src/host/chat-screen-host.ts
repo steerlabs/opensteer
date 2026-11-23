@@ -19,6 +19,7 @@ export const chatScreenCommands = [
   "connection.revoke",
   "connection.remove",
   "browser.profile.create",
+  "run.interrupt",
 ] as const;
 
 /** What those screens read. */
@@ -27,9 +28,6 @@ export const chatScreenReads = [
   "connections.list",
   "channel.connection.check",
 ] as const;
-
-/** The Host methods those screens call that send a command, by the command each sends. */
-export const chatScreenMethods = { stopRun: "run.interrupt" } as const;
 
 /**
  * The hooks those screens hand a whole Home client, by why each may: none sends a command the
@@ -41,6 +39,8 @@ export const chatScreenHooks = {
     "Sends and reads only what these lists hold: its client is typed from ChatScreenHost (`ConnectedAgentsHost`); it takes the whole client to hear that connections changed.",
   useConnectedAgentLive:
     "Reads what a connected agent's task is doing now (connections.activity) for Watch; sends nothing.",
+  useLiveTasks:
+    "Reads the tasks' live state the Home pushes for every task (the snapshot's task directory), so a chat's Stop ends when its Run does; sends nothing.",
   useChromeTabGrantCatalog:
     "Reads which shared Chrome tabs a grant may name (browser.sources.get); sends nothing.",
   useAgentAppOptions: "Reads which Mac apps and phone screens a grant may name; sends nothing.",
@@ -62,12 +62,9 @@ export type ChatScreenCommand = Extract<
 export interface ChatScreenHost {
   dispatch(command: ChatScreenCommand): Promise<HostApiCommandOutput>;
   readonly rpc: Pick<HostApiClient, (typeof chatScreenReads)[number]>;
-  stopRun(threadId: string): Promise<void>;
 }
 
 /** A Home as those screens may reach it. */
-export function chatScreenHost(
-  client: Pick<HostClient, "dispatch" | "rpc" | "stopRun">,
-): ChatScreenHost {
+export function chatScreenHost(client: Pick<HostClient, "dispatch" | "rpc">): ChatScreenHost {
   return client;
 }

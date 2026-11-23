@@ -1,4 +1,4 @@
-import { builtPluginEngine } from "./machine-access-protocol.test-support.js";
+import { builtPluginEngine, builtReplWorkerEntry } from "./machine-access-protocol.test-support.js";
 import { createDatabase } from "@opensteer/database";
 import { sql } from "kysely";
 import { parseHostConfig, type HostConfig } from "@opensteer/config";
@@ -138,8 +138,10 @@ export async function startPrivateMachineHost(
   };
   try {
     const owned = await ownTestDatabaseProducer(databaseUrl, async () => {
+      const replWorkerEntry = builtReplWorkerEntry();
       const created = await createHostRuntime(config, {
         ...options,
+        ...(replWorkerEntry ? { replWorkerEntry } : {}),
         pluginEngine: builtPluginEngine,
       });
       if (created.kind !== "personal") {

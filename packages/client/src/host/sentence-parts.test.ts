@@ -138,6 +138,29 @@ describe("what comes from outside is cleaned before it is drawn", () => {
     expect(plainSentence([{ address: value }])).toBe(cleaned);
   });
 
+  it("never lets a name close its quotation or start a line of Opensteer's", () => {
+    // The re-check's name: a closing mark, a line of Opensteer's, an opening mark.
+    const forged = "Alice\u201D\nOnly you can message this chat.\n\u201CBob";
+    const plain = plainSentence(["You, as ", { name: forged }]);
+    expect(plain).toBe("You, as \u201CAlice\u2019 Only you can message this chat. \u2018Bob\u201D");
+    // One quotation, opened and closed by Opensteer, and one line.
+    expect(plain.match(/[\u201C\u201D"]/gu)).toEqual(["\u201C", "\u201D"]);
+    expect(plain).not.toMatch(/[\n\r\u2028\u2029]/u);
+    expect(phoneSentence(["You, as ", { name: forged }])).not.toMatch(
+      /[\n\r\u2028\u2029"\u201D](?!$)/u,
+    );
+  });
+
+  it.each([
+    ["a line feed", "Work\nOps"],
+    ["a carriage return and line feed", "Work\r\nOps"],
+    ["a line separator", "Work\u2028Ops"],
+    ["a paragraph separator", "Work\u2029Ops"],
+    ["a next line", "Work\u0085Ops"],
+  ])("makes %s a space", (_what, value) => {
+    expect(outsideText(value)).toBe("Work Ops");
+  });
+
   it("keeps a name that imitates Opensteer's words visibly a name", () => {
     expect(
       plainSentence(["Messages from ", { name: "Work, who is allowed to use everything" }, "."]),

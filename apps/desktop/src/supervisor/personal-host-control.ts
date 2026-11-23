@@ -132,6 +132,39 @@ export class PersonalHostBootstrapRefusedError extends Error {
 
 const personalVersionHeaders = { [hostApiVersionHeader]: String(scopedPersonalApiVersion) };
 
+/**
+ * What a person reads when a call to this computer's Home failed for no reason the Home gave: it
+ * never answered (a socket closed, nothing listening), or its answer is not one this build reads.
+ * A Home's refusal is worded by `homeRefusalText` (`PersonalHostRefusalError`); every other
+ * failure of a call to it is this sentence, the original kept as its cause for the log.
+ */
+export class PersonalHostCallFailedError extends Error {
+  constructor(cause: unknown) {
+    super(
+      "Opensteer couldn't get an answer from this computer's Opensteer. Try again in a moment.",
+      { cause },
+    );
+    this.name = "PersonalHostCallFailedError";
+  }
+}
+
+/** A Home's answer read by `schema`; one this build cannot read is a failed call, never a report. */
+function hostAnswer<T>(schema: z.ZodType<T>, value: unknown): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new PersonalHostCallFailedError(parsed.error);
+  return parsed.data;
+}
+
+/** A request that never answered is a failed call; a cancellation stays itself. */
+async function answered(signal: AbortSignal, request: () => Promise<Response>): Promise<Response> {
+  try {
+    return await request();
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw new PersonalHostCallFailedError(error);
+  }
+}
+
 export class NativePersonalHostControl implements PersonalHostControlPort {
   readonly #fetch: PersonalHostFetch;
   readonly #pollIntervalMs: number;
@@ -244,7 +277,8 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     if (!response.ok) {
       throw new Error(`Personal Host bootstrap returned HTTP ${response.status}.`);
     }
-    LocalBootstrapSchema.parse(
+    hostAnswer(
+      LocalBootstrapSchema,
       await readBoundedJson(response, personalHostJsonOptions(64 * 1_024)),
     );
     // The process-launch capability bootstraps the desktop's ordinary owner
@@ -260,7 +294,8 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
       { authorization: `Bearer ${claimToken}` },
     );
     if (!response.ok) throw new PersonalOwnerClaimRequiredError();
-    const afterClaim = LocalBootstrapSchema.parse(
+    const afterClaim = hostAnswer(
+      LocalBootstrapSchema,
       await readBoundedJson(response, personalHostJsonOptions(64 * 1_024)),
     );
     if (afterClaim.setupUrl !== null) throw new PersonalOwnerClaimRequiredError();
@@ -413,17 +448,19 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     body?: BodyInit,
   ): Promise<Response> {
     return this.#withDeadline(signal, (deadline) =>
-      this.#fetch(deploymentId, url, {
-        cache: "no-store",
-        ...(body === undefined ? {} : { body }),
-        credentials: credentials ? "include" : "omit",
-        // These control routes sit outside the typed API; the Host exempts nobody from the epoch.
-        headers: { accept: "application/json", ...personalVersionHeaders, ...headers },
-        method,
-        redirect: "error",
-        referrerPolicy: "no-referrer",
-        signal: deadline,
-      }),
+      answered(deadline, () =>
+        this.#fetch(deploymentId, url, {
+          cache: "no-store",
+          ...(body === undefined ? {} : { body }),
+          credentials: credentials ? "include" : "omit",
+          // These control routes sit outside the typed API; the Host exempts nobody from the epoch.
+          headers: { accept: "application/json", ...personalVersionHeaders, ...headers },
+          method,
+          redirect: "error",
+          referrerPolicy: "no-referrer",
+          signal: deadline,
+        }),
+      ),
     );
   }
 }
@@ -465,7 +502,7 @@ export class NativePersonalRemoteHostControl {
         origin: runtime.localOrigin,
       },
     );
-    return PersonalRemoteAccessStatusSchema.parse(await this.#json(response));
+    return hostAnswer(PersonalRemoteAccessStatusSchema, await this.#json(response));
   }
 
   async configure(
@@ -483,7 +520,7 @@ export class NativePersonalRemoteHostControl {
         origin: runtime.localOrigin,
       },
     );
-    return PersonalRemoteAccessStatusSchema.parse(await this.#json(response));
+    return hostAnswer(PersonalRemoteAccessStatusSchema, await this.#json(response));
   }
 
   async connectCredential(
@@ -506,7 +543,7 @@ export class NativePersonalRemoteHostControl {
         timeoutMs: 35_000,
       },
     );
-    return ConnectCredentialResponseSchema.parse(await this.#json(response));
+    return hostAnswer(ConnectCredentialResponseSchema, await this.#json(response));
   }
 
   async issuePairingCode(runtimeInput: PersonalHostRuntimeRecord) {
@@ -517,7 +554,7 @@ export class NativePersonalRemoteHostControl {
       "/v1/personal-remote-access/pairing-codes",
       { body: {}, method: "POST", origin: runtime.localOrigin },
     );
-    return IssuePersonalPairingCodeResponseSchema.parse(await this.#json(response));
+    return hostAnswer(IssuePersonalPairingCodeResponseSchema, await this.#json(response));
   }
 
   async approveAccountLink(
@@ -535,7 +572,7 @@ export class NativePersonalRemoteHostControl {
         origin: runtime.localOrigin,
       },
     );
-    return ApprovePersonalHostAccountLinkResponseSchema.parse(await this.#json(response));
+    return hostAnswer(ApprovePersonalHostAccountLinkResponseSchema, await this.#json(response));
   }
 
   async consumeAccountLink(
@@ -621,7 +658,7 @@ export class NativePersonalRemoteHostControl {
         origin: runtime.localOrigin,
       },
     );
-    return RevokeConnectResponseSchema.parse(await this.#json(response));
+    return hostAnswer(RevokeConnectResponseSchema, await this.#json(response));
   }
 
   async #accountUnlinkStep(
@@ -675,22 +712,24 @@ export class NativePersonalRemoteHostControl {
     if (input.signal?.aborted) relayAccountAbort();
     else input.signal?.addEventListener("abort", relayAccountAbort, { once: true });
     try {
-      const response = await this.#fetch(deploymentId, endpoint, {
-        ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
-        cache: "no-store",
-        credentials: input.authorization ? "omit" : "include",
-        headers: {
-          accept: "application/json",
-          ...personalVersionHeaders,
-          ...(input.authorization ? { authorization: input.authorization } : {}),
-          origin: input.origin,
-          ...(input.body === undefined ? {} : { "content-type": "application/json" }),
-        },
-        method: input.method,
-        redirect: "error",
-        referrerPolicy: "no-referrer",
-        signal: controller.signal,
-      });
+      const response = await answered(controller.signal, () =>
+        this.#fetch(deploymentId, endpoint, {
+          ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
+          cache: "no-store",
+          credentials: input.authorization ? "omit" : "include",
+          headers: {
+            accept: "application/json",
+            ...personalVersionHeaders,
+            ...(input.authorization ? { authorization: input.authorization } : {}),
+            origin: input.origin,
+            ...(input.body === undefined ? {} : { "content-type": "application/json" }),
+          },
+          method: input.method,
+          redirect: "error",
+          referrerPolicy: "no-referrer",
+          signal: controller.signal,
+        }),
+      );
       input.signal?.throwIfAborted();
       if (response.redirected || (response.url !== "" && response.url !== endpoint)) {
         await response.body?.cancel();

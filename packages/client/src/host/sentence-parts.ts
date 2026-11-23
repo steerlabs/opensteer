@@ -15,11 +15,19 @@
  */
 export type SentencePart = string | { readonly address: string } | { readonly name: string };
 
-/** A value from outside: removed are direction controls, zero-width characters, soft hyphens. */
+/**
+ * A value from outside, as it may stand in a sentence: direction controls, zero-width characters
+ * and soft hyphens are removed; each line break is a space, so it never starts a line of its own;
+ * each double quotation mark is a single one, so it never ends the quotation a name stands in.
+ */
 export function outsideText(value: string): string {
   return value
     .replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "")
-    .replace(/[\u00AD\u180E\u200B-\u200D\u2060\uFEFF]/gu, "");
+    .replace(/[\u00AD\u180E\u200B-\u200D\u2060\uFEFF]/gu, "")
+    .replace(/\r\n|[\n\r\v\f\u0085\u2028\u2029]/gu, " ")
+    .replace(/[\u201C\u201F\u301D\u301E]/gu, "\u2018")
+    .replace(/[\u201D\u201E\u301F]/gu, "\u2019")
+    .replace(/[\u0022\uFF02]/gu, "\u0027");
 }
 
 /**

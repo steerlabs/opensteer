@@ -25,7 +25,10 @@ import {
   type CreatedChannelConnection,
   chatScreenHost,
   type ChatScreenHost,
+  agentSentence,
+  plainSentence,
 } from "@opensteer/client/host";
+import { homeIssueText } from "@opensteer/client/failure-text";
 import { useConnectedAgents } from "@opensteer/client/react";
 import type { AgentConnection } from "@opensteer/protocol";
 import { useShell } from "./app-shell.js";
@@ -200,12 +203,12 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
       );
       await reload();
       if (inspection.ready) {
-        toast.success(`${displayName}: checked.`);
+        toast.success(plainSentence([{ name: displayName }, ": checked."]));
         if (repairing) {
           setRepairing(null);
           setView("overview");
         }
-      } else setError(inspection.issues[0]?.message ?? "Setup is incomplete");
+      } else setError(homeIssueText(inspection.issues[0], "Setup is incomplete"));
     });
   }
 
@@ -576,7 +579,13 @@ export function ChannelOverview({
                       </button>
                     ) : !view.canPause && !view.canResume ? null : (
                       <SettingsSwitch
-                        label={`${view.canResume ? agentWords("messaging.resume") : agentWords("messaging.pause")} ${connection.displayName}`}
+                        label={plainSentence([
+                          view.canResume
+                            ? agentWords("messaging.resume")
+                            : agentWords("messaging.pause"),
+                          " ",
+                          { name: connection.displayName },
+                        ])}
                         checked={view.canPause}
                         disabled={pending || readFailed}
                         onChange={(enabled) =>
@@ -585,7 +594,7 @@ export function ChannelOverview({
                       />
                     )}
                     <SurfaceMenu
-                      label={`Actions for ${connection.displayName}`}
+                      label={plainSentence(["Actions for ", { name: connection.displayName }])}
                       items={[
                         {
                           icon: "reload",
@@ -631,7 +640,11 @@ export function ChannelOverview({
       </div>
       {removing ? (
         <Dialog
-          title={agentWords("messaging.remove.title", { account: removing.name })}
+          title={
+            <SentenceText
+              parts={agentSentence("messaging.remove.title", { account: { name: removing.name } })}
+            />
+          }
           onClose={() => setRemoving(null)}
           footer={
             <>

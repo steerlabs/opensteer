@@ -110,6 +110,21 @@ export function useChromeTabGrantCatalog(client: HostClient | null, wanted: bool
 }
 
 const selectActiveTasks = (snapshot: HostSnapshot) => snapshot.activeTasks;
+const selectThreads = (snapshot: HostSnapshot) => snapshot.threads;
+const selectTaskList = (snapshot: HostSnapshot) => snapshot.tasks;
+
+/**
+ * The tasks as the Home's live task updates hold them (`threadInDirectory` reads it): a chat's
+ * page reads from it whether its tasks run, so a Stop ends when the Run does, with no poll.
+ */
+export function useLiveTasks(
+  client: HostClient,
+): Pick<HostSnapshot, "threads" | "tasks" | "activeTasks"> {
+  const threads = useHostSelector(client, selectThreads);
+  const tasks = useHostSelector(client, selectTaskList);
+  const activeTasks = useHostSelector(client, selectActiveTasks);
+  return useMemo(() => ({ threads, tasks, activeTasks }), [threads, tasks, activeTasks]);
+}
 
 export function useConnectedAgentLive(client: HostClient, connectionId: string) {
   const tasks = useHostSelector(client, selectActiveTasks);

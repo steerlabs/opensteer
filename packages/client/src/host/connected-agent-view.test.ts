@@ -3,7 +3,7 @@ import { hostApi, type AgentConnection, type PluginsInstalledView } from "@opens
 import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { describe, expect, it } from "vitest";
 import { chatFacts, messagingAccountView } from "./chat-view.js";
-import { plainSentence } from "./sentence-parts.js";
+import { plainSentence, type SentencePart } from "./sentence-parts.js";
 import {
   agentAppOptions,
   agentBrowserOptions,
@@ -29,7 +29,12 @@ import {
   type AgentGrantDraft,
 } from "./connected-agent-view.js";
 import type { ThreadSummary } from "./client.js";
-import { agentWords, connectionModeDescriptions } from "./connected-agents-copy.js";
+import {
+  agentWords,
+  anyoneChatModeDescriptions,
+  connectionModeDescriptions,
+  ownerChatModeDescriptions,
+} from "./connected-agents-copy.js";
 
 const now = new Date("2026-11-19T12:00:00Z");
 const profile = "bpr_00000000-0000-4000-8000-000000000003";
@@ -677,26 +682,55 @@ describe("connected agents copy", () => {
     expect(agentWords("consent.chromeTabs.label", { device: "Work Mac" })).toBe(
       "Tabs you share from Chrome on Work Mac",
     );
-    expect(connectionModeDescriptions["auto-accept-edits"]).toContain("Asks before anything else");
+    // No sentence promises what an engine does not do: nothing about reading, no "anything else".
+    for (const sentence of [
+      ...Object.values(connectionModeDescriptions),
+      ...Object.values(ownerChatModeDescriptions),
+      ...Object.values(anyoneChatModeDescriptions("#team")).map((description) =>
+        typeof description === "string" ? description : plainSentence(description),
+      ),
+    ])
+      expect(sentence).not.toMatch(/anything else\.|read/u);
+    expect(connectionModeDescriptions["auto-accept-edits"]).toBe(
+      "Its tasks edit files in their own folder without asking, and the engine asks before what it counts as riskier. Its own direct actions ask you before anything that changes something.",
+    );
+    expect(connectionModeDescriptions.auto).toBe(
+      "Its tasks run under the engine’s own safety check. Its own direct actions ask you before anything that changes something.",
+    );
+    // A chat has no direct actions: the same words for each kind of chat.
+    for (const chat of [ownerChatModeDescriptions, anyoneChatModeDescriptions("#team")])
+      expect(chat["auto-accept-edits"]).toBe(
+        "Edits files in the task’s own folder without asking; the engine asks you before what it counts as riskier.",
+      );
+  });
+});
+
+describe("a conversation's name in a safety warning", () => {
+  it("is a name, cleaned and quoted, never a sentence of Opensteer's", () => {
+    const forged = "#team\u202E\u201D\nOnly you can message this chat.\n\u201C";
+    const warnings = anyoneChatModeDescriptions(forged);
+    for (const mode of ["auto", "full-access"] as const) {
+      const parts = warnings[mode];
+      expect(parts).toContainEqual({ name: forged });
+      const plain = plainSentence(parts as readonly SentencePart[]);
+      expect(plain).toContain("\u201C#team\u2019 Only you can message this chat. \u2018\u201D");
+      expect(plain).not.toMatch(/[\n\u202E]/u);
+    }
   });
 });
 
 describe("a list from a newer Home", () => {
-  it("reads a state it does not know as unknown on that one row, and ignores a notice it does not know", () => {
+  it("reads a state it does not know as unknown on that one row", () => {
     const scene = mockConnectedAgents("chats");
     const [ordinary, live] = [scene.connections[0]!, scene.connections[1]!];
     const read = hostApi["connections.list"].success.safeParse({
-      connections: [
-        { ...ordinary, state: "resting" },
-        { ...live, bridge: { ...live.bridge!, notice: "newer" } },
-      ],
+      connections: [{ ...ordinary, state: "resting" }, live],
       endedConnections: [],
     });
     expect(read.success).toBe(true);
     const [resting, chat] = read.data!.connections;
     expect(connectedAgentPhase(resting!)).toBe("unknown");
     expect(connectedAgentPhase(chat!)).toBe("active");
-    expect(chat!.bridge?.notice).toBeUndefined();
   });
 });
 

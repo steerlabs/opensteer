@@ -19,7 +19,6 @@ import type { ThreadCallerAuthority } from "./thread-caller.js";
 
 import type {
   ChannelAccountId,
-  ChannelBindingId,
   ChannelConnectionIssueKind,
   ChannelConversationId,
   ChannelDeliveryId,
@@ -1744,34 +1743,6 @@ export interface ChannelAccountTable {
   updatedAt: Timestamp;
 }
 
-export interface ChannelBindingTable {
-  id: ChannelBindingId;
-  accountId: ChannelAccountId;
-
-  createdBy: UserId;
-  selector: JsonColumn<Readonly<Record<string, unknown>>>;
-  executionPolicy: JsonColumn<Readonly<Record<string, unknown>>>;
-  accessPolicy: JsonColumn<Readonly<Record<string, unknown>>>;
-  revision: number;
-  status: "active" | "paused" | "revoked";
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
-export interface ChannelAccessGrantTable {
-  accountId: ChannelAccountId;
-  bindingId: ChannelBindingId;
-  externalUserId: string;
-  displayName: string;
-  status: "pending" | "approved" | "declined" | "revoked";
-  revision: number;
-  requestedAt: Timestamp;
-  requestIngressId: ChannelIngressId | null;
-  decidedAt: NullableTimestamp;
-  decidedBy: UserId | null;
-  updatedAt: Timestamp;
-}
-
 interface ChannelIdentityTable {
   id: ChannelIdentityId;
   accountId: ChannelAccountId;
@@ -1780,26 +1751,6 @@ interface ChannelIdentityTable {
   displayName: string;
   linkedUserId: UserId | null;
   status: "unlinked" | "linked";
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
-interface ChannelConversationTable {
-  personalContext: Generated<boolean>;
-  id: ChannelConversationId;
-  accountId: ChannelAccountId;
-  provider: ChannelProvider;
-  externalAccountId: string;
-  bindingId: ChannelBindingId;
-  bindingRevision: number;
-
-  externalScopeId: string | null;
-  externalConversationId: string;
-  externalThreadId: string | null;
-  conversationType: "dm" | "group" | "channel";
-  displayName: string | null;
-  activeThreadId: ThreadId | null;
-  providerState: JsonColumn<Readonly<Record<string, unknown>>>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -1817,57 +1768,12 @@ interface ChannelIngressEventTable {
   claimExpiresAt: NullableTimestamp;
   nextAttemptAt: Timestamp;
   lastError: string | null;
-  conversationId: ChannelConversationId | null;
   messageId: MessageId | null;
   runId: RunId | null;
   receivedAt: Timestamp;
   processedAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
-}
-
-export interface ChannelDeliveryTable {
-  id: ChannelDeliveryId;
-  accountId: ChannelAccountId;
-  /** Exactly one of these is set: a routed conversation, or the ignored ingress a status answers. */
-  conversationId: ChannelConversationId | null;
-  ingressId: ChannelIngressId | null;
-  messageId: MessageId | null;
-  audience: "conversation" | "actor";
-  kind: "reply" | "status";
-  /** One provider message. A reply longer than the provider allows becomes `partCount` of these. */
-  part: Generated<number>;
-  partCount: Generated<number>;
-  content: JsonColumn<readonly unknown[]>;
-  status:
-    "pending" | "leased" | "attempt-started" | "sent" | "retryable-failed" | "unknown" | "dead";
-  attempts: Generated<number>;
-  claimTokenHash: string | null;
-  claimOwner: string | null;
-  claimExpiresAt: NullableTimestamp;
-  nextAttemptAt: Timestamp;
-  lastError: string | null;
-  receipt: JsonColumn<Readonly<Record<string, unknown>>> | null;
-  sentAt: NullableTimestamp;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
-/**
- * A code is minted FOR a channel identity and consumed BY the Opensteer user
- * who redeems it in the web app, so the identity is known from the start and
- * the user only at consumption.
- */
-interface ChannelLinkCodeTable {
-  id: string;
-  accountId: ChannelAccountId;
-  userId: UserId | null;
-  codeHash: string;
-  expiresAt: Timestamp;
-  consumedAt: NullableTimestamp;
-  identityId: ChannelIdentityId;
-  requestIngressId: ChannelIngressId | null;
-  createdAt: Timestamp;
 }
 
 interface ComputerUsePolicyTable {
@@ -1968,10 +1874,6 @@ export interface AgentConnectionTable {
   bridgeConversationId: Generated<string | null>;
   /** Who may speak: the linked owner only, or anyone in its one conversation. */
   bridgeSenders: Generated<BridgeSenders | null>;
-  /** The binding the update converted into this bridge, once. */
-  bridgeFromBindingId: Generated<string | null>;
-  /** A one-time notice the person has not dismissed yet. */
-  bridgeNotice: Generated<BridgeNotice | null>;
   /** The channel's name, for a bridge that covers one channel. */
   bridgeConversationName: Generated<string | null>;
   /** Why the bridge ended, recorded when it was revoked. */
@@ -1979,7 +1881,6 @@ export interface AgentConnectionTable {
 }
 
 export type BridgeSenders = "owner" | "anyone";
-export type BridgeNotice = "converted" | "converted-without-channels";
 export type BridgeEndedBy = "you" | "organization" | "account" | "computer" | "work-home";
 
 export interface BridgeConversationTable {
@@ -2460,13 +2361,8 @@ export interface DatabaseSchema {
 
   integrationGrants: IntegrationGrantTable;
   channelAccounts: ChannelAccountTable;
-  channelAccessGrants: ChannelAccessGrantTable;
-  channelBindings: ChannelBindingTable;
   channelIdentities: ChannelIdentityTable;
-  channelConversations: ChannelConversationTable;
   channelIngressEvents: ChannelIngressEventTable;
-  channelDeliveries: ChannelDeliveryTable;
-  channelLinkCodes: ChannelLinkCodeTable;
   bridgeConversations: BridgeConversationTable;
   bridgeDeliveries: BridgeDeliveryTable;
   bridgeLinkCodes: BridgeLinkCodeTable;

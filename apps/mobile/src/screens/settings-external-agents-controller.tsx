@@ -12,11 +12,12 @@ import {
 } from "@opensteer/client/host";
 import { useConnectedAgents, usePersonalRemoteAccess } from "@opensteer/client/react";
 import { useNavigation } from "@react-navigation/native";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { ExternalAgentMark } from "./external-agent-mark.js";
 import { ExternalAgentSetupSheet } from "./external-agent-setup-sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
+import { readGateSections } from "./read-gate-sections.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 import { useSettingsHost } from "./use-settings-host.js";
 
@@ -41,7 +42,15 @@ export function ExternalAgentsSettingsController(): ReactNode {
   const arrived = guide === null ? null : arrivedConnection(connections, baseline);
   const names = { profiles: host?.getSnapshot().browserProfiles ?? [] };
   const view = connectedAgentsView(connections ?? [], names, agents.revoked);
-  const addDisabled = connections === null || reach.kind !== "ready";
+  // A list read before whose refresh failed changes nothing until it is read again
+  // (`readGateSections`): no setup starts against it, and one open closes.
+  const readFailed = agents.readFailed && connections !== null;
+  useEffect(() => {
+    if (!readFailed) return;
+    setGuide(null);
+    setBaseline(null);
+  }, [readFailed]);
+  const addDisabled = connections === null || readFailed || reach.kind !== "ready";
   const openRemoteAccess = () => {
     setGuide(null);
     if (deploymentId) navigation.navigate("SettingsAccount", { deploymentId });
@@ -154,7 +163,15 @@ export function ExternalAgentsSettingsController(): ReactNode {
   });
   return (
     <>
-      <NativeSettingsPage sections={sections} />
+      <NativeSettingsPage
+        sections={readGateSections(sections, {
+          failed: readFailed,
+          retry: {
+            message: agentWords("agent.readFailed"),
+            onRetry: () => void agents.refresh?.(),
+          },
+        })}
+      />
       <ExternalAgentSetupSheet
         address={guide !== null && reach.kind === "ready" ? guideAddress(guide, reach) : null}
         connected={arrived}
