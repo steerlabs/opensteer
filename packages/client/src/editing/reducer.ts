@@ -838,9 +838,15 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         state.suppressedInput = null;
         break;
       }
+      // The input a composition's end carries is its own: a commit's, or the deletion that
+      // cancelled it (its beforeinput came while composing). A person's own Backspace after a
+      // commit has a beforeinput of its own first, which ends the tail (regime C, seeds 1605 and
+      // 2225: the cancel's input, read before the mirror was cleared, sent the field again).
       if (
         state.compositionTail &&
-        ["insertFromComposition", "insertCompositionText"].includes(event.inputType)
+        ["insertFromComposition", "insertCompositionText", "deleteContentBackward"].includes(
+          event.inputType,
+        )
       ) {
         const discard = state.compositionTail === "discard";
         state.compositionTail = null;

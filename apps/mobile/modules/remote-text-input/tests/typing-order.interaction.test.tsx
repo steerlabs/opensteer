@@ -10,6 +10,7 @@ import {
   type Answer,
   type Packet,
   type Proxy,
+  type Span,
 } from "./remote-input-port.js";
 import { splitGraphemes } from "unicode-segmenter/grapheme";
 import {
@@ -1343,6 +1344,8 @@ describe("a person's caret moves and selections in the native field", () => {
     let swiped = 0;
     /** The moves each report of the native field stood for, by action. */
     const reported = new Map<number, number[]>();
+    /** The person's selection before and after each action. */
+    const carets = new Map<number, { before: Span; after: Span }>();
     const record = (action: Action) => {
       const index = kinds.length;
       kinds.push(kind);
@@ -1351,8 +1354,18 @@ describe("a person's caret moves and selections in the native field", () => {
       const current = segments.at(-1)!;
       current.actions.push(action);
       const p = current.person;
-      const before = { text: p.text, marked: p.marked };
+      const before = { text: p.text, marked: p.marked, selection: { ...p.selection } };
       action(p);
+      carets.set(index, { before: before.selection, after: { ...p.selection } });
+      // A swipe is drawn on the native field's text, which can lag the person's: one that leaves
+      // the person's caret where it was moved nothing of theirs, and nothing need reach the page
+      // (regime B, seeds 1327, 1333, 1563, 2582, 2680).
+      if (
+        kinds[index] === "move" &&
+        p.selection.start === before.selection.start &&
+        p.selection.end === before.selection.end
+      )
+        kinds[index] = "other";
       if (before.marked || p.marked) composing.add(index);
       if (!before.marked && p.marked) {
         open = { marked: [], start: clock };
@@ -1739,12 +1752,18 @@ describe("a person's caret moves and selections in the native field", () => {
           if (each !== "typed" && each !== "delete" && !(each === "move" && target.commands))
             return [];
           const its = sent.filter((entry) => entry.owners.includes(action));
-          // Swipes one report stands for that end where they began move nothing: none is sent.
+          // The moves one report stands for that leave the person's caret where it was before them
+          // move nothing: none is sent (seed 1333, a swipe and a caret move back).
           const group = reported.get(action);
+          const first = group && carets.get(Math.min(...group))?.before;
+          const end = group && carets.get(Math.max(...group))?.after;
           const still =
             each === "move" &&
             group !== undefined &&
-            group.reduce((sum, index) => sum + (distances.get(index) ?? 0), 0) === 0 &&
+            first !== undefined &&
+            end !== undefined &&
+            first.start === end.start &&
+            first.end === end.end &&
             !sent.some((entry) => group.some((index) => entry.owners.includes(index)));
           if (its.length === 0 && still) return [];
           if (its.length === 0) return [`action ${action + 1} (${each}) never reached the page`];
@@ -1827,66 +1846,46 @@ describe("a person's caret moves and selections in the native field", () => {
           if (entry.owners.length === 0 || entry.owners.some((owner) => composing.has(owner)))
             if (!entry.owners.some((owner) => kinds[owner] === "typed")) put += entry.put;
         }
-        let rest = put;
-        for (const lineage of lineages) {
-          // What its changes of context committed: up to one marked text each, in order.
-          let last: string | null = null;
-          // The changes of context between its start and the turn of the action that ended it,
-          // when the phone ended it (to the end of the sequence for one left open). Each may
-          // commit two of its marked texts: what the phone's reducer had marked then, and what
-          // the native field had marked when its configure ended the composition (one mark
-          // further on, CY4's insertion of a commit that differs).
-          const ending = lineage.end === undefined ? undefined : turnClock.get(lineage.end);
-          let changes = 2 * ((ending ?? clock) - lineage.start);
-          let at = 0;
+        // Every reading of what the page took, composition by composition: up to two of its
+        // marked texts for each change of context while it was open (the phone's reducer's, and
+        // the native field's when its configure ended it), then its commit's form. One reading
+        // that accounts for all of it, and nothing more, keeps the promise.
+        const read = (index: number, rest: string): boolean => {
+          if (index === lineages.length) return rest === "";
+          const lineage = lineages[index]!;
           const commit = lineage.committed;
-          while (changes > 0 && rest !== "") {
-            const marked = lineage.marked.slice(at);
-            // The longest marked text the field took next, leaving room for the commit's form.
-            const next = marked
-              .map((text, offset) => ({ text, offset }))
-              .filter(({ text }) => rest.startsWith(text))
-              .sort((a, b) => b.text.length - a.text.length)[0];
-            if (!next) break;
-            const after = rest.slice(next.text.length);
-            // A change's text equal to the commit, with the commit adding nothing, ends here.
-            if (commit && commit.text === next.text && !after.startsWith(commit.text)) {
-              last = next.text;
-              rest = after;
-              break;
-            }
-            if (
-              commit &&
-              after.startsWith(committedRemainder(next.text, commit.text)) === false &&
-              rest.startsWith(commit.text)
-            )
-              break;
-            last = next.text;
-            rest = after;
-            at += next.offset + 1;
-            changes -= 1;
-          }
-          if (!commit) continue;
-          const forms =
-            last !== null
-              ? [committedRemainder(last, commit.text)]
-              : [
-                  commit.text,
-                  ...lineage.marked
-                    .filter((text) => ended.includes(text))
-                    .map((text) => committedRemainder(text, commit.text)),
-                ];
-          const form = forms
-            .sort((a, b) => b.length - a.length)
-            .find((candidate) => rest.startsWith(candidate));
-          if (form === undefined) {
-            promise = `action ${commit.index + 1} committed ${said(commit.text)}${last !== null ? ` after a change committed ${said(last)}` : ""}, and what the page took of compositions from there is ${said(rest)}`;
-            break;
-          }
-          rest = rest.slice(form.length);
-        }
-        if (!promise && rest !== "")
-          promise = `the page took ${said(rest)} of compositions beyond what the person committed (${lineages.flatMap((lineage) => (lineage.committed ? [said(lineage.committed.text)] : [])).join(", ")})`;
+          const ending = lineage.end === undefined ? undefined : turnClock.get(lineage.end);
+          const budget = 2 * ((ending ?? clock) - lineage.start);
+          const take = (from: number, used: number, last: string | null, left: string): boolean => {
+            if (commit) {
+              const forms =
+                last !== null
+                  ? [committedRemainder(last, commit.text)]
+                  : [
+                      commit.text,
+                      ...lineage.marked
+                        .filter((text) => ended.includes(text))
+                        .map((text) => committedRemainder(text, commit.text)),
+                    ];
+              for (const form of new Set(forms))
+                if (left.startsWith(form) && read(index + 1, left.slice(form.length))) return true;
+            } else if (read(index + 1, left)) return true;
+            if (used < budget)
+              for (let at = from; at < lineage.marked.length; at++) {
+                const text = lineage.marked[at]!;
+                if (
+                  text &&
+                  left.startsWith(text) &&
+                  take(at, used + 1, text, left.slice(text.length))
+                )
+                  return true;
+              }
+            return false;
+          };
+          return take(0, 0, null, rest);
+        };
+        if (!read(0, put))
+          promise = `the page took ${said(put)} of compositions; no reading of what the person committed (${lineages.flatMap((lineage) => (lineage.committed ? [said(lineage.committed.text)] : [])).join(", ")}) accounts for it`;
       }
       // Relative to the caret: an insertion, a paste, a move or deletion command. A refused
       // replacement (a selection's deletion, a composition's update) is allowed.
@@ -2060,6 +2059,44 @@ describe("a person's caret moves and selections in the native field", () => {
     // The answer to the refused send's own packet keeps the native default from happening.
     expect(seen.some((answer) => answer.preventDefault === true)).toBe(true);
   });
+
+  // The counter-examples the larger runs found, kept as named cases: regime B 1327, 1333, 1563,
+  // 2582, 2680 (a swipe that moved nothing of the person's, the generator's) and regime C 1402,
+  // 1605, 2225 (a composition's cancelled input sending the field again, the product's).
+  it.each([
+    ["B", 1327],
+    ["B", 1333],
+    ["B", 1563],
+    ["B", 2582],
+    ["B", 2680],
+    ["C", 1402],
+    ["C", 1605],
+    ["C", 2225],
+  ] as const)("keeps regime %s's promise at seed %i", async (which, seed) => {
+    const result = await regime(seed, which);
+    expect(result.failure).toBeNull();
+  });
+
+  // Regime C, seeds 1605 and 2225: on a Mac app or phone screen a composition the person deletes
+  // away (its compositionend carries nothing) is followed by its deletion's own input, whose text
+  // the native field read before the mirror was cleared. That input is the cancel's: the field's
+  // text does not go again, and the letter typed next goes alone.
+  it.each(["display", "basic", "full"] as const)(
+    "on %s, sends nothing more for a composition deleted away",
+    async (name) => {
+      const { remote, keyboard, answerAll } = await open(targets[name]);
+      await keyboard((field) => field.paste("ab"));
+      await answerAll();
+      // All three wait for the composition's answers, as the person types on.
+      await keyboard((field) => {
+        field.setMarkedText("に");
+        field.deleteBackward();
+        field.insertText("x");
+      });
+      await answerAll();
+      expect(remote.value).toBe("abx");
+    },
+  );
 
   // CZ9: a keystroke of the context just left that reaches the view right after React commits
   // the new context, before its passive effects, is reduced there: the context left is retired
