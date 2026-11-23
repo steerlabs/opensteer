@@ -11,7 +11,6 @@ import {
   type PendingSendCommand,
   type WebSocketClient,
 } from "../packages/client/src/host/index.js";
-import { MockPersonalHost } from "../packages/client/src/mock/mock-personal-host.js";
 import {
   controlledClientSession,
   MemoryPrivateFilesystem,
@@ -226,7 +225,8 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
       ["replace-cookie", "refresh-view"],
     ],
     async (events) => {
-      const mockHost = new MockPersonalHost();
+      const deploymentId = createId("deployment");
+      const userId = createId("user");
       const originalSession = createId("authSession");
       const replacementSession = createId("authSession");
       let shellSession: AuthSessionId = originalSession;
@@ -245,43 +245,98 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
         capabilities: [],
         reconnectBaseDelayMs: 0,
         webSocketFactory: () => {
-          const socket = mockHost.connect();
-          const send = socket.send.bind(socket);
-          const deliver = socket.deliver.bind(socket);
-          socket.send = (data) => {
-            if (typeof data === "string") {
-              const frame = JSON.parse(data) as Record<string, unknown>;
-              if (frame.type === "client.attach") {
-                const { cursor: _ignored, ...rest } = frame;
-                return send(JSON.stringify(rest));
-              }
-            }
-            send(data);
+          const listeners = new Map<string, Set<(event: never) => void>>();
+          const emit = (type: string, event: unknown) => {
+            for (const listener of listeners.get(type) ?? []) listener(event as never);
           };
-          socket.deliver = (frame) => {
-            if (
-              frame.type === "host.snapshot" &&
-              "subscriptionId" in frame &&
-              frame.subscriptionId === "shell"
-            ) {
-              const snapshot = frame.snapshot as Record<string, unknown>;
-              return deliver({
-                ...frame,
-                snapshot: {
-                  ...snapshot,
-                  session: {
-                    ...(snapshot.session as Record<string, unknown>),
-                    sessionId: shellSession,
-                  },
-                },
-              } as typeof frame);
-            }
-            deliver(frame);
+          const ws: WebSocketClient = {
+            binaryType: "arraybuffer",
+            readyState: 0,
+            addEventListener: (type, listener) => {
+              const set = listeners.get(type) ?? new Set();
+              set.add(listener as (event: never) => void);
+              listeners.set(type, set);
+            },
+            close: () => {
+              (ws as { readyState: number }).readyState = 3;
+            },
+            send: (raw) => {
+              if (typeof raw !== "string") return;
+              const frame = JSON.parse(raw) as { type?: string; generation?: number };
+              if (frame.type !== "client.attach") return;
+              const generation = frame.generation ?? 1;
+              const attachedSession = shellSession;
+              queueMicrotask(() => {
+                if (ws.readyState !== 1) return;
+                emit("message", {
+                  data: JSON.stringify({
+                    type: "host.snapshot",
+                    subscriptionId: "shell",
+                    scope: { kind: "shell" },
+                    generation,
+                    throughSequence: "0",
+                    snapshot: {
+                      deploymentId,
+                      viewerId: userId,
+                      epoch: crypto.randomUUID(),
+                      tasks: [],
+                      visits: [],
+                      attention: [],
+                      attentionHasMore: false,
+                      counts: {
+                        pendingRequestCount: 0,
+                        pendingRequestsRevision: "0",
+                        needsYouCount: 0,
+                        unreadTaskCount: 0,
+                      },
+                      session: {
+                        sessionId: attachedSession,
+                        sessionSurface: "canonical",
+                        user: {
+                          id: userId,
+                          displayName: "Person",
+                          email: "person@example.test",
+                          image: null,
+                          emailVerified: true,
+                          disabledAt: null,
+                        },
+                        can: {
+                          createTasks: true,
+                          useVoice: true,
+                          manageComputers: true,
+                          managePrivateResources: true,
+                        },
+                      },
+                      activeTaskIds: [],
+                      activeNextBefore: null,
+                      recentTaskIds: [],
+                      nextBefore: null,
+                      taskCounts: { active: 0, open: 0 },
+                    },
+                  }),
+                });
+                emit("message", {
+                  data: JSON.stringify({
+                    type: "host.synchronized",
+                    subscriptionId: "shell",
+                    scope: { kind: "shell" },
+                    generation,
+                    throughSequence: "0",
+                  }),
+                });
+              });
+            },
           };
-          return socket as unknown as WebSocketClient;
+          queueMicrotask(() => {
+            if (ws.readyState !== 0) return;
+            (ws as { readyState: number }).readyState = 1;
+            emit("open", {});
+          });
+          return ws;
         },
         fetch: async (url, init) => {
-          if (!String(url).endsWith("/commands.dispatch")) return mockHost.fetch(url, init);
+          const href = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+          if (!href.endsWith("/commands.dispatch")) return Response.error();
           await wire.promise;
           assert.equal(init?.credentials, "include");
           const headers = new Headers(init?.headers);
@@ -291,7 +346,8 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
           const admission = !expected || expected === authenticated;
           if (admission) admissions.push(authenticated);
           if (admission && hostCooperates) {
-            const command = JSON.parse(String(init?.body)) as PendingSendCommand;
+            assert.equal(typeof init?.body, "string");
+            const command = JSON.parse(init?.body as string) as PendingSendCommand;
             assert.equal(command.type, "thread.sendMessage");
             accepted.add(command.idempotencyKey);
             // Admission survived a lost response. The event stream can settle it.
@@ -313,9 +369,7 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
       });
       const attach = async (nextSession: AuthSessionId, initial = false) => {
         shellSession = nextSession;
-        const pending = initial
-          ? host.load()
-          : (mockHost.sockets.forEach((socket) => socket.close()), host.reauthenticate());
+        const pending = initial ? host.load() : host.reauthenticate();
         for (
           let step = 0;
           step < 10 && host.connection.getSnapshot().scope?.loginId !== nextSession;
@@ -393,7 +447,6 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
         wire.resolve();
         outbox.dispose();
         host.dispose();
-        mockHost.dispose();
       }
     },
   );
