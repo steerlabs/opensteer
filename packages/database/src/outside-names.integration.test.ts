@@ -772,4 +772,34 @@ describeStore("a name from outside enters the Home clean", (it) => {
       updatedNames: [...cleaned.slice(1), cleaned[0]],
     });
   });
+  it("keeps browser profile names clean on create, replay and rename (the wire caps length)", async ({
+    storeFixture,
+  }) => {
+    const { store } = storeFixture;
+    const { userId } = await storeFixture.createRunFixture("outside-browser-profiles");
+    const createdNames: string[] = [];
+    const renamedNames: string[] = [];
+    for (const [index, name] of boundedNames.entries()) {
+      const input = {
+        homeRunnerId: null,
+        idempotencyKey: `outside-profile-${index}`,
+        name,
+        ownerId: userId,
+      };
+      const profile = await store.createBrowserProfile(input);
+      createdNames.push(profile.name);
+      expect(await store.createBrowserProfile(input)).toEqual(profile);
+      const renamed = await store.renameBrowserProfile({
+        name: boundedNames[(index + 1) % boundedNames.length]!,
+        ownerId: userId,
+        profileId: profile.id,
+      });
+      renamedNames.push(renamed.name);
+      expect(await store.getBrowserProfile(profile.id, userId)).toEqual(renamed);
+    }
+    expect({ createdNames, renamedNames }).toEqual({
+      createdNames: cleaned,
+      renamedNames: [...cleaned.slice(1), cleaned[0]],
+    });
+  });
 });
