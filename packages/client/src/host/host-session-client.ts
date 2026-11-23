@@ -1,6 +1,7 @@
 import { unsupportedVersionCloseCode } from "@opensteer/protocol";
 import type { PluginChange, PluginResourceCategory } from "@opensteer/protocol";
 import {
+  clientScopeKey,
   createConnectionController,
   type ClientScope,
   type ClientConnectionState,
@@ -10,12 +11,12 @@ import {
   type ConnectionPresentation,
   probeAnsweredByFrames,
 } from "../connections/connection-controller.js";
-import { classifyClientFailure } from "../connections/operation-error.js";
+import { classifyClientFailure, ClientOperationError } from "../connections/operation-error.js";
 import { HostTransportError } from "../connections/host-transport-error.js";
 import { assertMessageLogin, disposeMessageOutbox } from "./message-outbox.js";
 import { nameConnectionFromHost } from "./host-connection.js";
 import type { TranscriptItem } from "@opensteer/protocol/transcript";
-import { MessageIdSchema, utf8ByteLength } from "@opensteer/core";
+import { MessageIdSchema, utf8ByteLength, type AuthSessionId } from "@opensteer/core";
 import type { PersonalStreamCache } from "./personal-stream-cache.js";
 import { needsYouEntryKey, settleTeamAsk } from "./needs-you.js";
 import { withThreadState } from "./optimistic-command-patches.js";
@@ -297,6 +298,7 @@ export class HttpHostClient {
   readonly #clientScope: (() => ClientScope | null) | undefined;
   #connectionFailed: ((error: unknown) => void) | null = null;
   #connectionAdmit: (() => void) | null = null;
+  #admittedSession: { readonly scopeKey: string; readonly sessionId: AuthSessionId } | null = null;
   #socketCloseReason: string | undefined;
   #backgroundShellGeneration: number | undefined;
   #load: Promise<void> | undefined;
@@ -665,6 +667,7 @@ export class HttpHostClient {
   readonly #deniedAssignments = new Set<string>();
   readonly #threadDeployment = new Map<string, string>();
   #viewerGeneration = 0;
+  #sessionGeneration = 0;
   #savedViewReadiness = emptySavedViewReadiness();
   readonly #notificationListeners = new Set<(notification: NotificationView) => void>();
   readonly #pluginEngineListeners = new Set<(engine: PluginEngineStateView) => void>();
@@ -771,11 +774,37 @@ export class HttpHostClient {
     });
     this.#baseUrl = new URL(options.baseUrl);
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
+    const rpcOrigins = new WeakMap<
+      object,
+      { readonly sessionGeneration: number; readonly sessionId: AuthSessionId | undefined }
+    >();
+    const isCurrentRpc = (source?: object): boolean => {
+      const origin = source ? rpcOrigins.get(source) : undefined;
+      return (
+        origin === undefined ||
+        (origin.sessionGeneration === this.#sessionGeneration &&
+          origin.sessionId === this.#snapshot.sessionId)
+      );
+    };
     this.rpc = createHttpHostApiClient({
       baseUrl: this.#baseUrl,
-      fetch: this.#fetch,
+      fetch: async (input, init) => {
+        const origin = {
+          sessionGeneration: this.#sessionGeneration,
+          sessionId: this.#snapshot.sessionId,
+        };
+        try {
+          const response = await this.#fetch(input, init);
+          rpcOrigins.set(response, origin);
+          return response;
+        } catch (error) {
+          if (error && typeof error === "object") rpcOrigins.set(error, origin);
+          throw error;
+        }
+      },
       personalVersion: scopedPersonalApiVersion,
       ...(options.pacedUploads ? { pacedUploads: true } : {}),
+      isResponseCurrent: (source) => isCurrentRpc(source),
       onSignedOut: () => this.#expireSession(),
       onAuthenticationRequired: () => {
         this.#expireSession();
@@ -1050,26 +1079,31 @@ export class HttpHostClient {
         parsedCommand.access !== undefined);
     if (needsDevices && !this.#capabilities?.includes("devices-v1"))
       throw new Error("Update this Opensteer to use device setup and access switches.");
-    if (parsedCommand.type === "thread.icon.set") {
-      if (!this.#snapshot.taskMarksAvailable)
-        throw new Error("This Host does not support task marks.");
-      return this.#setThreadIcon(parsedCommand);
-    }
     const login = options?.expectedLogin;
-    if (!login) {
-      const sessionId =
-        parsedCommand.type === "thread.create" || parsedCommand.type === "thread.sendMessage"
-          ? (this.#snapshot.sessionId ?? undefined)
-          : undefined;
-      return this.#dispatchCommand(parsedCommand, sessionId);
-    }
-    assertMessageLogin(login, this.connection.getSnapshot().scope);
+    const currentScope = this.connection.getSnapshot().scope;
+    const admitted = this.#admittedSession;
+    const expectedSessionId = login
+      ? admitted &&
+        admitted.sessionId === this.#snapshot.sessionId &&
+        admitted.scopeKey === clientScopeKey(currentScope)
+        ? admitted.sessionId
+        : undefined
+      : parsedCommand.type === "thread.create" || parsedCommand.type === "thread.sendMessage"
+        ? this.#snapshot.sessionId
+        : undefined;
+    if (login) assertMessageLogin(login, expectedSessionId ? currentScope : null);
     try {
-      return await this.#dispatchCommand(parsedCommand, login.loginId);
+      if (parsedCommand.type === "thread.icon.set") {
+        if (!this.#snapshot.taskMarksAvailable)
+          throw new Error("This Host does not support task marks.");
+        return await this.#setThreadIcon(parsedCommand, expectedSessionId);
+      }
+      return await this.#dispatchCommand(parsedCommand, expectedSessionId);
     } catch (error) {
       if (
+        expectedSessionId !== undefined &&
         classifyClientFailure(error).reason === "session-changed" &&
-        this.#snapshot.sessionId === login.loginId
+        this.#snapshot.sessionId === expectedSessionId
       ) {
         this.#expireSession();
         if (this.#ownsConnection) void this.reauthenticate().catch(() => undefined);
@@ -1091,7 +1125,7 @@ export class HttpHostClient {
     return origin ? { ...command, origin } : command;
   }
 
-  #dispatchCommand(command: HostApiCommand, expectedSessionId?: string) {
+  #dispatchCommand(command: HostApiCommand, expectedSessionId?: AuthSessionId) {
     if (command.type === "request.respond")
       return this.#answerRequest(command.requestId, () =>
         this.#dispatchCommandNow(command, expectedSessionId),
@@ -1101,7 +1135,7 @@ export class HttpHostClient {
 
   async #dispatchCommandNow(
     command: HostApiCommand,
-    expectedSessionId?: string,
+    expectedSessionId?: AuthSessionId,
   ): Promise<HostApiCommandOutput> {
     const viewer = this.#viewerGeneration;
     const result = await this.#dispatch(command, expectedSessionId);
@@ -1614,8 +1648,12 @@ export class HttpHostClient {
    * old one's. Only the viewer's durable drafts and outbox, which live outside this client's
    * view state, survive it. This is the only place held data is cleared for a viewer.
    */
-  #forgetViewer(keep: Partial<HostSnapshot>) {
+  #forgetViewer(keep: Partial<HostSnapshot>, sameSession = false) {
     this.#viewerGeneration++;
+    if (!sameSession) {
+      this.#sessionGeneration++;
+      this.#admittedSession = null;
+    }
     clearRunPageViews(this);
     clearRunPlacePictures(this);
     this.#runPlaces.clear();
@@ -1821,18 +1859,20 @@ export class HttpHostClient {
     this.#publishedShell = state;
     const shellAuthority = state.snapshot;
     let forgot = false;
+    const sameSession =
+      shellAuthority?.session !== undefined &&
+      this.#snapshot.user !== null &&
+      this.#snapshot.user.id === shellAuthority.viewerId &&
+      this.#snapshot.deploymentId === shellAuthority.deploymentId &&
+      this.#snapshot.sessionId === shellAuthority.session.sessionId;
     if (
       (old !== undefined && old.history !== state.history) ||
       (shellAuthority &&
         this.#snapshot.user &&
-        (this.#snapshot.user.id !== shellAuthority.viewerId ||
-          this.#snapshot.deploymentId !== shellAuthority.deploymentId ||
-          old?.snapshot?.epoch !== shellAuthority.epoch ||
-          (shellAuthority.session &&
-            this.#snapshot.sessionId !== shellAuthority.session.sessionId)))
+        (!sameSession || old?.snapshot?.epoch !== shellAuthority.epoch))
     ) {
       const { connection, connectionInterrupted, network } = this.#snapshot;
-      this.#forgetViewer({ connection, connectionInterrupted, network });
+      this.#forgetViewer({ connection, connectionInterrupted, network }, sameSession);
       forgot = true;
     }
     const shell = state.snapshot;
@@ -3000,6 +3040,10 @@ export class HttpHostClient {
     input: CreateThreadInput,
     expectedLogin?: ClientScope,
   ): Promise<ThreadSummary> {
+    const origin = {
+      sessionGeneration: this.#sessionGeneration,
+      sessionId: this.#snapshot.sessionId,
+    };
     const result = await this.dispatch(
       {
         type: "thread.create",
@@ -3016,14 +3060,17 @@ export class HttpHostClient {
     );
     if (result.type !== "thread.create") throw new Error("Thread command mismatch.");
     // Not waited for: the new Thread is what the person is waiting to see.
-    void this.#rememberQuietly({
-      accessMode: input.accessMode,
-      selection: {
-        environmentId: input.environmentId,
-        harnessInstanceId: input.harnessInstanceId,
-        modelSelection: input.modelSelection,
+    void this.#rememberQuietly(
+      {
+        accessMode: input.accessMode,
+        selection: {
+          environmentId: input.environmentId,
+          harnessInstanceId: input.harnessInstanceId,
+          modelSelection: input.modelSelection,
+        },
       },
-    });
+      origin,
+    );
     return (
       this.#snapshot.threads.find(({ id }) => id === result.thread.id) ??
       toThreadSummary(result.thread, this.#snapshot.environments, this.#snapshot.harnesses)
@@ -3031,19 +3078,40 @@ export class HttpHostClient {
   }
 
   rememberExecution(choice: ExecutionChoice): Promise<ExecutionPreferences> {
+    return this.#rememberExecution(choice, {
+      sessionGeneration: this.#sessionGeneration,
+      sessionId: this.#snapshot.sessionId,
+    });
+  }
+
+  #rememberExecution(
+    choice: ExecutionChoice,
+    origin: { readonly sessionGeneration: number; readonly sessionId: AuthSessionId | undefined },
+  ): Promise<ExecutionPreferences> {
     // One at a time, in the order chosen: a remember nobody waits for, such
     // as a new Thread's, must not land after a later choice and take it back.
     const remembered = this.#remembering.then(async () => {
-      const result = await this.dispatch({
+      if (
+        this.#disposed ||
+        origin.sessionGeneration !== this.#sessionGeneration ||
+        origin.sessionId !== this.#snapshot.sessionId
+      ) {
+        throw new ClientOperationError("This request belongs to another sign-in.", "blocked", {
+          kind: "session",
+          reason: "session-changed",
+          retryable: false,
+        });
+      }
+      const command = clientCommandSchema.parse({
         ...(choice.accessMode ? { accessMode: choice.accessMode } : {}),
         idempotencyKey: mutationIdempotencyKey("execution-preferences"),
         ...(choice.selection ? { selection: choice.selection } : {}),
         type: "execution.preferences.remember",
       });
+      const result = await this.#dispatchCommand(command, origin.sessionId);
       if (result.type !== "execution.preferences.remember") {
         throw new Error("Execution preferences command mismatch.");
       }
-      this.#update({ ...this.#snapshot, executionPreferences: result.preferences });
       return result.preferences;
     });
     this.#remembering = remembered.catch(() => undefined);
@@ -3097,6 +3165,7 @@ export class HttpHostClient {
 
   async #setThreadIcon(
     command: Extract<HostApiCommand, { type: "thread.icon.set" }>,
+    expectedSessionId?: AuthSessionId,
   ): Promise<HostApiCommandOutput> {
     const { threadId } = command;
     const thread = threadInDirectory(threadId, this.#snapshot);
@@ -3106,7 +3175,7 @@ export class HttpHostClient {
     this.#threadIcons.set(threadId, { icon: command.icon ?? defaultTaskSymbol, token });
     this.#update(this.#snapshot);
     try {
-      return await this.#dispatchCommand(command);
+      return await this.#dispatchCommand(command, expectedSessionId);
     } finally {
       if (
         generation === this.#viewerGeneration &&
@@ -3125,6 +3194,10 @@ export class HttpHostClient {
   ): Promise<ThreadSummary> {
     const thread = this.#snapshot.threads.find((item) => item.id === threadId);
     if (!thread) throw new Error("Thread not found.");
+    const origin = {
+      sessionGeneration: this.#sessionGeneration,
+      sessionId: this.#snapshot.sessionId,
+    };
     const result = await this.dispatch({
       harnessInstanceId: selection.harnessInstanceId,
       ...(continuation ? { continuation } : {}),
@@ -3140,13 +3213,16 @@ export class HttpHostClient {
       this.#snapshot.harnesses,
     );
     {
-      await this.#rememberQuietly({
-        selection: {
-          environmentId: thread.environmentId,
-          harnessInstanceId: selection.harnessInstanceId,
-          modelSelection: selection.modelSelection,
+      await this.#rememberQuietly(
+        {
+          selection: {
+            environmentId: thread.environmentId,
+            harnessInstanceId: selection.harnessInstanceId,
+            modelSelection: selection.modelSelection,
+          },
         },
-      });
+        origin,
+      );
     }
     return this.#snapshot.threads.find(({ id }) => id === threadId) ?? updated;
   }
@@ -3154,6 +3230,10 @@ export class HttpHostClient {
   async updateThreadAccess(threadId: string, accessMode: ThreadAccessMode): Promise<ThreadSummary> {
     const thread = this.#snapshot.threads.find((item) => item.id === threadId);
     if (!thread) throw new Error("Thread not found.");
+    const origin = {
+      sessionGeneration: this.#sessionGeneration,
+      sessionId: this.#snapshot.sessionId,
+    };
     const result = await this.dispatch({
       accessMode,
       idempotencyKey: mutationIdempotencyKey(`thread-access:${threadId}`),
@@ -3166,7 +3246,7 @@ export class HttpHostClient {
       this.#snapshot.environments,
       this.#snapshot.harnesses,
     );
-    await this.#rememberQuietly({ accessMode });
+    await this.#rememberQuietly({ accessMode }, origin);
     return this.#snapshot.threads.find(({ id }) => id === threadId) ?? updated;
   }
 
@@ -3175,8 +3255,11 @@ export class HttpHostClient {
    * or unreachable remember is not theirs to see: the Host's next bootstrap
    * is the authority on what is remembered either way.
    */
-  async #rememberQuietly(choice: ExecutionChoice): Promise<void> {
-    await this.rememberExecution(choice).catch(() => undefined);
+  async #rememberQuietly(
+    choice: ExecutionChoice,
+    origin: { readonly sessionGeneration: number; readonly sessionId: AuthSessionId | undefined },
+  ): Promise<void> {
+    await this.#rememberExecution(choice, origin).catch(() => undefined);
   }
 
   async stopNode(threadId: string, nodeId: string): Promise<void> {
@@ -3475,7 +3558,7 @@ export class HttpHostClient {
 
   async #dispatch(
     command: HostApiCommandInput,
-    expectedSessionId?: string,
+    expectedSessionId?: AuthSessionId,
   ): Promise<HostApiCommandOutput> {
     return unwrapRpcResult(
       await this.rpc["commands.dispatch"](
@@ -4228,7 +4311,12 @@ export class HttpHostClient {
     this.#connectionFailed = fail;
     this.#connectionAdmit = () => {
       const scope = this.#clientScope ? this.#clientScope() : this.#localScope();
-      if (scope) attempt.acceptScope(scope);
+      const scopeKey = clientScopeKey(scope);
+      const sessionId = this.#snapshot.sessionId;
+      if (scope && scopeKey && sessionId) {
+        this.#admittedSession = { scopeKey, sessionId };
+        attempt.acceptScope(scope);
+      }
       if (attempt.signal.aborted) return;
       attempt.admit?.(lease);
       ready.resolve(lease);

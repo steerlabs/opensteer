@@ -18,6 +18,7 @@ import type {
   AssignmentSummary,
   AssignmentView,
   Attachment,
+  AuthSessionId,
   AuthenticatedUser,
   BrowserPageContentPart,
   ComputerAppContentPart,
@@ -965,7 +966,7 @@ export interface HostSnapshot {
   threads: ThreadSummary[];
   user: AuthenticatedUser | null;
   /** Recovery can replace the session with no other visible change, ending what was bound to it. */
-  sessionId?: string;
+  sessionId?: AuthSessionId;
 }
 
 export interface TranscriptFixtureSnapshot extends HostSnapshot {

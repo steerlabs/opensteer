@@ -1,4 +1,8 @@
-import { hostApi, type HostToClientMessage } from "@opensteer/protocol";
+import {
+  expectedMutationSessionHeader,
+  hostApi,
+  type HostToClientMessage,
+} from "@opensteer/protocol";
 import {
   ScopedClientMessageSchema,
   ScopedHostMessageSchema,
@@ -134,6 +138,25 @@ export class MockPersonalHost {
     const key = url.pathname.slice("/v1/rpc/".length);
     if (!(key in hostApi)) return new Response(null, { status: 404 });
     const name = key as keyof typeof hostApi;
+    const expected = new Headers(init?.headers).get(expectedMutationSessionHeader);
+    if (
+      name === "commands.dispatch" &&
+      expected !== null &&
+      expected !== this.client.getSnapshot().sessionId
+    ) {
+      return Response.json(
+        {
+          ok: false,
+          error: {
+            code: "forbidden",
+            reason: "session-changed",
+            message: "This request belongs to another sign-in.",
+            retryable: false,
+          },
+        },
+        { status: 403 },
+      );
+    }
     const raw = url.searchParams.get("input") ?? init?.body;
     const payload = typeof raw === "string" ? JSON.parse(raw) : {};
     const result = await this.client.rpc[name](payload as never);

@@ -111,40 +111,57 @@ describe("credential-aware command origin protection", () => {
   });
 });
 
-it("checks the expected mutation session against the session authenticated by the current cookie", async () => {
-  const dispatch = vi.fn(async () => rpcSuccess({}));
-  const old = { ...session, id: createId("authSession") };
-  const authenticator = new HostAuthenticator({
-    identity: {
-      requireSession: async () => session,
-      userSessionProfile: async () => session.user,
-    } as never,
-    publicUrl: new URL(canonical),
-  });
-  const app = Fastify();
-  registerHostApi(app, authenticator, {
-    "commands.dispatch": dispatch,
-  } as unknown as HostApiHandlers);
-  try {
-    const payload = { ...commands[0], idempotencyKey: "session-bound-test" };
-    const headers = { cookie: "canonical=x", origin: canonical };
-    const refused = await injectRpcRequest(app, "commands.dispatch", payload, {
-      ...headers,
-      [expectedMutationSessionHeader]: old.id,
+it.each([
+  ["browser cookie", { cookie: "canonical=x", origin: canonical }],
+  ["PersonalRemote header", { authorization: "PersonalRemote remote" }],
+  ["Bearer native OAuth", { authorization: "Bearer native" }],
+] as const)(
+  "checks the expected mutation session against the session authenticated by %s",
+  async (_label, headers) => {
+    const dispatch = vi.fn(async () => rpcSuccess({}));
+    const old = { ...session, id: createId("authSession") };
+    const authenticator = new HostAuthenticator({
+      identity: {
+        requireSession: async () => session,
+        userSessionProfile: async () => session.user,
+        authenticateNativeAccessToken: async () => ({
+          sessionId: session.id,
+          subject: session.user.id,
+          createdAt: new Date(session.createdAt),
+          expiresAt: new Date(session.expiresAt),
+          absoluteExpiresAt: new Date(session.absoluteExpiresAt),
+        }),
+      } as never,
+      personalRemote: {
+        authenticateRemoteCredential: async () => session,
+        authenticateRemoteSession: async () => null,
+      },
+      publicUrl: new URL(canonical),
     });
-    expect(refused.statusCode, refused.body).toBe(403);
-    expect(refused.json()).toMatchObject({ ok: false, error: { reason: "session-changed" } });
-    expect(dispatch).not.toHaveBeenCalled();
-    const accepted = await injectRpcRequest(app, "commands.dispatch", payload, {
-      ...headers,
-      [expectedMutationSessionHeader]: session.id,
-    });
-    expect(accepted.statusCode, accepted.body).toBe(200);
-    expect(dispatch).toHaveBeenCalledOnce();
-  } finally {
-    await app.close();
-  }
-});
+    const app = Fastify();
+    registerHostApi(app, authenticator, {
+      "commands.dispatch": dispatch,
+    } as unknown as HostApiHandlers);
+    try {
+      const payload = { ...commands[0], idempotencyKey: "session-bound-test" };
+      const refused = await injectRpcRequest(app, "commands.dispatch", payload, {
+        ...headers,
+        [expectedMutationSessionHeader]: old.id,
+      });
+      expect(refused.statusCode, refused.body).toBe(403);
+      expect(refused.json()).toMatchObject({ ok: false, error: { reason: "session-changed" } });
+      expect(dispatch).not.toHaveBeenCalled();
+      const accepted = await injectRpcRequest(app, "commands.dispatch", payload, {
+        ...headers,
+        [expectedMutationSessionHeader]: session.id,
+      });
+      expect(accepted.statusCode, accepted.body).toBe(200);
+      expect(dispatch).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+  },
+);
 
 it.each([undefined, "computer-app-installation-invalid"])(
   "logs a refused command at info with reason %s",
