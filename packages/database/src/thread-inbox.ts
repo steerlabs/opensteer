@@ -2730,7 +2730,11 @@ export async function enqueueThreadInputInTransaction(
       ...content,
       {
         type: "text",
-        text: await memoryPassWakeContext(transaction, thread),
+        text: await memoryPassWakeContext(
+          transaction,
+          thread,
+          request.source.kind === "trigger" ? request.source.occurrenceId : undefined,
+        ),
       },
     ];
     const started = await startMemoryPassInTransaction(transaction, thread, request.memoryPass);

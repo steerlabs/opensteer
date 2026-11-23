@@ -5983,16 +5983,24 @@ export class BrowserService {
     callId: string;
     ownerId: UserId;
     reason: string;
-    runId: RunId;
+    runId?: RunId;
+    originatingOccurrenceId?: import("@opensteer/core").TriggerOccurrenceId;
+    originatingWatchActivationId?: import("@opensteer/core").TriggerWatchActivationId;
     suggestion: BrowserAccessSuggestion;
     threadId: ThreadId;
   }): Promise<RequestCreationResult & { kind: "browser.access" }> {
+    const origin =
+      input.runId !== undefined
+        ? ({ originatingRunId: input.runId } as const)
+        : input.originatingOccurrenceId !== undefined
+          ? ({ originatingOccurrenceId: input.originatingOccurrenceId } as const)
+          : ({ originatingWatchActivationId: input.originatingWatchActivationId! } as const);
     if (
       input.suggestion.kind === "existing" &&
       (await this.#repository.getBrowserProfile(input.suggestion.profileId, input.ownerId)) &&
       !(await this.#repository.requests.findByCallIdentity({
         callId: input.callId,
-        originatingRunId: input.runId,
+        ...origin,
       }))
     )
       throw new OpensteerError({
@@ -6004,7 +6012,7 @@ export class BrowserService {
       callId: input.callId,
       kind: "browser.access",
       mode: "durable",
-      originatingRunId: input.runId,
+      ...origin,
       originatingThreadId: input.threadId,
       payload: { kind: "browser.access", reason: input.reason, suggestion: input.suggestion },
       presentation: {

@@ -196,8 +196,9 @@ export const TaskSchema = z.object({
 export const ThreadMessageOutputSchema = z.object({
   link: AgentLinkSchema.optional(),
   delegationId: AssignmentIdSchema.nullable(),
-  disposition: z.enum(["cancelled", "pending", "steering", "run-queued"]),
-  messageId: MessageIdSchema,
+  disposition: z.enum(["cancelled", "pending", "steering", "run-queued", "skipped"]),
+  messageId: MessageIdSchema.nullable(),
+  reason: z.string().optional(),
   runId: RunSchema.shape.id.nullable(),
 });
 export const ThreadInterruptOutputSchema = z.object({

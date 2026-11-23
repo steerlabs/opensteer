@@ -112,6 +112,7 @@ interface CreateTriggerInput {
    */
   readonly ownTask?: true;
   readonly program: TriggerProgram;
+  readonly script?: import("@opensteer/triggers").AutomationScript;
   readonly source: TriggerSource;
   readonly webhookRouteKey?: string;
   readonly webhookSecretHash?: string;
@@ -474,6 +475,15 @@ export async function createTriggerInTransaction(
       triggerId,
     })
     .execute();
+  if (input.script) {
+    await transaction
+      .insertInto("triggerRevisionScripts")
+      .values({
+        revisionId,
+        script: jsonValue(input.script),
+      })
+      .execute();
+  }
   if (source.kind === "watch") {
     await createWatchActivation(transaction, {
       anchorThreadId: anchor.id,
@@ -582,6 +592,7 @@ export class TriggerStore {
     ownerId: UserId;
     expectedRevisionId: TriggerRevisionId;
     program: TriggerProgram;
+    script?: import("@opensteer/triggers").AutomationScript;
   }) {
     return this.#update({ ...input, actorThreadId: null }, true);
   }
@@ -594,6 +605,7 @@ export class TriggerStore {
     readonly name?: string;
     readonly ownerId: UserId;
     readonly program?: TriggerProgram;
+    readonly script?: import("@opensteer/triggers").AutomationScript;
     readonly source?: TriggerSource;
     readonly triggerId: TriggerId;
   }): Promise<{
@@ -609,10 +621,15 @@ export class TriggerStore {
     readonly revision: TriggerRevision;
     readonly trigger: Trigger;
   }> {
-    if (input.name === undefined && input.program === undefined && input.source === undefined) {
+    if (
+      input.name === undefined &&
+      input.program === undefined &&
+      input.script === undefined &&
+      input.source === undefined
+    ) {
       throw new OpensteerError({
         code: "bad_request",
-        message: "Automation update requires at least one of name, program, or source",
+        message: "Automation update requires at least one of name, program, script, or source",
       });
     }
     return commitPersonalMutation(this.#database, async (transaction) => {
@@ -680,6 +697,30 @@ export class TriggerStore {
           triggerId: trigger.id,
         })
         .execute();
+      if (input.script) {
+        await transaction
+          .insertInto("triggerRevisionScripts")
+          .values({
+            revisionId,
+            script: jsonValue(input.script),
+          })
+          .execute();
+      } else {
+        const currentScript = await transaction
+          .selectFrom("triggerRevisionScripts")
+          .select("script")
+          .where("revisionId", "=", current.id)
+          .executeTakeFirst();
+        if (currentScript) {
+          await transaction
+            .insertInto("triggerRevisionScripts")
+            .values({
+              revisionId,
+              script: jsonValue(currentScript.script),
+            })
+            .execute();
+        }
+      }
       // A new source re-arms the clock the way a resume does: an elapsed
       // one-shot stays elapsed. A repair also skips missed ticks, keeping
       // a future next run (including a manual reschedule).
@@ -1790,7 +1831,7 @@ export class TriggerStore {
         throw conflict("Watch automations run continuously and cannot create occurrences");
       }
       await requireTriggerExecutionAuthority(transaction, trigger);
-      if (trigger.systemRole) throw conflict(MANAGED_MEMORY_REFUSAL);
+      // T13: Manual run_now works on memory passes as well as user automations.
       const sourceKey =
         input.idempotencyKey === undefined
           ? `manual:${globalThis.crypto.randomUUID()}`

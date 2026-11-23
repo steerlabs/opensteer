@@ -191,7 +191,7 @@ export const opensteer_delegation_cancel = defineAgentTool({
   input: z.strictObject({ delegationId: AssignmentIdSchema }),
   output: TaskSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
   destructive: true,
 });
 

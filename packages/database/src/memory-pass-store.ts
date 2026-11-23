@@ -18,6 +18,7 @@ import {
   MANAGED_MEMORY_WAKE_SKIPPED,
   memoryPassWakeText,
   TriggerSystemRoleSchema,
+  type AutomationScript,
   type TriggerProgram,
   type TriggerSource,
   type TriggerSystemRole,
@@ -40,6 +41,7 @@ export async function createMemoryPass(
     readonly execution: import("@opensteer/core").ExecutionSelection;
     readonly systemRole: TriggerSystemRole;
     readonly program: TriggerProgram;
+    readonly script?: AutomationScript;
     readonly source: TriggerSource;
     readonly pauseReason: string | null;
   },
@@ -77,6 +79,7 @@ export async function createMemoryPass(
         idempotencyKey: key,
         name: created.thread.title,
         program: input.program,
+        ...(input.script ? { script: input.script } : {}),
         source: input.source,
       },
       {
@@ -208,6 +211,7 @@ const maxConversations = 100;
 export async function memoryPassWakeContext(
   transaction: Transaction<DatabaseSchema>,
   worker: ThreadRow,
+  occurrenceId?: TriggerOccurrenceId,
 ): Promise<string> {
   const trigger = await transaction
     .selectFrom("triggers")
@@ -294,8 +298,19 @@ export async function memoryPassWakeContext(
   const quiet = conversations.every(
     ({ newest }) => wakes.completed && newest.getTime() <= wakes.completed.getTime(),
   );
+  // T13: Manual run_now bypasses the 2-hour quiet skip so the person can run a memory pass on demand.
+  const isManualOccurrence = occurrenceId
+    ? ((
+        await transaction
+          .selectFrom("triggerOccurrences")
+          .select(sql<string | null>`event->'source'->>'kind'`.as("sourceKind"))
+          .where("id", "=", occurrenceId)
+          .executeTakeFirst()
+      )?.sourceKind === "manual")
+    : false;
   if (
     role === "memory-light" &&
+    !isManualOccurrence &&
     quiet &&
     wakes.completed &&
     now - wakes.completed.getTime() < lightSourceCheck

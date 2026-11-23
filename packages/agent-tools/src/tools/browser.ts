@@ -168,7 +168,7 @@ export const browser_profile_request = defineAgentTool({
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: RequestCreationOutputSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
 });
 
 /** Where a connected agent's browser work happens: a tab it can see, or a profile shared with it. */

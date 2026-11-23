@@ -38,7 +38,7 @@ export const opensteer_request_answer = defineAgentTool({
   }),
   output: RequestWithdrawOutputSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
 });
 export const opensteer_request_withdraw = defineAgentTool({
   name: "opensteer_request_withdraw",
@@ -48,6 +48,6 @@ export const opensteer_request_withdraw = defineAgentTool({
   input: z.strictObject({ requestId: RequestIdSchema }),
   output: RequestWithdrawOutputSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
   destructive: true,
 });

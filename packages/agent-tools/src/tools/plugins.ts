@@ -128,7 +128,7 @@ export const opensteer_plugin_list = defineAgentTool({
   name: "opensteer_plugin_list",
   title: "List plugins",
   access: "read",
-  callers: ["run", "connection"],
+  callers: ["run", "program", "connection"],
   description:
     "List installed plugins, newest versions, connected account links, agent access and status, and local tools (device data apps and local servers) sharing the tools.<slug> namespace, with tool counts; a server awaiting launch approval appears only here. One list: pass cursor to continue; null ends it. Pass pluginId for that plugin with every kept version. Use plugin_search for callable tools.",
   input: z.strictObject({
@@ -175,7 +175,7 @@ export const opensteer_plugin_install = defineAgentTool({
   name: "opensteer_plugin_install",
   title: "Install a plugin",
   access: "settings",
-  callers: ["run"],
+  callers: ["run", "program"],
   description:
     "Install without approval from a catalog id, a URL (MCP, OpenAPI or GraphQL), or a folder inside Agent home. A folder contains sandboxed TypeScript plugin source, not the old Agent Plugins folder format. Pass pluginId with a folder to deploy a new version. Build errors return as data. OpenAPI warnings explain which operations were left out. The deployed version is the truth. Installation never links an account; that always needs the person. Read opensteer:plugins before writing a plugin.",
   input: z.strictObject({
@@ -199,7 +199,7 @@ export const opensteer_plugin_export = defineAgentTool({
   name: "opensteer_plugin_export",
   title: "Export plugin source",
   access: "settings",
-  callers: ["run"],
+  callers: ["run", "program"],
   description:
     "Write a deployed plugin version's source into a new folder inside Agent home. Edit that draft and install the folder with pluginId to deploy a new version. Existing folders are refused.",
   input: z.strictObject({
@@ -213,7 +213,7 @@ export const opensteer_plugin_activate = defineAgentTool({
   name: "opensteer_plugin_activate",
   title: "Activate a plugin version",
   access: "settings",
-  callers: ["run"],
+  callers: ["run", "program"],
   description:
     "Make an installed earlier version the running plugin version. Rollback changes code, not plugin data; widened credential destinations require the person to consent again.",
   input: z.strictObject({ pluginId: id, versionId: id }),
@@ -223,7 +223,7 @@ export const opensteer_plugin_remove = defineAgentTool({
   name: "opensteer_plugin_remove",
   title: "Remove a plugin",
   access: "settings",
-  callers: ["run"],
+  callers: ["run", "program"],
   destructive: true,
   description:
     "Remove an installed plugin. This does not authorize account linking or change another plugin's access.",
@@ -234,7 +234,7 @@ export const plugin_account_request = defineAgentTool({
   name: "plugin_account_request",
   title: "Request a plugin account",
   access: "read",
-  callers: ["run"],
+  callers: ["run", "program"],
   opensRequest: true,
   description:
     "Ask the person in Needs you to connect or link an account to a plugin requirement. Installation needs no approval; account linking always does, including reusing an existing saved account. Never enter, collect or link credentials yourself. Pending is waiting on the person, not permission; continue other work and do not repeat the request.",
@@ -250,7 +250,7 @@ export const opensteer_plugin_catalog = defineAgentTool({
   name: "opensteer_plugin_catalog",
   title: "Find catalog plugins",
   access: "read",
-  callers: ["run", "connection"],
+  callers: ["run", "program", "connection"],
   description:
     "Find plugins available to install by service name or purpose. Returns catalog ids, names, one-line descriptions and required account methods. Pass cursor to continue; null ends paging. Use the returned id with opensteer_plugin_install; installation never links an account.",
   input: z.strictObject({
@@ -285,7 +285,7 @@ export const plugin_resources = defineAgentTool({
   name: "plugin_resources",
   title: "Read plugin background work",
   access: "read",
-  callers: ["run", "connection"],
+  callers: ["run", "program", "connection"],
   description:
     "Read a plugin's schedules and runs, workflow declarations and runs (newest first, even if current declarations fail), or webhook subscriptions. The first page carries schedule/workflow definitions with names and input schemas for configuration and starting; null means current definitions could not be evaluated, while durable runs remain readable. Pass the returned next cursor for older runs. Run outputs are shown only to your own tasks while the plugin is on; otherwise a run shows what ran, when and how it ended. These reads do not start work or reveal webhook setup secrets. Scheduled approval answers and manual webhook setup/cleanup confirmation belong to the person in Plugins.",
   input: z.strictObject({
@@ -299,7 +299,7 @@ export const opensteer_plugin_resource_update = defineAgentTool({
   name: "opensteer_plugin_resource_update",
   title: "Manage plugin background work",
   access: "settings",
-  callers: ["run"],
+  callers: ["run", "program"],
   openWorld: true,
   description:
     "Configure a declared schedule, run it now, start or stop a workflow, or remove a webhook subscription. Read plugin_resources first for current identities; cursor paging keeps every live workflow reachable. Starting a workflow needs a unique key: reusing that key recovers the same start. Manual provider cleanup and its confirmation, scheduled approval settings and answers, webhook secret setup and account links remain person-only.",

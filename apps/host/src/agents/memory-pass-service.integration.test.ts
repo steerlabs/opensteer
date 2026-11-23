@@ -37,6 +37,7 @@ import {
 import { expect, vi } from "vitest";
 import { MemoryPassService, memoryPassWaitingReason } from "./memory-pass-service.js";
 import { memoryPassProgram } from "./memory-pass-program.js";
+import { memoryPassScript } from "./memory-pass-script.js";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import { lastService, serveMcp } from "../mcp/connection-caller.test-support.js";
 const computerZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -59,7 +60,7 @@ async function fixture(
   await f.database
     .updateTable("runners")
     .set({
-      capabilities: sql`'["trigger-program-v5"]'::jsonb`,
+      capabilities: sql`'["trigger-program-v5","automation-script-v1"]'::jsonb`,
     })
     .where("id", "=", base.runnerId)
     .execute();
@@ -143,7 +144,38 @@ async function role(
 }
 // Advance a separate scheduler clock so a tick cannot claim another role's real cron boundary.
 let nextTickAt = Date.parse("2000-01-01T00:00:00.000Z");
+async function completeRunningTicks(
+  f: StoreFixture,
+  base: Awaited<ReturnType<typeof fixture>>,
+  trigger: Trigger,
+) {
+  const running = await f.database
+    .selectFrom("triggerOccurrences")
+    .select(["id", "executionGeneration", "runnerBootId"])
+    .where("triggerId", "=", trigger.id)
+    .where("status", "=", "running")
+    .execute();
+  for (const row of running) {
+    await f.triggers.completeExecution({
+      executionGeneration: row.executionGeneration,
+      runnerBootId: row.runnerBootId ?? `boot-${row.id}`,
+      runnerId: base.runnerId,
+      output: {
+        occurrenceId: row.id,
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        result: null,
+        status: "succeeded",
+        stderr: "",
+        stdout: "",
+      },
+    });
+  }
+}
 async function tick(f: StoreFixture, base: Awaited<ReturnType<typeof fixture>>, trigger: Trigger) {
+  // Y11: A schedule skips while an earlier occurrence is still running, so finish prior test ticks first.
+  await completeRunningTicks(f, base, trigger);
   const now = new Date(nextTickAt++);
   await f.database
     .updateTable("triggers")
@@ -446,6 +478,12 @@ describeStore("managed memory passes", (it) => {
     expect(current.revision.id).not.toBe(prior.revision.id);
     expect(current.revision.ordinal).toBe(prior.revision.ordinal + 1);
     expect(current.revision.program).toEqual(memoryPassProgram("memory-light"));
+    const scriptRow = await f.database
+      .selectFrom("triggerRevisionScripts")
+      .select("script")
+      .where("revisionId", "=", current.revision.id)
+      .executeTakeFirstOrThrow();
+    expect(scriptRow.script).toEqual(memoryPassScript("memory-light"));
     await instance.reconcileMissing();
     expect((await role(f, base.userId)).revision.id).toBe(current.revision.id);
   });
@@ -661,7 +699,7 @@ describeStore("managed memory passes", (it) => {
         pauseReason: "Memory is off at your request.",
       });
   });
-  it("skips a pending offline tick after Pause on reconnect without recording a failure", async ({
+  it("cancels a pending offline tick on Pause and skips an in-flight wake after Pause without recording a failure (Y12)", async ({
     storeFixture: f,
   }) => {
     const base = await fixture(f, "late-pause");
@@ -681,21 +719,37 @@ describeStore("managed memory passes", (it) => {
       triggerId: light.id,
       status: "paused",
     });
-    await f.store.claimCommand(occurrence.commandId, "reconnect");
-    const started = await f.triggers.startExecution({
-      commandId: occurrence.commandId,
-      runnerBootId: "reconnected",
-      runnerId: base.runnerId,
+    // Y12: Pausing immediately cancels any pending offline tick.
+    const canceled = await f.database
+      .selectFrom("triggerOccurrences")
+      .select("status")
+      .where("id", "=", occurrence.id)
+      .executeTakeFirstOrThrow();
+    expect(canceled.status).toBe("canceled");
+
+    // Resume, start an occurrence, then pause while it is running: its late wake is still skipped cleanly.
+    await f.triggers.setStatus({
+      actorThreadId: null,
+      ownerId: base.userId,
+      triggerId: light.id,
+      status: "active",
     });
-    await expect(wake(f, light, occurrence.id, "late-wake")).rejects.toThrow(
+    const started = await tick(f, base, light);
+    await f.triggers.setStatus({
+      actorThreadId: null,
+      ownerId: base.userId,
+      triggerId: light.id,
+      status: "paused",
+    });
+    await expect(wake(f, light, started.occurrence.id, "late-wake")).rejects.toThrow(
       MANAGED_MEMORY_WAKE_SKIPPED,
     );
     await f.triggers.completeExecution({
       executionGeneration: started.executionGeneration,
-      runnerBootId: "reconnected",
+      runnerBootId: started.runnerBootId,
       runnerId: base.runnerId,
       output: {
-        occurrenceId: occurrence.id,
+        occurrenceId: started.occurrence.id,
         completedAt: new Date().toISOString(),
         error: null,
         exitCode: 0,
@@ -717,10 +771,9 @@ describeStore("managed memory passes", (it) => {
     await service(f).instance.ensureForPersonal();
     const light = (await role(f, base.userId)).trigger;
     const first = await tick(f, base, light);
-    const second = await tick(f, base, light);
     const results = await Promise.allSettled([
       wake(f, light, first.occurrence.id, "wake-one"),
-      wake(f, light, second.occurrence.id, "wake-two"),
+      wake(f, light, first.occurrence.id, "wake-two"),
     ]);
     expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
     const rejected = results.find((result) => result.status === "rejected");
@@ -737,7 +790,7 @@ describeStore("managed memory passes", (it) => {
           }
         : {
             key: "wake-two",
-            tick: second,
+            tick: first,
           };
     await f.triggers.setStatus({
       actorThreadId: null,
@@ -851,7 +904,10 @@ describeStore("managed memory passes", (it) => {
         status: "archived",
       }),
     ).rejects.toThrow(MANAGED_MEMORY_REFUSAL);
-    await expect(f.triggers.enqueueManual(common)).rejects.toThrow(MANAGED_MEMORY_REFUSAL);
+    // T13: Manual run_now works on memory passes (and bypasses the 2-hour quiet skip).
+    const manualOcc = await f.triggers.enqueueManual(common);
+    expect(manualOcc.status).toBe("pending");
+    await f.triggers.cancelPendingOccurrences(base.userId, common);
     for (const changed of [
       {
         name: "Other",
@@ -2135,5 +2191,41 @@ describeStore("managed memory passes", (it) => {
       status: "paused",
       pauseReason: "Memory is off at your request.",
     });
+  });
+
+  it("bypasses the 2-hour quiet skip on manual run_now and returns skipped on quiet scheduled wakes (T13)", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "manual-bypass");
+    const s = service(f);
+    await s.instance.ensureForPersonal();
+    const light = await role(f, base.userId, "memory-light");
+    const first = await tick(f, base, light.trigger);
+    const firstWake = await wake(f, light.trigger, first.occurrence.id, "first-light");
+    await finish(f, firstWake.run!, "completed");
+
+    // Scheduled tick right after completion is quiet and skipped.
+    const scheduled = await tick(f, base, light.trigger);
+    await expect(wake(f, light.trigger, scheduled.occurrence.id, "quiet-scheduled")).rejects.toThrow(
+      MANAGED_MEMORY_WAKE_SKIPPED,
+    );
+    await completeRunningTicks(f, base, light.trigger);
+
+    // Manual run_now right after completion bypasses the 2-hour quiet skip.
+    const manualOcc = await f.triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: base.userId,
+      triggerId: light.trigger.id,
+    });
+    await f.store.claimCommand(manualOcc.commandId, `claim-${manualOcc.id}`);
+    const manualBoot = `boot-${manualOcc.id}`;
+    await f.triggers.startExecution({
+      commandId: manualOcc.commandId,
+      runnerBootId: manualBoot,
+      runnerId: base.runnerId,
+    });
+    const manualWake = await wake(f, light.trigger, manualOcc.id, "manual-wake");
+    expect(manualWake.run).not.toBeNull();
+    expect(wakeText(manualWake).join("\n")).toContain("No new tasks since your last completed pass");
   });
 });

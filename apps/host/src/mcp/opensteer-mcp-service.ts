@@ -38,7 +38,7 @@ import {
   requestHoldLimitMs,
   shortRequestHoldMs,
 } from "@opensteer/core";
-import { findAgentOperation, type OpensteerStore } from "@opensteer/database";
+import { findAgentOperation, TriggerStore, type OpensteerStore } from "@opensteer/database";
 import {
   AgentOperationFailure,
   agentOperationRefusal,
@@ -875,6 +875,25 @@ export class OpensteerMcpService {
         call: ToolCall<typeof tool.name>,
       ) => Promise<unknown>;
       identity.signal?.throwIfAborted();
+      // T10: Enforce rolling-hour wake/ping fuse for automation scripts before dispatching wake tools.
+      if (caller.kind === "program" && database && programWakeFuseTools.has(tool.name)) {
+        const triggerId =
+          caller.program.kind === "watch"
+            ? caller.program.triggerId
+            : (
+                await database
+                  .selectFrom("triggerOccurrences")
+                  .select("triggerId")
+                  .where("id", "=", caller.program.occurrenceId)
+                  .executeTakeFirst()
+              )?.triggerId;
+        if (triggerId) {
+          await new TriggerStore(database).recordAutomationWake({
+            triggerId,
+            ownerId: caller.userId,
+          });
+        }
+      }
       const handled = await handler(call);
       const raw = handled;
       identity.signal?.throwIfAborted();
@@ -1119,6 +1138,20 @@ function connectionNotFoundMessage(tool: string, message: string): string {
  * Why a tool is not offered. A connected agent cannot ask for more access itself: the person
  * widens its grant under Connected agents, and the refusal says so.
  */
+const programWakeFuseTools = new Set<string>([
+  "opensteer_task_send",
+  "opensteer_task_create",
+  "opensteer_task_delegate",
+  "send_to_person",
+  "ask_person",
+  "opensteer_request_answer",
+  "browser_profile_request",
+  "computer_access_request",
+  "plugin_account_request",
+  "app_access_request",
+  "opensteer_plugin_resource_update",
+]);
+
 function unavailableTool(caller: AgentCaller, name: string): OpensteerError {
   const family = agentToolFamilies[name as keyof typeof agentToolFamilies];
   if (caller.kind === "connection" && family === "widen")

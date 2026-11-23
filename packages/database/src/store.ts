@@ -158,9 +158,11 @@ import { OwnerProfileStore } from "./owner-profile-store.js";
 import {
   installPersonMessageWake,
   publishPersonMessage,
+  publishProgramPersonMessage,
   type PersonMessageReady,
   type PersonMessageInput,
   type PersonMessageResult,
+  type ProgramPersonMessageInput,
 } from "./person-message-store.js";
 import { RequestStore } from "./request-store.js";
 import { IntegrationRequestStore } from "./integration-request-store.js";
@@ -1969,6 +1971,9 @@ export class OpensteerStore {
   }
   publishPersonMessage(input: PersonMessageInput): Promise<PersonMessageResult> {
     return publishPersonMessage(this.#database, input);
+  }
+  publishProgramPersonMessage(input: ProgramPersonMessageInput): Promise<PersonMessageResult> {
+    return publishProgramPersonMessage(this.#database, input);
   }
   async personalMessageSendKeys(
     ownerId: UserId,

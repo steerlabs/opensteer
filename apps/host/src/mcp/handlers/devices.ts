@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { immediateRequestResult, requestResult as domainRequestResult } from "../request-result.js";
 import type { z } from "zod";
 import type { AppAccessRequestInputSchema } from "@opensteer/agent-tools/tools";
@@ -9,6 +10,10 @@ import {
   ThreadIdSchema,
   type Request,
   type DeviceId,
+  type RunId,
+  type RunnerId,
+  type ThreadId,
+  type UserId,
 } from "@opensteer/core";
 import {
   OperationOutcomeUnknown,
@@ -16,7 +21,7 @@ import {
   type DirectOperationResult,
   type DirectOperationContext,
 } from "../../agent-sessions/agent-session-service.js";
-import type { ConnectionCaller } from "../agent-caller.js";
+import { callerLineage, type ConnectionCaller } from "../agent-caller.js";
 import { directResult, failedScriptOutput, requireDirectWork, scriptFailure } from "./direct.js";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import type { ComputerInventoryAuthority } from "../../computer-use/computer-use-service.js";
@@ -46,6 +51,7 @@ type DeviceToolDevices = Pick<
   | "computerUseVersion"
   | "listCallableTools"
   | "runComputerCode"
+  | "runProgramComputerCode"
   | "runSessionComputerCode"
   | "sessionComputerTarget"
   | "runSessionInventory"
@@ -73,6 +79,22 @@ export class DeviceToolHandlers {
 
   async computer_use(call: ToolCall<"computer_use">) {
     if (call.caller.kind === "connection") return this.#sessionComputerUse(call.caller, call);
+    if (call.caller.kind === "program") {
+      const replKey =
+        `run_${createHash("sha256").update(call.caller.key).digest("hex").slice(0, 24)}` as RunId;
+      return this.#devices.runProgramComputerCode(
+        {
+          ownerUserId: call.caller.userId,
+          threadId: call.caller.anchor.id,
+          bindingId: call.caller.key,
+          replKey,
+          ...(call.checkLive ? { recheck: call.checkLive } : {}),
+          ...(callerLineage(call.caller) ? { connectionWork: true as const } : {}),
+        },
+        call.input.code,
+        call.signal ?? AbortSignal.timeout(100_000),
+      );
+    }
     const run = requireRun(call.caller).claims;
     if (!(await this.#devices.computerToolEnabled(run)))
       throw refused(
@@ -181,38 +203,45 @@ export class DeviceToolHandlers {
     const caller = call.caller;
     const { operationKey: _operationKey, ...input } = call.input;
     const callId = operationId(caller, call.operationKey, "app_access_request");
-    if (input.dataApp === undefined && input.server === undefined) {
-      const { claims } = requireRun(caller);
-      return (
-        (await this.#replay({ originatingRunId: claims.runId }, callId)) ??
-        (input.app === undefined
-          ? this.#requestPhone(claims, input, callId)
-          : this.#requestComputerApp(claims, { ...input, app: input.app }, callId))
-      );
-    }
-    const scope =
-      caller.kind === "run"
-        ? caller.claims
-        : caller.kind === "program" && caller.program.kind === "trigger"
-          ? caller.program
-          : null;
-    if (!scope)
+    if (caller.kind === "connection")
       throw refused(
         "forbidden",
-        "Only a running task or Trigger occurrence can ask for local access.",
+        "Only a running task or automation script can ask for local access.",
       );
-    const origin =
-      "runId" in scope
-        ? { originatingRunId: scope.runId }
-        : { originatingOccurrenceId: scope.occurrenceId };
+    const origin: AccessRequestOrigin =
+      caller.kind === "run"
+        ? { originatingRunId: caller.claims.runId }
+        : caller.program.kind === "trigger"
+          ? { originatingOccurrenceId: caller.program.occurrenceId }
+          : { originatingWatchActivationId: caller.program.activationId };
+    const threadId = caller.kind === "run" ? caller.claims.threadId : caller.anchor.id;
+    const requestedBy = caller.userId;
+    const runnerId =
+      caller.kind === "run"
+        ? caller.claims.runnerId
+        : caller.program.kind === "trigger"
+          ? caller.program.runnerId
+          : undefined;
+    if (input.dataApp === undefined && input.server === undefined) {
+      return (
+        (await this.#replay(origin, callId)) ??
+        (input.app === undefined
+          ? this.#requestPhone({ origin, requestedBy, threadId }, input, callId)
+          : this.#requestComputerApp(
+              { origin, requestedBy, threadId, ...(runnerId ? { runnerId } : {}) },
+              { ...input, app: input.app },
+              callId,
+            ))
+      );
+    }
     const replay = await this.#replay(origin, callId);
     if (replay) return replay;
     const asker: AccessAsker = {
       origin,
       callId,
       reason: input.reason,
-      requestedBy: scope.requestedBy,
-      threadId: scope.threadId,
+      requestedBy,
+      threadId,
     };
     const outcome =
       input.dataApp !== undefined
@@ -235,7 +264,12 @@ export class DeviceToolHandlers {
    * ones instead of picking.
    */
   async #requestComputerApp(
-    scope: RunToolScope,
+    scope: {
+      readonly origin: AccessRequestOrigin;
+      readonly requestedBy: UserId;
+      readonly threadId: ThreadId;
+      readonly runnerId?: RunnerId;
+    },
     input: { readonly app: string; readonly computerId?: DeviceId | undefined } & Pick<
       z.infer<typeof AppAccessRequestInputSchema>,
       "access" | "reason"
@@ -244,10 +278,12 @@ export class DeviceToolHandlers {
   ) {
     const { machines: macs, phones } =
       await this.#devices.computerAppApprovals.computerUseInventory(scope.requestedBy);
-    const executingDeviceId = await this.#devices.store.requireSelfDeviceId(scope.runnerId);
+    const executingDeviceId = scope.runnerId
+      ? await this.#devices.store.requireSelfDeviceId(scope.runnerId)
+      : undefined;
     const named = input.computerId
       ? macs.find(({ deviceId }) => deviceId === input.computerId)
-      : (macs.find(({ deviceId }) => deviceId === executingDeviceId) ??
+      : ((executingDeviceId ? macs.find(({ deviceId }) => deviceId === executingDeviceId) : undefined) ??
         (macs.length === 1 ? macs[0] : undefined));
     if (!named) {
       const phone = input.computerId
@@ -273,12 +309,16 @@ export class DeviceToolHandlers {
       app: input.app,
       reason: input.reason,
       callId,
-      originatingRunId: scope.runId,
+      ...("originatingRunId" in scope.origin && scope.origin.originatingRunId
+        ? { originatingRunId: scope.origin.originatingRunId }
+        : "originatingOccurrenceId" in scope.origin && scope.origin.originatingOccurrenceId
+          ? { originatingOccurrenceId: scope.origin.originatingOccurrenceId }
+          : { originatingWatchActivationId: scope.origin.originatingWatchActivationId }),
       ownerUserId: scope.requestedBy,
       deviceId: named.deviceId,
       threadId: scope.threadId,
     });
-    return computerAccessResult(created);
+    return computerAccessResult(created, "originatingRunId" in scope.origin);
   }
 
   /**
@@ -287,7 +327,11 @@ export class DeviceToolHandlers {
    * the same unknown id as a typo.
    */
   async #requestPhone(
-    scope: RunToolScope,
+    scope: {
+      readonly origin: AccessRequestOrigin;
+      readonly requestedBy: UserId;
+      readonly threadId: ThreadId;
+    },
     input: Omit<z.infer<typeof AppAccessRequestInputSchema>, "operationKey">,
     callId: string,
   ) {
@@ -311,12 +355,16 @@ export class DeviceToolHandlers {
       app: null,
       reason: input.reason,
       callId,
-      originatingRunId: scope.runId,
+      ...("originatingRunId" in scope.origin && scope.origin.originatingRunId
+        ? { originatingRunId: scope.origin.originatingRunId }
+        : "originatingOccurrenceId" in scope.origin && scope.origin.originatingOccurrenceId
+          ? { originatingOccurrenceId: scope.origin.originatingOccurrenceId }
+          : { originatingWatchActivationId: scope.origin.originatingWatchActivationId }),
       ownerUserId: scope.requestedBy,
       deviceId: phone.deviceId,
       threadId: scope.threadId,
     });
-    return computerAccessResult(created);
+    return computerAccessResult(created, "originatingRunId" in scope.origin);
   }
 
   /** A retried ask answers with the Request it already opened. */
@@ -546,8 +594,9 @@ function sessionScriptOutput(
 /** What a task's ask for an app or a phone answers. */
 function computerAccessResult(
   created: Awaited<ReturnType<DeviceService["computerAppApprovals"]["requestComputerAppAccess"]>>,
+  fromRun = true,
 ) {
-  if (created.status === "pending") return requestResult(created.request, created.replayed);
+  if (created.status === "pending") return requestResult(created.request, created.replayed, fromRun);
   return {
     ...immediateRequestResult(
       "computer.app.access",

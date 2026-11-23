@@ -125,7 +125,7 @@ export const computer_use = defineAgentTool({
   output: ComputerUseOutputSchema,
   capability: "computerUse",
   access: "write",
-  callers: ["run", "connection"] as const,
+  callers: ["run", "program", "connection"] as const,
   openWorld: true,
   destructive: true,
 });
@@ -144,7 +144,7 @@ export const computer_access_request = defineAgentTool({
   }),
   output: RequestCreationOutputSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
 });
 
 export const ComputerAppsInputSchema = z.strictObject({

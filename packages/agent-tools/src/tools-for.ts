@@ -163,7 +163,6 @@ export function toolsFor(caller: {
   return (caller.kind === "connection" ? connectedTools : agentTools).filter(
     (tool) =>
       tool.callers.some((kind) => kind === caller.kind) &&
-      (caller.program?.kind !== "watch" || tool.name !== "app_access_request") &&
       (!("capability" in tool) ||
         !caller.capabilities ||
         caller.capabilities[tool.capability] === true) &&

@@ -258,10 +258,9 @@ export class RequestStore {
       readonly machineId: DeviceId;
       readonly access: "browser" | "apps" | "files";
       readonly reason: string;
-      readonly originatingRunId: RunId;
       readonly originatingThreadId: ThreadId;
       readonly requestedBy: UserId;
-    },
+    } & RequestOriginInput,
     isOnline: () => boolean,
   ): Promise<RequestMutation> {
     return commitPersonalMutation(this.#database, async (transaction) => {
@@ -273,6 +272,15 @@ export class RequestStore {
       if (!machine)
         throw new OpensteerError({ code: "forbidden", message: "Owned computer not found" });
       const label = { browser: "Browser", apps: "Apps", files: "Files and commands" }[input.access];
+      const origin: RequestOriginInput =
+        "originatingRunId" in input && input.originatingRunId !== undefined
+          ? { originatingRunId: input.originatingRunId }
+          : "originatingOccurrenceId" in input && input.originatingOccurrenceId !== undefined
+            ? { originatingOccurrenceId: input.originatingOccurrenceId }
+            : "originatingWatchActivationId" in input &&
+                input.originatingWatchActivationId !== undefined
+              ? { originatingWatchActivationId: input.originatingWatchActivationId }
+              : { originatingAgentSessionId: input.originatingAgentSessionId! };
       return createRequestInTransaction(
         this.#links,
         transaction,
@@ -281,7 +289,7 @@ export class RequestStore {
           kind: "device.access",
           mode: "durable",
           requiredActor: "owner",
-          originatingRunId: input.originatingRunId,
+          ...origin,
           originatingThreadId: input.originatingThreadId,
           requestedBy: input.requestedBy,
           payload: {
@@ -927,6 +935,7 @@ export class RequestStore {
     readonly definitionId: "android-phone" | "iphone-screen" | "macos-app";
     readonly idempotencyKey?: string;
     readonly originatingOccurrenceId?: TriggerOccurrenceId | null;
+    readonly originatingWatchActivationId?: TriggerWatchActivationId | null;
     readonly originatingRunId: RunId | null;
     readonly ownerUserId: UserId;
     readonly deviceId: DeviceId;
@@ -942,22 +951,20 @@ export class RequestStore {
     }
     const app = input.app === null ? null : ComputerAppIdentitySchema.parse(input.app);
     const access = IntegrationAccessSchema.parse(input.access);
-    const origin =
-      input.originatingRunId === null
-        ? input.originatingOccurrenceId
-          ? ({
-              originatingOccurrenceId: input.originatingOccurrenceId,
-            } as const)
-          : null
-        : input.originatingOccurrenceId
-          ? null
-          : ({
-              originatingRunId: input.originatingRunId,
-            } as const);
+    const origins = [
+      input.originatingRunId ? ({ originatingRunId: input.originatingRunId } as const) : null,
+      input.originatingOccurrenceId
+        ? ({ originatingOccurrenceId: input.originatingOccurrenceId } as const)
+        : null,
+      input.originatingWatchActivationId
+        ? ({ originatingWatchActivationId: input.originatingWatchActivationId } as const)
+        : null,
+    ].filter((entry) => entry !== null);
+    const origin = origins.length === 1 ? origins[0]! : null;
     if (!origin) {
       throw new OpensteerError({
         code: "bad_request",
-        message: "A computer app access Request originates from exactly one Run or Occurrence",
+        message: "A computer app access Request originates from exactly one Run, Occurrence, or Watch",
       });
     }
     return commitPersonalMutation(this.#database, async (personalTransaction) => {
