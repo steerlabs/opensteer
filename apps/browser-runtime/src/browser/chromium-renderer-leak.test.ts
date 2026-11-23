@@ -14,7 +14,10 @@ import { nativeProfileRequest } from "./native-profile.test-support.js";
 
 const executablePath = findChromium();
 
-function countDescendantRenderers(rootPid: number): number {
+function countDescendantRenderers(
+  rootPid: number,
+  kind: "all" | "page" | "extension" = "all",
+): number {
   const output = execFileSync("ps", ["-axo", "pid=,ppid=,command="], {
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
@@ -43,7 +46,12 @@ function countDescendantRenderers(rootPid: number): number {
     for (const child of byParent.get(current) ?? []) {
       if (visited.has(child.pid)) continue;
       visited.add(child.pid);
-      if (child.command.includes("--type=renderer")) renderers++;
+      const extension = child.command.includes("--extension-process");
+      if (
+        child.command.includes("--type=renderer") &&
+        (kind === "all" || (kind === "extension") === extension)
+      )
+        renderers++;
       queue.push(child.pid);
     }
   }
@@ -122,3 +130,69 @@ it("reaps renderer processes promptly after closing distinct-origin tabs in a na
     { timeout: 5_000, interval: 200 },
   );
 });
+
+it("leaves nothing of the look for the tab helper behind: the private page back where it started and its renderers back to before the look (TS9)", async () => {
+  // The look is held before its first ask, so the browser can be counted as it was before it.
+  const { ChromiumTabLifecycleBridge: Bridge } = await import("./tab-lifecycle-extension.js");
+  const served = Bridge.prototype.served;
+  const gate = Promise.withResolvers<void>();
+  let held = false;
+  vi.spyOn(Bridge.prototype, "served").mockImplementation(async function (
+    this: InstanceType<typeof Bridge>,
+    ...args: Parameters<InstanceType<typeof Bridge>["served"]>
+  ) {
+    held = true;
+    await gate.promise;
+    return served.apply(this, args);
+  });
+  const directory = await mkdtemp(path.join(tmpdir(), "os-renderer-probe-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  const internal = launched as unknown as {
+    playwrightContext: { process(): { pid: number } };
+    contextHandle: {
+      lifecycle: unknown;
+      lifecycleSettled: Promise<void>;
+      privatePage: { url(): string };
+    };
+  };
+  const rootPid = internal.playwrightContext.process().pid;
+  await vi.waitFor(() => expect(held).toBe(true));
+  const before = {
+    page: countDescendantRenderers(rootPid, "page"),
+    extension: countDescendantRenderers(rootPid, "extension"),
+    url: internal.contextHandle.privatePage.url(),
+  };
+  gate.resolve();
+  await internal.contextHandle.lifecycleSettled;
+  expect(internal.contextHandle.lifecycle).toBeDefined();
+  // The private page is where it was before the look.
+  expect(internal.contextHandle.privatePage.url()).toBe(before.url);
+  // Within a bound, the page renderers are as before the look; the only extension renderer it may
+  // add is the helper's own worker, which it woke to read the tabs.
+  await vi.waitFor(
+    () => {
+      expect(countDescendantRenderers(rootPid, "page")).toBeLessThanOrEqual(before.page);
+      expect(countDescendantRenderers(rootPid, "extension")).toBeLessThanOrEqual(
+        Math.max(before.extension, 1),
+      );
+    },
+    { timeout: 5_000, interval: 200 },
+  );
+  process.stdout.write(
+    `${JSON.stringify({
+      event: "ts9.probe-renderers",
+      before,
+      after: {
+        page: countDescendantRenderers(rootPid, "page"),
+        extension: countDescendantRenderers(rootPid, "extension"),
+      },
+    })}\n`,
+  );
+}, 60_000);
