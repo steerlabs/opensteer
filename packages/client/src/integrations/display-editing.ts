@@ -138,7 +138,7 @@ export class DisplayEditingSession {
         (error: Error) => held.callers.forEach((caller) => caller.reject(error)),
       );
   }
-  #carrierEnded(pending: Pending, reason: Error, recordTimeoutReceipt: boolean): boolean {
+  #carrierEnded(pending: Pending, text: string, recordTimeoutReceipt: boolean): boolean {
     // Q1 (AGENTS.md rule 4): once a paste or cut batch has left this client onto the carrier,
     // never report it as failed or invite a blind retry on timeout or display/carrier change.
     if (pending.sent && pending.mutatesClipboard) {
@@ -147,7 +147,7 @@ export class DisplayEditingSession {
       this.#finish(pending, undefined, { outcome: "unknown", items: [] });
       return true;
     }
-    this.#finish(pending, recordTimeoutReceipt ? this.#refuse("timeout", reason.message) : reason);
+    this.#finish(pending, recordTimeoutReceipt ? this.#refuse("timeout", text) : new Error(text));
     return false;
   }
   #cancel(reason: string): boolean {
@@ -156,7 +156,7 @@ export class DisplayEditingSession {
     for (const caller of held?.callers ?? []) caller.reject(new Error(reason));
     let preservedReceipt = false;
     for (const pending of new Set(this.#pending.values()))
-      if (this.#carrierEnded(pending, new Error(reason), false)) preservedReceipt = true;
+      if (this.#carrierEnded(pending, reason, false)) preservedReceipt = true;
     return preservedReceipt;
   }
   #refuse(reason: string, message: string): Error {
@@ -389,8 +389,7 @@ export class DisplayEditingSession {
         reject,
         sequences: new Set(),
         timer: setTimeout(
-          () =>
-            this.#carrierEnded(pending, new Error("This device didn’t respond. Try again."), true),
+          () => this.#carrierEnded(pending, "This device didn’t respond. Try again.", true),
           10000,
         ),
       };
@@ -410,11 +409,7 @@ export class DisplayEditingSession {
           this.#finish(pending, new Error("Input is unavailable."));
       } catch (error) {
         if (pending.sent && pending.mutatesClipboard) {
-          this.#carrierEnded(
-            pending,
-            error instanceof Error ? error : new Error("This edit couldn’t be sent."),
-            false,
-          );
+          this.#carrierEnded(pending, "This edit couldn’t be sent.", false);
           return;
         }
         if (error instanceof DisplayInputTooLargeError) {

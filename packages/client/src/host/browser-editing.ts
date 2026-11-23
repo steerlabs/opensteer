@@ -475,7 +475,7 @@ export class BrowserEditingStore {
         } catch (error) {
           this.#carrierEnded(
             operationId,
-            error instanceof Error ? error.message : "Clipboard transport failed.",
+            error instanceof Error ? error : "Clipboard transport failed.",
           );
         }
         return result;
@@ -576,7 +576,7 @@ export class BrowserEditingStore {
           (pending.kind === "paste" || pending.kind === "cut") &&
           pending.dispatched
         ) {
-          this.#carrierEnded(message.operationId, message.error.message, true);
+          this.#carrierEnded(message.operationId, "The remote page was suspended.", true);
           return;
         }
         const outcome = pending.kind === "paste" || pending.kind === "cut" ? "refused" : "empty";
@@ -592,7 +592,7 @@ export class BrowserEditingStore {
         )
           continue;
         if ((pending.kind === "paste" || pending.kind === "cut") && pending.dispatched) {
-          this.#carrierEnded(id, message.error.message, true);
+          this.#carrierEnded(id, "The remote page was suspended.", true);
           continue;
         }
         this.#take(id)?.resolve({ outcome: "empty", items: [] });
@@ -781,11 +781,7 @@ export class BrowserEditingStore {
               "Cut finished late, but the clipboard data couldn’t be read.",
             );
           } else {
-            this.#carrierEnded(
-              message.part.operationId,
-              error instanceof Error ? error.message : "Invalid clipboard part.",
-              false,
-            );
+            this.#carrierEnded(message.part.operationId, "Invalid clipboard part.", false);
           }
           return;
         }
@@ -796,7 +792,7 @@ export class BrowserEditingStore {
       }
     }
   }
-  #carrierEnded(id: string, message: string, keepLateCut = false): void {
+  #carrierEnded(id: string, reason: string | Error, keepLateCut = false): void {
     const pending = this.#pending.get(id);
     if (!pending) return;
     if (pending.late) {
@@ -826,7 +822,7 @@ export class BrowserEditingStore {
       this.#take(id)?.resolve({ outcome: "unknown", items: [] });
       return;
     }
-    this.#fail(id, new Error(message));
+    this.#fail(id, reason instanceof Error ? reason : new Error(reason));
   }
   #cancel(target: Target, message: string): void {
     for (const [id, pending] of this.#pending)
@@ -930,10 +926,7 @@ export class BrowserEditingStore {
           const pending = this.#pending.get(id);
           if (pending) pending.dispatched = true;
         } catch (error) {
-          this.#carrierEnded(
-            id,
-            error instanceof Error ? error.message : "Clipboard transport failed.",
-          );
+          this.#carrierEnded(id, error instanceof Error ? error : "Clipboard transport failed.");
         }
         return result;
       }
