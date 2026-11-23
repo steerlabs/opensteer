@@ -606,23 +606,36 @@ describe("the state after each event", () => {
     });
   });
 
-  // Re-check 10, S2 (finding 2): a start that failed before it reached Chromium is no refusal.
-  it("counts a start that failed before it was sent as an attempt, and gives up at the bound", () => {
-    const preparing: TabCastState = { ...initialTabCastState(), told: { state: "preparing" } };
-    let state = preparing;
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      state = after(state, { kind: "start-failed", why: "Electron browser page is closed." }, base);
-      expect(state).toMatchObject({ refusal: null, told: { state: "none" }, unpictured: attempt });
-      if (attempt < 3) {
-        expect(state.failed).toBeNull();
-        expect(nextStep(base, "tab#1", state).kind).toBe("start");
-        state = after(state, { kind: "start-begun" }, base);
+  // Re-check 10, S2 (finding 2) and re-check 11, finding 1 (U1): a start that failed before it
+  // reached Chromium is no refusal, and `pictureLimit` is the number of RETRIES after the first
+  // attempt in every path (1 retry on a native page, 3 on a page sized by command).
+  it("retries a start that failed before it was sent up to pictureLimit, then gives up", () => {
+    for (const [label, now] of [
+      ["native page", native],
+      ["page sized by the follow view", base],
+    ] as const) {
+      const limit = pictureLimit(now.tab!.native);
+      let state: TabCastState = { ...initialTabCastState(), told: { state: "preparing" } };
+      // First attempt plus `limit` retries: the first `limit` failures retry; failure `limit + 1` gives up.
+      for (let failure = 1; failure <= limit + 1; failure += 1) {
+        state = after(state, { kind: "start-failed", why: "Electron browser page is closed." }, now);
+        expect(state, `${label} failure ${failure}`).toMatchObject({
+          refusal: null,
+          told: { state: "none" },
+        });
+        if (failure <= limit) {
+          expect(state.unpictured, `${label} failure ${failure}`).toBe(failure);
+          expect(state.failed, `${label} failure ${failure}`).toBeNull();
+          expect(nextStep(now, "tab#1", state).kind, `${label} failure ${failure}`).toBe("start");
+          state = after(state, { kind: "start-begun" }, now);
+        } else {
+          expect(state.failed?.why, `${label} failure ${failure}`).toBe(
+            "its start could not be made (Electron browser page is closed.)",
+          );
+          expect(nextStep(now, "tab#1", state).kind, `${label} failure ${failure}`).toBe("wait");
+        }
       }
     }
-    expect(state.failed?.why).toBe(
-      "its start could not be made (Electron browser page is closed.)",
-    );
-    expect(nextStep(base, "tab#1", state).kind).toBe("wait");
     // A start Chromium refused is a refusal, of the facts when it was sent.
     const sentAt = startFacts(tab({ loading: true }));
     const sent: TabCastState = {
@@ -633,6 +646,13 @@ describe("the state after each event", () => {
       refusal: { ...sentAt, why: "no" },
       unpictured: 0,
     });
+    // Retries from an earlier cast do not carry into a different cast before its first start is sent.
+    const moved = after(
+      { ...initialTabCastState(), lastKey: keyOf(native), unpictured: 1 },
+      { kind: "observed" },
+      facts({ density: 1 }, native.tab!),
+    );
+    expect(moved).toMatchObject({ lastKey: null, unpictured: 0 });
   });
 
   // Re-check 10, S6: a cast at its bound is given up, even when a closed tab asks for a repair.

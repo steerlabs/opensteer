@@ -129,6 +129,7 @@ class Chromium {
       interrupted();
       if (method === "Emulation.setVisibleSize" && this.world.tabs[this.id].failPrepare) {
         this.world.tabs[this.id].failPrepare = false;
+        this.world.tabs[this.id].prepareFailuresOnCast += 1;
         throw new Error("Emulation.setVisibleSize failed");
       }
       if (method === "Page.stopScreencast") {
@@ -268,6 +269,14 @@ interface TabWorld {
   epoch: number;
   /** Starts Chromium took since its last picture. */
   startsSincePicture: number;
+  /** Starts accepted on the cast now wanted (U1: giving up needs more than pictureLimit attempts). */
+  startsOnCast: number;
+  /** Pre-send start failures on the cast now wanted (U1). */
+  prepareFailuresOnCast: number;
+  /** Misfit frames emitted on the cast now wanted (U1: a pictured cast can retry from a misfit). */
+  misfitsOnCast: number;
+  /** Stop timeouts recorded for this tab since its last picture/resume/session end (U1/U4). */
+  stopTimeouts: number;
   /**
    * Things that happened outside the follow view since the tab's last picture, each of which may
    * call for a cast of its own: a change can wait behind a hold and land after a later one.
@@ -322,7 +331,11 @@ class World {
       size: { height: 600, width: 800 },
       stallPaint: false,
       eventsSincePicture: 0,
+      misfitsOnCast: 0,
+      prepareFailuresOnCast: 0,
+      startsOnCast: 0,
       startsSincePicture: 0,
+      stopTimeouts: 0,
       unpainted: opening,
     });
     // B is a tab the person opened with an address, its first document still to commit.
@@ -358,12 +371,19 @@ class World {
   startedOn(id: Id) {
     const tab = this.tabs[id];
     tab.startsSincePicture += 1;
+    tab.startsOnCast += 1;
     if (this.port && tab.navigation.pending && tab.navigation.blankDocument)
       this.violations.push(`a start reached ${id} before its first document committed`);
   }
   /** A new showing, or a new cast wanted: one more cast's starts are allowed until a picture. */
-  afresh(id: Id) {
-    this.tabs[id].eventsSincePicture += 1;
+  afresh(id: Id, resetsCast = true) {
+    const tab = this.tabs[id];
+    tab.eventsSincePicture += 1;
+    if (resetsCast) {
+      tab.startsOnCast = 0;
+      tab.prepareFailuresOnCast = 0;
+      tab.misfitsOnCast = 0;
+    }
   }
   /** Which cast the follow view should picture now on a tab, as a key. */
   castOf(id: Id) {
@@ -414,6 +434,7 @@ class World {
           // The desktop page moved to another window as its paint was awaited.
           if (tab.failPrepare && desktop) {
             tab.failPrepare = false;
+            tab.prepareFailuresOnCast += 1;
             throw new Error("Electron browser page is closed.");
           }
           if (tab.stallPaint) {
@@ -474,6 +495,10 @@ class World {
             `${tab.id} was shown a picture of document ${painted.document}, not of ${tab.documentId}`,
           );
         tab.startsSincePicture = 0;
+        tab.startsOnCast = 0;
+        tab.prepareFailuresOnCast = 0;
+        tab.misfitsOnCast = 0;
+        tab.stopTimeouts = 0;
         tab.eventsSincePicture = 0;
       },
     };
@@ -566,6 +591,7 @@ function actions(
         // Asking for the picture again asks the page afresh.
         if (!world.streaming) {
           inView().epoch += 1;
+          inView().stopTimeouts = 0;
           world.afresh(world.active);
         }
         const before = world.streaming;
@@ -738,6 +764,7 @@ function actions(
         // Linux Chrome says nothing.
         if (world.engine !== "desktop") return;
         const chromium = inView().chromium;
+        inView().stopTimeouts = 0;
         chromium.casting = false;
         chromium.era += 1;
         chromium.emit(screencastEndedEvent, {});
@@ -766,8 +793,8 @@ function actions(
       name: "a tab closes beside it",
       run: () => {
         // Another tab of the window closes: headless Chrome may show this one at the window's size
-        // again. An event from outside: the starts it causes count from it.
-        world.afresh(world.active);
+        // again. An event from outside: the starts it causes count from it (does not clear failed).
+        world.afresh(world.active, false);
         world.emit({
           change: "closed",
           surface: { active: false, documentId: "C0", geometryRevision: 1, id: "C", url: "" },
@@ -779,7 +806,10 @@ function actions(
       name: "a frame that does not fit",
       run: () => {
         const tab = inView();
-        if (tab.chromium.casting) tab.chromium.frame(false);
+        if (tab.chromium.casting) {
+          tab.misfitsOnCast += 1;
+          tab.chromium.frame(false);
+        }
       },
     },
     {
@@ -835,6 +865,7 @@ function actions(
         next.attached = !tab.navigation.pending;
         tab.chromium = next;
         tab.epoch += 1;
+        tab.stopTimeouts = 0;
         world.afresh(tab.id);
         world.changed(tab.id);
       },
@@ -909,7 +940,9 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
         (!chromium.attached || tab.loading || (world.port && tab.navigation.pending))) ||
       (why === "the page did not paint" && tab.paintTimedOut && bound.paintTimer !== null) ||
       (why.startsWith("its cast was given up") &&
-        world.errorsFor.get(tab.id) === world.castOf(tab.id));
+        world.errorsFor.get(tab.id) === world.castOf(tab.id) &&
+        tab.startsOnCast + tab.prepareFailuresOnCast + tab.misfitsOnCast + tab.stopTimeouts >
+          (world.engine === "desktop" ? 1 : 3));
     if (!pictured && !named)
       broken.push(
         `${world.active} is wanted cast and neither pictured nor waiting on a fact true of it (told ${told.state}, shown ${String(bound.state.shown)}, waiting "${why}")`,
@@ -959,6 +992,14 @@ async function run(seed: number, engine: "desktop" | "linux", length: number) {
         world.errorsFor.set(world.active, world.castOf(world.active));
     },
   });
+  const pushDiagnostic = follow.diagnostics.push.bind(follow.diagnostics);
+  follow.diagnostics.push = (...entries) => {
+    for (const entry of entries) {
+      if (entry.stage === "cast-stop-timeout" && (entry.surfaceId === "A" || entry.surfaceId === "B"))
+        world.tabs[entry.surfaceId].stopTimeouts += 1;
+    }
+    return pushDiagnostic(...entries);
+  };
   // For reading one fault alone: the actions whose names this leaves out are never taken.
   const without = process.env.OPENSTEER_FOLLOW_GENERATED_WITHOUT;
   const list = actions(world, follow, pick).filter(

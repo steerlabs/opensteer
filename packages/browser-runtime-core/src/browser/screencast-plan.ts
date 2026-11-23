@@ -648,6 +648,16 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
       // A cast given up is tried again, with fresh counts, once what it would picture changed.
       if (next.failed && want.kind === "cast" && !sameCast(next.failed.key, want.key))
         next = { ...next, failed: null, unpictured: 0 };
+      // Retries belong to one cast: once what is wanted moves to another cast while none runs,
+      // the new cast begins its own retries afresh (U1).
+      if (
+        next.told.state === "none" &&
+        next.repairing === null &&
+        next.lastKey &&
+        want.kind === "cast" &&
+        !sameCast(next.lastKey, want.key)
+      )
+        next = { ...next, lastKey: null, unpictured: 0 };
       // A pause ends a paint wait: the next stream asks the page afresh.
       if (next.paint && (!facts.streaming || facts.closed)) next = { ...next, paint: null };
       return next;
@@ -675,18 +685,19 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
       if (told.state === "sent")
         return { ...state, refusal: { ...told.at, why: event.why }, told: { state: "none" } };
       if (told.state !== "preparing") return state;
-      // It failed before it reached Chromium (S2): an attempt with no picture, under the bound.
-      const unpictured = state.unpictured + 1;
+      // It failed before it reached Chromium (S2): `pictureLimit` is the number of retries after
+      // the first attempt, the same in every path (U1).
       const want = wanted(facts);
       const atBound =
-        want.kind === "cast" && unpictured >= pictureLimit(facts.tab?.native ?? false);
+        want.kind === "cast" && state.unpictured >= pictureLimit(facts.tab?.native ?? false);
       return {
         ...state,
         failed: atBound
           ? { key: want.key, why: `its start could not be made (${event.why})` }
           : state.failed,
+        lastKey: want.kind === "cast" ? want.key : state.lastKey,
         told: { state: "none" },
-        unpictured,
+        unpictured: atBound ? state.unpictured : state.unpictured + 1,
       };
     }
     case "not-sent":
