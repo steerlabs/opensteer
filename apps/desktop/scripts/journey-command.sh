@@ -43,6 +43,12 @@ journey() {
         smoke_start=$SECONDS
         smoke_code=0
         if [[ "$smoke" == quit ]]; then
+          # A repeated quit signs a new copy of its app, which may not read the Safe Storage
+          # item an earlier copy left in the guest's keychain: that item goes first.
+          if [[ -n "${quit_ran:-}" ]]; then
+            security delete-generic-password -s "opensteer-quit-smoke Safe Storage" > /dev/null 2>&1 || true
+          fi
+          quit_ran=1
           pnpm test:electron-quit:run --tab-restore > "$out/$smoke.log" 2>&1 || smoke_code=$?
         else
           pnpm "test:electron-$smoke:run" > "$out/$smoke.log" 2>&1 || smoke_code=$?
