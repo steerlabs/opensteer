@@ -287,12 +287,13 @@ export async function connectionAttempts(
         or (d.status = 'unknown' and d.updated_at >= f.cleanup_requested_at))
       union all
       -- A command with an effect outside the database, acting now in this Home's process: its
-      -- settled state is its evidence; one that may have acted is unknown, contact lost (G4).
+      -- settled state is its evidence; one that may have acted is unknown, contact lost (G4). A
+      -- narrowed grant waits on it as a Disconnect does, as it does on sessions (K4).
       select 'command', a.id, null, null, null, null, null, a.state = 'running',
         case when a.state <> 'running' then a.settled_at end,
         case when a.state = 'unknown' then a.settled_at end, null
       from command_attempts a join floor f on f.id = a.connection_id
-      where f.disconnected and (
+      where (f.disconnected or f.cleanup_reason = 'narrowed') and (
         a.state = 'running' or (a.state = 'unknown' and a.settled_at >= f.cleanup_requested_at))
       union all
       select 'session', s.id, null, s.thread_id, null, null, null, false, null, null, null
