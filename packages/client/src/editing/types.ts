@@ -109,7 +109,12 @@ export type EditingOperation =
   | { readonly kind: "compose"; readonly composition: EditingComposition }
   | { readonly kind: "edit"; readonly edit: EditingTextEdit }
   | { readonly kind: "copy" | "cut" }
-  | { readonly kind: "paste"; readonly items: readonly EditingClipboardPayloadItem[] };
+  | {
+      readonly kind: "paste";
+      readonly items: readonly EditingClipboardPayloadItem[];
+      /** CZ5: the context it was made for, stamped where it is made (the reducer's). */
+      readonly contextId?: string | undefined;
+    };
 
 export interface EditingProxyInstruction {
   /** Stop the platform's own handling of the event just delivered. */

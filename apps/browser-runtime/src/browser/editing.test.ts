@@ -569,6 +569,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           operationId: pasteId,
           consumerToken,
           items: [{ type: "text/plain", size: pasteBytes.length }],
+          contextId: context().context.contextId,
         });
         send({
           type: "input.key",
@@ -589,6 +590,41 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         );
         expect(await read("events.filter(e=>e.type==='paste').every(e=>e.trusted)")).toBe(true);
         checks.push("paste parts retain lane position and native trusted paste");
+        // CZ5: a paste is made for one field. Focus moves to another while its bytes are in
+        // flight: nothing lands in either field, and the person is told it was refused.
+        const madeFor = context().context.contextId;
+        const before = await read<string>("t.value");
+        const movedId = randomUUID();
+        const movedBytes = Buffer.from("made for t");
+        send({
+          type: "clipboard.paste-data",
+          surfaceId,
+          operationId: movedId,
+          consumerToken,
+          items: [{ type: "text/plain", size: movedBytes.length }],
+          contextId: madeFor,
+        });
+        await agent("Browser.getVersion");
+        await read("second.value='untouched';second.focus()");
+        await waitForBrowserState(
+          () =>
+            context().context.contextId !== madeFor && context().context.field?.multiline === false,
+        );
+        send({
+          type: "clipboard.part",
+          part: { operationId: movedId, index: 0, data: movedBytes.toString("base64") },
+        });
+        await waitForBrowserState(() =>
+          messages.some((m) => m.type === "clipboard.result" && m.operationId === movedId),
+        );
+        expect(
+          messages.find((m) => m.type === "clipboard.result" && m.operationId === movedId),
+        ).toMatchObject({ outcome: "refused", consumerToken });
+        expect(await read("second.value")).toBe("untouched");
+        expect(await read("t.value")).toBe(before);
+        await read("t.focus()");
+        await waitForBrowserState(() => context().context.field?.multiline === true);
+        checks.push("a paste whose field lost focus in flight lands nowhere and is refused");
         await read("p.focus();p.value='secret';p.select()");
         const sensitiveId = randomUUID();
         const copyEvents = await read<number>("events.filter(e=>e.type==='copy').length");
@@ -879,6 +915,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           type: "clipboard.paste-data",
           surfaceId,
           operationId,
+          contextId: context().context.contextId,
           items: items.map((item) => ({
             type: item.type,
             size: item.bytes.length,
@@ -1134,6 +1171,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           producerId: pressureProducer,
           operationId: pressurePaste,
           items: [{ type: "text/plain", size: 1 }],
+          contextId: context().context.contextId,
           inputSequence: 1,
         });
         const sentKeys = 6;

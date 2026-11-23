@@ -1350,6 +1350,7 @@ describe("BrowserController", () => {
                   surfaceId: activeSurfaceId(),
                   text: "x",
                   producerId: token,
+                  contextId: edit.contextId,
                 }
               : kind === "text"
                 ? { type: "input.text", surfaceId: activeSurfaceId(), edit, producerId: token }
@@ -1502,9 +1503,12 @@ describe("BrowserController", () => {
           consumerToken,
           producerId: "00000000-0000-4000-8000-000000000002",
         };
+        const published = sink.messages.filter((m) => m.type === "browser.editing").at(-1);
+        const contextId =
+          published?.type === "browser.editing" ? published.context.contextId : crypto.randomUUID();
         await controller.handle(
           type === "clipboard.paste-data"
-            ? { ...identity, type, items: [{ type: "text/plain", size: 1 }] }
+            ? { ...identity, type, items: [{ type: "text/plain", size: 1 }], contextId }
             : { ...identity, type },
         );
         expect(
@@ -3561,6 +3565,7 @@ describe("BrowserController", () => {
       surfaceId: originalSurfaceId,
       text: "pasted",
       type: "clipboard.paste",
+      contextId: crypto.randomUUID(),
     });
 
     const opened = context.pages().at(-1);
@@ -4022,15 +4027,64 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
-  it("reports only the latest human action on its exact target without typed content", async () => {
-    const controller = createController();
+  // CZ5: a paste goes into the field it was made for, or nowhere: one made for a context the page
+  // has left is refused whole, and nothing is typed.
+  it("refuses a paste made for a context the page has left", async () => {
+    const controller = createController(
+      undefined,
+      {},
+      validClaims({ editingVersion: 2, clipboard: false }),
+    );
     await controller.start();
     const active = ledger.active();
     if (!active) throw new Error("Missing active surface");
+    await vi.waitFor(() =>
+      expect(sink.messages.some((message) => message.type === "browser.editing")).toBe(true),
+    );
+    const published = sink.messages.filter((message) => message.type === "browser.editing").at(-1);
+    if (published?.type !== "browser.editing") throw new Error("Missing editing context");
+    await controller.handle({
+      type: "clipboard.paste",
+      surfaceId: active.surface.id,
+      text: "secret",
+      contextId: crypto.randomUUID(),
+    });
+    expect(commandsNamed("Input.insertText", page)).toHaveLength(0);
+    // The person is told.
+    expect(sink.messages.filter((message) => message.type === "browser.error")).toMatchObject([
+      { error: { message: "The field changed. Paste again." } },
+    ]);
+    await controller.handle({
+      type: "clipboard.paste",
+      surfaceId: active.surface.id,
+      text: "secret",
+      contextId: published.context.contextId,
+    });
+    expect(commandsNamed("Input.insertText", page)).toHaveLength(1);
+    await controller.close();
+    await ledger.close();
+  });
+
+  it("reports only the latest human action on its exact target without typed content", async () => {
+    // CZ5: a paste names the field it was made for: the page's context, published with editing.
+    const controller = createController(
+      undefined,
+      {},
+      validClaims({ editingVersion: 2, clipboard: false }),
+    );
+    await controller.start();
+    const active = ledger.active();
+    if (!active) throw new Error("Missing active surface");
+    await vi.waitFor(() =>
+      expect(sink.messages.some((message) => message.type === "browser.editing")).toBe(true),
+    );
+    const published = sink.messages.filter((message) => message.type === "browser.editing").at(-1);
+    if (published?.type !== "browser.editing") throw new Error("Missing editing context");
     await controller.handle({
       type: "clipboard.paste",
       surfaceId: active.surface.id,
       text: "never-include-this-secret-in-activity",
+      contextId: published.context.contextId,
     });
     await controller.handle({
       command: {

@@ -85,6 +85,8 @@ internal class ViewerInput(private val pool: PhoneBrowserPool, private val emit:
           if (items.length() != 1 || items.getJSONObject(0).getString("type") != "text/plain") throw BrowserFailure("unsupported-operation")
           val size = items.getJSONObject(0).getInt("size")
           if (size !in 0..1048576) throw BrowserFailure("too-large")
+          // A paste is made for one field's context; one that arrives after focus moved lands nowhere.
+          if (message.getString("contextId") != tab.contextId) throw BrowserFailure("stale-document")
           val consumer = message.optString("consumerToken").takeIf { it.isNotEmpty() } ?: throw BrowserFailure("forbidden")
           val operation = message.getString("operationId")
           val key = input.channelId to operation
@@ -113,6 +115,7 @@ internal class ViewerInput(private val pool: PhoneBrowserPool, private val emit:
           }
         }
         "clipboard.paste" -> {
+          if (message.getString("contextId") != tab.contextId) throw BrowserFailure("stale-document")
           val connection = connection(tab)
           val text = message.getString("text")
           if (text.length > 100000) throw BrowserFailure("too-large")

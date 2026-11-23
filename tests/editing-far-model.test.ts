@@ -180,6 +180,8 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     if (operation.kind === "compose")
       return observer.edit(operation.composition, true, admitted, producer);
     if (operation.kind === "paste") {
+      // CZ5: as the controller takes it: into the field it was made for, or refused whole.
+      if (!operation.contextId || !observer.admitsInsertion(operation.contextId)) return false;
       const scope = await clipboard.open({} as BrowserPage, operation.items);
       try {
         await observer.input(
@@ -452,6 +454,39 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     expect(await read(page, kind)).toEqual({ value: "Zabにx", caret: 5, collapsed: true });
     expect(await composeA("日")).toBe(true);
     expect(await read(page, kind)).toEqual({ value: "Zabにx日", caret: 6, collapsed: true });
+  });
+
+  // CZ5: a paste is one act on one field. Made for the user-name field, it reaches the page after
+  // focus moved to a password field: refused whole, nothing lands there.
+  it("lands no paste made for one field in the password field focus moved to", async () => {
+    await seed(page, kind, "name", 4);
+    await settle();
+    const made = observer.context.contextId;
+    const paste = {
+      kind: "paste",
+      items: [{ type: "text/plain", bytes: new TextEncoder().encode("hunter2") }],
+      contextId: made,
+    } as const;
+    await page.evaluate(() => {
+      const password = document.createElement("input");
+      password.type = "password";
+      password.id = "p";
+      document.body.append(password);
+      password.focus();
+    });
+    await settle();
+    expect(observer.context.field?.sensitive).toBe(true);
+    expect(await send(paste)).toBe(false);
+    expect(
+      await page.evaluate(() => (document.getElementById("p") as HTMLInputElement).value),
+    ).toBe("");
+    await page.evaluate(() => {
+      document.getElementById("p")?.remove();
+      document.getElementById("f")?.focus();
+    });
+    await settle();
+    // Made for the field focused, it lands.
+    expect(await send({ ...paste, contextId: observer.context.contextId })).toBe(true);
   });
 
   // CZ3: a command carries the context it was computed for. A Backspace the reducer computed for
@@ -1369,6 +1404,7 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
             operation = {
               kind: "paste",
               items: [{ type: "text/plain", bytes: new TextEncoder().encode(text) }],
+              contextId,
             };
             label = `paste ${JSON.stringify(text)}`;
             totals.pastes += 1;

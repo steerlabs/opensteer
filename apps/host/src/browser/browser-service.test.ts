@@ -1730,7 +1730,12 @@ describe("BrowserService", () => {
       modifiers: [],
     });
     expect(await runtime.nextCommand()).toMatchObject({ type: "input.key", key: "a" });
-    await send(baseline, { type: "clipboard.paste", surfaceId: "page-1", text: "a" });
+    await send(baseline, {
+      type: "clipboard.paste",
+      surfaceId: "page-1",
+      text: "a",
+      contextId: randomUUID(),
+    });
     expect(await runtime.nextCommand()).toMatchObject({ type: "clipboard.paste", text: "a" });
     expect(
       old
@@ -2283,6 +2288,7 @@ describe("BrowserService", () => {
       surfaceId: "page-1",
       operationId,
       items: [{ type: "text/plain", size: 1 }],
+      contextId: randomUUID(),
     });
     const paste = await runtime.nextCommand();
     await send({ type: "clipboard.part", part: { operationId, index: 0, data: "!" } });

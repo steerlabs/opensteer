@@ -893,6 +893,7 @@ integration("session-scoped browser agent backends", () => {
         type: "clipboard.paste-data",
         operationId: crypto.randomUUID(),
         items: [{ type: "text/html", size: 1 }],
+        contextId: crypto.randomUUID(),
       },
       { type: "input.key", action: "down", key: "Tab", code: "Tab", modifiers: [] },
       {
@@ -992,7 +993,7 @@ integration("session-scoped browser agent backends", () => {
     });
     await changed;
     const refused = waitForMessage(viewer, (message) => message.type === "browser.error", 2_000);
-    send({ type: "clipboard.paste", text: "Do not type" });
+    send({ type: "clipboard.paste", text: "Do not type", contextId: crypto.randomUUID() });
     expect(await refused).toMatchObject({ error: { reason: "target-suspended" } });
     expect(f.phone.protocolErrors()).toEqual([]);
   });

@@ -926,11 +926,13 @@ export class FarField {
         ? operation.edit.contextId
         : operation.kind === "compose"
           ? operation.composition.contextId
-          : operation.kind === "command"
+          : operation.kind === "command" || operation.kind === "paste"
             ? (operation.contextId ?? null)
             : null;
-    // Relative to the caret: an insertion, or a command in the protocol's relative list (CV1, CY7).
+    // Relative to the caret: an insertion (a paste is one, CZ5), or a command in the protocol's
+    // relative list (CV1, CY7).
     const insertion =
+      operation.kind === "paste" ||
       (operation.kind === "edit" &&
         operation.edit.text !== "" &&
         !operation.edit.before &&

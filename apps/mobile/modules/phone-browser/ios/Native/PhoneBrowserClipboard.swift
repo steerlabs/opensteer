@@ -67,6 +67,8 @@ import Foundation
         items[0]["type"] as? String == "text/plain", items[0]["name"] == nil,
         let size = BrowserWireNumber.integer(items[0]["size"]), (0...16 * 1024 * 1024).contains(size),
         tab.clipboardPastes.count < 32 else { throw BrowserRefusal.invalidArgument }
+      // A paste is made for one field's context; one that arrives after focus moved lands nowhere.
+      guard let contextId = message["contextId"] as? String, contextId == tab.contextId else { throw BrowserRefusal.notActionable }
       let key = "\(input.channelId):\(operation)"
       guard tab.clipboardPastes[key] == nil else { throw BrowserRefusal.invalidArgument }
       let paste = try BrowserClipboardPaste(input: input, tab: tab, operationId: operation, size: size)

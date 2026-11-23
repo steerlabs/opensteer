@@ -411,9 +411,18 @@ export class BrowserEditingStore {
               )
             : null;
         const operationId = crypto.randomUUID();
+        // CZ5: a paste names the field it was made for; without one there is none to paste into.
+        if (operation.kind === "paste" && !operation.contextId)
+          throw new Error("There is no field to paste into.");
         const command: BrowserCommand =
           operation.kind === "paste"
-            ? { type: "clipboard.paste-data", surfaceId, operationId, items: [...items!] }
+            ? {
+                type: "clipboard.paste-data",
+                surfaceId,
+                operationId,
+                items: [...items!],
+                contextId: operation.contextId!,
+              }
             : {
                 type: operation.kind === "copy" ? "clipboard.copy" : "clipboard.cut",
                 surfaceId,
@@ -755,17 +764,24 @@ export class BrowserEditingStore {
       case "edit":
         if (operation.edit.before || operation.edit.after)
           throw new Error("This browser cannot verify range edits.");
-        send({ type: "clipboard.paste", surfaceId, text: operation.edit.text });
+        send({
+          type: "clipboard.paste",
+          surfaceId,
+          text: operation.edit.text,
+          contextId: operation.edit.contextId,
+        });
         return;
       case "compose":
         throw new Error("This browser cannot show live composition.");
       case "paste": {
         if (operation.items.some((item) => item.type !== "text/plain"))
           throw new Error("This browser cannot paste rich clipboard data.");
+        if (!operation.contextId) throw new Error("There is no field to paste into.");
         send({
           type: "clipboard.paste",
           surfaceId,
           text: operation.items.map((item) => new TextDecoder().decode(item.bytes)).join(""),
+          contextId: operation.contextId,
         });
         return { outcome: "pasted", items: [] };
       }

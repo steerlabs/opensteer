@@ -309,6 +309,7 @@ struct BrowserHelperRefusal: CodedError {
       primitive.action.kind = command == "selectAll" ? "text.selectAll" : "text.backspace"
     case "clipboard.paste":
       guard let text = message["text"] as? String else { throw BrowserRefusal.invalidArgument }
+      guard let contextId = message["contextId"] as? String, contextId == tab.contextId else { throw BrowserRefusal.notActionable }
       primitive.action.kind = "text.paste"; primitive.action.text = text
     default: throw BrowserRefusal.unsupportedOperation
     }

@@ -2004,9 +2004,20 @@ export class BrowserController {
         await outcome("refused");
         return;
       }
+      // CZ5: a paste goes into the field it was made for, or nowhere: refused whole.
+      if (message.type === "clipboard.paste-data" && !observer.admitsInsertion(message.contextId)) {
+        this.clipboardParts.discard(message);
+        await outcome("refused");
+        return;
+      }
       const input =
         message.type === "clipboard.paste-data" ? await this.clipboardParts.take(message) : null;
       if (message.type === "clipboard.paste-data" && input === null) return;
+      // Focus may have moved while its bytes arrived: checked again, just before it is put in.
+      if (message.type === "clipboard.paste-data" && !observer.admitsInsertion(message.contextId)) {
+        await outcome("refused");
+        return;
+      }
       const command =
         message.type === "clipboard.paste-data"
           ? "paste"
@@ -2237,6 +2248,9 @@ export class BrowserController {
     }
     if (message.type === "clipboard.paste") {
       if (message.surfaceId !== active.surface.id) return;
+      // CZ5: into the field it was made for, or nowhere.
+      if (!(await this.editingObserver(active.surface.id)).admitsInsertion(message.contextId))
+        throw new BrowserRuntimeError("conflict", "The field changed. Paste again.");
       this.ledger.recordHumanActivity(message.surfaceId, { kind: "typing" });
       this.ledger.recordViewerInput(message.surfaceId, message.producerId);
       this.recordPasskeyInput(message, active.surface.id);

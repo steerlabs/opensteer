@@ -254,6 +254,7 @@ describe("basic browser input", () => {
     await target.send({
       kind: "paste",
       items: [{ type: "text/html", bytes: new TextEncoder().encode("<b>x</b>") }],
+      contextId: context.contextId,
     });
     expect(commands).toEqual([]);
     await target.send({ kind: "command", command: "selectAll", contextId: context.contextId });

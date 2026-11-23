@@ -644,7 +644,9 @@ export function BrowserPage(props: {
       if (contextId) editing.send({ kind: "command", command: "selectAll", contextId });
     } else if (action === "paste") {
       if (!pageMenu.editable) return;
-      const context = editingState.context?.contextId;
+      // CZ5: made for the field the menu was opened in, and refused in any other.
+      const context = editingState.menuContext;
+      if (!context) return;
       void Clipboard.getStringAsync()
         .then((text) => {
           if (
@@ -659,7 +661,12 @@ export function BrowserPage(props: {
             setProblem("Clipboard too large.");
             return;
           }
-          if (bytes.length) editing.send({ kind: "paste", items: [{ type: "text/plain", bytes }] });
+          if (bytes.length)
+            editing.send({
+              kind: "paste",
+              items: [{ type: "text/plain", bytes }],
+              contextId: context,
+            });
         })
         .catch(() => setProblem("Clipboard unavailable."));
     } else if (action === "copy-link" && pageMenu.linkUrl) {

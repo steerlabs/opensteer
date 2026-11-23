@@ -573,6 +573,19 @@ export class PageEditingObserver {
     }
   }
 
+  /**
+   * CZ5: whether a paste made for `contextId` may go in now: as an insertion, while that field
+   * (in that context or an earlier one of it) is the one focused. A paste made with no field
+   * focused carries the page's own context, and goes while that is still the page's.
+   */
+  admitsInsertion(contextId: string): boolean {
+    if (this.#activeChild) return this.#activeChild.admitsInsertion(contextId);
+    return (
+      contextId === this.#context.contextId ||
+      (this.#focused !== null && this.#earlier.has(contextId))
+    );
+  }
+
   async input<T>(action: () => Promise<T>, producer?: string): Promise<T> {
     if (this.#activeChild) return this.#activeChild.input(action, producer);
     const focus = this.#focused;

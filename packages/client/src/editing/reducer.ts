@@ -310,7 +310,9 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
   const emit = (computed: EditingOperation): boolean => {
     // CZ3: a command carries the context it was computed for, as an edit does: this reducer's.
     const operation =
-      computed.kind === "command" && computed.contextId === undefined && state.context
+      (computed.kind === "command" || computed.kind === "paste") &&
+      computed.contextId === undefined &&
+      state.context
         ? { ...computed, contextId: state.context.contextId }
         : computed;
     if (operation.kind === "compose" && !state.abilities.composition) return false;

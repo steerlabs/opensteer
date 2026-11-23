@@ -415,6 +415,7 @@ integration("Host and Chromium editing contract", () => {
         surfaceId,
         operationId: oversized,
         items: [{ type: "image/png", size: 16 * 1024 * 1024 + 1 }],
+        contextId: crypto.randomUUID(),
       });
       await expect
         .poll(() =>
@@ -436,6 +437,7 @@ integration("Host and Chromium editing contract", () => {
           surfaceId,
           operationId: id,
           items: [{ type, size: data.length }],
+          contextId: crypto.randomUUID(),
         });
         for (let index = 0; index < Math.ceil(data.length / (512 * 1024)); index++)
           person.send({
@@ -510,6 +512,7 @@ integration("Host and Chromium editing contract", () => {
           surfaceId,
           operationId: id,
           items: [{ type: "text/plain", size: 1 }],
+          contextId: crypto.randomUUID(),
         });
         other.send({ type: "clipboard.part", part: { operationId: id, index: 0, data: "eA==" } });
         await expect
@@ -533,6 +536,7 @@ integration("Host and Chromium editing contract", () => {
         surfaceId,
         operationId: recovered,
         items: [{ type: "text/plain", size: 1 }],
+        contextId: crypto.randomUUID(),
       });
       other.send({
         type: "clipboard.part",

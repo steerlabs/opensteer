@@ -637,6 +637,11 @@ const BaselineBrowserClientMessageSchema = z
        */
       ended: z.literal(true).optional(),
     }),
+    /**
+     * A key press carries no field context, by design: it goes to whatever has focus when it
+     * arrives, as a key on a keyboard does. (A paste, an edit, a composition and a command name
+     * the field they were made for.)
+     */
     z.strictObject({
       ...browserBase,
       type: z.literal("input.key"),
@@ -716,6 +721,11 @@ const BaselineBrowserClientMessageSchema = z
       surfaceId: BrowserSurfaceIdSchema,
       operationId: EditingClipboardOperationIdSchema,
       items: EditingClipboardItemsSchema,
+      /**
+       * CZ5: a paste is one act on one field: the context of the field it was made for. The page
+       * refuses it whole when that field is no longer the one focused, as it does an edit.
+       */
+      contextId: EditingContextIdSchema,
     }),
     z.strictObject({
       ...browserBase,
@@ -737,6 +747,8 @@ const BaselineBrowserClientMessageSchema = z
       targeted: z.boolean().optional(),
       surfaceId: BrowserSurfaceIdSchema,
       text: z.string().max(browserPasteTextMaxLength),
+      /** CZ5: the context of the field it was made for, refused whole in any other. */
+      contextId: EditingContextIdSchema,
     }),
     z.strictObject({
       ...browserRequestBase,

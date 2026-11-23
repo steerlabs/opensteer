@@ -56,7 +56,7 @@ it("uses shared exact legacy projection and reports synchronous admission refusa
     keystroke: { action: "down", key: "a", code: "KeyA", text: "a", modifiers: [] },
   });
   expect(send.mock.calls.map(([command]) => command)).toEqual([
-    { type: "clipboard.paste", surfaceId: surface, text: "hello" },
+    { type: "clipboard.paste", surfaceId: surface, text: "hello", contextId: "legacy" },
     {
       type: "input.key",
       surfaceId: surface,

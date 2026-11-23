@@ -1299,6 +1299,7 @@ describe("phone browser manager", () => {
       surfaceId: fixture.surfaceId,
       operationId,
       items: [{ type: "text/plain", size: 5 }],
+      contextId,
     });
     await fixture.client({
       type: "clipboard.part",
@@ -1310,6 +1311,7 @@ describe("phone browser manager", () => {
       surfaceId: fixture.surfaceId,
       operationId: uuid(),
       items: [{ type: "text/html", size: 5 }],
+      contextId,
     });
     expect(fixture.server().at(-1)).toMatchObject({
       type: "browser.error",

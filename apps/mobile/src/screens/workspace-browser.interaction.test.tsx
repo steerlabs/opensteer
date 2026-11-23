@@ -1313,9 +1313,12 @@ describe("mobile pages", () => {
     type("x");
     const surfaceId = chosen.pages[0]!.id;
     expect(sendBrowserCommand.mock.calls).toEqual([
-      [chosen.id, { type: "clipboard.paste", surfaceId, text: "saved" }],
-      [chosen.id, { type: "clipboard.paste", surfaceId, text: "!" }],
-      [chosen.id, { type: "clipboard.paste", surfaceId, text: "x" }],
+      [
+        chosen.id,
+        { type: "clipboard.paste", surfaceId, text: "saved", contextId: expect.any(String) },
+      ],
+      [chosen.id, { type: "clipboard.paste", surfaceId, text: "!", contextId: expect.any(String) }],
+      [chosen.id, { type: "clipboard.paste", surfaceId, text: "x", contextId: expect.any(String) }],
     ]);
   });
 
@@ -3110,6 +3113,18 @@ it("fences a menu clipboard read when another page contact changes its destinati
   const { container, render } = await setup({ sessionId: chosen.id, tabId: surfaceId });
   state.snapshot = snapshot([chosen]);
   await render();
+  // The page's own context, as a page publishes one from the start: what its paste is made for.
+  act(() =>
+    editing.receive(chosen.id, {
+      type: "browser.editing",
+      surfaceId,
+      context: {
+        contextId: "00000000-0000-4000-8000-000000000003",
+        field: { kind: "text", multiline: false, sensitive: false },
+        caret: null,
+      },
+    }),
+  );
   const menu = () =>
     act(() =>
       editing.receive(chosen.id, {
@@ -3138,6 +3153,7 @@ it("fences a menu clipboard read when another page contact changes its destinati
     type: "clipboard.paste",
     surfaceId,
     text: "clipboard",
+    contextId: "00000000-0000-4000-8000-000000000003",
   });
 });
 

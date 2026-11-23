@@ -292,7 +292,7 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     expect(result.operations.slice(1)).toEqual([
       { kind: "edit", edit: { contextId: context.contextId, text: "c", before: "abc", after: "" } },
       { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
-      { kind: "paste", items: [{ type: "text/plain", bytes }] },
+      { kind: "paste", items: [{ type: "text/plain", bytes }], contextId: context.contextId },
     ]);
   });
   // CS4: the hidden field's undo and redo arrive as the far page's own chords (iOS's undo manager,
@@ -364,7 +364,9 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     run({ type: "beforeinput", inputType: "insertText", data: "ab" });
     run(input("ab"));
     const pasted = run({ type: "paste", items: [{ type: "text/plain", bytes }] });
-    expect(pasted.operations).toEqual([{ kind: "paste", items: [{ type: "text/plain", bytes }] }]);
+    expect(pasted.operations).toEqual([
+      { kind: "paste", items: [{ type: "text/plain", bytes }], contextId: context.contextId },
+    ]);
     expect(pasted.instruction).toEqual({
       preventDefault: true,
       set: proxy("abcd"),
@@ -707,12 +709,12 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     const text = { ...abilities, clipboard: "text" } as const;
     const basic = { ...text, basicInput: true, rangeEdits: false };
     expect(paste(abilities, [plain, html, image])).toEqual({
-      operations: [{ kind: "paste", items: [plain, html, image] }],
+      operations: [{ kind: "paste", items: [plain, html, image], contextId: context.contextId }],
       refusal: undefined,
     });
     for (const target of [text, basic])
       expect(paste(target, [html, file, plain, image])).toEqual({
-        operations: [{ kind: "paste", items: [plain] }],
+        operations: [{ kind: "paste", items: [plain], contextId: context.contextId }],
         refusal: undefined,
       });
     expect(paste(text, [image, file])).toEqual({ operations: [], refusal: "clipboard" });

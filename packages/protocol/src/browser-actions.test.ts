@@ -411,8 +411,13 @@ describe("typed browser agent wire", () => {
         composition: { contextId: uuid, text: "字", selectionStart: 1, selectionEnd: 1 },
       },
       { type: "clipboard.copy", operationId: uuid },
-      { type: "clipboard.paste", text: "Hello" },
-      { type: "clipboard.paste-data", operationId: uuid, items: [{ type: "text/plain", size: 2 }] },
+      { type: "clipboard.paste", text: "Hello", contextId: uuid },
+      {
+        type: "clipboard.paste-data",
+        operationId: uuid,
+        items: [{ type: "text/plain", size: 2 }],
+        contextId: uuid,
+      },
     ];
     const denied = [
       { type: "input.key", action: "down", key: "Enter", code: "KeyV", modifiers: [] },
@@ -440,7 +445,12 @@ describe("typed browser agent wire", () => {
         },
       },
       { type: "clipboard.cut", operationId: uuid },
-      { type: "clipboard.paste-data", operationId: uuid, items: [{ type: "text/html", size: 2 }] },
+      {
+        type: "clipboard.paste-data",
+        operationId: uuid,
+        items: [{ type: "text/html", size: 2 }],
+        contextId: uuid,
+      },
     ];
     for (const message of allowed)
       expect(

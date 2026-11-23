@@ -102,10 +102,20 @@ describe("browser editing transport", () => {
       await target.send({
         kind: "paste",
         items: [{ type: "text/plain", bytes: encoder.encode("text") }],
+        contextId,
       });
-      expect(commands.at(-1)).toEqual({ type: "clipboard.paste", surfaceId, text: "text" });
+      expect(commands.at(-1)).toEqual({
+        type: "clipboard.paste",
+        surfaceId,
+        text: "text",
+        contextId,
+      });
       await expect(
-        target.send({ kind: "paste", items: [{ type: "image/png", bytes: new Uint8Array([1]) }] }),
+        target.send({
+          kind: "paste",
+          items: [{ type: "image/png", bytes: new Uint8Array([1]) }],
+          contextId,
+        }),
       ).rejects.toThrow("rich");
       store.dispose();
     },
@@ -159,7 +169,11 @@ describe("browser editing transport", () => {
   it("sends binary paste in bounded parts on the same target", async () => {
     const { store, target, commands } = setup();
     const bytes = new Uint8Array(editingClipboardPartMaxBytes + 3).fill(71);
-    const paste = target.send({ kind: "paste", items: [{ type: "image/png", bytes }] });
+    const paste = target.send({
+      kind: "paste",
+      items: [{ type: "image/png", bytes }],
+      contextId: crypto.randomUUID(),
+    });
     const command = commands[0];
     if (command?.type !== "clipboard.paste-data") throw new Error("No rich paste.");
     expect(
@@ -250,6 +264,7 @@ describe("browser editing transport", () => {
       target.send({
         kind: "paste",
         items: [{ type: "text/html", bytes: encoder.encode("<b>a</b>") }],
+        contextId: crypto.randomUUID(),
       }),
     ).rejects.toThrow("rich");
     const pending = target.send({ kind: "copy" });

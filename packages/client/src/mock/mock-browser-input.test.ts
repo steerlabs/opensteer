@@ -53,6 +53,7 @@ describe("mock basic browser input", () => {
         await target.send({
           kind: "paste",
           items: [{ type: "text/plain", bytes: new TextEncoder().encode("new text") }],
+          contextId,
         }),
       ).toMatchObject({ outcome: "pasted" });
       await target.send({ kind: "command", command: "selectAll", contextId });
@@ -207,12 +208,14 @@ describe("mock basic browser input", () => {
         surfaceId,
         operationId,
         items: [{ type: "text/html", size: 1 }],
+        contextId: operationId,
       },
       {
         type: "clipboard.paste-data",
         surfaceId,
         operationId,
         items: [{ type: "text/plain", size: 1 }],
+        contextId: operationId,
       },
     ];
     for (const command of commands) {
