@@ -202,6 +202,10 @@ const withoutTool: Readonly<Record<string, string>> = {
  * owed before this branch is trial-merged (the lead's item 2). The list only shrinks.
  */
 const owed: Readonly<Record<string, string>> = {
+  // Owed, not seeded: a public-mode Home needs Connect (an Opensteer account link and a route from
+  // the account service) or a hostname that resolves to a public address, and this test has
+  // neither. With a fixture origin given to the plugin service before its engine started, the
+  // engine's leased pass over webhook sources still wrote no subscription to remove (probe, 15 s).
   "plugins.webhook.remove": "opensteer_plugin_resource_update",
 };
 
