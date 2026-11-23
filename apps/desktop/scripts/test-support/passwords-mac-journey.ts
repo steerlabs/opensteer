@@ -23,6 +23,7 @@ import {
   type PasswordSignInAuthorityCommand,
   type PasswordSignInAuthorityEvent,
   ComputerUseDispatchActionsSchema,
+  computerUseHelperProtocolVersion,
 } from "@opensteer/protocol";
 import { z } from "zod";
 import {
@@ -30,6 +31,12 @@ import {
   ComputerUseSessionOwnership,
 } from "../../src/computer-use/computer-use-bridge-server.js";
 import { ComputerUseService } from "../../src/computer-use/computer-use-service.js";
+import {
+  computerUseFrameReader,
+  encodeComputerUseFrame,
+} from "../../src/computer-use/helper-frames.js";
+import { computerUseHelperSocketPath } from "../../src/computer-use/helper-paths.js";
+import { createConnection } from "node:net";
 import {
   ComputerUseBridgeClient,
   ComputerUseBridgeError,
@@ -629,6 +636,26 @@ export async function runPasswordsMacJourney(): Promise<void> {
       // seconds, without anything here stopping it.
       const serving = await helperPids();
       assert(serving.length > 0, "a helper serves this app before it quits");
+      // A watched window is a second socket of this same app: the helper must
+      // not take it for another app and stay.
+      const watching = createConnection(computerUseHelperSocketPath());
+      const greeted = new Promise<unknown>((resolve, reject) => {
+        const reader = computerUseFrameReader();
+        watching.on("data", (chunk: Buffer) => {
+          const [frame] = reader.push(chunk);
+          if (frame) resolve(frame);
+        });
+        watching.once("error", reject);
+      });
+      watching.write(
+        encodeComputerUseFrame({
+          id: 0,
+          method: "hello",
+          params: { clientVersion: "1", protocolVersion: computerUseHelperProtocolVersion },
+        }),
+      );
+      assert.equal(((await greeted) as { id?: number }).id, 0, "the second socket is greeted");
+      const watchingClosed = once(watching, "close");
       const quitting = performance.now();
       await service!.stop();
       const exitDeadline = Date.now() + 5_000;
@@ -639,6 +666,7 @@ export async function runPasswordsMacJourney(): Promise<void> {
       }
       await evidence.write("helper-exit-on-quit.json", {
         serving,
+        watchedWindowSocket: true,
         exitOutcomes: traffic.filter(
           (entry) =>
             typeof entry === "object" &&
@@ -650,6 +678,7 @@ export async function runPasswordsMacJourney(): Promise<void> {
         seconds: (performance.now() - quitting) / 1_000,
       });
       assert.deepEqual(remaining, [], "no helper of this app remains after it quits");
+      await watchingClosed;
       service = new ComputerUseService({
         appBundleId: "com.opensteer.passwords-acceptance",
         appVersion: "1",

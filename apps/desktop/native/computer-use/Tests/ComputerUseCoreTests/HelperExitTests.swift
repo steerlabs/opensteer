@@ -13,11 +13,13 @@ final class HelperExitTests: XCTestCase {
     let remote: Int32
   }
 
-  private func peer(_ id: Int) -> Peer {
+  /// One desktop's socket; `process` stands for the app on the other end.
+  private func peer(_ id: Int, process: pid_t = 1_000) -> Peer {
     var pair: [Int32] = [0, 0]
     XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
     let connection = IPCConnection(
-      id: id, fileDescriptor: pair[0], onFrame: { _, _ in }, onClose: { _ in })
+      id: id, fileDescriptor: pair[0], onFrame: { _, _ in }, onClose: { _ in },
+      peerProcessIdentifier: process)
     connection.markGreeted(protocolVersion: 11)
     return Peer(connection: connection, remote: pair[1])
   }
@@ -125,7 +127,7 @@ final class HelperExitTests: XCTestCase {
     defer { runtime.stop() }
     let quitting = peer(1)
     defer { close(quitting) }
-    let other = peer(2)
+    let other = peer(2, process: 2_000)
     defer { close(other) }
     await runtime.handle(
       connection: other.connection,
@@ -144,6 +146,32 @@ final class HelperExitTests: XCTestCase {
     XCTAssertNil(theirs.cancellation.reason)
     XCTAssertTrue(runtime.registry.sessions["theirs"] === theirs)
     XCTAssertEqual(exits, 0)
+  }
+
+  /// A watched window has a video socket of its own from the same app. The
+  /// app that is quitting is not another app: its every socket ends with it.
+  @MainActor
+  func testQuittingWhileAWindowIsWatchedStillExits() async throws {
+    var exits = 0
+    let runtime = hostRuntime(
+      helperVersion: "test", peerRequirement: .sameUser, terminate: { exits += 1 })
+    defer { runtime.stop() }
+    let control = peer(1)
+    defer { close(control) }
+    let video = peer(2)
+    defer { close(video) }
+    await runtime.handle(
+      connection: video.connection,
+      frame: Data(#"{"id":1,"method":"permissions.get","params":{}}"#.utf8))
+    _ = try frames(video.remote)
+
+    await runtime.handle(connection: control.connection, frame: Self.exitFrame)
+    await settle(runtime)
+
+    let answers = try frames(control.remote)
+    XCTAssertEqual((answers.first?["result"] as? [String: Any])?["exiting"] as? Bool, true)
+    XCTAssertTrue(video.connection.closedFlag)
+    XCTAssertEqual(exits, 1)
   }
 
   /// Work already on the serial lane finishes before the process goes.
@@ -195,7 +223,7 @@ final class HelperExitTests: XCTestCase {
     let again = peer(3)
     defer { close(again) }
     await runtime.handle(connection: again.connection, frame: Self.exitFrame)
-    let returning = peer(4)
+    let returning = peer(4, process: 2_000)
     defer { close(returning) }
     await runtime.handle(
       connection: returning.connection,
@@ -205,8 +233,89 @@ final class HelperExitTests: XCTestCase {
     XCTAssertEqual(exits, 0, "A desktop that came back keeps the helper.")
   }
 
+  /// A call answered outside the serial lane, such as reading the data grants,
+  /// still finishes before the process goes.
+  @MainActor
+  func testAnOutOfBandCallUnderWayFinishesBeforeTheHelperExits() async throws {
+    var exits = 0
+    let grants = HeldGrants()
+    let runtime = hostRuntime(
+      helperVersion: "test", peerRequirement: .sameUser,
+      dataPlane: DataPlane(contracts: [:], grants: [:], providers: [:], grantReader: grants),
+      terminate: { exits += 1 })
+    defer { runtime.stop() }
+    let quitting = peer(1)
+    defer { close(quitting) }
+    let reading = Task { @MainActor in
+      await runtime.handle(
+        connection: quitting.connection,
+        frame: Data(#"{"id":2,"method":"data.status","params":{}}"#.utf8))
+    }
+    await grants.entered()
+    await runtime.handle(connection: quitting.connection, frame: Self.exitFrame)
+    await settle(runtime)
+    XCTAssertEqual(exits, 0, "The exit waits for the call under way.")
+    grants.release()
+    await reading.value
+    await settle(runtime)
+    XCTAssertEqual(exits, 1)
+  }
+
+  /// A quit is not a lost connection: the pill says the work ended.
+  @MainActor
+  func testAQuitEndsSessionsAsEndedNotAsALostConnection() async throws {
+    let runtime = hostRuntime(
+      helperVersion: "test", peerRequirement: .sameUser, terminate: {})
+    defer { runtime.stop() }
+    let quitting = peer(1)
+    defer { close(quitting) }
+    runtime.registry.insert(HelperSession(sessionId: "task", connectionID: 1))
+    await runtime.handle(connection: quitting.connection, frame: Self.exitFrame)
+    XCTAssertEqual(runtime.lastOverlayEnding, .ended)
+
+    let dropped = hostRuntime(helperVersion: "test", peerRequirement: .sameUser)
+    defer { dropped.stop() }
+    let lost = peer(1)
+    defer { close(lost) }
+    dropped.registry.insert(HelperSession(sessionId: "task", connectionID: 1))
+    dropped.connectionClosed(lost.connection)
+    XCTAssertEqual(dropped.lastOverlayEnding, .connectionLost)
+  }
+
   /// Answered at once, never behind a batch, so a quitting app is not kept.
   func testExitIsAnsweredOutsideTheSerialLane() {
     XCTAssertTrue(HelperRuntime.outOfBandMethods.contains("helper.exit"))
   }
+}
+
+/// Grants whose first read waits until the test lets it answer.
+private final class HeldGrants: DataGrantReading, @unchecked Sendable {
+  private let held = Locked<CheckedContinuation<Void, Never>?>(nil)
+  private let arrived = Locked<CheckedContinuation<Void, Never>?>(nil)
+  private let hasArrived = Locked(false)
+
+  func entered() async {
+    if hasArrived.current { return }
+    await withCheckedContinuation { continuation in
+      arrived.withLock { $0 = continuation }
+      if hasArrived.current { arrived.withLock { $0?.resume(); $0 = nil } }
+    }
+  }
+
+  func release() { held.withLock { $0?.resume(); $0 = nil } }
+
+  func current() async -> DataGrants {
+    await withCheckedContinuation { continuation in
+      held.withLock { $0 = continuation }
+      hasArrived.withLock { $0 = true }
+      arrived.withLock { $0?.resume(); $0 = nil }
+    }
+    return DataGrants(
+      automation: .denied, calendars: .denied, contacts: .denied, fullDiskAccess: .denied,
+      reminders: .denied)
+  }
+
+  func state(of grant: DataGrant) async -> DataGrantState { .denied }
+  func request(_ grant: DataGrant) async -> DataGrants { await current() }
+  func awaitingRestart(_ grant: DataGrant) async -> Bool { false }
 }

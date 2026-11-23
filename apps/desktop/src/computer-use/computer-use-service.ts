@@ -8,7 +8,6 @@ import {
   ComputerViewHelperRequestSchema,
   ComputerUseHelperRequestSchema,
   computerUseMaxInstalledApps,
-  computerUseHelperProtocolVersion,
   computerUseMaxTimeoutMs,
   computerUseOutOfTimeSentence,
   type LoginReceiverKey,
@@ -575,10 +574,6 @@ export class ComputerUseService {
             "failed",
             "This computer use request could not be read.",
           );
-        if (request.data.method === "session.open" && !this.#loginReceiver) {
-          const { runId: _runId, ...legacy } = request.data.params;
-          params = legacy;
-        }
         if (request.data.method === "session.act") {
           const receiver = this.#loginReceiver;
           for (const action of request.data.params.actions) {
@@ -739,16 +734,15 @@ export class ComputerUseService {
           ownerInputVersion,
           videoProfile,
           loginText,
-          protocolVersion,
         }) => {
           this.#loginReceiver = loginText ?? null;
           this.#ownerViewVersion = ownerViewVersion;
           this.#ownerInputVersion = ownerInputVersion;
           this.#videoProfile = videoProfile;
-          // A Mac whose macOS lacks window groups still speaks this version; the
-          // helper refuses each window call with the sentence that says why.
-          this.#computerUseVersion =
-            protocolVersion === computerUseHelperProtocolVersion ? 2 : undefined;
+          // Only a helper of this app's own protocol gets this far. A Mac whose
+          // macOS lacks window groups still speaks it; the helper refuses each
+          // window call with the sentence that says why.
+          this.#computerUseVersion = 2;
           this.#lastKnownPermissions = permissions;
           for (const listener of this.#capabilityListeners) listener();
         },

@@ -75,6 +75,9 @@ public final class HelperRuntime {
   private let imessage: IMessageChannel
   /// `data.invoke` calls under way, which a pending restart waits for.
   private var appCallsInFlight = 0
+  /// Calls answered outside the serial lane and still running, which an exit
+  /// waits for as it does the lane.
+  private var outOfBandInFlight = 0
   /// `Stop` ends the session at once; the Run learns it on its next call.
   private var stoppedSessions: [String: Date] = [:]
   private var idleSince: Date? = Date()
@@ -299,6 +302,14 @@ public final class HelperRuntime {
     guard !closedConnectionIDs.contains(connection.id) else { return }
     connections[connection.id] = connection
     idleSince = nil
+    let outOfBand = envelope.method != "helper.exit" && Self.outOfBandMethods.contains(envelope.method)
+    if outOfBand { outOfBandInFlight += 1 }
+    defer {
+      if outOfBand {
+        outOfBandInFlight -= 1
+        if exitRequested { DispatchQueue.main.async { [weak self] in self?.exitIfUnused() } }
+      }
+    }
     do {
       let result = try await perform(
         method: envelope.method, envelope: envelope, connection: connection,
@@ -695,7 +706,17 @@ public final class HelperRuntime {
   /// helper serves Stable and Beta).
   func requestExit(connection: IPCConnection) -> Wire.HelperExitResult {
     Log.lifecycle.notice("The desktop is quitting; ending its connection.")
-    connectionClosed(connection)
+    // Every socket of the app that is quitting ends with it: a watched window
+    // has a video socket of its own, and it is not another app.
+    if let quitting = connection.peerProcessIdentifier {
+      for other in Array(connections.values)
+      where other !== connection && other.peerProcessIdentifier == quitting {
+        connectionClosed(other, ending: .ended)
+        other.close()
+      }
+    }
+    // A quit is not a lost connection: the pill says the work ended.
+    connectionClosed(connection, ending: .ended)
     guard connections.isEmpty, registry.sessions.isEmpty else {
       Log.lifecycle.notice("Another desktop still uses this helper; staying.")
       return Wire.HelperExitResult(exiting: false)
@@ -711,13 +732,14 @@ public final class HelperRuntime {
   /// action in hand finishes rather than being cut off by the process ending.
   func exitIfUnused() {
     guard exitRequested, !exiting, connections.isEmpty, registry.sessions.isEmpty,
-      appCallsInFlight == 0
+      appCallsInFlight == 0, outOfBandInFlight == 0, ownerAttachments.isEmpty
     else { return }
     let runtime = self
     executor.enqueue {
       await MainActor.run {
         guard runtime.exitRequested, !runtime.exiting, runtime.connections.isEmpty,
-          runtime.registry.sessions.isEmpty, runtime.appCallsInFlight == 0
+          runtime.registry.sessions.isEmpty, runtime.appCallsInFlight == 0,
+          runtime.outOfBandInFlight == 0, runtime.ownerAttachments.isEmpty
         else { return }
         runtime.exiting = true
         Log.lifecycle.notice("Quitting: the desktop quit.")
@@ -787,12 +809,16 @@ public final class HelperRuntime {
 
   func isMonitoring(_ pid: pid_t) -> Bool { monitor.isWatching(pid) }
 
+  /// How the last sessions that went away were shown as ending.
+  private(set) var lastOverlayEnding: OverlayModel.Ending?
+
   private func updateOverlay(ending: OverlayModel.Ending = .ended) {
     let ownerInput = ownerAttachments.values.filter { $0.active.current }.map { lease in
       OverlayModel.Session(id: lease.id, threadTitle: nil,
         apps: [.init(key: lease.binding.target.app.bundleId.lowercased(), name: lease.binding.target.app.displayName,
           access: .readWrite, path: lease.path)], ownerInput: true)
     }
+    lastOverlayEnding = ending
     overlay?.update(sessions: registry.sessions.values, owners: registry.owners, ending: ending, ownerInput: ownerInput)
   }
 
@@ -1343,6 +1369,8 @@ public final class HelperRuntime {
   }
   private func finishOwnerRelease(_ lease: MacOwnerAttachment, reason: String) {
     if ownerAttachments[lease.id] === lease { ownerAttachments[lease.id] = nil }
+    // Held keys and focus are given back before a requested exit goes.
+    if exitRequested { exitIfUnused() }
     let counts = lease.counters.current.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
     Log.session.notice("Owner input released: reason=\(reason, privacy: .public) counters=\(counts, privacy: .public)")
     updateOverlay()
@@ -1373,7 +1401,9 @@ public final class HelperRuntime {
 
   // MARK: - Connections and clocks
 
-  func connectionClosed(_ connection: IPCConnection) {
+  func connectionClosed(
+    _ connection: IPCConnection, ending: OverlayModel.Ending = .connectionLost
+  ) {
     for lease in ownerAttachments.values where lease.connection === connection { releaseOwnerInput(lease, reason: "viewer-gone") }
     video.disconnected(connection)
     closedConnectionIDs.insert(connection.id)
@@ -1382,7 +1412,7 @@ public final class HelperRuntime {
     for session in Array(registry.sessions.values) where session.connectionID == connection.id {
       closeSession(session.sessionId, reason: nil, overlayEnding: nil)
     }
-    updateOverlay(ending: .connectionLost)
+    updateOverlay(ending: ending)
     if connections.isEmpty, registry.sessions.isEmpty { idleSince = Date() }
   }
 

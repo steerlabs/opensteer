@@ -104,6 +104,20 @@ class HelperNotRunning extends Error {
  */
 export type ComputerUseHelperExit = "exiting" | "staying" | "not-running";
 
+/**
+ * The one protocol rule: the app and its helper are one release, so a helper
+ * speaks exactly this app's protocol and serves no other.
+ */
+export function helperSpeaksThisProtocol(hello: {
+  readonly minProtocolVersion: number;
+  readonly protocolVersion: number;
+}): boolean {
+  return (
+    hello.protocolVersion === computerUseHelperProtocolVersion &&
+    hello.minProtocolVersion === computerUseHelperProtocolVersion
+  );
+}
+
 /** A helper that cannot speak this app's protocol, said for whichever side is older. */
 function incompatibleHelper(helperProtocolVersion: number): ComputerUseHelperFailure {
   return new ComputerUseHelperFailure(
@@ -448,11 +462,7 @@ export class ComputerUseHelperClient {
               const response = ComputerUseHelperResponseSchema.parse(value);
               if (phase === 0) {
                 const hello = ComputerUseHelloResultSchema.parse(response.result);
-                if (
-                  response.id !== 0 ||
-                  hello.protocolVersion !== computerUseHelperProtocolVersion ||
-                  hello.minProtocolVersion !== computerUseHelperProtocolVersion
-                )
+                if (response.id !== 0 || !helperSpeaksThisProtocol(hello))
                   throw new Error("Video helper protocol mismatch");
                 phase = 1;
                 socket.write(
@@ -496,12 +506,15 @@ export class ComputerUseHelperClient {
    * connection's sessions exactly as a dropped connection does, and exits
    * unless another Opensteer app still holds a connection to it.
    *
-   * It never launches a helper to ask it: with nothing on the socket there is
-   * nothing to stop. The caller bounds the wait; this method adds none of its
-   * own beyond `deadline`.
+   * It never launches a helper to ask it, and never waits out a reconnect
+   * pause: a live connection is used as it is, and a connect still in flight,
+   * which could launch one, is torn down and replaced by one that only finds a
+   * helper already running. The caller bounds the wait; this method adds none
+   * of its own beyond `deadline`.
    */
   async requestExit(deadline: number): Promise<ComputerUseHelperExit> {
     if (this.#closed) return "not-running";
+    if (this.#establishing) await this.disconnect();
     let connection: HelperConnection;
     try {
       connection = await this.#connect(deadline, false);
@@ -598,7 +611,10 @@ export class ComputerUseHelperClient {
 
   async #establish(due: ComputerUseDeadline, launch: boolean): Promise<HelperConnection> {
     const generation = this.#generation;
-    const backoff = reconnectBackoffMs[Math.min(this.#attempt, reconnectBackoffMs.length - 1)] ?? 0;
+    // A connect that only looks for a running helper hammers nothing.
+    const backoff = launch
+      ? (reconnectBackoffMs[Math.min(this.#attempt, reconnectBackoffMs.length - 1)] ?? 0)
+      : 0;
     if (backoff > 0) await delay(Math.max(0, Math.min(backoff, due.at - this.#now())));
     this.#requireTime(due);
     const socket = await withComputerUseHelperLifecycleLock(
@@ -690,10 +706,7 @@ export class ComputerUseHelperClient {
     });
     const result = ComputerUseHelloResultSchema.parse(hello);
     this.#requireGeneration(generation, socket);
-    if (
-      computerUseHelperProtocolVersion < result.minProtocolVersion ||
-      computerUseHelperProtocolVersion > result.protocolVersion
-    ) {
+    if (!helperSpeaksThisProtocol(result)) {
       socket.destroy();
       throw incompatibleHelper(result.protocolVersion);
     }
