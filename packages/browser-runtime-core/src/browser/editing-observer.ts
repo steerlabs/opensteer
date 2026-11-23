@@ -8,7 +8,9 @@ import {
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
+  caretRelativeEditingCommands,
   EditingContextSchema,
+  type EditingCommand,
   type EditingContext,
   type EditingComposition,
   type EditingTextEdit,
@@ -496,17 +498,19 @@ export class PageEditingObserver {
   }
 
   /**
-   * CV1: a command made in `contextId`. A move or a deletion is relative to the caret: under an
-   * earlier context of the focused field it applies at the caret as it now is. Any command under
-   * another context (another field's) is refused alone, and nothing rotates.
+   * CV1: a command made in `contextId`. One relative to the caret (the protocol's list, CY7) made
+   * under an earlier context of the focused field applies at the caret as it now is. Any other
+   * command under an earlier context, and any command under another field's, is refused alone,
+   * and nothing rotates.
    */
   async command(
     contextId: string,
-    relative: boolean,
+    command: EditingCommand,
     action: () => Promise<unknown>,
     producer?: string,
   ): Promise<boolean> {
-    if (this.#activeChild) return this.#activeChild.command(contextId, relative, action, producer);
+    if (this.#activeChild) return this.#activeChild.command(contextId, command, action, producer);
+    const relative = caretRelativeEditingCommands.has(command);
     // CY6: admitted under its own context, and admitted again after every await, against focus
     // and context as they are then: anything moved, and it is refused alone.
     const focus = this.#focused;

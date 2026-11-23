@@ -196,7 +196,7 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     if (operation.kind === "command")
       return observer.command(
         operation.contextId ?? observer.context.contextId,
-        /^(move|delete)/.test(operation.command),
+        operation.command,
         () =>
           cdp.send(
             "Input.dispatchKeyEvent",
@@ -660,6 +660,34 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     // The person's own swipe afterwards moves as ever.
     expect(await send({ kind: "command", command: "moveBackward", contextId: earlier })).toBe(true);
     expect((await read(page, kind)).caret).toBe(5);
+  });
+
+  // CY7: under an earlier context of the same field only the commands in the protocol's relative
+  // list (the backward deletion and the plain caret moves the phone sends) apply at the caret.
+  // Every other command is refused alone: the text and the caret stay, and the next relative
+  // command still applies.
+  it.each([
+    "deleteWordBackward",
+    "deleteForward",
+    "moveWordLeftAndModifySelection",
+    "moveToBeginningOfDocument",
+    "moveUp",
+    "selectAll",
+  ] as const)("refuses %s under an earlier context, alone", async (command) => {
+    await seed(page, kind, "one two", 7);
+    await settle();
+    const earlier = observer.context.contextId!;
+    await seed(page, kind, "one two!", 8);
+    await settle();
+    expect(observer.context.contextId).not.toBe(earlier);
+    const current = observer.context.contextId;
+    expect(await send({ kind: "command", command, contextId: earlier })).toBe(false);
+    expect(await read(page, kind)).toEqual({ value: "one two!", caret: 8, collapsed: true });
+    expect(observer.context.contextId).toBe(current);
+    expect(await send({ kind: "command", command: "deleteBackward", contextId: earlier })).toBe(
+      true,
+    );
+    expect(await read(page, kind)).toEqual({ value: "one two", caret: 7, collapsed: true });
   });
 
   // CS1: a refusal inside the context while composing. The page moved the selection under an

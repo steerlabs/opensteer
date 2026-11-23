@@ -1,4 +1,5 @@
 import type { EditingOperation, EditingProxyInstruction } from "@opensteer/client/editing";
+import { caretRelativeEditingCommands } from "@opensteer/protocol/editing";
 import { splitGraphemes } from "unicode-segmenter/grapheme";
 
 /*
@@ -904,13 +905,13 @@ export class FarField {
           : operation.kind === "command"
             ? (operation.contextId ?? null)
             : null;
-    // Relative to the caret: an insertion, or a move or deletion command (CV1).
+    // Relative to the caret: an insertion, or a command in the protocol's relative list (CV1, CY7).
     const insertion =
       (operation.kind === "edit" &&
         operation.edit.text !== "" &&
         !operation.edit.before &&
         !operation.edit.after) ||
-      (operation.kind === "command" && /^(move|delete)/.test(operation.command));
+      (operation.kind === "command" && caretRelativeEditingCommands.has(operation.command));
     if (context !== null && this.contextId !== null && context !== this.contextId) {
       // An insertion typed under an earlier context of this field still goes in at the caret;
       // anything else is refused alone, the field's context kept.

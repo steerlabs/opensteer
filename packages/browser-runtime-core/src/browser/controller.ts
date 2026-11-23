@@ -1978,7 +1978,7 @@ export class BrowserController {
           );
         const applied = await observer.command(
           message.contextId,
-          /^(move|delete)/.test(message.command),
+          message.command,
           () => {
             this.recordPasskeyInput(message, active.surface.id);
             return cdp.send(

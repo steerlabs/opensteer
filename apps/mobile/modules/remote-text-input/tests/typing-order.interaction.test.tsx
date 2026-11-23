@@ -12,6 +12,7 @@ import {
   type Proxy,
 } from "./remote-input-port.js";
 import { splitGraphemes } from "unicode-segmenter/grapheme";
+import { caretRelativeEditingCommands } from "@opensteer/protocol/editing";
 import { Oracle, Person, type Action } from "./typing-oracle.js";
 import { browserEditingAbilities } from "../../../../../packages/client/src/host/browser-editing.js";
 import { displayEditingAbilities } from "../../../../../packages/client/src/integrations/display-editing.js";
@@ -1335,14 +1336,14 @@ describe("a person's caret moves and selections in the native field", () => {
     };
     const refusedOf = (index: number) =>
       sent.filter((entry) => entry.owners.includes(index) && !applied(entry));
-    /** Relative to the caret: an insertion, a paste, a move or deletion command. */
+    /** Relative to the caret: an insertion, a paste, a command in the protocol's relative list. */
     const relativeOp = (operation: EditingOperation) =>
       (operation.kind === "edit" &&
         operation.edit.text !== "" &&
         !operation.edit.before &&
         !operation.edit.after) ||
       operation.kind === "paste" ||
-      (operation.kind === "command" && /^(move|delete)/.test(operation.command));
+      (operation.kind === "command" && caretRelativeEditingCommands.has(operation.command));
     let failure: string | null = null;
     const said = (text: string) => JSON.stringify(escape(text));
     const describe = (operation: EditingOperation) =>
