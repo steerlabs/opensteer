@@ -137,6 +137,7 @@ async function codexRun(input: {
   readonly accessMode: ThreadAccessMode;
   readonly authFile?: false;
   readonly credentialStore?: "auto" | "file" | "keyring";
+  readonly extraLaunchArgs?: readonly string[];
   readonly own: boolean;
   readonly rules?: false;
 }) {
@@ -266,7 +267,20 @@ async function codexRun(input: {
     threadId: createId("thread"),
     threadStateDirectory,
     workspacePath: project,
-    wrapProcessLaunch: (launch) => launch,
+    wrapProcessLaunch: (launch) => {
+      if (!input.extraLaunchArgs) return launch;
+      const appServerIndex = launch.args.indexOf("app-server");
+      return appServerIndex === -1
+        ? { ...launch, args: [...launch.args, ...input.extraLaunchArgs] }
+        : {
+            ...launch,
+            args: [
+              ...launch.args.slice(0, appServerIndex),
+              ...input.extraLaunchArgs,
+              ...launch.args.slice(appServerIndex),
+            ],
+          };
+    },
     writableRoots: [project],
   };
   const events: HarnessEvent[] = [];
@@ -531,4 +545,60 @@ it("runs Codex background text from the Opensteer-owned home without notify or p
   });
   expect(refused).toEqual({ ok: false, failure: "unavailable" });
   expect(api.requests).toHaveLength(beforeCount);
+}, 180_000);
+
+it("refuses system or managed notify, provider auth, provider aws, and Bedrock settings surfaced by real Codex config/read (G6)", async () => {
+  const cases = [
+    {
+      name: "notify",
+      extraLaunchArgs: ["-c", 'notify=["true"]'],
+      ownerPattern: /notify/iu,
+    },
+    {
+      name: "built-in amazon-bedrock",
+      extraLaunchArgs: ["-c", 'model_provider="amazon-bedrock"'],
+      ownerPattern: /AWS|credential/iu,
+    },
+    {
+      name: "provider auth command",
+      extraLaunchArgs: [
+        "-c",
+        'model_provider="managed_auth"',
+        "-c",
+        'model_providers.managed_auth.name="Managed Auth"',
+        "-c",
+        'model_providers.managed_auth.base_url="http://127.0.0.1:9/v1"',
+        "-c",
+        'model_providers.managed_auth.auth.command="true"',
+      ],
+      ownerPattern: /command/iu,
+    },
+    {
+      name: "provider aws profile",
+      extraLaunchArgs: [
+        "-c",
+        'model_provider="amazon-bedrock-runtime"',
+        "-c",
+        'model_providers.amazon-bedrock-runtime.aws.region="us-east-1"',
+        "-c",
+        'model_providers.amazon-bedrock-runtime.aws.profile="corp-sso"',
+      ],
+      ownerPattern: /AWS|credential/iu,
+    },
+  ] as const;
+
+  for (const testCase of cases) {
+    const run = await codexRun({
+      accessMode: "approval-required",
+      extraLaunchArgs: testCase.extraLaunchArgs,
+      own: false,
+    });
+    expect(run.startFailure, testCase.name).toMatchObject({
+      code: "forbidden",
+      message: "This engine is not available for this task.",
+      ownerMessage: expect.stringMatching(testCase.ownerPattern),
+    });
+    expect(run.requests, testCase.name).toHaveLength(0);
+    expect(run.notifyRan, testCase.name).toBe(false);
+  }
 }, 180_000);

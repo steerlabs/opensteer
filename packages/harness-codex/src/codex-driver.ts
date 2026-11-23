@@ -136,6 +136,7 @@ import {
   linkNames,
   EngineUnavailableForTaskError,
   assertEngineMayRun,
+  checkCodexEffectiveConfig,
   checkCodexOthersHome,
   engineConfiguration,
   type HarnessEngineConfiguration,
@@ -4725,6 +4726,10 @@ function assertCodexProcessBoundary(
         "Local Codex configuration contains native model instructions that Opensteer cannot isolate",
     });
   }
+  const effectiveCheck = checkCodexEffectiveConfig(config);
+  if (!effectiveCheck.ok) {
+    throw new EngineUnavailableForTaskError(effectiveCheck.message);
+  }
 }
 
 /** What a model's commands start with is the Runner's, whichever configuration the Run has. */
@@ -5740,6 +5745,10 @@ async function codexPrivateThreadConfig(
     ).config,
     "effective private config",
   );
+  const effectiveCheck = checkCodexEffectiveConfig(effective);
+  if (!effectiveCheck.ok) {
+    throw new EngineUnavailableForTaskError(effectiveCheck.message);
+  }
   const servers =
     effective.mcp_servers === undefined
       ? {}
