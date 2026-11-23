@@ -93,6 +93,7 @@ import {
   PasskeyBridge,
 } from "@opensteer/browser-runtime-core/passkey-bridge";
 import type { PasskeyAuthenticator } from "@opensteer/browser-runtime-core/passkeys";
+import { DebuggerSessionState } from "./electron-debugger-session.js";
 
 export interface ElectronLocalProfileOpenTiming {
   readonly stage:
@@ -2433,25 +2434,6 @@ interface ProfileInventory {
  * them starts again. Chromium counts one acknowledgement per frame it sent, so
  * only the channel whose parameters it uses acknowledges frames to it.
  */
-/** What the hub knows of one debugger session, which a new session knows nothing of. */
-class DebuggerSessionState {
-  /** For each session a cast can run in (the page's own is ""), the highest frame id Chromium sent. */
-  readonly laneFrames = new Map<string, number>();
-  /** For each, the starts Chromium has answered: its next cast's frames carry one more. */
-  readonly laneStarts = new Map<string, number>();
-  /**
-   * The sessions the hub attached to this page for itself (cast sessions, profile inspections):
-   * each is detached exactly once, on whatever path its use ends, and no channel sees it.
-   */
-  readonly ownSessions = new Set<string>();
-  /** Every one of them in this debugger session: their events reach no channel. */
-  readonly ownSessionsSeen = new Set<string>();
-  /** The hub's own attaches Chromium has not answered. */
-  ownAttaching = 0;
-  /** Target events of the page's session that came while one was unanswered, in order. */
-  held: { readonly method: string; readonly record: Record<string, unknown> }[] = [];
-}
-
 class ElectronDebuggerHub {
   readonly #channels = new Set<ElectronCdpChannel>();
   readonly #contexts = new ExecutionContextInventory();
@@ -3432,12 +3414,15 @@ class ElectronDebuggerHub {
       // Chromium numbers a session's casts upward, one more for each start it answers: every
       // earlier run's frames carry at most the higher of what it sent and what it answered.
       // The count is the debugger session's: one that lets go and attaches again counts afresh.
-      const starts = this.#session.laneStarts;
-      run.floor = Math.max(this.#session.laneFrames.get(laneKey) ?? 0, starts.get(laneKey) ?? 0);
+      const session = this.#session;
+      const starts = session.laneStarts;
+      run.floor = Math.max(session.laneFrames.get(laneKey) ?? 0, starts.get(laneKey) ?? 0);
       await (lane.id === undefined
         ? send("Page.startScreencast", parameters)
         : this.#command("Page.startScreencast", parameters, lane.id));
-      starts.set(laneKey, (starts.get(laneKey) ?? 0) + 1);
+      // Counted while its session lives: one let go meanwhile keeps no count.
+      if (lane.id === undefined || session.ownSessions.has(lane.id))
+        starts.set(laneKey, (starts.get(laneKey) ?? 0) + 1);
       this.#assertCurrent(generation);
       if (cast.run !== run || run.lane !== lane)
         throw new Error("Electron CDP renderer changed before command dispatch.");
@@ -3582,6 +3567,8 @@ class ElectronDebuggerHub {
     const id = Number(frame.sessionId);
     if (!Number.isFinite(id)) return;
     const key = lane ?? "";
+    // A session of the hub's own it has let go keeps no count: no cast runs in it again.
+    if (lane !== undefined && !this.#session.ownSessions.has(lane)) return;
     if (id > (this.#session.laneFrames.get(key) ?? 0)) this.#session.laneFrames.set(key, id);
     const run = this.#runIn(lane);
     if (!run) return;
@@ -3701,8 +3688,11 @@ class ElectronDebuggerHub {
    * event), so what the session counted ends here too.
    */
   #detachDebugger(): void {
-    if (this.#isAttached()) this.#debugger.detach();
-    this.#debuggerSessionEnded();
+    try {
+      if (this.#isAttached()) this.#debugger.detach();
+    } finally {
+      this.#debuggerSessionEnded();
+    }
   }
 
   /**
@@ -3849,7 +3839,8 @@ class ElectronDebuggerHub {
    * debugger, since a crashed page or a teardown refuses every other command.
    */
   async #detachOwn(sessionId: string): Promise<void> {
-    if (!this.#session.ownSessions.delete(sessionId)) return;
+    if (!this.#session.ownSessions.has(sessionId)) return;
+    this.#session.letGo(sessionId);
     if (this.#webContents.isDestroyed() || !this.#debugger.isAttached()) return;
     await this.#debugger
       .sendCommand("Target.detachFromTarget", { sessionId })
@@ -3859,7 +3850,7 @@ class ElectronDebuggerHub {
 
   /** Chromium detached one of the hub's own sessions itself: nothing is left to let go. */
   #ownSessionGone(sessionId: string): void {
-    this.#session.ownSessions.delete(sessionId);
+    this.#session.gone(sessionId);
     const run = this.#runIn(sessionId);
     if (run) {
       run.lane = null;

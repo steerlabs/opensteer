@@ -80,6 +80,19 @@ const electron = vi.hoisted(() => ({
   }>,
 }));
 
+// Each debugger session's state, as the hub makes it, to read what it still keeps.
+const debuggerSessions = vi.hoisted(() => [] as unknown[]);
+vi.mock("./electron-debugger-session.js", async (original) => {
+  const made = await original<typeof import("./electron-debugger-session.js")>();
+  return {
+    DebuggerSessionState: class extends made.DebuggerSessionState {
+      constructor() {
+        super();
+        debuggerSessions.push(this);
+      }
+    },
+  };
+});
 vi.mock("electron", () => {
   class MockWebContents {
     readonly id = electron.views.length + 1;
@@ -2770,6 +2783,38 @@ describe("Electron debugger teardown", () => {
         "Target.attachedToTarget frame-1",
         "Target.detachedFromTarget frame-1",
       ]);
+      await hub.browser.close();
+    });
+
+    // The re-check of 963f808d0..fb245664c, finding 8: nothing in a debugger session's state
+    // outlives what it describes, on a debugger session that lives as long as the tab.
+    it("keeps nothing of a hundred private sessions that came and went", async () => {
+      const hub = await hubPage("82");
+      const own = ownSessions(hub);
+      const frame = (data: string, sessionId: number) => ({ data, metadata: {}, sessionId });
+      const person = await hub.page.cdp();
+      await person.send("Page.startScreencast", view);
+      for (let index = 1; index <= 100; index += 1) {
+        const agent = await hub.page.agentCdp();
+        await agent.send("Page.startScreencast", small);
+        const session = own.attached.at(-1)!;
+        hub.deliver("Page.screencastFrame", frame(`small ${index}`, 1), session);
+        await agent.detach();
+        // Chromium's last word of a session the hub let go; a late frame of it before that.
+        hub.deliver("Page.screencastFrame", frame(`late ${index}`, 1), session);
+        hub.deliver("Target.detachedFromTarget", { sessionId: session, targetId: "target-1" });
+      }
+      expect(own.detached()).toHaveLength(100);
+      const state = debuggerSessions.at(
+        -1,
+      ) as import("./electron-debugger-session.js").DebuggerSessionState;
+      // The page's own session is counted while it lives; of the private ones, nothing is left.
+      expect({
+        laneFrames: [...state.laneFrames.keys()].filter((key) => key !== ""),
+        laneStarts: [...state.laneStarts.keys()].filter((key) => key !== ""),
+        ownSessions: [...state.ownSessions],
+        ownSessionsSeen: [...state.ownSessionsSeen],
+      }).toEqual({ laneFrames: [], laneStarts: [], ownSessions: [], ownSessionsSeen: [] });
       await hub.browser.close();
     });
 
