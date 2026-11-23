@@ -2433,6 +2433,25 @@ interface ProfileInventory {
  * them starts again. Chromium counts one acknowledgement per frame it sent, so
  * only the channel whose parameters it uses acknowledges frames to it.
  */
+/** What the hub knows of one debugger session, which a new session knows nothing of. */
+class DebuggerSessionState {
+  /** For each session a cast can run in (the page's own is ""), the highest frame id Chromium sent. */
+  readonly laneFrames = new Map<string, number>();
+  /** For each, the starts Chromium has answered: its next cast's frames carry one more. */
+  readonly laneStarts = new Map<string, number>();
+  /**
+   * The sessions the hub attached to this page for itself (cast sessions, profile inspections):
+   * each is detached exactly once, on whatever path its use ends, and no channel sees it.
+   */
+  readonly ownSessions = new Set<string>();
+  /** Every one of them in this debugger session: their events reach no channel. */
+  readonly ownSessionsSeen = new Set<string>();
+  /** The hub's own attaches Chromium has not answered. */
+  ownAttaching = 0;
+  /** Target events of the page's session that came while one was unanswered, in order. */
+  held: { readonly method: string; readonly record: Record<string, unknown> }[] = [];
+}
+
 class ElectronDebuggerHub {
   readonly #channels = new Set<ElectronCdpChannel>();
   readonly #contexts = new ExecutionContextInventory();
@@ -2483,22 +2502,12 @@ class ElectronDebuggerHub {
     ElectronCdpChannel,
     { readonly run: CastRun; readonly frame: number }[]
   >();
-  /** For each session a cast can run in (the page's own is ""), the highest frame id Chromium sent. */
-  readonly #laneFrames = new Map<string, number>();
-  /** For each session, the starts Chromium has answered: its next cast's frames carry one more. */
-  #laneStarts = new Map<string, number>();
   #castStarts = 0;
   /**
-   * The sessions the hub attached to this page for itself (cast sessions, profile inspections):
-   * each is detached exactly once, on whatever path its use ends, and no channel sees it.
+   * What belongs to the debugger session now attached, and dies with it: made when the hub attaches
+   * the debugger, discarded at every detach, the hub's own and Electron's (`#debuggerSessionEnded`).
    */
-  readonly #ownSessions = new Set<string>();
-  /** Every one of them since the debugger attached: their events reach no channel. */
-  readonly #ownSessionsSeen = new Set<string>();
-  #ownAttaching = 0;
-  #ownTargetId: string | null = null;
-  /** Attaches to this page announced while one of the hub's own was unanswered. */
-  #heldSelfAttaches: Record<string, unknown>[] = [];
+  #session = new DebuggerSessionState();
   readonly #webContents: WebContents;
   readonly #setRenderingDemand: (demanded: boolean) => void;
   readonly #prepareInput: () => Promise<void>;
@@ -2545,7 +2554,10 @@ class ElectronDebuggerHub {
     this.#debugger.on("message", (_event, method, parameters, sessionId) => {
       if (sessionId) {
         // A cast's private session runs only its cast: its frames are for that cast's owners alone.
-        if (this.#ownSessionsSeen.has(sessionId) && !this.#profileInspections.has(sessionId)) {
+        if (
+          this.#session.ownSessionsSeen.has(sessionId) &&
+          !this.#profileInspections.has(sessionId)
+        ) {
           if (method === "Page.screencastFrame") this.#laneFrame(sessionId, asRecord(parameters));
           return;
         }
@@ -2576,29 +2588,19 @@ class ElectronDebuggerHub {
         // Its scripts belonged to documents that are gone; a stop reads what is alive then.
         if (this.#profileInventory) void this.#closeProfileInventory(this.#profileInventory);
       }
-      // The hub's own sessions are no channel's: none hears them attach or detach, by their
-      // identity. An attach to this page announced while one of the hub's own is unanswered is
-      // held until that answer says whose it is (another channel attaches to it too).
-      if (method === "Target.attachedToTarget" || method === "Target.detachedFromTarget") {
-        const own = typeof record.sessionId === "string" ? record.sessionId : null;
-        if (own !== null && this.#ownSessionsSeen.has(own)) {
-          if (method === "Target.detachedFromTarget") this.#ownSessionGone(own);
-          return;
-        }
-        if (
-          method === "Target.attachedToTarget" &&
-          this.#ownAttaching > 0 &&
-          asRecord(record.targetInfo).targetId === this.#ownTargetId
-        ) {
-          this.#heldSelfAttaches.push(record);
-          return;
-        }
+      // The hub's own sessions are no channel's: none hears of them, by their identity. While an
+      // attach of the hub's own is unanswered, any Target event may be about it: every one waits,
+      // in order, until the answer says which session is the hub's.
+      if (method.startsWith("Target.") && this.#session.ownAttaching > 0) {
+        this.#session.held.push({ method, record });
+        return;
       }
-      this.#pageEvent(method, record);
+      this.#targetOrPageEvent(method, record);
     });
     this.#debugger.on("detach", (_event, reason) => {
       // Every session it held is gone with it, the hub's own among them, and every cast.
       this.#castsEnded("detached");
+      this.#debuggerSessionEnded();
       this.#interrupt(new Error(`Electron CDP debugger detached: ${reason}.`));
       this.#forgetContexts();
       this.#events.emit("detach", reason);
@@ -2659,7 +2661,7 @@ class ElectronDebuggerHub {
       channel.enabledDomains.add(domain);
     }
     install(channel);
-    if (!this.#debugger.isAttached()) this.#debugger.attach("1.3");
+    this.#attachDebugger();
     // All owners and listeners exist before the first command can emit. This
     // fresh-session exception dispatches independent initial enables together;
     // their accounting and every later ownership change remain serialized.
@@ -3185,7 +3187,7 @@ class ElectronDebuggerHub {
       this.#forcedDisposal.resolve();
       throw error;
     } finally {
-      if (this.#isAttached()) this.#debugger.detach();
+      this.#detachDebugger();
       this.#forgetContexts();
       this.#events.removeAllListeners();
     }
@@ -3217,7 +3219,7 @@ class ElectronDebuggerHub {
           this.#destroyed,
           this.#forcedDisposal.promise,
         ]);
-      if (!this.#closed && this.#channels.size === 0 && this.#isAttached()) this.#debugger.detach();
+      if (!this.#closed && this.#channels.size === 0) this.#detachDebugger();
       this.#forgetContexts();
     })().finally(() => {
       if (this.#teardown === teardown) this.#teardown = null;
@@ -3228,7 +3230,7 @@ class ElectronDebuggerHub {
 
   #attach(): Promise<void> {
     if (this.#attachment) return this.#attachment;
-    if (!this.#debugger.isAttached()) this.#debugger.attach("1.3");
+    this.#attachDebugger();
     this.#contexts.clear();
     // Runtime commands wait until every context has been inventoried.
     const attachment = this.#dispatch("Runtime.enable").then(() => {
@@ -3406,8 +3408,8 @@ class ElectronDebuggerHub {
       // Chromium numbers a session's casts upward, one more for each start it answers: every
       // earlier run's frames carry at most the higher of what it sent and what it answered.
       // The count is the debugger session's: one that lets go and attaches again counts afresh.
-      const starts = this.#laneStarts;
-      run.floor = Math.max(this.#laneFrames.get(laneKey) ?? 0, starts.get(laneKey) ?? 0);
+      const starts = this.#session.laneStarts;
+      run.floor = Math.max(this.#session.laneFrames.get(laneKey) ?? 0, starts.get(laneKey) ?? 0);
       await (lane.id === undefined
         ? send("Page.startScreencast", parameters)
         : this.#command("Page.startScreencast", parameters, lane.id));
@@ -3505,7 +3507,7 @@ class ElectronDebuggerHub {
     const id = Number(frame.sessionId);
     if (!Number.isFinite(id)) return;
     const key = lane ?? "";
-    if (id > (this.#laneFrames.get(key) ?? 0)) this.#laneFrames.set(key, id);
+    if (id > (this.#session.laneFrames.get(key) ?? 0)) this.#session.laneFrames.set(key, id);
     const run = this.#runIn(lane);
     if (!run) return;
     if (run.frameSession === null) {
@@ -3599,13 +3601,31 @@ class ElectronDebuggerHub {
       if (how === "crashed" && lane?.id !== undefined) void this.#detachOwn(lane.id);
     }
     this.#handed.clear();
-    if (how === "detached") {
-      this.#ownSessions.clear();
-      this.#ownSessionsSeen.clear();
-      this.#laneFrames.clear();
-      // A start answered by the session that let go counts in the map it was asked in.
-      this.#laneStarts = new Map();
-    }
+  }
+
+  /** The hub attaches the debugger, if it is not: a new session, counted afresh. */
+  #attachDebugger(): void {
+    if (this.#debugger.isAttached()) return;
+    this.#debugger.attach("1.3");
+    this.#session = new DebuggerSessionState();
+  }
+
+  /**
+   * The hub lets the debugger go. Electron says nothing of a detach it was asked for (no "detach"
+   * event), so what the session counted ends here too.
+   */
+  #detachDebugger(): void {
+    if (this.#isAttached()) this.#debugger.detach();
+    this.#debuggerSessionEnded();
+  }
+
+  /**
+   * The debugger session is gone, however it went: its frame and start counts, the hub's own
+   * sessions and every event held for them go with it, and the next session starts from nothing.
+   * A start or attach still answering counts in the session it was asked in, never the next.
+   */
+  #debuggerSessionEnded(): void {
+    this.#session = new DebuggerSessionState();
   }
 
   /**
@@ -3618,10 +3638,9 @@ class ElectronDebuggerHub {
     const info = asRecord(await this.#command("Target.getTargetInfo"));
     const targetId = asRecord(info.targetInfo).targetId;
     if (typeof targetId !== "string") throw new Error("Browser page target is unavailable");
-    this.#ownTargetId = targetId;
-    this.#ownAttaching += 1;
-    try {
-      return await new Promise<string>((resolve, reject) => {
+    const session = this.#session;
+    return new Promise<string>((resolve, reject) => {
+      {
         let interrupted = false;
         const interrupt = (error: Error) => {
           interrupted = true;
@@ -3634,9 +3653,9 @@ class ElectronDebuggerHub {
             reject(new Error("Page debugger did not return a session"));
             return;
           }
-          this.#ownSessions.add(sessionId);
-          this.#ownSessionsSeen.add(sessionId);
-          if (interrupted || generation !== this.#rendererGeneration) {
+          session.ownSessions.add(sessionId);
+          session.ownSessionsSeen.add(sessionId);
+          if (interrupted || generation !== this.#rendererGeneration || session !== this.#session) {
             void this.#detachOwn(sessionId);
             reject(new Error("Electron CDP renderer changed before command dispatch."));
             return;
@@ -3648,18 +3667,26 @@ class ElectronDebuggerHub {
           reject(new Error("Electron CDP target is closed."));
           return;
         }
+        // Counted until Chromium answers, not until the caller stops waiting: an interrupted
+        // caller's session is still announced, and is still the hub's.
+        session.ownAttaching += 1;
+        const settled = () => {
+          session.ownAttaching -= 1;
+          if (session.ownAttaching === 0 && session === this.#session) this.#releaseHeldEvents();
+        };
         void this.#debugger.sendCommand("Target.attachToTarget", { targetId, flatten: true }).then(
-          (result) => answered(asRecord(result).sessionId),
+          (result) => {
+            answered(asRecord(result).sessionId);
+            settled();
+          },
           (error: unknown) => {
             this.#pending.delete(interrupt);
             reject(error instanceof Error ? error : new Error(String(error)));
+            settled();
           },
         );
-      });
-    } finally {
-      this.#ownAttaching -= 1;
-      if (this.#ownAttaching === 0) this.#releaseHeldAttaches();
-    }
+      }
+    });
   }
 
   /** An event of the page's own session, to the channels that hear it. */
@@ -3683,15 +3710,25 @@ class ElectronDebuggerHub {
     }
   }
 
-  /** Each attach held while the hub's own was unanswered: the hub's dropped, any other passed on. */
-  #releaseHeldAttaches(): void {
-    const held = this.#heldSelfAttaches;
-    this.#heldSelfAttaches = [];
-    for (const record of held) {
-      const sessionId = typeof record.sessionId === "string" ? record.sessionId : null;
-      if (sessionId !== null && this.#ownSessionsSeen.has(sessionId)) continue;
-      this.#pageEvent("Target.attachedToTarget", record);
+  /** The Target events held while the hub's own attach was unanswered, in the order they came. */
+  #releaseHeldEvents(): void {
+    const held = this.#session.held;
+    this.#session.held = [];
+    for (const { method, record } of held) this.#targetOrPageEvent(method, record);
+  }
+
+  /** A Target event about one of the hub's own sessions reaches no channel; any other does. */
+  #targetOrPageEvent(method: string, record: Record<string, unknown>): void {
+    const own = typeof record.sessionId === "string" ? record.sessionId : null;
+    if (
+      (method === "Target.attachedToTarget" || method === "Target.detachedFromTarget") &&
+      own !== null &&
+      this.#session.ownSessionsSeen.has(own)
+    ) {
+      if (method === "Target.detachedFromTarget") this.#ownSessionGone(own);
+      return;
     }
+    this.#pageEvent(method, record);
   }
 
   /**
@@ -3699,7 +3736,7 @@ class ElectronDebuggerHub {
    * debugger, since a crashed page or a teardown refuses every other command.
    */
   async #detachOwn(sessionId: string): Promise<void> {
-    if (!this.#ownSessions.delete(sessionId)) return;
+    if (!this.#session.ownSessions.delete(sessionId)) return;
     if (this.#webContents.isDestroyed() || !this.#debugger.isAttached()) return;
     await this.#debugger
       .sendCommand("Target.detachFromTarget", { sessionId })
@@ -3709,7 +3746,7 @@ class ElectronDebuggerHub {
 
   /** Chromium detached one of the hub's own sessions itself: nothing is left to let go. */
   #ownSessionGone(sessionId: string): void {
-    this.#ownSessions.delete(sessionId);
+    this.#session.ownSessions.delete(sessionId);
     const run = this.#runIn(sessionId);
     if (run) {
       run.lane = null;

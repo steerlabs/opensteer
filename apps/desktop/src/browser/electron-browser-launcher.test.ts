@@ -2140,6 +2140,32 @@ describe("Electron debugger teardown", () => {
       await hub.browser.close();
     });
 
+    // The re-check of e7080ea31..963f808d0, finding 1: a debugger session's counts die with it.
+    // The hub lets the debugger go when its last channel goes, and Electron says nothing of a
+    // detach it was asked for; the next session numbers its casts from 1 again.
+    it("pictures a page again after the hub let its debugger go and attached it anew", async () => {
+      const hub = await hubPage("71");
+      const first = await hub.page.cdp();
+      await first.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("before", 1));
+      await first.send("Page.screencastFrameAck", { sessionId: 1 });
+      await first.detach();
+      await vi.waitFor(() => expect(hub.contents.debugger.isAttached()).toBe(false));
+      // The page's own channel is gone; the next one to open attaches the debugger again.
+      const second = await hub.page.agentCdp();
+      expect(hub.contents.debugger.isAttached()).toBe(true);
+      const secondSaw = seen(second);
+      await second.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("after", 1));
+      expect(secondSaw).toEqual(["after"]);
+      await second.send("Page.screencastFrameAck", { sessionId: 1 });
+      expect(hub.sent("Page.screencastFrameAck")).toEqual([
+        ["Page.screencastFrameAck", { sessionId: 1 }],
+        ["Page.screencastFrameAck", { sessionId: 1 }],
+      ]);
+      await hub.browser.close();
+    });
+
     // Run on e7080ea31, follow-stale-dialog-answers: the second tab, answered, was pictured no
     // more. The smoke's order on that tab: opened and pictured, its cast started again in a new
     // size, then left before that start's first frame; a dialog opens there and is answered; its
@@ -2447,6 +2473,95 @@ describe("Electron debugger teardown", () => {
         "session-2",
       );
       expect(agentHeard).toEqual(["Target.targetInfoChanged"]);
+      await hub.browser.close();
+    });
+  });
+
+  // The re-check of e7080ea31..963f808d0, finding 2: while an attach of the hub's own is
+  // unanswered, every Target event waits, and is released in order once the answer says whose.
+  describe("Target events while one of the hub's attaches is unanswered", () => {
+    const view = { format: "jpeg", maxHeight: 900, maxWidth: 1_400, quality: 80 };
+    const small = { format: "png", maxHeight: 240, maxWidth: 320 };
+    async function announcing(label: string) {
+      const hub = await hubPage(label);
+      const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+      const attaches: { id: string; reply: PromiseWithResolvers<unknown> }[] = [];
+      hub.contents.debugger.sendCommand.mockImplementation(
+        (method: string, parameters?: Record<string, unknown>, session?: string) => {
+          if (method !== "Target.attachToTarget") return answer(method, parameters, session);
+          const id = `session-${attaches.length + 1}`;
+          const reply = Promise.withResolvers<unknown>();
+          attaches.push({ id, reply });
+          hub.deliver("Target.attachedToTarget", {
+            sessionId: id,
+            targetInfo: { targetId: "target-1", type: "page" },
+            waitingForDebugger: false,
+          });
+          return reply.promise;
+        },
+      );
+      const platform = await hub.page.cdp();
+      const heard: string[] = [];
+      platform.onEvent((method, parameters) => {
+        if (method.startsWith("Target."))
+          heard.push(`${method} ${String((parameters as { sessionId?: string }).sessionId)}`);
+      });
+      await platform.send("Target.setAutoAttach", {
+        autoAttach: true,
+        flatten: true,
+        waitForDebuggerOnStart: false,
+      });
+      await platform.send("Page.startScreencast", view);
+      return { attaches, heard, hub, platform };
+    }
+
+    it("tells no channel of the hub's session when the renderer goes before the attach answers", async () => {
+      const { attaches, heard, hub } = await announcing("75");
+      const agent = await hub.page.agentCdp();
+      const casting = agent.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(attaches).toHaveLength(1));
+      for (const [name, listener] of hub.contents.on.mock.calls)
+        if (name === "render-process-gone")
+          (listener as (...a: unknown[]) => void)({}, { reason: "crashed" });
+      await expect(casting).rejects.toThrow(/crashed/u);
+      attaches[0]!.reply.resolve({ sessionId: "session-1" });
+      await vi.waitFor(() =>
+        expect(hub.sent("Target.detachFromTarget")).toEqual([
+          ["Target.detachFromTarget", { sessionId: "session-1" }],
+        ]),
+      );
+      hub.deliver("Target.detachedFromTarget", { sessionId: "session-1", targetId: "target-1" });
+      expect(heard).toEqual([]);
+      await hub.browser.close();
+    });
+
+    it("passes on an agent's attach and detach that came meanwhile, in order, attach first", async () => {
+      const { attaches, heard, hub } = await announcing("76");
+      const caster = await hub.page.agentCdp();
+      const agent = await hub.page.agentCdp();
+      const casting = caster.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(attaches).toHaveLength(1));
+      const targets = agent.send("Target.getTargetInfo");
+      await vi.waitFor(() => expect(attaches).toHaveLength(2));
+      attaches[1]!.reply.resolve({ sessionId: "session-2" });
+      await targets;
+      // The agent goes, and Chromium tells of its session's end before the hub's attach answers.
+      // (Its release waits behind the cast's start, as every ownership change does.)
+      const releasing = agent.detach();
+      await vi.waitFor(() =>
+        expect(hub.sent("Target.detachFromTarget")).toEqual([
+          ["Target.detachFromTarget", { sessionId: "session-2" }],
+        ]),
+      );
+      hub.deliver("Target.detachedFromTarget", { sessionId: "session-2", targetId: "target-1" });
+      expect(heard).toEqual([]);
+      attaches[0]!.reply.resolve({ sessionId: "session-1" });
+      await casting;
+      await releasing;
+      expect(heard).toEqual([
+        "Target.attachedToTarget session-2",
+        "Target.detachedFromTarget session-2",
+      ]);
       await hub.browser.close();
     });
   });
