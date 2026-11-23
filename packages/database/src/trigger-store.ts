@@ -2161,19 +2161,17 @@ export class TriggerStore {
         const source = TriggerSourceSchema.parse(revision.source);
         if (source.kind !== "schedule") throw new Error("Schedule Trigger revision is invalid");
         const scheduledFor = trigger.nextFireAt;
-        // T8 / Y11: One firing at a time. A schedule tick arriving while a firing is already
-        // running is skipped (advancing nextFireAt) and emits a one-time overrun notice; a tick
-        // arriving while a previous schedule tick is still pending collapses without a notice.
+        // T10 / AA8: One firing at a time. When a schedule comes due while a firing is running,
+        // enqueue ONE waiting pending firing (if none is waiting yet) and emit a one-time overrun
+        // notice; further due times collapse into that single waiting firing.
         const runningOccurrence = await transaction
           .selectFrom("triggerOccurrences")
           .select("id")
           .where("triggerId", "=", trigger.id)
           .where("status", "=", "running")
           .executeTakeFirst();
-        let notifyOverrun = false;
-        if (runningOccurrence) {
-          notifyOverrun = trigger.overrunNotifiedAt === null;
-        } else if (!(await pendingScheduleOccurrenceExists(transaction, trigger.id))) {
+        const notifyOverrun = runningOccurrence !== undefined && trigger.overrunNotifiedAt === null;
+        if (!(await pendingScheduleOccurrenceExists(transaction, trigger.id))) {
           await seam?.beforeEnqueue?.();
           const enqueued = await enqueueOccurrence(
             transaction,
@@ -2205,7 +2203,7 @@ export class TriggerStore {
           .execute();
         if (notifyOverrun) {
           await recordAutomationFailure(transaction, {
-            detail: `Scheduled run for ${scheduledFor.toISOString()} was skipped because a previous firing is still running.`,
+            detail: `Scheduled run for ${scheduledFor.toISOString()} came due while a previous firing was still running; one waiting firing is queued.`,
             reason: "overran-schedule",
             triggerId: trigger.id,
           });

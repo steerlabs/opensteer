@@ -2333,7 +2333,8 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect(await store.claimCommand(wh2.commandId, "fifo-dispatcher")).not.toBeNull();
     await complete(fixture, wh2, "succeeded", "fifo-2");
 
-    // 2. Schedule overrun skips enqueueing while running and emits one 'overran-schedule' notice (T8)
+    // 2. Schedule overrun while running enqueues ONE waiting firing, collapses further ticks,
+    // blocks the waiting firing until the running one ends, and emits one 'overran-schedule' notice (T10 / AA8)
     const sched = await createScheduleTrigger(fixture, "overrun-sched");
     const firstTick = await triggers.enqueueManual({
       actorThreadId: null,
@@ -2353,20 +2354,25 @@ integration.sequential("Trigger failure auto-pause", () => {
       .where("id", "=", sched.trigger.id)
       .execute();
     const overrun1 = await triggers.claimDueSchedules(new Date());
-    expect(overrun1.occurrences.filter((o) => o.triggerId === sched.trigger.id)).toEqual([]);
+    const waiting = overrun1.occurrences.filter((o) => o.triggerId === sched.trigger.id);
+    expect(waiting).toHaveLength(1);
+    const waitingOccurrence = waiting[0]!;
+    // Waiting firing cannot be claimed while firstTick is still running (AA2 / AA8).
+    expect(await store.claimCommand(waitingOccurrence.commandId, "overrun-dispatcher")).toBeNull();
     const overrunNotices1 = await database
       .selectFrom("automationFailureNotices")
       .select(["reason"])
       .where("triggerId", "=", sched.trigger.id)
       .execute();
     expect(overrunNotices1).toEqual([{ reason: "overran-schedule" }]);
-    // Second overrun while still running does not emit a duplicate notice.
+    // Second due time while still running collapses into the single waiting firing without a duplicate notice.
     await database
       .updateTable("triggers")
-      .set({ nextFireAt: pastFire })
+      .set({ nextFireAt: new Date(Date.now() - 30_000) })
       .where("id", "=", sched.trigger.id)
       .execute();
-    await triggers.claimDueSchedules(new Date());
+    const overrun2 = await triggers.claimDueSchedules(new Date());
+    expect(overrun2.occurrences.filter((o) => o.triggerId === sched.trigger.id)).toEqual([]);
     const overrunNotices2 = await database
       .selectFrom("automationFailureNotices")
       .select(["reason"])
@@ -2388,6 +2394,11 @@ integration.sequential("Trigger failure auto-pause", () => {
       runnerBootId: "boot-overrun",
       runnerId: fixture.runnerId,
     });
+    // Once the running firing finishes, the single waiting firing can now be claimed.
+    expect(
+      await store.claimCommand(waitingOccurrence.commandId, "overrun-dispatcher"),
+    ).not.toBeNull();
+    await complete(fixture, waitingOccurrence, "succeeded", "overrun-waiting");
 
     // 3. 100-firing output pruning (T10): keep 100 most recent outputs, prune older without deleting rows
     const principal = await database

@@ -120,7 +120,7 @@ function noticeText(notice: PendingAutomationFailure): string {
     return `${automation} started failing. It is still active and will keep trying on its schedule.\n\nIts latest error, as reported: ${JSON.stringify(notice.detail)}`;
   }
   if (notice.reason === "overran-schedule") {
-    return `${automation} was still running when its next scheduled run came due, so that tick was skipped. It is still active.\n\nDetail: ${JSON.stringify(notice.detail)}`;
+    return `${automation} was still running when its next scheduled run came due, so one waiting run was queued and further overlapping ticks collapse into it. It is still active.\n\nDetail: ${JSON.stringify(notice.detail)}`;
   }
   if (notice.reason === "watch-crash-loop") {
     return `${automation} keeps stopping and restarting. It is still active and retrying with backoff.\n\nLatest exit and error: ${JSON.stringify(notice.detail)}`;
