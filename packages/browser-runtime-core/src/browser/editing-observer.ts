@@ -1687,8 +1687,10 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
   });
   on(document, "focusout", () => {
     last = null;
-    publish();
-    queueMicrotask(schedule);
+    // W4: during focusout activeElement is transiently document.body before focusin runs on the
+    // next field; deferring to a microtask publishes the new field directly when moving between
+    // fields in the same document, and still publishes field: null immediately on a true blur.
+    queueMicrotask(publish);
   });
   on(window, "blur", () => {
     last = null;

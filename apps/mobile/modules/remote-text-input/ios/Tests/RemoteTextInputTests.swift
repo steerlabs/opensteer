@@ -862,5 +862,40 @@ import UIKit
     let input = field.packets.compactMap { $0["event"] as? [String: Any] }.last { $0["type"] as? String == "input" }
     XCTAssertEqual((input?["proxy"] as? [String: Any])?["selectionStart"] as? Int, 4)
   }
+
+  // W4: tapping from one remote field to another keeps the hidden UITextView first responder
+  // with the software keyboard up, even when traits change or a transient no-field update arrives
+  // while focused stays true, without emitting a spurious blur back to JavaScript.
+  func testSwitchingFieldsKeepsFirstResponderAndSoftKeyboard() throws {
+    #if targetEnvironment(macCatalyst)
+    throw XCTSkip("Needs a window: run on the iOS Simulator")
+    #else
+    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+    let view = RemoteInputTextView(frame: CGRect(x: 0, y: 0, width: 390, height: 44), textContainer: nil)
+    window.addSubview(view)
+    window.makeKeyAndVisible()
+    var packets: [[String: Any]] = []
+    view.deliver = { packets.append($0) }
+    let textField: [String: Any] = ["kind": "text", "sensitive": false]
+    let numericPassword: [String: Any] = ["kind": "text", "sensitive": true, "inputMode": "numeric"]
+    view.configure(["contextId": "first", "field": textField], focused: true, softKeyboard: true)
+    XCTAssertTrue(view.isFirstResponder)
+    XCTAssertNil(view.inputView)
+    view.configure(["contextId": "second", "field": textField], focused: true, softKeyboard: true)
+    XCTAssertTrue(view.isFirstResponder)
+    XCTAssertNil(view.inputView)
+    view.configure(["contextId": "third", "field": numericPassword], focused: true, softKeyboard: true)
+    XCTAssertTrue(view.isFirstResponder)
+    XCTAssertNil(view.inputView)
+    // A transient no-field update while focused stays true must not emit a spurious blur.
+    view.configure(["contextId": "gap", "field": NSNull()], focused: true, softKeyboard: false)
+    view.configure(["contextId": "fourth", "field": textField], focused: true, softKeyboard: true)
+    XCTAssertTrue(view.isFirstResponder)
+    XCTAssertNil(view.inputView)
+    let blurs = packets.compactMap { ($0["event"] as? [String: Any])?["type"] as? String }.filter { $0 == "blur" }
+    XCTAssertEqual(blurs, [], "Programmatic field transitions must not emit a spurious blur")
+    window.isHidden = true
+    #endif
+  }
 }
 #endif

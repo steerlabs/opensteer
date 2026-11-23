@@ -10,6 +10,10 @@ import UniformTypeIdentifiers
   /// Where each waiting edit was typed, carried over the edits applied before its turn.
   private var edits = RemoteInputEdits()
   private var mutating = false
+  /// True while applyConfiguration updates UITextView traits so UIKit's side-effect
+  /// textViewDidEndEditing (e.g. toggling isEditable/isSecureTextEntry while focused stays true)
+  /// does not emit a spurious blur back to JavaScript.
+  private var configuring = false
   /// The selection the view itself last left, so a selection callback UIKit sends about it later
   /// (on another run loop turn, after `mutating` is false again) is not taken for a choice.
   private var ownSelection: NSRange?
@@ -517,6 +521,7 @@ import UniformTypeIdentifiers
   }
   public func textViewDidEndEditing(_ textView: UITextView) {
     held.removeAll()
+    if configuring { return }
     gate.notify(["type": "blur"])
   }
   public override func copy(_ sender: Any?) { gate.notify(["type": "copy"]) }
@@ -611,6 +616,8 @@ import UniformTypeIdentifiers
     let changed = traits != nextTraits
     if changed {
       traits = nextTraits
+      configuring = true
+      defer { configuring = false }
       isEditable = nextTraits.editable
       isSecureTextEntry = nextTraits.sensitive
       autocorrectionType = nextTraits.allowsSuggestions ? .default : .no

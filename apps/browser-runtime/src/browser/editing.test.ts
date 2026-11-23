@@ -628,8 +628,14 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         ).toMatchObject({ outcome: "refused", consumerToken });
         expect(await read("second.value")).toBe("untouched");
         expect(await read("t.value")).toBe(before);
+        const beforeSwitchBack = messages.length;
         await read("t.focus()");
         await waitForBrowserState(() => context().context.field?.multiline === true);
+        expect(
+          messages
+            .slice(beforeSwitchBack)
+            .filter((m) => m.type === "browser.editing" && m.context.field === null),
+        ).toEqual([]);
         checks.push("a paste whose field lost focus in flight lands nowhere and is refused");
         await read("p.focus();p.value='secret';p.select()");
         const sensitiveId = randomUUID();

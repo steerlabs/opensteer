@@ -278,7 +278,7 @@ internal class PhoneBrowserPool(
         tab.geometryRevision++
         tab.document.complete(Unit)
         val bridge = JSONObject.quote(tab.ackBridge)
-        view.evaluateJavascript("""(()=>{const channel=window[$bridge];const changed=()=>channel.postMessage('geometry');addEventListener('resize',changed,{passive:true});addEventListener('scroll',changed,{passive:true});if(window.visualViewport){visualViewport.addEventListener('resize',changed,{passive:true});visualViewport.addEventListener('scroll',changed,{passive:true})}addEventListener('focusin',()=>channel.postMessage('focus'));addEventListener('focusout',()=>channel.postMessage('focus'));changed()})()""", null)
+        view.evaluateJavascript("""(()=>{const channel=window[$bridge];const changed=()=>channel.postMessage('geometry');addEventListener('resize',changed,{passive:true});addEventListener('scroll',changed,{passive:true});if(window.visualViewport){visualViewport.addEventListener('resize',changed,{passive:true});visualViewport.addEventListener('scroll',changed,{passive:true})}addEventListener('focusin',()=>channel.postMessage('focus'));addEventListener('focusout',()=>queueMicrotask(()=>channel.postMessage('focus')));changed()})()""", null)
         onCommitted?.invoke(); schedulePictures()
         changed(tab, "documentChanged")
         if (!tab.failed) tab.navigationId?.let { id -> changed(tab, "navigationCommitted", mapOf("navigationId" to id)); tab.navigationId = null }
