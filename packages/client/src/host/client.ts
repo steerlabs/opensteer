@@ -150,7 +150,6 @@ export interface EnvironmentSummary {
   id: string;
   kind: ExecutionEnvironmentKind;
   name: string;
-  providerStateModes: ("ambient" | "isolated")[];
   runnerId: string | null;
   status: EnvironmentStatus;
 

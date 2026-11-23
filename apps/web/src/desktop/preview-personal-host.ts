@@ -32,7 +32,6 @@ export function previewPersonalHost(
     harnessAuthenticationAllowed: true,
     harnessCatalogs: [],
     harnessDrivers: [],
-    providerStateModes: ["ambient", "isolated"],
     id: ids.environmentId,
     kind: "main",
     name: "This Computer",

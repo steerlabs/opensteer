@@ -2564,7 +2564,6 @@ describe("durable harness catalogs", () => {
               modules: {
                 agents: {
                   harnessDrivers: options.harnessDrivers ?? [],
-                  providerStateModes: ["ambient", "isolated"],
                 },
               },
             }

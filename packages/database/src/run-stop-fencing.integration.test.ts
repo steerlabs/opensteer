@@ -353,7 +353,6 @@ integration.sequential("Run stop fencing", () => {
             ],
 
             maxConcurrentRuns: 4,
-            providerStateModes: ["isolated"],
           },
         },
       };

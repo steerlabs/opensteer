@@ -768,7 +768,6 @@ it("serves Agent home files, published output images, folder plugins, static app
             environmentIds: [environmentId],
             harnessDrivers: [],
             maxConcurrentRuns: 1,
-            providerStateModes: ["isolated"],
           },
         },
       }),

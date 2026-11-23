@@ -115,7 +115,6 @@ describe("engineGroups", () => {
     id: "environment-main",
     kind: "main",
     name: "Main",
-    providerStateModes: ["ambient", "isolated"],
     runnerId: "runner-main",
     status: "connected",
   };
@@ -141,7 +140,6 @@ describe("engineGroups", () => {
     };
     const home: EnvironmentSummary = {
       ...environment,
-      providerStateModes: ["ambient", "isolated"],
       harnessDrivers: environment.harnessDrivers.flatMap((driver): HarnessDriverSummary[] => {
         const reason = refused[driver.driverKind];
         if (driver.driverKind === "legacy-engine") return [];
@@ -239,9 +237,12 @@ describe("engineGroups", () => {
     expect(groups.some((group) => group.driverKind === "legacy-engine")).toBe(false);
   });
 
-  it("offers no adding where the work location cannot hold a private sign-in", () => {
-    const groups = engineGroups({ ...environment, providerStateModes: ["ambient"] }, []);
+  it("offers no adding where the work location runs no engines", () => {
+    const groups = engineGroups({ ...environment, harnessDrivers: [] }, [
+      account("claude", "Claude Code"),
+    ]);
 
+    expect(groups.map((group) => group.driverKind)).toEqual(["claude"]);
     expect(groups.some((group) => group.addable)).toBe(false);
   });
 
@@ -394,7 +395,6 @@ describe("an AI engine row's actions", () => {
     id: "environment-main",
     kind: "main",
     name: "Main",
-    providerStateModes: ["isolated"],
     runnerId: "runner-main",
     status: "connected",
   } satisfies EnvironmentSummary;

@@ -2631,7 +2631,6 @@ function hello(
         harnessDrivers,
 
         maxConcurrentRuns: 2,
-        providerStateModes: ["isolated"],
       },
     },
     name: "Runner",

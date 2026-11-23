@@ -307,7 +307,6 @@ integration.sequential("thread input queue promotion", () => {
             ],
 
             maxConcurrentRuns: 4,
-            providerStateModes: ["isolated"],
           },
         },
       };

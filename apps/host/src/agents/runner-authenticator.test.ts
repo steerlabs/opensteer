@@ -310,7 +310,6 @@ describe("RunnerAuthenticator identity refusals", () => {
           environmentIds: [environmentId],
           harnessDrivers: [],
           maxConcurrentRuns: 1,
-          providerStateModes: ["isolated"],
         },
         browser: { runtimeId: "older-browser" },
         integrations: { platform: "darwin" },

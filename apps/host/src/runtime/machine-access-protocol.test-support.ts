@@ -475,7 +475,6 @@ export async function connectTargetMachine(
                 environmentIds: [environment],
                 harnessDrivers: [],
                 maxConcurrentRuns: 2,
-                providerStateModes: ["isolated"],
               },
             }
           : {}),
@@ -814,7 +813,6 @@ export async function connectCallerMachine(
           },
         ],
         maxConcurrentRuns: input.maxConcurrentRuns ?? 4,
-        providerStateModes: ["ambient", "isolated"],
       },
     },
     name: input.name,

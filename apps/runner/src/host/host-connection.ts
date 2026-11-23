@@ -949,7 +949,6 @@ export class ReconnectingHostConnection {
       computerTool: 1,
       ...(agents.runFileOptions ? { runFiles: 1 as const } : {}),
       maxConcurrentRuns: this.#config.maxConcurrentRuns,
-      providerStateModes: [...agents.runtime.providerStateModes()],
     };
   }
 

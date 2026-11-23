@@ -48,9 +48,13 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
  * as too new and asks to be updated. This is the one place where AGENTS.md rule
  * 6 ("wire changes that released apps read are additive and optional") does not
  * apply; removing the team server was the owner's decision.
+ *
+ * 67 removed `providerStateModes` from each environment: every Runner now runs
+ * its engines as its own user, so the field said only whether it ran engines,
+ * which its drivers already say. Nothing before this release is served.
  */
-export const hostApiVersion = 66;
-export const minimumHostApiVersion = 66;
+export const hostApiVersion = 67;
+export const minimumHostApiVersion = 67;
 /**
  * A personal caller states its minimum here: a Host from before the window
  * compares it for equality, which admits exactly the Hosts this tree still

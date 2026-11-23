@@ -3935,7 +3935,6 @@ export async function ensureDefaultHarnesses(
         readonly stateKinds: readonly ("ambient" | "isolated")[];
       }[];
     }[];
-    readonly providerStateModes: readonly ("ambient" | "isolated")[];
   },
 ): Promise<void> {
   const everExisted = await store.listHarnessInstances({
@@ -3953,8 +3952,8 @@ export async function ensureDefaultHarnesses(
     // The person's own sign-in where this computer offers it: an engine that
     // runs the person's own install offers it only where that install is, so
     // a computer without one starts with an Opensteer-managed account instead.
-    const stateKind = (["ambient", "isolated"] as const).find(
-      (kind) => runner.providerStateModes.includes(kind) && source.stateKinds.includes(kind),
+    const stateKind = (["ambient", "isolated"] as const).find((kind) =>
+      source.stateKinds.includes(kind),
     );
     if (!stateKind) continue;
     if (

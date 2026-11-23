@@ -131,7 +131,6 @@ integration.sequential("automation failure notices", () => {
             ],
 
             maxConcurrentRuns: 4,
-            providerStateModes: ["isolated"],
           },
         },
         name: "Automation test Runner",

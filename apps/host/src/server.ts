@@ -2093,10 +2093,10 @@ export async function createHostServer(
           });
         }
         const agents = runner.modules.agents;
-        if (!agents?.providerStateModes.includes(command.stateKind)) {
+        if (!agents) {
           throw new OpensteerError({
             code: "conflict",
-            message: `This work location does not support ${command.stateKind} AI engine state`,
+            message: "This work location does not run AI engines",
           });
         }
         const driver = agents.harnessDrivers.find(
