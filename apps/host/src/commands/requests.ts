@@ -334,11 +334,14 @@ export class CommandRequestService {
           ? { status: "done", result }
           : { status: "done" };
     } catch (error) {
-      // Unknown is the default: failed only where nothing can have left the Home, a command whose
-      // handler changes the Home's database alone (a throw rolled it back), or a refusal marked
-      // where it was raised, before anything was sent. The proposer reads the Home's words only.
+      // Unknown is the default: failed only for a refusal marked where it was raised, before
+      // anything was sent, or the Home's own refusal inside a database-only command's
+      // transaction. The proposer reads the Home's words only.
+      // A refusal the Home raised inside a database-only command's one transaction rolled it
+      // back; any other error (a connection lost mid-commit) leaves even that commit unknown.
       outcome =
-        commandEffect(row) === "database" || isRaisedBeforeEffect(error)
+        isRaisedBeforeEffect(error) ||
+        (commandEffect(row) === "database" && error instanceof OpensteerError)
           ? {
               status: "failed",
               code: error instanceof OpensteerError ? error.code : "internal",

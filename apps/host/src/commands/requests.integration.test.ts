@@ -292,7 +292,7 @@ describeStore("command Requests at the Home", (it) => {
     expect(row.command).toMatchObject({ secretPaths: ["value"] });
   });
 
-  it("settles a database-only command's throw as failed, and runs nothing again", async ({
+  it("settles a database-only command's refusal as failed, a lost commit as unknown, once", async ({
     storeFixture,
   }) => {
     const { store, ran, run, door, rename, approve, failWith } = await setup(storeFixture);
@@ -301,18 +301,14 @@ describeStore("command Requests at the Home", (it) => {
       rename("One", "hin_00000000-0000-4000-8000-000000000201"),
       door(run),
     )) as { requestId: string };
-    // Renaming changes only the Home's database: a throw rolled its one transaction back.
+    // A connection dropped mid-commit: even a database-only command's outcome is not known (AD6).
     failWith(new Error("The database went away mid-commit"));
     expect(
       await approve(
         first.requestId,
         (await store.requests.get(first.requestId as never))!.command!.command,
       ),
-    ).toEqual({
-      status: "failed",
-      code: "internal",
-      message: "The Home refused it, so nothing changed.",
-    });
+    ).toEqual({ status: "unknown" });
     const second = (await dispatchCommand(
       run,
       rename("Two", "hin_00000000-0000-4000-8000-000000000202"),
@@ -339,7 +335,7 @@ describeStore("command Requests at the Home", (it) => {
     ).rejects.toMatchObject({ code: "conflict" });
     expect(ran).toHaveLength(2);
     expect(commandContinuation((await store.requests.get(first.requestId as never))!)).toContain(
-      "it did not happen",
+      "never repeat it blindly",
     );
   });
 
@@ -402,7 +398,8 @@ describeStore("command Requests at the Home", (it) => {
       harnessInstanceId: "hin_00000000-0000-4000-8000-000000000401",
       name: "Renamed",
     });
-    failWith(new Error("The database went away mid-commit"));
+    // Refused inside its one transaction: rolled back, so nothing happened.
+    failWith(new OpensteerError({ code: "conflict", message: "Changed meanwhile" }));
     expect(await approve(renamed.id, renamed.command)).toMatchObject({ status: "failed" });
   });
 
