@@ -53,8 +53,9 @@ export function displayRolesIn(file: string, source: string): string[] {
       : -1;
     const statement = close > index ? lines.slice(index, close + 1).join(" ") : line;
     if (swiftTitle.test(statement)) {
-      // Its modifiers, on the lines around it.
-      const near = lines.slice(Math.max(0, index - 4), index + 5).join("\n");
+      // Its modifiers, on the lines around it: after where the call closes, when it is written
+      // over several.
+      const near = lines.slice(Math.max(0, index - 4), Math.max(index, close) + 5).join("\n");
       if (!/dynamicTypeSize\(\{\s*max:\s*displayDynamicTypeLimit/u.test(near)) return [where];
     }
     return [];
@@ -125,6 +126,13 @@ describe("display titles on the phone", () => {
       ),
     ).toEqual([]);
     expect(displayRolesIn("apps/mobile/src/x.ios.tsx", "font({\n  size: 17,\n})")).toEqual([]);
+    // The reader's re-check 9: one written over five lines, capped on the line after it closes.
+    expect(
+      displayRolesIn(
+        "apps/mobile/src/x.ios.tsx",
+        'modifiers={[\n  font({\n    size: 28,\n    weight: "bold",\n    design: "rounded",\n  }),\n  dynamicTypeSize({ max: displayDynamicTypeLimit }),\n]}',
+      ),
+    ).toEqual([]);
   });
 
   it("sees a screen that names a display role itself", () => {
