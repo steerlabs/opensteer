@@ -88,6 +88,13 @@ afterEach(() => {
 
 const narrowest = layoutPhones[0]!;
 const largest = 3.571;
+/** A phone with a Dynamic Island and a home indicator: the insets the smallest phone has none of. */
+const islandPhone: LayoutPhone = {
+  header: 103,
+  insets: { bottom: 34, left: 0, right: 0, top: 59 },
+  name: "a phone with an island and a home indicator",
+  window: { height: 844, width: 390 },
+};
 
 async function draw(phone: LayoutPhone, screen: ReactNode, insets = phone.insets) {
   geometry.insets = insets;
@@ -115,16 +122,25 @@ const control = (container: Element, label: string) => {
 };
 
 describe("the screens a person meets when something is wrong, at the largest text size", () => {
-  it("lets a phone its Home removed be set up again", async () => {
-    const copy = removedCopy("iPhone", "Studio Mac mini");
-    const { container, frames } = await draw(
-      narrowest,
-      <RemovedView {...copy} onNotNow={() => undefined} onSetUpAgain={() => undefined} />,
-    );
-    expect(frames.broken(textElement(container, "This iPhone was removed"))).toEqual([]);
-    for (const label of ["Set up again", "Not now"])
-      expect(reachable(frames, control(container, label), narrowest.window), label).toBe(true);
-  });
+  // The one view of it, on iPhone and Android alike (the iPhone's own SwiftUI stack went, F43).
+  for (const phone of [narrowest, islandPhone])
+    it(`lets a phone its Home removed be set up again, on ${phone.name}`, async () => {
+      const copy = removedCopy("iPhone", "Studio Mac mini");
+      const { container, frames } = await draw(
+        phone,
+        <RemovedView {...copy} onNotNow={() => undefined} onSetUpAgain={() => undefined} />,
+      );
+      expect(frames.broken(textElement(container, "This iPhone was removed"))).toEqual([]);
+      for (const label of ["Set up again", "Not now"])
+        expect(reachable(frames, control(container, label), phone.window), label).toBe(true);
+      // Its words keep the screen's gutter, and its last action clears the home indicator.
+      expect(frames.frame(textElement(container, "signed out there")).x).toBeGreaterThanOrEqual(16);
+      const content = frames.frame(container.querySelector('[data-rn="ScrollContent"]')!);
+      const notNow = frames.frame(control(container, "Not now"));
+      expect(content.y + content.height - (notNow.y + notNow.height)).toBeGreaterThanOrEqual(
+        phone.insets.bottom,
+      );
+    });
 
   it("lets a Home that can't be verified be tried again", async () => {
     state.deploymentId = "dep_00000000-0000-4000-8000-0000000000aa";
@@ -147,19 +163,28 @@ describe("the screens a person meets when something is wrong, at the largest tex
       expect(reachable(frames, control(container, label), narrowest.window), label).toBe(true);
   });
 
-  it("says why the app could not start, all of it in reach", async () => {
-    const { container, frames } = await draw(
-      narrowest,
-      <StartupFailureView
-        detail="This phone’s storage could not be read. Restart the phone, then open Opensteer again."
-        title="Storage unavailable"
-      />,
-    );
-    expect(frames.broken(textElement(container, "Opensteer could not start"))).toEqual([]);
-    expect(reachable(frames, textElement(container, "Restart the phone"), narrowest.window)).toBe(
-      true,
-    );
-  });
+  for (const phone of [narrowest, islandPhone])
+    it(`says why the app could not start, all of it in reach, on ${phone.name}`, async () => {
+      const { container, frames } = await draw(
+        phone,
+        <StartupFailureView
+          detail="This phone’s storage could not be read. Restart the phone, then open Opensteer again."
+          title="This device's storage did not answer"
+        />,
+      );
+      expect(frames.broken(textElement(container, "Opensteer could not start"))).toEqual([]);
+      expect(reachable(frames, textElement(container, "Restart the phone"), phone.window)).toBe(
+        true,
+      );
+      // Never under the status bar, the island or the home indicator, scrolled to either end.
+      const content = frames.frame(container.querySelector('[data-rn="ScrollContent"]')!);
+      const title = frames.frame(textElement(container, "Opensteer could not start"));
+      expect(title.y - content.y).toBeGreaterThanOrEqual(phone.insets.top);
+      const last = frames.frame(textElement(container, "Restart the phone"));
+      expect(content.y + content.height - (last.y + last.height)).toBeGreaterThanOrEqual(
+        phone.insets.bottom,
+      );
+    });
 
   // A sheet that fits its contents, as iOS draws a form sheet at its largest: below the status
   // bar and a 10 pt gap, its content's top inset zero, clipping what it holds.
@@ -179,7 +204,7 @@ describe("the screens a person meets when something is wrong, at the largest tex
         <ConnectionDetails
           action={{ label: "Reconnect", onPress: () => undefined }}
           explanation="Your phone can’t reach Studio Mac mini. Messages you send wait here and go when it’s back."
-          mark={null}
+          mark={<View style={{ height: 28, width: 28 }} />}
           meta="Last connected 9:41 · via Connect"
           name="Studio Mac mini"
           others={[
@@ -194,6 +219,9 @@ describe("the screens a person meets when something is wrong, at the largest tex
     const sheet = frames.frame(container.querySelector('[data-testid="sheet"]')!);
     const reconnect = control(container, "Reconnect");
     expect(reachable(frames, reconnect, narrowest.window), "Reconnect").toBe(true);
+    // Pinned: in view inside the sheet without scrolling, below the words that scroll.
+    expect(reconnect.closest('[data-rn="ScrollContent"]')).toBeNull();
+    expect(inside(frames.frame(reconnect), sheet), "Reconnect is past the sheet's edge").toBe(true);
     // Brought into view by scrolling inside the sheet, never past its edge for good.
     const scroll = frames.frame(container.querySelector('[data-rn="ScrollView"]')!);
     expect(inside(scroll, sheet), "the sheet's words run past its edge").toBe(true);
