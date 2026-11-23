@@ -166,10 +166,9 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
         createdBy: fixture.userId,
         idempotencyKey: key,
         name: key,
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default async () => null",
+        script: {
+          interpreter: null,
+          text: "console.log('tick')",
         },
         source: {
           kind: "schedule",

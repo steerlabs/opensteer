@@ -346,7 +346,7 @@ describeStore("work Home", (it) => {
       .execute();
   }
   const everyMinute = {
-    program: { toolContractVersion: 5, language: "javascript", source: "export default () => {}" },
+    script: { interpreter: null, text: "console.log('tick')" },
     source: {
       kind: "schedule",
       schedule: { expression: "* * * * *", kind: "cron", timezone: "UTC" },
