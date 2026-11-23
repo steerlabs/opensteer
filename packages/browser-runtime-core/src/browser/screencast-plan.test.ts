@@ -874,4 +874,36 @@ describe("the state after each event", () => {
     ).toBe(false);
     expect(after(pendingRedraw, { kind: "casts-ended" }, base).redraw).toBe(false);
   });
+
+  it("resets retries when a preparation failure lands after the wanted cast moved to a new key", () => {
+    const oldFacts = facts();
+    const oldKey = keyOf(oldFacts);
+    const newFacts = facts({}, { document: "b", size: { height: 700, width: 900 } });
+    const newKey = keyOf(newFacts);
+    const preparing = {
+      ...initialTabCastState(),
+      lastKey: oldKey,
+      told: { state: "preparing" as const },
+      unpictured: 3,
+    };
+    const failed = after(
+      preparing,
+      { kind: "start-failed", why: "Emulation.setVisibleSize failed" },
+      newFacts,
+    );
+    expect(failed.failed).toBeNull();
+    expect(failed.unpictured).toBe(1);
+    expect(failed.lastKey).toEqual(newKey);
+    // Resizing away and back while preparing also clears the old cast's retries on observed
+    // (caught by 30,000-seed generated test, Linux seed 222745633).
+    const observedAway = after(preparing, { kind: "observed" }, newFacts);
+    expect(observedAway).toMatchObject({ lastKey: null, unpictured: 0 });
+    const failedBack = after(
+      observedAway,
+      { kind: "start-failed", why: "Emulation.setVisibleSize failed" },
+      oldFacts,
+    );
+    expect(failedBack.failed).toBeNull();
+    expect(failedBack.unpictured).toBe(1);
+  });
 });

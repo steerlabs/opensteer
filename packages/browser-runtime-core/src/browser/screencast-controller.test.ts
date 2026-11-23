@@ -1938,34 +1938,452 @@ describe("the follow view, when a page loads forever and never paints (U6)", asy
         vi.useRealTimers();
       }
     });
+
+  it("keeps the armed timers equal to what the state asks for after every reconcile (paint backoff, first-frame limit, loading wait, stop answer)", async () => {
+    const { BrowserPaintTimeoutError } = await import("./backend.js");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const surface = {
+        active: true,
+        documentId: "doc-1",
+        geometryRevision: 1,
+        id: "tab-1" as never,
+        loading: true,
+        url: "https://example.com/",
+      };
+      let holdStop = false;
+      let finishStop: (() => void) | null = null;
+      let failPaintOnce = true;
+      const cdp = new FakeCdpSession();
+      cdp.responses.set("Page.stopScreencast", async () => {
+        if (holdStop) {
+          await new Promise<void>((resolve) => {
+            finishStop = resolve;
+          });
+        }
+        return {};
+      });
+      const captureListeners = new Set<() => void>();
+      let capture = { height: 600, rasterScale: 1, revision: 1, width: 800 };
+      const page = {
+        applyGeometry: async () => undefined,
+        capture: {
+          read: () => capture,
+          subscribe: (listener: () => void) => {
+            captureListeners.add(listener);
+            return () => captureListeners.delete(listener);
+          },
+        },
+        invalidateSurface: async () => undefined,
+        settleRendering: async () => {
+          if (failPaintOnce) {
+            failPaintOnce = false;
+            throw new BrowserPaintTimeoutError();
+          }
+        },
+      };
+      const binding = { cdp, page, surface };
+      const listeners = new Set<(event: unknown) => void>();
+      let dialogOpen = false;
+      const ledger = {
+        active: () => binding,
+        binding: () => binding,
+        dialogOf: () => null,
+        dialogOpen: () => dialogOpen,
+        recordPageScale: () => undefined,
+        subscribe: (listener: (event: unknown) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        use: async <T>(_surfaceId: unknown, operation: () => Promise<T>) => operation(),
+        viewportOf: () => ({ height: capture.height, width: capture.width }),
+        withGeometry: async <T>(_surfaceId: unknown, operation: () => Promise<T>) => operation(),
+      };
+      const follow = new ScreencastController({
+        frames: new LatestFrameStream({ sendFrame: async () => undefined }),
+        ledger: ledger as never,
+        onDialogChanged: () => undefined,
+      });
+      const internals = follow as unknown as {
+        readonly bound: {
+          readonly firstFrameTimer: { readonly ms: number } | null;
+          readonly paintTimer: unknown;
+        } | null;
+        readonly stopTimers: Map<object, unknown>;
+      };
+      const expectTimers = (want: {
+        readonly paint: boolean;
+        readonly firstFrameMs: number | null;
+        readonly stop: boolean;
+      }) => {
+        expect(internals.bound?.paintTimer !== null).toBe(want.paint);
+        expect(internals.bound?.firstFrameTimer?.ms ?? null).toBe(want.firstFrameMs);
+        expect(internals.stopTimers.size).toBe(want.stop ? 1 : 0);
+        expect(vi.getTimerCount()).toBe(
+          (want.paint ? 1 : 0) + (want.firstFrameMs !== null ? 1 : 0) + (want.stop ? 1 : 0),
+        );
+      };
+
+      await follow.start();
+      await follow.setStreaming(true);
+      await settle();
+      // 1. Paint timeout arms only the paint backoff timer.
+      expectTimers({ firstFrameMs: null, paint: true, stop: false });
+
+      // 2. Resizing clears the stale paint backoff timer and starts the loading cast (10 s timer).
+      capture = { height: 700, rasterScale: 1, revision: 2, width: 900 };
+      surface.geometryRevision = 2;
+      for (const listener of captureListeners) listener();
+      await settle();
+      expectTimers({ firstFrameMs: 10_000, paint: false, stop: false });
+
+      // 3. Loading finishes -> 10 s loading timer is replaced by 3 s first-frame timer (still 1 timer).
+      surface.loading = false;
+      for (const listener of listeners)
+        listener({ change: "updated", surface: { ...surface }, type: "changed" });
+      await settle();
+      expectTimers({ firstFrameMs: 3_000, paint: false, stop: false });
+
+      // 4. Opening a dialog clears the first-frame timer cleanly.
+      dialogOpen = true;
+      for (const listener of listeners)
+        listener({ change: "dialog", surface: { ...surface }, type: "changed" });
+      await settle();
+      expectTimers({ firstFrameMs: null, paint: false, stop: false });
+
+      // 5. Closing the dialog re-arms the 3 s first-frame timer; delivering a frame clears it.
+      dialogOpen = false;
+      for (const listener of listeners)
+        listener({ change: "dialog", surface: { ...surface }, type: "changed" });
+      await settle();
+      expectTimers({ firstFrameMs: 3_000, paint: false, stop: false });
+      cdp.emit("Page.screencastFrame", {
+        data: jpeg(900, 700).toString("base64"),
+        metadata: { deviceHeight: 700, deviceWidth: 900 },
+        sessionId: 1,
+      });
+      await settle();
+      expectTimers({ firstFrameMs: null, paint: false, stop: false });
+
+      // 6. Pausing with an unanswered stop arms only the 5 s stop-answer timer; answering clears it.
+      holdStop = true;
+      const pause = follow.setStreaming(false);
+      await settle();
+      expectTimers({ firstFrameMs: null, paint: false, stop: true });
+      finishStop?.();
+      await pause;
+      await settle();
+      expectTimers({ firstFrameMs: null, paint: false, stop: false });
+
+      await follow.close();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 /*
- * Re-check 9, R1 and re-check 11, finding 6.6 (U5): the state of a bound tab has one writer, the
- * pure `after` in screencast-plan.ts, and session state has one writer, `afterSession`.
+ * Re-check 9, R1, re-check 11 finding 6.6 (U5), and mutation audit M19 (U8): the state of a bound
+ * tab has one writer, the pure `after` in screencast-plan.ts, and session state has one writer,
+ * `afterSession`. Checked by parsing the TypeScript AST (`@babel/parser`) and resolving types,
+ * imports and aliases rather than matching identifier names, so renaming fields or variables
+ * cannot bypass it.
  */
 describe("the follow view's state", () => {
   it("is written only by after and afterSession", async () => {
     const { readFileSync } = await import("node:fs");
-    const source = readFileSync(new URL("./screencast-controller.ts", import.meta.url), "utf8");
-    const lines = source.split("\n");
-    const assignments = lines.flatMap((line, index) => {
-      const where = `screencast-controller.ts:${index + 1}: ${line.trim()}`;
-      // A field of a state set in place, or a state stored from anything but `after`.
-      if (/\bstate\.\w+\s*(?:=(?!=)|\+=|-=|\+\+|--)/u.test(line)) return [where];
-      if (/\.state\s*=(?!=)/u.test(line) && !/\.state\s*=\s*after\(/u.test(line)) return [where];
-      if (
-        /\bsessionStates\.set\(/u.test(line) &&
-        !/sessionStates\.set\([^,]+,\s*afterSession\(/u.test(line)
-      )
-        return [where];
-      return [];
+    const { parse } = await import("@babel/parser");
+    const planSource = readFileSync(new URL("./screencast-plan.ts", import.meta.url), "utf8");
+    const controllerSource = readFileSync(
+      new URL("./screencast-controller.ts", import.meta.url),
+      "utf8",
+    );
+    const parseTs = (source: string) =>
+      parse(source, { plugins: ["typescript"], sourceType: "module" });
+    type AstNode = {
+      readonly type: string;
+      readonly loc?: { readonly start: { readonly line: number } } | null;
+      readonly [key: string]: unknown;
+    };
+    const walk = (node: unknown, visit: (current: AstNode) => void) => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+        for (const item of node) walk(item, visit);
+        return;
+      }
+      const record = node as AstNode;
+      if (typeof record.type === "string") visit(record);
+      for (const [key, value] of Object.entries(record)) {
+        if (key === "loc" || key === "start" || key === "end" || key === "extra") continue;
+        walk(value, visit);
+      }
+    };
+    const identName = (node: unknown): string | null => {
+      if (!node || typeof node !== "object") return null;
+      const n = node as AstNode;
+      if (n.type === "Identifier" && typeof n.name === "string") return n.name;
+      if (n.type === "PrivateName") return identName(n.id);
+      return null;
+    };
+    const typeRefName = (node: unknown): string | null => {
+      if (!node || typeof node !== "object") return null;
+      const n = node as AstNode;
+      if (n.type === "TSTypeAnnotation") return typeRefName(n.typeAnnotation);
+      if (n.type === "TSTypeReference") return identName(n.typeName);
+      return null;
+    };
+    const typeHasName = (node: unknown, target: string): boolean => {
+      let found = false;
+      walk(node, (n) => {
+        if (n.type === "TSTypeReference" && identName(n.typeName) === target) found = true;
+      });
+      return found;
+    };
+
+    // 1. Every property on TabCastState and SessionCastState in screencast-plan.ts is readonly.
+    const planAst = parseTs(planSource);
+    const mutablePlanFields: string[] = [];
+    const tabStateFields = new Set<string>();
+    const sessionStateFields = new Set<string>();
+    walk(planAst, (node) => {
+      if (node.type !== "TSInterfaceDeclaration") return;
+      const iface = identName(node.id);
+      if (iface !== "TabCastState" && iface !== "SessionCastState") return;
+      const body = (node.body as { readonly body?: AstNode[] } | undefined)?.body ?? [];
+      for (const member of body) {
+        if (member.type !== "TSPropertySignature") continue;
+        const prop = identName(member.key);
+        if (!prop) continue;
+        if (iface === "TabCastState") tabStateFields.add(prop);
+        else sessionStateFields.add(prop);
+        if (member.readonly !== true) mutablePlanFields.push(`${iface}.${prop}`);
+      }
     });
-    expect(assignments).toEqual([]);
-    // And each is stored in one place.
-    expect(lines.filter((line) => /\.state\s*=\s*after\(/u.test(line))).toHaveLength(1);
-    expect(
-      lines.filter((line) => /sessionStates\.set\([^,]+,\s*afterSession\(/u.test(line)),
-    ).toHaveLength(1);
+    expect(mutablePlanFields).toEqual([]);
+    expect(tabStateFields.size).toBeGreaterThan(0);
+    expect(sessionStateFields.size).toBeGreaterThan(0);
+
+    // 2. Track local names imported from ./screencast-plan.js and every property/variable typed as
+    //    TabCastState, SessionCastState, or a map of SessionCastState (independent of field names).
+    const controllerAst = parseTs(controllerSource);
+    const importedAs = new Map<string, string>();
+    const tabStateProps = new Set<string>();
+    const sessionMapProps = new Set<string>();
+    const tabStateVars = new Set<string>();
+    const sessionStateVars = new Set<string>();
+    const sessionMapVars = new Set<string>();
+    const sessionGetterMethods = new Set<string>();
+
+    walk(controllerAst, (node) => {
+      if (
+        node.type === "ImportDeclaration" &&
+        (node.source as { readonly value?: string } | undefined)?.value === "./screencast-plan.js"
+      ) {
+        for (const spec of (node.specifiers as AstNode[] | undefined) ?? []) {
+          if (spec.type !== "ImportSpecifier") continue;
+          const imported = identName(spec.imported);
+          const local = identName(spec.local);
+          if (imported && local) importedAs.set(imported, local);
+        }
+      }
+      if (
+        node.type === "TSPropertySignature" ||
+        node.type === "ClassProperty" ||
+        node.type === "ClassPrivateProperty"
+      ) {
+        const prop = identName(node.key);
+        if (!prop) return;
+        const tname = typeRefName(node.typeAnnotation);
+        if (tname === "TabCastState") tabStateProps.add(prop);
+        if (
+          (tname === "WeakMap" || tname === "Map") &&
+          typeHasName(node.typeAnnotation, "SessionCastState")
+        )
+          sessionMapProps.add(prop);
+        if (
+          node.value &&
+          (node.value as AstNode).type === "NewExpression" &&
+          typeHasName((node.value as AstNode).typeParameters, "SessionCastState")
+        )
+          sessionMapProps.add(prop);
+      }
+      if (node.type === "ClassMethod" && typeRefName(node.returnType) === "SessionCastState") {
+        const name = identName(node.key);
+        if (name) sessionGetterMethods.add(name);
+      }
+    });
+
+    const afterLocal = importedAs.get("after");
+    const afterSessionLocal = importedAs.get("afterSession");
+    const initialTabLocal = importedAs.get("initialTabCastState");
+    expect(afterLocal && afterSessionLocal && initialTabLocal).toBeTruthy();
+    expect(tabStateProps.size).toBeGreaterThan(0);
+    expect(sessionMapProps.size).toBeGreaterThan(0);
+
+    const isTabStateExpr = (expr: unknown): boolean => {
+      if (!expr || typeof expr !== "object") return false;
+      const n = expr as AstNode;
+      if (n.type === "Identifier") return tabStateVars.has(n.name as string);
+      if (n.type === "MemberExpression" && !n.computed) {
+        const prop = identName(n.property);
+        return prop !== null && tabStateProps.has(prop);
+      }
+      if (
+        n.type === "TSAsExpression" ||
+        n.type === "TSTypeAssertion" ||
+        n.type === "TSNonNullExpression"
+      )
+        return isTabStateExpr(n.expression);
+      return false;
+    };
+    const isSessionMapExpr = (expr: unknown): boolean => {
+      if (!expr || typeof expr !== "object") return false;
+      const n = expr as AstNode;
+      if (n.type === "Identifier") return sessionMapVars.has(n.name as string);
+      if (n.type === "MemberExpression" && !n.computed) {
+        const prop = identName(n.property);
+        return prop !== null && sessionMapProps.has(prop);
+      }
+      if (
+        n.type === "TSAsExpression" ||
+        n.type === "TSTypeAssertion" ||
+        n.type === "TSNonNullExpression"
+      )
+        return isSessionMapExpr(n.expression);
+      return false;
+    };
+    const isSessionStateExpr = (expr: unknown): boolean => {
+      if (!expr || typeof expr !== "object") return false;
+      const n = expr as AstNode;
+      if (n.type === "Identifier") return sessionStateVars.has(n.name as string);
+      if (n.type === "CallExpression") {
+        const callee = n.callee as AstNode | undefined;
+        if (callee?.type === "MemberExpression" && !callee.computed) {
+          const name = identName(callee.property);
+          if (name === "get" && isSessionMapExpr(callee.object)) return true;
+          if (name !== null && sessionGetterMethods.has(name)) return true;
+        }
+      }
+      if (
+        n.type === "TSAsExpression" ||
+        n.type === "TSTypeAssertion" ||
+        n.type === "TSNonNullExpression"
+      )
+        return isSessionStateExpr(n.expression);
+      return false;
+    };
+
+    // Propagate local aliases (e.g. `const s = bound.state` or `const m = this.sessionStates`).
+    for (let pass = 0; pass < 3; pass += 1) {
+      walk(controllerAst, (node) => {
+        if (node.type === "VariableDeclarator") {
+          const name = identName(node.id);
+          if (!name) return;
+          const tname = typeRefName((node.id as AstNode).typeAnnotation);
+          if (tname === "TabCastState" || isTabStateExpr(node.init)) tabStateVars.add(name);
+          if (tname === "SessionCastState" || isSessionStateExpr(node.init))
+            sessionStateVars.add(name);
+          if (
+            ((tname === "WeakMap" || tname === "Map") &&
+              typeHasName((node.id as AstNode).typeAnnotation, "SessionCastState")) ||
+            isSessionMapExpr(node.init)
+          )
+            sessionMapVars.add(name);
+        }
+      });
+    }
+
+    const callsLocal = (expr: unknown, local: string | undefined): boolean => {
+      if (!local || !expr || typeof expr !== "object") return false;
+      const n = expr as AstNode;
+      return n.type === "CallExpression" && identName(n.callee) === local;
+    };
+    const sourceLines = controllerSource.split("\n");
+    const where = (node: AstNode) => {
+      const line = node.loc?.start.line ?? 0;
+      return `screencast-controller.ts:${line}: ${sourceLines[line - 1]?.trim() ?? node.type}`;
+    };
+
+    const isTabStateProp = (expr: unknown): boolean => {
+      if (!expr || typeof expr !== "object") return false;
+      const n = expr as AstNode;
+      if (n.type === "MemberExpression" && !n.computed) {
+        const prop = identName(n.property);
+        return prop !== null && tabStateProps.has(prop);
+      }
+      if (
+        n.type === "TSAsExpression" ||
+        n.type === "TSTypeAssertion" ||
+        n.type === "TSNonNullExpression"
+      )
+        return isTabStateProp(n.expression);
+      return false;
+    };
+
+    const violations: string[] = [];
+    let afterWrites = 0;
+    let afterSessionWrites = 0;
+    walk(controllerAst, (node) => {
+      if (node.type === "AssignmentExpression") {
+        const left = node.left as AstNode;
+        if (isTabStateProp(left)) {
+          if (node.operator === "=" && callsLocal(node.right, afterLocal)) afterWrites += 1;
+          else violations.push(where(node));
+        } else if (left.type === "MemberExpression") {
+          if (isTabStateExpr(left.object) || isSessionStateExpr(left.object))
+            violations.push(where(node));
+        }
+      }
+      if (node.type === "UpdateExpression") {
+        const arg = node.argument as AstNode;
+        if (
+          arg.type === "MemberExpression" &&
+          (isTabStateExpr(arg.object) || isSessionStateExpr(arg.object))
+        )
+          violations.push(where(node));
+      }
+      if (node.type === "CallExpression") {
+        const callee = node.callee as AstNode;
+        if (callee.type === "MemberExpression" && !callee.computed) {
+          const method = identName(callee.property);
+          if (method === "set" && isSessionMapExpr(callee.object)) {
+            const args = (node.arguments as AstNode[] | undefined) ?? [];
+            if (callsLocal(args[1], afterSessionLocal)) afterSessionWrites += 1;
+            else violations.push(where(node));
+          }
+          const obj = identName(callee.object);
+          if (
+            (obj === "Object" && (method === "assign" || method === "defineProperty")) ||
+            (obj === "Reflect" && method === "set")
+          ) {
+            const target = (node.arguments as AstNode[] | undefined)?.[0];
+            if (isTabStateExpr(target) || isSessionStateExpr(target)) violations.push(where(node));
+          }
+        }
+      }
+      if (node.type === "TSAsExpression" || node.type === "TSTypeAssertion") {
+        if (
+          isTabStateExpr(node.expression) ||
+          isSessionStateExpr(node.expression) ||
+          isSessionMapExpr(node.expression)
+        )
+          violations.push(where(node));
+      }
+      if (node.type === "ObjectProperty") {
+        const key = identName(node.key);
+        if (
+          key !== null &&
+          tabStateProps.has(key) &&
+          !callsLocal(node.value, initialTabLocal) &&
+          !callsLocal(node.value, afterLocal)
+        )
+          violations.push(where(node));
+      }
+    });
+
+    expect(violations).toEqual([]);
+    expect(afterWrites).toBe(1);
+    expect(afterSessionWrites).toBe(1);
   });
 });

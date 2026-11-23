@@ -675,10 +675,10 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
           (next.failed.whileLoading === true && !loadingNow))
       )
         next = { ...next, failed: null, unpictured: 0 };
-      // Retries belong to one cast: once what is wanted moves to another cast while none runs,
-      // the new cast begins its own retries afresh (U1).
+      // Retries belong to one cast: once what is wanted moves to another cast while none runs or
+      // is with Chromium, the new cast begins its own retries afresh (U1, U8).
       if (
-        next.told.state === "none" &&
+        (next.told.state === "none" || next.told.state === "preparing") &&
         next.repairing === null &&
         next.lastKey &&
         want.kind === "cast" &&
@@ -725,11 +725,15 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
       if (event.at && facts.tab && refusedInNavigation(facts.tab, { ...event.at, why: event.why }))
         return { ...state, refusal: { ...event.at, why: event.why }, told: { state: "none" } };
       // It failed before it reached Chromium (S2): `pictureLimit` is the number of retries after
-      // the first attempt, the same in every path (U1).
+      // the first attempt, the same in every path (U1). If the wanted cast moved to a new key
+      // while the old start was preparing, the new cast starts its own retries afresh (U8).
       const want = wanted(facts);
       const loadingNow = facts.tab?.loading === true || facts.tab?.navigation?.pending === true;
-      const atBound =
-        want.kind === "cast" && state.unpictured >= pictureLimit(facts.tab?.native ?? false);
+      const prior =
+        want.kind === "cast" && state.lastKey !== null && !sameCast(state.lastKey, want.key)
+          ? 0
+          : state.unpictured;
+      const atBound = want.kind === "cast" && prior >= pictureLimit(facts.tab?.native ?? false);
       return {
         ...state,
         failed: atBound
@@ -741,7 +745,7 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
           : state.failed,
         lastKey: want.kind === "cast" ? want.key : state.lastKey,
         told: { state: "none" },
-        unpictured: atBound ? state.unpictured : state.unpictured + 1,
+        unpictured: atBound ? prior : prior + 1,
       };
     }
     case "not-sent":

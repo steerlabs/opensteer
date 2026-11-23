@@ -25,7 +25,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  * 11. every wait that has a limit ends by its limit when the clock advances past it with no other
  *     event: the cast is then pictured, started again, or given up with its reason (M13);
  * 12. after a change (a new key) or a resume, a cast that then fails gets its full number of
- *     retries again (M16).
+ *     retries again (M16);
+ * 13. after every reconcile, the set of timers that are armed equals exactly the set the state
+ *     asks for: none missing, none left over (M18).
  *
  * Stand-in rules and the real ElectronDebuggerHub behaviour each mirrors (launcher tests in
  * apps/desktop/src/browser/electron-browser-launcher.test.ts):
@@ -56,6 +58,7 @@ const {
   fits,
   frameVerdict,
   initialSessionCastState,
+  nextStep,
   pictureLimit,
   screencastRaster,
   startFacts,
@@ -339,6 +342,8 @@ interface TabWorld {
   readonly restampedCasts: Set<string>;
   /** Stop timeouts recorded for this tab since its last picture/resume/session (U1/U4). */
   stopTimeouts: number;
+  /** Whether a stop timed out under S3 on the current session without a fresh-cast picture yet. */
+  stopTimedOut: boolean;
   readonly captureListeners: Set<() => void>;
   readonly navigationListeners: Set<() => void>;
 }
@@ -393,6 +398,7 @@ class World {
       castTag: 0,
       restampedCasts: new Set(),
       startsByTag: new Map(),
+      stopTimedOut: false,
       stopTimeouts: 0,
       unpainted: opening,
     });
@@ -547,18 +553,23 @@ class World {
           );
         if (painted.tab !== tab.id)
           this.violations.push(`${tab.id} was shown ${painted.tab}'s picture`);
-        else if (painted.session !== tab.chromium || painted.cast !== tab.chromium.cast)
-          this.violations.push(
-            `${tab.id} was shown a picture of cast ${painted.cast}, not of cast ${tab.chromium.cast} that runs`,
-          );
         else if (painted.document !== tab.documentId)
           this.violations.push(
             `${tab.id} was shown a picture of document ${painted.document}, not of ${tab.documentId}`,
+          );
+        else if (
+          painted.session !== tab.chromium ||
+          (painted.cast !== tab.chromium.cast &&
+            !(tab.stopTimedOut && painted.cast < tab.chromium.cast))
+        )
+          this.violations.push(
+            `${tab.id} was shown a picture of cast ${painted.cast}, not of cast ${tab.chromium.cast} that runs`,
           );
         tab.castTag += 1;
         tab.startsByTag.clear();
         tab.attemptsByCast.clear();
         tab.restampedCasts.clear();
+        if (painted.cast === tab.chromium.cast) tab.stopTimedOut = false;
         tab.stopTimeouts = 0;
       },
     };
@@ -981,6 +992,7 @@ function actions(
         tab.epoch += 1;
         tab.attemptsByCast.clear();
         tab.restampedCasts.clear();
+        tab.stopTimedOut = false;
         tab.stopTimeouts = 0;
         world.afresh(tab.id);
         world.changed(tab.id);
@@ -1014,10 +1026,11 @@ async function settle(world: World, internals: Internals, maxTurns: number) {
 }
 
 interface Internals {
+  readonly closed: boolean;
   readonly dirty: boolean;
   readonly passing: boolean;
   readonly sessionStates: WeakMap<Chromium, SessionCastState>;
-  readonly stopTimers?: Map<object, unknown>;
+  readonly stopTimers?: Map<object, { readonly generation: number }>;
   readonly bound: {
     readonly id: Id;
     readonly cdp: Chromium;
@@ -1248,6 +1261,73 @@ function fullRetriesAfterChangeOrResume(
   return broken;
 }
 
+/** Invariant 13 (M18): after every reconcile, the set of timers that are armed equals exactly the set the state asks for: none missing, none left over. */
+function armedTimersMatchState(
+  world: World,
+  follow: InstanceType<typeof ScreencastController>,
+): string[] {
+  const broken: string[] = [];
+  const internals = follow as unknown as Internals;
+  const bound = internals.bound;
+  let expectedTimers = 0;
+  if (bound && bound.id === world.active) {
+    const facts = world.facts();
+    const wantPaint = bound.state.paint !== null;
+    if (wantPaint) expectedTimers += 1;
+    if (wantPaint && bound.paintTimer === null)
+      broken.push(
+        `after reconcile, ${bound.id} was missing the paint backoff timer the state asked for`,
+      );
+    if (!wantPaint && bound.paintTimer !== null)
+      broken.push(
+        `after reconcile, ${bound.id} left a paint backoff timer armed when the state asked for none`,
+      );
+    const step = nextStep(facts as never, "", bound.state, world.sessionState(bound.id));
+    const expectedMs = step.kind === "wait" ? step.timer : undefined;
+    if (expectedMs !== undefined) expectedTimers += 1;
+    if (expectedMs !== undefined && bound.firstFrameTimer?.ms !== expectedMs)
+      broken.push(
+        `after reconcile, ${bound.id} had first-frame timer ${bound.firstFrameTimer ? `${bound.firstFrameTimer.ms}ms` : "none"} instead of the ${expectedMs}ms "${step.kind === "wait" ? step.why : ""}" timer the state asked for`,
+      );
+    if (expectedMs === undefined && bound.firstFrameTimer !== null)
+      broken.push(
+        `after reconcile, ${bound.id} left a ${bound.firstFrameTimer.ms}ms first-frame timer armed when the state asked for none (${step.kind}${step.kind === "wait" ? `: ${step.why}` : ""})`,
+      );
+  }
+  const stopTimers = internals.stopTimers;
+  const sessions = new Set<Chromium>([
+    world.tabs.A.chromium,
+    world.tabs.B.chromium,
+    ...((stopTimers?.keys() as Iterable<Chromium> | undefined) ?? []),
+  ]);
+  for (const chromium of sessions) {
+    const label =
+      chromium === world.tabs.A.chromium
+        ? "A"
+        : chromium === world.tabs.B.chromium
+          ? "B"
+          : "a prior session";
+    const session = internals.sessionStates.get(chromium) ?? initialSessionCastState;
+    const wantStop = !internals.closed && session.stops > 0;
+    const armed = stopTimers?.get(chromium);
+    if (wantStop) expectedTimers += 1;
+    if (wantStop && (!armed || armed.generation !== session.generation))
+      broken.push(
+        `after reconcile, ${label} was missing the stop-answer timer for generation ${session.generation}`,
+      );
+    if (!wantStop && armed)
+      broken.push(
+        `after reconcile, ${label} left a stop-answer timer armed when no stop was with Chromium`,
+      );
+  }
+  const actualTimers = vi.getTimerCount();
+  if (actualTimers !== expectedTimers)
+    broken.push(
+      `after reconcile, ${actualTimers} timer(s) were armed instead of the ${expectedTimers} the state asked for`,
+    );
+  return broken;
+}
+
 /** The invariants at a quiet point; each one broken is said in words. */
 function check(world: World, follow: InstanceType<typeof ScreencastController>): string[] {
   const broken: string[] = [];
@@ -1265,6 +1345,7 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
   broken.push(...noFrameAdmittedWhileStopWithChromium(world, follow));
   broken.push(...lateStopAnswerChangesNothing(world));
   broken.push(...fullRetriesAfterChangeOrResume(world, follow));
+  broken.push(...armedTimersMatchState(world, follow));
   if (bound && bound.id === world.active && want.kind === "cast") {
     const told = bound.state.told;
     const pictured =
@@ -1366,8 +1447,10 @@ async function run(seed: number, engine: "desktop" | "linux", length: number) {
   follow.diagnostics.push = (...entries) => {
     for (const entry of entries) {
       const id = entry.surfaceId as string | undefined;
-      if (entry.stage === "cast-stop-timeout" && (id === "A" || id === "B"))
+      if (entry.stage === "cast-stop-timeout" && (id === "A" || id === "B")) {
         world.tabs[id].stopTimeouts += 1;
+        world.tabs[id].stopTimedOut = true;
+      }
     }
     return pushDiagnostic(...entries);
   };
