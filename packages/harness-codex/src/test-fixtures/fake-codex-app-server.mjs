@@ -431,7 +431,8 @@ function handleClientMethod(message) {
         send({ id: message.id, result: { rateLimits: { primary: { usedPercent: "lots" } } } });
         break;
       }
-      const reached = scenario === "rate-limits-reached";
+      const spendControl = scenario === "rate-limits-spend-control";
+      const reached = scenario === "rate-limits-reached" || spendControl;
       send({
         id: message.id,
         result: {
@@ -448,7 +449,7 @@ function handleClientMethod(message) {
             },
             rateLimitReachedType: reached ? "usage_limit_reached" : null,
             secondary: { resetsAt: null, usedPercent: 12, windowDurationMins: 300 },
-            spendControlReached: false,
+            spendControlReached: spendControl,
           },
           rateLimitResetCredits: { availableCount: 3, credits: [] },
           rateLimitsByLimitId: {},

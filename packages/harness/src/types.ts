@@ -691,10 +691,16 @@ export type HarnessObservedUsageScope =
 
 /** One provider-reported consumption window against an account's plan. */
 export interface HarnessObservedUsageWindow {
-  /** How the provider frames the window — "5h", "weekly", "30d". */
+  /** How the provider frames the window — "5h", "weekly", "30d", "Gemini 5h". */
   readonly label: string;
+  /**
+   * Providers whose models draw from this window when it represents a shared
+   * pool rather than the whole account or one model. An empty array marks an
+   * informational bucket whose model membership is unknown.
+   */
+  readonly providerIds?: readonly ModelSelection["providerId"][];
   readonly resetsAt: string | null;
-  /** Absent means the account as a whole. */
+  /** Absent means the account as a whole unless `providerIds` narrows it. */
   readonly scope?: HarnessObservedUsageScope;
   readonly usedPercent: number;
 }

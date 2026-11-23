@@ -46,6 +46,7 @@ import {
   type HarnessRunInput,
   type SupervisedProcess,
 } from "@opensteer/harness";
+import { accountWideLimitActive } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexHarnessDriver, codexAccessModeConfiguration } from "./index.js";
 import { CodexHarnessConfigSchema, MINIMUM_CODEX_CLI_VERSION } from "./config.js";
@@ -986,6 +987,22 @@ describe("Codex app-server harness", () => {
         expect.objectContaining({ label: "5h", usedPercent: 12 }),
       ],
     });
+  });
+
+  it("preserves an active Codex spend-control block independently of rate-limit window resets", async () => {
+    const inspected = await inspectScenario("rate-limits-spend-control");
+
+    if (inspected?.status !== "ready") throw new Error("Expected a ready Codex inspection");
+    const usage = inspected.connections?.[0]?.usage;
+    expect(usage).toMatchObject({
+      limitReached: true,
+      windows: [
+        expect.objectContaining({ label: "weekly", usedPercent: 100 }),
+        expect.objectContaining({ label: "5h", usedPercent: 12 }),
+        { label: "Spend limit", resetsAt: null, usedPercent: 100 },
+      ],
+    });
+    expect(accountWideLimitActive(usage!, Date.parse("2026-09-08T00:00:00.000Z"))).toBe(true);
   });
 
   it.each(["rate-limits-missing", "rate-limits-malformed"] as const)(

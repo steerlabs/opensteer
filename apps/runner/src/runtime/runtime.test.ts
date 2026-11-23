@@ -936,6 +936,116 @@ describe("RunnerRuntime", () => {
     }
   });
 
+  it("keeps an authenticated catalog ready when a driver returns invalid usage telemetry", async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-invalid-usage-"));
+    const registry = new HarnessRegistry();
+    const driverKind = HarnessIdSchema.parse("invalid-usage-test");
+    registry.registerDriver({
+      capabilities: fakeHarnessCapabilities,
+      accessModes: fakeHarnessAccessModes,
+      sources: fakeHarnessSources,
+      configSchema: z.strictObject({}),
+      create: async () => {
+        throw new Error("Unexpected adapter creation");
+      },
+      inspect: async () => ({
+        connections: [
+          {
+            authKind: "subscription",
+            connectionSlot: "primary",
+            label: "Subscription",
+            status: "connected",
+            usage: {
+              limitReached: false,
+              observedAt: "2026-11-01T00:00:00.000Z",
+              windows: [
+                {
+                  label: "Claude & GPT (shared) · Weekly",
+                  resetsAt: "2026-11-07T00:00:00.000Z",
+                  usedPercent: 40,
+                },
+              ],
+            },
+          },
+          {
+            authKind: "subscription",
+            connectionSlot: "secondary",
+            label: "Secondary",
+            status: "connected",
+            usage: {
+              limitReached: false,
+              observedAt: "2026-11-01T00:00:00.000Z",
+              windows: [
+                {
+                  label: "Gemini 5h",
+                  resetsAt: "2026-11-01T05:00:00.000Z",
+                  usedPercent: 25,
+                },
+              ],
+            },
+          },
+        ],
+        models: [
+          {
+            acceptsImages: false,
+            displayName: "Demo",
+            isDefault: true,
+            modelId: catalogSelection.modelId,
+            options: [],
+            providerId: catalogSelection.providerId,
+          },
+        ],
+        status: "ready",
+      }),
+      kind: driverKind,
+    });
+    const runtime = configuredRuntime({
+      environmentId: createId("environment"),
+      privateStateDirectory: join(temporaryRoot, "private"),
+      registry,
+    });
+
+    try {
+      const [catalog] = await runtime.inspectHarnesses(
+        [harnessDefinition(driverKind, "Invalid usage", 1)],
+        new AbortController().signal,
+      );
+      expect(catalog).toMatchObject({
+        connections: [
+          {
+            authKind: "subscription",
+            connectionSlot: "primary",
+            label: "Subscription",
+            status: "connected",
+          },
+          {
+            authKind: "subscription",
+            connectionSlot: "secondary",
+            label: "Secondary",
+            status: "connected",
+            usage: {
+              limitReached: false,
+              observedAt: "2026-11-01T00:00:00.000Z",
+              windows: [
+                {
+                  label: "Gemini 5h",
+                  resetsAt: "2026-11-01T05:00:00.000Z",
+                  usedPercent: 25,
+                },
+              ],
+            },
+          },
+        ],
+        models: [expect.objectContaining({ modelId: catalogSelection.modelId })],
+        status: "ready",
+      });
+      expect(catalog?.connections[0]?.usage).toBeUndefined();
+    } finally {
+      await runtime.close();
+      await rm(temporaryRoot, { force: true, recursive: true });
+    }
+  });
+
   it("never infers authentication from a generic provider error", async () => {
     const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-explicit-inspection-state-"));
     const registry = new HarnessRegistry();

@@ -1,5 +1,9 @@
 import { ModelIdSchema, ModelProviderIdSchema } from "@opensteer/core";
-import type { HarnessObservedConnection, HarnessObservedUsageScope } from "@opensteer/protocol";
+import {
+  HarnessObservedUsageWindowSchema,
+  type HarnessObservedConnection,
+  type HarnessObservedUsageScope,
+} from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import {
   currentConnectionUsage,
@@ -273,5 +277,145 @@ describe("connection usage", () => {
         now,
       ),
     ).toBeNull();
+  });
+
+  it("scopes shared provider pools independently without blocking unrelated providers or flipping account-wide limits", () => {
+    const antigravity = connection({
+      accountLabel: "person@example.test",
+      label: "Antigravity",
+      usage: {
+        limitReached: false,
+        observedAt: "2026-09-05T00:00:00.000Z",
+        windows: [
+          {
+            label: "Gemini 5h",
+            providerIds: [ModelProviderIdSchema.parse("google")],
+            resetsAt: "2026-09-05T05:00:00.000Z",
+            usedPercent: 25,
+          },
+          {
+            label: "Claude & GPT 5h",
+            providerIds: [
+              ModelProviderIdSchema.parse("anthropic"),
+              ModelProviderIdSchema.parse("openai"),
+            ],
+            resetsAt: "2026-09-05T06:00:00.000Z",
+            usedPercent: 100,
+          },
+          {
+            label: "Unknown pool 5h",
+            providerIds: [],
+            resetsAt: "2026-09-05T07:00:00.000Z",
+            usedPercent: 100,
+          },
+        ],
+      },
+    });
+
+    // Gemini sees only its own 25% window and is not limit-reached.
+    const gemini = currentConnectionUsage(antigravity, now, {
+      modelId: "gemini-4-neon",
+      providerId: "google",
+    });
+    expect(gemini?.limitReached).toBe(false);
+    expect(
+      describeConnectionUsage(antigravity, now, {
+        modelId: "gemini-4-neon",
+        providerId: "google",
+      }),
+    ).toBe("Gemini 5h 25% used · resets Sat 5:00 AM");
+
+    // Claude and GPT both draw from the exhausted 3P pool and report Limit reached.
+    for (const model of [
+      { modelId: "claude-opus-5-5", providerId: "anthropic" },
+      { modelId: "gpt-oss-120b-medium", providerId: "openai" },
+    ]) {
+      expect(currentConnectionUsage(antigravity, now, model)?.limitReached).toBe(true);
+      expect(describeConnectionUsage(antigravity, now, model)).toBe(
+        "Limit reached · resets Sat 6:00 AM",
+      );
+    }
+
+    // Once the 3P window resets, the limit lifts automatically.
+    const afterReset = new Date("2026-09-05T06:00:00.000Z").getTime();
+    expect(
+      currentConnectionUsage(antigravity, afterReset, {
+        modelId: "claude-opus-5-5",
+        providerId: "anthropic",
+      }),
+    ).toBeNull();
+
+    // Account overview (Settings, no model) names the 100%-used scoped pool rather than claiming the whole account is out.
+    expect(currentConnectionUsage(antigravity, now)?.limitReached).toBe(false);
+    expect(describeConnectionUsage(antigravity, now)).toBe(
+      "Claude & GPT 5h 100% used · resets Sat 6:00 AM",
+    );
+  });
+
+  it("clears an account-wide limit once its exhausted window resets even when a healthy window remains", () => {
+    const recovering = connection({
+      usage: {
+        limitReached: true,
+        observedAt: "2026-09-05T00:00:00.000Z",
+        windows: [
+          { label: "5h", resetsAt: "2026-09-05T04:00:00.000Z", usedPercent: 100 },
+          { label: "weekly", resetsAt: "2026-09-09T00:00:00.000Z", usedPercent: 25 },
+        ],
+      },
+    });
+
+    expect(currentConnectionUsage(recovering, now)?.limitReached).toBe(true);
+    expect(describeConnectionUsage(recovering, now)).toBe("Limit reached · resets Sat 4:00 AM");
+    const after5hReset = new Date("2026-09-05T04:00:00.000Z").getTime();
+    expect(currentConnectionUsage(recovering, after5hReset)?.limitReached).toBe(false);
+    expect(describeConnectionUsage(recovering, after5hReset)).toBe(
+      "Weekly 25% used · resets Wed 12:00 AM",
+    );
+  });
+
+  it("keeps an account-wide limit active even when a scoped pool for the selected model has expired", () => {
+    const blocked = connection({
+      usage: {
+        limitReached: true,
+        observedAt: "2026-09-05T00:00:00.000Z",
+        windows: [
+          {
+            label: "Gemini 5h",
+            providerIds: [ModelProviderIdSchema.parse("google")],
+            resetsAt: "2026-09-04T23:00:00.000Z",
+            usedPercent: 100,
+          },
+        ],
+      },
+    });
+
+    expect(
+      currentConnectionUsage(blocked, now, { modelId: "gemini-4-neon", providerId: "google" })
+        ?.limitReached,
+    ).toBe(true);
+    expect(
+      describeConnectionUsage(blocked, now, { modelId: "gemini-4-neon", providerId: "google" }),
+    ).toBe("Limit reached");
+  });
+
+  it("rejects conflicting scope and providerIds declarations on the wire schema", () => {
+    expect(
+      HarnessObservedUsageWindowSchema.safeParse({
+        label: "Gemini 5h",
+        providerIds: [],
+        resetsAt: null,
+        scope: modelScope("google", "gemini-4-neon"),
+        usedPercent: 50,
+      }).success,
+    ).toBe(false);
+    expect(
+      HarnessObservedUsageWindowSchema.safeParse({
+        label: "Gemini 5h",
+        providerIds: [ModelProviderIdSchema.parse("google")],
+        resetsAt: null,
+        scope: { kind: "account" },
+        usedPercent: 50,
+      }).success,
+    ).toBe(false);
   });
 });
