@@ -368,6 +368,8 @@ const machinePageLimit = 100;
 export interface HostServerDependencies {
   /** The person's Requests for Home commands agents propose. */
   readonly commandRequests?: import("./commands/requests.js").CommandRequestService;
+  /** Hands the agents' state tool the person's read handlers once they are built. */
+  readonly personReads?: (handlers: Readonly<Record<string, unknown>>) => void;
   /** The owner's plugin API; personal Hosts only. */
   readonly plugins?: import("./plugins/plugin-owner-api.js").PluginOwnerApi;
   readonly pluginAgentWorkStoppedSince?: (runnerId: RunnerId) => string | undefined;
@@ -2657,88 +2659,86 @@ export async function createHostServer(
       signOutDeviceSession(dependencies, session, sessionId, afterResponse),
   );
 
-  registerHostApi(
-    app,
-    dependencies.authenticator,
-    {
-      ...createHostApiHandlers(
-        identityRpcHandlers,
-        createTriggerRpcHandlers(dependencies.triggers.service),
-        dependencies.triggers.service,
-        createDeviceRpcHandlers(deviceRpcOptions),
-        deviceRpcOptions,
-        createChannelRpcHandlers(dependencies.channels.service),
-        dependencies.channels.service,
-        createBrowserSourceRpcHandlers(browserSourceRpcOptions),
-        browserSourceRpcOptions,
-        coreRpcHandlers,
-        handleCoreCommand,
-        dependencies.computerViews,
-        dependencies.plugins,
-        dependencies.pluginOAuth,
-        dependencies.commandRequests,
-      ),
-      ...(dependencies.connections
-        ? createConnectionRpcHandlers(dependencies.connections, (ownerId) =>
-            dependencies.browserSources.chromeTabGrantCatalog(ownerId),
-          )
-        : {
-            "connections.list": async () => {
-              throw new OpensteerError({
-                code: "not_found",
-                message: "Agent connections are unavailable.",
-              });
-            },
-            "connections.authorization.get": async () => {
-              throw new OpensteerError({
-                code: "not_found",
-                message: "Agent connections are unavailable.",
-              });
-            },
-            "connections.activity": async () => {
-              throw new OpensteerError({
-                code: "not_found",
-                message: "Agent connections are unavailable.",
-              });
-            },
-            "threads.activity": async () => {
-              throw new OpensteerError({
-                code: "not_found",
-                message: "Agent connections are unavailable.",
-              });
-            },
-          }),
-      "personal.accountLink.get": async (_input, context) => {
-        const service = dependencies.personalAccountLink?.service;
-        if (!service)
-          throw new OpensteerError({
-            code: "not_found",
-            message: "Opensteer Account linking is unavailable",
-          });
-        return rpcSuccess(await service.accountLinkStatus(context.session!));
-      },
-      "personal.remoteAccess.get": async (_input, context) => {
-        const service = dependencies.personalRemoteAccess?.service;
-        if (!service)
-          throw new OpensteerError({
-            code: "not_found",
-            message: "Personal remote access is unavailable",
-          });
-        return rpcSuccess(await service.administration.status(context.session!));
-      },
+  const hostApiHandlers: Parameters<typeof registerHostApi>[2] = {
+    ...createHostApiHandlers(
+      identityRpcHandlers,
+      createTriggerRpcHandlers(dependencies.triggers.service),
+      dependencies.triggers.service,
+      createDeviceRpcHandlers(deviceRpcOptions),
+      deviceRpcOptions,
+      createChannelRpcHandlers(dependencies.channels.service),
+      dependencies.channels.service,
+      createBrowserSourceRpcHandlers(browserSourceRpcOptions),
+      browserSourceRpcOptions,
+      coreRpcHandlers,
+      handleCoreCommand,
+      dependencies.computerViews,
+      dependencies.plugins,
+      dependencies.pluginOAuth,
+      dependencies.commandRequests,
+    ),
+    ...(dependencies.connections
+      ? createConnectionRpcHandlers(dependencies.connections, (ownerId) =>
+          dependencies.browserSources.chromeTabGrantCatalog(ownerId),
+        )
+      : {
+          "connections.list": async () => {
+            throw new OpensteerError({
+              code: "not_found",
+              message: "Agent connections are unavailable.",
+            });
+          },
+          "connections.authorization.get": async () => {
+            throw new OpensteerError({
+              code: "not_found",
+              message: "Agent connections are unavailable.",
+            });
+          },
+          "connections.activity": async () => {
+            throw new OpensteerError({
+              code: "not_found",
+              message: "Agent connections are unavailable.",
+            });
+          },
+          "threads.activity": async () => {
+            throw new OpensteerError({
+              code: "not_found",
+              message: "Agent connections are unavailable.",
+            });
+          },
+        }),
+    "personal.accountLink.get": async (_input, context) => {
+      const service = dependencies.personalAccountLink?.service;
+      if (!service)
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Opensteer Account linking is unavailable",
+        });
+      return rpcSuccess(await service.accountLinkStatus(context.session!));
     },
-    {
-      guardResponse: (input, context) => {
-        return dependencies.realtime.guardRead(personalResponseScopes(input, context.session?.id));
-      },
-      revalidateResponse: async (context) => {
-        if (!context.session) return;
-        const current = await dependencies.authenticator.authenticateSession(context.headers);
-        if (current.id !== context.session.id || current.user.id !== context.session.user.id)
-          throw new OpensteerError({ code: "unauthorized", message: "This session ended." });
-      },
+    "personal.remoteAccess.get": async (_input, context) => {
+      const service = dependencies.personalRemoteAccess?.service;
+      if (!service)
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Personal remote access is unavailable",
+        });
+      return rpcSuccess(await service.administration.status(context.session!));
     },
-  );
+  };
+  // The agents' state tool reads what the person's apps read: these same handlers (AC1).
+  dependencies.personReads?.(hostApiHandlers as never);
+  registerHostApi(app, dependencies.authenticator, hostApiHandlers, {
+    guardResponse: (input, context) => {
+      return dependencies.realtime.guardRead(personalResponseScopes(input, context.session?.id));
+    },
+    revalidateResponse: async (context) => {
+      if (!context.session) return;
+      const current = await dependencies.authenticator.authenticateSession(context.headers);
+      if (current.id !== context.session.id || current.user.id !== context.session.user.id)
+        throw new OpensteerError({ code: "unauthorized", message: "This session ended." });
+    },
+  });
 
   registerDeviceEnrollmentPreview(app, dependencies.store.database);
   app.post(

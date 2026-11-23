@@ -23,7 +23,13 @@ const selected = (tasks: boolean, ...resources: unknown[]) =>
   AgentGrantSchema.parse({ scope: "selected", tasks, resources });
 
 /** Every shape that holds a Home command lists the two command tools (A5). */
-const common = ["ask_person", "discover", "opensteer_commands", "opensteer_command"];
+const common = [
+  "ask_person",
+  "discover",
+  "opensteer_commands",
+  "opensteer_command",
+  "opensteer_state",
+];
 const browser = ["browser_connect", "browser_use"];
 const passwords = ["saved_login_request", "card_request"];
 const plugins = ["plugin_call", "plugin_resume"];
@@ -118,7 +124,7 @@ describe("the connection's actual MCP listing", () => {
     "approval-required" | undefined,
   ][] = [
     // The person's settings are read at Full access only, as opensteer_defaults_read was.
-    ["everything", full, [...everything, "opensteer_state"], undefined],
+    ["everything", full, everything, undefined],
     ["everything supervised", full, everything, "approval-required"],
     [
       "one profile, no tasks",

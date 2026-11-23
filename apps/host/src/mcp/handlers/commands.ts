@@ -17,7 +17,7 @@ import {
   type CommandType,
 } from "@opensteer/protocol/command-table";
 import { commandTitles } from "@opensteer/protocol/command-words";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import { z } from "zod";
 import { agentCommandDoor } from "../../commands/agent-door.js";
 import {
@@ -28,6 +28,7 @@ import {
 import type { CommandRegistry } from "../../commands/registry.js";
 import {
   proposerLineageKey,
+  rootTask,
   type CommandProposer,
   type CommandRequestService,
 } from "../../commands/requests.js";
@@ -61,7 +62,16 @@ export class CommandTools {
   readonly #registry: CommandRegistry;
   readonly #requests: () => CommandRequestService | undefined;
   readonly #administration: AdministrationToolHandlers;
+  readonly #reads: () => Readonly<Record<string, unknown>> | undefined;
+  readonly #engines: ((caller: AgentCaller) => Promise<Record<string, unknown>>) | undefined;
+  readonly #policy: (() => Promise<unknown>) | undefined;
   constructor(options: {
+    /** The person's read handlers, as the Host registered them. */
+    readonly reads?: () => Readonly<Record<string, unknown>> | undefined;
+    /** The engine accounts as the person's apps list them. */
+    readonly engines?: (caller: AgentCaller) => Promise<Record<string, unknown>>;
+    /** The organization's effective policy on a work Home; nothing on a personal one. */
+    readonly policy?: () => Promise<unknown>;
     readonly database: Kysely<DatabaseSchema>;
     readonly registry: CommandRegistry;
     readonly requests: () => CommandRequestService | undefined;
@@ -72,6 +82,9 @@ export class CommandTools {
     this.#registry = options.registry;
     this.#requests = options.requests;
     this.#administration = options.administration;
+    this.#reads = options.reads ?? (() => undefined);
+    this.#engines = options.engines;
+    this.#policy = options.policy;
   }
 
   /** What this caller holds, and how the Home answers each: from the rule, cut to the caller. */
@@ -233,13 +246,121 @@ export class CommandTools {
   }
 
   async opensteer_state({ caller, input }: ToolCall<"opensteer_state">) {
-    // Admitted like a command: the live scope from the same read the door makes (AD2). An ended
+    // Admitted like a command: the live grant from the same read the door makes (AD2). An ended
     // connection reads nothing; a chat anyone may speak in counts as selected.
     const holder = await agentCommandScope(this.#database)(caller);
     if (holder === "gone") throw notFound();
-    // Settings are the person's own: not there for a selected grant.
-    if (input.area === "settings" && holder?.scope === "selected") throw notFound();
-    return { area: input.area, view: await this.#administration.settingsView(caller) };
+    const scope = holder?.scope ?? null;
+    const grant = holder?.grant ?? null;
+    const connectionId =
+      caller.kind === "connection"
+        ? caller.connectionId
+        : caller.agentConnection?.agentConnectionId;
+    // The person's own read, by its handler; the area is cut afterwards, never widened.
+    const read = async (name: string, request: Record<string, unknown>) => {
+      const handler = this.#reads()?.[name] as
+        | ((input: unknown, context: unknown) => Promise<{ ok?: boolean; data?: unknown }>)
+        | undefined;
+      if (!handler) throw notFound();
+      const reply = await handler(request, {
+        // The person as their own apps sign in: the owner, not disabled.
+        session: {
+          id: `ses_state_${caller.userId}`,
+          user: { id: caller.userId, disabledAt: null },
+        },
+        headers: {},
+        afterResponse: () => undefined,
+        setHeader: () => undefined,
+      });
+      return (reply && typeof reply === "object" && "data" in reply ? reply.data : reply) as Record<
+        string,
+        unknown
+      >;
+    };
+    switch (input.area) {
+      case "settings":
+        if (scope === "selected") throw notFound();
+        return { area: input.area, view: await this.#administration.settingsView(caller) };
+      case "connections": {
+        const view = await read("connections.list", {});
+        const all = (view.connections ?? []) as readonly { readonly id: string }[];
+        // A connected agent sees itself only: other connections are other principals (X13).
+        if (!connectionId) return { area: input.area, view };
+        return {
+          area: input.area,
+          view: { connections: all.filter(({ id }) => id === connectionId), endedConnections: [] },
+        };
+      }
+      case "chats":
+        // A chat account and its chats are other connections (X13).
+        if (connectionId) throw notFound();
+        return { area: input.area, view: await read("channels.get", {}) };
+      case "devices": {
+        const view = await read("machines.list", {});
+        const machines = (view.machines ?? []) as readonly { readonly machineId?: string }[];
+        if (scope !== "selected" || grant?.scope !== "selected")
+          return { area: input.area, view: { machines } };
+        // A selected grant sees the devices of the apps it was given, as its tools do.
+        const devices = new Set<string>(
+          grant.resources.flatMap((resource) =>
+            resource.kind === "computer-app" ? [resource.deviceId as string] : [],
+          ),
+        );
+        return {
+          area: input.area,
+          view: { machines: machines.filter(({ machineId }) => devices.has(machineId ?? "")) },
+        };
+      }
+      case "engines":
+        if (scope === "selected") throw notFound();
+        return { area: input.area, view: (await this.#engines?.(caller)) ?? {} };
+      case "requests": {
+        const view = await read("requests.list", {});
+        // Each item as the person's Needs you list holds it: the Request, and how it is shown.
+        const requests = (view.requests ?? []) as readonly {
+          readonly request: { readonly id: string };
+        }[];
+        // Your own agents at Full access see what the person sees; anyone else, its lineage's:
+        // a connected agent's, the task tree it works in, or the automation's own task.
+        if (!connectionId && caller.accessMode === "full-access")
+          return { area: input.area, view: { requests } };
+        const mine = new Set(
+          connectionId
+            ? (
+                await this.#database
+                  .selectFrom("requests")
+                  .innerJoin("threads", "threads.id", "requests.originatingThreadId")
+                  .select("requests.id")
+                  .where("threads.originConnectionId", "=", connectionId as never)
+                  .execute()
+              ).map(({ id }) => id as string)
+            : await lineageRequests(
+                this.#database,
+                caller.kind === "run"
+                  ? await rootTask(this.#database, caller.thread.id)
+                  : (caller as Extract<AgentCaller, { kind: "program" }>).anchor.id,
+              ),
+        );
+        return {
+          area: input.area,
+          view: { requests: requests.filter(({ request }) => mine.has(request.id)) },
+        };
+      }
+      case "activity":
+        return {
+          area: input.area,
+          view: connectionId
+            ? await read("connections.activity", { connectionId })
+            : await read("threads.activity", {
+                threadId:
+                  caller.kind === "run"
+                    ? caller.thread.id
+                    : (caller as Extract<AgentCaller, { kind: "program" }>).anchor.id,
+              }),
+        };
+      case "policy":
+        return { area: input.area, view: { policy: (await this.#policy?.()) ?? null } };
+    }
   }
 
   #door(
@@ -394,4 +515,20 @@ function tooled(outcome: AgentCommandOutcome) {
     default:
       return { status: outcome.status, requestId: outcome.requestId as RequestId };
   }
+}
+
+/** The Requests raised in a task tree: the root task and every task made under it. */
+async function lineageRequests(
+  database: Kysely<DatabaseSchema>,
+  root: ThreadId,
+): Promise<readonly string[]> {
+  const { rows } = await sql<{ id: string }>`with recursive down as (
+      select id, 0 as depth from threads where id = ${root}
+      union all
+      select child.id, down.depth + 1
+      from threads child join down on child.parent_thread_id = down.id where down.depth < 64
+    ) select requests.id from requests join down on requests.originating_thread_id = down.id`.execute(
+    database,
+  );
+  return rows.map(({ id }) => id);
 }

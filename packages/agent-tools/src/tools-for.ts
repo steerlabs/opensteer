@@ -23,8 +23,8 @@ export const agentToolFamilies: Readonly<Record<AgentToolName, ToolFamily>> = {
   // Home commands: offered with any family, and cut to what the caller holds by the one rule.
   opensteer_commands: ["tasks", "browser", "computer", "plugins"],
   opensteer_command: ["tasks", "browser", "computer", "plugins"],
-  // The person's own settings: as opensteer_defaults_read was, `everything` at Full access.
-  opensteer_state: settings,
+  // Read like a command, area by area, cut by the one admission (AC1).
+  opensteer_state: ["tasks", "browser", "computer", "plugins"],
   opensteer_ai_account_list: settings,
   tab_list: ["tasks", "browser"],
   tab_open: browser,

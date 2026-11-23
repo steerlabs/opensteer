@@ -528,6 +528,8 @@ export async function createHostRuntime(
   let stopCommandRequestExpiry: (() => void) | undefined;
   // The agents' tools are built before the Home's command Requests; they read it when called.
   let commandRequestsForTools: CommandRequestService | undefined;
+  // The person's read handlers, handed over when the server builds them; read by the state tool.
+  let personReadHandlers: Readonly<Record<string, unknown>> | undefined;
   let executionLeaseLoop: DeadlineDrain | undefined;
   let finishLoop: DeadlineDrain | undefined;
   let connectionMaintenance: DeadlineDrain | undefined;
@@ -3284,6 +3286,14 @@ export async function createHostRuntime(
         administration,
         commands: new CommandTools({
           database,
+          reads: () => personReadHandlers,
+          engines: async (caller) =>
+            (await productHandlers.opensteer_ai_account_list({
+              caller,
+              input: {},
+              operationKey: "opensteer_state",
+            } as never)) as Record<string, unknown>,
+          policy: async () => (claimedWork ? claimedWork.applied() : null),
           registry: agentCommandRegistry(administration.service),
           requests: () => commandRequestsForTools,
           sessions: agentSessions,
@@ -3523,6 +3533,9 @@ export async function createHostRuntime(
     const app = await createHostServer(
       {
         commandRequests,
+        personReads: (handlers) => {
+          personReadHandlers = handlers;
+        },
         connections,
         connectionEffects: { stopLineage: driveConnectionCleanups },
         agentOperations: agentSessions,

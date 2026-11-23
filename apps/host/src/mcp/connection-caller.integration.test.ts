@@ -1151,7 +1151,7 @@ describeStore("connection grants and lineage", (it) => {
       listed.filter(
         (name) =>
           name.startsWith("opensteer_") &&
-          !["opensteer_commands", "opensteer_command"].includes(name),
+          !["opensteer_commands", "opensteer_command", "opensteer_state"].includes(name),
       ),
     ).toEqual([]);
     for (const name of [

@@ -160,7 +160,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "Read one area of Opensteer as the person's apps show it. settings: the person's name and what a new task starts with.",
+    "description": "Read one area of Opensteer as the person's apps show it, cut to what you may see: settings, connections, devices, chats, engines, requests, activity or policy. An area you cannot see is unavailable.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -168,6 +168,13 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
         "area": {
           "enum": [
             "settings",
+            "connections",
+            "devices",
+            "chats",
+            "engines",
+            "requests",
+            "activity",
+            "policy",
           ],
           "type": "string",
         },

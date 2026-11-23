@@ -79,12 +79,24 @@ export const opensteer_command = defineAgentTool({
   opensRequest: true,
 });
 
+/** The areas of Opensteer an agent may read, each as the person's apps read it. */
+export const stateAreas = [
+  "settings",
+  "connections",
+  "devices",
+  "chats",
+  "engines",
+  "requests",
+  "activity",
+  "policy",
+] as const;
+
 export const opensteer_state = defineAgentTool({
   name: "opensteer_state",
-  title: "Read Opensteer's settings",
+  title: "Read Opensteer",
   description:
-    "Read one area of Opensteer as the person's apps show it. settings: the person's name and what a new task starts with.",
-  input: z.strictObject({ area: z.enum(["settings"]) }),
+    "Read one area of Opensteer as the person's apps show it, cut to what you may see: settings, connections, devices, chats, engines, requests, activity or policy. An area you cannot see is unavailable.",
+  input: z.strictObject({ area: z.enum(stateAreas) }),
   output: z.object({ area: z.string(), view: z.record(z.string(), z.unknown()) }),
   access: "read",
   callers: ["run", "program", "connection"] as const,

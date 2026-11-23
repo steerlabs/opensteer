@@ -188,6 +188,76 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
         .execute(),
     ).toEqual([]);
 
+    // Every area reads what the person's apps read, cut to the caller (AC1).
+    for (const area of [
+      "settings",
+      "connections",
+      "devices",
+      "chats",
+      "engines",
+      "requests",
+      "activity",
+      "policy",
+    ]) {
+      const read = await call(full, "opensteer_state", { area });
+      expect(read.isError, `${area}: ${JSON.stringify(read.content)}`).not.toBe(true);
+      expect(read.structuredContent).toMatchObject({ area });
+    }
+    // Below Full access, your own agent's requests area is its own task tree's, not every task's.
+    const asker = await runFor("approval-required", "commands-asker");
+    const stranger = await runFor("approval-required", "commands-stranger");
+    const asked = call(asker, "opensteer_command", { ...rename("Asked again"), reason: "Mine" });
+    const treeAsk = await waitForValue(
+      async () =>
+        (await host.store.database
+          .selectFrom("requests")
+          .select("id")
+          .where("status", "=", "pending")
+          .where("command", "is not", null)
+          .executeTakeFirst()) ?? undefined,
+    );
+    const requestsOf = async (client: Client) =>
+      (
+        (await call(client, "opensteer_state", { area: "requests" })).structuredContent?.view as {
+          requests: { request: { id: string } }[];
+        }
+      ).requests.map(({ request }) => request.id);
+    expect(await requestsOf(asker)).toContain(treeAsk.id);
+    expect(await requestsOf(stranger)).not.toContain(treeAsk.id);
+    expect(await requestsOf(full)).toContain(treeAsk.id);
+    await testRpcData(
+      host.origin,
+      "commands.dispatch",
+      {
+        type: "request.respond",
+        idempotencyKey: randomUUID(),
+        requestId: treeAsk.id,
+        expectedRevision: (await host.store.requests.revision(treeAsk.id))!,
+        response: { kind: "form", answers: { decision: ["decline"] } },
+      } as never,
+      { headers: host.ownerHeaders },
+    );
+    expect((await asked).isError).not.toBe(true);
+    const someone = await connect({ scope: "everything" });
+    const seen = await call(someone.client, "opensteer_state", { area: "connections" });
+    expect(
+      (seen.structuredContent?.view as { connections: { id: string }[] }).connections.map(
+        ({ id }) => id,
+      ),
+    ).toEqual([someone.id]);
+    // Chats are other connections, for every connected agent.
+    const chats = await call(someone.client, "opensteer_state", { area: "chats" });
+    const nowhere = await call(someone.client, "opensteer_command", {
+      command: { type: "no.such.command" },
+    });
+    expect(chats.isError).toBe(true);
+    expect(JSON.stringify(chats.content)).toBe(JSON.stringify(nowhere.content));
+    const tasksOnly = await connect({ scope: "selected", tasks: true, resources: [] });
+    for (const area of ["settings", "engines", "chats"])
+      expect((await call(tasksOnly.client, "opensteer_state", { area })).isError, area).toBe(true);
+    const own = await call(tasksOnly.client, "opensteer_state", { area: "activity" });
+    expect(own.isError).not.toBe(true);
+
     // State is admitted like a command, from the live grant (AD2): narrowed, it is seen at once.
     const narrowing = await connect({ scope: "everything" });
     expect(
