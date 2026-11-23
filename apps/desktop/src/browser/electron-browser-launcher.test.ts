@@ -3426,6 +3426,107 @@ describe("Electron debugger teardown", () => {
   // cast while Chromium cast; its next start joined that cast at the hub, which hands the one frame
   // it holds before it answers, and the follow view dropped every frame that came while its start
   // was in flight. The real hub and the real follow view; Chromium is a still page.
+  // Re-check 9, finding 3 (R5): a renderer that crashed took the hub's casts with it on the same
+  // channel, and the follow view, still counting its cast running, waited for ever on the
+  // reloaded page's first frame. The real hub and the real follow view; Chromium is a still page.
+  it("pictures a still tab again after its renderer crashed and it reloaded at the same size", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const hub = await hubPage("86");
+    const channel = await hub.page.cdp();
+    const shown = { height: 600, width: 800 };
+    let frames = 0;
+    const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+    hub.contents.debugger.sendCommand.mockImplementation(
+      (method: string, parameters?: Record<string, unknown>, session?: string) => {
+        const answered = answer(method, parameters, session);
+        if (method !== "Page.startScreencast") return answered;
+        // A still page: its one frame for each start, before the answer is handled.
+        hub.deliver("Page.screencastFrame", {
+          data: jpeg(shown.width, shown.height).toString("base64"),
+          metadata: {
+            deviceHeight: shown.height,
+            deviceWidth: shown.width,
+            offsetTop: 0,
+            pageScaleFactor: 1,
+            scrollOffsetX: 0,
+            scrollOffsetY: 0,
+          },
+          sessionId: ++frames,
+        });
+        return answered;
+      },
+    );
+    const surface = {
+      active: true,
+      documentId: "d1",
+      geometryRevision: 1,
+      id: "tab-a",
+      loading: false,
+    };
+    const listeners = new Set<(event: unknown) => void>();
+    const binding = {
+      cdp: channel,
+      page: {
+        applyGeometry: async () => undefined,
+        capture: {
+          read: () => ({ ...shown, rasterScale: 1, revision: 1 }),
+          subscribe: () => () => undefined,
+        },
+        invalidateSurface: async () => undefined,
+        settleRendering: async () => undefined,
+      },
+      surface,
+    };
+    const ledger = {
+      active: () => binding,
+      binding: () => binding,
+      dialogOf: () => null,
+      dialogOpen: () => false,
+      recordPageScale: () => undefined,
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      viewportOf: () => shown,
+      withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+    };
+    const delivered: unknown[] = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+      ledger: ledger as never,
+      onDialogChanged: () => undefined,
+    });
+    const settled = async () => {
+      for (let turn = 0; turn < 8; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+    };
+    await follow.start();
+    await follow.setStreaming(true);
+    await vi.waitFor(() => expect(delivered).toHaveLength(1));
+    // The renderer crashes: the hub ends its casts, on this channel too.
+    for (const [name, listener] of [...hub.contents.on.mock.calls, ...hub.contents.once.mock.calls])
+      if (name === "render-process-gone")
+        (listener as (...a: unknown[]) => void)({}, { reason: "crashed" });
+    await settled();
+    // The person reloads it at the same size: a new document, the same capture.
+    for (const [name, listener] of hub.contents.on.mock.calls)
+      if (name === "did-navigate")
+        (listener as (...a: unknown[]) => void)({}, "https://site.test/");
+    surface.documentId = "d2";
+    surface.geometryRevision = 2;
+    for (const listener of listeners)
+      listener({ change: "updated", surface: { ...surface }, type: "changed" });
+    await vi.waitFor(() => expect(delivered).toHaveLength(2), { timeout: 1_000 });
+    expect(follow.diagnostics.some(({ stage }) => stage === "cast-ended")).toBe(true);
+    await follow.close();
+    await hub.browser.close();
+  });
+
   it("pictures a still tab whose capture moved while its start was answered", async () => {
     const { ScreencastController } =
       await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");

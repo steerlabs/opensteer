@@ -13,6 +13,7 @@ import { type BrowserCookie } from "@opensteer/browser-profile";
 import {
   BrowserPaintTimeoutError,
   BrowserRuntimeError,
+  screencastEndedEvent,
   pageViewport,
   pageWithTarget,
   normalizeElectronCursor,
@@ -1475,6 +1476,8 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       this.#invalidateCursor();
       // The hub rejects placement while crashed; navigation can recover it.
       this.#cancelPaint("crash");
+      // No navigation is under way in a renderer that is gone: a reload is the next one.
+      if (this.#navigation.pending) this.#navigationChanged({ pending: false });
       this.#fullscreen = false;
       this.#mediaPlaying = false;
       this.#contextMenuTrigger = null;
@@ -3656,6 +3659,9 @@ class ElectronDebuggerHub {
    * release), or is already gone with the debugger (`detached`).
    */
   #castsEnded(how: "crashed" | "detached"): void {
+    // Each channel a cast of which ended is told so on it: Chromium says nothing of it.
+    const told = new Set<ElectronCdpChannel>();
+    for (const cast of this.#casts) for (const owner of cast.owners) told.add(owner);
     for (const cast of this.#casts) {
       const lane = cast.run?.lane ?? null;
       if (cast.run) cast.run.lane = null;
@@ -3668,6 +3674,7 @@ class ElectronDebuggerHub {
     this.#castOf.clear();
     this.#handed.clear();
     this.#updateThrottling();
+    for (const channel of told) channel.castsEnded();
   }
 
   /** The hub attaches the debugger, if it is not: a new session, counted afresh. */
@@ -4103,6 +4110,11 @@ class ElectronCdpChannel implements CdpSession, CdpChannel {
     }
     this.#events.emit("event", method, parameters);
     this.#events.emit(method, parameters);
+  }
+
+  /** The hub ended this channel's casts itself: said on it, to whoever listens for exactly that. */
+  castsEnded(): void {
+    if (!this.#closed) this.#events.emit(screencastEndedEvent, {});
   }
 
   clearListeners(): void {
