@@ -898,9 +898,14 @@ it("reports a running browser whose egress proxy is down, repairs it once by a p
     const home = f.home(undefined, physical, { statusEveryMs: 50 });
     await home.recover();
     expect(home.report()).toBeUndefined();
-    // The repair's wake waits here, so the parked guest can be seen.
+    // The repair's wake waits here, so the parked guest can be seen: `resuming` says the wake
+    // was asked, an event, not a clock.
     const resume = Promise.withResolvers<void>();
-    f.controller.hold("resume", () => resume.promise);
+    const resuming = Promise.withResolvers<void>();
+    f.controller.hold("resume", () => {
+      resuming.resolve();
+      return resume.promise;
+    });
     f.controller.observe({ proxy: "down" });
     // While the repair runs the person is shown it waking, never "paused" first (W10).
     await vi.waitFor(() => expect(home.report()).toMatchObject({ phase: "waking" }));
@@ -909,9 +914,9 @@ it("reports a running browser whose egress proxy is down, repairs it once by a p
     // proxy back. (It used to park and wait for demand to wake: a person watching would have
     // been shown a parked browser.)
     // Parked, its wake held: proxy down is a fact of the running instance, not shown now (W4).
-    await vi.waitFor(async () => expect(["parked", "waking"]).toContain((await f.slot())?.phase));
-    await vi.waitFor(() => expect(home.report()?.proxyDown).toBeUndefined());
+    await resuming.promise;
     expect(["parked", "waking"]).toContain((await f.slot())?.phase);
+    expect(home.report()?.proxyDown).toBeUndefined();
     resume.resolve();
     await vi.waitFor(() => expect(f.controller.effects).toEqual(["start", "pause", "resume"]));
     await vi.waitFor(async () => expect((await f.slot())?.phase).toBe("running"));
