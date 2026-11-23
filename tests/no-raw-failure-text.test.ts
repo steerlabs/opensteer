@@ -92,7 +92,7 @@ const allowed: Readonly<Record<string, { readonly count: number; readonly reason
   },
   "apps/desktop/src/supervisor/local-runner-service.ts": { count: 1, reason: reasons.desktop },
   "apps/desktop/src/supervisor/personal-deployment-supervisor.ts": {
-    count: 2,
+    count: 1,
     reason: reasons.desktop,
   },
   "apps/desktop/src/supervisor/personal-host-connect-orchestrator.ts": {
