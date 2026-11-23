@@ -379,7 +379,8 @@ export class PageEditingObserver {
         return this.#stale();
       this.#composer = null;
     }
-    await this.#close(focus, edit.contextId, producer);
+    // CY3: another composer's composition is closed only for an edit the page will apply: after
+    // prepare has admitted it, in the one place below. A refused edit closes and records nothing.
     const generation = this.#generation;
     const response = await this.#cdp
       .send<{
@@ -414,6 +415,12 @@ export class PageEditingObserver {
       return this.#stale();
     }
     try {
+      if (this.#composer) {
+        await this.#close(focus, edit.contextId, producer);
+        // Read again after the close's awaits: focus moved meanwhile, and nothing is applied.
+        if (this.#focused?.fieldId !== focus.fieldId || this.#focused?.context !== focus.context)
+          return false;
+      }
       admitted?.();
       if (composition && "selectionStart" in edit) {
         await this.#cdp.send("Input.imeSetComposition", {
@@ -547,7 +554,7 @@ export class PageEditingObserver {
    * (focus left) sends nothing.
    */
   async #close(
-    focus: { context: number },
+    focus: { context: number; fieldId: string },
     contextId: string,
     producer: string | undefined,
   ): Promise<void> {
@@ -570,10 +577,14 @@ export class PageEditingObserver {
     // text itself.)
     const generation = this.#generation;
     await this.input(async () => {
+      // The re-read arms a one-shot guard in the page (armClose): the insertion's own beforeinput
+      // is cancelled if, by then, focus has left this field or its composition has ended. What
+      // the guard cannot cover: a navigation to another document inside this hop (the new
+      // document has no guard) stays a known residual.
       const again = await this.#cdp
         .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
           contextId: focus.context,
-          expression: "globalThis.editingOwner?.composition()",
+          expression: `globalThis.editingOwner?.armClose(${JSON.stringify(focus.fieldId)})`,
           returnByValue: true,
           silent: true,
         })
@@ -1032,7 +1043,10 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     anchor = current;
   };
   const beginInput = () => {syncSelection();ownInput++;};
-  const finishInput = () => {anchor = selectionAnchor();ownInput = Math.max(0, ownInput - 1);publish();};
+  const finishInput = () => {closeGuard = null;anchor = selectionAnchor();ownInput = Math.max(0, ownInput - 1);publish();};
+  // CY3: the close's guard, armed by its re-read: the insertion that follows is cancelled at its
+  // beforeinput when focus has left the field or its composition ended meanwhile.
+  let closeGuard = null;
   const accept = (result = {ok:true}) => {ownInput++;return result;};
   const rect = (range) => {
     const boxes = range.getClientRects();
@@ -1488,9 +1502,20 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     if (composing) composing.text = event.data ?? "";
   });
   on(document, "compositionend", () => {
+    if (closeGuard) closeGuard.ended = true;
     composing = null;
     if (!ownInput) selectionRevision++;
     schedule();
+  });
+  // The close's guard (CY3) sees the first beforeinput after it was armed: the close's own.
+  on(window, "beforeinput", (event) => {
+    const guard = closeGuard;
+    if (!guard) return;
+    closeGuard = null;
+    if (active() !== guard.element || guard.ended) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
   });
   on(document, "focusout", () => {
     last = null;
@@ -1558,6 +1583,13 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     prepare,
     /** The marked text of the active field's open composition, or null. */
     composition: () => (composing && composing.element === active() ? composing.text : null),
+    /** The same, read for the close's send: arms its one-shot guard (CY3). */
+    armClose: (fieldId) => {
+      const element = active();
+      if (!composing || composing.element !== element || fieldKey(element) !== fieldId) return null;
+      closeGuard = { element, ended: false };
+      return composing.text;
+    },
     stop: () => {
       personBindings.clear();
       saveFields = new WeakMap();

@@ -37,23 +37,21 @@ afterAll(async () => {
 
 /** What the Home sent as text, and to whom it attributed input, in order. */
 const record: string[] = [];
-/** CW1: what the page does right after the close has read its composition, before it sends. */
+/** CW1, CY3: what the page does after the close's last read of its composition, before it sends. */
 let between: null | (() => Promise<unknown>) = null;
 function handle(session: CDPSession): CdpSession {
   const raw = session.send.bind(session) as unknown as CdpSession["send"];
   const send = (async (method: string, params?: Record<string, unknown>) => {
-    if (method === "Input.insertText") record.push(`text ${String(params?.text)}`);
-    const result: unknown = await raw(method as never, params as never);
-    if (
-      method === "Runtime.evaluate" &&
-      String(params?.expression).includes("editingOwner?.composition()") &&
-      between
-    ) {
-      const act = between;
-      between = null;
-      await act();
+    if (method === "Input.insertText") {
+      // The real remaining hop (CY3): after every read of the observer's, as its insertion goes.
+      if (between) {
+        const act = between;
+        between = null;
+        await act();
+      }
+      record.push(`text ${String(params?.text)}`);
     }
-    return result;
+    return raw(method as never, params as never);
   }) as CdpSession["send"];
   return {
     send,
@@ -428,7 +426,8 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     expect(
       await page.evaluate(() => (document.getElementById("g") as HTMLInputElement).value),
     ).toBe("");
-    expect(record).not.toContain("text 日本");
+    // The composition stays its composer's, in the field it was made in.
+    expect((await read(page, kind)).value).toBe("日本");
     await page.evaluate(() => {
       document.getElementById("g")!.remove();
       document.getElementById("f")!.focus();
@@ -449,7 +448,7 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     await settle();
     const contextId = observer.context.contextId!;
     await send({ kind: "edit", edit: { contextId, text: "x", before: "", after: "" } }, "B");
-    expect(record).not.toContain("text 日本");
+    // Committed once, by the page itself, whatever the close sent in the hop.
     expect((await read(page, kind)).value).not.toContain("日本日本");
   });
   it("leaves the composition and the record as they were when another viewer's edit is refused", async () => {
@@ -597,6 +596,33 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     await page.evaluate(() => {
       document.getElementById("g")!.remove();
       document.getElementById("f")!.focus();
+    });
+    await settle();
+  });
+
+  // CY3: an insertion the page then refuses closes nothing and records nothing.
+  it("closes and records nothing for another viewer's insertion that is refused", async () => {
+    await seed(page, kind, "", 0);
+    await settle();
+    expect(await composeA("日本")).toBe(true);
+    record.length = 0;
+    const contextId = observer.context.contextId!;
+    // The field can no longer be edited, and the observer has not heard yet.
+    await page.evaluate(() => {
+      const field = document.getElementById("f")!;
+      if (field instanceof HTMLTextAreaElement) field.readOnly = true;
+      else field.contentEditable = "false";
+    });
+    expect(
+      await send({ kind: "edit", edit: { contextId, text: "x", before: "", after: "" } }, "B"),
+    ).toBe(false);
+    expect(record).toEqual([]);
+    await page.evaluate(() => {
+      const field = document.getElementById("f")!;
+      if (field instanceof HTMLTextAreaElement) field.readOnly = false;
+      else field.contentEditable = "true";
+      field.blur();
+      field.focus();
     });
     await settle();
   });
