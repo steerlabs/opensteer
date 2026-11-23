@@ -1435,7 +1435,7 @@ export class OpensteerStore {
     reader: TaskReader,
     threadId: ThreadId,
     ownerId: UserId,
-    options?: { readonly lineageConnectionId?: string; readonly nativeOnly?: boolean },
+    options?: Parameters<typeof threadStore.readTask>[4],
   ): Promise<Thread | null> {
     return threadStore.readTask(this.#database, reader, threadId, ownerId, options);
   }

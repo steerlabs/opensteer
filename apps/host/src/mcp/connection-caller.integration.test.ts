@@ -137,6 +137,47 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(await read(direct.session.threadId)).toEqual(await read(createId("thread")));
   });
 
+  it("refuses with Everything any change to another connected agent's task, the same way whatever its state or mode", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("other-agent-task");
+    const url = await serveMcp(storeFixture);
+    const bold = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+    });
+    const cautious = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "approval-required",
+      grant: { scope: "everything" },
+    });
+    const other = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const theirs = await createTask(other, f, "theirs");
+    // It can read it: Everything reads every task, so nothing about it is hidden.
+    const read = await bold.client.callTool({ name: "discover", arguments: { id: theirs } });
+    expect(read.structuredContent).toMatchObject({ item: { id: theirs } });
+    // A change is refused before its state (idle) or its mode (stronger than Supervised) is
+    // looked at, in the same body for every caller and every write tool.
+    const interrupt = (agent: typeof bold) =>
+      agent.client.callTool({ name: "opensteer_task_interrupt", arguments: { taskId: theirs } });
+    const steer = (agent: typeof bold) =>
+      agent.client.callTool({
+        name: "opensteer_task_send",
+        arguments: { taskId: theirs, message: "More", delivery: "steer", operationKey: "steer" },
+      });
+    const idle = await interrupt(bold);
+    expect(idle.isError).toBe(true);
+    expect(await interrupt(cautious)).toEqual(idle);
+    expect(await steer(bold)).toEqual(idle);
+    expect(await steer(cautious)).toEqual(idle);
+    expect(JSON.stringify(idle)).not.toContain("access mode");
+  });
+
   it("keeps an approval-required connection out of full-access changes", async ({
     storeFixture,
   }) => {
