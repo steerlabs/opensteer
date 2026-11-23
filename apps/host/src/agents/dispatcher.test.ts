@@ -737,10 +737,14 @@ describe("HostCommandDispatcher model selection", () => {
     ["a connected agent's task", { fromChat: false, runConnectionId: "agentConnection_1" }, false],
     ["a chat's task the person alone speaks in", { fromChat: true, runConnectionId: null }, false],
   ] as const)(
-    "tells the Runner whether %s is in the person's own lineage",
+    "passes on what the lineage walk decided for %s",
     async (_label, lineage, personLineage) => {
       const { dispatch, run } = dispatchRun({
-        lineage: { ...lineage, taskOriginConnectionId: lineage.runConnectionId },
+        lineage: {
+          ...lineage,
+          personLineage,
+          taskOriginConnectionId: lineage.runConnectionId,
+        },
         models: [gpt5],
         modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
       });
@@ -771,6 +775,7 @@ describe("HostCommandDispatcher model selection", () => {
     readonly inputOrigins?: ReadonlyMap<string, unknown>;
     readonly lineage?: {
       readonly fromChat: boolean;
+      readonly personLineage: boolean;
       readonly runConnectionId: string | null;
       readonly taskOriginConnectionId: string | null;
     };
@@ -886,6 +891,7 @@ describe("HostCommandDispatcher model selection", () => {
         loadRunDispatchContext: async () => ({
           lineage: input.lineage ?? {
             fromChat: false,
+            personLineage: true,
             runConnectionId: null,
             taskOriginConnectionId: null,
           },
@@ -1057,7 +1063,12 @@ describe("HostCommandDispatcher run planning", () => {
           }),
           getAgentHomeSettings: async () => ({ settings: {}, file: { status: "missing" } }),
           loadRunDispatchContext: async () => ({
-            lineage: { fromChat: false, runConnectionId: null, taskOriginConnectionId: null },
+            lineage: {
+              fromChat: false,
+              personLineage: true,
+              runConnectionId: null,
+              taskOriginConnectionId: null,
+            },
             providerSessionStateLayout: "session",
             personalContext: true,
             agentHome,

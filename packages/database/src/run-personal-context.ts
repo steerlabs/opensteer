@@ -5,12 +5,21 @@ import type { DatabaseSchema } from "./schema.js";
 
 /**
  * What a task's context lineage says about whose it is: whether it may carry
- * the person's personal context, and whether a chat is anywhere in it. A chat
- * the person alone speaks in keeps personal context, and is still a chat.
+ * the person's personal context, whether a chat is anywhere in it, and whether
+ * it is the person's own lineage. A chat the person alone speaks in keeps
+ * personal context, and is still a chat.
  */
 export interface ThreadContextLineage {
   readonly personalContext: boolean;
   readonly fromChat: boolean;
+  /**
+   * Only the person ever wrote into the task and the tasks it descends from:
+   * no chat, no connected agent (its own task, a message it sent, or a message
+   * from a Run that was not the person's), and no Opensteer job such as a
+   * memory pass. It narrows and never widens back: once a connected agent or a
+   * chat has written into a task, that task is not the person's own again.
+   */
+  readonly personLineage: boolean;
 }
 
 /** Re-evaluate every sender represented in this task, including later admitted batches. */
@@ -26,10 +35,11 @@ export async function runContextLineage(
 ): Promise<ThreadContextLineage> {
   const run = await database
     .selectFrom("runs")
-    .select(["threadId", "requestedBy"])
+    .select(["threadId", "requestedBy", "connectionId"])
     .where("id", "=", runId)
     .executeTakeFirstOrThrow();
-  return threadContextLineage(database, run.threadId, run.requestedBy);
+  const lineage = await threadContextLineage(database, run.threadId, run.requestedBy);
+  return run.connectionId === null ? lineage : { ...lineage, personLineage: false };
 }
 export async function threadAllowsPersonalContext(
   database: Kysely<DatabaseSchema>,
@@ -46,7 +56,7 @@ export async function threadContextLineage(
   // Reused workers retain every assigning conversation's context restriction, a task linked
   // under another (an automation's own task) retains its parent's, and work an automation's
   // program sends anywhere retains its anchor's.
-  const ancestors = await sql<{ threadId: ThreadId }>`
+  const ancestors = await sql<{ threadId: ThreadId; notPersons: boolean }>`
     with recursive context_threads(id) as (
       select ${threadId}::text
       union
@@ -78,9 +88,24 @@ export async function threadContextLineage(
         where id = current.id and parent_thread_id is not null
       ) parent
     )
-    select id as thread_id from context_threads
+    -- A thread is not the person's when a connected agent started it or wrote
+    -- into it, or it anchors one of Opensteer's own jobs (a memory pass).
+    select context_threads.id as thread_id,
+      (thread.origin_connection_id is not null
+        or exists (
+          select 1 from thread_inputs written
+          where written.thread_id = context_threads.id and written.state <> 'cancelled'
+            and written.connection_id is not null
+        )
+        or exists (
+          select 1 from triggers job
+          where job.anchor_thread_id = context_threads.id and job.system_role is not null
+        )) as not_persons
+    from context_threads
+    join threads thread on thread.id = context_threads.id
   `.execute(database);
   const threadIds = ancestors.rows.map((row) => row.threadId);
+  const persons = ancestors.rows.every((row) => !row.notPersons);
   const sources = await database
     .selectFrom("threadInputs")
     .innerJoin("channelConversations", (join) =>
@@ -109,9 +134,10 @@ export async function threadContextLineage(
       .where("activeThreadId", "in", unrepresented)
       .executeTakeFirst())
   )
-    return { fromChat: true, personalContext: false };
+    return { fromChat: true, personalContext: false, personLineage: false };
   return {
     fromChat: sources.length > 0,
+    personLineage: persons && sources.length === 0,
     personalContext: sources.every((source) =>
       channelAllowsPersonalContext({
         conversationType: source.conversationType,

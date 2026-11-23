@@ -285,6 +285,7 @@ describeStore("personal Messaging conversation contexts", (it) => {
     // A chat only the person speaks in keeps personal context and is still a chat.
     expect(await runContextLineage(f.database, first.run.id)).toEqual({
       fromChat: true,
+      personLineage: false,
       personalContext: true,
     });
     const running = await startPersonalQueuedRunFixture(f.store, first.run.id);
@@ -540,8 +541,13 @@ describeStore("personal Messaging conversation contexts", (it) => {
         true,
       );
       expect(await threadAllowsPersonalContext(f.database, p.thread.id, p.userId)).toBe(true);
+      // A chat's work is never the person's own lineage.
+      expect(
+        (await f.store.loadRunDispatchContext(grandchild.command.id)).lineage.personLineage,
+      ).toBe(false);
       expect(await threadContextLineage(f.database, p.thread.id, p.userId)).toEqual({
         fromChat: false,
+        personLineage: true,
         personalContext: true,
       });
     });

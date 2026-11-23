@@ -8,7 +8,12 @@ import {
   type RunId,
   type Thread,
 } from "@opensteer/core";
-import { createMemoryPass, needsYouPage, type MemoryPassExecution } from "@opensteer/database";
+import {
+  createMemoryPass,
+  needsYouPage,
+  threadContextLineage,
+  type MemoryPassExecution,
+} from "@opensteer/database";
 import { writeAgentHomeSettings } from "@opensteer/database/test-support/personal";
 import { HarnessIdSchema, ModelSelectionSchema } from "@opensteer/core";
 import {
@@ -486,6 +491,12 @@ describeStore("managed memory passes", (it) => {
       pauseReason: "Paused deliberately",
     });
     if (!light) throw new Error("Partial pair creation missing");
+    // A memory pass is Opensteer's job, not the person's task: it never runs
+    // with the person's own engine configuration.
+    expect(
+      (await threadContextLineage(f.database, light.trigger.anchorThreadId, base.userId))
+        .personLineage,
+    ).toBe(false);
     await expect(
       createMemoryPass(f.database, {
         ...input,

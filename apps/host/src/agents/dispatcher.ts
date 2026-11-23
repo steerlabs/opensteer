@@ -604,9 +604,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         taskPurpose: context.thread.purpose,
         personalContext: context.personalContext,
         // The person wrote their engine's settings for their own use; work a
-        // connected agent or a chat started never runs with them.
-        personLineage:
-          runConnectionId === null && taskOriginConnectionId === null && !context.lineage.fromChat,
+        // connected agent or a chat started or wrote into never runs with them.
+        // Decided where personal context is decided (`runContextLineage`).
+        personLineage: context.lineage.personLineage,
         threadState,
         assignment: assignment
           ? {

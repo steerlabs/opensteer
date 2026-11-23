@@ -110,6 +110,8 @@ export interface RunDispatchContext {
   readonly lineage: {
     /** A chat is somewhere in the task's context lineage, whoever speaks in it. */
     readonly fromChat: boolean;
+    /** Only the person ever wrote into this Run's task and its ancestors (`runContextLineage`). */
+    readonly personLineage: boolean;
     readonly runConnectionId: string | null;
     readonly taskOriginConnectionId: string | null;
   };
@@ -557,6 +559,7 @@ export async function loadRunDispatchContext(
     run: runFromRow(runRow),
     lineage: {
       fromChat: contextLineage.fromChat,
+      personLineage: contextLineage.personLineage,
       runConnectionId: runRow.connectionId,
       taskOriginConnectionId: threadRow.originConnectionId,
     },
