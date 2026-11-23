@@ -336,9 +336,9 @@ export async function requestExpiredCleanups(
       eb.or([
         eb("revokedAt", "is not", null),
         eb.and([eb("bridgeAccountId", "is", null), eb("expiresAt", "<=", now)]),
-        // A chat ends by what it is (its account, its computer, its grant, the organization's
-        // Home), read by the one state; no timer ends it.
-        chatEndedUnrevoked(database, now),
+        // A chat ends by what it is (its account, its computer, its grant), read by the one
+        // state; no timer ends it.
+        chatEndedUnrevoked(now),
       ]),
     )
     .where((eb) => eb.or([eb("cleanupReason", "is", null), eb("cleanupReason", "=", "narrowed")]))
@@ -355,7 +355,7 @@ export async function requestExpiredCleanups(
           "bridgeAccountId",
           "cleanupReason",
           "grantRevision",
-          chatEndedUnrevoked(tx, now).as("accountEnded"),
+          chatEndedUnrevoked(now).as("accountEnded"),
         ])
         .where("id", "=", candidate.id)
         .forNoKeyUpdate()
@@ -371,7 +371,7 @@ export async function requestExpiredCleanups(
             cleanupRequestedAt: now,
             cleanupCompletedAt: null,
             // Why it ended, from the facts that ended it, read now.
-            bridgeEndedBy: chatEndReason(tx),
+            bridgeEndedBy: chatEndReason(),
           })
           .where("id", "=", row.id)
           .execute();
@@ -776,7 +776,7 @@ export async function recordConnectionRunHandoff(
                 and speak_me.status = 'linked'
                 and speak_me.linked_user_id = agent_connections.user_id)))`.as("senderMaySpeak"),
       ])
-      .select(connectionState(tx).as("state"))
+      .select(connectionState().as("state"))
       .where("id", "=", input.connectionId)
       .forShare()
       .executeTakeFirst();
@@ -908,7 +908,7 @@ export function connectionCdpAttempts(database: Kysely<DatabaseSchema>) {
         // state function.
         const connection = await tx
           .selectFrom("agentConnections")
-          .select(["grantRevision", liveConnection(tx).as("live")])
+          .select(["grantRevision", liveConnection().as("live")])
           .where("id", "=", witness.connectionId)
           .forShare()
           .executeTakeFirst();

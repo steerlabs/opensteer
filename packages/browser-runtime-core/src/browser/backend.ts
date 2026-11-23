@@ -196,7 +196,7 @@ export interface BrowserContext {
    * called once the page exists or its creation failed: over the threshold, opens go one at a
    * time (TS13).
    */
-  beforeCreatePage?: (() => Promise<() => void>) | undefined;
+  beforeCreatePage?: ((signal?: AbortSignal) => Promise<() => void>) | undefined;
   /**
    * The one handoff of native pages to the runtime: called synchronously as
    * each page handle comes to exist, before any asynchronous work, with the

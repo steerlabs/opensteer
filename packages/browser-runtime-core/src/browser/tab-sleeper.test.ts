@@ -631,6 +631,39 @@ describe("TabSleeper", () => {
     }
   });
 
+  it("lets an abandoned open leave its turn at once, and the next open still waits for the open before it", async () => {
+    const limit = 2 * 1024 ** 3;
+    const f = await fixture({
+      memoryPressure: () =>
+        Promise.resolve({ usedBytes: Math.round(limit * 0.66), limitBytes: limit }),
+    });
+    try {
+      // Opens are taking turns (memory is being released).
+      (f.sleeper as unknown as { releasing: boolean }).releasing = true;
+      const first = await f.sleeper.beforePageOpen();
+      const abandoned = new AbortController();
+      const second = f.sleeper.beforePageOpen(abandoned.signal);
+      void second.catch(() => undefined);
+      let thirdIn = false;
+      const third = f.sleeper.beforePageOpen().then((done) => {
+        thirdIn = true;
+        return done;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      abandoned.abort();
+      await expect(second).rejects.toThrow(/abandoned/);
+      await vi.advanceTimersByTimeAsync(0);
+      // The first open has not made its page: the third still waits behind it.
+      expect(thirdIn).toBe(false);
+      first();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(thirdIn).toBe(true);
+      (await third)();
+    } finally {
+      await f.close();
+    }
+  });
+
   it("asks for a pass at once when a page no open of ours made arrives over the threshold with a tab that can sleep, not at the next timer tick (run 10, failure 2)", async () => {
     const limit = 2 * 1024 ** 3;
     let pressure = { usedBytes: Math.round(limit * 0.65), limitBytes: limit };

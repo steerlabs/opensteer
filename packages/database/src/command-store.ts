@@ -112,7 +112,6 @@ import {
 import { lockLineageConnection } from "./thread-caller.js";
 import { senderUnlinkedFailure } from "./bridge-admission.js";
 import { chatSenderMaySpeak } from "./thread-inbox.js";
-import { isWorkHomeDatabase } from "./work-home-context.js";
 
 export type RunnerControlInput =
   | {
@@ -122,7 +121,6 @@ export type RunnerControlInput =
       readonly threadId: ThreadId;
       readonly type: "run.interrupt";
       readonly keepQueueRunning?: true;
-      readonly auditOwnerStop?: true;
       readonly expectedBindingGeneration?: number | null;
       readonly stop?: { readonly id: CommandRow["id"]; readonly bootId: string };
       readonly authority?: ThreadCallerAuthority;
@@ -1144,9 +1142,6 @@ export async function enqueueRunnerControlInTransaction(
           requestResponseKeyVersion: input.sealedResponse.keyVersion,
         }
       : {}),
-    ...(input.type === "run.interrupt" && input.auditOwnerStop && isWorkHomeDatabase(transaction)
-      ? { workOwnerStop: true }
-      : {}),
     requestedBy: input.requestedBy,
     runId: input.runId,
     status: "pending",
@@ -1237,7 +1232,7 @@ export async function claimNextCommand(
       ])
       .where("commands.environmentId", "=", environmentId)
       .where("commands.status", "=", "pending")
-      .where((expression) => expression.not(chatWorkHeld(transaction)))
+      .where((expression) => expression.not(chatWorkHeld()))
       .where((expression) =>
         expression.or([
           expression("commands.type", "!=", "run.execute"),
@@ -1499,7 +1494,7 @@ export async function listPendingCommands(
         ]),
       )
       // A paused chat's work waits for the chat, not for time: it is not listed until it is back.
-      .where((expression) => expression.not(chatWorkHeld(database)))
+      .where((expression) => expression.not(chatWorkHeld()))
       .orderBy("commands.createdAt", "asc")
       .limit(Math.min(Math.max(limit, 1), 20_000))
       .execute()
@@ -1513,13 +1508,13 @@ export async function listPendingCommands(
  * schedule fires nothing, so only a tick enqueued before the pause is held here. Reads `commands`
  * and the left-joined `runs`.
  */
-function chatWorkHeld(database: object) {
+function chatWorkHeld() {
   return sql<boolean>`((commands.type in ('run.execute', 'run.steer') and runs.connection_id is not null
       and exists (
         select 1 from agent_connections
         where agent_connections.id = runs.connection_id
           and agent_connections.bridge_account_id is not null
-          and ${connectionState(database)} = 'waiting'))
+          and ${connectionState()} = 'waiting'))
     or (commands.type = 'trigger.execute' and exists (
         select 1 from trigger_occurrences held_occurrence
         join triggers held_trigger on held_trigger.id = held_occurrence.trigger_id
@@ -1528,7 +1523,7 @@ function chatWorkHeld(database: object) {
             held_trigger.origin_connection_id)
         where held_occurrence.command_id = commands.id
           and agent_connections.bridge_account_id is not null
-          and ${connectionState(database)} = 'waiting')))`;
+          and ${connectionState()} = 'waiting')))`;
 }
 /** The automation tick belongs to a chat (its own lineage) that is paused. */
 async function triggerCommandHeld(
@@ -1544,7 +1539,7 @@ async function triggerCommandHeld(
           held_trigger.origin_connection_id)
       where held_occurrence.command_id = ${commandId}
         and agent_connections.bridge_account_id is not null
-        and ${connectionState(transaction)} = 'waiting') as held`.execute(transaction);
+        and ${connectionState()} = 'waiting') as held`.execute(transaction);
   return rows[0]?.held === true;
 }
 export async function claimCommand(

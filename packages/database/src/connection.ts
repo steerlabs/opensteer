@@ -17,7 +17,6 @@ import {
   inDatabaseOperationTransaction,
 } from "./operation-budget.js";
 import type { DatabaseSchema } from "./schema.js";
-import { inheritWorkHomeDatabase } from "./work-home-context.js";
 import { applyDatabaseOperationBudget } from "./operation-budget-executor.js";
 
 interface DatabaseConnectionOptions {
@@ -285,7 +284,6 @@ export function withDatabaseTransaction<Schema, Result>(
         (transaction) =>
           inDatabaseOperationTransaction(async () => {
             operation?.signal.throwIfAborted();
-            inheritWorkHomeDatabase(database, transaction);
             const result = await action(transaction);
             operation?.signal.throwIfAborted();
             return result;

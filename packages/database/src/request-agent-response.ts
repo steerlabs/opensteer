@@ -123,7 +123,7 @@ async function connectionRequestsQuery(
     .leftJoin("agentSessions", "agentSessions.id", "requests.originatingAgentSessionId")
     .selectAll("requests")
     .where("threads.createdBy", "=", authority.userId)
-    .where(threadExecutionAdmitted(tx, authority.userId))
+    .where(threadExecutionAdmitted(authority.userId))
     .$if(scope === "selected", (query) =>
       query.where("threads.originConnectionId", "=", authority.connectionId),
     )
@@ -137,7 +137,7 @@ async function connectionRequestsQuery(
               .selectFrom("agentConnections")
               .select("agentConnections.id")
               .whereRef("agentConnections.id", "=", "threads.originConnectionId")
-              .where(connectionState(tx), "!=", "ended"),
+              .where(connectionState(), "!=", "ended"),
           ),
         ]),
       ),

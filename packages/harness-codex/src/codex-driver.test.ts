@@ -2891,7 +2891,8 @@ describe("Codex app-server harness", () => {
       });
       await expect(fixture.adapter.startSession(fixture.context)).rejects.toMatchObject({
         code: "forbidden",
-        message: expect.stringContaining('cli_auth_credentials_store = "file"'),
+        message: "This engine is not available for this task.",
+        ownerMessage: expect.stringContaining('cli_auth_credentials_store = "file"'),
       });
       await fixture.adapter.close();
     });
@@ -2946,6 +2947,24 @@ describe("Codex app-server harness", () => {
     });
     await fixture.adapter.close();
   });
+
+  it.each([
+    ["managed-notify", /notify/iu],
+    ["managed-provider-auth", /command/iu],
+    ["managed-provider-aws", /AWS|credential/iu],
+    ["managed-bedrock", /AWS|credential/iu],
+  ] as const)(
+    "refuses %s from system or managed Codex configuration on an others' task with two audiences",
+    async (scenario, ownerPattern) => {
+      const fixture = await setup(scenario);
+      await expect(fixture.adapter.startSession(fixture.context)).rejects.toMatchObject({
+        code: "forbidden",
+        message: "This engine is not available for this task.",
+        ownerMessage: expect.stringMatching(ownerPattern),
+      });
+      await fixture.adapter.close();
+    },
+  );
 
   it("uses read-only thread startup so Codex cannot persist project trust", async () => {
     const fixture = await setup("trust-boundary");

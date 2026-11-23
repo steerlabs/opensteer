@@ -13,7 +13,6 @@ import { expressionBuilder, sql, type Expression, type Kysely, type SqlBool } fr
 import type { DatabaseSchema } from "./schema.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
 import { delegatingConnectionStanding, liveDelegatingConnection } from "./resource-access.js";
-import { isWorkHomeDatabase } from "./work-home-context.js";
 type Database = Kysely<DatabaseSchema>;
 export interface ActiveExecutionBindingInput {
   readonly lostExecution?: boolean;
@@ -134,7 +133,6 @@ export async function assertActiveGrant(
   },
   executionNow: () => number = Date.now,
 ): Promise<RunLineage> {
-  const workHome = isWorkHomeDatabase(database);
   const row = await database
     .selectFrom("runs")
     .innerJoin("threads", "threads.id", "runs.threadId")
@@ -197,22 +195,12 @@ export async function assertActiveGrant(
         )
         .as("hasActiveGrant"),
     ])
-    .$if(workHome, (query) =>
-      query.select((eb) =>
-        eb
-          .exists(eb.selectFrom("workHomePolicy").select("singleton").where("state", "=", "active"))
-          .as("workHomeActive"),
-      ),
-    )
     .where("runs.id", "=", input.runId)
     .where("personalSettings.singletonKey", "=", "personal")
     .where("providerSessions.active", "=", true)
     .executeTakeFirst();
   const threadAdmitted =
-    row !== undefined &&
-    row.ownerDisabledAt === null &&
-    row.availableEnvironmentId !== null &&
-    (!workHome || Boolean(row.workHomeActive));
+    row !== undefined && row.ownerDisabledAt === null && row.availableEnvironmentId !== null;
   if (
     !row ||
     !executionBindingHolds(row, input, executionNow()) ||
@@ -338,20 +326,15 @@ function availableExecutionEnvironmentSubquery(userId: UserId) {
  * Both `admitThreadExecution` and `connectionRequests` call this builder so execution admission
  * cannot drift between execution checks and request visibility.
  */
-export function threadExecutionAdmitted(database: Database, userId: UserId): Expression<SqlBool> {
+export function threadExecutionAdmitted(userId: UserId): Expression<SqlBool> {
   const eb = expressionBuilder<DatabaseSchema, "threads">();
-  const environmentAvailable = eb.exists(
+  return eb.exists(
     availableExecutionEnvironmentSubquery(userId).whereRef(
       "executionEnvironments.id",
       "=",
       "threads.environmentId",
     ),
   );
-  if (!isWorkHomeDatabase(database)) return environmentAvailable;
-  return eb.and([
-    eb.exists(eb.selectFrom("workHomePolicy").select("singleton").where("state", "=", "active")),
-    environmentAvailable,
-  ]);
 }
 
 export async function executionEnvironmentIsAvailableToUser(
@@ -386,7 +369,7 @@ export async function admitThreadExecution(
     .selectFrom("threads")
     .select("threads.environmentId")
     .where("threads.id", "=", threadId)
-    .where(threadExecutionAdmitted(database, userId))
+    .where(threadExecutionAdmitted(userId))
     .executeTakeFirst();
   return row ?? null;
 }

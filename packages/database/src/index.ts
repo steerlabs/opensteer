@@ -147,6 +147,5 @@ export {
 
 export * from "./shared-chrome-attempts.js";
 
-export { WorkHomeStore } from "./work-home.js";
 export type { BrowserSessionCut, BrowserBindingRefusal } from "./browser-session-store.js";
 export * from "./browser-pool-store.js";

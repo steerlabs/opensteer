@@ -310,6 +310,36 @@ describe("SurfaceLedger", () => {
     }
   });
 
+  it("refuses only this pass when the freeze fails, and the tab sleeps restorably on the next", async () => {
+    const page = new FakePage({ url: "https://freeze.test/" });
+    let fails = true;
+    Object.assign(page, {
+      captureRestore: async () => ({ saved: true }),
+      freeze: async () => {
+        if (fails) throw new Error("Tab freeze timed out.");
+        return async () => {};
+      },
+    });
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    await flushMicrotasks();
+    const id = ledger.snapshot()[0]!.id;
+    try {
+      expect(await ledger.sleep(id, () => null)).toBe(false);
+      fails = false;
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      // Restorable: it sleeps as itself, the engine's saved state kept for its wake.
+      expect(
+        (
+          ledger as unknown as { records: Map<string, { restore?: { engine: unknown } }> }
+        ).records.get(id)?.restore?.engine,
+      ).toEqual({ saved: true });
+    } finally {
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
   it("decides a sleep on a frozen page, thaws it when the sleep does not go ahead, and lets a last-resort protection give way only to the last resort (V1)", async () => {
     const page = new FakePage({ url: "https://protect.test/" });
     const steps: string[] = [];
@@ -377,6 +407,35 @@ describe("SurfaceLedger", () => {
       const asked = performance.now();
       expect(await ledger.documentLoaded(id, 15_000)).toBe("asleep");
       expect(performance.now() - asked).toBeLessThan(1_000);
+    } finally {
+      await ledger.closeOwnedPages().catch(() => undefined);
+      await ledger.close().catch(() => undefined);
+    }
+  });
+
+  it("ends a load wait at a cancel while its page does not answer, never a poll later", async () => {
+    const page = new FakePage({ url: "https://silent.test/" });
+    page.cdpSession.responses.set("Runtime.evaluate", () => new Promise(() => {}));
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    await flushMicrotasks();
+    const id = ledger.snapshot()[0]!.id;
+    try {
+      const cancelled = new AbortController();
+      const waiting = ledger.documentLoaded(id, 15_000, cancelled.signal);
+      await vi.waitFor(() =>
+        expect(page.cdpSession.sent.some((entry) => entry.method === "Runtime.evaluate")).toBe(
+          true,
+        ),
+      );
+      const asked = performance.now();
+      cancelled.abort();
+      await expect(waiting).rejects.toMatchObject({ reason: "browser-command-cancelled" });
+      expect(performance.now() - asked).toBeLessThan(300);
+      // And a short wait ends at its own bound, not a page read later.
+      const started = performance.now();
+      expect(await ledger.documentLoaded(id, 200)).toBe("loading");
+      expect(performance.now() - started).toBeLessThan(600);
     } finally {
       await ledger.closeOwnedPages().catch(() => undefined);
       await ledger.close().catch(() => undefined);

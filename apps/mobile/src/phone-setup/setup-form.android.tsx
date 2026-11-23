@@ -36,14 +36,13 @@ function SetupForm(props: SetupFormProps): ReactNode {
     <Page
       action={
         <PrimaryButton
-          disabled={props.busy || props.blocked}
+          disabled={props.busy}
           label={props.busy ? "Setting up…" : props.continueLabel}
           onPress={props.onContinue}
         />
       }
       title={props.title}
     >
-      {props.work === null ? null : <Footer text={props.work} />}
       <InputRow
         disabled={props.busy}
         label="Name"

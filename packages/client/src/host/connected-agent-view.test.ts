@@ -300,15 +300,15 @@ describe("connected agent identity", () => {
         connection({
           client: { fingerprint: null, redirectOrigin: "https://chatgpt.com" },
           identityAtConsent: {
-            kind: "platform",
-            platformOrigin: "https://chatgpt.com",
-            platformDirectoryId: "chatgpt",
-            platformName: "ChatGPT",
+            kind: "verified",
+            origin: "https://chatgpt.com",
+            directoryId: "chatgpt",
+            displayName: "ChatGPT",
             directoryRevision: 1,
             recordedAt: "2026-11-03T10:00:00.000Z",
           },
           identity: {
-            evidenceKind: "platform",
+            evidenceKind: "verified",
             verified: true,
             selfAsserted: false,
             heading: "ChatGPT",
@@ -340,7 +340,7 @@ describe("connected agent identity", () => {
     const withdrawn = connection({
       verificationWithdrawnAt: "2026-11-03T11:00:00.000Z",
       identity: {
-        evidenceKind: "platform",
+        evidenceKind: "verified",
         verified: true,
         selfAsserted: false,
         heading: "ChatGPT",

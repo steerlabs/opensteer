@@ -18,6 +18,7 @@ import { lockBrowserHomeRunner } from "./browser-home-store.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
 import { nearestListedThread } from "./thread-lineage.js";
+import { readerSees, type TaskReader } from "./task-reader.js";
 import { requestSettlementActor, readRequestSettlementProvenance } from "./request-settlement.js";
 import {
   AssignmentIdSchema,
@@ -852,6 +853,7 @@ export class RequestStore {
 
   async agentPage(input: {
     readonly ownerId: UserId;
+    readonly reader?: TaskReader;
     readonly scope: import("./thread-store.js").AgentThreadListScope;
     readonly scopeId: string;
     readonly connectionAuthority?: Extract<
@@ -903,6 +905,8 @@ export class RequestStore {
             .innerJoin("threads", "threads.id", "requests.originatingThreadId")
             .where("threads.createdBy", "=", input.ownerId)
             .where("threads.removedAt", "is", null);
+          if (input.reader?.kind === "work")
+            query = query.where(readerSees(input.reader, sql.ref("threads.origin_connection_id")));
           if (lineageRootThreadId !== null)
             query = query.where("threads.lineageRootThreadId", "=", lineageRootThreadId);
           if (input.scope.kind === "connection")
@@ -1828,7 +1832,7 @@ export class RequestStore {
         .innerJoin("agentConnections", "agentConnections.id", "agentSessions.connectionId")
         .select("agentConnections.id")
         .where("agentSessions.id", "=", input.originatingAgentSessionId)
-        .where(liveConnection(tx))
+        .where(liveConnection())
         .where("agentConnections.grantRevision", "=", input.grantRevision)
         .forShare("agentConnections")
         .executeTakeFirst();
@@ -3576,7 +3580,7 @@ export async function lockActiveDurableRequestAuthority(
       .where("agentSessions.id", "=", request.originatingAgentSessionId)
       .where("agentSessions.status", "=", "active")
       .whereRef("agentConnections.grantRevision", "=", "agentOperations.grantRevision")
-      .where(liveConnection(transaction))
+      .where(liveConnection())
       .forShare("agentConnections")
       .executeTakeFirst();
     if (!live)

@@ -41,7 +41,11 @@ import {
   agentDirectoryMigrationName,
   applyAgentDirectoryVerification,
 } from "./agent-directory-migration.js";
-import { workHomeMigrationName, applyWorkHome } from "./work-home-migration.js";
+import { platformVerificationRemovalMigration } from "./platform-verification-removal-migration.js";
+import {
+  onePersonHomeContractMigration,
+  onePersonHomeFirstMigration,
+} from "./one-person-home-migration.js";
 import { browserPoolMigrationName, applyBrowserPool } from "./browser-pool-migration.js";
 import {
   applyBridgeConnections,
@@ -647,7 +651,7 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
-              [workHomeMigrationName]: { up: applyWorkHome },
+              ...onePersonHomeFirstMigration,
               [browserPoolMigrationName]: { up: applyBrowserPool },
               "0107_needs_you_counts_requests": {
                 /**
@@ -665,6 +669,10 @@ export function migrationProvider(options?: {
               },
               [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
               [chatRoutesEndMigrationName]: { up: applyChatRoutesEnd },
+              // A Home is one person's, and a connected agent holds only what they granted.
+              ...onePersonHomeContractMigration,
+              // A connected agent is verified by the origin it is reached at, and nothing else.
+              ...platformVerificationRemovalMigration,
               "0114_thread_inputs_written_by_connection": {
                 /**
                  * Indexes connection-written inputs per task so `threadContextLineage` checks
@@ -673,9 +681,15 @@ export function migrationProvider(options?: {
                  */
                 async up(database: Kysely<unknown>) {
                   await sql`
-                    create index if not exists thread_inputs_written_by_connection
+                    create index thread_inputs_written_by_connection
                     on thread_inputs(thread_id)
-                    where connection_id is not null and state <> 'cancelled'
+                    where connection_id is not null
+                      and (
+                        state <> 'cancelled'
+                        or run_id is not null
+                        or steer_command_id is not null
+                        or delivered_at is not null
+                      )
                   `.execute(database);
                 },
               },
@@ -688,7 +702,7 @@ export function migrationProvider(options?: {
                 async up(database: Kysely<unknown>) {
                   await sql`
                     alter table provider_sessions
-                    add column if not exists person_lineage boolean not null default true
+                    add column person_lineage boolean not null default true
                   `.execute(database);
                 },
               },

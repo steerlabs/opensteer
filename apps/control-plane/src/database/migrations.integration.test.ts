@@ -4,7 +4,7 @@ import { createControlPlaneAuth, ControlPlaneAuthenticator } from "../auth/auth.
 import { sql } from "kysely";
 import type { Kysely } from "kysely";
 import { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createControlPlaneDatabase } from "./database.js";
 import type { ControlPlaneDatabaseSchema } from "./schema.js";
 import { CONTROL_PLANE_BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
@@ -17,6 +17,7 @@ import {
   ownerDirectoryVisibilityMigration,
 } from "./migrations.js";
 import { browserPoolMigration } from "../cloud-computers/pool-migration.js";
+import { organizationsMigrationBeforeRemoval } from "./one-person-account-migration.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -445,5 +446,232 @@ integration("browser pool expand-only migration (0036_browser_pool)", () => {
     `.execute(database);
     expect(portCols.rows).toEqual([]);
     expect(browserPoolMigration).toBeDefined();
+  });
+});
+
+integration("organizations removed (0037_remove_organizations)", () => {
+  const databaseName = `opensteer_one_person_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  let maintenance: Pool;
+  let database: Kysely<ControlPlaneDatabaseSchema>;
+  const urlForDatabase = (name: string) => {
+    const url = new URL(databaseUrl ?? "postgres://unconfigured");
+    url.pathname = `/${name}`;
+    return url.toString();
+  };
+  const assignee = "acct_00000000-0000-4000-8000-0000000000a1";
+  const admin = "acct_00000000-0000-4000-8000-0000000000a2";
+  const otherPerson = "acct_00000000-0000-4000-8000-0000000000a3";
+  const organization = "org_00000000-0000-4000-8000-0000000000b1";
+  const assignment = "was_00000000-0000-4000-8000-0000000000c1";
+  const personal = "cc_00000000-0000-4000-8000-0000000000d1";
+  const work = "cc_00000000-0000-4000-8000-0000000000d2";
+  const reservedTarget = "00000000-0000-4000-8000-0000000000e1";
+  const computer = (id: string) =>
+    sql<Record<string, unknown>>`select * from public.cloud_computers where id = ${id}`
+      .execute(database)
+      .then(({ rows }) => rows[0]);
+
+  beforeAll(async () => {
+    maintenance = new Pool({ connectionString: urlForDatabase("postgres") });
+    await maintenance.query(`create database ${databaseName}`);
+    database = createControlPlaneDatabase({ connectionString: urlForDatabase(databaseName) });
+    await migrateControlPlaneToLatest(database);
+    // The release before this one: an organization's tables, its seat reservations on backup
+    // targets, and the contracting migration not run yet.
+    await organizationsMigrationBeforeRemoval.up(database);
+    await sql`
+      alter table public.cloud_computer_backup_targets
+        add column reserved_organization_id text,
+        add column organization_reservation_request_id uuid;
+      delete from public.kysely_migration where name >= '0037_remove_organizations';
+    `.execute(database);
+  });
+  afterAll(async () => {
+    await database?.destroy();
+    await maintenance?.query(`drop database if exists ${databaseName}`);
+    await maintenance?.end();
+  });
+
+  it("refuses while an organization or its computer exists, changes nothing, and runs once an operator decided", async () => {
+    await sql`
+      insert into public.users (id, display_name, email, email_verified) values
+        (${assignee}, 'Ada', 'ada@example.test', true),
+        (${admin}, 'Grace', 'grace@example.test', true),
+        (${otherPerson}, 'Alan', 'alan@example.test', true)
+    `.execute(database);
+    await sql`
+      insert into public.organizations (id, name, stripe_customer_id, stripe_subscription_id,
+          stripe_price_id, billing_currency, billing_status, paid_seats, policy)
+        values (${organization}, 'Workshop', 'cus_org', 'sub_org', 'price_seat', 'usd', 'active',
+          2, '{"externalMaxMode":"approval-required","allowEverything":false,"allowTasks":false,"devices":"cloud-computer-only"}')
+    `.execute(database);
+    await sql`
+      insert into public.organization_members (organization_id, account_id, role) values
+        (${organization}, ${admin}, 'admin'), (${organization}, ${assignee}, 'member')
+    `.execute(database);
+    await sql`
+      insert into public.cloud_computers (
+        id, account_id, generation, state, hostname, region, server_type, release,
+        readiness_started_at, phase, stripe_checkout_id, stripe_customer_id,
+        stripe_subscription_id, stripe_price_id, billing_currency, billing_status,
+        created_at, updated_at, sealed_setup_code, setup_code_digest
+      ) values
+        (${personal}, ${otherPerson}, 1, 'active', 'cc-d1.home.example.test', 'us-central1-a',
+          'default', '{}'::jsonb, now(), 'ready', 'cs_d1', 'cus_d1', 'sub_d1', 'price_1', 'usd',
+          'active', now(), now(), 'sealed-d1', 'digest-d1'),
+        (${work}, null, 1, 'active', 'cc-d2.home.example.test', 'us-central1-a', 'default',
+          '{}'::jsonb, now(), 'ready', ${`work:${assignment}`}, ${`work:${assignment}`},
+          ${`work:${assignment}`}, ${`work:${assignment}`}, '', 'active', now(), now(),
+          'sealed-d2', 'digest-d2')
+    `.execute(database);
+    await sql`
+      insert into public.work_assignments (id, organization_id, assignee_account_id,
+          cloud_computer_id, request_id, state)
+        values (${assignment}, ${organization}, ${assignee}, ${work}, ${randomUUID()}, 'active')
+    `.execute(database);
+    await sql`
+      update public.cloud_computers set work_assignment_id = ${assignment} where id = ${work}
+    `.execute(database);
+    await sql`
+      insert into public.cloud_computer_backup_targets (id, endpoint, bucket, prefix,
+          sealed_credentials, principal_fingerprint, reserved_organization_id)
+        values (${reservedTarget}, 'https://s3.example.test', 'backups', 'seat-1', 'sealed',
+          'fingerprint-seat-1', ${organization})
+    `.execute(database);
+    const before = await computer(personal);
+    const left = () =>
+      sql<{ name: string }>`
+        select table_name as name from information_schema.tables where table_schema = 'public'
+          and (table_name like 'organization%' or table_name like 'work\\_%')
+        union all select table_name || '.' || column_name from information_schema.columns
+          where table_schema = 'public' and (column_name like '%organization%'
+            or column_name = 'work_assignment_id')
+        order by 1`
+        .execute(database)
+        .then(({ rows }) => rows.map(({ name }) => name));
+    const shapeBefore = await left();
+    expect(shapeBefore.length).toBeGreaterThan(0);
+
+    const expectRefused = async (pattern: RegExp) => {
+      const computerBefore = await computer(work);
+      const failure = await migrateControlPlaneToLatest(database).then(
+        () => null,
+        (error: unknown) => error as Error & { cause?: Error },
+      );
+      expect(failure?.message).toContain("Control-plane migration failed");
+      expect(String(failure?.cause?.message)).toMatch(pattern);
+      const recorded = await sql<{ name: string }>`
+        select name from public.kysely_migration where name = '0037_remove_organizations'`.execute(
+        database,
+      );
+      expect(recorded.rows).toEqual([]);
+      expect(await left()).toEqual(shapeBefore);
+      expect(await computer(work)).toEqual(computerBefore);
+      expect(await computer(personal)).toEqual(before);
+    };
+
+    // A computer someone paid for is never destroyed or orphaned by a migration: it refuses and
+    // names what an operator must decide about.
+    await expectRefused(
+      new RegExp(`organization ${organization}[\\s\\S]*Cloud Computer ${work}`, "u"),
+    );
+
+    // Clearing the organization rows alone is not enough if the computer is half-resolved:
+    // alive without an owning account, or still carrying any work: placeholder billing id.
+    await sql`
+      update public.cloud_computers set work_assignment_id = null,
+          stripe_checkout_id = 'cs_assignee', stripe_customer_id = 'cus_assignee',
+          stripe_subscription_id = 'sub_assignee', stripe_price_id = 'price_1', billing_currency = 'usd'
+        where id = ${work}
+    `.execute(database);
+    await sql`delete from public.work_assignments`.execute(database);
+    await sql`delete from public.organization_members`.execute(database);
+    await sql`delete from public.organizations`.execute(database);
+    await expectRefused(new RegExp(`Cloud Computer ${work}.*no owning account`, "u"));
+
+    for (const [column, value] of [
+      ["stripe_subscription_id", `work:${assignment}`],
+      ["stripe_customer_id", `work:${assignment}`],
+      ["stripe_checkout_id", `work:${assignment}`],
+      ["stripe_price_id", `work:${assignment}`],
+    ] as const) {
+      await sql`
+        update public.cloud_computers set account_id = ${assignee},
+            stripe_checkout_id = ${column === "stripe_checkout_id" ? value : "cs_assignee"},
+            stripe_customer_id = ${column === "stripe_customer_id" ? value : "cus_assignee"},
+            stripe_subscription_id = ${column === "stripe_subscription_id" ? value : "sub_assignee"},
+            stripe_price_id = ${column === "stripe_price_id" ? value : "price_1"}
+          where id = ${work}
+      `.execute(database);
+      await expectRefused(new RegExp(`Cloud Computer ${work}.*${column}`, "u"));
+    }
+
+    // An operator finishes resolving it: a Home is handed only to its assignee, with real Stripe
+    // ids. First verify the guard locks organizations before dropping, so a concurrent insert
+    // from an older instance commits before the check and causes refusal instead of silent loss.
+    await sql`
+      update public.cloud_computers set account_id = ${assignee},
+          stripe_checkout_id = 'cs_assignee', stripe_customer_id = 'cus_assignee',
+          stripe_subscription_id = 'sub_assignee', stripe_price_id = 'price_1', billing_currency = 'usd'
+        where id = ${work}
+    `.execute(database);
+    const racing = new Pool({ connectionString: urlForDatabase(databaseName) });
+    const client = await racing.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `insert into public.organizations (id, name, stripe_customer_id, stripe_subscription_id,
+           stripe_price_id, billing_currency, billing_status, paid_seats, policy)
+         values ($1, 'Racing', 'cus_race', 'sub_race', 'price_seat', 'usd', 'active', 1, '{}')`,
+        [organization],
+      );
+      let settled = false;
+      const migrating = migrateControlPlaneToLatest(database).then(
+        () => {
+          settled = true;
+          return null;
+        },
+        (error: unknown) => {
+          settled = true;
+          return error as Error & { cause?: Error };
+        },
+      );
+      await vi.waitFor(async () => {
+        const waiting = await client.query<{ waiting: boolean }>(
+          `select exists (
+             select 1 from pg_locks
+             where relation = 'public.organizations'::regclass
+               and mode = 'AccessExclusiveLock'
+               and not granted
+           ) as waiting`,
+        );
+        expect(waiting.rows[0]?.waiting).toBe(true);
+      });
+      expect(settled).toBe(false);
+      await client.query("commit");
+      const raceError = await migrating;
+      expect(String(raceError?.cause?.message)).toMatch(
+        new RegExp(`organization ${organization}`, "u"),
+      );
+      expect(await left()).toEqual(shapeBefore);
+    } finally {
+      client.release();
+      await racing.end();
+    }
+    await sql`delete from public.organizations where id = ${organization}`.execute(database);
+
+    // Then the migration runs, and keeps both computers.
+    await migrateControlPlaneToLatest(database);
+    expect(await left()).toEqual([]);
+    // Every column it had is kept, but the one the migration drops.
+    const { workAssignmentId, ...kept } = { ...before };
+    expect(workAssignmentId).toBeNull();
+    expect(await computer(personal)).toEqual(kept);
+    expect(await computer(work)).toMatchObject({ accountId: assignee, state: "active" });
+    // The seat it reserved is a free backup target.
+    const target = await sql<{ id: string }>`
+      select id from public.cloud_computer_backup_targets where id = ${reservedTarget}
+        and computer_id is null and checkout_key is null`.execute(database);
+    expect(target.rows).toEqual([{ id: reservedTarget }]);
   });
 });
