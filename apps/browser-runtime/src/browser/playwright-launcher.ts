@@ -1347,6 +1347,12 @@ class PlaywrightContextHandle implements BrowserContext {
   >();
   private readonly explicitPages = new WeakSet<Page>();
   private readonly inFlightCreations = new Set<Promise<unknown>>();
+  /**
+   * Z3: opens the runtime no longer waits for (timed out or abandoned) whose page may still
+   * arrive. Until each settles, or its own bound passes, a page without an opener is held: it may
+   * be that page, which is closed with evidence and never handed out.
+   */
+  private readonly lateCreations = new Set<Promise<unknown>>();
   private readonly pendingLinkOpens: Array<{
     readonly opener: PlaywrightPageHandle;
     readonly disposition: LinkOpenDisposition;
@@ -1479,18 +1485,22 @@ class PlaywrightContextHandle implements BrowserContext {
     // and is never taken for the page that link opened. Any other page is handed off at once,
     // never waiting on an unrelated open (Q3): a popup names its opener, and with no gesture
     // waiting nothing is inferred.
+    // Z3: while an open the runtime gave up on may still deliver its page, a page without an
+    // opener waits for it, gesture or not: that page is closed, never handed out.
     if (!creationsSettled && !handle.openerHandle) this.prunePendingLinkOpens();
     if (
       !creationsSettled &&
       !handle.openerHandle &&
-      this.pendingLinkOpens.length > 0 &&
-      this.inFlightCreations.size > 0 &&
-      !this.explicitPages.has(page)
+      !this.explicitPages.has(page) &&
+      (this.lateCreations.size > 0 ||
+        (this.pendingLinkOpens.length > 0 && this.inFlightCreations.size > 0))
     ) {
       this.identifyingPages.add(page);
-      void Promise.allSettled(this.inFlightCreations).then(() =>
+      void Promise.allSettled([...this.inFlightCreations, ...this.lateCreations]).then(() =>
         queueMicrotask(() => {
           if (!this.identifyingPages.delete(page)) return;
+          // A late open's own page: its creator closes it.
+          if (this.explicitPages.has(page)) return;
           this.handOutOrdinary(page, true);
         }),
       );
@@ -2287,11 +2297,14 @@ class PlaywrightContextHandle implements BrowserContext {
     // told apart from this one by identity.
     const settled = Promise.withResolvers<void>();
     this.inFlightCreations.add(settled.promise);
+    // Z3: the page asked for is the runtime's from the ask until it is handed out or closed.
+    const raw = this.context.newPage();
+    let handedOut = false;
     try {
-      const opening = withTimeout(this.context.newPage(), openPageMs, {
+      const page = await withTimeout(raw, openPageMs, {
+        ...(signal ? { signal } : {}),
         timeoutError: () => new Error("Opening a page timed out."),
       });
-      const page = await opening;
       this.explicitPages.add(page);
       if (signal?.aborted) {
         // Abandoned while it opened: nobody takes it, so it is closed here.
@@ -2299,11 +2312,40 @@ class PlaywrightContextHandle implements BrowserContext {
         throw notWanted();
       }
       if (!this.publish(page, true)) throw new Error("The new page closed.");
+      handedOut = true;
       return page;
     } finally {
       settled.resolve();
       this.inFlightCreations.delete(settled.promise);
+      if (!handedOut) this.closeWhenItArrives(raw);
     }
+  }
+
+  /**
+   * Z3: an open that timed out or was abandoned: its page, if Chromium still makes it, is closed
+   * with evidence when it arrives, never ordinary and never unowned. Pages without an opener wait
+   * on it until it settles or its bound passes.
+   */
+  private closeWhenItArrives(raw: Promise<Page>): void {
+    const late = raw.then(
+      (page) => {
+        this.explicitPages.add(page);
+        if (!this.closed) void this.closePageWithEvidence(page);
+      },
+      () => undefined,
+    );
+    let bound: NodeJS.Timeout | undefined;
+    const held = Promise.race([
+      late,
+      new Promise<void>((resolve) => {
+        bound = setTimeout(resolve, openPageMs);
+        bound.unref?.();
+      }),
+    ]).finally(() => {
+      clearTimeout(bound);
+      this.lateCreations.delete(held);
+    });
+    this.lateCreations.add(held);
   }
 
   async createPage(options?: {

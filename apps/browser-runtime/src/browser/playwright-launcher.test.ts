@@ -2057,6 +2057,120 @@ describe("native Chromium profiles", () => {
   });
 });
 
+/*
+ * Z3: a page the runtime asked for is the runtime's from the ask until it is handed out or closed.
+ * An open it gave up on (timed out, or abandoned when its session ended) whose page Chromium still
+ * makes is closed when it arrives, with evidence: never handed out as the page a person's link
+ * opened, and never left open with no owner. The old open kept no hold on Playwright's answer.
+ */
+describe("a page whose open was given up (Z3)", () => {
+  async function fixture() {
+    const { PageOwnership } = await import("@opensteer/browser-runtime-core");
+    const f = await nativeCloseFixture();
+    const events = new EventEmitter();
+    const pages: Page[] = [];
+    const mockPage = (url: string) =>
+      Object.assign(new EventEmitter(), {
+        url: () => url,
+        opener: async () => null,
+        isClosed: () => false,
+        close: vi.fn(async () => undefined),
+      });
+    f.context.on.mockImplementation((event: string, listener: (...args: unknown[]) => void) => {
+      events.on(event, listener);
+    });
+    f.context.pages = () => pages;
+    f.context.newCDPSession.mockResolvedValue(
+      Object.assign(new EventEmitter(), {
+        send: vi.fn(async (method: string) =>
+          method === "Target.getTargetInfo" ? { targetInfo: { canAccessOpener: false } } : {},
+        ),
+        detach: vi.fn().mockResolvedValue(undefined),
+      }),
+    );
+    let late: PromiseWithResolvers<Page> | null = null;
+    f.context.newPage.mockImplementation(async () => {
+      if (late) return await late.promise;
+      const created = mockPage("about:blank") as unknown as Page;
+      pages.push(created);
+      events.emit("page", created);
+      return created;
+    });
+    const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+    const ownership = new PageOwnership();
+    ownership.adopt(launched.context);
+    const opener = await launched.context.createPage();
+    ownership.claim(opener, "only-session");
+    await Promise.resolve();
+    // The next open hangs in Chromium; the runtime gives it up (its session ended).
+    late = Promise.withResolvers<Page>();
+    const giveUp = new AbortController();
+    const asked = launched.context.createPage({ signal: giveUp.signal });
+    await vi.waitFor(() => expect(f.context.newPage).toHaveBeenCalledTimes(2));
+    giveUp.abort();
+    await expect(asked).rejects.toThrow();
+    // Chromium makes the page after all: Playwright announces it, then answers the open.
+    const arrive = (url: string) => {
+      const page = mockPage(url);
+      pages.push(page as unknown as Page);
+      events.emit("page", page);
+      return page;
+    };
+    const arriveLate = async () => {
+      const page = arrive("about:blank");
+      late!.resolve(page as unknown as Page);
+      for (let turn = 0; turn < 6; turn++) await Promise.resolve();
+      return page;
+    };
+    const handleOf = (page: unknown) =>
+      launched.context
+        .pages()
+        .find((handle) => (handle as unknown as { rawPage?: unknown }).rawPage === page);
+    return { f, launched, ownership, opener, arrive, arriveLate, handleOf };
+  }
+
+  it("closes the late page, and still gives the person's link its own page", async () => {
+    const { f, launched, ownership, opener, arrive, arriveLate, handleOf } = await fixture();
+    try {
+      const primaryBit = process.platform === "darwin" ? 4 : 2;
+      await (
+        await opener.cdp()
+      ).send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        button: "left",
+        modifiers: primaryBit,
+      });
+      const stray = await arriveLate();
+      await vi.waitFor(() => expect(stray.close).toHaveBeenCalled());
+      expect(handleOf(stray)).toBeUndefined();
+      // The link's own page, when it comes, is the link's.
+      const linked = arrive("https://link.test/");
+      await vi.waitFor(() => expect(handleOf(linked)).toBeDefined());
+      const handle = handleOf(linked)!;
+      expect(await handle.opener()).toBe(opener);
+      expect(ownership.sessionOf(handle)).toBe("only-session");
+    } finally {
+      f.exit();
+      await launched.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("closes the late page of an open abandoned when its session ended, and hands it to no one", async () => {
+    const { f, launched, ownership, arriveLate, handleOf } = await fixture();
+    try {
+      const stray = await arriveLate();
+      await vi.waitFor(() => expect(stray.close).toHaveBeenCalled());
+      expect(handleOf(stray)).toBeUndefined();
+      expect(ownership.sessionOf(stray as never)).toBeNull();
+    } finally {
+      f.exit();
+      await launched.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+});
+
 /** A page published as the runtime's own new page (K3 (a)), as every open of a native page is. */
 async function ownPage(
   launched: { context: { createPage(): Promise<BrowserPage> } },
