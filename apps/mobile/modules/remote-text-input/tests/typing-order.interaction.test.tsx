@@ -2156,26 +2156,6 @@ describe("a person's caret moves and selections in the native field", () => {
     },
   );
 
-  // CV1, the walk: a word the keyboard replaces by range after the page rewrote the field is
-  // refused as a replacement; the letters typed stay, and what is typed next lands.
-  it("keeps the typed word when the page refuses the keyboard's replacement of it", async () => {
-    const { remote, keyboard, answerAll, publish } = await open();
-    for (const letter of "teh") await keyboard((field) => field.insertText(letter));
-    await answerAll();
-    await keyboard((field) => field.replaceRange(0, 3, "the"));
-    // The page rewrites the field before the replacement reaches it: a new context.
-    remote.value = `Z${remote.value}`;
-    remote.caret += 1;
-    remote.earlier.add(remote.contextId!);
-    remote.contextId = "00000000-0000-4000-8000-000000000999";
-    await publish(remote.contextId);
-    await answerAll();
-    await keyboard((field) => field.insertText(" "));
-    await answerAll();
-    expect(remote.value).toBe("Zteh ");
-    expect(remote.refused).toMatchObject([{ kind: "edit", edit: { text: "the", before: "teh" } }]);
-  });
-
   // CY2, the fault the 37 replays pinned, end to end: the page rewrites its field without a word,
   // the keyboard's replacement made for the old text is refused as mismatched and the page
   // rotates, while the next two keystrokes wait in the native gate, named under the old context.

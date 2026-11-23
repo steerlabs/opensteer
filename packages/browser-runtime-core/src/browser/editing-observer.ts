@@ -1389,6 +1389,10 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
         const track = (event) => {
           if (event.type === "compositionstart") composing = { element, text: "" };
           if (event.type === "compositionend") composing = null;
+          // CZ10: what an EditContext's own events left, as an input's do for the other editors.
+          if (event.type === "compositionstart" || (event.type === "textupdate" && event.isTrusted))
+            composedText = context.text;
+          if (event.type === "compositionend") composedText = null;
           // During a composition each textupdate replaces the composition with its text.
           if (event.type === "textupdate" && composing?.element === element) composing.text = event.text;
         };
@@ -1568,7 +1572,8 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     return kind === "control" ? element.value : kind === "editcontext" ? element.editContext.text : element.textContent;
   };
   on(document, "compositionstart", () => {composedText = fieldText(active());});
-  on(document, "input", () => {if (composing) composedText = fieldText(composing.element);});
+  // CZ10: the browser's own input only: a page's synthetic input event says nothing of it.
+  on(document, "input", (event) => {if (composing && event.isTrusted) composedText = fieldText(composing.element);});
   on(document, "compositionend", () => {composedText = null;});
   /** Read wherever the script asks whether the field composes: no event says it. */
   const rewritten = () => {

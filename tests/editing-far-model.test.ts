@@ -499,6 +499,36 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     await settle();
   });
 
+  // CZ10: a page's mask that rewrites its value under a composition and then dispatches its own
+  // input event ended the composition all the same: only the browser's own events say what the
+  // composition holds, so the next composition is a new one, admitted.
+  it("ends the composition a rewrite ended, whatever synthetic input the page sends", async () => {
+    await seed(page, kind, "ab", 2);
+    await settle();
+    expect(await composeA("に")).toBe(true);
+    await page.evaluate((kind) => {
+      const element = document.getElementById("f")!;
+      if (kind === "textarea") {
+        const area = element as HTMLTextAreaElement;
+        const caret = area.selectionEnd;
+        area.value = `Z${area.value}`;
+        area.setSelectionRange(caret + 1, caret + 1);
+      } else {
+        const caret = getSelection()!.focusOffset;
+        element.textContent = `Z${element.textContent ?? ""}`;
+        const range = document.createRange();
+        range.setStart(element.firstChild!, caret + 1);
+        range.collapse(true);
+        getSelection()!.removeAllRanges();
+        getSelection()!.addRange(range);
+      }
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+    }, kind);
+    await settle();
+    expect(await composeA("日")).toBe(true);
+    expect(await read(page, kind)).toEqual({ value: "Zabに日", caret: 5, collapsed: true });
+  });
+
   // CY4, the lead's ruling 2: what the page holds from a composition it ended itself is applied.
   // The composer's commit of it then (the phone commits at the change of context) adds nothing
   // when it is that text, the rest when it extends it, all of it when it differs: each committed
