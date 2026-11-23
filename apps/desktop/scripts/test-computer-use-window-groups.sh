@@ -17,6 +17,9 @@ else
   # journey's own temporary root.
   apps=$(mktemp -d "$HOME/Applications/opensteer-window-groups-apps.XXXXXX")
 fi
+# Only the compiled journey may be shared, between passes of one run that name
+# the same directory; fixture apps are still built for each pass.
+build="${OPENSTEER_WINDOW_GROUP_BUILD:-$work}"
 journey_pid=''
 cleanup() {
   status=$?
@@ -48,10 +51,12 @@ ditto --norsrc --noextattr --noqtn "$fixture" "$peer_fixture"
 codesign --force --sign - "$peer_fixture"
 export OPENSTEER_WINDOW_GROUP_PEER_APP="$peer_fixture"
 pnpm build:computer-use-helper --requirement-only
-bash scripts/test-support/build-apple-data-module.sh "$work"
+if [[ ! -x "$build/Journey" ]]; then
+bash scripts/test-support/build-apple-data-module.sh "$build"
 sources=()
 while IFS= read -r file; do sources+=("$file"); done < <(find native/computer-use/Sources/ComputerUseCore -name '*.swift' | sort)
-xcrun swiftc -whole-module-optimization -parse-as-library -module-name ComputerUseCore -swift-version 5 -I "$work" -L "$work" -lOpensteerAppleData -lMacOSSigning -o "$work/Journey" "${sources[@]}" native/computer-use/Tests/Fixtures/WindowGroupJourney/Journey.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/Contracts.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/Video.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/Wire.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/Person.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/OwnerLatency.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/BatchCancellation.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/Lifetime.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/ReceiptSwitch.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/Focus.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/Sharing.swift
+xcrun swiftc -whole-module-optimization -parse-as-library -module-name ComputerUseCore -swift-version 5 -I "$build" -L "$build" -lOpensteerAppleData -lMacOSSigning -o "$build/Journey" "${sources[@]}" native/computer-use/Tests/Fixtures/WindowGroupJourney/Journey.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/Contracts.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/Video.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/Wire.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/Person.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/OwnerLatency.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/BatchCancellation.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/Lifetime.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/ReceiptSwitch.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/Focus.swift native/computer-use/Tests/Fixtures/WindowGroupJourney/Sharing.swift
+fi
 fi
 other_fixture=''
 if [[ "${OPENSTEER_MAC_OWNER_INPUT_JOURNEY:-}" == 1 ]]; then
@@ -88,7 +93,7 @@ for selected in "${cases[@]}"; do
     codesign --force --sign - "$peer_fixture"
   fi
   selection_start=$SECONDS
-  "$work/Journey" "$out" "$fixture" &
+  "$build/Journey" "$out" "$fixture" &
   journey_pid=$!
   set +e
   wait "$journey_pid"
