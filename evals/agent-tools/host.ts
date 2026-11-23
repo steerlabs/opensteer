@@ -318,6 +318,25 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
           : tabFixtureTools.has(name)
             ? undefined
             : (taskFixtureResult(testCase, name, args, scope.threadId) ?? defaultResult(name));
+        // A Home that changed answers with the change: `$after` reads `then` once an earlier
+        // accepted call in this sample matched `call` (tool and partial arguments), else
+        // `before`, so a model that checks its own work sees what the Home would show. It may
+        // stand for a whole mock or for one `$byArgs` entry's result.
+        const changed = (value: unknown): unknown => {
+          if (!isRecord(value) || !isRecord(value.$after)) return value;
+          const after = value.$after;
+          const call = isRecord(after.call) ? after.call : {};
+          const done = calls
+            .slice(0, index)
+            .some(
+              (previous) =>
+                previous?.valid === true &&
+                previous.tool === call.tool &&
+                partialMatch(previous.args, isRecord(call.args) ? call.args : {}),
+            );
+          return done ? after.then : after.before;
+        };
+        result = changed(result);
         if (
           result !== null &&
           typeof result === "object" &&
@@ -337,7 +356,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
             (candidate) => isRecord(candidate) && partialMatch(args, candidate.args),
           );
           result = isRecord(entry)
-            ? entry.result
+            ? changed(entry.result)
             : { $error: "No case mock matches these arguments" };
         }
         if (isRecord(result) && typeof result.$error === "string") {

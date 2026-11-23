@@ -8,6 +8,8 @@ import { parseCases } from "./cases.js";
 function responses(value: unknown): unknown[] {
   if (isRecord(value)) {
     if (typeof value.$error === "string") return [value];
+    if (isRecord(value.$after))
+      return [...responses(value.$after.before), ...responses(value.$after.then)];
     if (Array.isArray(value.$responses)) return value.$responses.flatMap(responses);
     if (Array.isArray(value.$byArgs))
       return value.$byArgs.flatMap((entry) => responses(isRecord(entry) ? entry.result : entry));
