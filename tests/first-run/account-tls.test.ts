@@ -1,7 +1,7 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { X509Certificate } from "node:crypto";
 import { createServer, request } from "node:https";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -113,7 +113,12 @@ describe("the fixture authority's files, made with the guest step's PATH", () =>
     );
   /** A key identifier as `openssl -text` prints it, under its extension's heading. */
   const keyIdentifier = (printed: string, heading: string) =>
-    new RegExp(`${heading}:\\s*\\n\\s*(?:keyid:)?([0-9A-F:]+)`, "u").exec(printed)?.[1] ?? null;
+    new RegExp(
+      `${heading}:[ \\t]*\\r?\\n[ \\t]*(?:keyid:)?([0-9A-Fa-f:]+)[ \\t]*(?:\\r?\\n|$)`,
+      "u",
+    )
+      .exec(printed)?.[1]
+      ?.toUpperCase() ?? null;
 
   it("names the authority and the account service apart, the leaf issued by the authority", () => {
     const authority = new X509Certificate(read("ca.pem"));
@@ -131,6 +136,35 @@ describe("the fixture authority's files, made with the guest step's PATH", () =>
     expect(authorityKey).not.toBeNull();
     expect(keyIdentifier(text("account.pem"), "X509v3 Authority Key Identifier")).toBe(
       authorityKey,
+    );
+  });
+
+  it("refuses files whose authority or account name does not match exactly", () => {
+    const script = path.resolve(
+      import.meta.dirname,
+      "../../scripts/test-vm/fixture-authority-files.sh",
+    );
+    const verify = (authorityName: string, accountName: string) =>
+      spawnSync("/bin/bash", [script, "--verify", directory, authorityName, accountName], {
+        encoding: "utf8",
+        env: { HOME: directory, PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+      });
+
+    expect(verify("Opensteer journey fixture authority", journeyAccountName).status).toBe(0);
+    const wrongAuthority = verify("Wrong fixture authority", journeyAccountName);
+    expect(wrongAuthority.status).not.toBe(0);
+    expect(wrongAuthority.stderr).toContain(
+      "fixture authority: the authority is named CN=Opensteer journey fixture authority",
+    );
+    const prefixAuthority = verify("Opensteer journey fixture", journeyAccountName);
+    expect(prefixAuthority.status).not.toBe(0);
+    const wrongAccount = verify(
+      "Opensteer journey fixture authority",
+      "other.first-run.opensteer.example",
+    );
+    expect(wrongAccount.status).not.toBe(0);
+    expect(wrongAccount.stderr).toContain(
+      `fixture authority: the account certificate is named CN=${journeyAccountName}`,
     );
   });
 
@@ -191,13 +225,97 @@ describe("the journey's own check of the fixture's files, before it launches any
 
   // The script as run 20261122T221025Z-d20c2ea7 had it: both certificates "CN=placeholder".
   it("stops on the pair the guest had, with Node's reason", async () => {
-    // Kept as a file: a test never reads the repository's history, which a shallow clone lacks.
-    const old = path.resolve(
-      import.meta.dirname,
-      "fixtures/authority-files-as-run-20261122T221025Z.sh",
+    // Make the exact broken pair the macOS LibreSSL guest produced (both certs CN=placeholder,
+    // no Authority Key Identifier) on every OpenSSL implementation, so Linux tests it too.
+    const directory = mkdtempSync(path.join(tmpdir(), "first-run-authority-placeholder-"));
+    const config = path.join(directory, "authority.cnf");
+    const openssl = "/usr/bin/openssl";
+    const version = execFileSync(openssl, ["version"], { encoding: "utf8" });
+    // OpenSSL 3 adds SKI/AKI by default to `x509 -req` unless disabled; LibreSSL does not.
+    const noKeyIds = version.startsWith("LibreSSL")
+      ? ""
+      : "subjectKeyIdentifier = none\nauthorityKeyIdentifier = none\n";
+    writeFileSync(
+      config,
+      `[req]\ndistinguished_name = dn\nprompt = no\n[dn]\nCN = placeholder\n[authority]\nbasicConstraints = critical, CA:true\nkeyUsage = critical, keyCertSign, cRLSign\nsubjectKeyIdentifier = hash\n[account]\nbasicConstraints = critical, CA:false\nkeyUsage = critical, digitalSignature, keyEncipherment\nextendedKeyUsage = serverAuth\nsubjectAltName = DNS:${journeyAccountName}\n${noKeyIds}`,
     );
-    await expect(assertAccountTlsAccepted(make(old))).rejects.toThrow(
+    execFileSync(
+      openssl,
+      [
+        "req",
+        "-x509",
+        "-new",
+        "-nodes",
+        "-newkey",
+        "rsa:2048",
+        "-keyout",
+        path.join(directory, "ca.key"),
+        "-out",
+        path.join(directory, "ca.pem"),
+        "-days",
+        "2",
+        "-config",
+        config,
+        "-extensions",
+        "authority",
+      ],
+      { stdio: "ignore" },
+    );
+    execFileSync(
+      openssl,
+      [
+        "req",
+        "-new",
+        "-nodes",
+        "-newkey",
+        "rsa:2048",
+        "-keyout",
+        path.join(directory, "account.key"),
+        "-out",
+        path.join(directory, "account.csr"),
+        "-config",
+        config,
+      ],
+      { stdio: "ignore" },
+    );
+    execFileSync(
+      openssl,
+      [
+        "x509",
+        "-req",
+        "-in",
+        path.join(directory, "account.csr"),
+        "-CA",
+        path.join(directory, "ca.pem"),
+        "-CAkey",
+        path.join(directory, "ca.key"),
+        "-CAcreateserial",
+        "-out",
+        path.join(directory, "account.pem"),
+        "-days",
+        "2",
+        "-extfile",
+        config,
+        "-extensions",
+        "account",
+      ],
+      { stdio: "ignore" },
+    );
+    await expect(assertAccountTlsAccepted(journeyAccountTls(directory)!)).rejects.toThrow(
       /refuses the fixture authority's certificate for account\.first-run\.opensteer\.example: self-signed certificate/u,
     );
+
+    // On LibreSSL (macOS), also run the verbatim script from 20261122T221025Z-d20c2ea7, which
+    // triggers the same CN=placeholder fault because LibreSSL ignores -subj with a config DN.
+    if (version.startsWith("LibreSSL")) {
+      // Kept as a file: a test never reads the repository's history, which a shallow clone lacks.
+      const old = path.resolve(
+        import.meta.dirname,
+        "fixtures/authority-files-as-run-20261122T221025Z.sh",
+      );
+      await expect(assertAccountTlsAccepted(make(old))).rejects.toThrow(
+        /refuses the fixture authority's certificate for account\.first-run\.opensteer\.example: self-signed certificate/u,
+      );
+    }
   });
 });
