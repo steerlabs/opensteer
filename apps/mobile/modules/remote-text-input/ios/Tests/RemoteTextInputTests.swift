@@ -904,5 +904,32 @@ import UIKit
     window.isHidden = true
     #endif
   }
+
+  // P4(a) / S4: evidence test before changing Mac helper rotation.
+  // Insert "t", deliver a same-field context with a new contextId as the Mac helper currently
+  // publishes after a keystroke, insert "e", deliver another contextId, insert "h". Because
+  // RemoteInputTextView.applyConfiguration clears `text = ""` whenever nextContext != contextId,
+  // the native text view holds only "h" before the caret (not "teh"), so iOS autocorrect never
+  // sees the word being typed when the Mac helper's round-trip arrives between keystrokes.
+  func testMacPerKeystrokeContextClearsNativeTextBeforeCaret() {
+    let field = Field()
+    let textField: [String: Any] = ["kind": "text", "sensitive": false]
+    field.view.configure(["contextId": "mac-0", "field": textField], focused: false)
+    field.view.insertText("t")
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "t")
+    field.view.configure(["contextId": "mac-1", "field": textField], focused: false)
+    field.view.insertText("e")
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "e")
+    field.view.configure(["contextId": "mac-2", "field": textField], focused: false)
+    field.view.insertText("h")
+    field.answerAll()
+    let text = field.view.text ?? ""
+    let beforeCaret = (text as NSString).substring(to: field.view.selectedRange.location)
+    XCTAssertEqual(beforeCaret, "h")
+    XCTAssertEqual(field.view.text, "h")
+    XCTAssertEqual(field.view.selectedRange, NSRange(location: 1, length: 0))
+  }
 }
 #endif
