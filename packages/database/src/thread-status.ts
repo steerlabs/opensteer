@@ -254,7 +254,9 @@ export async function projectThreadState(
           });
     const failure = last?.failure;
     const failurePreview =
-      failed && failure ? plainTextExcerpt(failure.message, taskLineMaxLength) : null;
+      failed && failure
+        ? plainTextExcerpt(failure.ownerMessage ?? failure.message, taskLineMaxLength)
+        : null;
     const changed = status !== thread.status || failurePreview !== thread.failurePreview;
     if (changed || force) {
       await tx

@@ -250,7 +250,7 @@ async function candidatesFor(
     transaction,
     change,
     run.status === "failed"
-      ? failureBody(run.failure?.message ?? "")
+      ? failureBody(run.failure?.ownerMessage ?? run.failure?.message ?? "")
       : "Opensteer stopped before it finished.",
     run.completedAt.toISOString(),
     run.revision,

@@ -6,7 +6,7 @@ import { backgroundLightModels, voiceCallSeed } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
 import { startRealtime } from "./voice.js";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
-import { redactUrlCredentials } from "@opensteer/shared/safeMessage";
+import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
@@ -134,7 +134,9 @@ import {
   type SupervisedProcess,
   linkDirectory,
   linkNames,
+  EngineUnavailableForTaskError,
   assertEngineMayRun,
+  checkCodexEffectiveConfig,
   checkCodexOthersHome,
   engineConfiguration,
   type HarnessEngineConfiguration,
@@ -1441,6 +1443,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         ...(this.#retryBudgetMs !== undefined ? { budgetMs: this.#retryBudgetMs } : {}),
         log: this.#log,
         logContext: { harness: "codex", runId: run.runId },
+        secrets: networkCredentialSecrets(this.#context.environment),
       }),
       runId: run.runId,
       started: false,
@@ -2175,7 +2178,12 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     if (!this.#unreadable.has(kind) && this.#unreadable.size < 64) {
       this.#unreadable.add(kind);
       this.#log?.("warn", "codex.frame.unreadable", {
-        detail: failure.message,
+        detail:
+          this.#server?.client.redactDiagnostic(failure.message) ??
+          redactNetworkCredentials(
+            failure.message,
+            networkCredentialSecrets(this.#context.environment),
+          ),
         method: message.method,
       });
     }
@@ -3282,7 +3290,10 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
           code: codexErrorCode(error),
           message:
             this.#server?.client.redactDiagnostic(error.message) ??
-            redactUrlCredentials(error.message),
+            redactNetworkCredentials(
+              error.message,
+              networkCredentialSecrets(this.#context.environment),
+            ),
           retryable: error.retryable,
         }),
       );
@@ -4451,7 +4462,7 @@ async function materializeCodexOthersHome(
 ): Promise<Readonly<Record<string, string>>> {
   const check = checkCodexOthersHome({ environment, providerState });
   if (!check.ok) {
-    throw new OpensteerError({ code: "forbidden", message: check.message });
+    throw new EngineUnavailableForTaskError(check.message);
   }
   if (check.mode !== "ambient") return environment;
   const othersHome = codexOthersHomeDirectory(providerState, check.sourceHome);
@@ -4723,6 +4734,10 @@ function assertCodexProcessBoundary(
       message:
         "Local Codex configuration contains native model instructions that Opensteer cannot isolate",
     });
+  }
+  const effectiveCheck = checkCodexEffectiveConfig(config);
+  if (!effectiveCheck.ok) {
+    throw new EngineUnavailableForTaskError(effectiveCheck.message);
   }
 }
 
@@ -5739,6 +5754,10 @@ async function codexPrivateThreadConfig(
     ).config,
     "effective private config",
   );
+  const effectiveCheck = checkCodexEffectiveConfig(effective);
+  if (!effectiveCheck.ok) {
+    throw new EngineUnavailableForTaskError(effectiveCheck.message);
+  }
   const servers =
     effective.mcp_servers === undefined
       ? {}

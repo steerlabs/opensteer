@@ -278,4 +278,50 @@ describe("ProviderRetryTracker", () => {
       vi.useRealTimers();
     }
   });
+
+  it("scrubs proxy passwords from retry events, warn logs, and budget-handler error logs (G7)", async () => {
+    const { networkCredentialSecrets } = await import("@opensteer/shared/safeMessage");
+    vi.useFakeTimers();
+    try {
+      const proxy = "http://alice:p@ss/word-g7@proxy.invalid:8080";
+      const password = "p@ss/word-g7";
+      const events: HarnessDurableEvent[] = [];
+      const logs: Array<{
+        readonly level: "info" | "warn";
+        readonly message: string;
+        readonly fields: Readonly<Record<string, unknown>> | undefined;
+      }> = [];
+      const tracker = new ProviderRetryTracker({
+        publish: (event) => events.push(event),
+        onBudgetExceeded: () => {
+          throw new Error(`Abort failed via ${proxy}`);
+        },
+        budgetMs: 1_000,
+        log: (level, message, fields) => {
+          logs.push({ fields, level, message });
+        },
+        secrets: networkCredentialSecrets({ HTTPS_PROXY: proxy }),
+      });
+
+      tracker.noteRetry({ message: `Retrying via ${proxy}` });
+      vi.advanceTimersByTime(1_000);
+
+      expect(events[0]).toMatchObject({
+        data: { message: "Retrying via http://[REDACTED]@proxy.invalid:8080" },
+        type: "run.retry",
+      });
+      expect(JSON.stringify(events)).not.toContain(password);
+      expect(JSON.stringify(logs)).not.toContain(password);
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          fields: expect.objectContaining({
+            error: "Abort failed via http://[REDACTED]@proxy.invalid:8080",
+          }),
+          message: "Provider retry budget handler failed",
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
