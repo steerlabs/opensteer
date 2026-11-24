@@ -233,6 +233,9 @@ private final class OwnerShortcutPolicy {
   func invalidate() {
     index?.invalidate()
   }
+  var diagnosticSnapshot: (shortcuts: [String], disabled: [String], complete: Bool)? {
+    index?.diagnosticSnapshot
+  }
   func route(_ combo: KeyCombo, pid: pid_t) throws -> ActionRunner.KeyRoute {
     guard !combo.modifiers.isEmpty else { return .keystroke }
     if self.pid != pid {
@@ -582,7 +585,16 @@ final class MacOwnerInputWorker {
 
   private func menuShortcut(_ combo: KeyCombo, target: EventTarget, lease: MacOwnerAttachment,
                             map: MacOwnerInputMap, proceed: @escaping @Sendable () throws -> Void) async throws -> Bool {
-    guard case .menuItem(let item) = try shortcutPolicy.route(combo, pid: target.processIdentifier) else { return false }
+    let route = try shortcutPolicy.route(combo, pid: target.processIdentifier)
+    let snap = shortcutPolicy.diagnosticSnapshot
+    guard case .menuItem(let item) = route else {
+      if !combo.modifiers.isDisjoint(with: [.cmd, .ctrl, .alt]) {
+        MacVideoDiagnostic.write(["event": "owner-menu-shortcut-miss", "streamId": lease.streamID,
+          "combo": MenuShortcutIndex.key(for: combo), "shortcuts": snap?.shortcuts ?? [],
+          "disabled": snap?.disabled ?? [], "complete": snap?.complete ?? false])
+      }
+      return false
+    }
     // A background app may receive the key without running its menu equivalent.
     // Choose its native menu action before effect; never also post or retry it.
     try proceed(); try lease.check(map)
@@ -595,6 +607,9 @@ final class MacOwnerInputWorker {
     } else { status = AXUIElementPerformAction(item, kAXPressAction as CFString) }
     if let error = ActionRunner.pressOutcome(status, whatMayHaveHappened: "the shortcut ran",
       failure: "This app's menu did not accept that shortcut.") { throw error }
+    MacVideoDiagnostic.write(["event": "owner-menu-shortcut-hit", "streamId": lease.streamID,
+      "combo": MenuShortcutIndex.key(for: combo), "shortcuts": snap?.shortcuts ?? [],
+      "disabled": snap?.disabled ?? [], "complete": snap?.complete ?? false])
     shortcutPolicy.invalidate()
     return true
   }

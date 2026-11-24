@@ -297,7 +297,12 @@ let timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
   case "owner-state":
     try? JSONSerialization.data(withJSONObject: ["text": ownerNote.string,
       "other": username.currentEditor()?.string ?? username.stringValue, "saves": ownerSaveCount,
-      "latencyChanges": ownerLatencyCount])
+      "latencyChanges": ownerLatencyCount,
+      "canUndo": ownerNote.undoManager?.canUndo ?? false,
+      "canRedo": ownerNote.undoManager?.canRedo ?? false,
+      "redoEnabled": redoItem.isEnabled,
+      "appActive": app.isActive,
+      "keyWindow": app.keyWindow?.title ?? ""])
       .write(to: output.appendingPathComponent("owner-state.json"))
   case "owner-latency":
     ownerLatencyCount = 0

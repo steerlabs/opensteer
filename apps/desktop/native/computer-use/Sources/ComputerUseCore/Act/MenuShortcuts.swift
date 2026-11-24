@@ -76,6 +76,11 @@ final class MenuShortcutIndex {
 
   var isBuilt: Bool { built != nil }
 
+  var diagnosticSnapshot: (shortcuts: [String], disabled: [String], complete: Bool)? {
+    guard let built else { return nil }
+    return (built.shortcuts.keys.sorted(), built.disabled.sorted(), built.complete)
+  }
+
   typealias Lookup = Found<AXUIElement>
 
   func lookup(_ combo: KeyCombo, applicationElement: AXUIElement) -> Lookup {
