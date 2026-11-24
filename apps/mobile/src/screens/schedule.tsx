@@ -282,7 +282,7 @@ function ScheduleBody(props: {
   const now = Date.now();
   const watch =
     item.kind === "watch" && definition.activation !== null
-      ? watchState(definition.activation.observed)
+      ? watchState(definition.activation.observed, definition.activation.contactLostAt, now)
       : null;
   const status = [
     item.statusWord,
@@ -440,7 +440,10 @@ function ScheduleBody(props: {
       )}
       {managed ? (
         <View style={styles.plate}>
-          <Fact label="Source" value={definition.revision.program.source} />
+          <Fact
+            label="Source"
+            value={definition.revision.script?.text ?? definition.revision.legacySource ?? ""}
+          />
         </View>
       ) : null}
       <View style={styles.runs}>
@@ -564,6 +567,7 @@ const runGlyph: Record<
   pending: { name: "clock", tint: color.muted },
   running: { name: "circle.dotted", tint: color.ember },
   succeeded: { name: "checkmark", tint: color.green },
+  unknown: { name: "questionmark.circle", tint: color.amber },
 };
 
 const RunRow = memo(function RunRow(props: {

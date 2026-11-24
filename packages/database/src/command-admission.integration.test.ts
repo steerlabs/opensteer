@@ -944,14 +944,13 @@ describeStore("one admission for Home commands", (it) => {
       createdBy: f.userId,
       idempotencyKey: randomUUID(),
       name: "Provider",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: { kind: "webhook" },
       webhookRouteKey: routeKey,
-      webhookSecretHash: "a".repeat(64),
     });
     // It is the connection's automation: its lineage is the connection's.
     await database
@@ -964,16 +963,15 @@ describeStore("one admission for Home commands", (it) => {
       .set({ originConnectionId: connection.id })
       .where("id", "=", f.threadId)
       .execute();
-    const deliver = (deliveryId: string) =>
+    const deliver = () =>
       storeFixture.triggers.enqueueWebhook({
-        deliveryId,
         headers: {},
         method: "POST",
         payload: { ok: true },
         routeKey,
       });
     await connections.revoke(f.userId, connection.id);
-    await expect(deliver("after-disconnect")).rejects.toBeDefined();
+    await expect(deliver()).rejects.toBeDefined();
     expect(
       await database
         .selectFrom("triggerOccurrences")
@@ -995,10 +993,10 @@ describeStore("one admission for Home commands", (it) => {
         createdBy: f.userId,
         idempotencyKey: randomUUID(),
         name: "Daily",
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default async () => null",
+        script: {
+          interpreter: null,
+
+          text: "console.log('ok')",
         },
         source: {
           kind: "schedule",
@@ -1020,14 +1018,10 @@ describeStore("one admission for Home commands", (it) => {
           command: { idempotencyKey: randomUUID(), ...command } as Command,
         })
       ).answer;
-    const program = {
-      toolContractVersion: 5,
-      language: "javascript",
-      source: "export default async () => 1",
-    };
+    const script = { interpreter: null, text: "console.log('ok')" } as const;
     const commands = (triggerId: string) => ({
       run: { type: "trigger.run", triggerId },
-      program: { type: "trigger.update", triggerId, input: { program } },
+      program: { type: "trigger.update", triggerId, input: { script } },
       rename: { type: "trigger.update", triggerId, input: { name: "Renamed" } },
       pause: { type: "trigger.status.set", triggerId, status: "paused" },
     });
@@ -1047,10 +1041,9 @@ describeStore("one admission for Home commands", (it) => {
     storeFixture,
   }) => {
     const { f, database } = await setup(storeFixture);
-    const program = {
-      toolContractVersion: 5 as const,
-      language: "javascript" as const,
-      source: "export default async () => null",
+    const script = {
+      interpreter: null,
+      text: "console.log('ok')",
     };
     const make = async () =>
       (
@@ -1060,7 +1053,7 @@ describeStore("one admission for Home commands", (it) => {
           createdBy: f.userId,
           idempotencyKey: randomUUID(),
           name: "Daily",
-          program,
+          script,
           source: {
             kind: "schedule",
             schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
@@ -1132,10 +1125,9 @@ describeStore("one admission for Home commands", (it) => {
         createdBy: f.userId,
         idempotencyKey: randomUUID(),
         name: "Daily",
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default async () => null",
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source: {
           kind: "schedule",
@@ -1158,10 +1150,9 @@ describeStore("one admission for Home commands", (it) => {
           command: { idempotencyKey: randomUUID(), ...command } as Command,
         })
       ).answer;
-    const program = {
-      toolContractVersion: 5,
-      language: "javascript",
-      source: "export default async () => 1",
+    const script = {
+      interpreter: null,
+      text: "console.log(1)",
     };
     const source = {
       kind: "schedule",
@@ -1169,20 +1160,20 @@ describeStore("one admission for Home commands", (it) => {
     };
     const create = (anchorThreadId: string) => ({
       type: "trigger.create",
-      input: { anchorThreadId, name: "New", program, source },
+      input: { anchorThreadId, name: "New", script, source },
     });
-    // The connected agent's automation: a program run unattended as its task is more than the
+    // The connected agent's automation: a script run unattended as its task is more than the
     // person's own agent holds there; the person is asked.
     const others = await make(theirs.id, connection.id);
     expect(await admit({ type: "trigger.run", triggerId: others })).toBe("ask");
-    expect(await admit({ type: "trigger.update", triggerId: others, input: { program } })).toBe(
+    expect(await admit({ type: "trigger.update", triggerId: others, input: { script } })).toBe(
       "ask",
     );
     expect(await admit(create(theirs.id))).toBe("ask");
     // The person's own: its own work, at Full access, now.
     const persons = await make(f.threadId, null);
     expect(await admit({ type: "trigger.run", triggerId: persons })).toBe("now");
-    expect(await admit({ type: "trigger.update", triggerId: persons, input: { program } })).toBe(
+    expect(await admit({ type: "trigger.update", triggerId: persons, input: { script } })).toBe(
       "now",
     );
     expect(await admit(create(f.threadId))).toBe("now");

@@ -296,7 +296,7 @@ function AutomationWhen({
     );
   }
   if (summary.watch && summary.kind === "watch") {
-    const state = watchState(summary.watch.observed);
+    const state = watchState(summary.watch.observed, summary.watch.contactLostAt, now);
     return (
       <span className="automation-when">
         <State text={state.text} tone={state.tone === "ok" ? "accent" : state.tone} />

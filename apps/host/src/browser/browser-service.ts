@@ -38,6 +38,7 @@ import {
   releaseBrowserStandardCdpLease,
   executionAccess,
   selectedGrantOf,
+  type RequestOriginInput,
   type TabRecord,
   type TabWrite,
 } from "@opensteer/database";
@@ -397,24 +398,26 @@ export interface BrowserSessionRepository {
     }[]
   >;
   readonly requests: {
-    create(input: {
-      readonly callId: string;
-      readonly kind: "browser.access";
-      readonly mode: "durable";
-      readonly originatingRunId: RunId;
-      readonly originatingThreadId: ThreadId;
-      readonly payload: Request["payload"];
-      readonly presentation: Request["presentation"];
-      readonly requestedBy: UserId;
-      readonly requiredActor: "requester";
-    }): Promise<{
+    create(
+      input: {
+        readonly callId: string;
+        readonly kind: "browser.access";
+        readonly mode: "durable";
+        readonly originatingThreadId: ThreadId;
+        readonly payload: Request["payload"];
+        readonly presentation: Request["presentation"];
+        readonly requestedBy: UserId;
+        readonly requiredActor: "requester";
+      } & RequestOriginInput,
+    ): Promise<{
       readonly replayed: boolean;
       readonly request: Request;
     }>;
-    findByCallIdentity(input: {
-      readonly callId: string;
-      readonly originatingRunId: RunId;
-    }): Promise<Request | null>;
+    findByCallIdentity(
+      input: {
+        readonly callId: string;
+      } & RequestOriginInput,
+    ): Promise<Request | null>;
     get(id: RequestId): Promise<Request | null>;
     resolveBrowserRequest(input: {
       readonly requestId: RequestId;
@@ -4672,8 +4675,35 @@ export class BrowserService {
     }
   }
 
-  async hasBrowserProfiles(ownerId: UserId): Promise<boolean> {
-    return (await this.#repository.listBrowserProfiles(ownerId)).length > 0;
+  async hasBrowserProfiles(ownerId: UserId, agentBindingId?: string): Promise<boolean> {
+    const profiles = await this.#repository.listBrowserProfiles(ownerId);
+    if (profiles.length === 0) return false;
+    if (!agentBindingId) return true;
+    if (!this.#repository.resolveResourceAccess) return false;
+    // Decide each profile through the single authority function (`resolveResourceAccess` /
+    // `authorizeTarget`, Rule 1) with Run parity (`explicitAccess: "read"` so lower task modes
+    // receive the browser address just like a Run of the same task, while per-action checks
+    // enforce read vs write, Z9 / T5).
+    for (const profile of profiles) {
+      try {
+        const authority = await this.#repository.resolveResourceAccess({
+          agentBindingId,
+          explicitAccess: "read",
+          grantTarget: { kind: "browser-profile", profileId: profile.id },
+          ownerUserId: ownerId,
+        });
+        if (authority.access !== null) return true;
+      } catch (error) {
+        if (error instanceof OpensteerError && error.code === "not_found") {
+          continue;
+        }
+        if (error instanceof OpensteerError && error.code === "forbidden") {
+          return false;
+        }
+        throw error;
+      }
+    }
+    return false;
   }
 
   async closeAgentSession(input: {
@@ -6113,16 +6143,24 @@ export class BrowserService {
     callId: string;
     ownerId: UserId;
     reason: string;
-    runId: RunId;
+    runId?: RunId;
+    originatingOccurrenceId?: import("@opensteer/core").TriggerOccurrenceId;
+    originatingWatchActivationId?: import("@opensteer/core").TriggerWatchActivationId;
     suggestion: BrowserAccessSuggestion;
     threadId: ThreadId;
   }): Promise<RequestCreationResult & { kind: "browser.access" }> {
+    const origin =
+      input.runId !== undefined
+        ? ({ originatingRunId: input.runId } as const)
+        : input.originatingOccurrenceId !== undefined
+          ? ({ originatingOccurrenceId: input.originatingOccurrenceId } as const)
+          : ({ originatingWatchActivationId: input.originatingWatchActivationId! } as const);
     if (
       input.suggestion.kind === "existing" &&
       (await this.#repository.getBrowserProfile(input.suggestion.profileId, input.ownerId)) &&
       !(await this.#repository.requests.findByCallIdentity({
         callId: input.callId,
-        originatingRunId: input.runId,
+        ...origin,
       }))
     )
       throw new OpensteerError({
@@ -6134,7 +6172,7 @@ export class BrowserService {
       callId: input.callId,
       kind: "browser.access",
       mode: "durable",
-      originatingRunId: input.runId,
+      ...origin,
       originatingThreadId: input.threadId,
       payload: { kind: "browser.access", reason: input.reason, suggestion: input.suggestion },
       presentation: {

@@ -14,7 +14,7 @@ import { upsertSelfDeviceInTransaction, getSelfDeviceId } from "./device-invento
 import { isDeepStrictEqual } from "node:util";
 import { canonicalRunnerPublicKeyPem } from "@opensteer/runner-auth";
 import { cancelPending } from "./request-cancellation.js";
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 
 import { lockBrowserProfile } from "./browser-profile-storage-store.js";
 import {
@@ -35,6 +35,7 @@ import {
   type RequestId,
   type RunId,
   type RunnerId,
+  type TriggerOccurrenceId,
   type UserId,
   nonTerminalRunStatuses,
   OpensteerError,
@@ -415,6 +416,7 @@ async function failRunsForRevokedRunner(
   transaction: Transaction<DatabaseSchema>,
   runnerId: RunnerId,
   links: ChannelLinks,
+  extraCommandIds: readonly DatabaseSchema["commands"]["id"][] = [],
 ): Promise<void> {
   const affected = await transaction
     .selectFrom("runs")
@@ -440,6 +442,7 @@ async function failRunsForRevokedRunner(
       .execute(databaseOperationOptions());
   }
   await lockRunProjectionRows(transaction, {
+    ...(extraCommandIds.length > 0 ? { commandIds: extraCommandIds } : {}),
     runIds: affected.map(({ id }) => id),
     threadIds: affected.map(({ threadId }) => threadId),
   });
@@ -976,12 +979,35 @@ export async function revokeRunner(
         ),
       );
   let runIds = new Set<RunId>();
+  let occurrenceIds = new Set<TriggerOccurrenceId>();
   let sessionIds = new Set<BrowserSessionId>();
+  const activeTriggerOccurrences = (transaction: Transaction<DatabaseSchema>) =>
+    transaction
+      .selectFrom("triggerOccurrences")
+      .select(["commandId", "id", "status", "connectionId", "terminalEvidenceAt"])
+      .where("status", "in", ["pending", "running"])
+      .where((expression) =>
+        expression.or([
+          expression("runnerId", "=", runnerId),
+          expression(
+            "environmentId",
+            "in",
+            transaction
+              .selectFrom("executionEnvironments")
+              .select("id")
+              .where("runnerId", "=", runnerId),
+          ),
+        ]),
+      );
   const recheck = async (transaction: Transaction<DatabaseSchema>) => {
     const currentRuns = await runs(transaction).execute(databaseOperationOptions());
+    const currentOccurrences = await activeTriggerOccurrences(transaction).execute(
+      databaseOperationOptions(),
+    );
     const currentSessions = await sessions(transaction).execute(databaseOperationOptions());
     if (
       currentRuns.some(({ id }) => !runIds.has(id)) ||
+      currentOccurrences.some(({ id }) => !occurrenceIds.has(id)) ||
       currentSessions.some(({ id }) => !sessionIds.has(id))
     ) {
       throw new TransactionScopeChanged();
@@ -1033,6 +1059,14 @@ export async function revokeRunner(
           await runs(transaction)
             .orderBy("runs.id", "asc")
             .forNoKeyUpdate("runs")
+            .execute(databaseOperationOptions())
+        ).map(({ id }) => id),
+      );
+      occurrenceIds = new Set(
+        (
+          await activeTriggerOccurrences(transaction)
+            .orderBy("id", "asc")
+            .forNoKeyUpdate()
             .execute(databaseOperationOptions())
         ).map(({ id }) => id),
       );
@@ -1099,15 +1133,58 @@ export async function revokeRunner(
 
         await clearRemovedDeviceStopsInTransaction(transaction, deviceEffects.removedDeviceIds);
         await recheck(transaction);
-        await failRunsForRevokedRunner(transaction, runnerId, links);
-        await transaction
-          .updateTable("triggerWatchActivations")
-          .set({
-            desired: "stopped",
-            leaseExpiresAt: null,
-            observed: "stopped",
-            updatedAt: revokedAt,
-          })
+        // Lock threads of affected runs (188) before triggers (189) and trigger_watch_activations (190),
+        // which precede failRunsForRevokedRunner's provider_sessions (192) and commands (218).
+        const affectedRunThreadIds = [
+          ...new Set(
+            (
+              await runs(transaction).select("runs.threadId").execute(databaseOperationOptions())
+            ).map(({ threadId }) => threadId),
+          ),
+        ];
+        if (affectedRunThreadIds.length > 0) {
+          await transaction
+            .selectFrom("threads")
+            .select("id")
+            .where("id", "in", affectedRunThreadIds)
+            .orderBy("id", "asc")
+            .forNoKeyUpdate()
+            .execute(databaseOperationOptions());
+        }
+        // Y6: Removing a computer pauses its active automations and stops active watches.
+        const runnerTriggers = await transaction
+          .selectFrom("triggers")
+          .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
+          .innerJoin("executionEnvironments", "executionEnvironments.id", "threads.environmentId")
+          .select("triggers.id")
+          .where("executionEnvironments.runnerId", "=", runnerId)
+          .where("triggers.status", "=", "active")
+          .orderBy("triggers.id", "asc")
+          .forNoKeyUpdate("triggers")
+          .execute(databaseOperationOptions());
+        if (runnerTriggers.length > 0) {
+          await transaction
+            .updateTable("triggers")
+            .set({
+              nextFireAt: null,
+              pauseReason: "Paused because its computer was removed.",
+              pausedAt: revokedAt,
+              pausedBy: "system",
+              pausedByConnectionId: null,
+              pausedByThreadId: null,
+              status: "paused",
+              updatedAt: revokedAt,
+            })
+            .where(
+              "id",
+              "in",
+              runnerTriggers.map(({ id }) => id),
+            )
+            .execute(databaseOperationOptions());
+        }
+        const activeWatches = await transaction
+          .selectFrom("triggerWatchActivations")
+          .select("id")
           .where((expression) =>
             expression.or([
               expression("runnerId", "=", runnerId),
@@ -1122,7 +1199,34 @@ export async function revokeRunner(
             ]),
           )
           .where("desired", "=", "active")
+          .orderBy("id", "asc")
+          .forNoKeyUpdate()
           .execute(databaseOperationOptions());
+        if (activeWatches.length > 0) {
+          await transaction
+            .updateTable("triggerWatchActivations")
+            .set({
+              desired: "stopped",
+              leaseExpiresAt: null,
+              observed: "stopped",
+              updatedAt: revokedAt,
+            })
+            .where(
+              "id",
+              "in",
+              activeWatches.map(({ id }) => id),
+            )
+            .execute(databaseOperationOptions());
+        }
+        const lockedOccurrences = await activeTriggerOccurrences(transaction)
+          .orderBy("id", "asc")
+          .execute(databaseOperationOptions());
+        await failRunsForRevokedRunner(
+          transaction,
+          runnerId,
+          links,
+          lockedOccurrences.map(({ commandId }) => commandId),
+        );
         const closed = await transaction
           .updateTable("browserSessions")
           .set({
@@ -1220,6 +1324,87 @@ export async function revokeRunner(
           reason: "resource-deleted",
           resolvedAt: revokedAt,
         });
+        if (lockedOccurrences.length > 0) {
+          const lockedCommands = await transaction
+            .selectFrom("commands")
+            .select(["frameSentAt", "id"])
+            .where(
+              "id",
+              "in",
+              lockedOccurrences.map(({ commandId }) => commandId),
+            )
+            .orderBy("id", "asc")
+            .forNoKeyUpdate()
+            .execute(databaseOperationOptions());
+          const frameSentByCommandId = new Map(
+            lockedCommands.map((row) => [row.id, row.frameSentAt]),
+          );
+          const cancelError = {
+            code: "canceled_by_computer_removed",
+            message: "Automation occurrence was canceled because its computer was removed.",
+          };
+          const unknownError = {
+            code: "outcome_unknown",
+            message: "Outcome unknown: its computer was removed while this firing was running.",
+          };
+          for (const row of lockedOccurrences) {
+            const neverSent =
+              row.status === "pending" || frameSentByCommandId.get(row.commandId) === null;
+            if (neverSent) {
+              await transaction
+                .updateTable("commands")
+                .set({
+                  lastError: jsonValue(cancelError),
+                  status: "failed",
+                  updatedAt: revokedAt,
+                })
+                .where("id", "=", row.commandId)
+                .where("status", "in", ["pending", "dispatched"])
+                .execute(databaseOperationOptions());
+              await transaction
+                .updateTable("triggerOccurrences")
+                .set({
+                  completedAt: revokedAt,
+                  error: jsonValue(cancelError),
+                  ...(row.connectionId && !row.terminalEvidenceAt
+                    ? { terminalEvidenceAt: revokedAt }
+                    : {}),
+                  status: "canceled",
+                  updatedAt: revokedAt,
+                })
+                .where("id", "=", row.id)
+                .where("status", "in", ["pending", "running"])
+                .execute(databaseOperationOptions());
+            } else if (row.status === "running") {
+              await transaction
+                .updateTable("commands")
+                .set({
+                  lastError: jsonValue(unknownError),
+                  status: "unknown",
+                  updatedAt: revokedAt,
+                })
+                .where("id", "=", row.commandId)
+                .where("status", "in", ["dispatched", "pending"])
+                .execute(databaseOperationOptions());
+              await transaction
+                .updateTable("triggerOccurrences")
+                .set({
+                  completedAt: revokedAt,
+                  contactLostAt: revokedAt,
+                  error: jsonValue(unknownError),
+                  ...(row.connectionId && !row.terminalEvidenceAt
+                    ? { terminalEvidenceAt: revokedAt }
+                    : {}),
+                  status: "unknown",
+                  updatedAt: revokedAt,
+                })
+                .where("id", "=", row.id)
+                .where("status", "=", "running")
+                .execute(databaseOperationOptions());
+            }
+          }
+          await wakeExecutionCommands(transaction);
+        }
         const sessionTargets = [
           ...new Set([DeviceIdSchema.parse(runnerId), ...deviceEffects.removedDeviceIds]),
         ];

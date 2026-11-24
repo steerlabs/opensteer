@@ -1257,21 +1257,31 @@ describe("Opensteer MCP spine", () => {
       await f.service.close();
     }
   });
-  it("lists only program tools and refuses a Run-only tool even if named directly", async () => {
+  it("lists unlocked script tools and refuses excluded Run-only tools even if named directly (T5 / Y9)", async () => {
     const f = await httpFixture();
     const client = await connect(f.url, "program");
     try {
       const names = (await client.listTools(undefined, { timeout: 5000 })).tools.map((t) => t.name);
       expect(names).toContain("opensteer_task_delegate");
       expect(names).toContain("computer_apps");
+      expect(names).toContain("computer_use");
+      expect(names).toContain("send_to_person");
       expect(names).toContain("opensteer_task_wait");
       expect(client.getInstructions()).toBeUndefined();
-      expect(names).not.toContain("computer_use");
       expect(names).not.toContain("show_to_person");
+      expect(names).not.toContain("saved_login_request");
+      expect(names).not.toContain("card_request");
+      expect(names).not.toContain("chrome_cookies_request");
+      expect(names).not.toContain("opensteer_subagent_stop");
+      Object.assign(f.handlers, { saved_login_request: vi.fn() });
       await expect(
-        f.service.callTool("program", "send_to_person", { message: "hi" }, { operationKey: "p" }),
+        f.service.callTool(
+          "program",
+          "saved_login_request",
+          { reason: "Sign in", site: "example.com" },
+          { operationKey: "p" },
+        ),
       ).rejects.toThrow("unavailable to this caller");
-      expect(f.personMessage).not.toHaveBeenCalled();
     } finally {
       await client.close();
       await f.service.close();

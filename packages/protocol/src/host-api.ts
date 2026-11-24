@@ -193,6 +193,7 @@ import {
   TriggerSummaryViewSchema,
   TriggerViewSchema,
   TriggerWatchActivationViewSchema,
+  TriggerWebhookAddressViewSchema,
   UpdateTriggerHttpBodySchema,
 } from "@opensteer/triggers/models";
 import { z } from "zod";
@@ -1505,7 +1506,12 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     trigger: TriggerViewSchema,
     type: z.literal("trigger.create"),
     wasDuplicate: z.boolean(),
-    webhook: z.object({ secret: z.string().min(1), url: z.url() }).optional(),
+    webhook: z
+      .object({
+        scope: z.enum(["public", "local"]),
+        url: z.url(),
+      })
+      .optional(),
   }),
   z.object({
     revision: TriggerRevisionViewSchema,
@@ -2146,6 +2152,7 @@ const hostApiGroup4 = defineRpc({
       occurrences: z.array(TriggerOccurrenceViewSchema).max(100),
       revision: TriggerRevisionViewSchema,
       trigger: TriggerViewSchema,
+      webhook: TriggerWebhookAddressViewSchema.nullable().optional(),
     }),
   ),
   "triggers.list": declaration(

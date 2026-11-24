@@ -1,6 +1,6 @@
 import { defineAgentTool } from "../registry.js";
 import {
-  TriggerProgramSchema,
+  AutomationScriptInputSchema,
   TriggerSourceInputSchema,
   TriggerSystemRoleSchema,
 } from "@opensteer/triggers";
@@ -44,12 +44,12 @@ export const opensteer_automation_create = defineAgentTool({
   name: "opensteer_automation_create",
   title: "Create an automation",
   description:
-    "Create a schedule, reminder, cron, webhook or watch on a task; this requires full access and a program with tool contract version 5. Connections must name taskId. ownTask: true runs it in a new task linked under that task and kept off the task list: it keeps running after that task is Done, its failures and Requests reach that task, and nothing returns automatically.",
+    'Write a normal script file in Agent home, test it in your shell, then register its text and when it runs (schedule, reminder, cron, webhook, or watch). Omit interpreter for Node, or pass argv such as ["python3"] or ["bash"]. Requires full access. Connections must name taskId. ownTask: true runs it in a new task linked under that task and kept off the task list: it keeps running after that task is Done, its failures and Requests reach that task, and nothing returns automatically.',
   targetFields: ["taskId"],
   input: z.strictObject({
     taskId: ThreadIdSchema.optional(),
     name: z.string().trim().min(1).max(160),
-    program: TriggerProgramSchema,
+    script: AutomationScriptInputSchema,
     source: TriggerSourceInputSchema,
     ownTask: z.literal(true).optional(),
     operationKey: OperationKeySchema.optional(),
@@ -62,17 +62,17 @@ export const opensteer_automation_update = defineAgentTool({
   name: "opensteer_automation_update",
   title: "Update an automation",
   description:
-    "Change an automation's name, program or source with the expectedRevisionId you read; program changes require full access. Opensteer's memory passes refuse name and program changes and sources other than cron.",
+    "Change an automation's name, script or source with the expectedRevisionId you read; to change a script, edit your file, test it, and register its updated text. Script changes require full access. Opensteer's memory passes refuse name and script changes and sources other than cron.",
   input: z
     .strictObject({
       automationId: TriggerIdSchema,
       expectedRevisionId: TriggerRevisionIdSchema,
       name: z.string().trim().min(1).max(160).optional(),
-      program: TriggerProgramSchema.optional(),
+      script: AutomationScriptInputSchema.optional(),
       source: TriggerSourceInputSchema.optional(),
     })
     .refine(
-      (i) => i.name !== undefined || i.program !== undefined || i.source !== undefined,
+      (i) => i.name !== undefined || i.script !== undefined || i.source !== undefined,
       "Provide a change",
     ),
   output: TriggerWriteOutputSchema,
@@ -83,7 +83,7 @@ export const opensteer_automation_control = defineAgentTool({
   name: "opensteer_automation_control",
   title: "Control an automation",
   description:
-    "Pause, resume, archive, reschedule, run now or cancel pending occurrences. These timing controls need the automation's task access mode to be no higher than yours; run_now and archive also require full access. reschedule moves the next unclaimed cron run to a future nextFireAt, then the cadence resumes. run_now works on a non-archived schedule or webhook and has real effects. cancel_pending without occurrenceId cancels every pending occurrence. Started work keeps running. Opensteer's memory passes refuse archive and run_now.",
+    "Pause, resume, archive, reschedule, run now or cancel pending occurrences. These timing controls need the automation's task access mode to be no higher than yours; run_now and archive also require full access. reschedule moves the next unclaimed cron run to a future nextFireAt, then the cadence resumes. run_now works on a non-archived schedule or webhook and has real effects. cancel_pending without occurrenceId cancels every pending occurrence. pause and archive stop any running firing and cancel pending occurrences. Opensteer's memory passes refuse archive.",
   input: z
     .strictObject({
       automationId: TriggerIdSchema,

@@ -642,7 +642,7 @@ async function triggerCaller(
       kind: "schedule",
       schedule: { kind: "cron", expression: "0 0 * * *", timezone: "UTC" },
     },
-    program: { language: "javascript", source: "export default ()=>null", toolContractVersion: 5 },
+    script: { interpreter: null, text: "console.log('ok');" },
   });
   type TriggerExecute = {
     readonly type: string;
@@ -689,7 +689,6 @@ async function triggerCaller(
       runnerBootId,
       runnerId,
       threadId: anchor.id,
-      toolContractVersion: 5,
     },
   } satisfies AgentCaller;
 }

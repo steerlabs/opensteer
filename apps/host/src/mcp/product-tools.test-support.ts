@@ -60,7 +60,6 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
     ...requestBase,
     content: MessageContentSchema,
     delivery: ThreadInputPolicySchema,
-    observationId: z.string().trim().min(1).max(255).optional(),
     threadId: ThreadIdSchema,
     type: z.literal("thread.message"),
   }),
@@ -329,6 +328,15 @@ export class ProductToolsTestClient {
       triggers: new TriggerToolHandlers(
         options.triggers ?? (unavailable as AgentTriggerManager),
         options.store,
+        options.store.database
+          ? undefined
+          : {
+              door: (_caller, registry) => ({
+                registry,
+                scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
+                admit: async () => ({ answer: "now", face: 0, execution: null }),
+              }),
+            },
       ),
     });
     this.service = new OpensteerMcpService({
@@ -425,6 +433,15 @@ export class ProductToolsTestClient {
         input.taskId = input.anchorThreadId;
         delete input.anchorThreadId;
       }
+      if (
+        input.script &&
+        typeof input.script === "object" &&
+        "interpreter" in input.script &&
+        (input.script as { interpreter?: unknown }).interpreter === null
+      ) {
+        const { interpreter: _interpreter, ...rest } = input.script as Record<string, unknown>;
+        input.script = rest;
+      }
       if (input.action === "set_status") {
         input.action =
           input.status === "active" ? "resume" : input.status === "paused" ? "pause" : "archive";
@@ -472,7 +489,7 @@ export async function readToolRecords(
   result: {
     readonly taskId?: import("@opensteer/core").ThreadId;
     readonly runId: import("@opensteer/core").RunId | null;
-    readonly messageId?: import("@opensteer/core").MessageId;
+    readonly messageId?: import("@opensteer/core").MessageId | null;
     readonly delegationId?: import("@opensteer/core").AssignmentId | null;
   },
 ) {

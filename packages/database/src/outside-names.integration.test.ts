@@ -1010,10 +1010,9 @@ describeStore("a name from outside enters the Home clean", (it) => {
         createdBy: userId,
         idempotencyKey: `outside-automation-${index}`,
         name,
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default async () => null",
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source: {
           kind: "schedule",

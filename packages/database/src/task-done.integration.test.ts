@@ -286,10 +286,10 @@ integration.sequential("Shared task Done", () => {
       createdBy: f.userId,
       idempotencyKey: "child-trigger",
       name: "Child schedule",
-      program: {
-        toolContractVersion: 5,
-        language: "typescript",
-        source: "export default async () => null;",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -327,12 +327,14 @@ integration.sequential("Shared task Done", () => {
     expect(
       await database
         .selectFrom("triggers")
-        .select(["status", "nextFireAt"])
+        .select(["status", "nextFireAt", "pauseReason", "pausedBy"])
         .where("id", "=", trigger.trigger.id)
         .executeTakeFirst(),
     ).toEqual({
       status: "paused",
       nextFireAt: null,
+      pauseReason: "Paused because its task was marked done.",
+      pausedBy: "system",
     });
     expect(done.interruptCommands.map(({ runId }) => runId).sort()).toEqual(
       [parentRun.id, child.run.id].sort(),
@@ -401,10 +403,10 @@ integration.sequential("Shared task Done", () => {
       idempotencyKey: "own-task-monitor",
       name: "Deal monitor",
       ownTask: true,
-      program: {
-        toolContractVersion: 5,
-        language: "typescript",
-        source: "export default async () => null;",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -791,10 +793,10 @@ integration.sequential("Shared task Done", () => {
       createdBy: f.userId,
       idempotencyKey: "quiet-trigger",
       name: "Quiet schedule",
-      program: {
-        toolContractVersion: 5,
-        language: "typescript",
-        source: "export default async () => null;",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",

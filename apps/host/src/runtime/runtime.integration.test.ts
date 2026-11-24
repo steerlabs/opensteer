@@ -590,10 +590,9 @@ integration("Host vertical slice", () => {
         createdBy: ownerId,
         idempotencyKey: "disconnect-boot-trigger",
         name: "Old automation",
-        program: {
-          language: "javascript",
-          source: "export default async () => null",
-          toolContractVersion: 5,
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source: {
           kind: "schedule",

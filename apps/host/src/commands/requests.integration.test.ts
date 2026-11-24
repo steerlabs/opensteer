@@ -224,10 +224,9 @@ describeStore("command Requests at the Home", (it) => {
     storeFixture,
   }) => {
     const { f, database, store, commandStore } = await setup(storeFixture);
-    const program = {
-      toolContractVersion: 5,
-      language: "javascript",
-      source: "export default async () => null",
+    const script = {
+      interpreter: null,
+      text: "console.log('ok')",
     };
     const create = {
       type: "trigger.create",
@@ -235,7 +234,7 @@ describeStore("command Requests at the Home", (it) => {
       input: {
         anchorThreadId: f.threadId,
         name: "Daily",
-        program,
+        script,
         source: {
           kind: "schedule",
           schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },

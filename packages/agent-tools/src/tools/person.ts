@@ -28,7 +28,7 @@ export const send_to_person = defineAgentTool({
   input: z.strictObject({ message: PersonMessageSchema }),
   output: PersonMessageOutputSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
 });
 
 export const show_to_person = defineAgentTool({
@@ -126,5 +126,5 @@ export const ask_person = defineAgentTool({
   }),
   output: z.union([RequestCreationOutputSchema, SessionPersonOutputSchema]),
   access: "write",
-  callers: ["run", "connection"] as const,
+  callers: ["run", "program", "connection"] as const,
 });
