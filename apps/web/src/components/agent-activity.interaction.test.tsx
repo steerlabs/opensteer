@@ -1239,6 +1239,56 @@ describe("a message still on this device", () => {
   });
 });
 
+describe("arrival motion", () => {
+  // Failure mode: every turn rises in whenever it mounts, so opening or returning to a task with a
+  // long report composites the whole turn (hundreds of ms), as does each row scrolled into view.
+  it("moves only a row live work appends, never rows there when shown, history or a new cut", async () => {
+    const message = (index: number): MessageEntry => ({
+      ...note,
+      runId: null,
+      body: `Update ${index}`,
+      createdAt: new Date(Date.UTC(2026, 7, 16, 10, index)).toISOString(),
+      id: `arrival-${index}`,
+    });
+    const range = (from: number, to: number) =>
+      Array.from({ length: to - from }, (_, index) => message(from + index));
+    const scroller = document.createElement("div");
+    document.body.append(scroller);
+    const root = createRoot(scroller);
+    roots.push(root);
+    const show = async (entries: MessageEntry[]) =>
+      act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={["/tasks/arrival"]}>
+            <AgentTranscript entries={entries} scroller={() => scroller} />
+          </MemoryRouter>,
+        );
+      });
+    const moving = () =>
+      [...scroller.querySelectorAll(".transcript__virtual-slot--arrived")].map((slot) =>
+        slot.querySelector("[data-message-id]")?.getAttribute("data-message-id"),
+      );
+    await show(range(10, 20));
+    expect(moving()).toEqual([]);
+    // A page of history lands above: nothing arrives.
+    await show(range(0, 20));
+    expect(moving()).toEqual([]);
+    // Live work appends one row: it rises in, once.
+    await show(range(0, 21));
+    expect(moving()).toEqual(["arrival-20"]);
+    act(() => {
+      scroller
+        .querySelector(".transcript__virtual-slot--arrived")!
+        .dispatchEvent(new Event("animationend"));
+    });
+    await show(range(0, 21));
+    expect(moving()).toEqual([]);
+    // A jump or a new cut replaces the window: none of its rows arrive.
+    await show(range(40, 50));
+    expect(moving()).toEqual([]);
+  });
+});
+
 describe("a long transcript's bodies", () => {
   it("draws only the rows in and near view of any transcript it scrolls, each parsed at once", async () => {
     const makeEntries = (count: number, thread: string): MessageEntry[] =>

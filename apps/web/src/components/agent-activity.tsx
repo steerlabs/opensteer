@@ -354,6 +354,16 @@ const noPinnedRowKeys: readonly string[] = [];
  * Prose and compact tool rows share the reading stream. The run's status is
  * a separate line: it never controls whether the agent's words are visible.
  */
+/** The arrival motion, set on the element itself so later renders of the row never cut it short. */
+function riseIn(element: HTMLElement) {
+  element.classList.add("transcript__virtual-slot--arrived");
+  element.addEventListener(
+    "animationend",
+    () => element.classList.remove("transcript__virtual-slot--arrived"),
+    { once: true },
+  );
+}
+
 export function AgentTranscript({
   activity = "idle",
   attachmentReader = null,
@@ -686,6 +696,27 @@ export function AgentTranscript({
     initialAtTail:
       pinnedRowKeys.length === 0 && pinnedMessageIds.length === 0 && revealMessage === null,
   });
+  // Only a row that live work appends while the transcript is shown rises in. Rows there when it
+  // was shown (a task opened or returned to), a page of history, a jump or a new cut hold still, as
+  // do rows scrolled back into view: animating a whole turn makes the browser composite it, which
+  // for a long report costs hundreds of milliseconds.
+  const knownKeys = useRef(new Set<string>());
+  const arrivingKeys = useRef(new Set<string>());
+  const fresh = rowKeys.filter((key) => !knownKeys.current.has(key));
+  if (fresh.length) {
+    const appended =
+      knownKeys.current.size > 0 &&
+      fresh.length <= 2 &&
+      fresh.every((key, index) => rowKeys[rowKeys.length - fresh.length + index] === key);
+    for (const key of fresh) {
+      knownKeys.current.add(key);
+      if (appended) arrivingKeys.current.add(key);
+    }
+  }
+  const observeSlot = (key: string, element: HTMLElement | null) => {
+    virtual.observeRow(key, element);
+    if (element && arrivingKeys.current.delete(key)) riseIn(element);
+  };
   const renderRowAt = (index: number) => {
     const { group, key } = rows[index]!;
     return (
@@ -719,7 +750,7 @@ export function AgentTranscript({
           <div
             className="transcript__virtual-slot"
             key={row.key}
-            ref={(element) => virtual.observeRow(row.key, element)}
+            ref={(element) => observeSlot(row.key, element)}
           >
             {renderRowAt(item.index)}
           </div>
