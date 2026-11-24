@@ -1,4 +1,4 @@
-import { requestDecision } from "@opensteer/client/host";
+import { commandRequestView, requestDecision } from "@opensteer/client/host";
 import { clientScopeKey } from "@opensteer/client/connections";
 import { assertMessageLogin, enqueueDraftReply, hostMessageOutbox } from "@opensteer/client/host";
 import { presentClientIssue } from "@opensteer/client/feedback";
@@ -45,6 +45,7 @@ import { TaskMark, TaskBadge } from "./workspace/task-mark.js";
 import { sendMessageCommand, storageUnavailable } from "../host/message-outbox.js";
 import { ActionLine } from "./action-line.js";
 import { OperationRequestPanel, useOperationRequest } from "./agent-work.js";
+import { CommandRequestPanel } from "./command-request-panel.js";
 import { requestAnswer, useAction } from "./use-action.js";
 import { VoiceButton, VoiceDock } from "./voice.js";
 import { ThreadBrowserRequestAction } from "./thread-browser-access-action.js";
@@ -723,9 +724,21 @@ function requestTitle(request: Request): string {
 
 /* ---- The focused Request ---- */
 
-/** A connected agent's direct operation gets its own card; every other request, the panel. */
+/**
+ * A command an agent proposed and a connected agent's direct operation each get their own card;
+ * every other request, the panel.
+ */
 function DockedRequestPanel(props: Parameters<typeof RequestPanel>[0]) {
   const operation = useOperationRequest(props.surface.request);
+  const command = commandRequestView(props.surface.request);
+  if (command)
+    return (
+      <CommandRequestPanel
+        disabled={props.disabled}
+        request={props.surface.request}
+        view={command}
+      />
+    );
   return operation ? (
     <OperationRequestPanel
       disabled={props.disabled}
