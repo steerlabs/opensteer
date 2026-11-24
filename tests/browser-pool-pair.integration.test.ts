@@ -421,16 +421,21 @@ it("settles a Start still outstanding before a removal accepts stopped, so nothi
   const first = p.home();
   await first.recover();
   // The restart's Start leaves the Home and is held on its way to the agent.
+  const held = Promise.withResolvers<void>();
   const arrive = Promise.withResolvers<void>();
-  p.controller.hold("start", () => arrive.promise);
+  p.controller.hold("start", () => {
+    held.resolve();
+    return arrive.promise;
+  });
   void first.restart({ key: "held" }).catch(() => undefined);
-  await vi.waitFor(() => expect(p.controller.effects).toEqual(["start", "stop"]));
+  await held.promise;
+  expect(p.controller.effects).toEqual(["start", "stop"]);
   await first.releaseDevice();
   await first.released();
   // The removal sent the same Start again by its id and stopped what it started.
   expect((await p.status()).phase).toBe("stopped");
   const afterRemoval = [...p.controller.effects];
-  expect(afterRemoval.at(-1)).toBe("stop");
+  expect(afterRemoval).toEqual(["start", "stop", "start", "stop"]);
   // The held request arrives at last: the same id has its answer, and nothing starts.
   const starts = p.answered.filter((kind) => kind === "start").length;
   arrive.resolve();
