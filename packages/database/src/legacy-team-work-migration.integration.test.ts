@@ -11,8 +11,12 @@ import { sql, type Kysely } from "kysely";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
 import { recoverThreadWorkQueues } from "./execution-recovery.js";
+import { replayMigrations } from "./migration-replay.test-support.js";
 import { migrateToLatest, migrationProvider } from "./migrations.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { emptyPersonalResourceRevisions } from "./personal-state-schema.js";
+import { readTranscriptItem } from "./personal-sync-store.js";
 import { createRunFinishDrain } from "./run-finalization.js";
 import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
@@ -116,14 +120,37 @@ async function input(home: Home, spec: Input) {
       })
     : null;
   const source = spec.team
-    ? JSON.stringify({ teamId: home.team, channelId, threadRootId: "1", audience: "channel" })
+    ? JSON.stringify({
+        teamId: home.team,
+        channelId,
+        threadRootId: "1",
+        messageId: "2",
+        audience: {
+          teamName: "Design",
+          channelName: "launch",
+          channelKind: "public",
+          memberCount: 3,
+          peopleOnly: false,
+        },
+      })
     : null;
   const authority = spec.team
     ? JSON.stringify({ kind: "team-request", teamId: home.team, requestId: request })
     : JSON.stringify({ kind: "user-session", userId: home.userId });
   const author = spec.team
-    ? '{"kind":"system","displayName":"Team request"}'
-    : JSON.stringify({ kind: "human", userId: home.userId, displayName: "Alex" });
+    ? JSON.stringify({
+        kind: "team-member",
+        actor: "human",
+        teamId: home.team,
+        teamUserId: createId("user"),
+        displayName: "Sam",
+      })
+    : JSON.stringify({
+        kind: "human",
+        userId: home.userId,
+        principalId: home.principal,
+        displayName: "Alex",
+      });
   await sql`insert into causal_chains (id, max_delegations, max_autonomous_runs, used_delegations, used_autonomous_runs)
     values (${chain}, 100, 100, 0, 0)`.execute(database);
   await sql`insert into messages (id, thread_id, sequence, kind, actor_principal_id, author, content)
@@ -144,7 +171,11 @@ async function run(
   home: Home,
   spec: {
     readonly thread: ThreadId;
-    readonly seed: { readonly message: MessageId; readonly chain: string; readonly target: string | null };
+    readonly seed: {
+      readonly message: MessageId;
+      readonly chain: string;
+      readonly target: string | null;
+    };
     readonly status: string;
     readonly ordinal?: number;
     readonly finishIntent?: Record<string, unknown>;
@@ -161,7 +192,10 @@ async function run(
       ${spec.seed.target}::jsonb, ${spec.seed.message}, ${spec.seed.message}, ${spec.seed.chain})`.execute(
     database,
   );
-  if (intent) await sql`update runs set finish_intent = ${intent}::jsonb where id = ${id}`.execute(database);
+  await sql`update threads set next_run_ordinal = greatest(next_run_ordinal, ${(spec.ordinal ?? 0) + 1})
+    where id = ${spec.thread}`.execute(database);
+  if (intent)
+    await sql`update runs set finish_intent = ${intent}::jsonb where id = ${id}`.execute(database);
   return id;
 }
 
@@ -171,7 +205,7 @@ async function card(thread: ThreadId, message: MessageId, position: number | nul
     (id, thread_id, kind, position, revision, visible, is_turn_start, created_at, message_id, view)
     values (${message}, ${thread}, 'message', ${position}, 0, ${position !== null},
       ${position !== null}, now(), ${message},
-      '{"author":"system","messageKind":"input","edited":false,"published":false,"preview":"fixture"}')`.execute(
+      '{"author":"team-member","messageKind":"input","edited":false,"published":false,"preview":"fixture"}')`.execute(
     database,
   );
   if (position !== null)
@@ -200,12 +234,24 @@ async function expectEverythingReadable() {
   const targets = await sql<{ target: unknown }>`
     select reply_target as target from runs where reply_target is not null
     union all select reply_target from thread_inputs where reply_target is not null
-    union all select reply_target from delegations where reply_target is not null`.execute(database);
+    union all select reply_target from delegations where reply_target is not null`.execute(
+    database,
+  );
   for (const { target } of targets.rows) ReplyTargetSchema.parse(target);
   const states = await sql<{ state: string }>`select distinct state from thread_inputs`.execute(
     database,
   );
   for (const { state } of states.rows) ThreadInputStateSchema.parse(state);
+}
+
+/** The person's own read of a card: what their task shows for that message. */
+async function expectCardSaysWhy(home: Home, thread: ThreadId, message: MessageId) {
+  const read = await readTranscriptItem(database, {
+    viewerId: home.userId,
+    scope: { kind: "thread", threadId: thread },
+    itemId: message,
+  });
+  expect(read).toMatchObject({ kind: "item", item: { messageId: message, delivery: ended } });
 }
 
 /** What start-up does with this work: the queues' recovery, then one pass of the finish drain. */
@@ -397,6 +443,7 @@ describe("a ready Home at main's last migration that did Team work", () => {
       expect(item.visible).toBe(true);
       expect(item.position).not.toBeNull();
       expect(item.view).toMatchObject({ delivery: ended, published: false });
+      await expectCardSaysWhy(home, thread, message);
       expect(
         await database
           .selectFrom("messages")
@@ -467,9 +514,7 @@ describe("a Home crossing main's current-state conversion with Team work", () =>
 
     await migrateToLatest(database);
     expect(
-      (
-        await sql<{ ready: boolean }>`select ready from client_sync_state`.execute(database)
-      ).rows,
+      (await sql<{ ready: boolean }>`select ready from client_sync_state`.execute(database)).rows,
     ).toEqual([{ ready: true }]);
     await expectEverythingReadable();
 
@@ -488,7 +533,10 @@ describe("a Home crossing main's current-state conversion with Team work", () =>
       replyTarget: null,
       runId: null,
     });
-    for (const message of [teamSeed.message, ask.message]) {
+    for (const [thread, message] of [
+      [teamTask, teamSeed.message],
+      [askTask, ask.message],
+    ] as const) {
       const item = await database
         .selectFrom("transcriptItems")
         .select(["visible", "view"])
@@ -496,6 +544,7 @@ describe("a Home crossing main's current-state conversion with Team work", () =>
         .executeTakeFirstOrThrow();
       expect(item.visible).toBe(true);
       expect(item.view).toMatchObject({ delivery: ended });
+      await expectCardSaysWhy(home, thread, message);
     }
 
     const started = await startUp();
@@ -510,5 +559,162 @@ describe("a Home crossing main's current-state conversion with Team work", () =>
         .where("status", "in", ["queued", "starting", "running", "waiting"])
         .execute(),
     ).toEqual([]);
+  });
+});
+
+/**
+ * Main's 0038, verbatim: its durable resource kinds (origin/main
+ * packages/protocol/src/resources.ts, `durablePersonalResourceKinds`) and the default and CHECK
+ * it built from them (origin/main packages/database/src/personal-state-schema.ts, the
+ * `resource_revisions` column of `retainedStateDdl`).
+ */
+const mainKinds = [
+  "settings",
+  "identity",
+  "owner-profile",
+  "environment",
+  "machine",
+  "harness",
+  "harness-catalog",
+  "tab",
+  "tab-layout",
+  "browser-profile",
+  "browser-placement",
+  "browser-home",
+  "browser-availability",
+  "plugin",
+  "team-replies",
+];
+const mainKeys = `array[${mainKinds.map((kind) => `'${kind}'`).join(",")}]`;
+const mainEach = mainKinds
+  .map(
+    (kind) => `jsonb_typeof(resource_revisions->'${kind}') = 'string' and
+    (resource_revisions->>'${kind}') ~ '^(0|[1-9][0-9]{0,18})$' and
+    (resource_revisions->>'${kind}')::numeric <= sequence`,
+  )
+  .join(" and ");
+const main0038 = `create table main_0038 (
+    sequence bigint not null default 0,
+    resource_revisions jsonb not null default '${JSON.stringify(Object.fromEntries(mainKinds.map((kind) => [kind, "0"])))}',
+    check (jsonb_typeof(resource_revisions) = 'object'
+      and resource_revisions ?& ${mainKeys}
+      and resource_revisions - ${mainKeys} = '{}'::jsonb and ${mainEach}))`;
+
+/** The revisions column's default and every CHECK on its table, as PostgreSQL holds them. */
+async function revisionCatalog(target: Kysely<DatabaseSchema>, table = "client_sync_state") {
+  const column = await sql<{ default: string }>`
+    select pg_get_expr(d.adbin, d.adrelid) as default from pg_attrdef d
+    join pg_attribute a on a.attrelid = d.adrelid and a.attnum = d.adnum
+    where d.adrelid = ${table}::regclass and a.attname = 'resource_revisions'`.execute(target);
+  const checks = await sql<{ name: string; definition: string }>`
+    select conname as name, pg_get_constraintdef(oid) as definition from pg_constraint
+    where conrelid = ${table}::regclass and contype = 'c' order by conname`.execute(target);
+  return { default: column.rows[0]?.default, checks: checks.rows };
+}
+
+describe("the resource revisions 0038 created", () => {
+  it("are main's on a Home at main's last migration, hold through this release's writes, and end as a fresh install's", async () => {
+    await migrateToMain();
+    // The fixture's 0038 objects are main's: deparsed, they equal those of main's text.
+    await sql.raw(main0038).execute(database);
+    const main = await revisionCatalog(database, "main_0038");
+    const at0046 = await revisionCatalog(database);
+    expect(at0046.default).toBe(main.default);
+    expect(at0046.checks.map(({ definition }) => definition)).toContain(main.checks[0]!.definition);
+    await sql`drop table main_0038`.execute(database);
+
+    // A ready Home main has written to: its settings revision moved.
+    const home = await seedHome();
+    await sql`update client_sync_state set sequence = 7,
+      resource_revisions = jsonb_set(resource_revisions, '{settings}', '"7"')`.execute(database);
+    await migrateToLatest(database);
+    // This release's own commit, bumping two kinds, after the update.
+    await commitPersonalMutation(database, async (_tx, mutation) => {
+      mutation.bumpResource("plugin");
+      mutation.bumpResource("tab");
+    });
+    const state = await database
+      .selectFrom("clientSyncState")
+      .select(["resourceRevisions", "sequence"])
+      .where("deploymentId", "=", home.deploymentId)
+      .executeTakeFirstOrThrow();
+    expect(state.resourceRevisions).toEqual({
+      ...emptyPersonalResourceRevisions,
+      settings: "7",
+      plugin: state.sequence,
+      tab: state.sequence,
+    });
+    const upgraded = await revisionCatalog(database);
+
+    const fresh = await cloneTestDatabase("host");
+    const freshDatabase = createDatabase({ connectionString: fresh.url });
+    try {
+      await sql`drop schema public cascade; create schema public`.execute(freshDatabase);
+      await migrateToLatest(freshDatabase);
+      expect(upgraded).toEqual(await revisionCatalog(freshDatabase));
+    } finally {
+      await freshDatabase.destroy();
+      await fresh.drop();
+    }
+    // And the default is what this release writes for a new Home.
+    expect(
+      (
+        await sql<{ value: unknown }>`select ${sql.raw(upgraded.default!)} as value`.execute(
+          database,
+        )
+      ).rows[0]!.value,
+    ).toEqual(emptyPersonalResourceRevisions);
+  });
+});
+
+describe("Needs you after the update", () => {
+  it("counts Requests alone on a ready Home whose projection drifted below its pending count", async () => {
+    await migrateToMain();
+    await seedHome();
+    // Main counted a teammate's ask in Needs you; the Request projection holds no row.
+    await sql`update client_sync_state set pending_request_count = 1, needs_you_count = 3`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+    expect(
+      (
+        await sql<{ pending: number; needsYou: number }>`
+          select pending_request_count as pending, needs_you_count as needs_you from client_sync_state`.execute(
+          database,
+        )
+      ).rows,
+    ).toEqual([{ pending: 0, needsYou: 0 }]);
+  });
+
+  it("counts Requests alone when main's conversion had passed its count stage", async () => {
+    await migrateToBeforeConversion();
+    await seedHome();
+    // The Home stops right after its conversion counted Needs you, as main's could.
+    const stopped = new Error("The Home stopped during its conversion");
+    await expect(
+      migrateToLatest(database, migrationProvider(), {
+        afterBatch: (stage) => {
+          if (stage === "attention-links") throw stopped;
+        },
+      }),
+    ).rejects.toBe(stopped);
+    expect(
+      (
+        await sql<{ ready: boolean; stage: string }>`
+          select ready, upgrade_cursor->>'stage' as stage from client_sync_state`.execute(database)
+      ).rows,
+    ).toEqual([{ ready: false, stage: "verify" }]);
+    // Main's count stage counted two of a teammate's asks in Needs you.
+    await sql`update client_sync_state set needs_you_count = needs_you_count + 2`.execute(database);
+
+    // 0107 meets that count before the conversion goes on from where it stopped.
+    await replayMigrations(database, "0107_needs_you_counts_requests");
+    expect(
+      (
+        await sql<{ ready: boolean; pending: number; needsYou: number }>`
+          select ready, pending_request_count as pending, needs_you_count as needs_you
+          from client_sync_state`.execute(database)
+      ).rows,
+    ).toEqual([{ ready: true, pending: 0, needsYou: 0 }]);
   });
 });
