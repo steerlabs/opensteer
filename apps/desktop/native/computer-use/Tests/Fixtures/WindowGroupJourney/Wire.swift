@@ -472,10 +472,8 @@ extension WireJourney {
     }
     func source(_ view: String) -> [String: Any] { ["kind": "owner-view", "viewId": view, "generation": 1] }
     start("capture-ready")
-    let stressMode = ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_REDO_STRESS"] == "1"
-    let viewLeaseMs = stressMode ? 1_800_000 : 300_000
     for (wire, view, window, stream, media) in [(self, viewA, aWindowId, streamA, mediaA), (other, viewB, bWindowId, streamB, mediaB)] {
-      _ = try await wire.request("view.open", ["viewId": view, "generation": 1, "leaseDurationMs": viewLeaseMs,
+      _ = try await wire.request("view.open", ["viewId": view, "generation": 1, "leaseDurationMs": 300_000,
         "target": ["kind": "app", "app": identity, "windowId": window]])
       let resolved = try await wire.request("display.resolve", ["source": source(view), "ownerInputVersion": 2])
       let target = try (resolved["target"] as? [String: Any]).unwrap("video target")
@@ -629,6 +627,9 @@ extension WireJourney {
         var staleRedos = 0
         var missDetails: [[String: Any]] = []
         for i in 0..<iterations {
+          if i % 25 == 0 {
+            _ = try await request("view.renew", ["viewId": viewA, "generation": 1, "leaseDurationMs": 300_000])
+          }
           let beforeKU = try keyUpCount()
           let beforeTypeMark = editingMark
           let typed = try await input([
