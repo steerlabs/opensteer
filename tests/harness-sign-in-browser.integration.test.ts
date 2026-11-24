@@ -32,7 +32,6 @@ import {
 } from "../packages/database/src/test-database.test-support.js";
 import {
   HarnessRegistry,
-  isolatedServiceHarnessRuntimeBoundary,
   type HarnessAuthenticationResult,
   type HarnessAuthenticationSelection,
   type HarnessAuthenticationStart,
@@ -426,7 +425,6 @@ async function startSignInHome(withBrowser: boolean) {
             sourceId: "openai",
             stateKind: "isolated",
           },
-          harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
           catalogTimeoutMs: 10_000,
           runTimeoutMs: 15_000,
         },

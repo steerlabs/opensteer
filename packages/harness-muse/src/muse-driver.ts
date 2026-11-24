@@ -110,9 +110,6 @@ const museApiKeyFileName = ".opensteer-meta-api-key";
 /** Muse's limit on a typed answer to one of its questions (msp `UserInputAnswer.freeText`). */
 const museFreeTextMaxLength = 500;
 const mintUuid = createUuidV7Mint();
-const nativeUserOnlyDetail =
-  "Muse Code keeps its sign-in in the computer's own account, so it runs only on a computer where Opensteer runs as you.";
-
 const museSources = [
   {
     detail: "Meta models through Muse Code, using a subscription or Meta API key.",
@@ -174,7 +171,6 @@ export interface MuseHarnessDependencies {
 
 export class MuseHarnessDriver implements HarnessDriver {
   readonly kind = HarnessIdSchema.parse("muse");
-  readonly isolatedServiceRefusal = nativeUserOnlyDetail;
   readonly sources = museSources;
   readonly accessModes = [
     "approval-required",
@@ -196,9 +192,6 @@ export class MuseHarnessDriver implements HarnessDriver {
 
   async inspect(context: HarnessInspectionContext): Promise<HarnessInspectionResult> {
     const config = MuseHarnessConfigSchema.parse(context.config);
-    if (context.runtimeBoundary.kind !== "native-user") {
-      return { detail: nativeUserOnlyDetail, status: "unavailable" };
-    }
     if (context.sourceId !== museSourceId) {
       return {
         detail: `Muse Code does not offer the source ${context.sourceId}`,
@@ -311,7 +304,6 @@ export class MuseHarnessDriver implements HarnessDriver {
     context: HarnessAuthenticationContext,
     selection: HarnessAuthenticationSelection,
   ): Promise<HarnessAuthenticationStart> {
-    assertNativeUser(context.runtimeBoundary.kind);
     MuseHarnessConfigSchema.parse(context.config);
     assertSelection(selection.connectionSlot);
     if (selection.methodId === museApiKeyMethodId) {
@@ -342,7 +334,6 @@ export class MuseHarnessDriver implements HarnessDriver {
     context: HarnessAuthenticationContext,
     selection: HarnessLogoutSelection = {},
   ): Promise<void> {
-    assertNativeUser(context.runtimeBoundary.kind);
     assertSelection(selection.connectionSlot);
     const key = await museApiKey(context.providerState);
     if (key && context.providerState.kind === "isolated") {
@@ -356,7 +347,6 @@ export class MuseHarnessDriver implements HarnessDriver {
   }
 
   async removeProfile(context: HarnessAuthenticationContext): Promise<void> {
-    assertNativeUser(context.runtimeBoundary.kind);
     if (context.providerState.kind !== "isolated") return;
     await museApiKeyFile(context.providerState).remove();
     const home = context.providerState.providerHomeDirectory;
@@ -461,8 +451,6 @@ class MuseHarnessAdapter implements HarnessAdapter {
     prompt,
     signal,
   }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
-    if (context.runtimeBoundary.kind !== "native-user")
-      return { ok: false, failure: "unavailable" };
     return backgroundTextResult(signal, async () => {
       return withBackgroundTextDirectory(context, signal, async (directory) => {
         signal.throwIfAborted();
@@ -1694,13 +1682,7 @@ async function museApiKey(
   return state.kind === "isolated" ? museApiKeyFile(state).read() : undefined;
 }
 
-function assertNativeUser(kind: HarnessInspectionContext["runtimeBoundary"]["kind"]): void {
-  if (kind !== "native-user")
-    throw new OpensteerError({ code: "forbidden", message: nativeUserOnlyDetail });
-}
-
 function assertNativeSession(context: HarnessSessionContext): void {
-  assertNativeUser(context.runtimeBoundary.kind);
   context.signal.throwIfAborted();
 }
 

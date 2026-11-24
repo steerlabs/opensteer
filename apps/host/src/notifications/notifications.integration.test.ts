@@ -20,7 +20,7 @@ import {
   type HostNotificationPublication,
 } from "@opensteer/control-plane-protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { HostToClientMessageSchema } from "@opensteer/protocol";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -188,7 +188,6 @@ integration("Notifications", () => {
         );
         return registry;
       },
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 60_000,
     });
     await stack.host.store.database

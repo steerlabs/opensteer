@@ -143,15 +143,6 @@ function apiKeyFile(providerState: HarnessProviderState) {
   });
 }
 
-const antigravityNativeUserDetail =
-  "Antigravity keeps its sign-in in the computer's own account, so it runs only on a computer where Opensteer runs as you.";
-
-function assertNativeUser(context: Pick<HarnessInspectionContext, "runtimeBoundary">): void {
-  if (context.runtimeBoundary.kind !== "native-user") {
-    throw new OpensteerError({ code: "forbidden", message: antigravityNativeUserDetail });
-  }
-}
-
 function sourceConfigurationIssue(
   sourceId: string,
   config: AntigravityHarnessConfig,
@@ -563,7 +554,6 @@ export function antigravitySessionPolicy(protocolVersion: 1 | 2): AcpSessionPoli
 
 export class AntigravityHarnessDriver implements HarnessDriver {
   readonly kind = HarnessIdSchema.parse("antigravity");
-  readonly isolatedServiceRefusal = antigravityNativeUserDetail;
   readonly sources = antigravitySources;
   readonly accessModes = [
     "approval-required",
@@ -589,7 +579,6 @@ export class AntigravityHarnessDriver implements HarnessDriver {
   }
 
   async prepare(context: HarnessInspectionContext): Promise<void> {
-    assertNativeUser(context);
     // `inspect` reports the missing release; there is nothing to download.
     if (antigravityUnavailableReason()) return;
     const config = AntigravityHarnessConfigSchema.parse(context.config);
@@ -630,9 +619,6 @@ export class AntigravityHarnessDriver implements HarnessDriver {
   }
 
   async inspect(context: HarnessInspectionContext): Promise<HarnessInspectionResult> {
-    if (context.runtimeBoundary.kind !== "native-user") {
-      return { detail: antigravityNativeUserDetail, status: "unavailable" };
-    }
     const unavailable = antigravityUnavailableReason();
     if (unavailable) return { detail: unavailable, status: "unavailable" };
     const runtime = this.#requireRuntime();
@@ -742,7 +728,6 @@ export class AntigravityHarnessDriver implements HarnessDriver {
     context: HarnessAuthenticationContext,
     selection: HarnessAuthenticationSelection,
   ): Promise<HarnessAuthenticationStart> {
-    assertNativeUser(context);
     if (selection.connectionSlot && selection.connectionSlot !== primaryConnectionSlot) {
       throw new OpensteerError({ code: "bad_request", message: "Unknown Antigravity connection" });
     }
@@ -772,7 +757,6 @@ export class AntigravityHarnessDriver implements HarnessDriver {
     context: HarnessAuthenticationContext,
     selection: HarnessLogoutSelection = {},
   ): Promise<void> {
-    assertNativeUser(context);
     if (selection.connectionSlot && selection.connectionSlot !== primaryConnectionSlot) {
       throw new OpensteerError({ code: "bad_request", message: "Unknown Antigravity connection" });
     }
@@ -807,7 +791,6 @@ export class AntigravityHarnessDriver implements HarnessDriver {
   }
 
   async removeProfile(context: HarnessAuthenticationContext): Promise<void> {
-    assertNativeUser(context);
     await this.logout(context);
     await apiKeyFile(context.providerState).remove();
   }
@@ -1004,7 +987,6 @@ class AntigravityAdapter implements HarnessAdapter {
   }
 
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
-    assertNativeUser(context);
     assertEngineMayRun("antigravity", context);
     const session = await this.#adapter.startSession(context);
     this.#assertSessionReference(session.providerSessionReference);
@@ -1015,7 +997,6 @@ class AntigravityAdapter implements HarnessAdapter {
     providerSessionReference: string,
     context: HarnessSessionContext,
   ): Promise<HarnessSession> {
-    assertNativeUser(context);
     assertEngineMayRun("antigravity", context);
     this.#assertSessionReference(providerSessionReference);
     const session = await this.#adapter.resumeSession(providerSessionReference, context);
@@ -1028,7 +1009,6 @@ class AntigravityAdapter implements HarnessAdapter {
   }
 
   async #launch(context: HarnessSessionContext): Promise<HarnessProcessLaunch> {
-    assertNativeUser(context);
     const apiKey = await apiKeyFile(context.providerState).read();
     const launch = await prepareAntigravityLaunch({
       ...(apiKey ? { apiKey } : {}),
@@ -1053,8 +1033,6 @@ class AntigravityAdapter implements HarnessAdapter {
 
   async generateText(input: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
     const { context } = input;
-    if (context.runtimeBoundary.kind !== "native-user")
-      return { ok: false, failure: "unavailable" };
     return backgroundTextResult(input.signal, async () => {
       await mkdir(context.scratchDirectory, { mode: 0o700, recursive: true });
       const scratch = await mkdtemp(join(context.scratchDirectory, "antigravity-text-"));

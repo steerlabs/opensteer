@@ -31,10 +31,7 @@ import {
   type LaunchedBrowser,
 } from "../packages/browser-runtime-core/src/index.js";
 import { CodexHarnessDriver } from "../packages/harness-codex/src/codex-driver.js";
-import {
-  HarnessRegistry,
-  isolatedServiceHarnessRuntimeBoundary,
-} from "../packages/harness/src/index.js";
+import { HarnessRegistry } from "../packages/harness/src/index.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 export const executablePath = [
@@ -132,7 +129,6 @@ export async function deployment(
     databaseUrl: databaseUrl!,
     harnesses,
     harnessInstance: { config: {}, driverKind: "codex", sourceId: "openai", stateKind: "isolated" },
-    harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
     runTimeoutMs: 90_000,
     maxConcurrentRuns: options.maxConcurrentRuns ?? 1,
   });

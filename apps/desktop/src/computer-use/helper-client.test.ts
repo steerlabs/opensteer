@@ -97,8 +97,8 @@ describe.runIf(process.platform === "darwin")("ComputerUseHelperClient", () => {
       const harness = await helperHarness({
         hello: {
           helperVersion: "test",
-          minProtocolVersion: 10,
-          protocolVersion: 10,
+          minProtocolVersion: 11,
+          protocolVersion: 11,
           routes: { windowLocation: true, windowGroups: true },
           permissions: { accessibility: "granted", screenRecording: "granted" },
           ...(version === undefined ? {} : { ownerInputVersion: version }),
@@ -142,8 +142,8 @@ describe.runIf(process.platform === "darwin")("ComputerUseHelperClient", () => {
     async (videoProfile) => {
       const hello: Record<string, unknown> = {
         helperVersion: "test",
-        minProtocolVersion: 10,
-        protocolVersion: 10,
+        minProtocolVersion: 11,
+        protocolVersion: 11,
         permissions: { accessibility: "granted", screenRecording: "granted" },
         ...(videoProfile === undefined ? {} : { videoProfile }),
       };
@@ -167,7 +167,7 @@ describe.runIf(process.platform === "darwin")("ComputerUseHelperClient", () => {
       expect(
         h.received.filter((f) => (f as { method?: string }).method === "hello").at(-1),
       ).toMatchObject({
-        params: { protocolVersion: 10, ownerViewVersion: 3, clientVersion: "9.9.9" },
+        params: { protocolVersion: 11, ownerViewVersion: 3, clientVersion: "9.9.9" },
       });
       expect(
         (
@@ -225,7 +225,7 @@ describe.runIf(process.platform === "darwin")("ComputerUseHelperClient", () => {
     const harness = await helperHarness({
       hello: {
         helperVersion: "9",
-        minProtocolVersion: 10,
+        minProtocolVersion: 11,
         routes: { windowLocation: true, windowGroups: true },
         permissions: { accessibility: "denied", screenRecording: "denied" },
         protocolVersion: computerUseHelperProtocolVersion - 1,
@@ -265,20 +265,21 @@ describe.runIf(process.platform === "darwin")("ComputerUseHelperClient", () => {
     });
   });
 
-  it("accepts a helper whose range still contains our version", async () => {
+  it("refuses a helper of another release even when its range contains our protocol", async () => {
     const harness = await helperHarness({
       hello: {
         helperVersion: "42",
-        minProtocolVersion: 10,
+        minProtocolVersion: computerUseHelperProtocolVersion,
         routes: { windowLocation: true, windowGroups: true },
         permissions: { accessibility: "granted", screenRecording: "granted" },
         protocolVersion: computerUseHelperProtocolVersion + 3,
       },
     });
 
-    await expect(harness.client.handshake()).resolves.toEqual({
-      helperVersion: "42",
-      permissions: { accessibility: "granted", screenRecording: "granted" },
+    // The app and its helper are one release: no other one is served.
+    await expect(harness.client.handshake()).rejects.toMatchObject({
+      code: "incompatible-version",
+      message: computerUseUpdateSentence,
     });
   });
 
@@ -310,6 +311,34 @@ describe.runIf(process.platform === "darwin")("ComputerUseHelperClient", () => {
     await vi.waitFor(() => expect(seen).toHaveLength(1));
 
     expect(seen[0]).toMatchObject({ event: "session.stopped" });
+  });
+
+  it("asks the helper to exit without the pause a failed connection earns", async () => {
+    const harness = await helperHarness();
+    harness.reply("helper.exit", () => ({ exiting: true }));
+    // Two failed connections: the next ordinary connect would wait 500 ms first.
+    harness.fail("hello", { code: "failed", message: "not yet" });
+    await harness.client.request("permissions.get", {}).catch(() => undefined);
+    await harness.client.request("permissions.get", {}).catch(() => undefined);
+    harness.unfail("hello");
+
+    const started = performance.now();
+    await expect(harness.client.requestExit(harness.clock.at + 1_000)).resolves.toBe("exiting");
+    expect(performance.now() - started).toBeLessThan(400);
+  });
+
+  it("tears down a connect in flight rather than joining it to ask the helper to exit", async () => {
+    const harness = await helperHarness();
+    harness.reply("helper.exit", () => ({ exiting: true }));
+    harness.holdHellos();
+    const inFlight = harness.client.request("permissions.get", {});
+    await vi.waitFor(() => expect(harness.helloCount).toBe(1));
+
+    const exit = harness.client.requestExit(harness.clock.at + 1_000);
+    await expect(inFlight).rejects.toMatchObject({ code: "failed" });
+    harness.answerHellos();
+    await expect(exit).resolves.toBe("exiting");
+    expect(harness.commands()).not.toContain("/usr/bin/open");
   });
 
   it("reconnects transparently after the helper exits once", async () => {
@@ -741,7 +770,7 @@ async function helperHarness(
   let lifecycleLockHeldAtSocketReadiness = Promise.resolve(false);
   const hello = options.hello ?? {
     helperVersion: "1",
-    minProtocolVersion: 10,
+    minProtocolVersion: 11,
     routes: { windowLocation: true, windowGroups: true },
     permissions: { accessibility: "denied", screenRecording: "denied" },
     protocolVersion: computerUseHelperProtocolVersion,
@@ -878,6 +907,7 @@ async function helperHarness(
       for (const socket of sockets) writeToClient(socket, event);
     },
     fail: (method: string, error: { code: string; message: string }) => failures.set(method, error),
+    unfail: (method: string) => failures.delete(method),
     helperAppPath,
     helperLockPath,
     get lifecycleLockHeldAtSocketReadiness() {

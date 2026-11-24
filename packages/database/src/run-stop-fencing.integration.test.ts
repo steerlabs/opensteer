@@ -353,7 +353,6 @@ integration.sequential("Run stop fencing", () => {
             ],
 
             maxConcurrentRuns: 4,
-            providerStateModes: ["isolated"],
           },
         },
       };
@@ -705,6 +704,548 @@ integration.sequential("Run stop fencing", () => {
       restartedAfterHostBoot: true,
       supersededBindingRenewed: false,
     };
+  });
+
+  it("records engine-retired cause, leaves open tools stopped, and pauses queued work", async ({
+    storeFixture,
+  }) => {
+    const { fixture, running, database, store } = storeFixture;
+    const f = await fixture("engine-retired");
+    const run = await running(f, "engine-retired");
+    // Open a tool call in flight and enqueue a follow-up message behind this Run.
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      event: pendingEvent({
+        bindingGeneration: f.bindingGeneration,
+        data: {
+          arguments: { command: "sleep 30" },
+          callId: "call-inflight",
+          tool: { name: "shell", namespace: "codex" },
+        },
+        environmentId: f.environmentId,
+        ordinal: f.ordinal++,
+        runId: run.id,
+        threadId: f.thread.id,
+        type: "tool.started",
+      }),
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
+    await store.enqueueThreadInput({
+      content: [{ text: "Follow-up that must not run silently", type: "text" }],
+      idempotencyKey: "engine-retired-followup",
+      policy: "queue",
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      threadId: f.thread.id,
+    });
+    // The shared engine retired under another task's stop: this innocent neighbour
+    // ends interrupted with cause "engine-retired".
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      event: pendingEvent({
+        bindingGeneration: f.bindingGeneration,
+        data: {
+          cause: "engine-retired",
+          status: "interrupted",
+        },
+        environmentId: f.environmentId,
+        ordinal: f.ordinal++,
+        runId: run.id,
+        threadId: f.thread.id,
+        type: "run.interrupted",
+      }),
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
+    const settledRun = await database
+      .selectFrom("runs")
+      .select(["status", "interruptedCause"])
+      .where("id", "=", run.id)
+      .executeTakeFirstOrThrow();
+    expect(settledRun).toEqual({ status: "interrupted", interruptedCause: "engine-retired" });
+    // Rule 4: the in-flight tool call is interrupted/stopped, never failed or completed.
+    const toolRow = await database
+      .selectFrom("toolCalls")
+      .select(["status", "isError"])
+      .where("runId", "=", run.id)
+      .where("callId", "=", "call-inflight")
+      .executeTakeFirstOrThrow();
+    expect(toolRow).toEqual({ status: "interrupted", isError: null });
+    // Follow-ups are paused rather than silently starting a new Run.
+    const threadRow = await database
+      .selectFrom("threads")
+      .select(["inputQueuePaused", "status"])
+      .where("id", "=", f.thread.id)
+      .executeTakeFirstOrThrow();
+    expect(threadRow.inputQueuePaused).toBe(true);
+    const allRuns = await database
+      .selectFrom("runs")
+      .select(["id", "status"])
+      .where("threadId", "=", f.thread.id)
+      .execute();
+    expect(allRuns).toHaveLength(1);
+    const page = await readTranscriptPage(database, {
+      viewerId: f.userId,
+      scope: { kind: "thread", threadId: f.thread.id },
+    });
+    expect(page.kind).toBe("page");
+    if (page.kind === "page") {
+      const runItem = page.items.find((item) => item.kind === "run" && item.runId === run.id);
+      expect(runItem?.kind === "run" ? runItem.interruptedCause : undefined).toBe("engine-retired");
+      const toolItem = page.items.find((item) => item.kind === "tool");
+      expect(toolItem?.view.status).toBe("stopped");
+    }
+  });
+
+  it("H5(b)+(c): holds next Run on previous-stop-unconfirmed without cycling Starting, records failureCode, and promotes unproven stop to interrupted with stopConfirmedAt on late proof", async ({
+    storeFixture,
+  }) => {
+    const { fixture, running, database, store } = storeFixture;
+    const f = await fixture("unproven-late-proof");
+    const run1 = await running(f, "unproven-1");
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      event: pendingEvent({
+        bindingGeneration: f.bindingGeneration,
+        data: {
+          code: "execution_termination_unproven",
+          message:
+            "Stopping could not be confirmed. Something from this Run may still be running on that device.",
+          retryable: false,
+          status: "failed",
+        },
+        environmentId: f.environmentId,
+        ordinal: f.ordinal++,
+        runId: run1.id,
+        threadId: f.thread.id,
+        type: "run.failed",
+      }),
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
+    const failedThread = await database
+      .selectFrom("threads")
+      .select(["status", "failureCode", "failurePreview"])
+      .where("id", "=", f.thread.id)
+      .executeTakeFirstOrThrow();
+    expect(failedThread.status).toBe("failed");
+    expect(failedThread.failureCode).toBe("execution_termination_unproven");
+
+    // Enqueue a follow-up message; simulate Runner rejecting with previous-stop-unconfirmed.
+    const nextSent = await store.enqueueThreadInput({
+      content: [{ text: "Try again after stop", type: "text" }],
+      idempotencyKey: "unproven-next-msg",
+      policy: "queue",
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      threadId: f.thread.id,
+    });
+    expect(nextSent.command).not.toBeNull();
+    expect(nextSent.run).not.toBeNull();
+    await store.claimCommand(nextSent.command!.id, "test-dispatcher");
+    const heldError = Object.assign(new Error("Stopping could not be confirmed."), {
+      cause: {
+        code: "conflict",
+        message: "Stopping could not be confirmed.",
+        reason: "previous-stop-unconfirmed",
+        retryable: true,
+      },
+    });
+    await store.retryCommand(nextSent.command!.id, heldError);
+
+    const heldRun = await database
+      .selectFrom("runs")
+      .select(["status", "startHoldReason"])
+      .where("id", "=", nextSent.run!.id)
+      .executeTakeFirstOrThrow();
+    expect(heldRun).toEqual({
+      status: "queued",
+      startHoldReason: "previous-stop-unconfirmed",
+    });
+    // While held, listPendingCommands must NOT keep claiming and cycling Starting.
+    const pendingWhileHeld = await store.listPendingCommands();
+    expect(pendingWhileHeld.some((cmd) => cmd.id === nextSent.command!.id)).toBe(false);
+
+    // Late proof arrives from the Runner: run.interrupted at Run 1's nextRunnerOrdinal.
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      event: pendingEvent({
+        bindingGeneration: f.bindingGeneration,
+        data: {
+          status: "interrupted",
+        },
+        environmentId: f.environmentId,
+        ordinal: f.ordinal++,
+        runId: run1.id,
+        threadId: f.thread.id,
+        type: "run.interrupted",
+      }),
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
+    const confirmedRun = await database
+      .selectFrom("runs")
+      .select(["status", "failure", "stopConfirmedAt"])
+      .where("id", "=", run1.id)
+      .executeTakeFirstOrThrow();
+    expect(confirmedRun.status).toBe("interrupted");
+    expect(confirmedRun.failure).toBeNull();
+    expect(confirmedRun.stopConfirmedAt).not.toBeNull();
+
+    // Thread clears failureCode and queued Run 2's hold lifts so it can dispatch!
+    const liftedThread = await database
+      .selectFrom("threads")
+      .select(["failureCode", "failurePreview"])
+      .where("id", "=", f.thread.id)
+      .executeTakeFirstOrThrow();
+    expect(liftedThread.failureCode).toBeNull();
+    expect(liftedThread.failurePreview).toBeNull();
+
+    const unheldRun = await database
+      .selectFrom("runs")
+      .select(["status", "startHoldReason"])
+      .where("id", "=", nextSent.run!.id)
+      .executeTakeFirstOrThrow();
+    expect(unheldRun).toEqual({ status: "queued", startHoldReason: null });
+    const pendingAfterLift = await store.listPendingCommands();
+    expect(pendingAfterLift.some((cmd) => cmd.id === nextSent.command!.id)).toBe(true);
+
+    // Transcript Run card reflects interrupted + stopConfirmedAt.
+    const page = await readTranscriptPage(database, {
+      viewerId: f.userId,
+      scope: { kind: "thread", threadId: f.thread.id },
+    });
+    expect(page.kind).toBe("page");
+    if (page.kind === "page") {
+      const runItem = page.items.find((item) => item.kind === "run" && item.runId === run1.id);
+      expect(runItem?.view.status).toBe("interrupted");
+      expect(runItem?.kind === "run" ? runItem.stopConfirmedAt : undefined).toBeTruthy();
+    }
+  });
+
+  it("S2+S3: keeps held Runs and refuses new follow-up Runs after a Runner restart with unknown earlier-boot reap", async ({
+    storeFixture,
+  }) => {
+    const { fixture, running, database, store } = storeFixture;
+    const f = await fixture("s3-reboot-unknown");
+    const run1 = await running(f, "s3-unproven-1");
+    await database
+      .updateTable("providerSessions")
+      .set({ providerSessionReference: "native-session-s3-unknown" })
+      .where("threadId", "=", f.thread.id)
+      .execute();
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      event: pendingEvent({
+        bindingGeneration: f.bindingGeneration,
+        data: {
+          code: "execution_termination_unproven",
+          message:
+            "Stopping could not be confirmed. Something from this Run may still be running on that device.",
+          retryable: false,
+          status: "failed",
+        },
+        environmentId: f.environmentId,
+        ordinal: f.ordinal++,
+        runId: run1.id,
+        threadId: f.thread.id,
+        type: "run.failed",
+      }),
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
+    // Queue Run 2 and mark it held on previous-stop-unconfirmed.
+    const nextSent = await store.enqueueThreadInput({
+      content: [{ text: "Follow up while held", type: "text" }],
+      idempotencyKey: "s3-follow-up-1",
+      policy: "queue",
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      threadId: f.thread.id,
+    });
+    await store.claimCommand(nextSent.command!.id, "test-dispatcher");
+    const heldError = Object.assign(new Error("Stopping could not be confirmed."), {
+      cause: {
+        code: "conflict",
+        message: "Stopping could not be confirmed.",
+        reason: "previous-stop-unconfirmed",
+        retryable: true,
+      },
+    });
+    await store.retryCommand(nextSent.command!.id, heldError);
+
+    // Runner restarts on the same machine as boot B2 with earlier-boot reap UNKNOWN
+    // (capabilities omits earlier-boots-contained-v1).
+    const boot2 = `rbt_${randomUUID()}` as RunnerDescriptor["bootId"];
+    await database
+      .updateTable("runners")
+      .set({ capabilities: jsonValue([]) })
+      .where("id", "=", f.runnerId)
+      .execute();
+    await store.attachRunnerExecutions({
+      dispatchingRunIds: [],
+      executions: [],
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: boot2,
+      runnerId: f.runnerId,
+    });
+
+    // Run 2 MUST remain held on previous-stop-unconfirmed.
+    const heldAfterRestart = await database
+      .selectFrom("runs")
+      .select(["status", "startHoldReason"])
+      .where("id", "=", nextSent.run!.id)
+      .executeTakeFirstOrThrow();
+    expect(heldAfterRestart).toEqual({
+      status: "queued",
+      startHoldReason: "previous-stop-unconfirmed",
+    });
+
+    // Attempting to bind a follow-up Run on boot B2 MUST be refused with previous-stop-unconfirmed.
+    await store.claimCommand(nextSent.command!.id, "test-dispatcher");
+    await expect(
+      store.acquireExecutionBinding({
+        bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+        continuationIdentity,
+        harnessInstanceId: f.harness.id,
+        leaseTokenHash: `lease-${randomUUID()}`,
+        runId: nextSent.run!.id,
+        runnerBootId: boot2,
+        runnerId: f.runnerId,
+        threadId: f.thread.id,
+      }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      reason: "previous-stop-unconfirmed",
+    });
+  });
+
+  it("S2+S3 lift (1): lifts hold and admits follow-up after a later verified reap (earlier-boots-contained-v1)", async ({
+    storeFixture,
+  }) => {
+    const { fixture, running, database, store } = storeFixture;
+    const f = await fixture("s3-lift-verified-reap");
+    await database
+      .updateTable("runners")
+      .set({ machineBootId: "linux:machine-boot-1" })
+      .where("id", "=", f.runnerId)
+      .execute();
+    const run1 = await running(f, "s3-reap-1");
+    await database
+      .updateTable("providerSessions")
+      .set({ providerSessionReference: "native-session-s3-reap" })
+      .where("threadId", "=", f.thread.id)
+      .execute();
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      event: pendingEvent({
+        bindingGeneration: f.bindingGeneration,
+        data: {
+          code: "execution_termination_unproven",
+          message:
+            "Stopping could not be confirmed. Something from this Run may still be running on that device.",
+          retryable: false,
+          status: "failed",
+        },
+        environmentId: f.environmentId,
+        ordinal: f.ordinal++,
+        runId: run1.id,
+        threadId: f.thread.id,
+        type: "run.failed",
+      }),
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
+    const nextSent = await store.enqueueThreadInput({
+      content: [{ text: "Follow up after verified reap", type: "text" }],
+      idempotencyKey: "s3-reap-next",
+      policy: "queue",
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      threadId: f.thread.id,
+    });
+    await store.claimCommand(nextSent.command!.id, "test-dispatcher");
+    await store.retryCommand(
+      nextSent.command!.id,
+      Object.assign(new Error("Stopping could not be confirmed."), {
+        cause: {
+          code: "conflict",
+          message: "Stopping could not be confirmed.",
+          reason: "previous-stop-unconfirmed",
+          retryable: true,
+        },
+      }),
+    );
+
+    // Boot 2 restarts with unknown reap: stays held.
+    const boot2 = `rbt_${randomUUID()}` as RunnerDescriptor["bootId"];
+    await database
+      .updateTable("runners")
+      .set({ capabilities: jsonValue([]), machineBootId: "linux:machine-boot-1" })
+      .where("id", "=", f.runnerId)
+      .execute();
+    await store.attachRunnerExecutions({
+      dispatchingRunIds: [],
+      executions: [],
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: boot2,
+      runnerId: f.runnerId,
+    });
+    expect(
+      (
+        await database
+          .selectFrom("runs")
+          .select("startHoldReason")
+          .where("id", "=", nextSent.run!.id)
+          .executeTakeFirstOrThrow()
+      ).startHoldReason,
+    ).toBe("previous-stop-unconfirmed");
+
+    // Boot 3 restarts with a verified earlier-boot reap (earlier-boots-contained-v1):
+    // attach confirms Run 1, lifts the hold on Run 2, and Run 2 binds cleanly.
+    const boot3 = `rbt_${randomUUID()}` as RunnerDescriptor["bootId"];
+    await database
+      .updateTable("runners")
+      .set({
+        capabilities: jsonValue(["earlier-boots-contained-v1"]),
+        machineBootId: "linux:machine-boot-1",
+      })
+      .where("id", "=", f.runnerId)
+      .execute();
+    await store.attachRunnerExecutions({
+      dispatchingRunIds: [],
+      executions: [],
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: boot3,
+      runnerId: f.runnerId,
+    });
+    const run1After = await database
+      .selectFrom("runs")
+      .select(["status", "stopConfirmedAt"])
+      .where("id", "=", run1.id)
+      .executeTakeFirstOrThrow();
+    expect(run1After.status).toBe("interrupted");
+    expect(run1After.stopConfirmedAt).not.toBeNull();
+    const run2After = await database
+      .selectFrom("runs")
+      .select(["status", "startHoldReason"])
+      .where("id", "=", nextSent.run!.id)
+      .executeTakeFirstOrThrow();
+    expect(run2After).toEqual({ status: "queued", startHoldReason: null });
+    await store.claimCommand(nextSent.command!.id, "test-dispatcher");
+    const bound = await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+      continuationIdentity,
+      harnessInstanceId: f.harness.id,
+      leaseTokenHash: `lease-${randomUUID()}`,
+      machineBootId: "linux:machine-boot-1",
+      runId: nextSent.run!.id,
+      runnerBootId: boot3,
+      runnerId: f.runnerId,
+      threadId: f.thread.id,
+    });
+    expect(bound.runnerBootId).toBe(boot3);
+  });
+
+  it("S2+S3 lift (2): lifts hold and admits follow-up after a new machine boot even when reap is unknown", async ({
+    storeFixture,
+  }) => {
+    const { fixture, running, database, store } = storeFixture;
+    const f = await fixture("s3-lift-machine-boot");
+    await database
+      .updateTable("runners")
+      .set({ machineBootId: "linux:machine-boot-old" })
+      .where("id", "=", f.runnerId)
+      .execute();
+    const run1 = await running(f, "s3-reboot-1");
+    await database
+      .updateTable("providerSessions")
+      .set({ providerSessionReference: "native-session-s3-reboot" })
+      .where("threadId", "=", f.thread.id)
+      .execute();
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      event: pendingEvent({
+        bindingGeneration: f.bindingGeneration,
+        data: {
+          code: "execution_termination_unproven",
+          message:
+            "Stopping could not be confirmed. Something from this Run may still be running on that device.",
+          retryable: false,
+          status: "failed",
+        },
+        environmentId: f.environmentId,
+        ordinal: f.ordinal++,
+        runId: run1.id,
+        threadId: f.thread.id,
+        type: "run.failed",
+      }),
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
+    const nextSent = await store.enqueueThreadInput({
+      content: [{ text: "Follow up after machine reboot", type: "text" }],
+      idempotencyKey: "s3-reboot-next",
+      policy: "queue",
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      threadId: f.thread.id,
+    });
+    await store.claimCommand(nextSent.command!.id, "test-dispatcher");
+    await store.retryCommand(
+      nextSent.command!.id,
+      Object.assign(new Error("Stopping could not be confirmed."), {
+        cause: {
+          code: "conflict",
+          message: "Stopping could not be confirmed.",
+          reason: "previous-stop-unconfirmed",
+          retryable: true,
+        },
+      }),
+    );
+
+    // Machine reboots (new machineBootId), even though earlier-boot reap returned unknown!
+    const boot2 = `rbt_${randomUUID()}` as RunnerDescriptor["bootId"];
+    await database
+      .updateTable("runners")
+      .set({ capabilities: jsonValue([]), machineBootId: "linux:machine-boot-new" })
+      .where("id", "=", f.runnerId)
+      .execute();
+    await store.attachRunnerExecutions({
+      dispatchingRunIds: [],
+      executions: [],
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: boot2,
+      runnerId: f.runnerId,
+    });
+
+    const run1After = await database
+      .selectFrom("runs")
+      .select(["status", "stopConfirmedAt"])
+      .where("id", "=", run1.id)
+      .executeTakeFirstOrThrow();
+    expect(run1After.status).toBe("interrupted");
+    expect(run1After.stopConfirmedAt).not.toBeNull();
+    const run2After = await database
+      .selectFrom("runs")
+      .select(["status", "startHoldReason"])
+      .where("id", "=", nextSent.run!.id)
+      .executeTakeFirstOrThrow();
+    expect(run2After).toEqual({ status: "queued", startHoldReason: null });
+    await store.claimCommand(nextSent.command!.id, "test-dispatcher");
+    const bound = await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+      continuationIdentity,
+      harnessInstanceId: f.harness.id,
+      leaseTokenHash: `lease-${randomUUID()}`,
+      machineBootId: "linux:machine-boot-new",
+      runId: nextSent.run!.id,
+      runnerBootId: boot2,
+      runnerId: f.runnerId,
+      threadId: f.thread.id,
+    });
+    expect(bound.runnerBootId).toBe(boot2);
   });
 });
 function pendingEvent<T extends PendingAgentEvent>(input: Omit<T, "emittedAt">): T {

@@ -4,12 +4,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createId, HarnessIdSchema } from "@opensteer/core";
 import {
-  isolatedServiceHarnessRuntimeBoundary,
-  nativeUserHarnessRuntimeBoundary,
   profileHarnessProviderStoreScope,
   type HarnessInstanceDefinition,
   type HarnessProviderStoreScope,
-  type HarnessRuntimeBoundary,
 } from "@opensteer/harness";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -23,7 +20,7 @@ const temporaryDirectories: string[] = [];
 
 const sharedScope: HarnessProviderStoreScope = {
   kind: "driver-shared",
-  nativeUserHome: { environmentVariable: "TEST_HOME", relativeHomePath: ".test" },
+  ambientHome: { environmentVariable: "TEST_HOME", relativeHomePath: ".test" },
 };
 
 afterEach(async () => {
@@ -35,9 +32,10 @@ afterEach(async () => {
 describe("harness provider state", () => {
   it("gives isolated profiles independent homes and one shared store identity", async () => {
     const root = await temporaryRoot();
+    const ambientHome = join(root, "ambient-home");
     const first = definition("isolated");
     const second = definition("isolated");
-    const options = sharedOptions(root, isolatedServiceHarnessRuntimeBoundary);
+    const options = ambientOptions(root, ambientHome);
     const { providerState: firstState } = await prepareHarnessProviderState(first, options);
     const { providerState: secondState } = await prepareHarnessProviderState(second, options);
 
@@ -48,11 +46,11 @@ describe("harness provider state", () => {
     // Two profiles of one driver resume each other's conversations, which is the
     // whole point of separating credentials from the session store.
     expect(secondState.continuationKey).toBe(firstState.continuationKey);
-    expect(secondState.store.directory).toBe(join(root, "harness-stores", "test", "store"));
+    expect(secondState.store.directory).toBe(ambientHome);
     expect(firstState.continuationKey).toMatch(/^test:store:[^:]+$/u);
     expect(firstState.continuationKey).not.toContain(root);
     expect(firstState.continuationKey).not.toContain(first.id);
-    expect((await stat(storeMetadataPath(root))).mode & 0o777).toBe(0o600);
+    expect((await stat(ambientMetadataPath(root, ambientHome))).mode & 0o777).toBe(0o600);
     expect((await prepareHarnessProviderState(first, options)).providerState.continuationKey).toBe(
       firstState.continuationKey,
     );
@@ -62,7 +60,7 @@ describe("harness provider state", () => {
     const root = await temporaryRoot();
     const first = definition("isolated");
     const second = definition("isolated");
-    const options = profileOptions(root, isolatedServiceHarnessRuntimeBoundary);
+    const options = profileOptions(root);
     const { providerState: firstState } = await prepareHarnessProviderState(first, options);
     const { providerState: secondState } = await prepareHarnessProviderState(second, options);
 
@@ -70,7 +68,7 @@ describe("harness provider state", () => {
     expect(firstState.store.directory).toBe(firstState.providerHomeDirectory);
   });
 
-  it("makes the ambient provider home the store on a native-user Runner", async () => {
+  it("makes the ambient provider home the store", async () => {
     const root = await temporaryRoot();
     const ambientHome = join(root, "ambient-codex-home");
     const options = ambientOptions(root, ambientHome);
@@ -87,7 +85,7 @@ describe("harness provider state", () => {
     await expect(stat(ambientMetadataPath(root, ambientHome))).resolves.toBeDefined();
   });
 
-  it("gives each ambient home its own store identity on a native-user Runner", async () => {
+  it("gives each ambient home its own store identity", async () => {
     const root = await temporaryRoot();
     const firstHome = join(root, "ambient-home-one");
     const secondHome = join(root, "ambient-home-two");
@@ -114,43 +112,11 @@ describe("harness provider state", () => {
     await expect(stat(ambientMetadataPath(root, secondHome))).resolves.toBeDefined();
   });
 
-  it("keeps one record for a service store whatever the environment names", async () => {
-    const root = await temporaryRoot();
-    const profile = definition("isolated");
-    const options = sharedOptions(root, isolatedServiceHarnessRuntimeBoundary);
-    const first = await prepareHarnessProviderState(profile, options);
-    const second = await prepareHarnessProviderState(profile, {
-      ...options,
-      environment: { TEST_HOME: join(root, "unused-home") },
-    });
-
-    // The Runner owns this store, so its record identifies it and no ambient
-    // home the environment happens to name can split or move it.
-    expect(second.providerState.continuationKey).toBe(first.providerState.continuationKey);
-    expect(second.providerState.store.directory).toBe(
-      join(root, "harness-stores", "test", "store"),
-    );
-    await expect(stat(storeMetadataPath(root))).resolves.toBeDefined();
-    await expect(stat(join(root, "harness-stores", "test", "ambient"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
-  });
-
-  it("rejects ambient provider state on an isolated service", async () => {
-    const root = await temporaryRoot();
-    await expect(
-      prepareHarnessProviderState(
-        definition("ambient"),
-        sharedOptions(root, isolatedServiceHarnessRuntimeBoundary),
-      ),
-    ).rejects.toThrow("require a native-user Runner");
-  });
-
   it("adopts a legacy per-profile identity into the store it joins", async () => {
     const root = await temporaryRoot();
     const legacy = definition("isolated");
     const other = definition("isolated");
-    const options = sharedOptions(root, isolatedServiceHarnessRuntimeBoundary);
+    const options = ambientOptions(root, join(root, "ambient-home"));
     const legacyMetadata = join(root, "harness-profiles", legacy.id, "profile.json");
     await mkdir(join(root, "harness-profiles", legacy.id), { mode: 0o700, recursive: true });
     await writeFile(
@@ -172,16 +138,17 @@ describe("harness provider state", () => {
 
   it("keeps a legacy profile record until the store durably owns its key", async () => {
     const root = await temporaryRoot();
-    const options = sharedOptions(root, isolatedServiceHarnessRuntimeBoundary);
+    const ambientHome = join(root, "ambient-home");
+    const options = ambientOptions(root, ambientHome);
     const legacy = definition("isolated");
     const legacyMetadata = join(root, "harness-profiles", legacy.id, "profile.json");
     await mkdir(join(root, "harness-profiles", legacy.id), { mode: 0o700, recursive: true });
     await writeFile(legacyMetadata, JSON.stringify({ authenticationEpoch: 0, stateId: "late" }));
     // A store already holding every key it may carry cannot adopt another
     // profile, and the profile's own record must survive so nothing is lost.
-    await mkdir(join(root, "harness-stores", "test"), { mode: 0o700, recursive: true });
+    await mkdir(dirname(ambientMetadataPath(root, ambientHome)), { mode: 0o700, recursive: true });
     await writeFile(
-      storeMetadataPath(root),
+      ambientMetadataPath(root, ambientHome),
       JSON.stringify({
         id: "full",
         supersededKeys: Array.from({ length: 256 }, (_, index) => `test:profile-state:${index}`),
@@ -194,7 +161,7 @@ describe("harness provider state", () => {
     await expect(stat(legacyMetadata)).resolves.toBeDefined();
   });
 
-  it("removes an isolated profile on a native-user Runner without touching the CLI home", async () => {
+  it("removes an isolated profile without touching the CLI home", async () => {
     const root = await temporaryRoot();
     const ambientHome = join(root, "ambient-codex-home");
     const profile = definition("isolated");
@@ -218,7 +185,7 @@ describe("harness provider state", () => {
   it("refuses a relative ambient home rather than guessing which directory it names", async () => {
     const root = await temporaryRoot();
     const options = {
-      ...sharedOptions(root, nativeUserHarnessRuntimeBoundary),
+      ...ambientOptions(root, join(root, "ambient-home")),
       environment: { TEST_HOME: "relative/home" },
     };
     await expect(prepareHarnessProviderState(definition("ambient"), options)).rejects.toThrow(
@@ -228,9 +195,10 @@ describe("harness provider state", () => {
 
   it("removes one profile without reaching into the store behind its symlinks", async () => {
     const root = await temporaryRoot();
+    const ambientHome = join(root, "ambient-home");
     const retained = definition("isolated");
     const removed = definition("isolated");
-    const options = sharedOptions(root, isolatedServiceHarnessRuntimeBoundary);
+    const options = ambientOptions(root, ambientHome);
     const { providerState: retainedState } = await prepareHarnessProviderState(retained, options);
     const { providerState: removedState } = await prepareHarnessProviderState(removed, options);
     const rollout = join(removedState.store.directory, "sessions", "2026", "09", "rollout.jsonl");
@@ -248,13 +216,13 @@ describe("harness provider state", () => {
     // The shared store is what every other profile resumes through.
     expect(await readFile(rollout, "utf8")).toBe("kept\n");
     expect(retainedState.privateStateRoot).toBe(dirname(root));
-    await expect(stat(storeMetadataPath(root))).resolves.toBeDefined();
+    await expect(stat(ambientMetadataPath(root, ambientHome))).resolves.toBeDefined();
   });
 
   it("deletes a profile-scoped store with the profile that owned it", async () => {
     const root = await temporaryRoot();
     const profile = definition("isolated");
-    const options = profileOptions(root, isolatedServiceHarnessRuntimeBoundary);
+    const options = profileOptions(root);
     await prepareHarnessProviderState(profile, options);
     await removeHarnessProviderState(profile, options);
 
@@ -265,11 +233,12 @@ describe("harness provider state", () => {
 
   it("keeps a profile whose store metadata never landed removable", async () => {
     const root = await temporaryRoot();
+    const ambientHome = join(root, "ambient-home");
     const profile = definition("isolated");
-    const options = sharedOptions(root, isolatedServiceHarnessRuntimeBoundary);
+    const options = ambientOptions(root, ambientHome);
     await prepareHarnessProviderState(profile, options);
     // A process that died between the mkdir and the first metadata write.
-    await rm(storeMetadataPath(root), { force: true });
+    await rm(ambientMetadataPath(root, ambientHome), { force: true });
 
     const state = await existingIsolatedHarnessProviderState(profile, options);
     expect(state).toMatchObject({
@@ -308,10 +277,6 @@ async function symlinkStoreEntry(providerHome: string, store: string): Promise<v
   expect(await readlink(join(providerHome, "sessions"))).toBe(join(store, "sessions"));
 }
 
-function storeMetadataPath(root: string): string {
-  return join(root, "harness-stores", "test", "metadata.json");
-}
-
 /** Pins the layout: a person-owned store's record is selected by its directory. */
 function ambientMetadataPath(root: string, storeDirectory: string): string {
   const key = createHash("sha256").update(storeDirectory).digest("hex").slice(0, 16);
@@ -320,33 +285,18 @@ function ambientMetadataPath(root: string, storeDirectory: string): string {
 
 function ambientOptions(root: string, ambientHome: string): HarnessProviderStateOptions {
   return {
-    ...sharedOptions(root, nativeUserHarnessRuntimeBoundary),
     environment: { TEST_HOME: ambientHome },
-  };
-}
-
-function sharedOptions(
-  root: string,
-  runtimeBoundary: HarnessRuntimeBoundary,
-): HarnessProviderStateOptions {
-  return {
-    environment: {},
     // The Runner's data directory is one level above the state layout it holds.
     privateStateRoot: dirname(root),
-    runtimeBoundary,
     stateDirectory: root,
     storeScope: sharedScope,
   };
 }
 
-function profileOptions(
-  root: string,
-  runtimeBoundary: HarnessRuntimeBoundary,
-): HarnessProviderStateOptions {
+function profileOptions(root: string): HarnessProviderStateOptions {
   return {
     environment: {},
     privateStateRoot: dirname(root),
-    runtimeBoundary,
     stateDirectory: root,
     storeScope: profileHarnessProviderStoreScope,
   };

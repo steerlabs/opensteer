@@ -69,6 +69,8 @@ import type {
   RunAttemptId,
   RunFailure,
   RunId,
+  RunInterruptedCause,
+  RunStartHoldReason,
   RunnerId,
   SecurityAuditId,
   ThreadAccessMode,
@@ -562,6 +564,8 @@ interface RunnerTable {
   moduleDescriptors: JsonColumn<RunnerModules>;
   /** What the computer says it is, from its last signed hello; null until it says. */
   device: JsonColumn<RunnerDevice | null>;
+  /** Stable OS boot identity from the Runner's last signed hello; null until reported. */
+  machineBootId: Generated<string | null>;
   connectionGeneration: ColumnType<string, number | string, number | string>;
   /** Null for a Runner with no agents module, which executes nothing. */
   maxConcurrentRuns: number | null;
@@ -715,7 +719,11 @@ export interface ThreadTable {
   inputQueueRevision: Generated<string>;
   lastReplyMessageId: Generated<MessageId | null>;
   lastReplyPreview: Generated<string | null>;
+  failureCode: Generated<string | null>;
   failurePreview: Generated<string | null>;
+  runStartHoldReason: Generated<RunStartHoldReason | null>;
+  /** Unresolved unproven-stop Run whose boot containment has not yet been confirmed. */
+  unconfirmedStopRunId: Generated<RunId | null>;
   latestRunCompletedAt: Generated<Date | null>;
   latestPlace: Generated<PlaceView | null>;
   removedAt: Generated<Date | null>;
@@ -921,6 +929,9 @@ export interface RunTable {
   /** The reply its channel was sent when a turn ended in the background. */
   turnReplyMessageId: Generated<MessageId | null>;
   status: "queued" | "starting" | "running" | "waiting" | "completed" | "failed" | "interrupted";
+  interruptedCause: Generated<RunInterruptedCause | null>;
+  startHoldReason: Generated<RunStartHoldReason | null>;
+  stopConfirmedAt: Generated<Date | null>;
   createdAt: Timestamp;
   startedAt: NullableTimestamp;
   completedAt: NullableTimestamp;
@@ -961,6 +972,7 @@ export interface RunAttemptTable {
   bindingGeneration: number | null;
   runnerId: RunnerId | null;
   runnerBootId: string | null;
+  machineBootId: Generated<string | null>;
   /** The selection the attempt was dispatched with. */
   modelSelection: JsonColumn<ModelSelection | null>;
   dispatchedAt: NullableTimestamp;

@@ -414,6 +414,8 @@ export function itemView(row: Item): TranscriptItem {
     endedAt,
     replyMessageId,
     failure,
+    interruptedCause,
+    stopConfirmedAt,
     retry,
     usage,
     messageKind,
@@ -491,6 +493,8 @@ export function itemView(row: Item): TranscriptItem {
         endedAt,
         replyMessageId,
         failure,
+        ...(interruptedCause ? { interruptedCause } : {}),
+        ...(stopConfirmedAt ? { stopConfirmedAt } : {}),
         retry,
         usage,
       });

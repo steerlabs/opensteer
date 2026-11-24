@@ -592,6 +592,97 @@ describeStore("one admission for Home commands", (it) => {
     return { profile, newProfile, tab, browserSession, setup };
   }
 
+  it("reaches a tab group only when every tab in it is reached: tab.group.close (K)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, connect } = await setup(storeFixture);
+    const { profile, newProfile, tab } = await browserFixtures(storeFixture, f);
+    const other = await newProfile(`Other ${randomUUID().slice(0, 4)}`);
+    const inProfile = await tab("person");
+    const alsoInProfile = await tab("person");
+    const elsewhere = await tab("person", other.id);
+    const group = (groupId: string, tabIds: readonly string[]) => ({
+      kind: "group",
+      group: { groupId, name: groupId, color: "blue", collapsed: false, tabIds },
+    });
+    const held = `tgr_${randomUUID()}`;
+    const mixed = `tgr_${randomUUID()}`;
+    const none = `tgr_${randomUUID()}`;
+    await database
+      .insertInto("tabLayouts")
+      .values({
+        ownerId: f.userId,
+        items: JSON.stringify([
+          group(held, [inProfile, alsoInProfile]),
+          group(mixed, [inProfile, elsewhere]),
+          group(none, [elsewhere]),
+        ]) as never,
+      })
+      .onConflict((conflict) =>
+        conflict.column("ownerId").doUpdateSet((eb) => ({ items: eb.ref("excluded.items") })),
+      )
+      .execute();
+    const close = (groupId: string) => ({ type: "tab.group.close", groupId });
+    const admit = async (subject: Parameters<typeof admitCommand>[1]["subject"], groupId: string) =>
+      (
+        await admitCommand(database, {
+          ownerUserId: f.userId,
+          subject,
+          command: { idempotencyKey: randomUUID(), ...close(groupId) } as never,
+        })
+      ).answer;
+    // The person: admitted, as every command of theirs.
+    expect(await admit({ kind: "person" }, held)).toBe("now");
+    // A connected agent holding the profile every tab of the group is in: admitted (the person's
+    // handler still answers it, so the door asks them).
+    const holder = await connect({
+      scope: "selected",
+      tasks: false,
+      resources: [{ kind: "browser-profile", profileId: profile.id }],
+    });
+    expect(await admit(commandSubject(`connection:${holder.id}`), held)).not.toBe("not_found");
+    // Holding only some of its tabs, or none: like a group that does not exist (rule 5).
+    expect(await admit(commandSubject(`connection:${holder.id}`), mixed)).toBe("not_found");
+    expect(await admit(commandSubject(`connection:${holder.id}`), none)).toBe("not_found");
+    expect(await admit(commandSubject(`connection:${holder.id}`), `tgr_${randomUUID()}`)).toBe(
+      "not_found",
+    );
+  });
+
+  it("lets an Auto connection close a tab its own direct session opened, and asks about the person's (G2d)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, connect } = await setup(storeFixture);
+    const { profile, tab } = await browserFixtures(storeFixture, f);
+    const auto = await connect(
+      {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: profile.id }],
+      },
+      "auto",
+    );
+    const { session } = await beginAgentSession(database, {
+      userId: f.userId,
+      agentConnectionId: auto.id,
+    });
+    await database
+      .updateTable("threads")
+      .set({ accessMode: "auto" })
+      .where("id", "=", session.threadId)
+      .execute();
+    const admit = async (tabIds: readonly string[]) =>
+      (
+        await admitCommand(database, {
+          ownerUserId: f.userId,
+          subject: { kind: "binding", bindingId: `session:${session.id}` },
+          command: { idempotencyKey: randomUUID(), type: "tab.close", tabIds } as never,
+        })
+      ).answer;
+    expect(await admit([await tab({ taskId: session.threadId })])).toBe("now");
+    expect(await admit([await tab("person")])).toBe("ask");
+  });
+
   it("asks a Supervised agent about tabs, browsers and setups it did not open (D3, D4)", async ({
     storeFixture,
   }) => {

@@ -78,7 +78,6 @@ function mainEnvironment(drivers: unknown[] = [driver("claude", "anthropic")]) {
     harnessDrivers: drivers,
     id: "env_main",
     kind: "main",
-    providerStateModes: ["ambient", "isolated"],
   };
 }
 

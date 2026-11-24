@@ -9,7 +9,6 @@ import {
 } from "@opensteer/core";
 import {
   Deferred,
-  nativeUserHarnessRuntimeBoundary,
   spawnSupervised,
   type HarnessEvent,
   type HarnessRunInput,
@@ -764,8 +763,6 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
     personalContext: false,
     personLineage: false,
     machineAccessNotice: "No other computers are reachable.",
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse({
       modelId: "model",
       options: {},
@@ -779,7 +776,6 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
       privateStateRoot: directory,
       store: { directory, id: "test-store" },
     },
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     skills: undefined,
     threadId: createId("thread"),

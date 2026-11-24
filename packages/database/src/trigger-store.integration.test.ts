@@ -207,7 +207,6 @@ integration.sequential("Trigger failure auto-pause", () => {
             ],
 
             maxConcurrentRuns: 4,
-            providerStateModes: ["isolated"],
           },
         },
         name: "Trigger test Runner",

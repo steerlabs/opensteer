@@ -223,10 +223,6 @@ in container images.
 `deploy/container/Containerfile` builds these into the images it publishes. They are separate
 programs that Opensteer runs, not code linked into it.
 
-- [bubblewrap](https://github.com/containers/bubblewrap) 0.11.2, GNU Library General Public License
-  version 2 or later. Built unmodified from the upstream release tarball the Containerfile pins by
-  SHA-256, which is its corresponding source. The licence text is installed beside the binary at
-  `/usr/local/share/licenses/bubblewrap/COPYING`.
 - [Caddy](https://github.com/caddyserver/caddy) 2.10.2, Apache License 2.0, copied unmodified from
   the official `caddy` image.
 - [tini](https://github.com/krallin/tini), MIT License, installed from the Debian package, whose

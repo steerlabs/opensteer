@@ -70,6 +70,12 @@ import {
   formatClockTime,
   groupTranscriptEntries,
   hasRunOutcome,
+  isRunEngineRetired,
+  isRunTerminationUnproven,
+  runInterruptedMessage,
+  runInterruptedTitle,
+  runOutcomeMessage,
+  runOutcomeTitle,
   silentRunLabel,
   isTerminalRunEntryStatus,
   incomingMessagePreview,
@@ -3349,21 +3355,56 @@ function RunOutcome({
   conversation?: boolean;
   run: RunEntry;
 }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  const [rechecking, setRechecking] = useState(false);
+  const [recheckNote, setRecheckNote] = useState<string | null>(null);
   const restart = restarted(run) ? (
     <RunRestart>Restarted to include your message</RunRestart>
   ) : null;
   if (run.status === "failed") {
+    const message = runOutcomeMessage(run);
+    const unproven = isRunTerminationUnproven(run);
     return (
       <>
         <div className="run-failure" role="alert">
           <span className="run-failure__title">
             <Icon name="alert-circle" />
-            {conversation ? "Opensteer couldn’t finish" : "Run failed"}
+            {runOutcomeTitle(run, { conversation })}
           </span>
-          {run.error ? (
-            <p className="run-failure__message">{run.error.ownerMessage ?? run.error.message}</p>
+          {message ? <p className="run-failure__message">{message}</p> : null}
+          {unproven && client && threadId ? (
+            <div className="run-failure__actions">
+              <button
+                className="btn btn--small btn--ghost"
+                disabled={rechecking}
+                type="button"
+                onClick={() => {
+                  setRechecking(true);
+                  setRecheckNote(null);
+                  void client
+                    .recheckThreadStop(threadId)
+                    .then(({ proven }) => {
+                      setRecheckNote(
+                        proven
+                          ? "Confirmed stopped."
+                          : "Still couldn’t confirm this stopped. Something may still be running on that device.",
+                      );
+                    })
+                    .catch((error: unknown) => {
+                      setRecheckNote(
+                        failureWords(error) ?? "Couldn’t check right now. Try again in a moment.",
+                      );
+                    })
+                    .finally(() => setRechecking(false));
+                }}
+              >
+                {rechecking ? "Checking…" : "Check again"}
+              </button>
+              {recheckNote ? <p className="action-note">{recheckNote}</p> : null}
+            </div>
           ) : null}
-          {run.error?.retryable ? (
+          {run.error?.retryable && !unproven ? (
             <p className="action-note">This looks temporary — sending again may work.</p>
           ) : null}
         </div>
@@ -3372,10 +3413,33 @@ function RunOutcome({
     );
   }
   if (run.status === "interrupted") {
+    const retired = isRunEngineRetired(run);
+    const message = runInterruptedMessage(run);
+    if (retired && message) {
+      return (
+        <>
+          <div className="run-failure" role="status">
+            <span className="run-failure__title">
+              <Icon name="alert-circle" />
+              {runInterruptedTitle(run, { conversation })}
+            </span>
+            <p className="run-failure__message">{message}</p>
+          </div>
+          {restart}
+        </>
+      );
+    }
+    const confirmedLabel = run.stopConfirmedAt
+      ? ` Confirmed stopped at ${new Date(run.stopConfirmedAt).toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        })}.`
+      : "";
     return (
       <>
         <p className="run-note">
-          <Icon name="stop" /> {conversation ? "Stopped." : "Run stopped."}
+          <Icon name="stop" /> {runInterruptedTitle(run, { conversation })}
+          {confirmedLabel}
         </p>
         {restart}
       </>

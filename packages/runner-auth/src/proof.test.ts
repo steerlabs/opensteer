@@ -295,8 +295,19 @@ describe("Runner identity proofs", () => {
     const firstDescriptor = descriptor();
     const agents = firstDescriptor.modules.agents;
     if (!agents) throw new Error("The fixture descriptor must advertise agents");
+    // The same descriptor with one array in the other order.
     const secondDescriptor = withAgents(firstDescriptor, {
-      providerStateModes: [...agents.providerStateModes].reverse(),
+      harnessDrivers: agents.harnessDrivers.map((driver) =>
+        "sources" in driver
+          ? {
+              ...driver,
+              sources: driver.sources.map((source) => ({
+                ...source,
+                stateKinds: [...source.stateKinds].reverse(),
+              })),
+            }
+          : driver,
+      ),
     });
     const shared = { challenge: challenge() };
 
@@ -430,7 +441,6 @@ function descriptor(): RunnerDescriptor {
           },
         ],
         maxConcurrentRuns: 4,
-        providerStateModes: ["ambient", "isolated"],
       },
     },
     name: "Main runner",

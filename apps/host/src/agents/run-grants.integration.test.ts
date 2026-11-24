@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { fileURLToPath } from "node:url";
 import { ModelSelectionSchema, type RunId } from "@opensteer/core";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
@@ -136,7 +136,6 @@ integration("Run tool authority", () => {
         );
         return registry;
       },
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       ...(options.runCapabilityLifetimeSeconds
         ? {
             runCapabilityLifetimeSeconds: options.runCapabilityLifetimeSeconds,

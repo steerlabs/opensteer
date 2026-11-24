@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { RunnerToHostMessageSchema } from "@opensteer/protocol";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -60,7 +60,6 @@ const evidence: unknown[] = [];
         registry.registerDriver(driver);
         return registry;
       },
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       harnessInstance: {
         config: {},
         driverKind: "codex",
@@ -161,7 +160,6 @@ const evidence: unknown[] = [];
                 },
               }
             : {}),
-          harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
           harnessInstance: {
             config: {},
             driverKind: "codex",
@@ -288,7 +286,6 @@ const evidence: unknown[] = [];
             );
             return registry;
           },
-          harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
           harnessInstance: {
             config: {},
             driverKind: "codex",

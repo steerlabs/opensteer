@@ -609,6 +609,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("thread.inputQueue.resume"),
   }),
   z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    threadId: ThreadIdSchema,
+    type: z.literal("thread.stop.recheck"),
+  }),
+  z.strictObject({
     type: z.literal("thread.visit"),
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
@@ -1271,6 +1276,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     asOfSequence: SequenceSchema,
     thread: ThreadViewSchema,
     type: z.literal("thread.inputQueue.resume"),
+  }),
+  z.object({
+    proven: z.boolean(),
+    type: z.literal("thread.stop.recheck"),
   }),
   z.object({ input: ThreadInputViewSchema, type: z.literal("thread.input.cancel") }),
   z.object({ type: z.literal("thread.input.move") }),

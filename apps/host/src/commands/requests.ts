@@ -337,6 +337,8 @@ export class CommandRequestService {
           throw changesWhatWasAsked();
       },
     });
+    // The same approval twice at once: the second reads what the first came to; nothing runs twice.
+    if (begun.replayed) return begun.replayed;
     if (begun.closed)
       throw new OpensteerError({
         code: "forbidden",

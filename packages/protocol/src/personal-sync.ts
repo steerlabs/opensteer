@@ -12,6 +12,7 @@ import {
   RunAttemptIdSchema,
   RunIdSchema,
   RunRetryViewSchema,
+  RunStartHoldReasonSchema,
   TaskPurposeSchema,
   ThreadIdSchema,
   ThreadStatusSchema,
@@ -38,7 +39,7 @@ import {
   TranscriptOrderCursorViewSchema,
 } from "./transcript.js";
 
-export const scopedPersonalApiVersion = 66;
+export const scopedPersonalApiVersion = 67;
 export const personalClientFrameMaxBytes = 32 * 1024;
 export const personalChangesFrameMaxBytes = 512 * 1024;
 export const personalLiveFrameMaxBytes = 16 * 1024;
@@ -186,6 +187,7 @@ const task = z.object({
   doneReason: ThreadDoneReasonSchema.nullable(),
   pendingRequestCount: z.int().nonnegative(),
   lastReplyPreview: z.string().max(1120).nullable(),
+  failureCode: z.string().max(255).nullable().optional(),
   failurePreview: z.string().max(1120).nullable(),
   latestRunCompletedAt: z.iso.datetime().nullable(),
   /** Where it runs and on which account: a task list says when that account is getting ready. */
@@ -193,6 +195,8 @@ const task = z.object({
   harnessInstanceId: HarnessInstanceIdSchema,
   /** A Run waits to start and none is executing. */
   runQueued: z.boolean(),
+  /** Why a queued Run is being held back from starting on its device. */
+  runStartHoldReason: RunStartHoldReasonSchema.nullable().optional(),
   /** A connected agent is working this task itself; Stop it with `agent.session.stop`. */
   agentSessionId: AgentSessionIdSchema.nullable().optional(),
   /**
@@ -260,6 +264,7 @@ const queue = z.object({
         revision: PersonalRevisionSchema,
         status: z.string().max(80),
         finishing: z.boolean(),
+        startHoldReason: RunStartHoldReasonSchema.nullable().optional(),
         createdAt: z.iso.datetime().optional(),
         runOrdinal: z.int().nonnegative().optional(),
       }),

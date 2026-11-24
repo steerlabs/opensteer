@@ -93,11 +93,23 @@ export function threadStopTarget(input: ThreadStopTargetInput): RunQueueEntry | 
 export function threadStartHold(
   input: ThreadStopTargetInput & {
     readonly environments: readonly EnvironmentSummary[];
-    readonly thread: Pick<ThreadSummary, "environmentId" | "harnessInstanceId" | "harnessLabel">;
+    readonly thread: Pick<
+      ThreadSummary,
+      "environmentId" | "harnessInstanceId" | "harnessLabel" | "runStartHoldReason"
+    >;
   },
 ): string | null {
-  if (nextQueuedRun(input) === null) return null;
+  const queued = nextQueuedRun(input);
+  if (queued === null) return null;
   const environment = input.environments.find(({ id }) => id === input.thread.environmentId);
+  if (
+    queued.startHoldReason === "previous-stop-unconfirmed" ||
+    input.thread.runStartHoldReason === "previous-stop-unconfirmed"
+  ) {
+    return environment
+      ? `Waiting: Opensteer couldn’t confirm the last Run stopped on ${environment.name}.`
+      : "Waiting: Opensteer couldn’t confirm the last Run stopped on that device.";
+  }
   // The person stopped agents on the computer this task runs on.
   if (environment?.agentsStoppedSince)
     return `Waiting: agents are stopped on ${environment.name}. This starts when they’re resumed there.`;

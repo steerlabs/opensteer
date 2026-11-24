@@ -146,7 +146,6 @@ export interface EnvironmentSummary {
   id: string;
   kind: ExecutionEnvironmentKind;
   name: string;
-  providerStateModes: ("ambient" | "isolated")[];
   runnerId: string | null;
   status: EnvironmentStatus;
 
@@ -237,6 +236,10 @@ export interface ThreadSummary {
   harnessLabel: string;
   /** A Run waits to start and none is executing, as the shell's task row says. */
   runQueued?: boolean;
+  /** Why a queued Run is being held back from starting on its device. */
+  runStartHoldReason?: import("@opensteer/core").RunStartHoldReason | null;
+  /** Machine failure code when the task's latest Run failed. */
+  failureCode?: string | null;
   /** A connected agent or a chat started this task, so the person's own engine rules do not apply. */
   startedByOther?: boolean | undefined;
   /** A connected agent works this task itself; Stop it with `agent.session.stop`. */
@@ -287,6 +290,7 @@ export interface ThreadAutomation {
  */
 export interface TaskEntry {
   readonly failure: string | null;
+  readonly failureCode?: string | null;
   readonly lastReply: string | null;
   readonly thread: ThreadSummary;
 }
@@ -302,6 +306,7 @@ export interface RunQueueEntry {
   maintenance?: Run["maintenance"];
   createdAt: string;
   id: string;
+  startHoldReason?: import("@opensteer/core").RunStartHoldReason | null;
   status: "queued" | "starting" | "running" | "waiting";
   threadId: string;
   runOrdinal: number;
@@ -526,6 +531,10 @@ export interface RunEntry {
   createdAt: string;
   /** When it ended, which settles what a page before its end left open. */
   endedAt?: string;
+  /** Why an interrupted Run ended without a person asking to stop it. */
+  interruptedCause?: import("@opensteer/core").RunInterruptedCause;
+  /** When late confirmation proved this Run stopped after an earlier unconfirmed stop. */
+  stopConfirmedAt?: string;
   error: {
     code: string;
     message: string;
@@ -1464,6 +1473,7 @@ export interface HostClient extends TabsClient {
   rememberExecution(choice: ExecutionChoice): Promise<ExecutionPreferences>;
   /** Lets a queue a Stop paused admit work again. Idempotent on the Host. */
   resumeThreadInputQueue(threadId: string): Promise<void>;
+  recheckThreadStop(threadId: string): Promise<{ readonly proven: boolean }>;
   sendBrowserCommand(sessionId: string, command: BrowserCommand): void;
   stopMachineAccessSession(sessionId: string): Promise<boolean>;
   /**
