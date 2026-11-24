@@ -11040,6 +11040,68 @@ describe("work under a connection's authority never uses the clipboard or change
     attached.close();
   });
 
+  it("keeps a subscriber's own child however many children a neighbour opens on the shared root (S2)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("S2 Profile");
+    const own = await attach();
+    const neighbour = await attach();
+    const attachPage = async (
+      attached: Awaited<ReturnType<typeof attach>>["attached"],
+      targetId: string,
+      sessionId: string,
+    ) => {
+      const request = attached.request({
+        method: "Target.attachToTarget",
+        parameters: { targetId, flatten: true },
+      });
+      const forward = await runtime.nextCommand();
+      runtime.sendServer({
+        type: "cdp.result",
+        requestId: forward.requestId,
+        result: { sessionId },
+      });
+      await expect(request).resolves.toEqual({ sessionId });
+    };
+    await attachPage(own.attached, "own-tab", "cdp_own");
+    await attachPage(neighbour.attached, "neighbour-tab", "cdp_neighbour");
+    let sequence = 1;
+    const childAttached = (envelope: string, sessionId: string, targetId: string) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: {
+          method: "Target.attachedToTarget",
+          sessionId: envelope,
+          parameters: {
+            sessionId,
+            targetInfo: { targetId, type: "iframe", url: "https://frame.test/" },
+            waitingForDebugger: false,
+          },
+          sequence: sequence++,
+        },
+      });
+    childAttached("cdp_own", "cdp_own_child", "own-frame");
+    for (let index = 0; index < 4_200; index += 1)
+      childAttached("cdp_neighbour", `cdp_neighbour_child_${index}`, `neighbour-frame-${index}`);
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        sessionId: "cdp_own",
+        parameters: { sessionId: "cdp_own_child", targetId: "own-frame" },
+        sequence: sequence++,
+      },
+    });
+    await vi.waitFor(() =>
+      expect(own.events).toContainEqual(
+        expect.objectContaining({
+          method: "Target.detachedFromTarget",
+          parameters: { sessionId: "cdp_own_child", targetId: "own-frame" },
+        }),
+      ),
+    );
+    own.attached.close();
+    neighbour.attached.close();
+  });
+
   it("never deadlocks when attachCdpForAgent or agent start races #holdForAgent on the same profile (PH1)", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");

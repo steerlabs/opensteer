@@ -6265,9 +6265,15 @@ export class BrowserService {
             if (targetId) visibleRootTargets.delete(targetId);
             return;
           }
-          if (targetId) rememberBounded(visibleRootTargets, targetId);
-          if (event.method === "Target.attachedToTarget" && eventSessionId) {
-            rememberBounded(attachedSessions, eventSessionId);
+          // S2: learn only from this subscriber's own root discovery (no envelope) or from a
+          // session it already holds, so another attachment's children on a shared root cannot
+          // evict its own. Its own page sessions come from its attach replies.
+          const envelope = event.sessionId;
+          if (envelope === undefined || attachedSessions.has(envelope)) {
+            if (targetId) rememberBounded(visibleRootTargets, targetId);
+            if (event.method === "Target.attachedToTarget" && eventSessionId && envelope) {
+              rememberBounded(attachedSessions, eventSessionId);
+            }
           }
         } else if (event.method === "Target.detachedFromTarget") {
           if (eventSessionId && attachedSessions.has(eventSessionId)) {
