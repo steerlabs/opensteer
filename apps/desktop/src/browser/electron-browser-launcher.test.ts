@@ -5304,15 +5304,47 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         `\u0001chrome-extension://${extId}/war.html`,
       ];
 
-      // Before connection control: person's own page keeps #745's behavior.
+      // Before connection control: person's own page keeps #745's behavior, and will-frame-navigate /
+      // will-redirect do NOT block data:, blob:, or about:srcdoc subframes (N4).
       const personNav = vi.fn();
       willNavigate({ preventDefault: personNav }, extUrls[0]);
       expect(personNav).not.toHaveBeenCalled();
       expect(popupHandler({ url: extUrls[0] })).toMatchObject({ action: "allow" });
+      for (const subframeUrl of [
+        "data:text/html,<p>inline</p>",
+        "blob:https://example.test/1234",
+        "about:srcdoc",
+        extUrls[0],
+      ]) {
+        const preventFrame = vi.fn();
+        willFrameNavigate({ url: subframeUrl, preventDefault: preventFrame });
+        expect(
+          preventFrame,
+          `uncontrolled will-frame-navigate ${subframeUrl}`,
+        ).not.toHaveBeenCalled();
+        const preventRedir = vi.fn();
+        willRedirect({ preventDefault: preventRedir }, subframeUrl);
+        expect(preventRedir, `uncontrolled will-redirect ${subframeUrl}`).not.toHaveBeenCalled();
+      }
 
-      // Mark page as connection-controlled (as SessionCdpRouter does on connection attach).
-      const channel = await browser.cdp.attach(targetId, false, undefined, true);
-      for (const url of extUrls) {
+      // S-e: backend.attach alone does NOT mark the page connection-controlled; only setConnectionControlled does.
+      const channel = await browser.cdp.attach(targetId);
+      const stillPersonNav = vi.fn();
+      willNavigate({ preventDefault: stillPersonNav }, extUrls[0]);
+      expect(stillPersonNav).not.toHaveBeenCalled();
+
+      // Mark page as connection-controlled (as SessionCdpRouter's counted retain does).
+      browser.cdp.setConnectionControlled?.(targetId, true);
+      await vi.waitFor(() => {
+        const probe = vi.fn();
+        willNavigate({ preventDefault: probe }, extUrls[0]);
+        expect(probe).toHaveBeenCalledOnce();
+      });
+      for (const url of [
+        ...extUrls,
+        `blob:chrome-extension://${extId}/0b1c`,
+        `filesystem:chrome-extension://${extId}/temporary/x`,
+      ]) {
         const preventNav = vi.fn();
         willNavigate({ preventDefault: preventNav }, url);
         expect(preventNav, `will-navigate ${url}`).toHaveBeenCalledOnce();
@@ -5326,6 +5358,16 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         expect(preventRedirect, `will-redirect ${url}`).toHaveBeenCalledOnce();
 
         expect(popupHandler({ url }), `windowOpen ${url}`).toMatchObject({ action: "deny" });
+      }
+      // On a connection-controlled page, ordinary data:/blob:/about:srcdoc subframes still work (N4).
+      for (const okSubframe of [
+        "data:text/html,<p>inline</p>",
+        "blob:https://example.test/1234",
+        "about:srcdoc",
+      ]) {
+        const preventFrame = vi.fn();
+        willFrameNavigate({ url: okSubframe, preventDefault: preventFrame });
+        expect(preventFrame, `controlled will-frame-navigate ${okSubframe}`).not.toHaveBeenCalled();
       }
 
       // A popup opened by a connection-controlled page inherits connection control immediately.

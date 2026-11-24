@@ -467,47 +467,98 @@ async function checkConnectedAgentBesideExtension(
     `M1a failed: window.open to ${warUrl} opened a popup (${browser.context.pages().length} vs ${pagesBeforePopup})`,
   );
 
-  // M1b defense in depth: even if Electron's M1a gate were bypassed and the main frame reached
-  // chrome-extension: anyway, the router detaches the connection's channel and refuses Runtime.evaluate.
-  await blindClient.send({ method: "Page.enable", sessionId: blindSession });
-  const forcedDetached = new Promise<boolean>((resolve) => {
-    const check = (event: { method: string; parameters: CdpParameters }) => {
-      if (
-        event.method === "Target.detachedFromTarget" &&
-        event.parameters.sessionId === blindSession
-      )
-        resolve(true);
-    };
-    blindClient.onEvent(check);
-    setTimeout(() => resolve(false), 5_000);
+  // N1: Debugger.setBreakpointByUrl with urlRegex is refused on a connected agent channel, and
+  // reloading the page runs no agent code in the content-script world.
+  await blindClient.send({ method: "Debugger.enable", sessionId: blindSession });
+  let bpOutcome = "resolved";
+  try {
+    await blindClient.send({
+      method: "Debugger.setBreakpointByUrl",
+      sessionId: blindSession,
+      parameters: {
+        lineNumber: 0,
+        urlRegex: ".*",
+        condition:
+          'document.documentElement.dataset.bpLeak = (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) || "page", false',
+      },
+    });
+  } catch (error) {
+    bpOutcome = error instanceof Error ? error.message : String(error);
+  }
+  assert.notEqual(
+    bpOutcome,
+    "resolved",
+    "N1 failed: Debugger.setBreakpointByUrl with urlRegex succeeded on a connected agent channel",
+  );
+  await load(connPage, `${origin}/connected-check-bp`);
+  await waitForDataset(connPage, "extensionReply");
+  assert.equal(
+    await dataset(connPage, "bpLeak"),
+    "",
+    "N1 failed: breakpoint condition executed in content-script world after reload",
+  );
+
+  // M1b + N2 defense in depth: even if Electron's M1a gate were bypassed and the main frame
+  // reached chrome-extension: anyway, the router ends EVERY connection channel on the target —
+  // including a fresh channel that has NOT enabled Page, Runtime, or sent any ID command.
+  const freshClient = router.openStandardClient(sessionId, {
+    wholeContext: false,
+    connection: true,
+    lineage: { attachmentId: "smoke-conn-fresh", seedTargetId: connTargetId },
   });
+  const { sessionId: freshSession } = (await freshClient.send({
+    method: "Target.attachToTarget",
+    parameters: { targetId: connTargetId, flatten: true },
+  })) as { sessionId: string };
+  const waitDetached = (client: ReturnType<SessionCdpRouter["openStandardClient"]>, sid: string) =>
+    new Promise<boolean>((resolve) => {
+      client.onEvent((event) => {
+        if (event.method === "Target.detachedFromTarget" && event.parameters.sessionId === sid)
+          resolve(true);
+      });
+      setTimeout(() => resolve(false), 5_000);
+    });
+  const blindDetached = waitDetached(blindClient, blindSession);
+  const freshDetached = waitDetached(freshClient, freshSession);
   browser.cdp.setConnectionControlled?.(connTargetId, false);
   await contents(connPage).loadURL(warUrl);
   assert.equal(
-    await forcedDetached,
+    await blindDetached,
     true,
-    `M1b failed: connection channel did not emit Target.detachedFromTarget after loading ${warUrl}`,
+    `M1b failed: blind connection channel did not emit Target.detachedFromTarget after loading ${warUrl}`,
   );
-  let afterCompromise = "resolved";
-  try {
-    await blindClient.send({
-      method: "Runtime.evaluate",
-      sessionId: blindSession,
-      parameters: { expression: "chrome.runtime.id", returnByValue: true },
-    });
-  } catch (error) {
-    afterCompromise = error instanceof Error ? error.message : String(error);
+  assert.equal(
+    await freshDetached,
+    true,
+    `N2 failed: fresh connection channel (no Page/Runtime enable) did not emit Target.detachedFromTarget after loading ${warUrl}`,
+  );
+  for (const [label, client, sid] of [
+    ["blind", blindClient, blindSession],
+    ["fresh", freshClient, freshSession],
+  ] as const) {
+    let afterCompromise = "resolved";
+    try {
+      await client.send({
+        method: "Runtime.evaluate",
+        sessionId: sid,
+        parameters: { expression: "chrome.runtime.id", returnByValue: true },
+      });
+    } catch (error) {
+      afterCompromise = error instanceof Error ? error.message : String(error);
+    }
+    assert.notEqual(
+      afterCompromise,
+      "resolved",
+      `M1b/N2 failed: Runtime.evaluate succeeded on ${label} channel after entering chrome-extension: page`,
+    );
   }
-  assert.notEqual(
-    afterCompromise,
-    "resolved",
-    "M1b failed: Runtime.evaluate succeeded after channel entered chrome-extension: page",
-  );
+  freshClient.close();
   blindClient.close();
   await connPage.close();
 
-  // Record Electron-only facts #2 (non-WAR navigation from a non-connection web page) and
-  // #3 (whether an attached child iframe session survives navigating to a WAR extension page).
+  // Record Electron-only facts #2 (non-WAR navigation from a non-connection web page),
+  // #3 (whether an attached child iframe session survives navigating to a WAR extension page),
+  // and N4 (data:, blob:, and srcdoc iframes on an ordinary non-connection page + will-frame-navigate).
   const probePage = await browser.context.createPage();
   const probeTargetId = await probePage.targetId();
   router.claimTarget(sessionId, probeTargetId);
@@ -519,6 +570,51 @@ async function checkConnectedAgentBesideExtension(
   );
 
   await load(probePage, `${origin}/iframe-probe`);
+  const observedFrameNavigations: string[] = [];
+  const onProbeFrameNavigate = (details: { url: string }) => {
+    observedFrameNavigations.push(details.url);
+  };
+  contents(probePage).on("will-frame-navigate", onProbeFrameNavigate);
+  const iframeResults = (await contents(probePage).executeJavaScript(`
+    new Promise((resolve) => {
+      const seen = [];
+      const done = () => {
+        if (seen.length === 3) {
+          window.removeEventListener("message", onMessage);
+          resolve(seen.sort());
+        }
+      };
+      const onMessage = (event) => {
+        if (typeof event.data === "string" && event.data.endsWith("-ok") && !seen.includes(event.data)) {
+          seen.push(event.data);
+          done();
+        }
+      };
+      window.addEventListener("message", onMessage);
+      const dataFrame = document.createElement("iframe");
+      dataFrame.src = "data:text/html,<script>parent.postMessage('data-ok','*')</script>";
+      document.body.appendChild(dataFrame);
+      const blobFrame = document.createElement("iframe");
+      blobFrame.src = URL.createObjectURL(
+        new Blob(["<script>parent.postMessage('blob-ok','*')</script>"], { type: "text/html" }),
+      );
+      document.body.appendChild(blobFrame);
+      const srcdocFrame = document.createElement("iframe");
+      srcdocFrame.srcdoc = "<script>parent.postMessage('srcdoc-ok','*')</script>";
+      document.body.appendChild(srcdocFrame);
+      setTimeout(() => resolve(seen.sort()), 3000);
+    })
+  `)) as string[];
+  contents(probePage).off("will-frame-navigate", onProbeFrameNavigate);
+  assert.deepEqual(
+    iframeResults,
+    ["blob-ok", "data-ok", "srcdoc-ok"],
+    `N4 failed: ordinary non-connection iframes did not all load cleanly; got ${JSON.stringify(iframeResults)}`,
+  );
+  console.log(
+    `[extensions-smoke] connected-agent: will-frame-navigate fired for data=${observedFrameNavigations.some((u) => u.startsWith("data:"))} blob=${observedFrameNavigations.some((u) => u.startsWith("blob:"))} srcdoc=${observedFrameNavigations.some((u) => u.startsWith("about:srcdoc"))} urls=${JSON.stringify(observedFrameNavigations)}`,
+  );
+
   const probeClient = router.openStandardClient(sessionId, { wholeContext: false });
   const iframeEvents: { method: string; parameters: CdpParameters }[] = [];
   probeClient.onEvent((event) => iframeEvents.push(event));
@@ -559,7 +655,7 @@ async function checkConnectedAgentBesideExtension(
   probeClient.close();
   await probePage.close();
 
-  checks.push("a connected agent beside an extension (M1, M2, M5, S1)");
+  checks.push("a connected agent beside an extension (M1, M2, M5, S1, N1, N2, N4)");
 }
 
 async function webStore(

@@ -84,6 +84,13 @@ export class CdpProductIsolation {
       this.#scripts.set(record.scriptId, false);
     if (method === "Page.addScriptToEvaluateOnNewDocument" && typeof record.identifier === "string")
       this.#newDocumentScripts.add(record.identifier);
+    if (method === "Debugger.setBreakpointByUrl" && Array.isArray(record.locations)) {
+      // Strip locations outside page scripts rather than throwing after V8 sets the breakpoint.
+      record.locations = record.locations.filter(
+        (loc) => this.#scripts.get(String(asRecord(loc).scriptId)) === false,
+      );
+      return;
+    }
     if (method === "Profiler.stop") {
       const refusal = this.#profileRefusal(result);
       if (refusal) throw profileRefused(refusal);
@@ -146,6 +153,20 @@ export class CdpProductIsolation {
         "forbidden",
         "Page script registration belongs to another channel or Opensteer platform code.",
       );
+    if (method === "Debugger.setBreakpointByUrl") {
+      // urlRegex, scriptHash, and non-web URLs (e.g. file:// preloads) let breakpoint `condition`
+      // expressions run inside Opensteer's preload or platform isolated worlds.
+      if (params.urlRegex !== undefined || params.scriptHash !== undefined)
+        throw new SessionCdpRouterError(
+          "forbidden",
+          "Debugger.setBreakpointByUrl cannot use urlRegex or scriptHash because breakpoints could enter Opensteer's preload or platform worlds.",
+        );
+      if (!isAllowedProductBreakpointUrl(params.url))
+        throw new SessionCdpRouterError(
+          "forbidden",
+          "Debugger.setBreakpointByUrl requires an explicit http(s) or extension URL so breakpoints cannot enter Opensteer's preload or platform worlds.",
+        );
+    }
     if (
       method.startsWith("HeapProfiler.") ||
       method.startsWith("Memory.") ||
@@ -214,6 +235,16 @@ export class CdpProductIsolation {
     return false;
   }
 }
+function isAllowedProductBreakpointUrl(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === "http:" || protocol === "https:" || protocol === "chrome-extension:";
+  } catch {
+    return false;
+  }
+}
+
 function internalName(value: unknown): boolean {
   return (
     typeof value === "string" &&

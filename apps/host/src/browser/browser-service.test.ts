@@ -10625,6 +10625,41 @@ describe("work under a connection's authority never uses the clipboard or change
       /Extensions\.getExtensions is not available to a connected agent/u,
     );
 
+    // S-c: root-state Target.* events naming chrome-extension: targets never reach a connectionWork subscriber.
+    const rootEvents: unknown[] = [];
+    const connectedRoot = await service.attachCdpForAgent(
+      { ...connectedBinding, sessionId: connectedOpened.session.id },
+      (event) => rootEvents.push(event),
+    );
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetCreated",
+        parameters: {
+          targetInfo: {
+            targetId: "ext-target",
+            type: "service_worker",
+            url: `chrome-extension://${"a".repeat(32)}/worker.js`,
+          },
+        },
+        sequence: 1,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetCreated",
+        parameters: {
+          targetInfo: { targetId: "web-target", type: "page", url: "https://example.test/" },
+        },
+        sequence: 2,
+      },
+    });
+    await vi.waitFor(() => expect(rootEvents).toHaveLength(1));
+    expect(JSON.stringify(rootEvents)).not.toContain("chrome-extension:");
+    expect(JSON.stringify(rootEvents)).toContain("web-target");
+
+    connectedRoot.close();
     connectedCdp.close();
     cdp.close();
   });

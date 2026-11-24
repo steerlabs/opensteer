@@ -112,6 +112,7 @@ import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
+  isChromeExtensionUrl,
   normalizePageOpenUrl,
   OpensteerError,
   agentGrantAllows,
@@ -6170,7 +6171,16 @@ export class BrowserService {
       onClosed?.();
     };
     const unsubscribe = broker.subscribeCdp((event) => {
-      if (event.scriptAttachmentId === scriptAttachmentId) onEvent(event);
+      if (event.scriptAttachmentId !== scriptAttachmentId) return;
+      if (
+        connectionWork &&
+        event.method.startsWith("Target.") &&
+        isChromeExtensionUrl(
+          (event.parameters as { targetInfo?: { url?: unknown } } | undefined)?.targetInfo?.url,
+        )
+      )
+        return;
+      onEvent(event);
     }, close);
     const inRunnerAdmission = Boolean(lane?.inRunnerAdmission);
     const admissionWaited = !inRunnerAdmission && this.#agentAdmissions.busy(record.runnerId);

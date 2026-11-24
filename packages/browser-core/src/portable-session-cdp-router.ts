@@ -100,12 +100,7 @@ export interface BrowserCdpBackend {
    * whatever other channels on the target have enabled.
    */
   readonly dedicatedContext?: boolean;
-  attach(
-    targetId: string,
-    waitForPage?: boolean,
-    signal?: AbortSignal,
-    connection?: boolean,
-  ): Promise<CdpChannel>;
+  attach(targetId: string, waitForPage?: boolean, signal?: AbortSignal): Promise<CdpChannel>;
   /** Notifies the backend when a target enters or leaves connected-agent control (M1a, S1). */
   setConnectionControlled?(targetId: string, controlled: boolean): void;
   assertScope?(method: string, parameters: CdpParameters): void;
@@ -118,6 +113,8 @@ export interface SessionCdpRouterLimits {
   readonly maxCommandBytes: number;
   readonly maxEventBytes: number;
   readonly maxResultBytes: number;
+  /** Upper bound (ms) for internal `Runtime.enable` inventory on connection channels. */
+  readonly internalRuntimeEnableTimeoutMs?: number;
 }
 
 export interface StandardCdpAttachmentOptions {
@@ -272,6 +269,7 @@ const defaultLimits: SessionCdpRouterLimits = {
   maxCommandBytes: 432 * 1_024,
   maxEventBytes: 432 * 1_024,
   maxResultBytes: 432 * 1_024,
+  internalRuntimeEnableTimeoutMs: 5_000,
 };
 
 const browserRootLimit = standardCdpMessageMaxBytes - 4_096;
@@ -1537,7 +1535,6 @@ export class SessionCdpRouter {
       targetId,
       Boolean(state.standard),
       state.standard ? state.closed.signal : undefined,
-      connection,
     );
     try {
       this.#assertCurrentClaim(state, targetId, claim);
@@ -1578,6 +1575,11 @@ export class SessionCdpRouter {
     });
     state.channels.set(attached.virtualSessionId, attached);
     if (connection) this.#retainConnectionTarget(targetId);
+    // N2: connection channels start an internal Runtime inventory at attach so M1b
+    // compromise detection never waits for the agent to enable Page or Runtime.
+    if (connection && !this.#backend.allowsProfileCookieReads) {
+      await this.#ensureRuntimeInventory(state, attached);
+    }
     if (rootInfo) {
       this.#appendEvent(
         state,
@@ -1681,7 +1683,12 @@ export class SessionCdpRouter {
         this.#handlePageEvent(state, child, method, params),
       );
       state.channels.set(child.virtualSessionId, child);
-      if (attached.connection) this.#retainConnectionTarget(targetId);
+      if (attached.connection) {
+        this.#retainConnectionTarget(targetId);
+        if (!this.#backend.allowsProfileCookieReads) {
+          void this.#ensureRuntimeInventory(state, child).catch(() => undefined);
+        }
+      }
       this.#appendEvent(
         state,
         method,
@@ -1711,20 +1718,17 @@ export class SessionCdpRouter {
     if (attached.extensionIsolation) {
       const outcome = attached.extensionIsolation.observeEvent(method, parameters);
       if (outcome.action === "compromised") {
-        void this.#endChannel(state, attached, true);
+        this.#compromiseTargetConnections(state.session, attached.physicalTargetId);
         return;
       }
       if (outcome.action === "drop") return;
-      if (
-        !attached.agentRuntimeEnabled &&
-        (method === "Runtime.executionContextCreated" ||
-          method === "Runtime.executionContextDestroyed" ||
-          method === "Runtime.executionContextsCleared")
-      )
-        return;
+      if (!attached.agentRuntimeEnabled && method.startsWith("Runtime.")) return;
       parameters = outcome.params;
     } else if (attached.commandExtensionIsolation) {
-      attached.commandExtensionIsolation.observeEvent(method, parameters);
+      const outcome = attached.commandExtensionIsolation.observeEvent(method, parameters);
+      if (outcome.action === "compromised") {
+        this.#compromiseTargetConnections(state.session, attached.physicalTargetId);
+      }
     }
     this.#appendEvent(state, method, parameters, attached.virtualSessionId);
   }
@@ -1895,18 +1899,78 @@ export class SessionCdpRouter {
     return attached;
   }
 
+  #compromiseTargetConnections(session: BrowserSessionState, targetId: string): void {
+    for (const connection of session.connections) {
+      for (const attached of connection.channels.values()) {
+        if (attached.physicalTargetId !== targetId) continue;
+        if (attached.extensionIsolation) {
+          attached.extensionIsolation.markCompromised();
+          void this.#endChannel(connection, attached, true);
+        } else if (attached.commandExtensionIsolation) {
+          attached.commandExtensionIsolation.markCompromised();
+        }
+      }
+    }
+  }
+
   async #ensureRuntimeInventory(state: ConnectionState, attached: AttachedChannel): Promise<void> {
     if (attached.internalRuntimeEnabled) return;
     if (!attached.internalRuntimeEnable) {
+      const timeoutMs = this.#limits.internalRuntimeEnableTimeoutMs ?? 5_000;
       const enabling = this.#trackPhysicalWork(state, () =>
-        this.#trackTargetWork(attached.physicalTargetId, () =>
-          attached.channel.send("Runtime.enable"),
-        ),
+        this.#trackTargetWork(attached.physicalTargetId, async () => {
+          const timeout = Promise.withResolvers<never>();
+          const timer = setTimeout(() => {
+            timeout.reject(
+              new SessionCdpRouterError(
+                "conflict",
+                "Browser page did not answer Runtime.enable in time.",
+                { unsent: false },
+              ),
+            );
+          }, timeoutMs);
+          if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") {
+            timer.unref();
+          }
+          const onAbort = () => {
+            timeout.reject(
+              new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+                unsent: true,
+              }),
+            );
+          };
+          const signals = [state.closed.signal, attached.ended.signal];
+          for (const signal of signals) {
+            if (signal.aborted) {
+              onAbort();
+              break;
+            }
+            signal.addEventListener("abort", onAbort, { once: true });
+          }
+          const sent = attached.channel.send("Runtime.enable");
+          // If the timeout or abort wins first, suppress any later rejection from the abandoned send.
+          void sent.catch(() => undefined);
+          try {
+            await Promise.race([sent, timeout.promise]);
+            attached.internalRuntimeEnabled = true;
+          } finally {
+            clearTimeout(timer);
+            for (const signal of signals) signal.removeEventListener("abort", onAbort);
+          }
+        }),
       )
-        .then(() => {
-          attached.internalRuntimeEnabled = true;
+        .catch((error: unknown) => {
+          // Never leave an un-inventoried connection channel open after a timeout or failure.
+          if (attached.extensionIsolation) {
+            void this.#endChannel(state, attached);
+          }
+          if (error instanceof SessionCdpRouterError) throw error;
+          throw new SessionCdpRouterError(
+            "conflict",
+            "Browser page failed to initialize Runtime inventory.",
+            { cause: error },
+          );
         })
-        .catch(() => undefined)
         .finally(() => {
           if (attached.internalRuntimeEnable === enabling) delete attached.internalRuntimeEnable;
         });
@@ -1934,21 +1998,36 @@ export class SessionCdpRouter {
     }
     if (command.method === "Page.enable") attached.pageEnabled = true;
     if (command.method === "Page.disable") attached.pageEnabled = false;
-    const isolation =
-      attached.extensionIsolation ??
-      (command.connection === true
-        ? (attached.commandExtensionIsolation ??= new ConnectionExtensionIsolation(
-            `agent-world:${attached.virtualSessionId}:`,
-            { targetId: attached.physicalTargetId },
-          ))
-        : undefined);
+    let isolation = attached.extensionIsolation ?? attached.commandExtensionIsolation;
+    if (!isolation && command.connection === true) {
+      const claim = this.#assertOwnedTarget(state, attached.physicalTargetId);
+      await this.#readTargetInfo(state, attached.physicalTargetId, claim, undefined, true);
+      this.#assertCurrentClaim(state, attached.physicalTargetId, claim);
+      if (state.channels.get(attached.virtualSessionId) !== attached) {
+        throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+          unsent: true,
+        });
+      }
+      isolation = attached.commandExtensionIsolation ??= new ConnectionExtensionIsolation(
+        `agent-world:${attached.virtualSessionId}:`,
+        { targetId: attached.physicalTargetId },
+      );
+      if (!this.#backend.allowsProfileCookieReads) {
+        await this.#ensureRuntimeInventory(state, attached);
+      }
+      if (isolation.compromised) {
+        throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+          unsent: true,
+        });
+      }
+    }
     if (isolation) {
       if (command.method === "Runtime.enable") {
-        attached.agentRuntimeEnabled = true;
         if (attached.internalRuntimeEnabled || attached.internalRuntimeEnable) {
           await attached.internalRuntimeEnable;
-          if (!state.channels.has(attached.virtualSessionId))
+          if (!state.channels.has(attached.virtualSessionId) || isolation.compromised)
             throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
+          attached.agentRuntimeEnabled = true;
           for (const event of isolation.allowedContextEvents()) {
             this.#appendEvent(
               state,
@@ -1959,6 +2038,7 @@ export class SessionCdpRouter {
           }
           return {};
         }
+        attached.agentRuntimeEnabled = true;
         attached.internalRuntimeEnabled = true;
       } else if (command.method === "Runtime.disable") {
         attached.agentRuntimeEnabled = false;
@@ -2135,15 +2215,6 @@ export class SessionCdpRouter {
 
     const owner = this.#sessions.get(this.#ownerByTargetId.get(targetId)?.sessionId ?? "");
     if (owner) {
-      if (method === "Target.targetInfoChanged" && isExtensionUrl(info.url)) {
-        for (const state of owner.session.connections) {
-          for (const attached of state.channels.values()) {
-            if (attached.physicalTargetId === targetId && attached.connection) {
-              void this.#endChannel(state, attached, true);
-            }
-          }
-        }
-      }
       for (const state of owner.session.connections)
         for (const root of this.#targetRoots(state))
           this.#discover(state, method, parameters, root);
@@ -2434,7 +2505,10 @@ export class SessionCdpRouter {
     )
       return;
     if (method.startsWith("Target.") && parameters.targetInfo !== undefined) {
-      const info = this.#projectTargetInfo(state, asRecord(parameters.targetInfo));
+      const connection =
+        state.connection ||
+        (sessionId !== undefined && state.channels.get(sessionId)?.connection === true);
+      const info = this.#projectTargetInfo(state, asRecord(parameters.targetInfo), connection);
       if (!info) return;
       parameters = { ...parameters, targetInfo: info };
     }
@@ -2629,6 +2703,7 @@ function validateCommand(command: CdpCommand, maxBytes: number): number {
 
 function validateLimits(limits: SessionCdpRouterLimits): SessionCdpRouterLimits {
   for (const [name, value] of Object.entries(limits)) {
+    if (value === undefined) continue;
     if (!Number.isSafeInteger(value) || value < 1) {
       throw new TypeError(`${name} must be a positive safe integer.`);
     }

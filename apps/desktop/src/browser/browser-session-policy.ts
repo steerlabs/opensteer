@@ -75,11 +75,12 @@ export function applyBrowserSessionPolicy(
       options.onUploadRequest?.(details.webContentsId, details.id);
     if (details.resourceType === "mainFrame" && details.webContentsId !== undefined)
       options.onMainFrameRequest?.(details.webContentsId, details.method);
-    if (!isAllowedBrowserRequest(details.url)) callback({ cancel: true });
+    const kind = classifyBrowserRequest(details.url);
+    if (kind === "denied") callback({ cancel: true });
     // An extension's own files are part of the browser, not the web: they
     // never wait for the profile's cookies, and its worker starts from them.
     // Pages controlled by a connected agent cannot load or probe extension URLs (M1a, S1).
-    else if (isExtensionUrl(details.url)) {
+    else if (kind === "extension") {
       const cancel =
         details.webContentsId !== undefined &&
         options.isConnectionWebContents?.(details.webContentsId) === true;
@@ -195,13 +196,26 @@ function isLoopbackOrigin(value: string): boolean {
 
 const pagePolicyPreloadId = "opensteer-page-policy";
 
-function isAllowedBrowserRequest(value: string): boolean {
+/**
+ * Classifies one request URL without adding a second `new URL()` parse on the hot web path:
+ * Chromium delivers canonical URLs here, so ordinary `https://`/`http://` requests skip extension
+ * recursion while `chrome-extension:` and `blob:`/`filesystem:` wrappers are still caught.
+ */
+function classifyBrowserRequest(value: string): "denied" | "extension" | "web" {
+  if (value.startsWith("chrome-extension:")) return "extension";
   try {
-    return ["blob:", "chrome-extension:", "data:", "http:", "https:", "ws:", "wss:"].includes(
-      new URL(value).protocol,
-    );
+    const parsed = new URL(value);
+    if (parsed.protocol === "chrome-extension:") return "extension";
+    if (
+      (parsed.protocol === "blob:" || parsed.protocol === "filesystem:") &&
+      isExtensionUrl(parsed.pathname)
+    )
+      return "extension";
+    return ["blob:", "data:", "http:", "https:", "ws:", "wss:"].includes(parsed.protocol)
+      ? "web"
+      : "denied";
   } catch {
-    return false;
+    return "denied";
   }
 }
 

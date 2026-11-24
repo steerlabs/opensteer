@@ -56,7 +56,12 @@ export function isChromeExtensionUrl(value: unknown): boolean {
   try {
     const url = new URL(value);
     if (url.protocol === "chrome-extension:") return true;
-    if (url.protocol === "view-source:") return isChromeExtensionUrl(url.pathname);
+    if (
+      url.protocol === "view-source:" ||
+      url.protocol === "blob:" ||
+      url.protocol === "filesystem:"
+    )
+      return isChromeExtensionUrl(url.pathname);
     return false;
   } catch {
     return false;

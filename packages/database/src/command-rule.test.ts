@@ -455,6 +455,8 @@ describe("connection page-open URL protocol checks (M4)", () => {
       `  ChRoMe-ExTeNsIoN://${id}/options.html`,
       `view-source:chrome-extension://${id}/options.html`,
       `view-source:chrome-ex\ttension://${id}/options.html`,
+      `blob:chrome-extension://${id}/0b1c`,
+      `filesystem:chrome-extension://${id}/temporary/x`,
     ]) {
       expect(isChromeExtensionUrl(blocked), blocked).toBe(true);
       expect(isAllowedConnectionPageUrl(blocked), blocked).toBe(false);

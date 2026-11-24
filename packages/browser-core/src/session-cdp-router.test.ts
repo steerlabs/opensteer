@@ -67,6 +67,7 @@ class FakeBackend implements BrowserCdpBackend {
   readonly listeners = new Set<(method: string, parameters: CdpParameters) => void>();
   /** Shapes each channel before the router sees it. */
   prepareChannel: (channel: FakeChannel, targetId: string) => void = () => undefined;
+  setConnectionControlled?: (targetId: string, controlled: boolean) => void;
   nextTarget = 1;
   targetInfos: Record<string, unknown>[] = [];
 
@@ -3072,6 +3073,9 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
     connClient.onEvent((event) => connEvents.push(event));
     runClient.onEvent((event) => runEvents.push(event));
 
+    backend.prepareChannel = (ch) => {
+      ch.contexts = [];
+    };
     const { sessionId: connSession } = (await connClient.send({
       method: "Target.attachToTarget",
       parameters: { targetId: "seed", flatten: true },
@@ -3092,8 +3096,6 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
       auxData: { frameId: "main", isDefault: false, type: "isolated" },
     };
     const pageContext = frameWorld(1);
-    connChannel.contexts = [];
-    runChannel.contexts = [];
     await connClient.send({ method: "Runtime.enable", sessionId: connSession });
     await runClient.send({ method: "Runtime.enable", sessionId: runSession });
 
@@ -3605,5 +3607,429 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
     expect(events.some((e) => e.method === "Target.attachedToTarget")).toBe(false);
 
     await router.close();
+  });
+
+  it("refuses Debugger.setBreakpointByUrl urlRegex/scriptHash/non-http URLs and strips disallowed locations without throwing (N1)", async () => {
+    const backend = new FakeBackend();
+    backend.extensions = true;
+    backend.dedicatedContext = true;
+    backend.targetInfos = [{ targetId: "seed", type: "page", url: "https://example.test/" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    const client = router.openStandardClient("a", {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId: "conn-n1", seedTargetId: "seed" },
+    });
+    const { sessionId } = (await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const channel = backend.channels.get("seed")!;
+    await client.send({ method: "Runtime.enable", sessionId });
+    await client.send({ method: "Debugger.enable", sessionId });
+    channel.emit("Debugger.scriptParsed", {
+      scriptId: "10",
+      url: "https://example.test/app.js",
+      executionContextId: 1,
+    });
+
+    for (const parameters of [
+      {
+        urlRegex: ".*",
+        lineNumber: 0,
+        condition: "document.body.dataset.x = chrome.runtime.id, false",
+      },
+      { urlRegex: "abcdefghijklmnop.*", lineNumber: 0 },
+      { scriptHash: "abc123", lineNumber: 0 },
+      { url: `${extOrigin}/content.js`, lineNumber: 0 },
+      { url: `blob:${extOrigin}/0b1c`, lineNumber: 0 },
+      { url: "file:///etc/passwd", lineNumber: 0 },
+      { lineNumber: 0 },
+    ]) {
+      await expect(
+        client.send({ method: "Debugger.setBreakpointByUrl", sessionId, parameters }),
+        JSON.stringify(parameters),
+      ).rejects.toMatchObject({ code: "forbidden" });
+    }
+    expect(channel.commands.some((c) => c.method === "Debugger.setBreakpointByUrl")).toBe(false);
+
+    // Explicit https:// URL succeeds; disallowed locations are stripped rather than throwing an oracle.
+    channel.results.set("Debugger.setBreakpointByUrl", {
+      breakpointId: "bp-1",
+      locations: [
+        { scriptId: "10", lineNumber: 0 },
+        { scriptId: "55", lineNumber: 0 },
+      ],
+    });
+    await expect(
+      client.send({
+        method: "Debugger.setBreakpointByUrl",
+        sessionId,
+        parameters: { url: "https://example.test/app.js", lineNumber: 0 },
+      }),
+    ).resolves.toEqual({
+      breakpointId: "bp-1",
+      locations: [{ scriptId: "10", lineNumber: 0 }],
+    });
+
+    await router.close();
+  });
+
+  it("subscribes connection channels at attach and ends EVERY connection channel on the target upon main-frame extension commit without agent enables (N2)", async () => {
+    const backend = new FakeBackend();
+    backend.extensions = true;
+    backend.dedicatedContext = true;
+    backend.targetInfos = [{ targetId: "seed", type: "page", url: "https://example.test/" }];
+    const channels: FakeChannel[] = [];
+    backend.prepareChannel = (ch) => {
+      channels.push(ch);
+      ch.contexts = [frameWorld(1, { frameId: "seed", isDefault: true, type: "default" })];
+    };
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+
+    const client1 = router.openStandardClient("a", {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId: "conn-n2-1", seedTargetId: "seed" },
+    });
+    const client2 = router.openStandardClient("a", {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId: "conn-n2-2", seedTargetId: "seed" },
+    });
+    const events1: CdpEvent[] = [];
+    const events2: CdpEvent[] = [];
+    client1.onEvent((e) => events1.push(e));
+    client2.onEvent((e) => events2.push(e));
+
+    // Neither client sends Page.enable, Runtime.enable, or any ID-carrying command.
+    const { sessionId: session1 } = (await client1.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const { sessionId: session2 } = (await client2.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    expect(channels).toHaveLength(2);
+    expect(channels[0]!.commands.some((c) => c.method === "Runtime.enable")).toBe(true);
+    expect(channels[1]!.commands.some((c) => c.method === "Runtime.enable")).toBe(true);
+    expect(events1.some((e) => e.method.startsWith("Runtime."))).toBe(false);
+    expect(events2.some((e) => e.method.startsWith("Runtime."))).toBe(false);
+
+    // Main frame commits chrome-extension: on channel 0 ONLY — BOTH connection channels must end at once.
+    channels[0]!.emit("Runtime.executionContextCreated", {
+      context: {
+        id: 9,
+        origin: extOrigin,
+        name: "",
+        auxData: { frameId: "seed", isDefault: true, type: "default" },
+      },
+    });
+    expect(
+      events1.some(
+        (e) => e.method === "Target.detachedFromTarget" && e.parameters.sessionId === session1,
+      ),
+    ).toBe(true);
+    expect(
+      events2.some(
+        (e) => e.method === "Target.detachedFromTarget" && e.parameters.sessionId === session2,
+      ),
+    ).toBe(true);
+    for (const [client, sid] of [
+      [client1, session1],
+      [client2, session2],
+    ] as const) {
+      await expect(
+        client.send({
+          method: "Runtime.evaluate",
+          sessionId: sid,
+          parameters: { expression: "chrome.tabs.query({})", returnByValue: true },
+        }),
+      ).rejects.toMatchObject({ code: "not_found", message: "CDP session is not attached here." });
+    }
+
+    await router.close();
+  });
+
+  it("drops allowed script IDs when their context is destroyed or contexts are cleared (N3)", async () => {
+    const backend = new FakeBackend();
+    backend.extensions = true;
+    backend.dedicatedContext = true;
+    backend.targetInfos = [{ targetId: "seed", type: "page", url: "https://example.test/" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    const client = router.openStandardClient("a", {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId: "conn-n3", seedTargetId: "seed" },
+    });
+    const events: CdpEvent[] = [];
+    client.onEvent((e) => events.push(e));
+    const { sessionId } = (await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const channel = backend.channels.get("seed")!;
+    await client.send({ method: "Runtime.enable", sessionId });
+    await client.send({ method: "Debugger.enable", sessionId });
+
+    channel.emit("Debugger.scriptParsed", {
+      scriptId: "25",
+      url: "https://a.test/app.js",
+      executionContextId: 1,
+    });
+    await expect(
+      client.send({
+        method: "Debugger.getScriptSource",
+        sessionId,
+        parameters: { scriptId: "25" },
+      }),
+    ).resolves.toBeDefined();
+
+    // Cross-process clear: script 25 is reused by an extension content script in new context 2.
+    channel.emit("Runtime.executionContextsCleared", {});
+    channel.emit("Runtime.executionContextCreated", {
+      context: {
+        id: 1,
+        origin: "https://b.test",
+        name: "",
+        uniqueId: "b1",
+        auxData: { frameId: "seed", isDefault: true, type: "default" },
+      },
+    });
+    channel.emit("Runtime.executionContextCreated", {
+      context: {
+        id: 2,
+        origin: extOrigin,
+        name: "Secret Password Manager",
+        uniqueId: "b2",
+        auxData: { frameId: "seed", isDefault: false, type: "isolated" },
+      },
+    });
+    channel.emit("Debugger.scriptParsed", {
+      scriptId: "25",
+      url: extScriptUrl,
+      executionContextId: 2,
+    });
+    await expect(
+      client.send({
+        method: "Debugger.getScriptSource",
+        sessionId,
+        parameters: { scriptId: "25" },
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    channel.emit("Debugger.paused", {
+      callFrames: [{ callFrameId: "cf-1", location: { scriptId: "25", lineNumber: 0 }, url: "" }],
+    });
+    expect(events.some((e) => e.method === "Debugger.paused")).toBe(false);
+
+    // Individual executionContextDestroyed also drops scripts bound to that context.
+    channel.emit("Debugger.scriptParsed", {
+      scriptId: "30",
+      url: "https://b.test/sub.js",
+      executionContextId: 1,
+    });
+    channel.emit("Runtime.executionContextDestroyed", { executionContextId: 1 });
+    await expect(
+      client.send({
+        method: "Debugger.getScriptSource",
+        sessionId,
+        parameters: { scriptId: "30" },
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+
+    await router.close();
+  });
+
+  it("gates all Runtime.* events on agentRuntimeEnabled, ignores extension subframes without false compromise, handles blob:/filesystem: extension URLs, and does not leak connection control on failed attach (S-b, S-d, S-e, S-g)", async () => {
+    const backend = new FakeBackend();
+    backend.extensions = true;
+    backend.dedicatedContext = true;
+    const controlledHistory: [string, boolean][] = [];
+    backend.setConnectionControlled = (targetId, controlled) => {
+      controlledHistory.push([targetId, controlled]);
+    };
+    backend.targetInfos = [
+      { targetId: "seed", type: "page", url: "https://example.test/" },
+      { targetId: "ext-blob", type: "page", url: `blob:${extOrigin}/0b1c` },
+      { targetId: "ext-fs", type: "page", url: `filesystem:${extOrigin}/temporary/x` },
+    ];
+    backend.prepareChannel = (ch) => {
+      ch.contexts = [frameWorld(1, { frameId: "seed", isDefault: true, type: "default" })];
+    };
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    router.claimTarget("a", "ext-blob");
+    router.claimTarget("a", "ext-fs");
+
+    const client = router.openStandardClient("a", {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId: "conn-sb", seedTargetId: "seed" },
+    });
+    const events: CdpEvent[] = [];
+    client.onEvent((e) => events.push(e));
+
+    // S-d: blob:chrome-extension: and filesystem:chrome-extension: targets are hidden and refused.
+    const targets = (await client.send({ method: "Target.getTargets" })) as {
+      targetInfos: { targetId: string }[];
+    };
+    expect(targets.targetInfos.map((t) => t.targetId)).toEqual(["seed"]);
+
+    const { sessionId } = (await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const channel = backend.channels.get("seed")!;
+
+    // S-b: without Runtime.enable, Runtime.consoleAPICalled / exceptionThrown / bindingCalled never leak.
+    channel.emit("Runtime.consoleAPICalled", { type: "log", args: [], executionContextId: 1 });
+    channel.emit("Runtime.exceptionThrown", {
+      exceptionDetails: { text: "oops", executionContextId: 1 },
+    });
+    channel.emit("Runtime.bindingCalled", { name: "h", payload: "1", executionContextId: 1 });
+    expect(events.some((e) => e.method.startsWith("Runtime."))).toBe(false);
+
+    // After Runtime.enable then Runtime.disable, Runtime.* events stop again.
+    await client.send({ method: "Runtime.enable", sessionId });
+    await client.send({ method: "Runtime.disable", sessionId });
+    events.length = 0;
+    channel.emit("Runtime.consoleAPICalled", { type: "log", args: [], executionContextId: 1 });
+    expect(events.some((e) => e.method.startsWith("Runtime."))).toBe(false);
+
+    // S-g: default-world extension-origin context in an unseen SUBFRAME must NOT falsely compromise main page.
+    channel.emit("Runtime.executionContextCreated", {
+      context: {
+        id: 88,
+        origin: extOrigin,
+        name: "",
+        auxData: { frameId: "subframe-99", isDefault: true, type: "default" },
+      },
+    });
+    await expect(
+      client.send({
+        method: "Runtime.evaluate",
+        sessionId,
+        parameters: { contextId: 1, expression: "1", returnByValue: true },
+      }),
+    ).resolves.toBeDefined();
+
+    // A non-default content script running inside an ordinary web subframe must NOT mark that web
+    // subframe as an extension frame.
+    channel.emit("Runtime.executionContextCreated", {
+      context: {
+        id: 89,
+        origin: extOrigin,
+        name: "Content Script",
+        auxData: { frameId: "web-subframe-1", isDefault: false, type: "isolated" },
+      },
+    });
+    await expect(
+      client.send({
+        method: "Page.createIsolatedWorld",
+        sessionId,
+        parameters: { frameId: "web-subframe-1", worldName: "helper" },
+      }),
+    ).resolves.toBeDefined();
+
+    client.close();
+    expect(controlledHistory.at(-1)).toEqual(["seed", false]);
+
+    // S-e: failed attach (claim released during pending attach) never calls setConnectionControlled(true).
+    controlledHistory.length = 0;
+    const gate = Promise.withResolvers<void>();
+    const origAttach = backend.attach.bind(backend);
+    backend.attach = async (targetId) => {
+      await gate.promise;
+      return origAttach(targetId);
+    };
+    const failingAttach = router.send("a", {
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+      connection: true,
+    });
+    await Promise.resolve();
+    router.releaseTarget("a", "seed");
+    gate.resolve();
+    await expect(failingAttach).rejects.toMatchObject({ code: "not_found" });
+    expect(controlledHistory).toEqual([]);
+
+    await router.close();
+  });
+
+  it("bounds internal Runtime.enable inventory and refuses cleanly without hanging when a backend never answers (N2 timeout)", async () => {
+    vi.useFakeTimers();
+    try {
+      const backend = new FakeBackend();
+      backend.extensions = true;
+      backend.dedicatedContext = true;
+      const controlledHistory: [string, boolean][] = [];
+      backend.setConnectionControlled = (targetId, controlled) => {
+        controlledHistory.push([targetId, controlled]);
+      };
+      backend.targetInfos = [{ targetId: "seed", type: "page", url: "https://example.test/" }];
+      backend.prepareChannel = (channel) => {
+        // Simulate a renderer (e.g., dialog-blocked or stalled) that never answers Runtime.enable.
+        channel.enableGate = new Promise<void>(() => undefined);
+      };
+      const router = new SessionCdpRouter(backend, { internalRuntimeEnableTimeoutMs: 25 });
+      router.registerSession("a", "seed", async () => true, "/files/a");
+
+      const client = router.openStandardClient("a", {
+        wholeContext: false,
+        connection: true,
+        lineage: { attachmentId: "conn-timeout", seedTargetId: "seed" },
+      });
+      const attachAttempt = client
+        .send({
+          method: "Target.attachToTarget",
+          parameters: { targetId: "seed", flatten: true },
+        })
+        .then(
+          () => "resolved" as const,
+          (error: unknown) => error,
+        );
+      await vi.advanceTimersByTimeAsync(25);
+      const outcome = await attachAttempt;
+      expect(outcome).toBeInstanceOf(SessionCdpRouterError);
+      expect((outcome as SessionCdpRouterError).code).toBe("conflict");
+      // Channel must be closed and not leaked, and closing the client releases connection control cleanly.
+      const channel = backend.channels.get("seed")!;
+      expect(channel.closed).toBe(true);
+      client.close();
+      await client.settled;
+      expect(controlledHistory.at(-1)).toEqual(["seed", false]);
+
+      // Also verify a connection-flagged command on a non-connection channel refuses without hanging.
+      backend.prepareChannel = (ch) => {
+        ch.enableGate = new Promise<void>(() => undefined);
+      };
+      const { sessionId: runSession } = (await router.send("a", {
+        method: "Target.attachToTarget",
+        parameters: { targetId: "seed", flatten: true },
+      })) as { sessionId: string };
+      const lazyAttempt = router
+        .send("a", {
+          method: "Runtime.evaluate",
+          sessionId: runSession,
+          connection: true,
+          parameters: { contextId: 1, expression: "1" },
+        })
+        .then(
+          () => "resolved" as const,
+          (error: unknown) => error,
+        );
+      await vi.advanceTimersByTimeAsync(25);
+      const lazyOutcome = await lazyAttempt;
+      expect(lazyOutcome).toBeInstanceOf(SessionCdpRouterError);
+      expect((lazyOutcome as SessionCdpRouterError).code).toBe("conflict");
+
+      await router.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

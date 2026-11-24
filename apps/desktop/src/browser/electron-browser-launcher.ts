@@ -3,6 +3,7 @@ import {
   cdpProfileRefusal,
   contextScopedCdpMethods,
   CdpProductIsolation,
+  isExtensionUrl,
   type CdpProfileRefusal,
   ExecutionContextInventory,
   type BrowserCdpBackend,
@@ -819,6 +820,8 @@ class ElectronBrowserContext implements BrowserContext {
   readonly #createHelper: ElectronBrowserContextOptions["createHelper"];
   readonly #events = new EventEmitter();
   readonly #pages = new Set<ElectronBrowserPage>();
+  readonly #pagesByTargetId = new Map<string, ElectronBrowserPage>();
+  readonly #connectionControlledTargets = new Set<string>();
   readonly #handOffs = new Set<(page: BrowserPage, opener: BrowserPage | null) => void>();
   readonly #profileSession: Session;
   readonly #localProfile: ElectronLocalProfile | undefined;
@@ -987,6 +990,28 @@ class ElectronBrowserContext implements BrowserContext {
     );
   }
 
+  /**
+   * Authoritative target-level connection control driven solely by the router's retain/release
+   * counts (S-e). Syncs immediately when the page is indexed, or applies the current authoritative
+   * state once `pageByTargetId` resolves so concurrent flips never land out of order.
+   */
+  setTargetConnectionControlled(targetId: string, controlled: boolean): void {
+    if (controlled) this.#connectionControlledTargets.add(targetId);
+    else this.#connectionControlledTargets.delete(targetId);
+    const known = this.#pagesByTargetId.get(targetId);
+    if (known) {
+      known.setConnectionControlled(controlled);
+      return;
+    }
+    void this.pageByTargetId(targetId)
+      .then((page) => {
+        if (!page) return;
+        this.#pagesByTargetId.set(targetId, page);
+        page.setConnectionControlled(this.#connectionControlledTargets.has(targetId));
+      })
+      .catch(() => undefined);
+  }
+
   async targetInfos(): Promise<Record<string, unknown>[]> {
     return Promise.all(
       [...this.#pages].filter((page) => !page.isClosed()).map((page) => page.targetInfo()),
@@ -1048,9 +1073,17 @@ class ElectronBrowserContext implements BrowserContext {
       removeTab?.();
       removePresented?.();
       this.#pages.delete(page);
+      for (const [id, entry] of this.#pagesByTargetId) {
+        if (entry === page) {
+          this.#pagesByTargetId.delete(id);
+          this.#connectionControlledTargets.delete(id);
+        }
+      }
       void page
         .targetId()
         .then((targetId) => {
+          this.#pagesByTargetId.delete(targetId);
+          this.#connectionControlledTargets.delete(targetId);
           this.#events.emit("target", "Target.targetDestroyed", { targetId });
         })
         .catch(() => undefined);
@@ -1141,6 +1174,11 @@ class ElectronBrowserContext implements BrowserContext {
 
   async #announcePage(page: ElectronBrowserPage): Promise<void> {
     const targetInfo = await page.targetInfo();
+    const targetId = typeof targetInfo.targetId === "string" ? targetInfo.targetId : undefined;
+    if (targetId) {
+      this.#pagesByTargetId.set(targetId, page);
+      if (this.#connectionControlledTargets.has(targetId)) page.setConnectionControlled(true);
+    }
     this.#events.emit("target", "Target.targetCreated", { targetInfo });
     this.#events.emit("page", page);
   }
@@ -1514,12 +1552,10 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         event.preventDefault();
     });
     view.webContents.on("will-frame-navigate", (details) => {
-      if (!isAllowedBrowserNavigation(details.url, false, !this.#connectionControlled))
-        details.preventDefault();
+      if (this.#connectionControlled && isExtensionUrl(details.url)) details.preventDefault();
     });
     view.webContents.on("will-redirect", (event, url) => {
-      if (!isAllowedBrowserNavigation(url, false, !this.#connectionControlled))
-        event.preventDefault();
+      if (this.#connectionControlled && isExtensionUrl(url)) event.preventDefault();
     });
     view.webContents.on("cursor-changed", (_event, type) => {
       this.#cursor = normalizeElectronCursor(type);
@@ -4533,25 +4569,16 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
     });
   }
 
-  async attach(
-    targetId: string,
-    _waitForPage?: boolean,
-    _signal?: AbortSignal,
-    connection?: boolean,
-  ): Promise<CdpChannel> {
+  async attach(targetId: string): Promise<CdpChannel> {
     this.#assertOpen();
     const page = await this.#context.pageByTargetId(targetId);
     if (!page) throw new Error("CDP target is not an attachable page in this Profile Host.");
-    if (connection) page.setConnectionControlled(true);
     return page.agentCdp();
   }
 
   setConnectionControlled(targetId: string, controlled: boolean): void {
     if (this.#closed) return;
-    void this.#context
-      .pageByTargetId(targetId)
-      .then((page) => page?.setConnectionControlled(controlled))
-      .catch(() => undefined);
+    this.#context.setTargetConnectionControlled(targetId, controlled);
   }
 
   assertScope(method: string, parameters: CdpParameters): void {
@@ -4719,6 +4746,7 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
 
 function isAllowedBrowserNavigation(value: string, popup = false, allowExtensions = true): boolean {
   if (value === "about:blank") return true;
+  if (!allowExtensions && isExtensionUrl(value)) return false;
   try {
     const protocol = new URL(value).protocol;
     // Chromium itself keeps web pages from extension pages they may not reach;

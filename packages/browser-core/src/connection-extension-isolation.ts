@@ -3,14 +3,20 @@ import { SessionCdpRouterError, type CdpParameters } from "./portable-session-cd
 
 /**
  * Whether a URL or origin parses (per WHATWG URL rules, stripping ASCII tabs/newlines and leading
- * C0 controls) to a Chrome extension scheme, including `view-source:` wrapping one.
+ * C0 controls) to a Chrome extension scheme, including `view-source:`, `blob:`, and `filesystem:`
+ * wrappers whose inner URL is `chrome-extension:`.
  */
 export function isExtensionUrl(value: unknown): boolean {
   if (typeof value !== "string") return false;
   try {
     const parsed = new URL(value);
     if (parsed.protocol === "chrome-extension:") return true;
-    if (parsed.protocol === "view-source:") return isExtensionUrl(parsed.pathname);
+    if (
+      parsed.protocol === "view-source:" ||
+      parsed.protocol === "blob:" ||
+      parsed.protocol === "filesystem:"
+    )
+      return isExtensionUrl(parsed.pathname);
     return false;
   } catch {
     return false;
@@ -20,6 +26,16 @@ export function isExtensionUrl(value: unknown): boolean {
 /** Whether a free-form string (e.g. a formatted stack trace or breakpoint regex) mentions an extension URL. */
 function containsExtensionUrl(value: unknown): boolean {
   return typeof value === "string" && (isExtensionUrl(value) || /chrome-extension:/iu.test(value));
+}
+
+function isHttpOrHttpsUrl(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -53,10 +69,12 @@ export interface ConnectionExtensionIsolationOptions {
  * frames, and resources. Instantiated ONLY for connection-controlled channels, so the person's own
  * Runs keep full access to extensions they build and test while a connected agent:
  * - can only address execution contexts and scripts positively seen as the page's own main world
- *   or worlds created by this connection through the router (M2, S5);
+ *   or worlds created by this connection through the router, dropping script IDs with their
+ *   contexts (M2, N3, S5);
+ * - cannot set wildcard/hash breakpoints that run conditions inside extension worlds (N1);
  * - has every agent-chosen world name namespaced with a per-channel non-`opensteer-` prefix so no
  *   world name acts as an installed-extension oracle or reaches an extension world (M5);
- * - ends its channel at once if its main frame commits a `chrome-extension:` document (M1b).
+ * - ends its channel at once if its main frame commits a `chrome-extension:` document (M1b, N2, S-g).
  */
 export class ConnectionExtensionIsolation {
   readonly #worldPrefix: string;
@@ -64,9 +82,9 @@ export class ConnectionExtensionIsolation {
   readonly #allowedContextIds = new Set<number>();
   readonly #allowedUniqueIds = new Set<string>();
   readonly #allowedContexts = new Map<number, CdpParameters>();
-  readonly #allowedScriptIds = new Set<string>();
+  /** Maps allowed scriptId -> executionContextId so scripts expire with their context (N3). */
+  readonly #allowedScripts = new Map<string, number>();
   readonly #extensionFrameIds = new Set<string>();
-  readonly #knownSubframes = new Set<string>();
   #mainFrameId: string | undefined;
   #compromised = false;
 
@@ -78,6 +96,10 @@ export class ConnectionExtensionIsolation {
 
   get compromised(): boolean {
     return this.#compromised;
+  }
+
+  markCompromised(): void {
+    this.#compromised = true;
   }
 
   /** Live allowed execution contexts, already prefix-stripped, for replaying on `Runtime.enable`. */
@@ -110,6 +132,7 @@ export class ConnectionExtensionIsolation {
       this.#allowedContextIds.clear();
       this.#allowedUniqueIds.clear();
       this.#allowedContexts.clear();
+      this.#allowedScripts.clear();
       return { action: "forward", params };
     }
     if (method === "Page.frameNavigated") {
@@ -126,7 +149,6 @@ export class ConnectionExtensionIsolation {
         }
         return { action: "forward", params };
       }
-      if (frameId) this.#knownSubframes.add(frameId);
       if (isExt) {
         if (frameId) this.#extensionFrameIds.add(frameId);
         return { action: "drop" };
@@ -136,11 +158,7 @@ export class ConnectionExtensionIsolation {
     if (method === "Page.navigatedWithinDocument") {
       if (isExtensionUrl(params.url)) {
         const frameId = typeof params.frameId === "string" ? params.frameId : undefined;
-        if (
-          frameId === undefined ||
-          frameId === this.#mainFrameId ||
-          !this.#knownSubframes.has(frameId)
-        ) {
+        if (frameId === undefined || frameId === this.#mainFrameId) {
           this.#compromised = true;
           return { action: "compromised" };
         }
@@ -157,7 +175,6 @@ export class ConnectionExtensionIsolation {
       method === "Page.frameDetached"
     ) {
       const frameId = typeof params.frameId === "string" ? params.frameId : undefined;
-      if (typeof params.parentFrameId === "string" && frameId) this.#knownSubframes.add(frameId);
       if (
         isExtensionUrl(params.url) ||
         (frameId !== undefined && this.#extensionFrameIds.has(frameId))
@@ -178,14 +195,16 @@ export class ConnectionExtensionIsolation {
         isExtensionUrl(aux.url) ||
         (frameId !== undefined && this.#extensionFrameIds.has(frameId));
       if (isExtOrigin) {
-        if (
-          aux.isDefault === true &&
-          (frameId === undefined ||
-            frameId === this.#mainFrameId ||
-            !this.#knownSubframes.has(frameId))
-        ) {
-          this.#compromised = true;
-          return { action: "compromised" };
+        // S-g: only a default-world extension context in the MAIN frame (known from targetId /
+        // top-level frameNavigated) compromises the channel; a default-world extension context in
+        // a subframe marks that subframe as an extension document; a non-default content script
+        // running in a web subframe never marks that web subframe as an extension frame.
+        if (aux.isDefault === true) {
+          if (frameId === undefined || frameId === this.#mainFrameId) {
+            this.#compromised = true;
+            return { action: "compromised" };
+          }
+          this.#extensionFrameIds.add(frameId);
         }
         return { action: "drop" };
       }
@@ -209,17 +228,28 @@ export class ConnectionExtensionIsolation {
       return { action: "forward", params: { ...params, context: sanitizedContext } };
     }
     if (method === "Runtime.executionContextDestroyed") {
-      const id = typeof params.executionContextId === "number" ? params.executionContextId : null;
+      let id = typeof params.executionContextId === "number" ? params.executionContextId : null;
       const uniqueId =
         typeof params.executionContextUniqueId === "string"
           ? params.executionContextUniqueId
           : null;
+      if (id === null && uniqueId !== null) {
+        for (const [ctxId, ctx] of this.#allowedContexts) {
+          if (ctx.uniqueId === uniqueId) {
+            id = ctxId;
+            break;
+          }
+        }
+      }
       const known =
         (id !== null && this.#allowedContextIds.has(id)) ||
         (uniqueId !== null && this.#allowedUniqueIds.has(uniqueId));
       if (id !== null) {
         this.#allowedContextIds.delete(id);
         this.#allowedContexts.delete(id);
+        for (const [scriptId, ctxId] of this.#allowedScripts) {
+          if (ctxId === id) this.#allowedScripts.delete(scriptId);
+        }
       }
       if (uniqueId !== null) this.#allowedUniqueIds.delete(uniqueId);
       return known ? { action: "forward", params } : { action: "drop" };
@@ -235,7 +265,7 @@ export class ConnectionExtensionIsolation {
       ) {
         return { action: "drop" };
       }
-      if (typeof params.scriptId === "string") this.#allowedScriptIds.add(params.scriptId);
+      if (typeof params.scriptId === "string") this.#allowedScripts.set(params.scriptId, ctxId);
       return { action: "forward", params };
     }
     if (method === "Debugger.paused") {
@@ -246,7 +276,7 @@ export class ConnectionExtensionIsolation {
         if (
           isExtensionUrl(record.url) ||
           typeof location.scriptId !== "string" ||
-          !this.#allowedScriptIds.has(location.scriptId)
+          !this.#allowedScripts.has(location.scriptId)
         )
           return { action: "drop" };
       }
@@ -341,19 +371,25 @@ export class ConnectionExtensionIsolation {
 
   /**
    * Refuses commands targeting any context, script, or remote object NOT positively learned as the
-   * page's own (M2, S5), refuses extension URLs/frames, and namespaces agent-chosen world names so
-   * extension names never act as an oracle or binding target (M5).
+   * page's own (M2, N3, S5), refuses wildcard/hash/non-HTTP(S) breakpoints (N1), refuses extension
+   * URLs/frames, and namespaces agent-chosen world names so extension names never act as an oracle
+   * or binding target (M5).
    */
   assertAndRewriteCommand(method: string, params: CdpParameters = {}): CdpParameters {
     if (this.#compromised)
       throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
         unsent: true,
       });
-    if (
-      method === "Debugger.setBreakpointByUrl" &&
-      (isExtensionUrl(params.url) || containsExtensionUrl(params.urlRegex))
-    )
-      throw new SessionCdpRouterError("forbidden", "Breakpoint target is not available.");
+    if (method === "Debugger.setBreakpointByUrl") {
+      // N1: urlRegex and scriptHash can match extension content scripts and evaluate `condition`
+      // inside their isolated worlds. Accept only a parsed HTTP(S) `url`.
+      if (
+        params.urlRegex !== undefined ||
+        params.scriptHash !== undefined ||
+        !isHttpOrHttpsUrl(params.url)
+      )
+        throw new SessionCdpRouterError("forbidden", "Breakpoint target is not available.");
+    }
     if (method === "Page.getResourceContent" && isExtensionUrl(params.url))
       throw new SessionCdpRouterError("not_found", "Resource is not available.");
     if (this.#isExtensionFrameId(params.frameId))
@@ -388,7 +424,7 @@ export class ConnectionExtensionIsolation {
     return params;
   }
 
-  /** Learns agent-created world IDs, prunes extension frames/history, and rejects disallowed handles. */
+  /** Learns agent-created world IDs, strips disallowed breakpoint locations, prunes frames/history, and rejects disallowed handles. */
   sanitizeResult(method: string, result: unknown): unknown {
     if (this.#compromised)
       throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
@@ -397,6 +433,15 @@ export class ConnectionExtensionIsolation {
     if (method === "Page.createIsolatedWorld" && typeof record.executionContextId === "number") {
       this.#allowedContextIds.add(record.executionContextId);
       return result;
+    }
+    if (method === "Debugger.setBreakpointByUrl" && Array.isArray(record.locations)) {
+      // N1: strip locations whose script is not allowed instead of throwing (no install oracle).
+      return {
+        ...record,
+        locations: record.locations.filter((loc) =>
+          this.#isAllowedScriptId(asRecord(loc).scriptId),
+        ),
+      };
     }
     if (
       method === "Page.getResourceTree" &&
@@ -419,7 +464,7 @@ export class ConnectionExtensionIsolation {
           !this.#isAllowedContextId(details.executionContextId)) ||
         isExtensionUrl(details.url) ||
         (details.scriptId !== undefined &&
-          this.#allowedScriptIds.size > 0 &&
+          this.#allowedScripts.size > 0 &&
           !this.#isAllowedScriptId(details.scriptId)) ||
         (this.#allowedContextIds.size > 0 && this.#hasDisallowedReference(details.exception, true))
       )
@@ -439,7 +484,7 @@ export class ConnectionExtensionIsolation {
   }
 
   #isAllowedScriptId(value: unknown): boolean {
-    return typeof value === "string" && this.#allowedScriptIds.has(value);
+    return typeof value === "string" && this.#allowedScripts.has(value);
   }
 
   #isExtensionFrameId(value: unknown): boolean {
@@ -454,9 +499,9 @@ export class ConnectionExtensionIsolation {
       const record = asRecord(frame);
       if (isExtensionUrl(record.url)) return true;
       if (
-        this.#allowedScriptIds.size > 0 &&
+        this.#allowedScripts.size > 0 &&
         typeof record.scriptId === "string" &&
-        !this.#allowedScriptIds.has(record.scriptId)
+        !this.#allowedScripts.has(record.scriptId)
       )
         return true;
       return false;
@@ -472,9 +517,9 @@ export class ConnectionExtensionIsolation {
         const entry = asRecord(frame);
         if (isExtensionUrl(entry.url)) return false;
         if (
-          this.#allowedScriptIds.size > 0 &&
+          this.#allowedScripts.size > 0 &&
           typeof entry.scriptId === "string" &&
-          !this.#allowedScriptIds.has(entry.scriptId)
+          !this.#allowedScripts.has(entry.scriptId)
         )
           return false;
         return true;
@@ -552,7 +597,7 @@ export class ConnectionExtensionIsolation {
   }
 
   /**
-   * Inverted allow-list check (M2, S5): every contextId, executionContextId, uniqueContextId,
+   * Inverted allow-list check (M2, N3, S5): every contextId, executionContextId, uniqueContextId,
    * scriptId, or remote-object ID must name a positively learned page/agent context or script.
    * When inspecting outbound events/results (`fromBrowser = true`), skips serialized page JS values.
    */
@@ -570,7 +615,7 @@ export class ConnectionExtensionIsolation {
         if (typeof field !== "string" || !this.#allowedUniqueIds.has(field)) return true;
       }
       if (key === "scriptId") {
-        if (fromBrowser && this.#allowedScriptIds.size === 0) {
+        if (fromBrowser && this.#allowedScripts.size === 0) {
           // A console/exception event can carry a scriptId even when Debugger was never enabled.
         } else if (!this.#isAllowedScriptId(field)) {
           return true;

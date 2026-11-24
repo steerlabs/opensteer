@@ -365,11 +365,16 @@ it("cancels chrome-extension: requests for connection-controlled webContents whi
     `chrome-extension://${extId}/war.txt`,
     `chrome-ex\ttension://${extId}/war.html`,
     `\u0001chrome-extension://${extId}/war.html`,
+    `blob:chrome-extension://${extId}/subresource`,
+    `filesystem:chrome-extension://${extId}/temporary/subresource`,
   ]) {
     const connAnswer = vi.fn();
     before({ url, webContentsId: 42 }, connAnswer);
     expect(connAnswer, url).toHaveBeenCalledWith({ cancel: true });
   }
+  const webBlobAnswer = vi.fn();
+  before({ url: "blob:https://site.test/subresource", webContentsId: 42 }, webBlobAnswer);
+  expect(webBlobAnswer).toHaveBeenCalledWith({ cancel: false });
   const personAnswer = vi.fn();
   before({ url: `chrome-extension://${extId}/options.html`, webContentsId: 7 }, personAnswer);
   expect(personAnswer).toHaveBeenCalledWith({ cancel: false });
