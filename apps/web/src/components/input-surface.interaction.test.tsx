@@ -815,7 +815,7 @@ describe("a command an agent proposed", () => {
       },
       note: "n".repeat(6_000),
     },
-    secretPaths: [],
+    secretPaths: [] as string[],
     governs: { kind: "connection", id: "mcn_1" },
     askKey: "0".repeat(64),
     argumentsDigest: "1".repeat(64),
@@ -826,9 +826,9 @@ describe("a command an agent proposed", () => {
       { path: "grant", current: "Reach: everything" },
       { path: "grant.resources.0.profileId", name: "“Work”" },
     ],
-    editor: null,
+    editor: null as { screen: string } | null,
   };
-  const proposal = () =>
+  const proposal = (overrides: Partial<typeof part> = {}, revision = "7") =>
     ({
       ...request({
         kind: "form",
@@ -846,14 +846,19 @@ describe("a command an agent proposed", () => {
         ],
       }),
       kind: "person.question",
-      reviewedRevision: "7",
-      command: part,
+      mode: "durable",
+      reviewedRevision: revision,
+      command: { ...part, ...overrides },
     }) as unknown as Request;
   const mount = async (asked: Request) => {
     const node = document.createElement("div");
     document.body.append(node);
     root = createRoot(node);
-    await act(async () => {
+    await rerender(asked);
+    return node;
+  };
+  const rerender = async (asked: Request) =>
+    act(async () => {
       root.render(
         <MemoryRouter>
           <InputSurface
@@ -861,25 +866,43 @@ describe("a command an agent proposed", () => {
             placeholder="Reply…"
             requests={[asked]}
             running={false}
-            threadId="thread"
+            threadId={createId("thread")}
           />
         </MemoryRouter>,
       );
     });
-    return node;
-  };
+  const button = (node: HTMLElement, label: string) =>
+    [...node.querySelectorAll<HTMLButtonElement>(".command-request button")].find(
+      ({ textContent }) => textContent === label,
+    );
   const click = async (node: HTMLElement, label: string) =>
     act(async () => {
-      [...node.querySelectorAll<HTMLButtonElement>(".command-request button")]
-        .find(({ textContent }) => textContent === label)
-        ?.click();
+      button(node, label)?.click();
     });
+  const arm = async () =>
+    act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+  afterEach(() => {
+    vi.useRealTimers();
+    shell.hostClient.dispatch.mockImplementation(async () => undefined);
+  });
+  /** The Home's answer to an approval; every other command answers as before. */
+  const approvalAnswers = (outcome: Record<string, unknown>) =>
+    shell.hostClient.dispatch.mockImplementation(async (command) =>
+      (command as { type: string }).type === "request.command.approve"
+        ? { type: "request.command.approve", outcome }
+        : undefined,
+    );
 
-  it("shows every argument whole, what the Home knows beside it, and the agent's words as its own", async () => {
+  it("shows every argument whole under a heading that says whose, and the agent's words as its own", async () => {
     const node = await mount(proposal());
     const card = node.querySelector(".command-request")!;
     expect(card.querySelector(".action-panel__title")?.textContent).toBe(part.sentence);
     expect(card.textContent).toContain("Asked by the connected agent “Research”");
+    expect(card.querySelector(".command-request__heading")?.textContent).toBe(
+      "Proposed by the connected agent “Research”, exactly as it would run",
+    );
     const rows = [...card.querySelectorAll<HTMLElement>(".command-request__row")].map((row) => [
       row.dataset.path,
       row.querySelector(".command-request__label")?.textContent,
@@ -905,56 +928,146 @@ describe("a command an agent proposed", () => {
     expect(card.querySelector(".operation-request__says-label")?.textContent).toBe(
       "The connected agent says (its own words, not checked by the Home)",
     );
-    expect(card.querySelector(".operation-request__says-text")?.textContent).toBe(part.agentReason);
-    expect(card.textContent).toContain(
-      "Approve runs it as you, exactly as shown. Decline tells the agent no.",
-    );
     expect(
       [...card.querySelectorAll(".operation-request__answers button")].map((b) => b.textContent),
     ).toEqual(["Decline", "Approve"]);
   });
 
-  it("approves exactly the command as proposed, for the revision shown, then says what it came to", async () => {
-    shell.hostClient.dispatch.mockResolvedValueOnce({
-      type: "request.command.approve",
-      outcome: { status: "unknown" },
-    });
-    const asked = proposal();
-    const node = await mount(asked);
+  it("does nothing on Approve for a second after a card appears, and after another takes its place", async () => {
+    vi.useFakeTimers();
+    approvalAnswers({ status: "unknown" });
+    const first = proposal();
+    const node = await mount(first);
+    // A click the moment it appears, a double click's second press: nothing is sent.
+    expect(button(node, "Approve")?.disabled).toBe(true);
     await click(node, "Approve");
-    await vi.waitFor(() => expect(shell.hostClient.dispatch).toHaveBeenCalledOnce());
+    expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
+    await act(async () => {
+      vi.advanceTimersByTime(999);
+    });
+    await click(node, "Approve");
+    expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
+    // Another proposal takes the same place: it waits its own second.
+    const second = proposal({ sentence: "Change a connected agent's access: “Other”" });
+    await rerender(second);
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    await click(node, "Approve");
+    expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
+    await arm();
+    await click(node, "Approve");
+    expect(shell.hostClient.dispatch).toHaveBeenCalledOnce();
     expect(shell.hostClient.dispatch).toHaveBeenCalledWith({
       type: "request.command.approve",
-      requestId: asked.id,
+      requestId: second.id,
       expectedRevision: "7",
       idempotencyKey: expect.any(String),
       command: part.command,
     });
     // It may have happened: never said to have failed.
-    await vi.waitFor(() =>
-      expect(node.querySelector(".command-request [role=status]")?.textContent).toBe(
-        "Approved, but the Home cannot tell whether it happened. It will not run it again; check before you ask for it again.",
-      ),
+    expect(node.querySelector(".command-request [role=status]")?.textContent).toBe(
+      "Approved, but the Home cannot tell whether it happened. It will not run it again; check it before it is done again.",
     );
-    expect(node.querySelectorAll(".command-request .operation-request__answers")).toHaveLength(0);
+  });
+
+  it("keeps Approve inert until the arguments were scrolled to their end, and says there is more", async () => {
+    vi.useFakeTimers();
+    const sizes = { scrollHeight: 1_000, clientHeight: 100 };
+    const before = Object.keys(sizes).map(
+      (key) => [key, Object.getOwnPropertyDescriptor(HTMLElement.prototype, key)] as const,
+    );
+    for (const [key, value] of Object.entries(sizes))
+      Object.defineProperty(HTMLElement.prototype, key, { configurable: true, get: () => value });
+    try {
+      const node = await mount(proposal());
+      await arm();
+      expect(node.querySelector(".command-request__more")?.textContent).toBe(
+        "More below. Scroll to the end to approve.",
+      );
+      expect(button(node, "Approve")?.disabled).toBe(true);
+      await click(node, "Approve");
+      expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
+      const rows = node.querySelector<HTMLElement>(".command-request__rows")!;
+      await act(async () => {
+        rows.scrollTop = 900;
+        rows.dispatchEvent(new Event("scroll"));
+      });
+      expect(node.querySelector(".command-request__more")).toBeNull();
+      expect(button(node, "Approve")?.disabled).toBe(false);
+      // The sentence and the buttons were never inside what scrolls.
+      expect(rows.contains(node.querySelector(".action-panel__title"))).toBe(false);
+      expect(rows.contains(button(node, "Approve")!)).toBe(false);
+    } finally {
+      for (const [key, descriptor] of before)
+        if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key];
+    }
+  });
+
+  it("offers no Approve for a command that carries a secret: its own screen, I did it myself, or Decline", async () => {
+    const asked = proposal({
+      type: "plugin.oauthApp.save",
+      secretPaths: ["input.clientSecret"],
+      command: { type: "plugin.oauthApp.save", input: { clientId: "c" } } as never,
+      editor: { screen: "plugin" },
+    });
+    const node = await mount(asked);
+    expect(
+      [...node.querySelectorAll(".operation-request__answers button")].map((b) => b.textContent),
+    ).toEqual(["Open Plugins", "Decline", "I did it myself"]);
+    expect(node.querySelector("input[type=password]")).toBeNull();
+    await click(node, "I did it myself");
+    await vi.waitFor(() => expect(shell.hostClient.dispatch).toHaveBeenCalledOnce());
+    expect(shell.hostClient.dispatch).toHaveBeenCalledWith({
+      type: "request.respond",
+      requestId: asked.id,
+      expectedRevision: "7",
+      idempotencyKey: expect.any(String),
+      response: { kind: "form", answers: { decision: ["done-myself"] } },
+    });
+  });
+
+  it("leaves the message box a message box: typing and sending never answers, so never declines", async () => {
+    const node = await mount(proposal());
+    // No field below the card is its answer: none is named after it or asks for an answer.
+    const fields = [...node.querySelectorAll("textarea")].map((area) => [
+      area.getAttribute("aria-label"),
+      area.getAttribute("placeholder"),
+    ]);
+    expect(fields.flat().join(" ")).not.toMatch(/Approve runs it|your own answer/u);
+    const field = textareaView(composerField(node));
+    expect(field.placeholder).toBe("Reply…");
+    await act(async () => {
+      rewrite(field.element, "approve");
+    });
+    await act(async () => {
+      node.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.click();
+    });
+    await vi.waitFor(() => expect(shell.hostClient.dispatch).toHaveBeenCalled(), {
+      timeout: 1_000,
+    });
+    expect(
+      shell.hostClient.dispatch.mock.calls.map(([command]) => (command as { type: string }).type),
+    ).not.toContain("request.respond");
   });
 
   it("says a refusal in the Home's words, and declines as it always has", async () => {
-    shell.hostClient.dispatch.mockResolvedValueOnce({
-      type: "request.command.approve",
-      outcome: {
-        status: "failed",
-        code: "conflict",
-        message: "The Home refused it, so nothing changed.",
-      },
+    vi.useFakeTimers();
+    approvalAnswers({
+      status: "failed",
+      code: "conflict",
+      message: "The Home refused it, so nothing changed.",
     });
     let node = await mount(proposal());
+    await arm();
     await click(node, "Approve");
     await vi.waitFor(() =>
       expect(node.querySelector(".command-request [role=status]")?.textContent).toBe(
         "Approved, but the Home refused it, so nothing changed.",
       ),
     );
+    vi.useRealTimers();
     act(() => root.unmount());
     document.body.replaceChildren();
     shell.hostClient.dispatch.mockClear();

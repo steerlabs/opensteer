@@ -1,6 +1,8 @@
 import {
   commandApproval,
+  commandApproveArmMs,
   commandDecline,
+  commandDoneMyself,
   commandRequestView,
   commandRequestWords,
   mutationIdempotencyKey,
@@ -8,7 +10,8 @@ import {
   type RequestView,
 } from "@opensteer/client/host";
 import type { CommandRequestOutcome } from "@opensteer/core";
-import { useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router";
 import { ActionLine } from "./action-line.js";
 import { useShell } from "./app-shell.js";
 import { requestAnswer, useAction } from "./use-action.js";
@@ -19,10 +22,30 @@ const approveAction = {
   happened: "your approval was sent",
 } as const;
 
+/** Where each screen that performs a command is, in this app. */
+const screenPaths: Readonly<Record<string, string>> = {
+  "account-link": "/settings/account",
+  "add-device": "/settings/devices",
+  "ai-engines": "/settings/ai",
+  automation: "/automations",
+  "browser-profiles": "/settings/sign-ins/browsers",
+  chrome: "/settings/sign-ins/chrome",
+  "connected-agent": "/settings/external-agents",
+  "device-access": "/settings/devices",
+  "device-apps": "/settings/devices",
+  "general-settings": "/settings/general",
+  messaging: "/settings/messaging",
+  plugin: "/settings/plugins",
+  "remote-access": "/settings/devices",
+};
+
 /**
- * What an agent proposed, all of it: the Home's sentence, who asked, the agent's words kept as
- * its own, every argument of the command whole with what the Home knows beside it, then Approve
- * or Decline. After Approve it says what the command came to.
+ * What an agent proposed, all of it: the Home's sentence, who asked, every argument of the
+ * command whole with what the Home knows beside it, the agent's words kept as its own, then
+ * Approve or Decline. The sentence and the buttons stay in view while the arguments scroll;
+ * Approve waits until the arguments were seen to their end and for a moment after the card
+ * appears, so a click meant for something else never approves it. After Approve it says what the
+ * command came to.
  */
 export function CommandRequestPanel({
   disabled,
@@ -34,29 +57,54 @@ export function CommandRequestPanel({
   readonly view: CommandRequestView;
 }) {
   const { hostClient } = useShell();
-  const [typed, setTyped] = useState<Record<string, string>>({});
+  const navigate = useNavigate();
   const [outcome, setOutcome] = useState<CommandRequestOutcome | null>(null);
+  const shownRevision = `${request.id}:${request.reviewedRevision ?? ""}`;
+  // One approval of this card as shown: a retry after a lost answer is the same approval.
+  const approvalKey = useMemo(
+    () => mutationIdempotencyKey(`command-approve:${shownRevision}`),
+    [shownRevision],
+  );
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    setArmed(false);
+    const timer = setTimeout(() => setArmed(true), commandApproveArmMs);
+    return () => clearTimeout(timer);
+  }, [shownRevision]);
+  const rows = useRef<HTMLDListElement>(null);
+  const [seenEnd, setSeenEnd] = useState(false);
+  const check = useCallback(() => {
+    const list = rows.current;
+    if (list && list.scrollTop + list.clientHeight >= list.scrollHeight - 2) setSeenEnd(true);
+  }, []);
+  useLayoutEffect(() => {
+    setSeenEnd(false);
+    check();
+  }, [shownRevision, check]);
   const approve = useAction(
     hostClient,
     {
       ...approveAction,
       execute: async () => {
-        const result = (await hostClient.dispatch(
-          commandApproval(request, mutationIdempotencyKey(`command-approve:${request.id}`), typed),
-        )) as { readonly outcome?: CommandRequestOutcome };
+        const result = (await hostClient.dispatch(commandApproval(request, approvalKey))) as {
+          readonly outcome?: CommandRequestOutcome;
+        };
         if (result.outcome) setOutcome(result.outcome);
         return result;
       },
     },
     `command-approve:${request.id}`,
   );
-  const decline = useAction(
+  const answer = useAction(
     hostClient,
     {
       ...requestAnswer,
-      execute: () =>
+      execute: (done: boolean) =>
         hostClient.dispatch(
-          commandDecline(request, mutationIdempotencyKey(`request:${request.id}`)),
+          (done ? commandDoneMyself : commandDecline)(
+            request,
+            mutationIdempotencyKey(`request:${request.id}`),
+          ),
         ),
     },
     `request:${request.id}`,
@@ -69,8 +117,10 @@ export function CommandRequestPanel({
         command: { ...request.command!, outcome },
       })!
     : view;
-  const busy = disabled || approve.running || decline.running;
-  const missing = shown.secrets.some(({ path }) => !typed[path]);
+  const busy = disabled || approve.running || answer.running;
+  const ready = armed && seenEnd;
+  const screen = shown.personOnly?.screen;
+  const screenPath = screen ? screenPaths[screen.id] : undefined;
   return (
     <fieldset
       aria-label={shown.sentence}
@@ -81,13 +131,20 @@ export function CommandRequestPanel({
       <p className="action-panel__title">{shown.sentence}</p>
       <p className="operation-request__summary">{shown.askedBy}</p>
       {shown.gives ? <p className="command-request__gives">{shown.gives}</p> : null}
-      <dl className="command-request__rows" aria-label="The change, as proposed">
-        {shown.rows.map((row) => (
+      <p className="command-request__heading">{shown.rowsHeading}</p>
+      <dl
+        aria-label={shown.rowsHeading}
+        className="command-request__rows"
+        onScroll={check}
+        ref={rows}
+        tabIndex={0}
+      >
+        {shown.rows.map((row, index) => (
           <div
             className="command-request__row"
             data-depth={row.depth}
             data-path={row.path}
-            key={row.path}
+            key={`${index}:${row.path}`}
             style={{ paddingInlineStart: `${row.depth * 12}px` }}
           >
             <dt className="command-request__label">{row.label}</dt>
@@ -106,47 +163,65 @@ export function CommandRequestPanel({
           </div>
         ))}
       </dl>
+      {seenEnd ? null : (
+        <p className="command-request__more" role="note">
+          {commandRequestWords.more}
+        </p>
+      )}
       {shown.agentWords ? (
         <blockquote className="operation-request__says">
           <span className="operation-request__says-label">{shown.agentWords.label}</span>
           <span className="operation-request__says-text">{shown.agentWords.text}</span>
         </blockquote>
       ) : null}
-      {shown.approve
-        ? shown.secrets.map((secret) => (
-            <label className="command-request__secret" key={secret.path}>
-              <span>
-                {secret.label} · {commandRequestWords.secret}
-              </span>
-              <input
-                autoComplete="off"
-                onChange={(event) => setTyped({ ...typed, [secret.path]: event.target.value })}
-                type="password"
-                value={typed[secret.path] ?? ""}
-              />
-            </label>
-          ))
-        : null}
-      <p className="operation-request__after" role={shown.approve ? undefined : "status"}>
+      <p
+        className="operation-request__after"
+        role={shown.approve || shown.doneMyself ? undefined : "status"}
+      >
         {shown.line}
       </p>
-      {shown.approve && shown.decline ? (
+      {shown.decline ? (
         <div className="operation-request__answers">
-          <button className="btn" disabled={busy} onClick={() => void decline.run()} type="button">
-            {shown.decline.label}
-          </button>
+          {screen && screenPath ? (
+            <button className="btn" onClick={() => navigate(screenPath)} type="button">
+              {`Open ${screen.label}`}
+            </button>
+          ) : null}
           <button
-            className="btn btn--primary"
-            disabled={busy || missing}
-            onClick={() => void approve.run()}
+            className="btn"
+            disabled={busy}
+            onClick={() => void answer.run(false)}
             type="button"
           >
-            {shown.approve.label}
+            {shown.decline.label}
           </button>
+          {shown.doneMyself ? (
+            <button
+              className="btn"
+              disabled={busy}
+              onClick={() => void answer.run(true)}
+              type="button"
+            >
+              {shown.doneMyself.label}
+            </button>
+          ) : null}
+          {shown.approve ? (
+            <button
+              aria-disabled={!ready}
+              className="btn btn--primary"
+              disabled={busy || !ready}
+              onClick={() => {
+                if (ready) void approve.run();
+              }}
+              type="button"
+            >
+              {shown.approve.label}
+            </button>
+          ) : null}
         </div>
       ) : null}
       {approve.line ? <ActionLine line={approve.line} wrap /> : null}
-      {decline.line ? <ActionLine line={decline.line} wrap /> : null}
+      {answer.line ? <ActionLine line={answer.line} wrap /> : null}
     </fieldset>
   );
 }

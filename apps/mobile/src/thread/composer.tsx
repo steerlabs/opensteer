@@ -758,6 +758,7 @@ export function Composer(props: {
       {surface === null ? null : commandCard !== null ? (
         <Animated.View entering={appear}>
           <CommandRequestCard
+            deploymentId={deploymentId}
             disabled={!props.canRespond || requestDisabledReason !== null}
             highlighted={surface.request.id === props.highlightRequestId}
             hostClient={hostClient}

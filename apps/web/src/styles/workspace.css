@@ -4334,6 +4334,14 @@ html[data-tab-sorting] * {
 
 .command-request__label {
   color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.command-request__heading,
+.command-request__more {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-sm);
 }
 
 .command-request__value,
@@ -4359,10 +4367,4 @@ html[data-tab-sorting] * {
 
 .command-request__current {
   color: var(--muted);
-}
-
-.command-request__secret {
-  display: grid;
-  gap: var(--space-4);
-  font-size: var(--text-sm);
 }

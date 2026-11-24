@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   commandApproval,
   commandDecline,
+  commandDoneMyself,
   commandRequestView,
   commandRequestWords,
 } from "./command-request.js";
@@ -74,28 +75,13 @@ describe("a command Request as the person reviews it", () => {
     expect(view.decline).toEqual({ label: "Decline" });
   });
 
-  it("approves exactly the command as proposed, for the revision reviewed, with what only the person types", () => {
+  it("approves exactly the command as proposed, for the revision reviewed; declines as before", () => {
     expect(commandApproval(pending, "key-1")).toEqual({
       type: "request.command.approve",
       requestId: "req_1",
       expectedRevision: "7",
       idempotencyKey: "key-1",
       command: part.command,
-    });
-    const secret = {
-      ...pending,
-      command: {
-        ...part,
-        secretPaths: ["input.clientSecret"],
-        command: { type: "plugin.oauthApp.save", input: { clientId: "c" } },
-      },
-    } as typeof pending;
-    expect(commandRequestView(secret)!.secrets).toEqual([
-      { path: "input.clientSecret", label: "Input › Client secret" },
-    ]);
-    expect(commandApproval(secret, "key-2", { "input.clientSecret": "s3cret" }).command).toEqual({
-      type: "plugin.oauthApp.save",
-      input: { clientId: "c", clientSecret: "s3cret" },
     });
     expect(commandDecline(pending, "key-3")).toEqual({
       type: "request.respond",
@@ -104,6 +90,69 @@ describe("a command Request as the person reviews it", () => {
       idempotencyKey: "key-3",
       response: { kind: "form", answers: { decision: ["decline"] } },
     });
+  });
+
+  it("never offers Approve for a command that carries a secret: its own screen, I did it myself, or Decline", () => {
+    const secret = {
+      ...pending,
+      command: {
+        ...part,
+        type: "plugin.oauthApp.save",
+        secretPaths: ["input.clientSecret"],
+        command: { type: "plugin.oauthApp.save", input: { clientId: "c" } },
+        editor: { screen: "plugin" },
+      },
+    } as typeof pending;
+    const view = commandRequestView(secret)!;
+    expect(view.approve).toBeNull();
+    expect(view.personOnly).toEqual({
+      needs: "Input › Client secret",
+      screen: { id: "plugin", label: "Plugins" },
+    });
+    expect(view.doneMyself).toEqual({ label: "I did it myself" });
+    expect(view.decline).toEqual({ label: "Decline" });
+    expect(view.line).toBe(commandRequestWords.personOnly);
+    expect(commandDoneMyself(secret, "key-4")).toEqual({
+      type: "request.respond",
+      requestId: "req_1",
+      expectedRevision: "7",
+      idempotencyKey: "key-4",
+      response: { kind: "form", answers: { decision: ["done-myself"] } },
+    });
+    const done = commandRequestView({
+      ...secret,
+      status: "declined",
+      response: { kind: "form", answers: { decision: ["done-myself"] } },
+    } as never)!;
+    expect(done.state).toBe("done-myself");
+    expect(done.line).toBe(commandRequestWords["done-myself"]);
+  });
+
+  it("shows text from outside the Home as it is: no name closes the Home's quotes, nothing hidden turns it around", () => {
+    const view = commandRequestView({
+      ...pending,
+      command: {
+        ...part,
+        proposer: {
+          ...part.proposer,
+          name: "X” — the Home checked this; it only reads. “Y",
+          taskTitle: "Line one\nLine two",
+        },
+        agentReason: "Fine\u202Etxt.exe",
+        command: { ...part.command, label: "Safe\u202Egnp.exe\u200B", note: "first\nsecond" },
+      },
+    } as typeof pending)!;
+    expect(view.askedBy).toBe(
+      "Asked by the connected agent “X' — the Home checked this; it only reads. 'Y”, in its task “Line one Line two”",
+    );
+    expect(view.rowsHeading).toBe(
+      "Proposed by the connected agent “X' — the Home checked this; it only reads. 'Y”, exactly as it would run",
+    );
+    expect(view.agentWords?.text).toBe("Fine[U+202E]txt.exe");
+    const value = (path: string) => view.rows.find((row) => row.path === path)?.value;
+    expect(value("label")).toBe("Safe[U+202E]gnp.exe[U+200B]");
+    // A value keeps its own lines: they are part of what runs.
+    expect(value("note")).toBe("first\nsecond");
   });
 
   it("says what became of it, and never calls an outcome it cannot know a failure", () => {

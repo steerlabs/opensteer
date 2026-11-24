@@ -125,6 +125,7 @@ export function QuestionCard(props: {
       {/* No composer here takes its typed answer, so the card holds the field. */}
       {command ? (
         <CommandRequestCard
+          deploymentId={props.deploymentId}
           disabled={!props.canRespond || props.surface.denied !== null}
           hostClient={props.hostClient}
           key={props.surface.request.id}
