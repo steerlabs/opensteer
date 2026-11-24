@@ -3,11 +3,7 @@ import { HomeHealthReportSchema } from "@opensteer/protocol/problems";
 import { sql } from "kysely";
 import { expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
-import {
-  readProblemReportsSetting,
-  readStoredProblems,
-  setProblemReportsSetting,
-} from "./home-problems.js";
+import { readStoredProblems } from "./home-problems.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 import { cloneTestDatabase } from "./test-database.test-support.js";
 
@@ -77,10 +73,6 @@ it("reads this Home's problems from the rows it keeps, as codes and counts only"
     const text = JSON.stringify(problems);
     for (const secret of ["ENOENT", "/Users/alex", "PRIVATE", "ENOSPC"])
       expect(text).not.toContain(secret);
-
-    expect(await readProblemReportsSetting(database)).toBe("off");
-    expect(await setProblemReportsSetting(database, "on")).toBe("on");
-    expect(await readProblemReportsSetting(database)).toBe("on");
   } finally {
     await database.destroy();
     await clone.drop();

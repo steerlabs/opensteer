@@ -239,12 +239,12 @@ Runner mounts). The Host reads it only because `compose.yaml` sets
 `OPENSTEER_MACHINE_STATUS=root-maintenance`, and shows it with its own problems under Settings →
 General → Problems.
 
-A self-hosted Home sends nothing. It names no Opensteer account, so its "Send problem reports" switch
-stays off and cannot be turned on, unless you set `OPENSTEER_HOME_PROBLEM_REPORTS_URL` in
-`config.env` to an `https://` origin of your own that accepts `POST /v1/problem-reports`. Then,
-once the person turns it on, that address receives the full health report every 15 minutes: exactly
-the bytes Settings shows. A managed Home (an Opensteer Cloud Computer) always sends its health report
-to the Opensteer account that runs it; see
+A self-hosted Home sends nothing unless you, its operator, set `OPENSTEER_HOME_PROBLEM_REPORTS_URL` in
+`config.env` to an `https://` origin of your own that accepts `POST /v1/problem-reports`. Setting
+it is the consent: from then on the Host sends that address its health report every 15 minutes,
+exactly the bytes Settings → General → Problems shows. The person's apps have no switch for it, and
+no agent can change it. Unset, nothing leaves the machine. A managed Home (an Opensteer Cloud
+Computer) always sends its health report to the Opensteer account that runs it; see
 [architecture](../../docs/architecture.md#problems-and-reports).
 
 ## Managed release and verification

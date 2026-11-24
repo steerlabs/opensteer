@@ -334,6 +334,13 @@ export function loadControlPlaneConfig(
   }
   const managedHomeEnvironment = withManagedHomeConfigFiles(environment);
   const cloudComputers = loadCloudComputerConfig(managedHomeEnvironment);
+  // The synthetic purchase's door opens only where Stripe is in test mode.
+  if (
+    parsed.OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL &&
+    cloudComputers?.stripeKey &&
+    !/^(?:sk|rk)_test_/u.test(cloudComputers.stripeKey)
+  )
+    throw new Error("The synthetic purchase's sign-in is refused beside a live Stripe key");
   if (cloudComputers && parsed.OPENSTEER_CONTROL_PLANE_PUBLIC_URL.protocol !== "https:") {
     throw new Error("Cloud Computers require an HTTPS Account origin");
   }

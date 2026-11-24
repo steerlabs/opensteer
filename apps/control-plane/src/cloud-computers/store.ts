@@ -10,7 +10,6 @@ import {
   problemTable,
   type CloudComputerSetupFailure,
   type HomeHealthReport,
-  type OpensteerProblemReport,
   type ProblemCode,
 } from "@opensteer/protocol/problems";
 import { deletionView } from "./deletion-view.js";
@@ -1557,6 +1556,7 @@ export class CloudComputerStore {
           reportedAt: now,
           updatedAt: now,
           ...(ready ? { everReady: true, generationReady: true, dnsQuarantined: false } : {}),
+          ...(ready && row.phase !== "ready" ? { readyAt: now } : {}),
           ...(report.lastError ===
           "The Cloud Computer reported a different Home identity for this generation."
             ? { dnsQuarantined: true }
@@ -1570,7 +1570,14 @@ export class CloudComputerStore {
                 readinessStartedAt: now,
               }
             : {}),
-          ...((report.phase === "booting" || report.phase === "failed") && row.phase === "ready"
+          // Down again after being ready: a fresh clock only when it had stayed ready for the
+          // whole limit. One that keeps going down sooner keeps the clock of its first outage,
+          // so it pages once that outage passes the limit even while it flaps (U2).
+          ...((report.phase === "booting" || report.phase === "failed") &&
+          row.phase === "ready" &&
+          (!row.readyAt ||
+            now.getTime() - row.readyAt.getTime() >=
+              this.#options.config.notReadyAfterMinutes * 60_000)
             ? { readinessStartedAt: now }
             : {}),
           ...(deleted
@@ -2017,30 +2024,6 @@ export class CloudComputerStore {
           .map(({ code }) => code),
       ),
     ];
-  }
-
-  /**
-   * Adds one person's own Home's report to how many reports named each code with each bucket
-   * today. Nothing else of it is kept or logged: not its version, kind, address or time.
-   */
-  async countProblemReport(report: OpensteerProblemReport): Promise<void> {
-    const day = this.#now().toISOString().slice(0, 10);
-    const rows = Object.entries(report.codes).map(([code, bucket]) => ({
-      day,
-      code,
-      bucket: bucket!,
-      reports: "1",
-    }));
-    if (!rows.length) return;
-    await this.#db
-      .insertInto("problemReportCounts")
-      .values(rows)
-      .onConflict((conflict) =>
-        conflict.columns(["day", "code", "bucket"]).doUpdateSet((eb) => ({
-          reports: eb("problemReportCounts.reports", "+", "1"),
-        })),
-      )
-      .execute();
   }
 
   async setupCodeForReadyHome(

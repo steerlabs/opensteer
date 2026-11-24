@@ -317,7 +317,6 @@ export const databaseLockOrder = [
   "control-plane:cloud_computer_backup_namespaces",
   // A health report is written under a share lock on its Cloud Computer.
   "control-plane:cloud_computer_health",
-  "control-plane:problem_report_counts",
   "control-plane:cloud_deployment_operations",
   "control-plane:oauth_refresh_token",
   "control-plane:oauth_consents",

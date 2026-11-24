@@ -3,8 +3,9 @@ import type { Migration } from "kysely/migration";
 
 /**
  * What the account keeps of problem reports, and nothing more: the latest health report each
- * Cloud Computer sent (replaced by the next), and how many reports from people's own Homes named
- * each problem code on each day. Expand-only.
+ * Cloud Computer sent, replaced by the next. Also when a Cloud Computer last became ready, so a
+ * computer that keeps going down is not given a fresh clock each time (`report`), and which
+ * Account the synthetic purchase's own sign-in made, the only one it signs in. Expand-only.
  */
 export const problemReportsMigration: Migration = {
   async up(database) {
@@ -14,13 +15,8 @@ export const problemReportsMigration: Migration = {
         received_at timestamptz not null,
         report jsonb not null
       );
-      create table if not exists public.problem_report_counts (
-        day date not null,
-        code text not null,
-        bucket text not null check (bucket in ('1', '2-9', '10-99', '100+')),
-        reports bigint not null default 0 check (reports >= 0),
-        primary key (day, code, bucket)
-      );
+      alter table public.cloud_computers add column if not exists ready_at timestamptz;
+      alter table public.users add column if not exists synthetic_at timestamptz;
     `.execute(database);
   },
 };

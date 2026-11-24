@@ -2460,8 +2460,6 @@ export interface PersonalSettingsTable {
   agentHomePath: string;
   voiceThreadId: ThreadId | null;
   quietTaskDays: QuietTaskDays;
-  /** Whether the person sends this Home's problem reports to Opensteer; see home-problems.ts. */
-  problemReports: Generated<"off" | "on">;
   executionPreferences: JsonColumn<ExecutionPreferences>;
   /** The owner's own name, or null for "You"; see `owner-profile-store.ts`. */
   ownerName: Generated<string | null>;

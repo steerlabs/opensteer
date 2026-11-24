@@ -214,8 +214,8 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_PORT: positiveInteger(4310),
   OPENSTEER_PERSONAL_ACCOUNT_ISSUER: optionalUrl,
   /**
-   * Where this Home sends its problem reports when the person turns them on, instead of the
-   * Opensteer account: a self-hoster's own collector. Never read on a Cloud Computer.
+   * A self-hosted Home operator's own collector for this Home's health report; setting it is the
+   * consent. Unset, nothing is sent. Never read on a Cloud Computer.
    */
   OPENSTEER_PROBLEM_REPORTS_URL: optionalUrl,
   /**

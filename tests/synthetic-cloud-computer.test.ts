@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   readConfiguration,
   runSyntheticPurchase,
   steps,
+  worstCaseMs,
 } from "../scripts/synthetic-cloud-computer.mjs";
 
 const origin = "https://account.example.test";
@@ -221,5 +223,23 @@ describe("the synthetic purchase", () => {
       { OPENSTEER_SYNTHETIC_ACCOUNT_URL: `${origin}/v1` },
     ])
       expect(() => readConfiguration({ ...env, ...change })).toThrow();
+  });
+
+  it("is given longer by its CronJob than its own worst case, so it is never cut off mid-cleanup (U5)", () => {
+    const defaults = readConfiguration({
+      OPENSTEER_SYNTHETIC_ACCOUNT_URL: origin,
+      OPENSTEER_SYNTHETIC_EMAIL: config.email,
+      OPENSTEER_SYNTHETIC_PASSWORD: config.password,
+    });
+    const deadline = Number(
+      /activeDeadlineSeconds: (\d+)/u.exec(
+        readFileSync(
+          new URL("../deploy/monitoring/synthetic-cronjob.yaml", import.meta.url),
+          "utf8",
+        ),
+      )?.[1],
+    );
+    expect(worstCaseMs(defaults)).toBe(83.5 * 60_000);
+    expect(deadline * 1_000).toBeGreaterThan(worstCaseMs(defaults) + 10 * 60_000);
   });
 });

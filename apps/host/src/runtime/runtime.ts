@@ -3293,7 +3293,6 @@ export async function createHostRuntime(
     const administration = new AdministrationToolHandlers(
       new AdministrationService(
         {
-          problems: homeProblems,
           authenticator,
           store,
           commands,
@@ -3867,7 +3866,7 @@ export async function createHostRuntime(
     continuations.start();
     automationFailures.start();
     quietTasks.start();
-    void homeProblems.start().catch(() => undefined);
+    homeProblems.start();
     let closed = false;
     let closingStep: string | undefined;
     hostAuthorityPublisher?.start();

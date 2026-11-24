@@ -1,22 +1,15 @@
 import { lstat, readFile, statfs } from "node:fs/promises";
 import { join } from "node:path";
 import type { HostConfig } from "@opensteer/config";
-import {
-  readProblemReportsSetting,
-  readStoredProblems,
-  setProblemReportsSetting,
-  type DatabaseSchema,
-} from "@opensteer/database";
+import { readStoredProblems, type DatabaseSchema } from "@opensteer/database";
 import type { ProblemReporting } from "@opensteer/protocol";
 import {
   HomeHealthReportSchema,
   MachineStatusSchema,
-  OpensteerProblemReportSchema,
   ReleaseVersionSchema,
   cloudComputerHealthPath,
   compareProblems,
   diskBucket,
-  problemCountBucket,
   problemReportsPath,
   reportTime,
   problemsLimit,
@@ -32,10 +25,8 @@ export const machineStatusFile = "machine-status.json";
 /** A machine status older than this says nothing about services now. */
 const machineStatusFreshMs = 15 * 60_000;
 const backupOverdueMs = 36 * 60 * 60_000;
-/** How often a Cloud Computer, or a Home sending to its own collector, sends its report. */
+/** How often a Home that reports sends its report. */
 export const problemReportIntervalMs = 15 * 60_000;
-/** How often a person's own Home sends Opensteer its codes: once a day. */
-export const opensteerReportIntervalMs = 24 * 60 * 60_000;
 
 type Destination =
   | {
@@ -44,12 +35,18 @@ type Destination =
       readonly clientId: string;
       readonly clientSecret: string;
     }
-  | { readonly kind: "opensteer" | "own"; readonly url: URL }
+  | { readonly kind: "own"; readonly url: URL }
   | { readonly kind: "none" };
 
-/** Where this Home's report goes, from configuration only; nothing an agent says changes it. */
+/**
+ * Where this Home's report goes, from its operator's configuration only; nothing a person's app
+ * or an agent says changes it. A Cloud Computer reports to the Opensteer account that runs it; a
+ * Home whose operator set `OPENSTEER_PROBLEM_REPORTS_URL` reports to that collector (the
+ * operator's setting is the consent); every other Home, a person's own Mac among them, sends
+ * nothing at all.
+ */
 export function problemReportDestination(
-  config: Pick<HostConfig, "managedHome" | "personalAccountIssuer" | "problemReportsOrigin">,
+  config: Pick<HostConfig, "managedHome" | "problemReportsOrigin">,
 ): Destination {
   const managed = config.managedHome;
   if (managed)
@@ -61,8 +58,6 @@ export function problemReportDestination(
     };
   if (config.problemReportsOrigin)
     return { kind: "own", url: new URL(problemReportsPath, config.problemReportsOrigin) };
-  if (config.personalAccountIssuer)
-    return { kind: "opensteer", url: new URL(problemReportsPath, config.personalAccountIssuer) };
   return { kind: "none" };
 }
 
@@ -71,15 +66,24 @@ export function reportVersion(value: string | undefined): string {
   return ReleaseVersionSchema.safeParse(value).success ? value! : "0.0.0";
 }
 
+/** How full the disk holding a folder is, as a bucket; undefined when it cannot be read. */
+export async function statfsDiskBucket(directory: string): Promise<DiskBucket | undefined> {
+  try {
+    const disk = await statfs(directory);
+    if (!disk.blocks) return undefined;
+    return diskBucket(1 - disk.bavail / disk.blocks);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * This Home's problems, and the one report it sends. The read is the one function behind the
- * person's Settings, `opensteer_state` area `problems` and the report: what the database keeps
- * (`readStoredProblems`), what the machine's root maintenance wrote, and the disk. The report is
- * sent by this Home on its own timer, never for a connection or a Run, to one address from
- * configuration: the full health report to the Opensteer account for a Cloud Computer (its
- * operator) or to a self-hoster's own collector, and only codes with bucketed counts, once a day,
- * from a person's own Home to Opensteer. Nothing but a Cloud Computer sends anything unless the
- * person turned it on, and while it is off there is no timer at all.
+ * This Home's problems, and the one report it sends where its operator configured one. The read
+ * is the one function behind the person's Settings, `opensteer_state` area `problems` and the
+ * report: what the database keeps (`readStoredProblems`), what the machine's root maintenance
+ * wrote, and the disk. The report is sent by this Home on its own timer, never for a connection
+ * or a Run: the health report to the Opensteer account for a Cloud Computer, or to a self-hosted
+ * Home's own collector. Where there is no destination there is no timer and nothing is sent.
  */
 export class HomeProblems {
   readonly #database: Kysely<DatabaseSchema>;
@@ -90,10 +94,9 @@ export class HomeProblems {
   readonly #destination: Destination;
   readonly #fetch: typeof fetch;
   readonly #now: () => number;
+  readonly #readDisk: (directory: string) => Promise<DiskBucket | undefined>;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #sending: Promise<void> | undefined;
-  /** Set by `setSending` before anything else it does, so an Off already counts mid-send. */
-  #on = false;
   #closed = false;
   #last: Pick<ProblemReporting, "lastSentAt" | "lastResult"> = {};
 
@@ -112,6 +115,8 @@ export class HomeProblems {
     readonly destination: Destination;
     readonly fetch?: typeof fetch;
     readonly now?: () => number;
+    /** How full the data folder's disk is; `statfs` unless a test stands in for it. */
+    readonly readDisk?: (directory: string) => Promise<DiskBucket | undefined>;
   }) {
     this.#database = options.database;
     this.#dataDirectory = options.dataDirectory;
@@ -121,6 +126,7 @@ export class HomeProblems {
     this.#destination = options.destination;
     this.#fetch = options.fetch ?? fetch;
     this.#now = options.now ?? Date.now;
+    this.#readDisk = options.readDisk ?? statfsDiskBucket;
   }
 
   /** This Home's problems now, the ones that need someone first. */
@@ -135,7 +141,7 @@ export class HomeProblems {
       .slice(0, problemsLimit);
   }
 
-  /** The full health report: what a Cloud Computer or a Home's own collector receives. */
+  /** The health report a Cloud Computer's operator or a self-hosted Home's collector receives. */
   async report(): Promise<HomeHealthReport> {
     const [problems, machine, disk] = await Promise.all([
       this.problems(),
@@ -152,73 +158,34 @@ export class HomeProblems {
     });
   }
 
-  async reporting(): Promise<ProblemReporting> {
-    const mode =
-      this.#destination.kind === "operator"
-        ? "operator"
-        : await readProblemReportsSetting(this.#database);
-    return {
-      mode,
-      destination: this.#destination.kind === "operator" ? "opensteer" : this.#destination.kind,
-      ...this.#last,
-    };
+  reporting(): ProblemReporting {
+    return { destination: this.#destination.kind, ...this.#last };
   }
 
   /**
-   * Exactly the bytes this Home sends, or would send, to its destination: the preview the person
-   * sees and the upload are this one string. Null where there is nowhere to send.
+   * Exactly the bytes this Home sends: the preview the person sees and the upload are this one
+   * string. Null where nothing is sent.
    */
   async body(): Promise<string | null> {
-    const kind = this.#destination.kind;
-    if (kind === "none") return null;
-    if (kind === "operator" || kind === "own") return JSON.stringify(await this.report());
-    const totals = new Map<string, number>();
-    for (const problem of await this.problems())
-      totals.set(problem.code, (totals.get(problem.code) ?? 0) + problem.count);
-    const codes = Object.fromEntries(
-      [...totals].map(([code, total]) => [code, problemCountBucket(total)]),
-    );
-    const home = this.#home === "cloud-computer" ? "other" : this.#home;
-    return JSON.stringify(
-      OpensteerProblemReportSchema.parse({ schema: 1, home, version: this.#version, codes }),
-    );
+    return this.#destination.kind === "none" ? null : JSON.stringify(await this.report());
   }
 
   async view() {
-    const [problems, reporting, body] = await Promise.all([
-      this.problems(),
-      this.reporting(),
-      this.body(),
-    ]);
-    return { problems, reporting, body };
+    const [problems, body] = await Promise.all([this.problems(), this.body()]);
+    return { problems, reporting: this.reporting(), body };
   }
 
-  /** Whether a timer is set: none while nothing will be sent (rule 7). */
+  /** Whether a timer is set: never where nothing is sent (rule 7). */
   scheduled(): boolean {
     return this.#timer !== undefined;
-  }
-
-  /**
-   * The person's own choice, approved by them at the door; a Cloud Computer's report is not
-   * theirs to turn off. Off counts at once, before the setting is written.
-   */
-  async setSending(send: boolean): Promise<ProblemReporting> {
-    if (this.#destination.kind !== "operator") {
-      if (!send) this.#stop();
-      await setProblemReportsSetting(this.#database, send ? "on" : "off");
-      this.#on = send;
-      if (send) this.#schedule(60_000);
-    }
-    return this.reporting();
   }
 
   /** Sends the report once, if this Home sends one. Never throws: the result is remembered. */
   async sendOnce(): Promise<void> {
     const destination = this.#destination;
-    if (destination.kind === "none" || !this.#sends()) return;
+    if (destination.kind === "none" || this.#closed) return;
     const body = await this.body();
-    // An Off that landed while the body was built stops it here, before anything leaves.
-    if (body === null || !this.#sends()) return;
+    if (body === null || this.#closed) return;
     const at = reportTime(this.#now());
     try {
       const response = await this.#fetch(destination.url, {
@@ -244,45 +211,28 @@ export class HomeProblems {
     }
   }
 
-  /**
-   * Starts the timer only where something will be sent: always on a Cloud Computer, elsewhere
-   * only while the person has it on. Off, nothing wakes.
-   */
-  async start(): Promise<void> {
-    const kind = this.#destination.kind;
-    if (kind === "none") return;
-    this.#on = kind === "operator" || (await readProblemReportsSetting(this.#database)) === "on";
-    if (this.#on) this.#schedule(60_000 + Math.floor(Math.random() * 60_000));
+  /** Starts the timer where a report goes; where none does, nothing is ever scheduled. */
+  start(): void {
+    this.#schedule(60_000 + Math.floor(Math.random() * 60_000));
   }
 
   async close(): Promise<void> {
     this.#closed = true;
-    this.#stop();
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = undefined;
     await this.#sending;
   }
 
-  #sends(): boolean {
-    return !this.#closed && (this.#destination.kind === "operator" || this.#on);
-  }
-
-  #stop(): void {
-    this.#on = false;
-    if (this.#timer) clearTimeout(this.#timer);
-    this.#timer = undefined;
-  }
-
   #schedule(delayMs: number): void {
-    if (this.#destination.kind === "none" || !this.#sends()) return;
+    if (this.#destination.kind === "none" || this.#closed) return;
     if (this.#timer) clearTimeout(this.#timer);
-    const interval =
-      this.#destination.kind === "opensteer" ? opensteerReportIntervalMs : problemReportIntervalMs;
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
       this.#sending ??= this.sendOnce()
         .catch(() => undefined)
         .finally(() => {
           this.#sending = undefined;
-          this.#schedule(interval + Math.floor(Math.random() * 60_000));
+          this.#schedule(problemReportIntervalMs + Math.floor(Math.random() * 60_000));
         });
     }, delayMs);
     this.#timer.unref();
@@ -306,14 +256,8 @@ export class HomeProblems {
     }
   }
 
-  async #disk(): Promise<DiskBucket | undefined> {
-    try {
-      const disk = await statfs(this.#dataDirectory);
-      if (!disk.blocks) return undefined;
-      return diskBucket(1 - disk.bavail / disk.blocks);
-    } catch {
-      return undefined;
-    }
+  #disk(): Promise<DiskBucket | undefined> {
+    return this.#readDisk(this.#dataDirectory);
   }
 }
 

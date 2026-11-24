@@ -59,8 +59,6 @@ export type AdministrationDependencies = Pick<
   | "deviceDrivers"
 > & {
   readonly reconcileIdleCompaction?: () => Promise<void>;
-  /** The person's own choice of sending problem reports; see problems/home-problems.ts. */
-  readonly problems?: HostServerDependencies["problems"];
   readonly integrations: Pick<
     HostServerDependencies["integrations"],
     "devices" | "localServerRegistry" | "continuations"
@@ -69,7 +67,6 @@ export type AdministrationDependencies = Pick<
 const coreTypes = [
   "viewer.timeZone.update",
   "viewer.quietTasks.update",
-  "settings.problemReports.set",
   "viewer.name.update",
   "settings.idleCompaction.set",
   "execution.preferences.remember",
@@ -348,15 +345,6 @@ export class AdministrationService {
         });
         await dependencies.reconcileIdleCompaction?.();
         return { type: command.type, policy };
-      }
-      case "settings.problemReports.set": {
-        // An agent's proposal reaches here only as the person, once they approved its Request.
-        if (!dependencies.problems)
-          throw new OpensteerError({ code: "not_found", message: "This Home sends no reports" });
-        return {
-          reporting: await dependencies.problems.setSending(command.send),
-          type: command.type,
-        };
       }
       case "viewer.quietTasks.update":
         return {

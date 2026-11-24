@@ -763,30 +763,13 @@ Who learns what depends on who runs the machine:
    **What it cannot see through these:** anything the person or an agent did or holds on it,
    including pages, tasks, messages, files, accounts, sign-ins, names, logs and error text.
 
-3. **People's own devices and self-hosted Homes: nothing is sent** unless the person turns it on.
-   It is off by default, Settings shows the exact bytes before anything is sent, and while it is off
-   nothing even wakes to check. Where a report goes is configuration, never the person's choice or
-   an agent's:
-   - **A Mac linked to the Opensteer account** (`OPENSTEER_PERSONAL_ACCOUNT_ISSUER`, which the
-     desktop passes) sends Opensteer once a day only `{schema, home, version, codes}`: its kind, its
-     version, and each problem code with a bucketed count (`1`, `2-9`, `10-99`, `100+`;
-     `OpensteerProblemReportSchema`). No times, no services, no backup or update results, no account
-     or id.
-     - Opensteer also sees the internet address the report comes from, and the load balancer's request
-       logs may keep it.
-     - The account service logs nothing of a report. It keeps only how many reports named each code
-       with each bucket on each day (`problem_report_counts`).
-     - Those counts are untrusted. The endpoint is anonymous, so anyone can add to them. With one
-       budget per replica (600 a minute, whatever address a request gives), a flood can crowd real
-       reports out for that minute. No alert reads these counts.
-   - **A self-hosted Linux Home** (`deploy/home`) names no Opensteer account. It sends nothing, and
-     its switch stays off and cannot be turned on, unless `OPENSTEER_HOME_PROBLEM_REPORTS_URL` names
-     the self-hoster's own collector. That collector then receives the full health report every 15
-     minutes, and what it keeps is up to whoever runs it.
-   - **Turning it on or off** is an ordinary command at the door (`settings.problemReports.set`,
-     class `approve`). The person's own app changes it at once. An agent with standing to propose Home
-     settings may propose either; that becomes a Request, and nothing changes until the person
-     approves it. A connection whose grant does not reach Home settings reads it as not found.
+3. **People's own devices send nothing.** A Mac Home, or any Home whose operator set no collector,
+   has no switch, no timer and nothing to send; its Problems page says that nothing about these
+   problems leaves this computer. **A self-hosted Linux Home** (`deploy/home`) sends the same health
+   report every 15 minutes to its operator's own collector only when that operator sets
+   `OPENSTEER_HOME_PROBLEM_REPORTS_URL`: the operator's setting is the consent, the person's Settings
+   shows the exact bytes, and what the collector keeps is up to whoever runs it. No person's app and
+   no agent can turn it on, off or point it anywhere.
 
 The machine status is read only where `OPENSTEER_MACHINE_STATUS=root-maintenance` says root's
 maintenance writes it (`deploy/home` sets it). There the file is in `host-data`, which no Runner
@@ -797,8 +780,14 @@ Rule 3 of AGENTS.md (nothing leaves the Home before it is in the Disconnect set)
 done for a connection, and a report is not one. It is the Home's own, sent on its own timer, never
 for a connection or a Run, and carries nothing a connection produced except codes and counts. An
 agent reads problems through `opensteer_state` (area `problems`, for the person's own agents and
-`everything` grants; outside a grant it does not exist) and may propose the setting as above. No
-tool sends a report, reads one back, or changes where it goes or what it holds.
+`everything` grants; outside a grant it does not exist). No tool sends a report, reads one back, or
+changes where it goes or what it holds.
+
+**An opt-in report from a person's own Home to Opensteer is deliberately not built.** It would need
+someone at Opensteer who reads what it counts, and a way to trust a report: an anonymous endpoint
+lets anyone forge counts or crowd real reports out, and the sending address can tie a report to the
+person's other requests to Opensteer. Until both exist, every problem stays on the person's own
+Home, where they see it.
 
 Not built yet, and where each would attach. A consent prompt at first run would set the same
 setting, once, after setup. Crash reports from devices (Sentry's protocol, so a self-hoster could

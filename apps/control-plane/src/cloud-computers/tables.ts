@@ -59,6 +59,8 @@ export interface CloudComputerTable {
   revision: Generated<number>;
   everReady: Generated<boolean>;
   generationReady: Generated<boolean>;
+  /** When it last became ready; see `report`. */
+  readyAt: Generated<Date | null>;
   dnsQuarantined: Generated<boolean>;
   createAttempted: Generated<boolean>;
   bootCompletedAt: NullableTimestamp;
@@ -94,15 +96,6 @@ export interface CloudComputerHealthTable {
   computerId: CloudComputerId;
   receivedAt: Timestamp;
   report: ColumnType<import("@opensteer/protocol/problems").HomeHealthReport, string, string>;
-}
-
-/** How many reports from people's own Homes named each problem code with each bucket, by day. */
-export interface ProblemReportCountTable {
-  day: ColumnType<string, string, string>;
-  code: string;
-  bucket: string;
-  /** A bigint: one report adds one, so no sender can overflow it. */
-  reports: ColumnType<string, string, string>;
 }
 
 export interface CloudComputerCheckoutTable {

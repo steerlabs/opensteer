@@ -64,8 +64,8 @@ services:
       OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN: ${OPENSTEER_HOME_ACCOUNT_ORIGIN:-}
       OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID: ${OPENSTEER_HOME_OIDC_CLIENT_ID:-}
       OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET_FILE: ${OPENSTEER_HOME_OIDC_CLIENT_SECRET_PATH:-}
-      # Where problem reports go when the person turns them on. Empty: nowhere, and the switch is
-      # off and cannot be turned on (this Home names no Opensteer account to send to).
+      # The operator's own collector for this Home's health report; setting it is the consent.
+      # Empty: nothing leaves the machine.
       OPENSTEER_PROBLEM_REPORTS_URL: ${OPENSTEER_HOME_PROBLEM_REPORTS_URL:-}
       # Root's maintenance writes machine-status.json into host-data, which no Runner mounts.
       OPENSTEER_MACHINE_STATUS: root-maintenance

@@ -93,6 +93,22 @@ export function readConfiguration(env = process.env) {
   };
 }
 
+/** How long Stripe's page may take to load, fill and send the browser back, at most. */
+const paymentPageMs = 60_000 + 30_000 + 120_000;
+/** How long a paid Cloud Computer may take to appear in the account. */
+const appearMs = 5 * 60_000;
+/** The Home's two answers and the account's own calls, generously. */
+const callsMs = 5 * 60_000;
+
+/**
+ * The longest a run can take: a leftover's deletion, payment, appearance, readiness, the Home's
+ * check and its own deletion. Whatever runs it must allow longer, or a run stopped from outside
+ * can leave a Cloud Computer running (deploy/monitoring/synthetic-cronjob.yaml).
+ */
+export function worstCaseMs(config) {
+  return config.goneMs * 2 + paymentPageMs + appearMs + config.readyMs + callsMs;
+}
+
 /** The account service, as a signed-in person's browser speaks to it. */
 function accountClient(config, fetch) {
   const cookies = new Map();
@@ -287,7 +303,7 @@ export async function runSyntheticPurchase(config, world = {}) {
     await payOnCheckoutPage(config, launchBrowser, checkout.json.url);
     // The account's own computer appears once Stripe's webhook (or its 60-second pass) arrives.
     computerId = await until(
-      5 * 60_000,
+      appearMs,
       5_000,
       async () => {
         const created = (await list("payment")).filter((computer) => !known.has(computer.id));

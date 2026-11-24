@@ -521,17 +521,6 @@ export const commandTable: CommandTable = {
     governs: home("time-zone"),
     effect: "database",
   },
-  // What leaves the Home is the person's to decide: an agent may propose it either way, and
-  // nothing changes until the person approves its Request.
-  "settings.problemReports.set": {
-    family: "settings",
-    scope: "home",
-    step: "none",
-    faces: one("approve"),
-    governsKinds: ["home"],
-    governs: home("problem-reports"),
-    effect: "database",
-  },
   "viewer.quietTasks.update": {
     family: "settings",
     scope: "home",

@@ -96,6 +96,20 @@ it("loads optional managed Home settings from the Account runtime directory", ()
           "https://user:password@releases.example.com/feed",
       }),
     ).toThrow("Missing or invalid OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL");
+    // The synthetic purchase's sign-in opens only beside a test-mode Stripe key (U6).
+    const synthetic = {
+      OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: "synthetic@example.com",
+      OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD: "s".repeat(24),
+    };
+    expect(loadControlPlaneConfig({ ...environment, ...synthetic }).syntheticSignIn).toBeDefined();
+    for (const key of ["sk_live_123456789", "rk_live_123456789"])
+      expect(() =>
+        loadControlPlaneConfig({
+          ...environment,
+          ...synthetic,
+          OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY: key,
+        }),
+      ).toThrow("refused beside a live Stripe key");
   } finally {
     rmSync(directory, { recursive: true });
   }

@@ -59,11 +59,7 @@ import type { ControlPlaneAuthenticator } from "../auth/auth.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import { toWebHeaders } from "../portal/routes.js";
 import { cloudComputerSetupFailure, logAccountEvent } from "../server/events.js";
-import {
-  HomeHealthReportSchema,
-  OpensteerProblemReportSchema,
-  problemReportsPath,
-} from "@opensteer/protocol/problems";
+import { HomeHealthReportSchema } from "@opensteer/protocol/problems";
 import { ControlPlaneError } from "../server/errors.js";
 import { PoolSlotEgressRateLimitedError } from "./pool-store.js";
 import type { CloudComputerStore } from "./store.js";
@@ -78,8 +74,6 @@ export interface CloudComputerRouteOptions {
   readonly kickBilling?: () => void;
   /** The Opensteer website, the one origin allowed to read the public offer from a page. */
   readonly websiteOrigin?: URL;
-  /** How many reports from people's own Homes a replica takes a minute; 600 unless a test says. */
-  readonly problemReportsPerMinute?: number;
 }
 
 const params = z.object({ id: CloudComputerIdSchema });
@@ -253,30 +247,6 @@ export function registerCloudComputerRoutes(
         codes,
         version: report.data.version,
       });
-    return reply.code(204).send();
-  });
-
-  // A person's own Home's codes, once a day, only while they turned it on. Anonymous: it carries
-  // no account and no id, nothing of it is logged, and only how many reports named each code with
-  // each bucket on each day is kept. One budget for each replica, whoever sends: behind the load
-  // balancer the sending address cannot be told apart or trusted, so it is not used.
-  const problemReportsPerMinute = options.problemReportsPerMinute ?? 600;
-  let problemReportWindow = { startedAt: 0, count: 0 };
-  app.post(problemReportsPath, { bodyLimit: 4_096 }, async (request, reply) => {
-    privateResponse(reply);
-    const report = OpensteerProblemReportSchema.safeParse(request.body);
-    if (!report.success) throw new ControlPlaneError("bad_request", "Invalid problem report");
-    const now = Date.now();
-    if (now - problemReportWindow.startedAt >= 60_000)
-      problemReportWindow = { startedAt: now, count: 0 };
-    if (++problemReportWindow.count > problemReportsPerMinute)
-      return reply
-        .code(429)
-        .header("retry-after", "60")
-        .send({
-          error: { code: "rate_limited", message: "Too many problem reports" },
-        });
-    await store.countProblemReport(report.data);
     return reply.code(204).send();
   });
 

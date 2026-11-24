@@ -303,13 +303,12 @@ const idempotencyKeySchema = z.string().trim().min(1).max(255);
 /** Client-generated, so a retried take is the same lease. */
 const threadInputEditLeaseIdSchema = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/);
 /**
- * Who this Home's report goes to. `operator`: a Cloud Computer, whose health report Opensteer,
- * which runs it, always receives. `off` or `on`: the person's own choice on any other Home, sent
- * to `destination` (Opensteer's account service, or an address the Home's operator configured).
+ * Who this Home's report goes to, from its operator's configuration alone: `operator`, a Cloud
+ * Computer, whose health report Opensteer, which runs it, receives; `own`, the collector a
+ * self-hosted Home's operator set; `none`, nothing leaves this computer.
  */
 export const ProblemReportingSchema = z.object({
-  mode: z.enum(["operator", "off", "on"]),
-  destination: z.enum(["opensteer", "own", "none"]),
+  destination: z.enum(["operator", "own", "none"]),
   lastSentAt: z.iso.datetime().optional(),
   lastResult: z.enum(["sent", "refused", "unreachable"]).optional(),
 });
@@ -661,12 +660,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("settings.idleCompaction.set"),
     idempotencyKey: idempotencyKeySchema,
     policy: IdleCompactionPolicySchema,
-  }),
-  // The person's own choice to send this Home's problem reports to Opensteer. No agent sends it.
-  z.strictObject({
-    type: z.literal("settings.problemReports.set"),
-    idempotencyKey: idempotencyKeySchema,
-    send: z.boolean(),
   }),
   // How many untouched days move the reader's tasks to Done. Needs `quiet-tasks-v1`.
   z.strictObject({
@@ -1356,10 +1349,6 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("settings.idleCompaction.set"),
   }),
   z.object({ quietTaskDays: QuietTaskDaysSchema, type: z.literal("viewer.quietTasks.update") }),
-  z.object({
-    reporting: ProblemReportingSchema,
-    type: z.literal("settings.problemReports.set"),
-  }),
   // `applied` is false when the Account already had a newer name, which `profile` then shows.
   z.object({
     applied: z.boolean(),

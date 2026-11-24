@@ -1,4 +1,3 @@
-import { problemCountBucket } from "@opensteer/protocol/problems";
 import { outsideName } from "@opensteer/shared/outsideName";
 import { chatParityProvider } from "./chat-parity.js";
 import { ItemTextStore } from "../host/item-text-store.js";
@@ -2698,20 +2697,21 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     // The preview keeps no durable session history to page back through.
     "machine.access.history": async () => rpcSuccess({ nextCursor: null, sessions: [] }),
     // A computer's placed tasks are counted in this read, from the tasks the preview holds.
-    // The preview sends nothing; it shows the bytes a Mac would send Opensteer, as a Host does.
-    "problems.get": async () => {
-      const totals = new Map<string, number>();
-      for (const { code, count } of client.problems)
-        totals.set(code, (totals.get(code) ?? 0) + count);
-      const codes = Object.fromEntries(
-        [...totals].map(([code, total]) => [code, problemCountBucket(total)]),
-      );
-      return rpcSuccess({
+    // The preview sends nothing anywhere; with a destination set it shows the bytes a Host would.
+    "problems.get": async () =>
+      rpcSuccess({
         problems: client.problems,
-        reporting: client.problemReporting(),
-        body: JSON.stringify({ schema: 1, home: "mac", version: "0.0.0", codes }),
-      });
-    },
+        reporting: { destination: client.problemDestination },
+        body:
+          client.problemDestination === "none"
+            ? null
+            : JSON.stringify({
+                schema: 1,
+                home: client.problemDestination === "operator" ? "cloud-computer" : "server",
+                version: "0.0.0",
+                problems: client.problems,
+              }),
+      }),
     "machines.list": async () => {
       const snapshot = client.getSnapshot();
       const tasks = snapshot.tasks?.entries ?? [];
@@ -3234,12 +3234,6 @@ async function executeMockCommand(
     case "settings.idleCompaction.set":
       client.setIdleCompactionPolicy(command.policy);
       return rpcSuccess({ type: command.type, policy: command.policy });
-    // The preview sends nothing anywhere; it keeps the person's choice to show it.
-    case "settings.problemReports.set":
-      return rpcSuccess({
-        reporting: client.setProblemReportsChoice(command.send),
-        type: command.type,
-      });
     case "viewer.quietTasks.update":
       client.setQuietTaskDays(command.quietTaskDays);
       return rpcSuccess({ quietTaskDays: command.quietTaskDays, type: command.type });
@@ -4510,14 +4504,10 @@ export class MockHostClient implements HostClient {
   /** The problems the preview's Home has, for a scenario or a test. */
   setProblems(
     problems: readonly import("@opensteer/protocol/problems").Problem[],
-    options: {
-      readonly cloudComputer?: boolean;
-      readonly destination?: "opensteer" | "own" | "none";
-    } = {},
+    destination: "operator" | "own" | "none" = "none",
   ): void {
     this.#state.problems = [...problems];
-    if (options.cloudComputer) this.#state.problemReports = "operator";
-    if (options.destination) this.#state.problemDestination = options.destination;
+    this.#state.problemDestination = destination;
   }
 
   setSearchSuggestionsAvailable(available: boolean): void {
@@ -5456,18 +5446,6 @@ export class MockHostClient implements HostClient {
     );
     if (result.type !== "viewer.name.update") throw new Error("Setting command mismatch.");
     return { applied: result.applied };
-  }
-
-  async setProblemReports(send: boolean) {
-    const result = unwrapRpcResult(
-      await this.rpc["commands.dispatch"]({
-        idempotencyKey: crypto.randomUUID(),
-        send,
-        type: "settings.problemReports.set",
-      }),
-    );
-    if (result.type !== "settings.problemReports.set") throw new Error("Setting command mismatch.");
-    return result.reporting;
   }
 
   async setQuietTaskDays(days: QuietTaskDays): Promise<void> {
@@ -13883,18 +13861,10 @@ class MockHostState {
         personalSettings: { ...this.snapshot.personalSettings, idleCompactionPolicy: policy },
       });
   }
-  /** `operator` stands for a Cloud Computer, whose report its operator always receives. */
-  problemReports: "off" | "on" | "operator" = "off";
-  problemDestination: "opensteer" | "own" | "none" = "opensteer";
+  /** Where the preview's Home would send its report: by default nowhere, as a Mac. */
+  problemDestination: "operator" | "own" | "none" = "none";
   /** What a preview shows as this Home's problems; none until a test or a scenario sets some. */
   problems: import("@opensteer/protocol/problems").Problem[] = [];
-  problemReporting(): import("@opensteer/protocol").ProblemReporting {
-    return { mode: this.problemReports, destination: this.problemDestination };
-  }
-  setProblemReportsChoice(send: boolean): import("@opensteer/protocol").ProblemReporting {
-    if (this.problemReports !== "operator") this.problemReports = send ? "on" : "off";
-    return this.problemReporting();
-  }
   setQuietTaskDays(days: QuietTaskDays): void {
     this.update({ ...this.snapshot, quietTaskDays: days });
   }

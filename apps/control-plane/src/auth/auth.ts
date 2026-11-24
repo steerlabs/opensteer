@@ -166,9 +166,27 @@ export function createControlPlaneAuth(
       ...(config.appReview || config.syntheticSignIn
         ? [
             appReviewSignIn(
-              [config.appReview, config.syntheticSignIn].filter(
-                (account): account is AppReviewSignInConfig => account !== undefined,
-              ),
+              [
+                config.appReview,
+                config.syntheticSignIn && { ...config.syntheticSignIn, synthetic: true as const },
+              ].filter((account): account is AppReviewSignInConfig => account !== undefined),
+              {
+                isSynthetic: async (userId) =>
+                  (
+                    await database
+                      .selectFrom("users")
+                      .select("syntheticAt")
+                      .where("id", "=", userId as never)
+                      .executeTakeFirst()
+                  )?.syntheticAt != null,
+                markSynthetic: async (userId) => {
+                  await database
+                    .updateTable("users")
+                    .set({ syntheticAt: new Date() })
+                    .where("id", "=", userId as never)
+                    .execute();
+                },
+              },
             ),
           ]
         : []),

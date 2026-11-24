@@ -130,14 +130,24 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
     expect(
       (await signIn({ email: syntheticSignIn.email, password: appReview.password })).status,
     ).toBe(401);
+    // A person who already has an Account under that email is never signed in by it (U6).
+    const personId = `usr_${crypto.randomUUID()}`;
+    await sql`insert into public.users (id, display_name, email, email_verified)
+      values (${personId}, 'A person', ${syntheticSignIn.email}, true)`.execute(database);
+    expect((await signIn(syntheticSignIn)).status).toBe(401);
+    await database
+      .deleteFrom("users")
+      .where("id", "=", personId as never)
+      .execute();
+    // The Account it makes itself is marked, and only that one signs in again.
     expect((await signIn(syntheticSignIn)).status).toBe(200);
-    expect(
-      await database
-        .selectFrom("users")
-        .select("email")
-        .where("email", "in", [appReview.email, syntheticSignIn.email])
-        .execute(),
-    ).toEqual([{ email: syntheticSignIn.email }]);
+    expect((await signIn(syntheticSignIn)).status).toBe(200);
+    const made = await database
+      .selectFrom("users")
+      .select(["email", "syntheticAt"])
+      .where("email", "in", [appReview.email, syntheticSignIn.email])
+      .execute();
+    expect(made).toEqual([{ email: syntheticSignIn.email, syntheticAt: expect.any(Date) }]);
     await database.deleteFrom("users").where("email", "=", syntheticSignIn.email).execute();
   });
 

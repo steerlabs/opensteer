@@ -61,17 +61,18 @@ export type CloudComputerSetupFailure = z.infer<typeof CloudComputerSetupFailure
  */
 export const ReleaseVersionSchema = z
   .string()
-  .max(32)
-  .regex(/^\d{1,6}\.\d{1,6}\.\d{1,6}(?:-(?:alpha|beta|rc)\.\d{1,6})?$/u);
+  .max(24)
+  .regex(/^\d{1,4}\.\d{1,4}\.\d{1,4}(?:-(?:alpha|beta|rc)\.\d{1,4})?$/u);
 
 /**
- * A time in a report, to the minute and nothing finer: `2026-11-24T10:42:00Z`. A free number of
- * fractional digits would be room for chosen text.
+ * A time in a report, to the minute and nothing finer: `2026-11-24T10:42:00Z`, a real month,
+ * day, hour and minute of this century and zero seconds. A free number of fractional digits, or
+ * any two digits in each place, would be room for chosen text.
  */
 export const ReportTimeSchema = z
   .string()
   .max(20)
-  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00Z$/u);
+  .regex(/^20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:00Z$/u);
 export type ReportTime = z.infer<typeof ReportTimeSchema>;
 
 /** A time as a report holds it: truncated to its minute. */
@@ -267,9 +268,9 @@ export const MachineStatusSchema = z.strictObject({
 export type MachineStatus = z.infer<typeof MachineStatusSchema>;
 
 /**
- * The full health report: what a Cloud Computer sends its operator, the Opensteer account, and
- * what a self-hosted Home sends its own collector when the person turned that on. The person sees
- * the exact bytes before they are sent.
+ * The one report a Home sends: what a Cloud Computer sends its operator, the Opensteer account,
+ * and what a self-hosted Home sends its operator's own collector when that operator set its
+ * address. A person's own Home sends nothing. The person sees the exact bytes in Settings.
  */
 export const HomeHealthReportSchema = z.strictObject({
   schema: z.literal(1),
@@ -287,29 +288,6 @@ export const HomeHealthReportSchema = z.strictObject({
     .max(problemsLimit),
 });
 export type HomeHealthReport = z.infer<typeof HomeHealthReportSchema>;
-
-/** How many times a problem happened, as the Opensteer account is told it: a bucket. */
-export const ProblemCountBucketSchema = z.enum(["1", "2-9", "10-99", "100+"]);
-export function problemCountBucket(count: number): z.infer<typeof ProblemCountBucketSchema> {
-  if (count >= 100) return "100+";
-  if (count >= 10) return "10-99";
-  if (count >= 2) return "2-9";
-  return "1";
-}
-
-/**
- * The whole of what a person's own Home sends the Opensteer account, once a day, only while they
- * turned it on: its kind, its version, and each problem's code with a bucketed count. No times,
- * no services, no backup or update results, no account and no id: the account keeps only how
- * many Homes named each code on each day.
- */
-export const OpensteerProblemReportSchema = z.strictObject({
-  schema: z.literal(1),
-  home: z.enum(["server", "mac", "other"]),
-  version: ReleaseVersionSchema,
-  codes: z.partialRecord(z.enum(homeProblemCodes), ProblemCountBucketSchema),
-});
-export type OpensteerProblemReport = z.infer<typeof OpensteerProblemReportSchema>;
 
 /** A problem as the Host's API answers it: tolerant of fields a newer Host adds. */
 export const ProblemViewSchema = z.object({
@@ -335,6 +313,6 @@ export function compareProblems(left: Problem, right: Problem): number {
   );
 }
 
-/** The paths of the account service that receive a report. */
+/** Where a Cloud Computer's report goes on the account service, and on a self-hoster's collector. */
 export const cloudComputerHealthPath = (id: string) => `/v1/cloud-computers/${id}/health`;
 export const problemReportsPath = "/v1/problem-reports";

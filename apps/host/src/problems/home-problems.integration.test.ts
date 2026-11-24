@@ -4,19 +4,9 @@ import { join } from "node:path";
 import { createDatabase } from "@opensteer/database";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
-import {
-  HomeHealthReportSchema,
-  OpensteerProblemReportSchema,
-  reportTime,
-} from "@opensteer/protocol/problems";
-import { sql } from "kysely";
+import { HomeHealthReportSchema, reportTime } from "@opensteer/protocol/problems";
 import { describe, expect, it, vi } from "vitest";
-import {
-  HomeProblems,
-  machineStatusFile,
-  opensteerReportIntervalMs,
-  problemReportDestination,
-} from "./home-problems.js";
+import { HomeProblems, machineStatusFile, problemReportDestination } from "./home-problems.js";
 
 const managed = {
   managedHome: {
@@ -28,29 +18,26 @@ const managed = {
 } as const;
 
 describe("a Home's problems and its one report", () => {
-  it("sends to one configured address only: the operator's for a Cloud Computer, else the person's choice", () => {
+  it("sends to one address its operator configured, and from a person's own Home nowhere", () => {
     expect(problemReportDestination(managed)).toMatchObject({
       kind: "operator",
       url: new URL(
         "https://account.example.test/v1/cloud-computers/cc_00000000-0000-4000-8000-000000000001/health",
       ),
     });
-    expect(
-      problemReportDestination({ personalAccountIssuer: new URL("https://account.example.test") }),
-    ).toEqual({
-      kind: "opensteer",
-      url: new URL("https://account.example.test/v1/problem-reports"),
-    });
+    // A Mac names its Opensteer account, and still sends it nothing.
     expect(
       problemReportDestination({
         personalAccountIssuer: new URL("https://account.example.test"),
-        problemReportsOrigin: new URL("https://collector.self.example"),
-      }),
+      } as never),
+    ).toEqual({ kind: "none" });
+    expect(
+      problemReportDestination({ problemReportsOrigin: new URL("https://collector.self.example") }),
     ).toEqual({ kind: "own", url: new URL("https://collector.self.example/v1/problem-reports") });
     expect(problemReportDestination({})).toEqual({ kind: "none" });
   });
 
-  it("builds the report from fixed values, sends nothing until the person turns it on, then exactly what they saw", async () => {
+  it("builds the report from fixed values and sends a self-hoster's collector exactly what Settings shows", async () => {
     const clone = await cloneTestDatabase("host");
     const database = createDatabase({ connectionString: clone.url });
     const directory = mkdtempSync(join(tmpdir(), "home-problems-"));
@@ -84,6 +71,8 @@ describe("a Home's problems and its one report", () => {
         home: "server",
         readsMachineStatus: true,
         version: "1.4.0 /home/alex",
+        // A stand-in for the disk: what is on this machine's own disk is not the test's (U7).
+        readDisk: async () => "under-70",
         // A self-hoster's own collector receives the full report.
         destination: {
           kind: "own",
@@ -113,19 +102,16 @@ describe("a Home's problems and its one report", () => {
         home: "mac",
         readsMachineStatus: false,
         version: "1.4.0",
+        // A stand-in for the disk: what is on this machine's own disk is not the test's (U7).
+        readDisk: async () => "under-70",
         destination: { kind: "none" },
       });
       expect(await mac.report()).not.toHaveProperty("services");
       expect((await mac.report()).problems).toEqual([]);
 
-      // Off by default: nothing leaves, and nothing wakes to check (S10).
-      expect((await problems.reporting()).mode).toBe("off");
-      await problems.start();
-      expect(problems.scheduled()).toBe(false);
-      await problems.sendOnce();
-      expect(fetch).not.toHaveBeenCalled();
-
-      expect((await problems.setSending(true)).mode).toBe("on");
+      // Its operator set the address: that is the consent, and it sends on its timer.
+      expect(problems.reporting()).toEqual({ destination: "own" });
+      problems.start();
       expect(problems.scheduled()).toBe(true);
       await problems.sendOnce();
       expect(sent).toHaveLength(1);
@@ -134,15 +120,7 @@ describe("a Home's problems and its one report", () => {
       expect(new Headers(sent[0]!.init.headers).has("authorization")).toBe(false);
       expect(sent[0]!.init.body).toBe((await problems.view()).body);
       expect(JSON.parse(String(sent[0]!.init.body))).toEqual(await problems.report());
-      expect(await problems.reporting()).toMatchObject({ mode: "on", lastResult: "sent" });
-
-      // An Off that lands while a report is being built stops it before it leaves (S11).
-      const sending = problems.sendOnce();
-      const off = problems.setSending(false);
-      await Promise.all([sending, off]);
-      expect(sent).toHaveLength(1);
-      expect(problems.scheduled()).toBe(false);
-      await problems.setSending(true);
+      expect(problems.reporting()).toMatchObject({ destination: "own", lastResult: "sent" });
 
       // A machine status the maintenance stopped writing says nothing about services now.
       utimesSync(
@@ -164,7 +142,7 @@ describe("a Home's problems and its one report", () => {
         schema: 1,
         home: "server",
         version: "0.0.0",
-        ...((await problems.report()).disk ? { disk: (await problems.report()).disk } : {}),
+        disk: "under-70",
         problems: [],
       });
       await problems.close();
@@ -175,56 +153,40 @@ describe("a Home's problems and its one report", () => {
     }
   });
 
-  it("sends Opensteer, from a person's own Home, only its kind, version and codes with bucketed counts, once a day (D2)", async () => {
+  it("on a person's own Home has no timer, sends nothing and has no body to show (S10)", async () => {
     const clone = await cloneTestDatabase("host");
     const database = createDatabase({ connectionString: clone.url });
-    const directory = mkdtempSync(join(tmpdir(), "home-problems-"));
     try {
-      const personal = await seedPersonalFixture(database, "/tmp/problems-home");
-      // Three plugin sign-ins that did not finish, on two surfaces: one code, a count of three.
-      for (const surface of ["web", "web", "desktop"])
-        await sql`insert into integration_auth_attempts
-          (id, flow, owner_user_id, state_hash, launch_ticket_hash, encrypted_payload,
-           encryption_key_version, status, surface, expires_at, created_at)
-          values (${crypto.randomUUID()}, 'oauth', ${personal.userId}, ${crypto.randomUUID()},
-           ${crypto.randomUUID()}, '\\x00', 1, 'failed', ${surface}, now(), now())`.execute(
-          database,
-        );
-      const fetch = vi.fn(async () => new Response(null, { status: 204 }));
+      await seedPersonalFixture(database, "/tmp/problems-home");
+      const fetch = vi.fn<typeof globalThis.fetch>();
       const problems = new HomeProblems({
         database,
-        dataDirectory: directory,
+        dataDirectory: "/nonexistent",
         home: "mac",
         readsMachineStatus: false,
         version: "1.4.0",
-        destination: {
-          kind: "opensteer",
-          url: new URL("https://account.example.test/v1/problem-reports"),
-        },
-        fetch: fetch as typeof globalThis.fetch,
+        // A stand-in for the disk: what is on this machine's own disk is not the test's (U7).
+        readDisk: async () => "under-70",
+        destination: { kind: "none" },
+        fetch,
       });
-      const body = (await problems.view()).body!;
-      expect(JSON.parse(body)).toEqual({
-        schema: 1,
-        home: "mac",
-        version: "1.4.0",
-        codes: { "sign_in.unfinished": "2-9" },
-      });
-      expect(OpensteerProblemReportSchema.parse(JSON.parse(body))).toEqual(JSON.parse(body));
-      await problems.setSending(true);
+      problems.start();
+      expect(problems.scheduled()).toBe(false);
       await problems.sendOnce();
-      const [, init] = fetch.mock.calls[0] as unknown as [URL, RequestInit];
-      expect(init.body).toBe(body);
-      expect(opensteerReportIntervalMs).toBe(24 * 60 * 60_000);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(await problems.view()).toEqual({
+        problems: [],
+        reporting: { destination: "none" },
+        body: null,
+      });
       await problems.close();
     } finally {
-      rmSync(directory, { recursive: true, force: true });
       await database.destroy();
       await clone.drop();
     }
   });
 
-  it("sends a Cloud Computer's report with its account credentials, whatever the setting says", async () => {
+  it("sends a Cloud Computer's report with its account credentials", async () => {
     const clone = await cloneTestDatabase("host");
     const database = createDatabase({ connectionString: clone.url });
     const directory = mkdtempSync(join(tmpdir(), "home-problems-"));
@@ -237,13 +199,12 @@ describe("a Home's problems and its one report", () => {
         home: "cloud-computer",
         readsMachineStatus: true,
         version: "1.4.0",
+        // A stand-in for the disk: what is on this machine's own disk is not the test's (U7).
+        readDisk: async () => "under-70",
         destination: problemReportDestination(managed),
         fetch: fetch as typeof globalThis.fetch,
       });
-      expect(await problems.reporting()).toMatchObject({
-        mode: "operator",
-        destination: "opensteer",
-      });
+      expect(problems.reporting()).toEqual({ destination: "operator" });
       await problems.sendOnce();
       const [url, init] = fetch.mock.calls[0] as unknown as [URL, RequestInit];
       expect(String(url)).toBe(

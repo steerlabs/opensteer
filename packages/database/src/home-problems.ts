@@ -113,29 +113,3 @@ export async function readStoredProblems(database: Kysely<DatabaseSchema>): Prom
   }
   return [...merged.values()];
 }
-
-/** Whether the person turned on "Send problem reports to Opensteer". Off when unset. */
-export async function readProblemReportsSetting(
-  database: Kysely<DatabaseSchema>,
-): Promise<"off" | "on"> {
-  const row = await database
-    .selectFrom("personalSettings")
-    .select("problemReports")
-    .where("singletonKey", "=", "personal")
-    .executeTakeFirst();
-  return row?.problemReports === "on" ? "on" : "off";
-}
-
-/** The person's own choice, from their Settings; no agent's command reaches it (person-view). */
-export async function setProblemReportsSetting(
-  database: Kysely<DatabaseSchema>,
-  value: "off" | "on",
-): Promise<"off" | "on"> {
-  const updated = await database
-    .updateTable("personalSettings")
-    .set({ problemReports: value })
-    .where("singletonKey", "=", "personal")
-    .returning("problemReports")
-    .executeTakeFirst();
-  return updated?.problemReports ?? "off";
-}

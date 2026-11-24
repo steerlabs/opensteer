@@ -72,7 +72,6 @@ import { cloudComputerOperatorUsage, runCloudComputerOperator } from "./operator
 import type { StripeBilling, StripeSubscription } from "./stripe.js";
 import {
   cloudComputerHealthPath,
-  problemReportsPath,
   reportTime,
   type HomeHealthReport,
 } from "@opensteer/protocol/problems";
@@ -373,7 +372,6 @@ integration("Cloud Computer Account service", () => {
           kickBootstrap,
           kickBilling,
           stripeWebhookSecret: webhookSecret,
-          problemReportsPerMinute: 4,
           verifyProvisioner: googleServiceAccountVerifier({
             audience: publicOrigin.origin,
             email: provisionerEmail,
@@ -1139,9 +1137,12 @@ integration("Cloud Computer Account service", () => {
     expect(JSON.stringify(config)).not.toContain(setup!);
     expect(logs.join("")).not.toContain(first.bootstrapToken!);
 
+    // Down again 50 ms after it became ready: it was not ready for the whole limit, so the clock
+    // of its outage keeps running from when readiness began (U2).
+    const readinessBefore = (await getDesired(id))?.readinessStartedAt;
     now = new Date(now.getTime() + 50);
     expect((await report(pinned, { phase: "booting" })).json()).toEqual({ recorded: true });
-    expect((await getDesired(id))?.readinessStartedAt).toBe(now.toISOString());
+    expect((await getDesired(id))?.readinessStartedAt).toBe(readinessBefore);
     expect((await getDesired(id))?.observedIdentity).toEqual(identity);
 
     await expect(cloud.mutate(id, "reissue")).rejects.toThrow("working Home");
@@ -1420,7 +1421,7 @@ integration("Cloud Computer Account service", () => {
     expect((await read()).json()).toHaveProperty("lastBackupAt", later.completedAt);
   });
 
-  it("keeps each Cloud Computer's latest health report for its operator, and counts a person's codes only", async () => {
+  it("keeps each Cloud Computer's latest health report for its operator, and takes no report from anyone else", async () => {
     const { id } = await buy();
     const current = (await getDesired(id))!;
     const oidc = (await bootable(current)).managedHome!.oidc;
@@ -1494,48 +1495,10 @@ integration("Cloud Computer Account service", () => {
       ),
     ).toEqual([{ event: "account.cloud_computer.report_missing", computerId: id, minutes: 61 }]);
 
-    // A person's own Home: its kind, version and each code with a bucketed count, nothing else.
-    const personal = {
-      schema: 1,
-      home: "mac",
-      version: "1.4.0",
-      codes: { "stop.unconfirmed": "2-9", "engine.inspection_failed": "1" },
-    };
-    const anonymous = (payload: unknown) =>
-      http({ method: "POST", url: problemReportsPath, payload });
-    for (const bad of [
-      { ...personal, home: "cloud-computer" },
-      { ...personal, account: "alex@example.com" },
-      { ...personal, codes: { "stop.unconfirmed": 1_000_000 } },
-      report,
-    ])
-      expect((await anonymous(bad)).statusCode).toBe(400);
-    const logged = logs.length;
-    expect((await anonymous(personal)).statusCode).toBe(204);
-    expect((await anonymous(personal)).statusCode).toBe(204);
+    // A person's own Home sends Opensteer nothing: there is no route to send it to.
     expect(
-      await database
-        .selectFrom("problemReportCounts")
-        .select(["code", "bucket", "reports"])
-        .orderBy("code")
-        .execute(),
-    ).toEqual([
-      { code: "engine.inspection_failed", bucket: "1", reports: "2" },
-      { code: "stop.unconfirmed", bucket: "2-9", reports: "2" },
-    ]);
-    // Nothing of a report is logged.
-    expect(logs.slice(logged).join("")).toBe("");
-    // One budget a minute for every sender, whatever address it gives (S3): here, four.
-    const spoofed = (address: string) =>
-      http({
-        method: "POST",
-        url: problemReportsPath,
-        headers: { "x-forwarded-for": address },
-        payload: personal,
-      });
-    expect((await spoofed("198.51.100.1")).statusCode).toBe(204);
-    expect((await spoofed("198.51.100.2")).statusCode).toBe(204);
-    expect((await spoofed("198.51.100.3")).statusCode).toBe(429);
+      (await http({ method: "POST", url: "/v1/problem-reports", payload: {} })).statusCode,
+    ).toBe(404);
   });
 
   it("assigns a late egress endpoint and serves it only to the current booted Home", async () => {
@@ -1740,6 +1703,71 @@ integration("Cloud Computer Account service", () => {
     now = new Date(now.getTime() + 31 * 60_000);
     expect(await findings("account.cloud_computer.not_ready")).toEqual([
       { event: "account.cloud_computer.not_ready", computerId: id, phase: "booting", minutes: 31 },
+    ]);
+  });
+
+  it("pages a computer that keeps going down faster than the limit, though each outage is short (U2)", async () => {
+    const { id } = await buy();
+    // Up and claimed, as after its first set-up.
+    await database
+      .updateTable("cloudComputers")
+      .set({ bootCompletedAt: now, bootstrapReceiptAt: now, lastBackupAt: now })
+      .where("id", "=", id)
+      .execute();
+    const takeLease = () =>
+      http({
+        method: "POST",
+        url: cloudComputerLeasePath,
+        headers: leaseHeaders(),
+        payload: { holder: lease },
+      });
+    const flap = async (phase: "ready" | "booting") => {
+      expect((await takeLease()).statusCode).toBe(200);
+      const current = (await getDesired(id))!;
+      expect(
+        (
+          await report(
+            current,
+            phase === "ready"
+              ? {}
+              : {
+                  phase: "booting",
+                  observedIdentity: null,
+                  providerServerId: 7,
+                  ipv4: "192.0.2.7",
+                },
+          )
+        ).json(),
+      ).toEqual({ recorded: true });
+    };
+    await flap("ready");
+    const notReady = async () =>
+      (await cloud.watch(30 * 60_000)).filter(
+        ({ event }) => event === "account.cloud_computer.not_ready",
+      );
+    // Every ten minutes for an hour: down for three, back for seven, never up for the limit.
+    const pages: number[] = [];
+    for (let minute = 0; minute < 60; minute += 10) {
+      await flap("booting");
+      now = new Date(now.getTime() + 3 * 60_000);
+      if ((await notReady()).length) pages.push(minute + 3);
+      await flap("ready");
+      now = new Date(now.getTime() + 7 * 60_000);
+    }
+    await flap("booting");
+    now = new Date(now.getTime() + 3 * 60_000);
+    if ((await notReady()).length) pages.push(63);
+    // Its first outage began at minute 0, so from minute 33 on, each time it is down, it pages.
+    expect(pages).toEqual([33, 43, 53, 63]);
+    // Up again for the whole limit, then down: a fresh outage, with a fresh clock.
+    await flap("ready");
+    now = new Date(now.getTime() + 30 * 60_000);
+    await flap("booting");
+    now = new Date(now.getTime() + 29 * 60_000);
+    expect(await notReady()).toEqual([]);
+    now = new Date(now.getTime() + 60_000);
+    expect(await notReady()).toEqual([
+      expect.objectContaining({ computerId: id, phase: "booting", minutes: 30 }),
     ]);
   });
 

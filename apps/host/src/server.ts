@@ -379,10 +379,7 @@ const machinePageLimit = 100;
 
 export interface HostServerDependencies {
   /** This Home's problems and the report it sends; see problems/home-problems.ts. */
-  readonly problems?: Pick<
-    import("./problems/home-problems.js").HomeProblems,
-    "view" | "setSending"
-  >;
+  readonly problems?: Pick<import("./problems/home-problems.js").HomeProblems, "view">;
   /** The person's Requests for Home commands agents propose. */
   readonly commandRequests?: import("./commands/requests.js").CommandRequestService;
   /** Hands the agents' state tool the person's read handlers once they are built. */

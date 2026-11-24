@@ -6,7 +6,7 @@ export async function resetManagedCloudTables(database: Kysely<ControlPlaneDatab
   await resetAccountSigningKeys(database);
   await sql`
     truncate table
-      cloud_computer_health, problem_report_counts,
+      cloud_computer_health,
       cloud_computer_egress_endpoints, cloud_computer_backup_namespaces,
       cloud_computer_backup_targets, cloud_computer_provisioner_lease,
       browser_pool_slots, browser_pool_hosts,

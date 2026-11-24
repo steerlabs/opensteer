@@ -2,7 +2,7 @@
 
 exports[`the listing tells the truth about dispatch (ruling 2) > keeps an ask for want of an agent handler apart from an ask of the rule 1`] = `
 {
-  "byRule": 53,
+  "byRule": 52,
   "waiting": 75,
 }
 `;

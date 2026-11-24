@@ -34,7 +34,9 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 0
-      activeDeadlineSeconds: 4200
+      # Longer than the run's own worst case (worstCaseMs: 83.5 minutes with the default bounds),
+      # so a run is never stopped from outside while it still has a Cloud Computer to delete.
+      activeDeadlineSeconds: 6000
       template:
         spec:
           restartPolicy: Never
