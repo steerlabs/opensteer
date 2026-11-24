@@ -1356,7 +1356,7 @@ describe("a message still on this device", () => {
 describe("arrival motion", () => {
   // Failure mode: every turn rises in whenever it mounts, so opening or returning to a task with a
   // long report composites the whole turn (hundreds of ms), as does each row scrolled into view.
-  it("moves only a row live work appends, never rows there when shown, history or a new cut", async () => {
+  it("moves only a row live work appends, never rows there when shown, history, a repair or a new cut", async () => {
     const message = (index: number): MessageEntry => ({
       ...note,
       runId: null,
@@ -1370,14 +1370,21 @@ describe("arrival motion", () => {
     document.body.append(scroller);
     const root = createRoot(scroller);
     roots.push(root);
-    const show = async (entries: MessageEntry[]) =>
+    // The live conversation's newest rows, of the cut given; null for a window of history.
+    const show = async (entries: MessageEntry[], liveCut: number | null = 1) =>
       act(async () => {
         root.render(
           <MemoryRouter initialEntries={["/tasks/arrival"]}>
-            <AgentTranscript entries={entries} scroller={() => scroller} />
+            <AgentTranscript entries={entries} liveCut={liveCut} scroller={() => scroller} />
           </MemoryRouter>,
         );
       });
+    const settle = () => {
+      for (const slot of scroller.querySelectorAll(".transcript__virtual-slot--arrived"))
+        act(() => {
+          slot.dispatchEvent(new Event("animationend"));
+        });
+    };
     const moving = () =>
       [...scroller.querySelectorAll(".transcript__virtual-slot--arrived")].map((slot) =>
         slot.querySelector("[data-message-id]")?.getAttribute("data-message-id"),
@@ -1417,6 +1424,22 @@ describe("arrival motion", () => {
     expect(moving()).toEqual([]);
     await show(range(30, 53));
     expect(moving()).toEqual(["arrival-52"]);
+    settle();
+    // A repair installs a new cut that keeps every row and adds one: it was read, not appended.
+    await show(range(30, 54), 2);
+    expect(moving()).toEqual([]);
+    await show(range(30, 55), 2);
+    expect(moving()).toEqual(["arrival-54"]);
+    settle();
+    // In a window of history, Load newer appends a page; landing on the newest rows, it still
+    // moves nothing, and only live work after it does.
+    await show(range(30, 55), null);
+    await show(range(30, 56), null);
+    expect(moving()).toEqual([]);
+    await show(range(30, 57), 2);
+    expect(moving()).toEqual([]);
+    await show(range(30, 58), 2);
+    expect(moving()).toEqual(["arrival-57"]);
   });
 });
 

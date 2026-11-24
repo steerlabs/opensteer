@@ -1588,6 +1588,8 @@ const ThreadView = memo(function ThreadView({
                       <AgentTranscript
                         teamChannelName={teamSource?.channel.name ?? null}
                         followTail={atTail && !historical}
+                        // Live work appends to the newest window of one cut; a page read does not.
+                        liveCut={canLoadNewer || historical || loadingEarlier ? null : cuts}
                         pinnedMessageIds={pinnedMessageIds}
                         pinnedRowKeys={pinnedRowKeys}
                         revealMessage={revealMessage}

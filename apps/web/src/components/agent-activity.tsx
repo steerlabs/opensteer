@@ -360,8 +360,8 @@ const noBrowserUses: readonly BrowserSessionUseSummary[] = [];
 const noPinnedRowKeys: readonly string[] = [];
 
 /** The one or two rows live work appended after `before`, each of whose rows stands where it was. */
-function appendedKeys(before: readonly string[] | null, after: readonly string[]): string[] {
-  if (before === null || before.length === 0) return [];
+function appendedKeys(before: readonly string[], after: readonly string[]): string[] {
+  if (before.length === 0) return [];
   const added = after.length - before.length;
   if (added < 1 || added > 2) return [];
   for (let index = 0; index < before.length; index++) {
@@ -415,6 +415,7 @@ export const AgentTranscript = memo(function AgentTranscript({
   viewerUserId = null,
   scroller = null,
   followTail = false,
+  liveCut = null,
   pinnedRowKeys = noPinnedRowKeys,
   pinnedMessageIds = noPinnedRowKeys,
 }: {
@@ -484,6 +485,12 @@ export const AgentTranscript = memo(function AgentTranscript({
   scroller?: (() => HTMLElement | null) | null;
   /** True while the caller is actively following the live tail. */
   followTail?: boolean;
+  /**
+   * The snapshot (cut) the rows were drawn from while they are the live conversation's newest rows;
+   * null while they are a window of history, a page of it is being read, or the transcript is not
+   * live. Only a row live work appends within one such cut rises in.
+   */
+  liveCut?: number | null;
   /** Row keys that the caller needs mounted even while off-screen (e.g. restore anchors). */
   pinnedRowKeys?: readonly string[];
   /** Message IDs whose containing row must stay mounted (survives turn-row renames on prepend). */
@@ -702,20 +709,24 @@ export const AgentTranscript = memo(function AgentTranscript({
       pinnedRowKeys.length === 0 && pinnedMessageIds.length === 0 && revealMessage === null,
   });
   // Only a row that live work appends while the transcript is shown rises in: the rows committed
-  // last, each in place, with one or two more after them. Rows there when it was shown (a task
-  // opened or returned to), a page of history, a jump or a new cut hold still, as do rows scrolled
-  // back into view: animating a whole turn makes the browser composite it, which for a long report
-  // costs hundreds of milliseconds.
+  // last, each in place, with one or two more after them, all within one live cut. Rows there when
+  // it was shown (a task opened or returned to), a page of history, a jump, a repair or a new cut
+  // hold still, as do rows scrolled back into view: animating a whole turn makes the browser
+  // composite it, which for a long report costs hundreds of milliseconds.
   const slots = useRef(new Map<string, HTMLElement>());
-  const committedKeys = useRef<readonly string[] | null>(null);
+  const committed = useRef<{
+    readonly cut: number | null;
+    readonly keys: readonly string[];
+  } | null>(null);
   useLayoutEffect(() => {
-    const before = committedKeys.current;
-    committedKeys.current = rowKeys;
-    for (const key of appendedKeys(before, rowKeys)) {
+    const before = committed.current;
+    committed.current = { cut: liveCut, keys: rowKeys };
+    if (liveCut === null || before?.cut !== liveCut) return;
+    for (const key of appendedKeys(before.keys, rowKeys)) {
       const slot = slots.current.get(key);
       if (slot) riseIn(slot);
     }
-  }, [rowKeys]);
+  }, [liveCut, rowKeys]);
   const observeSlot = (key: string, element: HTMLElement | null) => {
     virtual.observeRow(key, element);
     if (element) slots.current.set(key, element);
