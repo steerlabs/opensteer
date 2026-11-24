@@ -3161,11 +3161,14 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     if (status === "completed" && active.childTurns.size > 0) {
       active.retry.recover();
       active.root = "idle";
-      this.#publish({ data: { phase: "background" }, type: "run.phase" });
+      if (!active.interruptRequested) {
+        this.#publish({ data: { phase: "background" }, type: "run.phase" });
+      }
       return;
     }
-    if (status === "completed") this.#publishTerminal(active, "completed");
-    else if (status === "interrupted") this.#publishTerminal(active, "interrupted");
+    if (status === "completed") {
+      this.#publishTerminal(active, active.interruptRequested ? "interrupted" : "completed");
+    } else if (status === "interrupted") this.#publishTerminal(active, "interrupted");
     else if (status === "failed") {
       const error =
         typeof turn.error === "object" && turn.error !== null ? (turn.error as JsonObject) : {};
