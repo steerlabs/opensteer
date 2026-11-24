@@ -154,7 +154,7 @@ if [ "$build" = 1 ]; then
   say "Building this checkout's desktop app (pnpm --filter @opensteer/desktop build)…"
   (cd "$repo" && pnpm --filter @opensteer/desktop build >/dev/null) || fail "the build failed; run it yourself to see why."
 fi
-[ -x "$electron" ] || fail "Electron is not installed in this checkout; run pnpm install --frozen-lockfile."
+[ -x "$electron" ] || fail "Electron's app is not downloaded in this checkout; run: (cd apps/desktop && node node_modules/electron/install.js)"
 [ -f "$desktop/dist/main.js" ] || fail "apps/desktop/dist is missing; run without --no-build."
 bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$electron_app/Contents/Info.plist")
 case "$bundle_id" in com.opensteer.*) fail "Electron here claims $bundle_id, an Opensteer identity." ;; esac
