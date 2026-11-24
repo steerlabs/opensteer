@@ -17,6 +17,7 @@ import {
 import type { AccountApi } from "./account.js";
 import type { Addresses, CreateVm, DnsProvider, VmProvider, VmServer } from "./provider.js";
 import { Reconciler } from "./reconcile.js";
+import { CloudflareDns } from "./cloudflare.js";
 import { ComputeFake, regionPath, zonePath } from "./google-compute.test-support.js";
 
 const home = CloudComputerDesiredSchema.parse({
@@ -53,7 +54,8 @@ function harness({
   concurrency = 2,
   compute,
   adapter,
-}: { concurrency?: number; compute?: ComputeFake; adapter?: VmProvider } = {}) {
+  zone,
+}: { concurrency?: number; compute?: ComputeFake; adapter?: VmProvider; zone?: DnsProvider } = {}) {
   const reports: CloudComputerReport[] = [];
   const onError = vi.fn();
   const calls: string[] = [];
@@ -111,19 +113,21 @@ function harness({
     }),
   } satisfies VmProvider;
   const vmProvider = adapter ?? compute?.adapter() ?? provider;
-  const dns = {
-    listManaged: vi.fn(async () =>
-      [...records.keys()].map((hostname) => ({ id: home.id, hostname })),
-    ),
-    ensureRecords: vi.fn(async (hostname: string, addresses: Addresses) => {
-      calls.push("dns");
-      records.set(hostname, addresses);
-    }),
-    removeRecords: vi.fn(async (hostname: string) => {
-      calls.push("removeDns");
-      records.delete(hostname);
-    }),
-  } satisfies DnsProvider;
+  const dns =
+    zone ??
+    ({
+      listManaged: vi.fn(async () =>
+        [...records.keys()].map((hostname) => ({ id: home.id, hostname })),
+      ),
+      ensureRecords: vi.fn(async (hostname: string, addresses: Addresses) => {
+        calls.push("dns");
+        records.set(hostname, addresses);
+      }),
+      removeRecords: vi.fn(async (hostname: string) => {
+        calls.push("removeDns");
+        records.delete(hostname);
+      }),
+    } satisfies DnsProvider);
   const status = {
     desired: [home],
     identity: identity as typeof identity | undefined,
@@ -1103,4 +1107,75 @@ describe("Cloud Computer reconciliation", () => {
       expect(h.provider.find).toHaveBeenCalledTimes(1);
     },
   );
+});
+
+/** A Cloudflare zone in memory: the dns_records list (by comment prefix or exact name) and delete. */
+function sharedZone(records: { id: string; name: string; comment: string }[]) {
+  const zone = records.map((record) => ({
+    ...record,
+    type: "A",
+    content: "192.0.2.9",
+    proxied: false,
+  }));
+  const deleted: string[] = [];
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    const id = /\/dns_records\/([a-f0-9]{32})$/u.exec(url.pathname)?.[1];
+    if ((init?.method ?? "GET") === "DELETE" && id) {
+      deleted.push(id);
+      zone.splice(
+        zone.findIndex((record) => record.id === id),
+        1,
+      );
+      return Response.json({ success: true, result: { id } });
+    }
+    const prefix = url.searchParams.get("comment.startswith");
+    const exact = url.searchParams.get("name.exact");
+    const result = zone.filter(
+      (record) =>
+        (prefix === null || record.comment.startsWith(prefix)) &&
+        (exact === null || record.name === exact),
+    );
+    return Response.json({ success: true, result, result_info: { total_pages: 1 } });
+  };
+  return { deleted, names: () => zone.map(({ name }) => name), fetch };
+}
+
+describe("a DNS zone another environment shares", () => {
+  it("sweeps only records under its own Cloud Computer domain", async () => {
+    const production = {
+      id: "a".repeat(32),
+      name: `cc-${"1".repeat(8)}-1111-4111-8111-${"1".repeat(12)}.computers.example.com`,
+      comment: "Opensteer Cloud Computer",
+    };
+    const lookalike = {
+      id: "b".repeat(32),
+      name: `cc-${"2".repeat(8)}-2222-4222-8222-${"2".repeat(12)}.not-home-trial.example.com`,
+      comment: "Opensteer Cloud Computer",
+    };
+    const test = {
+      id: "c".repeat(32),
+      name: `cc-${"3".repeat(8)}-3333-4333-8333-${"3".repeat(12)}.home-trial.example.com`,
+      comment: "Opensteer Cloud Computer",
+    };
+    const zone = sharedZone([production, lookalike, test]);
+    const dns = new CloudflareDns({
+      token: "cloudflare-test-token",
+      zoneId: "0".repeat(32),
+      domain: "home-trial.example.com",
+      timeoutMs: 2000,
+      baseUrl: new URL("https://cloudflare.test/client/v4/"),
+      fetch: zone.fetch,
+    });
+    const listed = await dns.listManaged(new AbortController().signal);
+    expect(listed.map(({ hostname }) => hostname)).toEqual([test.name]);
+
+    const h = harness({ zone: dns });
+    h.status.desired = [];
+    await h.pass();
+    h.status.now += 120_000;
+    await h.pass();
+    expect(zone.deleted).toEqual([test.id]);
+    expect(zone.names()).toEqual([production.name, lookalike.name]);
+  });
 });

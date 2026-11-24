@@ -179,6 +179,12 @@ if [ "$action" = begin ]; then
   # No timeout and no lock on sleep: the job's suite may run for half an hour.
   security set-keychain-settings "$keychain"
   security unlock-keychain -p "$password" "$keychain"
+  # The journeys' apps run in the guest's GUI session, a security session of its own, where this
+  # keychain, the default, stayed locked: Chrome then held its first navigation on reading its own
+  # key from it (chrome-background's R4 never sent its request) and its launch kept the cover from
+  # becoming key (row 1). So it is unlocked in that session too; only launchd, asked by root, runs
+  # a command there. The login keychain is still never unlocked.
+  sudo -n launchctl asuser "$(id -u)" security unlock-keychain -p "$password" "$keychain"
   others_in "$previous_list"
   security list-keychains -d user -s "$keychain" ${others[@]+"${others[@]}"}
   security default-keychain -d user -s "$keychain"

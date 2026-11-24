@@ -125,7 +125,12 @@ async function main(): Promise<void> {
     onError: logFailure,
     orphanGraceMs: config.orphanGraceMs,
     provider: googleProvider,
-    dns: new CloudflareDns({ ...http, token: config.cloudflareToken, zoneId: config.zoneId }),
+    dns: new CloudflareDns({
+      ...http,
+      token: config.cloudflareToken,
+      zoneId: config.zoneId,
+      domain: config.domain,
+    }),
     discover: discoverHome(http),
     accountOrigin: config.accountOrigin,
     image: config.image,

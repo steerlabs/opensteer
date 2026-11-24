@@ -80,27 +80,28 @@ Set `OPENSTEER_CLOUD_COMPUTER_BACKUP_KEY_PROJECT` to a dedicated Google Cloud pr
 
 Run `apps/home-provisioner` with `deploy/home-provisioner/deployment.yaml` (`replicas: 1`, `strategy.type: Recreate`). The pod authenticates to Account with a Google workload identity token fetched from `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity` for the Account origin audience. The same identity's access token authorizes its Compute Engine calls. `OPENSTEER_HOME_CLOUDFLARE_TOKEN` accepts a `_FILE` variant. [deploy/home-provisioner/google-compute.md](../deploy/home-provisioner/google-compute.md) sets up the project, the network and the provisioner's permissions.
 
-| Env var                                    | Meaning                                                                        | Required | Default                       | Secret source                 |
-| ------------------------------------------ | ------------------------------------------------------------------------------ | -------- | ----------------------------- | ----------------------------- |
-| `OPENSTEER_ACCOUNT_URL`                    | Bare `https://` origin of the Account service                                  | Yes      | None                          | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_PROJECT`               | Compute Engine project for Cloud Computer VMs                                  | Yes      | None                          | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_ZONE`                  | Compute Engine zone (for example `us-central1-a`); also selects the region     | Yes      | None                          | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_NETWORK`               | VPC network name                                                               | Yes      | None                          | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_SUBNET`                | Subnet name                                                                    | Yes      | None                          | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_MACHINE_TYPE`          | Machine type when a desired record has `serverType: null`                      | No       | `e2-standard-4`               | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_IMAGE`                 | Ubuntu 24.04 LTS image or image family resource path                           | No       | Ubuntu 24.04 LTS amd64 family | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_DISK_TYPE`             | Boot disk type (`pd-balanced`, `pd-standard`, `pd-ssd`)                        | No       | `pd-balanced`                 | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_DISK_SIZE_GB`          | Boot disk size in GB                                                           | No       | `30`                          | Deployment secret/env         |
-| `OPENSTEER_HOME_CLOUDFLARE_TOKEN`          | Cloudflare API token                                                           | Yes      | None                          | Secret (`_FILE` or SecretRef) |
-| `OPENSTEER_HOME_CLOUDFLARE_ZONE_ID`        | Cloudflare 32-character hex zone ID for `OPENSTEER_CLOUD_COMPUTER_DOMAIN`      | Yes      | None                          | Deployment secret/env         |
-| `OPENSTEER_HOME_PROVISIONER_REPLICAS`      | Safety guard; must equal `"1"` or the process refuses to start                 | No       | `1`                           | Deployment manifest           |
-| `OPENSTEER_HOME_INTERVAL_MS`               | Poll interval in milliseconds (`1000`–`300000`)                                | No       | `10000`                       | Deployment secret/env         |
-| `OPENSTEER_HOME_REQUEST_TIMEOUT_MS`        | Per-HTTP-request timeout in milliseconds (`100`–`60000`)                       | No       | `15000`                       | Deployment secret/env         |
-| `OPENSTEER_HOME_ACTION_TIMEOUT_MS`         | Compute Engine operation timeout in milliseconds (`1000`–`600000`)             | No       | `90000`                       | Deployment secret/env         |
-| `OPENSTEER_HOME_READINESS_TIMEOUT_MS`      | Max wait for a Home to become ready in milliseconds (`1000`–`3600000`)         | No       | `600000`                      | Deployment secret/env         |
-| `OPENSTEER_HOME_ORPHAN_GRACE_MS`           | Grace period before deleting orphaned VMs or DNS records (`60000`–`86400000`)  | No       | `300000`                      | Deployment secret/env         |
-| `OPENSTEER_HOME_CONCURRENCY`               | Max Cloud Computers reconciled in parallel (`1`–`16`)                          | No       | `4`                           | Deployment secret/env         |
-| `OPENSTEER_HOME_PROVISIONER_HEARTBEAT_URL` | `https://` address sent a GET after each tick with no failure; accepts `_FILE` | No       | None                          | Secret (`_FILE` or SecretRef) |
+| Env var                                | Meaning                                                                                                         | Required | Default                       | Secret source                 |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------- | -------- | ----------------------------- | ----------------------------- |
+| `OPENSTEER_ACCOUNT_URL`                | Bare `https://` origin of the Account service                                                                   | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_PROJECT`           | Compute Engine project for Cloud Computer VMs                                                                   | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_ZONE`              | Compute Engine zone (for example `us-central1-a`); also selects the region                                      | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_NETWORK`           | VPC network name                                                                                                | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_SUBNET`            | Subnet name                                                                                                     | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_MACHINE_TYPE`      | Machine type when a desired record has `serverType: null`                                                       | No       | `e2-standard-4`               | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_IMAGE`             | Ubuntu 24.04 LTS image or image family resource path                                                            | No       | Ubuntu 24.04 LTS amd64 family | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_DISK_TYPE`         | Boot disk type (`pd-balanced`, `pd-standard`, `pd-ssd`)                                                         | No       | `pd-balanced`                 | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_DISK_SIZE_GB`      | Boot disk size in GB                                                                                            | No       | `30`                          | Deployment secret/env         |
+| `OPENSTEER_HOME_CLOUDFLARE_TOKEN`      | Cloudflare API token                                                                                            | Yes      | None                          | Secret (`_FILE` or SecretRef) |
+| `OPENSTEER_HOME_CLOUDFLARE_ZONE_ID`    | Cloudflare 32-character hex zone ID for `OPENSTEER_CLOUD_COMPUTER_DOMAIN`                                       | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_CLOUD_COMPUTER_DOMAIN` | Account's `OPENSTEER_CLOUD_COMPUTER_DOMAIN`; the only names in the zone the reconciler lists, writes or deletes | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_PROVISIONER_REPLICAS`  | Safety guard; must equal `"1"` or the process refuses to start                                                  | No       | `1`                           | Deployment manifest           |
+| `OPENSTEER_HOME_INTERVAL_MS`           | Poll interval in milliseconds (`1000`–`300000`)                                                                 | No       | `10000`                       | Deployment secret/env         |
+| `OPENSTEER_HOME_REQUEST_TIMEOUT_MS`    | Per-HTTP-request timeout in milliseconds (`100`–`60000`)                                                        | No       | `15000`                       | Deployment secret/env         |
+| `OPENSTEER_HOME_ACTION_TIMEOUT_MS`     | Compute Engine operation timeout in milliseconds (`1000`–`600000`)                                              | No       | `90000`                       | Deployment secret/env         |
+| `OPENSTEER_HOME_READINESS_TIMEOUT_MS`  | Max wait for a Home to become ready in milliseconds (`1000`–`3600000`)                                          | No       | `600000`                      | Deployment secret/env         |
+| `OPENSTEER_HOME_ORPHAN_GRACE_MS`       | Grace period before deleting orphaned VMs or DNS records (`60000`–`86400000`)                                   | No       | `300000`                      | Deployment secret/env         |
+| `OPENSTEER_HOME_CONCURRENCY`           | Max Cloud Computers reconciled in parallel (`1`–`16`)                                                           | No       | `4`                           | Deployment secret/env         |
+| `OPENSTEER_HOME_PROVISIONER_HEARTBEAT_URL` | `https://` address sent a GET after each tick with no failure; accepts `_FILE` | No | None | Secret (`_FILE` or SecretRef) |
 
 ### Home VM environment (on each VM)
 
@@ -137,6 +138,7 @@ Managed VMs receive their configuration automatically during boot and store it u
    - On first run, the reconciler creates and maintains firewall rule `opensteer-cloud-computers-v4` (and `opensteer-cloud-computers-v6` on a dual-stack subnet) on the VPC, allowing inbound TCP `80` and `443` from `0.0.0.0/0` (and `::/0`) to instances tagged `opensteer-cloud-computers`.
 3. **Cloudflare**:
    - Create or choose the DNS zone for `OPENSTEER_CLOUD_COMPUTER_DOMAIN` and record its 32-hex zone ID in `OPENSTEER_HOME_CLOUDFLARE_ZONE_ID`.
+   - Give the reconciler the same domain in `OPENSTEER_HOME_CLOUD_COMPUTER_DOMAIN`. A zone token can edit every record in the zone, and the orphan sweep removes Cloud Computer records whose computer its Account does not know: limited to that domain, two environments that share a zone never delete each other's records.
    - Create an API token with `Zone:DNS:Edit` restricted to that single zone.
    - The reconciler creates unproxied (`proxied: false`, `ttl: 1`) `A` records (and `AAAA` records only when `OPENSTEER_CLOUD_COMPUTER_IPV6=on`) stamped with the comment `Opensteer Cloud Computer`. Keep customer subdomains free of pre-existing `CNAME`, `A`, or `AAAA` records.
 4. **Release (installer and container images)**:
