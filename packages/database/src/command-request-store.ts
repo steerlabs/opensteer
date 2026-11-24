@@ -121,6 +121,17 @@ const pendingCommand = (database: Kysely<DatabaseSchema>, owner: UserId) =>
     .where("status", "=", "pending")
     .where("command", "is not", null);
 
+interface OpenInput {
+  readonly ownerUserId: UserId;
+  readonly callId: string;
+  readonly origin: CommandRequestOrigin;
+  readonly originatingThreadId: ThreadId;
+  readonly part: CommandRequestPart;
+  readonly presentation: RequestPresentation;
+  /** The proposer's admission once more, first in the transaction that writes the Request. */
+  readonly stillAsks?: (transaction: Transaction<DatabaseSchema>) => Promise<boolean>;
+}
+
 export class CommandRequestStore {
   readonly #database: Kysely<DatabaseSchema>;
   readonly #requests: RequestStore;
@@ -138,27 +149,17 @@ export class CommandRequestStore {
    * ask waits until the person answers or its proposer withdraws it, and the same proposal the
    * person declined is answered as declined for a day (`declineRemembered`).
    */
-  async open(input: {
-    readonly ownerUserId: UserId;
-    readonly callId: string;
-    readonly origin: CommandRequestOrigin;
-    readonly originatingThreadId: ThreadId;
-    readonly part: CommandRequestPart;
-    readonly presentation: RequestPresentation;
-  }): Promise<CommandRequestOpened> {
+  async open(input: OpenInput): Promise<CommandRequestOpened> {
     return this.#open(input);
   }
 
-  #open(input: {
-    readonly ownerUserId: UserId;
-    readonly callId: string;
-    readonly origin: CommandRequestOrigin;
-    readonly originatingThreadId: ThreadId;
-    readonly part: CommandRequestPart;
-    readonly presentation: RequestPresentation;
-  }): Promise<CommandRequestOpened> {
+  #open(input: OpenInput): Promise<CommandRequestOpened> {
     return commitPersonalMutation(this.#database, async (transaction) => {
       const owner = input.ownerUserId;
+      // Whoever asks must still reach what it asks about as the Request is written: a grant
+      // narrowed since the door admitted it reads like nothing there, and nothing opens.
+      if (input.stillAsks && !(await input.stillAsks(transaction)))
+        throw new OpensteerError({ code: "not_found", message: "Not found" });
       // The same call (the agent's own key) replays its Request, whatever happened since.
       const replay = await transaction
         .selectFrom("requests")
@@ -354,6 +355,8 @@ export class CommandRequestStore {
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
+    /** The person did it themselves: what their own command came to, with no value in it. */
+    readonly outcome?: CommandRequestOutcome;
   }): Promise<{ readonly request: Request }> {
     return commitPersonalMutation(this.#database, async (transaction) => {
       const row = await this.#lockPending(transaction, input);
@@ -365,6 +368,14 @@ export class CommandRequestStore {
           resolvedAt: now,
           resolvedBy: input.resolvedBy,
           response: jsonValue(input.response),
+          ...(input.outcome
+            ? {
+                command: partValue({
+                  ...CommandRequestPartSchema.parse(row.command),
+                  outcome: input.outcome,
+                }),
+              }
+            : {}),
           settlementProvenance: await readRequestSettlementProvenance(
             transaction,
             input.resolvedBy,
@@ -381,6 +392,65 @@ export class CommandRequestStore {
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
       return { request: await refreshRequestState(transaction, request.id) };
     });
+  }
+
+  /**
+   * The Home's words on a pending Request, written again as they are true now (its sentence, what
+   * it gives, its notes, the card): the revision moves, so a client that read the old words reads
+   * the Request again before anything can be answered.
+   */
+  async refreshWords(input: {
+    readonly requestId: RequestId;
+    readonly expectedRevision: string;
+    readonly resolvedBy: UserId;
+    readonly part: CommandRequestPart;
+    readonly presentation: RequestPresentation;
+  }): Promise<void> {
+    await commitPersonalMutation(this.#database, async (transaction) => {
+      const row = await this.#lockPending(transaction, input);
+      await transaction
+        .updateTable("requests")
+        .set({ command: partValue(input.part), presentation: jsonValue(input.presentation) })
+        .where("id", "=", row.id)
+        .where("status", "=", "pending")
+        .execute();
+      await refreshRequestState(transaction, row.id);
+    });
+  }
+
+  /**
+   * The person did themselves what this pending Request asked for: settled as their answer that
+   * they did it, with the value-free outcome their own command came to, under its lock and
+   * revision.
+   */
+  async doneByPerson(input: {
+    readonly requestId: RequestId;
+    readonly resolvedBy: UserId;
+    readonly outcome: CommandRequestOutcome;
+  }): Promise<{ readonly request: Request }> {
+    const current = await this.#database
+      .selectFrom("requests")
+      .select("revision")
+      .where("id", "=", input.requestId)
+      .executeTakeFirstOrThrow();
+    return this.decline({
+      requestId: input.requestId,
+      expectedRevision: current.revision,
+      resolvedBy: input.resolvedBy,
+      response: { kind: "form", answers: { decision: ["done-myself"] } },
+      outcome: input.outcome,
+    });
+  }
+
+  /** The pending command Requests of one owner for one command type, oldest first. */
+  async pendingOfType(owner: UserId, type: string): Promise<readonly Request[]> {
+    const rows = await pendingCommand(this.#database, owner)
+      .selectAll()
+      .where(sql<boolean>`command->>'type' = ${type}`)
+      .orderBy("createdAt")
+      .orderBy("id")
+      .execute();
+    return rows.map(requestFromRow);
   }
 
   /**

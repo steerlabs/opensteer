@@ -44,6 +44,7 @@ import {
   commandReviewFields,
   commandReviewText,
   outsideName,
+  visibleText,
   type CommandReviewNote,
 } from "@opensteer/protocol/command-review";
 import { sql, type Kysely } from "kysely";
@@ -148,7 +149,7 @@ const homeScriptPlaces: Readonly<Record<HostHomeKind, CommandScriptPlace>> = {
  */
 const quotedName = (value: string | null | undefined) => {
   if (!value) return null;
-  const name = outsideName(value);
+  const name = outsideName(value, 4 * maxNameLength);
   return `“${name.length > maxNameLength ? `${name.slice(0, maxNameLength - 1)}…` : name}”`;
 };
 /** What the proposer is told of a refusal: the Home's words, never the handler's. */
@@ -210,23 +211,15 @@ export class CommandRequestService {
     const face = commandAskedFace(input.command.type, input.face);
     const governs = (row.governs as (c: HostApiCommand) => CommandResource)(input.command);
     const stored = proposedCommand(row, input.command);
-    const names = await this.name(governs, input.ownerUserId);
-    const named = commandSentence(input.command, () => names).slice(0, requestTitleMaxLength);
-    const asker = askedBy(input.proposer);
-    const summary = titleFirst(named, ` · ${asker}`);
-    const gives = commandGives(
-      input.command,
-      face,
-      await this.#scriptPlace(input.command, input.ownerUserId),
-    );
+    const words = await this.#words(input.command, face, input.proposer, input.ownerUserId);
     const reason = input.reason?.trim().slice(0, 500) || null;
     const part: CommandRequestPart = {
       type: input.command.type,
       family: row.family,
       face: row.faces[face]!.class,
-      summary,
-      sentence: named,
-      gives,
+      summary: words.summary,
+      sentence: words.sentence,
+      gives: words.gives,
       command: RequestJsonObjectSchema.parse(JSON.parse(JSON.stringify(stored))),
       secretPaths: [...(row.secretFields ?? [])],
       governs: JSON.parse(JSON.stringify(governs)) as CommandRequestPart["governs"],
@@ -234,16 +227,33 @@ export class CommandRequestService {
       argumentsDigest: digest(stored),
       proposer: { ...input.proposer },
       agentReason: reason,
-      notes: await this.#notes(input.command, stored, input.ownerUserId),
+      notes: words.notes,
       editor: commandEditor(input.command.type),
     };
+    const connectionId = input.proposer.connectionId;
+    const sessionId = "agentSessionId" in input.origin ? input.origin.agentSessionId : null;
     const opened = await this.#store.open({
       ownerUserId: input.ownerUserId,
       callId: `command:${input.proposer.key}:${input.callKey}`.slice(0, 512),
       origin: input.origin,
       originatingThreadId: input.originatingThreadId,
       part,
-      presentation: commandPresentation(part, named, asker),
+      presentation: commandPresentation(part, words.sentence, words.asker),
+      // A connection's grant is read once more as the Request is written: narrowed since the door
+      // admitted it, what it asked about reads like nothing there and no Request opens, so no name
+      // of it is written for that connection to read (rule 5).
+      ...(connectionId
+        ? {
+            stillAsks: (transaction: Kysely<DatabaseSchema>) =>
+              this.#stillAsks(
+                transaction,
+                input.ownerUserId,
+                connectionId,
+                sessionId,
+                input.command,
+              ),
+          }
+        : {}),
     });
     if (opened.status !== "pending") return opened;
     return { status: "pending", requestId: opened.request.id, existing: opened.replayed };
@@ -262,14 +272,32 @@ export class CommandRequestService {
    * The person declines. Whatever an app sends through `request.respond` on a command Request,
    * a choice, a form, free text, is a decline: approving is never a form answer.
    */
-  decline(input: {
+  async decline(input: {
     readonly requestId: RequestId;
     readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }) {
-    return this.#store.decline(input);
+    // A command Request has fixed answers and no words: whatever is sent is the plain decline,
+    // or, where the card offers it, that the person did it themselves. Nothing typed is kept, and
+    // nothing typed reaches the agent (an agent's reason may ask for a secret in the box).
+    const pending = await this.#requests.get(input.requestId);
+    const doneMyself =
+      (pending?.command?.secretPaths.length ?? 0) > 0 &&
+      input.response.kind === "form" &&
+      input.response.answers[commandRequestAnswers.field]?.[0] === commandRequestAnswers.doneMyself;
+    return this.#store.decline({
+      ...input,
+      response: {
+        kind: "form",
+        answers: {
+          [commandRequestAnswers.field]: [
+            doneMyself ? commandRequestAnswers.doneMyself : commandRequestAnswers.decline,
+          ],
+        },
+      },
+    });
   }
 
   /**
@@ -321,6 +349,44 @@ export class CommandRequestService {
     );
     // Exactly what was proposed, or nothing.
     if (digest(approved) !== pending.command.argumentsDigest) throw changesWhatWasAsked();
+    // The Home's words are true now, or the person looks again: the sentence, what it gives and
+    // the notes as the revision the person reviewed carries them, computed again. If any differ,
+    // the Request is written again under a new revision (the card refreshes) and nothing runs.
+    const askedFace = Math.max(
+      0,
+      row.faces.findIndex((shape) => shape.class === pending.command!.face),
+    );
+    const words = await this.#words(
+      command,
+      askedFace,
+      pending.command.proposer as CommandProposer,
+      actor.userId,
+    );
+    if (
+      words.sentence !== (pending.command.sentence ?? pending.command.summary) ||
+      words.gives !== pending.command.gives ||
+      canonicalJson(words.notes) !== canonicalJson(pending.command.notes ?? [])
+    ) {
+      const part: CommandRequestPart = {
+        ...pending.command,
+        summary: words.summary,
+        sentence: words.sentence,
+        gives: words.gives,
+        notes: words.notes,
+      };
+      await this.#store.refreshWords({
+        requestId: input.requestId,
+        expectedRevision: input.expectedRevision,
+        resolvedBy: actor.userId,
+        part,
+        presentation: commandPresentation(part, words.sentence, words.asker),
+      });
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "request-changed",
+        message: "This changed since you read it. Look at it again before approving.",
+      });
+    }
     const begun = await this.#store.beginApproval({
       // Whoever asked must still be able to ask for this, as it stands now, in the approval's own
       // transaction: a Disconnect, a narrowing, a lowered task mode or a paused automation since
@@ -428,6 +494,58 @@ export class CommandRequestService {
     } else outcome = { status: "unknown" };
     await this.#store.settle(input.requestId, outcome);
     return outcome;
+  }
+
+  /**
+   * The Home's own words for a proposal, as they are true now: its sentence (what it is done to,
+   * named), the card's title, what it gives to whom, and the notes beside its values. Computed
+   * when the agent asks, and again when the person approves.
+   */
+  async #words(command: HostApiCommand, face: number, proposer: CommandProposer, owner: UserId) {
+    const row = commandRow(command.type) as CommandRow;
+    const governs = (row.governs as (c: HostApiCommand) => CommandResource)(command);
+    const names = await this.name(governs, owner);
+    const sentence = commandSentence(command, () => names).slice(0, requestTitleMaxLength);
+    const asker = askedBy(proposer);
+    return {
+      sentence,
+      asker,
+      summary: titleFirst(sentence, ` · ${asker}`),
+      gives: commandGives(command, face, await this.#scriptPlace(command, owner)),
+      notes: await this.#notes(command, proposedCommand(row, command), owner),
+    };
+  }
+
+  /**
+   * The person did themselves what pending asks asked for: a handler calls this after the
+   * person's own command succeeded, and decides that it satisfied them. Each pending Request of
+   * this owner for the same command type and the same thing, of a kind the card cannot approve
+   * (it carries a value only the person types), is settled as done by the person, with the
+   * value-free outcome the handler gives, under its lock and revision. Its agent reads that the
+   * person did it themselves, and that its proposal did not run.
+   */
+  async personDid(input: {
+    readonly ownerUserId: UserId;
+    readonly command: HostApiCommand;
+    readonly outcome: CommandRequestOutcome;
+  }): Promise<readonly RequestId[]> {
+    const row = commandRow(input.command.type) as CommandRow;
+    const governs = commandResourceKey(
+      (row.governs as (c: HostApiCommand) => CommandResource)(input.command),
+    );
+    const settled: RequestId[] = [];
+    for (const request of await this.#store.pendingOfType(input.ownerUserId, input.command.type)) {
+      const part = request.command!;
+      if (part.secretPaths.length === 0) continue;
+      if (commandResourceKey(part.governs as unknown as CommandResource) !== governs) continue;
+      await this.#store.doneByPerson({
+        requestId: request.id,
+        resolvedBy: input.ownerUserId,
+        outcome: input.outcome,
+      });
+      settled.push(request.id);
+    }
+    return settled;
   }
 
   /**
@@ -714,7 +832,9 @@ export function commandPresentation(
   ];
   if (part.gives) lines.push(part.gives);
   if (part.agentReason)
-    lines.push(`The agent's own reason (its words, not checked): ${part.agentReason}`);
+    lines.push(
+      `The agent's own reason (its words, not checked): ${visibleText(part.agentReason, "one")}`,
+    );
   return {
     kind: "form",
     title: part.summary,
@@ -736,7 +856,8 @@ export function commandPresentation(
               prompt: "Approve runs it as you, exactly as shown. Decline tells the agent no.",
               choices: [{ label: "Decline", value: commandRequestAnswers.decline }],
             }),
-        custom: true,
+        // Fixed answers only: nothing typed here could reach the agent.
+        custom: false,
         multiSelect: false,
         secret: false,
       },

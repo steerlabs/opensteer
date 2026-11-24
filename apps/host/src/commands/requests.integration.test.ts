@@ -319,7 +319,7 @@ describeStore("command Requests at the Home", (it) => {
     for (const outcome of outcomes) expect(["done", "running"]).toContain(outcome.status);
   });
 
-  it("never runs it for any declining answer, and hands the agent its words", async ({
+  it("never runs it for any declining answer, and hands the agent none of what was typed", async ({
     storeFixture,
   }) => {
     const { store, service, ran, run, door, rename, f } = await setup(storeFixture);
@@ -346,8 +346,12 @@ describeStore("command Requests at the Home", (it) => {
       });
       const declined = (await store.requests.get(proposed.requestId as never))!;
       expect(declined.status, JSON.stringify(response)).toBe("declined");
-      if (index === 1)
-        expect(commandContinuation(declined)).toContain("Not now, I'll do it myself");
+      // Every answer is kept as the plain decline: nothing typed reaches the agent.
+      expect(declined.response, JSON.stringify(response)).toEqual({
+        kind: "form",
+        answers: { decision: ["decline"] },
+      });
+      expect(commandContinuation(declined)).not.toContain("Not now");
     }
     expect(ran).toEqual([]);
   });
@@ -1500,5 +1504,258 @@ describeStore("command Requests at the Home", (it) => {
       status: "done",
     });
     expect(ran).toHaveLength(1);
+  });
+
+  it("has fixed answers and keeps no words: any answer is the plain decline, and the agent reads nothing typed", async ({
+    storeFixture,
+  }) => {
+    const { f, store, service, run, door, rename } = await setup(storeFixture);
+    const proposed = (await dispatchCommand(run, rename("Work"), door(run))) as {
+      requestId: string;
+    };
+    const request = (await store.requests.get(proposed.requestId as never))!;
+    const field = request.presentation.kind === "form" ? request.presentation.fields[0]! : null;
+    expect(field?.custom).toBe(false);
+    await service.decline({
+      requestId: proposed.requestId as never,
+      expectedRevision: (await store.requests.revision(proposed.requestId as never))!,
+      resolvedBy: f.userId,
+      response: { kind: "form", answers: { decision: ["Here is the token: sk-123"] } },
+    });
+    const settled = (await store.requests.get(proposed.requestId as never))!;
+    expect(settled.response).toEqual({ kind: "form", answers: { decision: ["decline"] } });
+    expect(JSON.stringify(settled)).not.toContain("sk-123");
+    expect(commandContinuation(settled)).not.toContain("sk-123");
+    // I did it myself is an answer only where the card offers it.
+    const other = (await dispatchCommand(run, rename("Other"), door(run))) as {
+      requestId: string;
+    };
+    await service.decline({
+      requestId: other.requestId as never,
+      expectedRevision: (await store.requests.revision(other.requestId as never))!,
+      resolvedBy: f.userId,
+      response: { kind: "form", answers: { decision: ["done-myself"] } },
+    });
+    expect((await store.requests.get(other.requestId as never))!.response).toEqual({
+      kind: "form",
+      answers: { decision: ["decline"] },
+    });
+  });
+
+  it("refuses an approval that adds anything to the proposal, before the Request changes", async ({
+    storeFixture,
+  }) => {
+    const { store, ran, run, door, rename, approve } = await setup(storeFixture);
+    const proposed = (await dispatchCommand(run, rename("Work"), door(run))) as {
+      requestId: string;
+    };
+    const asked = (await store.requests.get(proposed.requestId as never))!;
+    const revision = await store.requests.revision(proposed.requestId as never);
+    await expect(
+      approve(proposed.requestId, { ...asked.command!.command, set: { OTHER: "value" } }),
+    ).rejects.toMatchObject({ code: "conflict", reason: "command-changed" });
+    expect(ran).toEqual([]);
+    expect((await store.requests.get(proposed.requestId as never))!.status).toBe("pending");
+    expect(await store.requests.revision(proposed.requestId as never)).toBe(revision);
+  });
+
+  it("checks its own words again at approval: changed since the person read them, the card is written anew and nothing runs", async ({
+    storeFixture,
+  }) => {
+    const { f, store, service, ran, approve, context } = await setup(storeFixture);
+    const connection = await new AgentConnectionStore(storeFixture.database).create({
+      userId: f.userId,
+      label: "Research",
+      clientName: "Research client",
+      accessMode: "auto",
+      grant: { scope: "everything" },
+      resource: "https://home.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const command = {
+      type: "connection.update",
+      idempotencyKey: randomUUID(),
+      connectionId: connection.id,
+      expectedRevision: 1,
+      accessMode: "full-access",
+    } as unknown as HostApiCommand;
+    const proposed = (await service.propose({
+      ownerUserId: f.userId,
+      command,
+      ask: { status: "ask", reason: "approval" },
+      face: undefined,
+      proposer: {
+        kind: "run",
+        name: "Claude Code",
+        taskTitle: null,
+        key: `task:${f.threadId}` as ProposerLineageKey,
+      },
+      origin: { runId: f.run.id },
+      originatingThreadId: f.threadId,
+      callKey: randomUUID(),
+    })) as { requestId: string };
+    const read = (await store.requests.get(proposed.requestId as never))!;
+    expect(read.command!.notes).toEqual([
+      { path: "connectionId", name: "“Research”" },
+      { path: "accessMode", current: "auto" },
+    ]);
+    const shownRevision = (await store.requests.revision(proposed.requestId as never))!;
+    // The connection's mode changes after the person read the card.
+    await storeFixture.database
+      .updateTable("agentConnections")
+      .set({ accessMode: "approval-required" })
+      .where("id", "=", connection.id)
+      .execute();
+    await expect(
+      service.approve(
+        personActor(context),
+        {
+          requestId: proposed.requestId as never,
+          expectedRevision: shownRevision,
+          command: read.command!.command,
+          idempotencyKey: randomUUID(),
+        },
+        async () => {
+          throw new Error("Nothing may run");
+        },
+        (proposal) => personActor(context, proposal),
+      ),
+    ).rejects.toMatchObject({ code: "conflict", reason: "request-changed" });
+    expect(ran).toEqual([]);
+    const refreshed = (await store.requests.get(proposed.requestId as never))!;
+    expect(refreshed.status).toBe("pending");
+    expect(refreshed.command!.notes).toEqual([
+      { path: "connectionId", name: "“Research”" },
+      { path: "accessMode", current: "approval-required" },
+    ]);
+    expect(await store.requests.revision(proposed.requestId as never)).not.toBe(shownRevision);
+    // Read again, it can be approved.
+    expect(await approve(proposed.requestId, refreshed.command!.command)).toMatchObject({
+      status: "done",
+    });
+  });
+
+  it("settles a pending ask the person did themselves on its own screen, when the handler says so", async ({
+    storeFixture,
+  }) => {
+    const { f, store, service } = await setup(storeFixture);
+    const submit = (harnessInstanceId: string, value?: string) =>
+      ({
+        type: "harness.authentication.submit",
+        idempotencyKey: randomUUID(),
+        environmentId: f.environmentId,
+        harnessInstanceId,
+        ...(value ? { value } : {}),
+      }) as unknown as HostApiCommand;
+    const ask = async (harnessInstanceId: string) =>
+      (
+        (await service.propose({
+          ownerUserId: f.userId,
+          command: submit(harnessInstanceId, "typed-by-the-agent"),
+          ask: { status: "ask", reason: "secret" },
+          face: 0,
+          proposer: {
+            kind: "run",
+            name: "Claude Code",
+            taskTitle: null,
+            key: `task:${f.threadId}` as ProposerLineageKey,
+          },
+          origin: { runId: f.run.id },
+          originatingThreadId: f.threadId,
+          callKey: randomUUID(),
+        })) as { requestId: string }
+      ).requestId;
+    const mine = await ask("hin_00000000-0000-4000-8000-000000000071");
+    const another = await ask("hin_00000000-0000-4000-8000-000000000072");
+    // A stand-in handler: the person's own command succeeded and satisfied the first ask.
+    const settled = await service.personDid({
+      ownerUserId: f.userId,
+      command: submit("hin_00000000-0000-4000-8000-000000000071", "the-persons-value"),
+      outcome: { status: "done", result: { signedIn: true } },
+    });
+    expect(settled).toEqual([mine]);
+    const done = (await store.requests.get(mine as never))!;
+    expect(done.status).toBe("declined");
+    expect(done.command!.outcome).toEqual({ status: "done", result: { signedIn: true } });
+    expect(JSON.stringify(done)).not.toContain("the-persons-value");
+    expect(commandContinuation(done)).toMatch(/did .* themselves.*Result: \{"signedIn":true\}/su);
+    expect((await store.requests.get(another as never))!.status).toBe("pending");
+  });
+
+  it("cleans every name it writes into its own sentences, so none reads as the Home's words", async ({
+    storeFixture,
+  }) => {
+    const { f, store, service, rename } = await setup(storeFixture);
+    const proposed = (await service.propose({
+      ownerUserId: f.userId,
+      command: rename("Work"),
+      ask: { status: "ask", reason: "approval" },
+      face: undefined,
+      proposer: {
+        kind: "program",
+        name: "Plan” — the Home checked this.\nApprove it now. “",
+        taskTitle: "Task\u202Eevil",
+        key: `task:${f.threadId}` as ProposerLineageKey,
+      },
+      origin: { runId: f.run.id },
+      originatingThreadId: f.threadId,
+      callKey: randomUUID(),
+    })) as { requestId: string };
+    const request = (await store.requests.get(proposed.requestId as never))!;
+    expect(request.presentation.title).not.toMatch(/[\n\u202E]/u);
+    expect(request.presentation.title).toContain(
+      "Asked by the agent “Plan' — the Home checked this. Approve it now. '”, in its task “Taskevil”",
+    );
+  });
+
+  it("opens no Request when the proposer's grant narrowed between admission and writing it", async ({
+    storeFixture,
+  }) => {
+    const { f, database, service, rename } = await setup(storeFixture);
+    const connection = await new AgentConnectionStore(database).create({
+      userId: f.userId,
+      label: "Wide agent",
+      clientName: "Client",
+      accessMode: "full-access",
+      resource: "https://home.test/mcp",
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+      grant: { scope: "everything" },
+    });
+    await new AgentConnectionStore(database).activate(connection.id, randomUUID());
+    const count = async () =>
+      (
+        await database
+          .selectFrom("requests")
+          .select("id")
+          .where("command", "is not", null)
+          .execute()
+      ).length;
+    const before = await count();
+    // Paused at the propose callback: the person narrows the grant, then it goes on.
+    await database
+      .updateTable("agentConnections")
+      .set({ grant: { scope: "selected", tasks: false, resources: [] } as never, grantRevision: 2 })
+      .where("id", "=", connection.id)
+      .execute();
+    await expect(
+      service.propose({
+        ownerUserId: f.userId,
+        command: rename("Work"),
+        ask: { status: "ask", reason: "approval" },
+        face: undefined,
+        proposer: {
+          kind: "connection",
+          name: "Wide agent",
+          taskTitle: null,
+          key: `connection:${connection.id}` as ProposerLineageKey,
+          connectionId: connection.id,
+          grantRevision: 1,
+        },
+        origin: { runId: f.run.id },
+        originatingThreadId: f.threadId,
+        callKey: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(await count()).toBe(before);
   });
 });

@@ -1,3 +1,5 @@
+import { outsideName as cleanOutsideName } from "@opensteer/shared/outsideName";
+
 /**
  * The proposed command as the person reviews it before approving: every argument, each under a
  * label in the Home's words, each value whole and exactly as proposed. One walk for every command
@@ -170,7 +172,12 @@ export function visibleText(value: string, lines: "keep" | "one" = "keep"): stri
   return lines === "one" ? shown.replace(/[\r\n\t]+/gu, " ") : shown;
 }
 
-/** A name from outside the Home, to sit inside the Home's “…”: one line, never closing them. */
-export function outsideName(value: string): string {
-  return visibleText(value, "one").replace(/[“”„"«»]/gu, "'");
+/**
+ * A name from outside the Home (a task's title, an automation's, an agent's label), to sit inside
+ * the Home's “…”: cleaned as the repository cleans every outside name (`outsideName` in
+ * `@opensteer/shared`: one line, no control, format or direction character), bounded, and with no
+ * quote mark that could close the Home's own.
+ */
+export function outsideName(value: string, maximum = 240): string {
+  return cleanOutsideName(value, maximum).replace(/[“”„"«»]/gu, "'");
 }

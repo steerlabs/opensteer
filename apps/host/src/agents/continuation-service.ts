@@ -694,15 +694,15 @@ export function commandContinuation(request: Request): string {
   if (request.status === "declined") {
     const answers =
       request.response?.kind === "form" ? Object.values(request.response.answers).flat() : [];
-    if (answers.includes(commandRequestAnswers.doneMyself))
-      return `The person did ${asked} themselves, on its own screen in Opensteer; your proposal itself did not run. Read the current state before relying on it, and do not propose it again.`;
-    const words = answers
-      .filter((value) => value !== commandRequestAnswers.decline)
-      .join(" ")
-      .trim();
+    if (answers.includes(commandRequestAnswers.doneMyself)) {
+      const result =
+        command.outcome?.status === "done" && command.outcome.result !== undefined
+          ? ` Result: ${JSON.stringify(command.outcome.result).slice(0, 4_000)}`
+          : "";
+      return `The person did ${asked} themselves, on its own screen in Opensteer; your proposal itself did not run.${result} Read the current state before relying on it, and do not propose it again.`;
+    }
     return [
       `The person declined ${asked}.`,
-      ...(words ? [`They said: ${JSON.stringify(words.slice(0, 2_000))}`] : []),
       "Nothing changed. The same proposal is answered as declined for a day; do not repeat it unless something changed.",
     ].join("\n");
   }
