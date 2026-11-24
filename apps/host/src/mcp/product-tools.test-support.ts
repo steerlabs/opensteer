@@ -1,3 +1,5 @@
+import { dispatchCommand, type CommandAuthority } from "../commands/dispatch.js";
+import type { HostApiCommand } from "@opensteer/protocol";
 import {
   opensteer_task_read,
   opensteer_task_list,
@@ -35,6 +37,7 @@ import {
   ThreadIdSchema,
   ThreadInputPolicySchema,
   readableRequestList,
+  raisedBeforeEffect,
 } from "@opensteer/core";
 import { TriggerControlInputSchema } from "@opensteer/triggers";
 import { z } from "zod";
@@ -231,7 +234,7 @@ import { ProductToolHandlers } from "./handlers/product.js";
 import { TriggerToolHandlers } from "./handlers/triggers.js";
 import { agentToolHandlers } from "./handlers/index.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
-import { AgentCallerResolver } from "./agent-caller.js";
+import { AgentCallerResolver, type AgentCaller } from "./agent-caller.js";
 import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import type { WatchControlTokenService } from "../triggers/watch-capability.js";
@@ -304,6 +307,40 @@ export class ProductToolsTestClient {
       ...options,
       commands,
     });
+    // These tests are about the handlers: a door that admits, handing the handler the door's own
+    // authority as the real door does (the admission itself is the door's tests').
+    product.useDoor({
+      through: async (
+        caller: AgentCaller,
+        command: HostApiCommand,
+        act: (door: CommandAuthority) => Promise<unknown>,
+      ) => {
+        let value: unknown;
+        await dispatchCommand(caller, command, {
+          registry: {
+            [command.type]: {
+              accepts: "any",
+              run: async (
+                _actor: unknown,
+                _command: unknown,
+                on: { readonly authority: CommandAuthority | null },
+              ) => {
+                try {
+                  value = await act(on.authority!);
+                } catch (error) {
+                  // As the door's own: a refusal in the write's one transaction wrote nothing.
+                  throw error instanceof OpensteerError ? raisedBeforeEffect(error) : error;
+                }
+                return { type: command.type };
+              },
+            },
+          } as never,
+          admit: async () => ({ answer: "now", face: 0, execution: null }),
+          scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
+        });
+        return value;
+      },
+    } as never);
     const unavailable = new Proxy(
       {},
       {

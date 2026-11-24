@@ -36,7 +36,7 @@ import {
   hostDiscoverySigningBytes,
   hostKeyFingerprint,
 } from "../packages/deployment-authority/src/index.js";
-import { Kysely } from "kysely";
+import { Kysely, sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -238,6 +238,8 @@ integration("A pooled Home against its Opensteer account (phase B, piece 4)", ()
   });
 
   afterAll(async () => {
+    await resetManagedCloudTables(database);
+    await sql`truncate table deployments, oauth_clients, users cascade`.execute(database);
     await database.destroy();
   });
 
@@ -246,7 +248,7 @@ integration("A pooled Home against its Opensteer account (phase B, piece 4)", ()
     leaseHolder = randomUUID();
     subscriptions.clear();
     await resetManagedCloudTables(database);
-    await database.deleteFrom("users").execute();
+    await sql`truncate table deployments, oauth_clients, users cascade`.execute(database);
   });
 
   async function buildHarness(
