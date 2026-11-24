@@ -38,6 +38,11 @@ import {
   commandSentence,
   type CommandScriptPlace,
 } from "@opensteer/protocol/command-words";
+import {
+  commandReviewFields,
+  commandReviewText,
+  type CommandReviewNote,
+} from "@opensteer/protocol/command-review";
 import { sql, type Kysely } from "kysely";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import type { CommandAsk } from "./dispatch.js";
@@ -222,6 +227,7 @@ export class CommandRequestService {
       argumentsDigest: digest(stored),
       proposer: { ...input.proposer },
       agentReason: reason,
+      notes: await this.#notes(input.command, stored, input.ownerUserId),
       editor: commandEditor(input.command.type),
     };
     const opened = await this.#store.open({
@@ -415,6 +421,41 @@ export class CommandRequestService {
     return outcome;
   }
 
+  /**
+   * What the Home knows beside the proposed values, in its own words: what each id it can name
+   * names, and, for a connected agent's settings, what each changed value is now. A value itself
+   * is never copied: the card reads every value from the proposed command.
+   */
+  async #notes(
+    command: HostApiCommand,
+    stored: Readonly<Record<string, unknown>>,
+    owner: UserId,
+  ): Promise<CommandReviewNote[]> {
+    const notes = new Map<string, { name?: string; current?: string }>();
+    for (const field of commandReviewFields(stored)) {
+      const kind = idKinds[field.path.split(".").at(-1)!];
+      if (!kind || field.value === null) continue;
+      const name = await this.name({ kind, id: field.value }, owner);
+      if (name) notes.set(field.path, { name });
+    }
+    if (command.type === "connection.update") {
+      const now = await this.#database
+        .selectFrom("agentConnections")
+        .select(["label", "accessMode", "grant"])
+        .where("id", "=", command.connectionId)
+        .where("userId", "=", owner)
+        .executeTakeFirst();
+      if (now)
+        for (const key of ["label", "accessMode", "grant"] as const) {
+          const proposed = command[key];
+          if (proposed === undefined || canonicalJson(proposed) === canonicalJson(now[key]))
+            continue;
+          notes.set(key, { ...notes.get(key), current: commandReviewText(now[key]) });
+        }
+    }
+    return [...notes].map(([path, note]) => ({ path, ...note }));
+  }
+
   /** Whether the proposing connection could still ask for this command, as it is now. */
   async #stillAsks(
     database: Kysely<DatabaseSchema>,
@@ -582,6 +623,20 @@ export class CommandRequestService {
   }
 }
 
+/** The ids inside a command the Home names, by the field that holds one. */
+const idKinds: Readonly<Record<string, CommandResource["kind"]>> = {
+  agentConnectionId: "connection",
+  automationId: "automation",
+  connectionId: "connection",
+  deviceId: "device",
+  harnessInstanceId: "engine",
+  machineId: "device",
+  profileId: "browser-profile",
+  taskId: "task",
+  threadId: "task",
+  triggerId: "automation",
+};
+
 /** Who asked, marked as the agent's own: its name and its task's title are its words. */
 function askedBy(proposer: CommandProposer): string {
   return proposer.taskTitle
@@ -618,7 +673,7 @@ export function commandPresentation(
     fields: [
       {
         id: commandDecisionFieldId,
-        prompt: "Decline it here, or approve it on its own screen.",
+        prompt: "Approve runs it as you, exactly as shown. Decline tells the agent no.",
         choices: [{ label: "Decline", value: "decline" }],
         custom: true,
         multiSelect: false,

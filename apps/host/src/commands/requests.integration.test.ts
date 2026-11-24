@@ -32,6 +32,7 @@ import {
 import type { CommandRegistry } from "./registry.js";
 import { CommandRequestService, proposerLineageKey, type ProposerLineageKey } from "./requests.js";
 import { commandSentence } from "@opensteer/protocol/command-words";
+import { commandReviewFields, commandReviewText } from "@opensteer/protocol/command-review";
 
 const types = Object.keys(commandTable) as CommandType[];
 
@@ -1024,5 +1025,163 @@ describeStore("command Requests at the Home", (it) => {
           })
         ).answer,
       ).toBe("not_found");
+  });
+
+  it("puts every proposed argument on the card, names the ids it can, and says what a connected agent's settings are now", async ({
+    storeFixture,
+  }) => {
+    const { f, store, service } = await setup(storeFixture);
+    const connection = await new AgentConnectionStore(storeFixture.database).create({
+      userId: f.userId,
+      label: "Research",
+      clientName: "Research client",
+      accessMode: "auto",
+      grant: { scope: "everything" },
+      resource: "https://home.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const profile = { id: `bpr_${randomUUID()}` };
+    await storeFixture.database
+      .insertInto("browserProfiles")
+      .values({
+        id: profile.id as never,
+        ownerId: f.userId,
+        name: "Work",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .execute();
+    const command = {
+      type: "connection.update",
+      idempotencyKey: randomUUID(),
+      connectionId: connection.id,
+      expectedRevision: 1,
+      label: "Research",
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: profile.id, access: "use" }],
+      },
+    } as unknown as HostApiCommand;
+    const proposed = await service.propose({
+      ownerUserId: f.userId,
+      command,
+      ask: { status: "ask", reason: "approval" },
+      face: undefined,
+      proposer: {
+        kind: "connection",
+        name: "Research",
+        taskTitle: null,
+        key: `connection:${connection.id}` as ProposerLineageKey,
+      },
+      origin: { runId: f.run.id },
+      originatingThreadId: f.threadId,
+      callKey: randomUUID(),
+      reason: "I need your work profile.",
+    });
+    const part = (await store.requests.get((proposed as { requestId: string }).requestId as never))!
+      .command!;
+    // Every value the person approves is on the card, from the command itself, whole.
+    const fields = commandReviewFields(part.command);
+    expect(
+      fields
+        .filter(({ value }) => value !== null)
+        .map(({ path }) => path)
+        .sort(),
+    ).toEqual(
+      [
+        "connectionId",
+        "expectedRevision",
+        "label",
+        "grant.scope",
+        "grant.tasks",
+        "grant.resources.0.kind",
+        "grant.resources.0.profileId",
+        "grant.resources.0.access",
+      ].sort(),
+    );
+    // Beside them, only the Home's words: what an id names, what a changed setting is now. The
+    // label it would keep has nothing beside it.
+    expect(part.notes).toEqual([
+      { path: "connectionId", name: "“Research”" },
+      { path: "grant.resources.0.profileId", name: "“Work”" },
+      { path: "grant", current: commandReviewText({ scope: "everything" }) },
+    ]);
+    expect(part.agentReason).toBe("I need your work profile.");
+    const request = (await store.requests.get(
+      (proposed as { requestId: string }).requestId as never,
+    ))!;
+    expect(request.presentation.kind === "form" && request.presentation.fields[0]!.prompt).toBe(
+      "Approve runs it as you, exactly as shown. Decline tells the agent no.",
+    );
+  });
+
+  it("refuses an approval of anything but the Request as the person reviewed it, and runs nothing", async ({
+    storeFixture,
+  }) => {
+    const { store, ran, run, door, rename, service, context } = await setup(storeFixture);
+    const proposed = await dispatchCommand(run, rename("Work"), door(run));
+    const requestId = (proposed as { requestId: string }).requestId as never;
+    const request = (await store.requests.get(requestId))!;
+    const revision = (await store.requests.revision(requestId))!;
+    const approveAt = (expectedRevision: string, id = requestId) =>
+      service.approve(
+        personActor(context),
+        {
+          requestId: id,
+          expectedRevision,
+          command: request.command!.command,
+          idempotencyKey: randomUUID(),
+        },
+        (person, approved) =>
+          dispatchCommand(person, approved, { registry: door(run).registry }, context),
+        (proposal) => personActor(context, proposal),
+      );
+    // A revision other than the one read: what the person was shown is not what is there now.
+    await expect(approveAt(String(Number(revision) + 1))).rejects.toMatchObject({
+      code: "conflict",
+    });
+    expect(ran).toEqual([]);
+    // Once the agent withdrew it, the card the person still holds approves nothing.
+    await service.withdraw({
+      ownerUserId: request.requestedBy,
+      requestId,
+      proposerKey: request.command!.proposer.key as ProposerLineageKey,
+    });
+    await expect(approveAt(revision)).rejects.toMatchObject({ code: "conflict" });
+    expect(ran).toEqual([]);
+  });
+
+  it("is never an agent's to approve: to any agent the approval reads as a command that does not exist", async ({
+    storeFixture,
+  }) => {
+    const { store, ran, run, door, rename } = await setup(storeFixture);
+    const proposed = await dispatchCommand(run, rename("Work"), door(run));
+    const requestId = (proposed as { requestId: string }).requestId;
+    const request = (await store.requests.get(requestId as never))!;
+    const said = (error: unknown) => {
+      const { code, message, reason, next, details } = error as OpensteerError;
+      return JSON.stringify({ code, message, reason, next, details });
+    };
+    const approving = await dispatchCommand(
+      run,
+      {
+        type: "request.command.approve",
+        idempotencyKey: randomUUID(),
+        requestId,
+        expectedRevision: (await store.requests.revision(requestId as never))!,
+        command: request.command!.command,
+      } as unknown as HostApiCommand,
+      door(run),
+    ).catch(said);
+    const nothing = await dispatchCommand(
+      run,
+      { type: "no.such.command", idempotencyKey: randomUUID() } as unknown as HostApiCommand,
+      door(run),
+    ).catch(said);
+    expect(approving).toBe(nothing);
+    expect(JSON.parse(approving as string)).toMatchObject({ code: "not_found" });
+    expect(ran).toEqual([]);
+    expect((await store.requests.get(requestId as never))!.status).toBe("pending");
   });
 });

@@ -38,6 +38,7 @@
     "./transcript": "./src/transcript.ts",
     "./test-support/personal-wire": "./src/personal-wire.test-support.ts",
     "./command-table": "./src/command-table.ts",
+    "./command-review": "./src/command-review.ts",
     "./command-words": "./src/command-words.ts",
     "./test-support/command-samples": "./src/command-samples.test-support.ts"
   },

@@ -31,13 +31,15 @@ function patterned(pattern: string): string | undefined {
   return undefined;
 }
 
-function sampleOf(schema: Schema, root: Schema): unknown {
+function sampleOf(schema: Schema, root: Schema, every = false, depth = 0): unknown {
+  // A schema that refers to itself is filled only with what it requires below a few levels.
+  const all = every && depth < 6;
   if (typeof schema.$ref === "string") {
     const target = schema.$ref
       .replace(/^#\//u, "")
       .split("/")
       .reduce<unknown>((at, key) => (at as Schema | undefined)?.[key], root) as Schema;
-    return sampleOf(target, root);
+    return sampleOf(target, root, every, depth + 1);
   }
   if ("const" in schema) return schema.const;
   if (Array.isArray(schema.enum)) return schema.enum[0];
@@ -45,21 +47,24 @@ function sampleOf(schema: Schema, root: Schema): unknown {
     if (Array.isArray(schema[key])) {
       const options = schema[key] as Schema[];
       const concrete = options.find((option) => option.type !== "null") ?? options[0]!;
-      return sampleOf(concrete, root);
+      return sampleOf(concrete, root, every, depth);
     }
-  if (Array.isArray(schema.allOf)) return sampleOf((schema.allOf as Schema[])[0]!, root);
+  if (Array.isArray(schema.allOf))
+    return sampleOf((schema.allOf as Schema[])[0]!, root, every, depth);
   switch (schema.type) {
     case "object": {
       const properties = (schema.properties ?? {}) as Record<string, Schema>;
       const required = new Set((schema.required ?? []) as string[]);
       const value: Record<string, unknown> = {};
       for (const [key, property] of Object.entries(properties))
-        if (required.has(key)) value[key] = sampleOf(property, root);
+        if (all || required.has(key)) value[key] = sampleOf(property, root, every, depth + 1);
       return value;
     }
     case "array": {
       const count = Math.max(1, Number(schema.minItems ?? 0));
-      return Array.from({ length: count }, () => sampleOf((schema.items ?? {}) as Schema, root));
+      return Array.from({ length: count }, () =>
+        sampleOf((schema.items ?? {}) as Schema, root, every, depth + 1),
+      );
     }
     case "integer":
     case "number":
@@ -92,6 +97,24 @@ const overrides: Partial<Record<CommandType, Record<string, unknown>>> = {
   "personal.remoteAccess.request": { intent: { action: "rotate" } },
   "tab.group.update": { name: "Group" },
 };
+
+/**
+ * A command of each type with every field its schema names, optional ones included, for a test
+ * that must see all of a command; it may be one its own schema refuses (a refinement unmet).
+ */
+export function everyFieldCommand(type: CommandType): Record<string, unknown> {
+  const members = variants().get(type) ?? [];
+  const values = members.map((member) => {
+    const json = z.toJSONSchema(member, { unrepresentable: "any", io: "input" }) as Schema;
+    return { ...(sampleOf(json, json, true) as Record<string, unknown>), type };
+  });
+  // The variant with the most fields: a command whose variants differ shows its widest.
+  return values.reduce<Record<string, unknown>>(
+    (widest, value) =>
+      JSON.stringify(value).length > JSON.stringify(widest).length ? value : widest,
+    { type },
+  );
+}
 
 /**
  * A command of each type, built from its JSON Schema with only what is required. `valid` says

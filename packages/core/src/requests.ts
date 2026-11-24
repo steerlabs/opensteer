@@ -657,6 +657,21 @@ export const CommandRequestPartSchema = z.object({
   }),
   /** The agent's own words, not checked. */
   agentReason: z.string().max(500).nullable(),
+  /**
+   * What the Home knows beside a proposed value (`command-review` in the protocol), by the value's
+   * path: what an id names and what the value is now. Never a value itself: every value the
+   * person approves is read from `command`, whole.
+   */
+  notes: z
+    .array(
+      z.strictObject({
+        path: z.string().min(1).max(400),
+        name: z.string().min(1).max(240).optional(),
+        current: z.string().min(1).max(16_000).optional(),
+      }),
+    )
+    .max(200)
+    .optional(),
   /** The screen that performs it, filled in; null where only this card can. */
   editor: z.object({ screen: z.string().min(1).max(60) }).nullable(),
   outcome: commandRequestOutcomeSchema.optional(),
