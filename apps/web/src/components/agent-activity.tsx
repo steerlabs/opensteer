@@ -26,7 +26,12 @@ import {
   providerRetryDetail,
   providerRetryLabel,
 } from "@opensteer/client/host";
-import { useToolOutput, useTranscriptMessage, useTranscriptText } from "@opensteer/client/react";
+import {
+  useTabRead,
+  useToolOutput,
+  useTranscriptMessage,
+  useTranscriptText,
+} from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
 import { voiceCallSeed } from "@opensteer/core";
 import { AppCard } from "./apps/app-card.js";
@@ -41,7 +46,6 @@ import {
   Fragment,
   Suspense,
   lazy,
-  type ComponentProps,
   useEffect,
   useId,
   useLayoutEffect,
@@ -115,6 +119,7 @@ import {
   type TranscriptGroup,
   type PlaceEntry,
   type ReasoningEntry,
+  type ReplyPlace,
   type RequestReceiptEntry,
   type RunEntry,
   type ThreadActivity,
@@ -156,11 +161,14 @@ import {
   appChip,
   pageChip,
   phoneChip,
+  sameChip,
+  sameChips,
   SurfaceChip,
   SurfaceChips,
   SurfaceLink,
+  type ChipSurface,
 } from "./surface-chips.js";
-import { FoldMeasuresWhenLaidOut, MessageFold } from "./message-fold.js";
+import { MessageFold } from "./message-fold.js";
 import { AnsweredQuestionRow } from "./answered-question.js";
 import { useToast } from "./toast.js";
 import { TaskMark, AgentOrb } from "./workspace/task-mark.js";
@@ -174,47 +182,14 @@ import { act, failureWords } from "./use-action.js";
 // Fetched with this module, not when a reply is first drawn: until it lands a
 // reply shows its raw Markdown, and on a weak link that wait is what people see.
 const markdownChunk = import("./markdown.js");
-const LazyMarkdown = lazy(() => markdownChunk);
+const Markdown = lazy(() => markdownChunk);
 
 /**
- * Where a long transcript's rows scroll, while the browser skips the ones off screen. A row's
- * Markdown is parsed once it comes within a screen of view; until then its words stand as plain
- * text, so Find and assistive reading still have them. Without skipping (an engine that would not
- * hold the reader's place as a row above grows), every body is parsed as it is drawn.
+ * The newest rows stay drawn wherever the reader is, so streaming and following the tail never
+ * flicker: a screen's height of them, at most eight. A long report is a screen by itself, so a
+ * research task holds only its last reply.
  */
-const DeferredBodies = createContext<(() => HTMLElement | null) | null>(null);
-const undeferredRows = 40;
-/** Tail rows pinned mounted in virtualized transcripts so streaming stays smooth. */
-const virtualTailPinRows = 8;
-
-function Markdown(props: ComponentProps<typeof LazyMarkdown>) {
-  const scroller = useContext(DeferredBodies);
-  const [near, setNear] = useState(scroller === null);
-  const plain = useRef<HTMLParagraphElement | null>(null);
-  useEffect(() => {
-    const element = plain.current;
-    const root = scroller?.() ?? null;
-    if (near || !element) return;
-    if (!root || typeof IntersectionObserver === "undefined") {
-      setNear(true);
-      return;
-    }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some(({ isIntersecting }) => isIntersecting)) setNear(true);
-      },
-      { root, rootMargin: "100% 0px" },
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [near, scroller]);
-  if (near) return <LazyMarkdown {...props} />;
-  return (
-    <p className="md-prose md-prose--plain" ref={plain}>
-      {props.bare ? props.text : readableMarkdown(props.text)}
-    </p>
-  );
-}
+const transcriptTail = { rows: 8, px: 900 } as const;
 
 const TranscriptLive = createContext(true);
 /**
@@ -272,7 +247,10 @@ const TaskViews = createContext<TaskRenderer | undefined>(undefined);
 /** The reader's Home: a message from it leads to Home itself, not to a Thread page. */
 /** Every browser this reader can see, which a Run's pages are looked up in. */
 const TranscriptBrowserUses = createContext<readonly BrowserSessionUseSummary[]>([]);
-/** The person's tabs, as links in the transcript open them; a new object on every tab change. */
+/**
+ * The person's tabs, as links in the transcript open them. Each view that draws a tab reads it from
+ * here itself (`useTabRead`), so a tab changing redraws the chips that draw it and nothing else.
+ */
 export type TranscriptTabSource = Pick<HostSnapshot, "tabs" | "browserProfiles">;
 const noTabs: TranscriptTabSource = { tabs: new TabStore(), browserProfiles: [] };
 const TranscriptBrowsers = createContext<TranscriptTabSource>(noTabs);
@@ -393,13 +371,34 @@ const noAssignments: Readonly<Record<string, AssignmentSummary>> = {};
 const noBrowserUses: readonly BrowserSessionUseSummary[] = [];
 const noPinnedRowKeys: readonly string[] = [];
 
+/** The one or two rows live work appended after `before`, each of whose rows stands where it was. */
+function appendedKeys(before: readonly string[], after: readonly string[]): string[] {
+  if (before.length === 0) return [];
+  const added = after.length - before.length;
+  if (added < 1 || added > 2) return [];
+  for (let index = 0; index < before.length; index++) {
+    if (after[index] !== before[index]) return [];
+  }
+  return after.slice(before.length);
+}
+
+/** The arrival motion, set on the element itself so later renders of the row never cut it short. */
+function riseIn(element: HTMLElement) {
+  element.classList.add("transcript__virtual-slot--arrived");
+  element.addEventListener(
+    "animationend",
+    () => element.classList.remove("transcript__virtual-slot--arrived"),
+    { once: true },
+  );
+}
+
 /**
  * The agent's side of the conversation.
  *
  * Prose and compact tool rows share the reading stream. The run's status is
  * a separate line: it never controls whether the agent's words are visible.
  */
-export function AgentTranscript({
+export const AgentTranscript = memo(function AgentTranscript({
   activity = "idle",
   attachmentReader = null,
   conversation = false,
@@ -428,6 +427,7 @@ export function AgentTranscript({
   viewerUserId = null,
   scroller = null,
   followTail = false,
+  liveCut = null,
   pinnedRowKeys = noPinnedRowKeys,
   pinnedMessageIds = noPinnedRowKeys,
   rowItemsRef,
@@ -492,12 +492,20 @@ export function AgentTranscript({
   subagentReader?: SubagentReader | null;
   viewerUserId?: string | null;
   /**
-   * The element a long transcript scrolls in. Given, rows outside the viewport
-   * are virtualized and off-screen Markdown is only parsed as it nears view.
+   * The element the transcript scrolls in. Given, only the rows in and near
+   * the viewport are drawn; the rest stand as spacers at their measured or
+   * estimated heights.
    */
   scroller?: (() => HTMLElement | null) | null;
   /** True while the caller is actively following the live tail. */
   followTail?: boolean;
+  /**
+   * Names the subscription and snapshot (cut) the rows were drawn from while they are the live,
+   * synchronized conversation's newest rows; null while they are a window of history, a page of it
+   * is being read, or the transcript is catching up. Only a row live work appends within one such
+   * cut rises in.
+   */
+  liveCut?: string | null;
   /** Row keys that the caller needs mounted even while off-screen (e.g. restore anchors). */
   pinnedRowKeys?: readonly string[];
   /** Message IDs whose containing row must stay mounted (survives turn-row renames on prepend). */
@@ -631,11 +639,6 @@ export function AgentTranscript({
         : null,
     [ownerPanel, ownerTurn],
   );
-  // Read once: the start-up check that decides whether rows are skipped finishes long before this.
-  const [skipping] = useState(
-    () => typeof document !== "undefined" && document.documentElement.dataset.rowSkipping !== "off",
-  );
-  const deferBodies = skipping ? scroller : null;
   const imageScope = useMemo(
     () => (attachmentReader && threadId ? { client: attachmentReader, threadId } : null),
     [attachmentReader, threadId],
@@ -648,20 +651,23 @@ export function AgentTranscript({
   useLayoutEffect(() => {
     if (rowItemsRef) rowItemsRef.current = drawnRowItems;
   }, [drawnRowItems, rowItemsRef]);
+  // A row never measured stands at the height its words would take. A reply is drawn whole, so a
+  // long report is estimated as long as it is: a short guess would draw rows that it then pushes
+  // far out of view.
   const estimateRowHeight = useCallback(
     (index: number) => {
       const row = rows[index];
       if (!row) return 120;
       const { group } = row;
+      const lines = (words: string) => Math.ceil(words.length / 80);
       if (group.kind === "message") {
-        const lines = Math.min(12, Math.max(1, Math.ceil(group.entry.body.length / 72)));
-        return 44 + lines * 22;
+        const { body, messageKind } = group.entry;
+        // A person's words fold at twenty lines at most.
+        return (
+          44 + Math.max(1, messageKind === "input" ? Math.min(20, lines(body)) : lines(body)) * 22
+        );
       }
-      if (group.kind === "turn") {
-        const replyLen = group.turn.reply?.body.length ?? 0;
-        const lines = Math.min(14, Math.max(2, Math.ceil(replyLen / 72)));
-        return 60 + lines * 22;
-      }
+      if (group.kind === "turn") return 60 + Math.max(2, lines(group.turn.reply?.body ?? "")) * 22;
       return 84;
     },
     [rows],
@@ -694,10 +700,6 @@ export function AgentTranscript({
   const disclosures = useMemo(() => new Map<string, boolean>(), [threadId]);
   const allPinnedKeys = useMemo(() => {
     const pinned = new Set<string>(pinnedRowKeys);
-    // Keep the tail rows mounted so streaming and tail-follow never flicker.
-    for (let index = Math.max(0, rows.length - virtualTailPinRows); index < rows.length; index++) {
-      pinned.add(rows[index]!.key);
-    }
     if (ownerTurn !== undefined) pinned.add(ownerTurn);
     const wantedMessages = new Set<string>(pinnedMessageIds);
     if (revealMessage !== null) wantedMessages.add(revealMessage.id);
@@ -722,18 +724,40 @@ export function AgentTranscript({
     keys: rowKeys,
     estimate: estimateRowHeight,
     pinnedKeys: allPinnedKeys,
+    tail: transcriptTail,
     followTail,
     initialAtTail:
       pinnedRowKeys.length === 0 && pinnedMessageIds.length === 0 && revealMessage === null,
   });
+  // Only a row that live work appends while the transcript is shown rises in: the rows committed
+  // last, each in place, with one or two more after them, all within one live cut. Rows there when
+  // it was shown (a task opened or returned to), a page of history, a jump, a repair or a new cut
+  // hold still, as do rows scrolled back into view: animating a whole turn makes the browser
+  // composite it, which for a long report costs hundreds of milliseconds.
+  const slots = useRef(new Map<string, HTMLElement>());
+  const committed = useRef<{
+    readonly cut: string | null;
+    readonly keys: readonly string[];
+  } | null>(null);
+  useLayoutEffect(() => {
+    const before = committed.current;
+    committed.current = { cut: liveCut, keys: rowKeys };
+    if (liveCut === null || before?.cut !== liveCut) return;
+    for (const key of appendedKeys(before.keys, rowKeys)) {
+      const slot = slots.current.get(key);
+      if (slot) riseIn(slot);
+    }
+  }, [liveCut, rowKeys]);
+  const observeSlot = (key: string, element: HTMLElement | null) => {
+    virtual.observeRow(key, element);
+    if (element) slots.current.set(key, element);
+    else slots.current.delete(key);
+  };
   const renderRowAt = (index: number) => {
     const { group, key } = rows[index]!;
     return (
       <TranscriptRow
         continued={places?.[index]?.continued === true}
-        // Virtualized transcripts only mount the viewport + overscan (~30 rows), so parse
-        // their Markdown immediately to prevent delayed plain-to-Markdown height shifts.
-        deferBodies={!virtual.enabled && index < rows.length - undeferredRows ? deferBodies : null}
         group={group}
         joined={places?.[index]?.joined === true}
         key={key}
@@ -762,7 +786,7 @@ export function AgentTranscript({
           <div
             className="transcript__virtual-slot"
             key={row.key}
-            ref={(element) => virtual.observeRow(row.key, element)}
+            ref={(element) => observeSlot(row.key, element)}
           >
             {renderRowAt(item.index)}
           </div>
@@ -828,13 +852,12 @@ export function AgentTranscript({
       </DeliveryFeedback>
     </TranscriptDisclosures>
   );
-}
+});
 
 /* ---- A turn ---- */
 
 interface TranscriptRowProps {
   readonly continued: boolean;
-  readonly deferBodies: (() => HTMLElement | null) | null;
   readonly group: TranscriptGroup;
   readonly joined: boolean;
   readonly renderTask: TaskRenderer | undefined;
@@ -845,13 +868,12 @@ interface TranscriptRowProps {
 }
 
 /**
- * One transcript row. Rows stay mounted however long the conversation, so a row whose group holds
- * the same entries as before skips rendering: a streamed token redraws its own row alone.
+ * One transcript row. A row whose group holds the same entries as before skips rendering: a
+ * streamed token redraws its own row alone.
  */
 const TranscriptRow = memo(
   function TranscriptRow({
     continued,
-    deferBodies,
     group,
     joined,
     renderTask,
@@ -861,42 +883,39 @@ const TranscriptRow = memo(
     viewerUserId,
   }: TranscriptRowProps) {
     return (
-      <DeferredBodies value={deferBodies}>
-        <FoldMeasuresWhenLaidOut value={deferBodies !== null}>
-          {time ? <p className="transcript__time">{time}</p> : null}
-          <div
-            className="transcript__row"
-            data-continued={continued || undefined}
-            data-joined={joined || undefined}
-            data-transcript-row={rowKey}
-          >
-            {group.kind === "app" ? (
-              <AppCard entry={group.entry} />
-            ) : group.kind === "turn" ? (
-              <TurnView turn={group.turn} turnKey={group.key} reveal={reveal} />
-            ) : group.kind === "delegation" ? (
-              <DelegationNotice delegation={group.entry} />
-            ) : group.kind === "question" ? (
-              <TranscriptAnsweredQuestion entry={group.entry} />
-            ) : group.kind === "assignment" ? (
-              renderTask?.([group.entry])
-            ) : (
-              <TranscriptMessage
-                joinedRun={group.joinedRun === true}
-                reveal={reveal?.id === group.entry.id ? reveal : null}
-                message={group.entry}
-                viewerUserId={viewerUserId}
-              />
-            )}
-          </div>
-        </FoldMeasuresWhenLaidOut>
-      </DeferredBodies>
+      <>
+        {time ? <p className="transcript__time">{time}</p> : null}
+        <div
+          className="transcript__row"
+          data-continued={continued || undefined}
+          data-joined={joined || undefined}
+          data-transcript-row={rowKey}
+        >
+          {group.kind === "app" ? (
+            <AppCard entry={group.entry} />
+          ) : group.kind === "turn" ? (
+            <TurnView turn={group.turn} turnKey={group.key} reveal={reveal} />
+          ) : group.kind === "delegation" ? (
+            <DelegationNotice delegation={group.entry} />
+          ) : group.kind === "question" ? (
+            <TranscriptAnsweredQuestion entry={group.entry} />
+          ) : group.kind === "assignment" ? (
+            renderTask?.([group.entry])
+          ) : (
+            <TranscriptMessage
+              joinedRun={group.joinedRun === true}
+              reveal={reveal?.id === group.entry.id ? reveal : null}
+              message={group.entry}
+              viewerUserId={viewerUserId}
+            />
+          )}
+        </div>
+      </>
     );
   },
   // `renderTask` is a screen's inline renderer; an assignment row redraws when its entry does.
   (previous: TranscriptRowProps, next: TranscriptRowProps) =>
     previous.continued === next.continued &&
-    previous.deferBodies === next.deferBodies &&
     previous.joined === next.joined &&
     previous.time === next.time &&
     previous.reveal === next.reveal &&
@@ -1392,20 +1411,25 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
  */
 function ReplySurfaces({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   const uses = useContext(TranscriptBrowserUses);
-  const sessions = useContext(TranscriptBrowsers);
   const whole = useContext(ActivityOfTurn).get(turnKey)?.turn ?? turn;
-  const surfaces = useMemo(
-    () =>
-      replyPlaces(whole, uses, sessions).map((place) =>
-        place.kind === "page"
-          ? pageChip(place.page)
-          : place.kind === "phone"
-            ? phoneChip(place.phone)
-            : appChip(place.app),
-      ),
-    [uses, sessions, whole],
+  const surfaces = useTabRead(
+    useContext(TranscriptBrowsers),
+    useCallback(
+      (sessions: TranscriptTabSource) => replyPlaces(whole, uses, sessions).map(replyPlaceChip),
+      [uses, whole],
+    ),
+    sameChips,
   );
   return <SurfaceChips label="Pages and apps this reply used" surfaces={surfaces} />;
+}
+
+/** A place a reply's Run used, as its chip. */
+function replyPlaceChip(place: ReplyPlace): ChipSurface {
+  return place.kind === "page"
+    ? pageChip(place.page)
+    : place.kind === "phone"
+      ? phoneChip(place.phone)
+      : appChip(place.app);
 }
 
 /**
@@ -1729,7 +1753,7 @@ function Typing({ turnKey = null }: { turnKey?: string | null }) {
  * narrow screen it is a sheet. Its steps are drawn as the turn draws them
  * anywhere, without timings or what they consumed.
  */
-export function ConversationActivity({
+export const ConversationActivity = memo(function ConversationActivity({
   anchor,
   browserSessions = noTabs,
   browserUses = noBrowserUses,
@@ -1861,7 +1885,7 @@ export function ConversationActivity({
       {body}
     </Popover>
   );
-}
+});
 
 function TurnContent({
   reveal = null,
@@ -2051,14 +2075,14 @@ function TracePlace({
   turn: Turn;
   markOnly?: boolean;
 }) {
-  const sessions = useContext(TranscriptBrowsers);
-  const place = useMemo(() => placeReply(entry, sessions), [entry, sessions]);
-  const page =
-    place.kind === "page"
-      ? pageChip(place.page)
-      : place.kind === "app"
-        ? appChip(place.app)
-        : phoneChip(place.phone);
+  const page = useTabRead(
+    useContext(TranscriptBrowsers),
+    useCallback(
+      (sessions: TranscriptTabSource) => replyPlaceChip(placeReply(entry, sessions)),
+      [entry],
+    ),
+    sameChip,
+  );
   // An agent is in one tab at a time: the live turn's latest stop, while its tab is listed.
   const acting =
     turnState(turn) !== "settled" &&
@@ -2067,10 +2091,10 @@ function TracePlace({
   if (markOnly)
     return (
       <>
-        {place.kind === "phone" ? (
+        {page.phone ? (
           <Icon name="phone" />
-        ) : place.kind === "app" ? (
-          <AppMark identity={place.app.app} />
+        ) : page.app ? (
+          <AppMark identity={page.app} />
         ) : (
           <SiteMark favicon={page.favicon ?? null} />
         )}
@@ -2091,10 +2115,10 @@ function TracePlace({
       }
     >
       <span className="trace-place__stop">
-        {place.kind === "phone" ? (
+        {page.phone ? (
           <Icon name="phone" />
-        ) : place.kind === "app" ? (
-          <AppMark identity={place.app.app} />
+        ) : page.app ? (
+          <AppMark identity={page.app} />
         ) : (
           <SiteMark favicon={page.favicon ?? null} />
         )}
@@ -2838,7 +2862,11 @@ function OwnMessage({
 }) {
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [open, setOpen] = useState(reveal !== null);
+  // Opened, it stays open when its row is drawn again.
+  const [open, setOpen] = usePersistentDisclosure(
+    `message:${previewMessage.clientSendKey ?? previewMessage.id}`,
+    reveal !== null,
+  );
   const message = useTranscriptMessage(client, threadId, previewMessage, open);
   const outbox = client ? hostMessageOutbox(client) : null;
   const computer = useClientConnectionName(client?.connection ?? null);
@@ -2998,16 +3026,23 @@ function PersonWords({ text }: { readonly text: string }) {
 
 /** The pages a person included with their message, above its words. */
 function MessagePages({ pages }: { pages: readonly BrowserPageContentPart[] }) {
-  const sessions = useContext(TranscriptBrowsers);
-  if (pages.length === 0) return null;
+  return pages.length === 0 ? null : <MessagePageChips pages={pages} />;
+}
+
+/** Each page as the message drawn names it, an opened message's whole list included. */
+function MessagePageChips({ pages }: { pages: readonly BrowserPageContentPart[] }) {
+  const chips = useTabRead(
+    useContext(TranscriptBrowsers),
+    useCallback(
+      (sessions: TranscriptTabSource) => messagePages(pages, sessions).map(pageChip),
+      [pages],
+    ),
+    sameChips,
+  );
   return (
     <div aria-label="Pages included" className="msg--user__pages" role="group">
-      {pages.map((part) => (
-        <SurfaceChip
-          key={`${part.sessionId}:${part.tabId}`}
-          surface={pageChip(messagePages([part], sessions)[0]!)}
-          withSite
-        />
+      {pages.map((part, index) => (
+        <SurfaceChip key={`${part.sessionId}:${part.tabId}`} surface={chips[index]!} withSite />
       ))}
     </div>
   );
@@ -3064,7 +3099,8 @@ function RecoveryNote({
 }) {
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [open, setOpen] = useState(reveal !== null);
+  // Opened, it stays open when its row is drawn again.
+  const [open, setOpen] = usePersistentDisclosure(`message:${previewMessage.id}`, reveal !== null);
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
@@ -3179,7 +3215,11 @@ function InputMessage({
   const conversation = useContext(ConversationMode);
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [open, setOpen] = useState(reveal !== null);
+  // Opened, it stays open when its row is drawn again.
+  const [open, setOpen] = usePersistentDisclosure(
+    `message:${previewMessage.clientSendKey ?? previewMessage.id}`,
+    reveal !== null,
+  );
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);

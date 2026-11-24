@@ -160,6 +160,79 @@ it("gives scoped browser usage notices only to a synchronized viewer of that tas
   expect(selected.close).not.toHaveBeenCalled();
 });
 
+it("splits browser usage notices exceeding 100 observed threads across multiple frames", () => {
+  const hub = new RealtimeHub();
+  const ownerId = createId("user");
+  const observedIds = Array.from({ length: 125 }, () => createId("thread"));
+  const unobservedId = createId("thread");
+  const messages: HostToClientMessage[] = [];
+  const unregister = hub.registerConnection({
+    userId: ownerId,
+    sessionId: createId("authSession"),
+    sync: { wake: () => undefined, observedThreadIds: () => observedIds } as never,
+    sink: {
+      id: crypto.randomUUID(),
+      send: async (message) => {
+        messages.push(message);
+      },
+      close: vi.fn(),
+    },
+  });
+  try {
+    hub.publishBrowserUsageChanged([...observedIds, observedIds[0]!, unobservedId]);
+    expect(messages).toEqual([
+      { type: "host.browser-usage-changed", threadIds: observedIds.slice(0, 100) },
+      { type: "host.browser-usage-changed", threadIds: observedIds.slice(100) },
+    ]);
+  } finally {
+    unregister();
+  }
+});
+
+it("refreshes the browser usage of exactly the tasks each socket has open, 100 to a frame", async () => {
+  const hub = new RealtimeHub();
+  const ownerId = createId("user");
+  const endedSession = createId("authSession");
+  const viewer = connect(hub, ownerId);
+  const otherViewer = connect(hub, ownerId);
+  const idle = connect(hub, ownerId);
+  const ended = connect(hub, ownerId, endedSession);
+  await Promise.all([
+    viewer.attach(true),
+    otherViewer.attach(true),
+    idle.attach(),
+    ended.attach(true),
+  ]);
+  const manyIds = Array.from({ length: 150 }, () => createId("thread"));
+  const wide: HostToClientMessage[] = [];
+  hub.registerConnection({
+    userId: ownerId,
+    sessionId: createId("authSession"),
+    sync: { wake: () => undefined, observedThreadIds: () => manyIds } as never,
+    sink: {
+      id: crypto.randomUUID(),
+      send: async (message) => {
+        wide.push(message);
+      },
+      close: vi.fn(),
+    },
+  });
+  hub.closeSession(endedSession);
+  hub.refreshObservedBrowserUsage();
+  expect(viewer.messages).toEqual([
+    { type: "host.browser-usage-changed", threadIds: [viewer.threadId] },
+  ]);
+  expect(otherViewer.messages).toEqual([
+    { type: "host.browser-usage-changed", threadIds: [otherViewer.threadId] },
+  ]);
+  expect(idle.messages).toEqual([]);
+  expect(ended.messages).toEqual([]);
+  expect(wide).toEqual([
+    { type: "host.browser-usage-changed", threadIds: manyIds.slice(0, 100) },
+    { type: "host.browser-usage-changed", threadIds: manyIds.slice(100) },
+  ]);
+});
+
 it("sends show to attached sessions of the person once and leaves reconnects empty", async () => {
   const hub = new RealtimeHub();
   const ownerId = createId("user");

@@ -1,4 +1,4 @@
-import { useLiveAgentCard, useThreadTranscript } from "@opensteer/client/react";
+import { useLiveAgentCard, useThreadScope, useThreadTranscript } from "@opensteer/client/react";
 import {
   Suspense,
   lazy,
@@ -99,15 +99,17 @@ export function SubagentPane({
   threadId: string;
   threadTitle: string;
 }) {
-  const { hostClient, snapshot: shown } = useShell();
+  const { hostClient } = useShell();
   const { entries } = useThreadTranscript(hostClient, threadId);
+  // This conversation's own work, read live; the shell around it is the stable projection.
+  const scope = useThreadScope(hostClient, threadId, entries);
   const snapshot = useMemo(
     () => ({
-      ...shown,
-      connection: live ? shown.connection : ("offline" as const),
+      ...scope,
+      connection: live ? scope.connection : ("offline" as const),
       transcripts: { [threadId]: entries },
     }),
-    [entries, live, shown, threadId],
+    [entries, live, scope, threadId],
   );
   const { detail, watch } = useNodeDetail(hostClient, threadId, nodeId);
   const summary =
@@ -525,7 +527,7 @@ function PaneFooter({
   const { requests } = useThreadTranscript(hostClient, threadId);
   const engine = useContext(AgentEngine);
   const { card } = view;
-  const items = useDockedRequests(threadId, requests, false);
+  const items = useDockedRequests(hostClient, threadId, requests, false);
   const own = card.requestId
     ? items.filter((item) => item.surface.request.id === card.requestId)
     : [];

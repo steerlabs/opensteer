@@ -5,12 +5,11 @@ import {
   assignmentTitle,
   assignmentPresentation,
   assignmentRequester,
-  currentAssignment,
   delegationPresentation,
   taskRowNote,
   threadMark,
-  type AssignmentEntry,
   type AssignmentPresentation,
+  type AssignmentReader,
   type AssignmentTone,
   type DelegationEntry,
   type HostSnapshot,
@@ -34,9 +33,8 @@ function taskHref(assignment: AssignmentSummary): string {
  * to a Workspace beyond the loaded catalog; holding one opens its Workspace
  * channel without changing the conversation.
  */
-function useObservedWorker(entry: AssignmentEntry): void {
-  const { hostClient, snapshot } = useShell();
-  const assignment = currentAssignment(entry, snapshot.assignments);
+function useObservedWorker(assignment: AssignmentSummary): void {
+  const { hostClient } = useShell();
   const workerThreadId = assignment.workerThread.id;
   const observe = assignment.status === "open";
   useEffect(
@@ -49,15 +47,17 @@ function useObservedWorker(entry: AssignmentEntry): void {
  * What a task keeps doing whether or not its line is drawn: its worker stays
  * observed, and a change in where it stands is said to a screen reader. One
  * per task, so a closed group still speaks and an opened one never twice.
+ * The task is given as held now, with what its presentation reads.
  */
-export function ObservedWorker({ entry }: { entry: AssignmentEntry }) {
-  const { snapshot } = useShell();
-  useObservedWorker(entry);
-  const presentation = assignmentPresentation(
-    currentAssignment(entry, snapshot.assignments),
-    snapshot,
-  );
-  return <LifecycleNews text={presentation.announcement} />;
+export function ObservedWorker({
+  assignment,
+  reader,
+}: {
+  assignment: AssignmentSummary;
+  reader: AssignmentReader;
+}) {
+  useObservedWorker(assignment);
+  return <LifecycleNews text={assignmentPresentation(assignment, reader).announcement} />;
 }
 
 /**

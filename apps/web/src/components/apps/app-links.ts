@@ -47,8 +47,10 @@ const pointedFrames = new Map<HTMLIFrameElement, number>();
 /** Which frame held focus, as last seen, and since when another frame last held it. */
 let focusedFrame: Element | null = null;
 const focusLeftAt = new Map<Element, number>();
-let watchers = 0;
-let stopWatching: (() => void) | null = null;
+let watching = false;
+/** App frames on screen, each holding the focus poll; it runs only while one is. */
+let framesWatched = 0;
+let focusPoll: ReturnType<typeof setInterval> | undefined;
 
 function now(): number {
   return performance.now();
@@ -66,44 +68,52 @@ function noteFocus(at: number): void {
 /**
  * What this page can see of a person's input: its own presses (a press inside
  * a frame never reaches its listeners, while every key on the page does,
- * Tab included), which frame the pointer is over, and which frame holds focus.
- * Ref-counted so unmounting the last mounted shell or frame stops its timer.
+ * Tab included) and which frame the pointer is over.
  */
-export function watchAppInput(): () => void {
-  if (typeof window === "undefined" || typeof document === "undefined") return () => undefined;
-  watchers += 1;
-  if (stopWatching === null) {
-    const press = (event: Event) => {
-      if (event.isTrusted) pageInputAt = now();
-    };
-    const over = (event: Event) => {
+export function watchAppInput(): void {
+  if (watching || typeof window === "undefined") return;
+  watching = true;
+  const press = (event: Event) => {
+    if (event.isTrusted) pageInputAt = now();
+  };
+  for (const type of ["pointerdown", "pointerup", "mousedown", "keydown", "touchend"])
+    window.addEventListener(type, press, { capture: true, passive: true });
+  document.addEventListener(
+    "pointerover",
+    (event) => {
       if (event.target instanceof HTMLIFrameElement) pointedFrames.set(event.target, Infinity);
-    };
-    const out = (event: Event) => {
+    },
+    { capture: true, passive: true },
+  );
+  document.addEventListener(
+    "pointerout",
+    (event) => {
       if (event.target instanceof HTMLIFrameElement) pointedFrames.set(event.target, now());
-    };
-    const pressTypes = ["pointerdown", "pointerup", "mousedown", "keydown", "touchend"] as const;
-    for (const type of pressTypes)
-      window.addEventListener(type, press, { capture: true, passive: true });
-    document.addEventListener("pointerover", over, { capture: true, passive: true });
-    document.addEventListener("pointerout", out, { capture: true, passive: true });
-    const timer = window.setInterval(() => noteFocus(now()), 200);
-    stopWatching = () => {
-      window.clearInterval(timer);
-      for (const type of pressTypes) window.removeEventListener(type, press, { capture: true });
-      document.removeEventListener("pointerover", over, { capture: true });
-      document.removeEventListener("pointerout", out, { capture: true });
-    };
+    },
+    { capture: true, passive: true },
+  );
+}
+
+/**
+ * Follows which frame holds focus while an app frame is on screen, and returns its release. Focus
+ * moving between frames raises nothing on this page, so it is polled; with no frame on screen
+ * there is nothing to follow, and the poll stops.
+ */
+export function watchFrameFocus(): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  framesWatched += 1;
+  if (framesWatched === 1) {
+    noteFocus(now());
+    focusPoll = setInterval(() => noteFocus(now()), 200);
   }
-  let stopped = false;
+  let released = false;
   return () => {
-    if (stopped) return;
-    stopped = true;
-    watchers = Math.max(0, watchers - 1);
-    if (watchers === 0 && stopWatching !== null) {
-      stopWatching();
-      stopWatching = null;
-    }
+    if (released) return;
+    released = true;
+    framesWatched -= 1;
+    if (framesWatched > 0) return;
+    clearInterval(focusPoll);
+    focusPoll = undefined;
   };
 }
 

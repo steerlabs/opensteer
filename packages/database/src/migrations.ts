@@ -22,6 +22,7 @@ import {
   applyBrowserSessionTabsIndex,
   applyInlineTranscriptMessages,
   applyStoppedRunsNotNews,
+  applyTaskOpenIndexes,
   applyThreadDoneBy,
   applyRunProviderRetry,
   applyPersonalStateSchema,
@@ -31,6 +32,7 @@ import {
   dropDeviceAccessCountMigrationName,
   inlineTranscriptMessagesMigrationName,
   stoppedRunsNotNewsMigrationName,
+  taskOpenIndexesMigrationName,
   threadDoneByMigrationName,
   runProviderRetryMigrationName,
   taskApprovalReceiptsMigrationName,
@@ -643,6 +645,7 @@ export function migrationProvider(options?: {
               [stoppedRunsNotNewsMigrationName]: { up: applyStoppedRunsNotNews },
               [threadDoneByMigrationName]: { up: applyThreadDoneBy },
               [runProviderRetryMigrationName]: { up: applyRunProviderRetry },
+              [taskOpenIndexesMigrationName]: { up: applyTaskOpenIndexes },
               [agentGrantsMigrationName]: { up: applyAgentGrants },
               [agentSessionsMigrationName]: { up: applyAgentSessions },
               "0102_chrome_live_tabs_source": {

@@ -224,6 +224,128 @@ test("fences a pending write at generation replacement and checkpoints installed
   expect(commits.at(-1)).toMatchObject({ cursor: { afterSequence: "2" }, state: { items: [] } });
 });
 
+test("leaving a task before the checkpoint flush still saves what it last showed", async () => {
+  const commits: PersonalStreamCheckpoint[] = [];
+  const f = fixture({
+    ...createPersonalStreamCache(memoryCheckpointStorage()),
+    commit: async (checkpoint, current) => {
+      if (current()) commits.push(checkpoint);
+    },
+  });
+  f.syncShell();
+  f.syncDetail();
+  f.stream.receive({
+    ...f.address,
+    type: "host.changes",
+    fromSequence: "1",
+    throughSequence: "2",
+    changes: [
+      {
+        entityKind: "item",
+        entityId: "added",
+        operation: "upsert",
+        sequence: "2",
+        ordinal: 0,
+        value: { ...item, id: "added", revision: "2", position: "2" },
+      },
+    ],
+  });
+  // Left at once: the scope is no longer synchronized when the flush comes.
+  f.stream.select(undefined);
+  expect(f.detail.transcript.getSnapshot().synchronized).toBe(false);
+  f.stream.flushCheckpoints();
+  await vi.waitFor(() => expect(commits.filter(({ kind }) => kind === "detail")).toHaveLength(1));
+  const saved = commits.find(({ kind }) => kind === "detail");
+  expect(saved).toMatchObject({ cursor: { afterSequence: "2" } });
+  expect(saved?.kind === "detail" && saved.state.items.map(({ id }) => id)).toEqual([
+    item.id,
+    "added",
+  ]);
+});
+
+test("a quick return's catch-up never replaces the checkpoint a task left with", async () => {
+  const commits: PersonalStreamCheckpoint[] = [];
+  const f = fixture({
+    ...createPersonalStreamCache(memoryCheckpointStorage()),
+    commit: async (checkpoint, current) => {
+      if (current()) commits.push(checkpoint);
+    },
+  });
+  f.syncShell();
+  f.syncDetail();
+  f.stream.select(undefined);
+  f.stream.select(threadScope);
+  const next = f.sent.findLast((frame) => frame.type === "client.subscribe") as Extract<
+    ScopedClientMessage,
+    { type: "client.subscribe" }
+  >;
+  // One replayed commit lands, not yet synchronized, before the flush.
+  f.stream.receive({
+    subscriptionId: next.subscriptionId,
+    generation: next.generation,
+    scope: next.scope,
+    type: "host.changes",
+    fromSequence: "1",
+    throughSequence: "2",
+    changes: [],
+  });
+  f.stream.flushCheckpoints();
+  await vi.waitFor(() => expect(commits.filter(({ kind }) => kind === "detail")).toHaveLength(1));
+  expect(commits.find(({ kind }) => kind === "detail")).toMatchObject({
+    cursor: { afterSequence: "1" },
+  });
+});
+
+test("a task let go for recency still saves its pending checkpoint", async () => {
+  const commits: PersonalStreamCheckpoint[] = [];
+  const f = fixture({
+    ...createPersonalStreamCache(memoryCheckpointStorage()),
+    commit: async (checkpoint, current) => {
+      if (current()) commits.push(checkpoint);
+    },
+  });
+  f.syncShell();
+  f.syncDetail();
+  f.stream.select(undefined);
+  // Nine other tasks shown and left push the first out of memory before the flush.
+  for (let index = 0; index < 9; index++) {
+    const scope = { kind: "thread" as const, threadId: createId("thread") };
+    f.stream.select(scope);
+    // The stream first looks for the task's saved cut, then subscribes.
+    const next = await vi.waitFor(() => {
+      const subscribe = f.sent.findLast(
+        (frame) =>
+          frame.type === "client.subscribe" &&
+          frame.scope.kind === "thread" &&
+          frame.scope.threadId === scope.threadId,
+      );
+      expect(subscribe).toBeDefined();
+      return subscribe as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+    });
+    const at = { subscriptionId: next.subscriptionId, generation: next.generation, scope };
+    f.stream.receive({
+      ...at,
+      type: "host.snapshot",
+      throughSequence: "1",
+      snapshot: {
+        ...f.detailSnapshot().snapshot,
+        thread: detailThread({ ...task, id: scope.threadId }),
+      },
+    });
+    f.stream.receive({ ...at, type: "host.synchronized", throughSequence: "1" });
+  }
+  f.stream.select(undefined);
+  expect(f.stream.peekDetail(threadScope)).toBeUndefined();
+  f.stream.flushCheckpoints();
+  await vi.waitFor(() =>
+    expect(
+      commits.some(
+        ({ kind, scope }) => kind === "detail" && scope.scopeKey === `thread:${threadId}`,
+      ),
+    ).toBe(true),
+  );
+});
+
 async function savedCache() {
   const storage = memoryCheckpointStorage();
   const cache = createPersonalStreamCache(storage);

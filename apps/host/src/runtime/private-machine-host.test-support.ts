@@ -118,12 +118,16 @@ export async function startPrivateMachineHost(
       NonNullable<NonNullable<Parameters<typeof createHostRuntime>[1]>["pluginEngine"]>
     >;
     readonly canonicalOrigin?: URL;
+    readonly webDistribution?: HostConfig["webDistribution"];
   } = {},
 ): Promise<PrivateMachineHost> {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "private-machine-test-")));
   const config = {
     ...privateMachineHostConfig(await freePort(), directory, databaseUrl),
     ...(options.deploymentName ? { deploymentName: options.deploymentName } : {}),
+    ...(options.webDistribution
+      ? { mode: "production" as const, webDistribution: options.webDistribution }
+      : {}),
     ...(options.canonicalOrigin
       ? { canonicalOrigin: options.canonicalOrigin, runtimeOrigin: options.canonicalOrigin }
       : {}),

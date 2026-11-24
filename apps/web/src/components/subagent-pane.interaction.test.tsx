@@ -28,6 +28,7 @@ it("holds one node watch while a subagent is open and releases it on leaving", a
     "ResizeObserver",
     class {
       observe() {}
+      unobserve() {}
       disconnect() {}
     },
   );

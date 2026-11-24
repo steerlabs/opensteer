@@ -31,9 +31,11 @@ import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import { requestAnswer, useAction } from "./use-action.js";
 
 /** The view for a connected agent's own task, or null for any other task. */
-export function useSessionTask(threadId: string): SessionTaskView | null {
-  const { snapshot, hostClient } = useShell();
-  const thread = threadInDirectory(threadId, snapshot);
+export function useSessionTask(hostClient: HostClient, threadId: string): SessionTaskView | null {
+  const thread = useHostSelector(
+    hostClient,
+    useCallback((current) => threadInDirectory(threadId, current), [threadId]),
+  );
   const operations = useTaskActivity(
     hostClient,
     threadId,
@@ -42,7 +44,7 @@ export function useSessionTask(threadId: string): SessionTaskView | null {
       : null,
   );
   if (!thread) return null;
-  const slot = agentSessionSlot(snapshot, threadId, operations);
+  const slot = sessionSlotFromHome(thread.externalWork, operations);
   return sessionTaskView({
     thread: { status: thread.status, agentSessionId: thread.agentSessionId ?? null },
     slot,
@@ -169,10 +171,17 @@ export function useOperationRequest(
     | "originatingThreadId"
   >,
 ): OperationRequestView | null {
-  const { snapshot } = useShell();
+  const { hostClient } = useShell();
+  const work = useHostSelector(
+    hostClient,
+    useCallback(
+      (current) => threadInDirectory(request.originatingThreadId, current)?.externalWork,
+      [request.originatingThreadId],
+    ),
+  );
   return operationRequestView({
     request,
-    session: agentSessionSlot(snapshot, request.originatingThreadId),
+    session: sessionSlotFromHome(work),
   });
 }
 

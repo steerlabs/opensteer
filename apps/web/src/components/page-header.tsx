@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Icon } from "./icon.js";
 import { SidebarRestoreButton } from "./sidebar-chrome.js";
-import { useOptionalWorkspace } from "./workspace/workspace-context.js";
+import { useWorkspaceAttention } from "./workspace/workspace-context.js";
 
 /**
  * Routed pages own their titlebar so desktop drag regions never overlay page
@@ -22,7 +22,7 @@ export function PageTopbar({
   readonly title: ReactNode;
   readonly trailing?: ReactNode;
 }) {
-  const attention = useOptionalWorkspace()?.attention ?? 0;
+  const attention = useWorkspaceAttention();
   return (
     <header className={mobileOnly ? "topbar topbar--mobile-only" : "topbar"}>
       <SidebarRestoreButton />

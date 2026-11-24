@@ -12,7 +12,13 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { useOptionalWorkspace } from "../workspace/workspace-context.js";
 import { useToast } from "../toast.js";
-import { appLinkLabel, openAppLink, watchAppInput, type AppLinkPlaces } from "./app-links.js";
+import {
+  appLinkLabel,
+  openAppLink,
+  watchAppInput,
+  watchFrameFocus,
+  type AppLinkPlaces,
+} from "./app-links.js";
 
 export function useAppTheme(): AppTheme {
   const [theme, setTheme] = useState<AppTheme>(currentTheme);
@@ -91,7 +97,10 @@ export function useAppLinkPlaces(inWorkspace = true): { readonly current: AppLin
     ask: (url, open) =>
       toast.success(`This app wants to open ${appLinkLabel(url)}`, { label: "Open", run: open }),
   };
-  useEffect(watchAppInput, []);
+  useEffect(() => {
+    watchAppInput();
+    return watchFrameFocus();
+  }, []);
   return places;
 }
 
