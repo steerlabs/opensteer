@@ -1042,9 +1042,16 @@ export class IdentityService {
     const responseHeaders = new Headers();
     responseHeaders.set("cache-control", "no-store");
     if (input.delivery === "cookie") {
+      // The cookie is only how the credential travels; the session row is the
+      // fence. Its idle deadline moves forward on use, but no later response
+      // rewrites this cookie, so a cookie that expired on the idle deadline
+      // would sign out a device in steady use exactly a week after it joined.
+      // It lives as long as the session can, and the Host refuses it sooner
+      // when the row has gone idle.
+      const maxAge = Math.max(0, Math.floor((absoluteExpiresAt.getTime() - now.getTime()) / 1_000));
       responseHeaders.append(
         "set-cookie",
-        `${personalRemoteCookieName}=${encodeURIComponent(credential)}; Path=/; Max-Age=${idleSessionSeconds}; HttpOnly; Secure; SameSite=Lax`,
+        `${personalRemoteCookieName}=${encodeURIComponent(credential)}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`,
       );
       return { data: { delivery: "cookie", session }, headers: responseHeaders, status: 200 };
     }

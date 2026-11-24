@@ -81,7 +81,10 @@ export function createPersonalSessionStore(
       const session = await read(deploymentId);
       if (session === null) return null;
       if (expectedLoginId !== undefined && session.viewLoginId !== expectedLoginId) return null;
-      if (Date.parse(session.expiresAt) <= now.getTime()) return null;
+      // `expiresAt` is the idle deadline at sign-in, and the Host moves it
+      // forward on use without telling this store. The Host enforces it; this
+      // store keeps the credential until the session can no longer be valid.
+      if (Date.parse(session.absoluteExpiresAt) <= now.getTime()) return null;
       return `${personalRemoteAuthorizationScheme} ${session.token}`;
     },
 
