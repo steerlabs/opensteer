@@ -897,10 +897,10 @@ extension WireJourney {
       _ = try await independent.request("session.observe", ["sessionId": otherSession, "app": otherApp,
         "window": independentRef, "includeScreenshot": false])
       start("agent-refused-held-button")
-      beforeHeldUps = try mouseUps()
       let heldContact = try await input([["kind": "mouse", "phase": "down", "button": "left",
         "clickCount": 1, "modifiers": [], "x": 0.5, "y": 0.5]])
       try require(heldContact["outcome"] as? String == "dispatched", "Person button did not go down")
+      beforeHeldUps = try mouseUps()
       let heldResult = try await agent.request("session.act", ["sessionId": session, "app": sessionApp, "window": ref,
         "actions": [["type": "key", "keys": "x"]]])
       let heldError = heldResult["error"] as? [String: Any]
