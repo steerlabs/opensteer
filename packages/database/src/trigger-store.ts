@@ -248,10 +248,12 @@ export async function assertActiveTriggerExecutionBinding(
       "threads.doneAt as threadDoneAt",
       "threads.removedAt as threadRemovedAt",
       "threads.status as threadStatus",
-      "threads.unconfirmedStopRunId as threadUnconfirmedStopRunId",
       "triggerOccurrences.admittedGrantRevision",
       "triggerOccurrences.admittedAccessMode",
     ])
+    .$if(Boolean(input.rejectHeldAnchor), (qb) =>
+      qb.select("threads.unconfirmedStopRunId as threadUnconfirmedStopRunId"),
+    )
     .where("triggerOccurrences.id", "=", input.occurrenceId)
     .where("triggerOccurrences.environmentId", "=", input.environmentId)
     .where("triggerOccurrences.executionGeneration", "=", input.executionGeneration)
@@ -280,7 +282,7 @@ export async function assertActiveTriggerExecutionBinding(
         },
       )
     : null;
-  if (input.rejectHeldAnchor && row.threadUnconfirmedStopRunId !== null)
+  if (input.rejectHeldAnchor && row.threadUnconfirmedStopRunId != null)
     throw new TriggerAnchorStopHeld();
   if (
     !(await admitThreadExecution(database, row.anchorThreadId, row.createdBy)) ||
