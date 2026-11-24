@@ -968,8 +968,8 @@ export class ShellHub implements ShellControlStreamHandler {
     await this.#endMatching(() => true, "host-shutdown");
     // An evidence write waiting out its backoff gets one more try now; the startup sweep stands
     // behind any that still fails.
-    for (const wake of [...this.#retryWakers]) wake();
-    await Promise.allSettled([...this.#evidenceTurns.values()]);
+    for (const wake of this.#retryWakers) wake();
+    await Promise.allSettled(this.#evidenceTurns.values());
     // Endings whose writes failed earlier are still owed, and their scheduled
     // retries will not outlive this process. Each gets one more attempt here;
     // the startup sweep of open rows is what stands behind that.

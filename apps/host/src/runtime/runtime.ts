@@ -1835,6 +1835,8 @@ export async function createHostRuntime(
         realtime.sendToUsers([userId], { notification: view, type: "host.notification" }),
       onError: (failure) => reportNotification("error", failure),
       onWarning: (failure) => reportNotification("warn", failure),
+      // A connected agent's alert reached an outcome: its Disconnect can settle (A5).
+      onAttemptSettled: () => connectionMaintenance?.wake(),
       ready: notificationAuthorityReady,
       store: notifications,
     });

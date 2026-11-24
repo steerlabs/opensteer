@@ -29,7 +29,8 @@ import {
   type PendingAgentEvent,
   type RunnerDescriptor,
 } from "@opensteer/protocol";
-import { afterAll, describe, expect, it as baseIt } from "vitest";
+import { sql } from "kysely";
+import { afterAll, describe, expect, it as baseIt, vi } from "vitest";
 import "./connection.js";
 import {
   ShellSessionIdSchema,
@@ -39,6 +40,7 @@ import {
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { connectionAttempts } from "./connection-disconnect.js";
 import { createDatabase, OpensteerStore } from "./index.js";
+import { NotificationStore } from "./notification-store.js";
 import { revokeRunGrants } from "./run-grants.js";
 import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
 import { readTranscriptOverlays } from "./personal-overlay-store.js";
@@ -1367,6 +1369,18 @@ integration.sequential("Run stop fencing", () => {
         .executeTakeFirst();
     return { f, connection, connections, fence, reserve, outstanding, row, grantRevision };
   }
+  /** Until some session of this database waits on a row lock: the one the test holds. */
+  async function waitingOnARowLock(database: StoreFixture["database"]) {
+    await vi.waitFor(
+      async () => {
+        const { rows } = await sql<{ readonly waiting: number }>`
+          select count(*)::integer as waiting from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'`.execute(database);
+        expect(rows[0]?.waiting).toBeGreaterThan(0);
+      },
+      { timeout: 10_000 },
+    );
+  }
   const shellId = (n: number) =>
     ShellSessionIdSchema.parse(`shs_00000000-0000-4000-8000-${String(n).padStart(12, "0")}`);
 
@@ -1421,7 +1435,7 @@ integration.sequential("Run stop fencing", () => {
     });
     void reserving.catch(() => undefined);
     // Held on the connection row the revoke has: neither written nor refused yet.
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await waitingOnARowLock(database);
     expect(settled).toBe(false);
     release.resolve();
     await revoking;
@@ -1538,18 +1552,201 @@ integration.sequential("Run stop fencing", () => {
     ).toMatchObject({ cleanupCompletedAt: expect.any(Date), lastActionUncertainAt: null });
   });
 
-  it("loses contact with every connection shell the last Home did not see end", async ({
+  /** A connected agent's Run asking the person, and the alert decided for it (A5). */
+  async function lineagedRequest(storeFixture: StoreFixture, suffix: string) {
+    const { fixture, running, openRequest, database } = storeFixture;
+    const f = await fixture(suffix);
+    const run = await running(f, suffix);
+    const request = await openRequest(f, run, 1);
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: f.userId,
+      label: "Fixture",
+      clientName: "Fixture",
+      resource: "http://localhost/mcp",
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    await connections.activate(connection.id, `fixture-${suffix}`);
+    const notifications = new NotificationStore(database);
+    const decide = async () => {
+      const [decision] = await notifications.decide({
+        type: "requestChanged",
+        kind: "harness.approval",
+        status: "pending",
+        opened: true,
+        requestId: request.id,
+        runId: run.id,
+        threadId: f.thread.id,
+      });
+      if (!decision) throw new Error("Expected an alert");
+      return {
+        ...decision.view,
+        userId: decision.userId,
+        eventId: createId("event"),
+        sequence: decision.sequence,
+        connectionId: decision.connectionId,
+        occurredAt: new Date(decision.view.occurredAt),
+        expiresAt: new Date(Date.parse(decision.view.occurredAt) + 15 * 60_000),
+      };
+    };
+    // Your own agent's Run first: no connection, no attempt.
+    const own = await decide();
+    await database
+      .updateTable("runs")
+      .set({ connectionId: connection.id })
+      .where("id", "=", run.id)
+      .executeTakeFirstOrThrow();
+    const entry = await decide();
+    const attempts = () =>
+      connectionAttempts(database, connection.id).then((rows) =>
+        rows.filter((attempt) => attempt.kind === "notification"),
+      );
+    const state = () =>
+      database
+        .selectFrom("agentConnections")
+        .select(["cleanupCompletedAt", "lastActionUncertainAt", "lastActionUncertain"])
+        .where("id", "=", connection.id)
+        .executeTakeFirstOrThrow();
+    return { f, run, request, connection, connections, notifications, own, entry, attempts, state };
+  }
+
+  it("attributes a Request alert to the connection whose lineage asked", async ({
+    storeFixture,
+  }) => {
+    const r = await lineagedRequest(storeFixture, "alert-lineage");
+    expect(r.own.connectionId).toBeNull();
+    expect(r.entry.connectionId).toBe(r.connection.id);
+  });
+
+  it("records a connection's alert at hand-off and counts it until its outcome", async ({
     storeFixture,
   }) => {
     const { store } = storeFixture;
-    const s = await lineagedShell(storeFixture, "shell-home-restart");
-    const sessionId = shellId(18);
-    await s.reserve(sessionId);
-    await store.endAllOpenShellSessions("host-shutdown");
-    expect(await s.row(sessionId)).toMatchObject({
-      terminalEvidenceAt: expect.any(Date),
-      contactLostAt: expect.any(Date),
+    const r = await lineagedRequest(storeFixture, "alert-counted");
+    const begun = await r.notifications.beginPublication(r.entry);
+    expect(begun).toMatchObject({ kind: "begun" });
+    if (begun.kind !== "begun") throw new Error("unreachable");
+    await r.connections.revoke(r.f.userId, r.connection.id);
+    // In flight when the Disconnect committed: in the set, outstanding, and Stopping.
+    expect(await r.attempts()).toMatchObject([
+      { id: begun.attemptId, kind: "notification", terminalEvidenceAt: null },
+    ]);
+    // Nor is the same alert sent again by a resend once the connection ended.
+    await expect(r.notifications.continuePublication(begun.attemptId, r.entry)).resolves.toBe(
+      false,
+    );
+    await store.driveConnectionCleanups({ stopper: { stop: async () => "ended" as const } });
+    expect(await r.state()).toMatchObject({ cleanupCompletedAt: null });
+    // Its acknowledgement was lost: unknown, ended with contact lost, and the person checks.
+    await r.notifications.settlePublication(begun.attemptId, "unknown");
+    await store.driveConnectionCleanups({ stopper: { stop: async () => "ended" as const } });
+    expect(await r.state()).toMatchObject({
+      cleanupCompletedAt: expect.any(Date),
+      lastActionUncertainAt: expect.any(Date),
+      lastActionUncertain: expect.objectContaining({
+        attemptId: begun.attemptId,
+        reason:
+          "A phone alert for this agent's question may have been sent; the Opensteer account did not confirm it.",
+      }),
     });
+    // And the ended connection hands off nothing more.
+    await expect(r.notifications.beginPublication(r.entry)).resolves.toEqual({
+      kind: "refused",
+      reason: "The connected agent's access ended",
+    });
+  });
+
+  it("refuses the hand-off once the revoke committed, or the Request stopped waiting", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const answered = await lineagedRequest(storeFixture, "alert-answered");
+    await database
+      .updateTable("requests")
+      .set({ status: "cancelled", cancellationReason: "authority-revoked", resolvedAt: new Date() })
+      .where("id", "=", answered.request.id)
+      .execute();
+    await expect(answered.notifications.beginPublication(answered.entry)).resolves.toMatchObject({
+      kind: "refused",
+    });
+    const revoked = await lineagedRequest(storeFixture, "alert-revoked");
+    await revoked.connections.revoke(revoked.f.userId, revoked.connection.id);
+    await expect(revoked.notifications.beginPublication(revoked.entry)).resolves.toMatchObject({
+      kind: "refused",
+    });
+    for (const r of [answered, revoked]) {
+      expect(
+        await database
+          .selectFrom("commandAttempts")
+          .select("id")
+          .where("connectionId", "=", r.connection.id)
+          .execute(),
+      ).toEqual([]);
+    }
+  });
+
+  it("holds a hand-off behind a revoke in progress, then refuses it", async ({ storeFixture }) => {
+    const { database } = storeFixture;
+    const r = await lineagedRequest(storeFixture, "alert-race");
+    const locked = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const revoking = database.transaction().execute(async (tx) => {
+      await tx
+        .selectFrom("agentConnections")
+        .select("id")
+        .where("id", "=", r.connection.id)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      await tx
+        .updateTable("agentConnections")
+        .set({ revokedAt: new Date(), cleanupReason: "revoked", cleanupRequestedAt: new Date() })
+        .where("id", "=", r.connection.id)
+        .execute();
+      locked.resolve();
+      await release.promise;
+    });
+    await locked.promise;
+    let settled = false;
+    const handing = r.notifications.beginPublication(r.entry).finally(() => {
+      settled = true;
+    });
+    await waitingOnARowLock(database);
+    expect(settled).toBe(false);
+    release.resolve();
+    await revoking;
+    await expect(handing).resolves.toMatchObject({ kind: "refused" });
+    expect(await r.attempts()).toEqual([]);
+  });
+
+  it("answers a second hand-off of the same alert with the first; only a failed one goes again", async ({
+    storeFixture,
+  }) => {
+    const r = await lineagedRequest(storeFixture, "alert-once");
+    const first = await r.notifications.beginPublication(r.entry);
+    if (first.kind !== "begun") throw new Error("Expected a begun attempt");
+    await expect(r.notifications.beginPublication(r.entry)).resolves.toEqual({
+      kind: "prior",
+      state: "running",
+    });
+    // Known never sent: the alert may be handed off again, as a new attempt.
+    await r.notifications.settlePublication(first.attemptId, "failed");
+    const second = await r.notifications.beginPublication(r.entry);
+    expect(second).toMatchObject({ kind: "begun" });
+    if (second.kind !== "begun") throw new Error("unreachable");
+    await expect(r.notifications.continuePublication(second.attemptId, r.entry)).resolves.toBe(
+      true,
+    );
+    // It may have reached the phone: it answers every later hand-off, and is never sent again.
+    await r.notifications.settlePublication(second.attemptId, "unknown");
+    await expect(r.notifications.beginPublication(r.entry)).resolves.toEqual({
+      kind: "prior",
+      state: "unknown",
+    });
+    await expect(r.notifications.continuePublication(second.attemptId, r.entry)).resolves.toBe(
+      false,
+    );
   });
 });
 function pendingEvent<T extends PendingAgentEvent>(input: Omit<T, "emittedAt">): T {

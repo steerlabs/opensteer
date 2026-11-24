@@ -939,25 +939,18 @@ export async function endShellSession(
 
 /**
  * No session survives a Host epoch, so every open row ends at startup. A connection's shell the
- * last Host did not see end on its target has lost contact: the stream it was opened on went
- * with that process, so no receipt for it can ever arrive.
+ * last Host did not see end on its target is settled by its Disconnect: the stream it was opened
+ * on went with that process, so this Home's stop finds no such stream and records contact lost.
  */
 export async function endAllOpenShellSessions(
   database: Kysely<DatabaseSchema>,
   reason: ShellCloseReason,
 ): Promise<number> {
-  const now = new Date();
   const result = await database
     .updateTable("machineAccessSessions")
-    .set({ endReason: reason, endedAt: now, state: "ended" })
+    .set({ endReason: reason, endedAt: new Date(), state: "ended" })
     .where("endedAt", "is", null)
     .executeTakeFirst();
-  await database
-    .updateTable("machineAccessSessions")
-    .set({ terminalEvidenceAt: now, contactLostAt: now })
-    .where("connectionId", "is not", null)
-    .where("terminalEvidenceAt", "is", null)
-    .execute();
   return Number(result.numUpdatedRows);
 }
 

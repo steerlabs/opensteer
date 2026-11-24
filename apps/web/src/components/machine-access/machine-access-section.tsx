@@ -516,7 +516,7 @@ export function MachineAccessSection({
                 </span>
                 <span className="machine-access__session-detail">
                   {session.ending
-                    ? "Disconnected. Opensteer is still saving that it ended."
+                    ? "Opensteer cut this connection and is still recording that it ended."
                     : `${machineAccessElapsedLabel(session.startedAt, now)} · ${formatBytes(
                         machineAccessSessionBytes(session),
                       )}`}

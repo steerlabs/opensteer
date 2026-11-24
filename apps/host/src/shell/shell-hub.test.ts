@@ -1707,6 +1707,19 @@ describe("ShellHub connection attempts (A4)", () => {
     await vi.waitFor(() => expect(context.peer.sent.length).toBe(asked + 1));
     context.hub.detach(context.peer, "transport-disconnected");
     await expect(context.hub.stopConnectionAttempt(attempt)).resolves.toBe("contact-lost");
+    // A Home that never held the stream it was opened on (it started after the last one went)
+    // hears nothing from it either.
+    const restarted = harness();
+    await expect(
+      restarted.hub.stopConnectionAttempt({
+        id: ShellSessionIdSchema.parse(`shs_${globalThis.crypto.randomUUID()}`),
+        runnerId: restarted.target,
+        targetFence: {
+          ...restarted.stream.fence,
+          auxiliaryStreamId: context.stream.fence.auxiliaryStreamId,
+        },
+      }),
+    ).resolves.toBe("contact-lost");
     // A row that names no stream was never offered to a target.
     await expect(
       context.hub.stopConnectionAttempt({ ...attempt, targetFence: null }),
