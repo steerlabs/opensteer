@@ -27,8 +27,6 @@ import {
   type Message,
 } from "@opensteer/core";
 import {
-  isolatedServiceHarnessRuntimeBoundary,
-  nativeUserHarnessRuntimeBoundary,
   threadTitlePrompt,
   spawnSupervised,
   type HarnessAdapter,
@@ -210,16 +208,6 @@ describe("Pi model catalog", () => {
 });
 
 describe("Pi inspection", () => {
-  it("refuses an isolated-service Runner outright", async () => {
-    const result = await inspectSource("openai", {
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-    });
-    expect(result).toEqual({
-      detail: expect.stringContaining("no command sandbox"),
-      status: "unavailable",
-    });
-  });
-
   it("reports an unsupported Pi version as unavailable", async () => {
     const result = await inspectSource("openai", { environment: { FAKE_PI_VERSION: "0.84.0" } });
     expect(result).toEqual({
@@ -278,7 +266,6 @@ describe("Pi inspection", () => {
       config: { baseUrl: "https://openrouter.ai/api/v1" },
       environment: stringEnvironment(process.env),
       providerState,
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: piCompatibleSourceId,
       workingDirectory: directory,
@@ -341,7 +328,6 @@ describe("Pi inspection", () => {
       config: { baseUrl: "https://endpoint.test/v1" },
       environment: stringEnvironment(process.env),
       providerState,
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: piCompatibleSourceId,
       workingDirectory: directory,
@@ -1506,14 +1492,6 @@ describe("Pi sessions", () => {
     await fixture.adapter.close();
   });
 
-  it("refuses to run on an isolated-service Runner", async () => {
-    const fixture = await setup({ runtimeBoundary: isolatedServiceHarnessRuntimeBoundary });
-    await expect(fixture.adapter.startSession(fixture.context)).rejects.toThrow(
-      /no command sandbox/,
-    );
-    await fixture.adapter.close();
-  });
-
   it("refuses to replay durable history as a fresh provider session", async () => {
     const fixture = await setup({ history: [historyMessage("user", "earlier")] });
     await expect(fixture.adapter.startSession(fixture.context)).rejects.toThrow(
@@ -1665,23 +1643,6 @@ describe("Pi resume", () => {
     await fixture.adapter.close();
   });
 
-  it("refuses to resume on an isolated-service Runner", async () => {
-    const fixture = await setup();
-    const started = await fixture.adapter.startSession(fixture.context);
-    await started.execute(fixture.turn("First"));
-    const reference = started.providerSessionReference;
-    await started.stop();
-    // The same refusal `startSession` gives: Pi has no command sandbox, so a
-    // resumed conversation is no safer than a new one on a shared Runner.
-    await expect(
-      fixture.adapter.resumeSession(reference, {
-        ...fixture.context,
-        runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-      }),
-    ).rejects.toThrow(/no command sandbox/u);
-    await fixture.adapter.close();
-  });
-
   it("refuses a reference that is not a Pi session file", async () => {
     const fixture = await setup();
     await expect(fixture.adapter.resumeSession("not-a-session", fixture.context)).rejects.toThrow(
@@ -1820,7 +1781,6 @@ interface SetupOptions {
     readonly options: Record<string, string>;
     readonly providerId: string;
   };
-  readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
   readonly scenario?: string;
   readonly shutdownGraceMs?: number;
   readonly skills?: readonly { readonly description: string; readonly name: string }[];
@@ -1955,8 +1915,6 @@ async function setup(options: SetupOptions = {}): Promise<Fixture> {
     personalContext: false,
     personLineage: false,
     machineAccessNotice: noComputersNotice,
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse(
       options.modelSelection ?? {
         modelId: "claude-opus-4-8",
@@ -1966,7 +1924,6 @@ async function setup(options: SetupOptions = {}): Promise<Fixture> {
     ),
     platformGuide: "Opensteer platform guide.",
     providerState: testProviderState(directory, "isolated"),
-    runtimeBoundary: options.runtimeBoundary ?? nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     skills: skills.length > 0 ? { skills } : undefined,
     threadId: createId("thread"),
@@ -2009,7 +1966,6 @@ async function inspectSource(
     readonly environment?: Record<string, string>;
     readonly executable?: string;
     readonly providerStateKind?: "ambient" | "isolated";
-    readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
   } = {},
 ): Promise<HarnessInspectionResult | undefined> {
   const directory = await temporaryDirectory();
@@ -2018,7 +1974,6 @@ async function inspectSource(
     config: {},
     environment: stringEnvironment({ ...process.env, ...options.environment }),
     providerState: testProviderState(directory, options.providerStateKind ?? "isolated"),
-    runtimeBoundary: options.runtimeBoundary ?? nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     sourceId,
     workingDirectory: directory,
@@ -2034,7 +1989,6 @@ function authenticationContext(
     config: {},
     environment: stringEnvironment(process.env),
     providerState,
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     sourceId,
     workingDirectory: directory,

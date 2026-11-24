@@ -38,6 +38,7 @@ export async function issueRunGrant(
   input: {
     readonly bindingGeneration: number;
     readonly connectionId?: string | null;
+    readonly machineBootId?: string | null;
     readonly modelSelection: ModelSelection;
     readonly runId: RunId;
     readonly runnerBootId: string;

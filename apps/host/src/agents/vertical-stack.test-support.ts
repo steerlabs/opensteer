@@ -1,7 +1,7 @@
 import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
 import type { Kysely, Selectable } from "kysely";
 import type { DatabaseSchema } from "@opensteer/database";
-import type { HarnessRegistry, HarnessRuntimeBoundary } from "@opensteer/harness";
+import type { HarnessRegistry } from "@opensteer/harness";
 import type {
   AgentHomeAccess,
   PreparedIntegrationsModule,
@@ -183,7 +183,6 @@ export interface VerticalStackOptions {
    * closes its registry when it stops.
    */
   readonly harnesses: HarnessRegistry | (() => HarnessRegistry);
-  readonly harnessRuntimeBoundary: HarnessRuntimeBoundary;
   /** The one account the deployment is given before its Runner connects. */
   readonly harnessInstance: {
     readonly config: Readonly<Record<string, unknown>>;

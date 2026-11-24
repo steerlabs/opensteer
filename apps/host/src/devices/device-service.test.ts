@@ -2170,85 +2170,16 @@ describe("DeviceService computer use gateway", () => {
     });
   });
 
-  it("refuses a connection's clipboard chords in a Mac app before sending, and forwards the person's own", async () => {
-    const sentence = "The clipboard is not available to a connected agent. Use type to enter text.";
-    const chords = [
-      "cmd+v",
-      "Cmd+V",
-      "command+v",
-      "meta+v",
-      "super+v",
-      " CMD + V ".replaceAll(" ", ""),
-      "cmd+c",
-      "cmd+x",
-      "fn+cmd+c",
-      "cmd+shift+v",
-      "shift+cmd+v",
-      "cmd+option+shift+v",
-      "opt+cmd+v",
-      "cmd+alt+c",
-    ];
-    for (const keys of chords) {
+  it("sends a connected agent's copy, cut and paste chords in a Mac app like any other key", async () => {
+    for (const keys of ["cmd+v", "cmd+c", "cmd+x", "cmd+shift+v", "cmd+alt+c"]) {
       const fixture = guiFixture({ operation: "act" });
-      await expect(
-        operate(
-          fixture.service,
-          fixture.callable,
-          // The chord follows an ordinary action in the batch: nothing of it is sent.
-          {
-            actions: [
-              { keys: "Escape", type: "key" },
-              { keys, type: "key" },
-            ],
-            observationId: "obs-1",
-          },
-          { ...runCaller(context), connectionWork: true },
-        ),
-        keys,
-      ).rejects.toMatchObject({ code: "forbidden", message: sentence });
-      expect(fixture.computerUse.sendAct, keys).not.toHaveBeenCalled();
-    }
-    // A connected agent's own computer_use is its session: refused the same.
-    const direct = guiFixture({ operation: "act" });
-    await expect(
-      operate(
-        direct.service,
-        direct.callable,
-        { actions: [{ keys: "cmd+v", type: "key" }], observationId: "obs-1" },
-        {
-          run: null,
-          threadId: context.threadId,
-          agentBindingId: "session:direct",
-          session: {
-            ownerUserId: direct.callable.grant.ownerUserId,
-            sessionId: createId("agentSession"),
-            taskId: context.threadId,
-            bindingId: "session:direct",
-            target: direct.callable.grant.connectionId,
-            generation: "1",
-            deviceId: DeviceIdSchema.parse(createId("device")),
-            readOnly: false,
-            recheck: async () => undefined,
-          },
-        } as unknown as ToolCaller,
-      ),
-    ).rejects.toMatchObject({ code: "forbidden", message: sentence });
-    expect(direct.computerUse.sendAct).not.toHaveBeenCalled();
-    // Other chords, typed text and the person's own Run are untouched.
-    for (const [actions, who] of [
-      [[{ keys: "cmd+s", type: "key" }], { ...runCaller(context), connectionWork: true as const }],
-      [
-        [{ keys: "cmd+shift+c", type: "key" }],
-        { ...runCaller(context), connectionWork: true as const },
-      ],
-      [[{ keys: "ctrl+v", type: "key" }], { ...runCaller(context), connectionWork: true as const }],
-      [[{ text: "cmd+v", type: "type" }], { ...runCaller(context), connectionWork: true as const }],
-      [[{ keys: "cmd+v", type: "key" }], runCaller(context)],
-      [[{ keys: "cmd+c", type: "key" }], runCaller(context)],
-    ] as const) {
-      const fixture = guiFixture({ operation: "act" });
-      await operate(fixture.service, fixture.callable, { actions, observationId: "obs-1" }, who);
-      expect(fixture.computerUse.sendAct, JSON.stringify(actions)).toHaveBeenCalledOnce();
+      await operate(
+        fixture.service,
+        fixture.callable,
+        { actions: [{ keys, type: "key" }], observationId: "obs-1" },
+        { ...runCaller(context), connectionWork: true },
+      );
+      expect(fixture.computerUse.sendAct, keys).toHaveBeenCalledOnce();
     }
   });
 

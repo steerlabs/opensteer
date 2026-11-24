@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
-import { HarnessRegistry, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CursorHarnessDriver } from "@opensteer/harness-cursor";
 import WebSocket from "ws";
 import { setFileMode } from "@opensteer/shared/privateFiles";
@@ -35,7 +35,6 @@ await import(${JSON.stringify(fixture)});
       return registry;
     },
     harnessInstance: { config: {}, driverKind: "cursor", sourceId: "cursor", stateKind: "ambient" },
-    harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
     catalogTimeoutMs: 10_000,
     runTimeoutMs: 10_000,
   });

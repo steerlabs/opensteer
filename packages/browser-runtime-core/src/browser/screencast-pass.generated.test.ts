@@ -261,13 +261,13 @@ class Chromium {
         // Each start's frame comes with its answer or once the answer is handled, as it falls; a
         // frame of a cast stopped before it was due is never sent.
         const afterHandled = this.world.chance(0.5);
-        const due = (frameFit: boolean) => {
+        const due = (frameFit: boolean, forStart = true) => {
           this.framesDue -= 1;
-          if (this.cast === cast && this.casting) this.frame(frameFit, true);
+          if (this.cast === cast && this.casting) this.frame(frameFit, forStart);
         };
-        const schedule = (later: boolean, frameFit: boolean) => {
+        const schedule = (later: boolean, frameFit: boolean, forStart = true) => {
           this.framesDue += 1;
-          (later ? setImmediate : queueMicrotask)(() => due(frameFit));
+          (later ? setImmediate : queueMicrotask)(() => due(frameFit, forStart));
         };
         const fit = this.framesFit;
         // Chromium casts from when it takes the start; its answer may reach the follow view later.
@@ -292,10 +292,7 @@ class Chromium {
         // Chromium's frame for a start usually comes once its answer is handled; while the page is
         // held as each start's frame comes, it does, so that the frame is set aside.
         if (!before) schedule(this.world.tabs[this.id].flicker || afterHandled, fit);
-        else if (!fit && this.world.engine === "desktop")
-          (afterHandled ? setImmediate : queueMicrotask)(() => {
-            if (this.cast === cast && this.casting) this.frame(true);
-          });
+        else if (!fit && this.world.engine === "desktop") schedule(afterHandled, true, false);
         return {};
       } finally {
         if (startEntry) {
@@ -619,6 +616,8 @@ class World {
           this.violations.push(
             `${tab.id} showed a frame while a stop of its cast was with Chromium`,
           );
+        if (session.staleStops === 0 && tab.timedOutStopCasts.size > 0)
+          tab.timedOutStopCasts.clear();
         const timedOutCastWhileUnanswered =
           painted.fromTimedOutStop ||
           (tab.timedOutStopCasts.has(painted.cast) && session.staleStops > 0);
@@ -1407,7 +1406,7 @@ function fullRetriesAfterChangeOrResume(
   return broken;
 }
 
-/** Invariant 13 (M18): after every reconcile, the set of timers that are armed equals exactly the set the state asks for: none missing, none left over. */
+/** Invariant 13 (M18): at every quiet point, the set of timers that are armed equals exactly the set the state asks for: none missing, none left over. */
 function armedTimersMatchState(
   world: World,
   follow: InstanceType<typeof ScreencastController>,
@@ -1542,6 +1541,8 @@ function staleStopsSettledOnStartAnswered(
   }
   for (const id of ["A", "B"] as const) {
     const state = world.sessionState(id);
+    if (state.staleStops === 0 && world.tabs[id].timedOutStopCasts.size > 0)
+      world.tabs[id].timedOutStopCasts.clear();
     if (state.staleStops > 0) {
       const settled = afterSession(state, { kind: "start-answered" });
       if (settled.staleStops !== 0 || settled.endedBefore < state.generation)

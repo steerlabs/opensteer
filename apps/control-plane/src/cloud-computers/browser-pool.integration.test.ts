@@ -259,7 +259,7 @@ integration("Browser pool Account service", () => {
     leaseHolder = randomUUID();
     subscriptions.clear();
     await resetManagedCloudTables(database);
-    await database.deleteFrom("users").execute();
+    await sql`truncate table deployments, oauth_clients, users cascade`.execute(database);
   });
 
   async function buildHarness(

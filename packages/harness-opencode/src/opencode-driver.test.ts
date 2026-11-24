@@ -15,8 +15,6 @@ import {
   type Message,
 } from "@opensteer/core";
 import {
-  isolatedServiceHarnessRuntimeBoundary,
-  nativeUserHarnessRuntimeBoundary,
   threadTitlePrompt,
   type HarnessAdapter,
   type HarnessEvent,
@@ -360,20 +358,6 @@ describe("OpenCode inspection", () => {
     expect(result?.detail).toContain("no credential");
   });
 
-  it("refuses to run at all on an isolated-service Runner", async () => {
-    const result = await inspect({
-      scenario: "happy",
-      sourceId: "anthropic",
-      key: "k",
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-    });
-    expect(result).toEqual({
-      detail:
-        "OpenCode has no command sandbox of its own, so it runs only on a computer where Opensteer runs as you.",
-      status: "unavailable",
-    });
-  });
-
   it("refuses an ambient profile", async () => {
     const result = await inspect({
       scenario: "happy",
@@ -615,7 +599,6 @@ describe("OpenCode inspection", () => {
       config: { baseUrl: "https://endpoint.test/v1" },
       environment: {},
       providerState,
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai-compatible",
       workingDirectory: directory,
@@ -707,7 +690,6 @@ describe("OpenCode sign-in", () => {
       config: {},
       environment: {},
       providerState,
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -725,7 +707,6 @@ describe("OpenCode sign-in", () => {
       config: {},
       environment: {},
       providerState: testProviderState(directory, "isolated"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -745,7 +726,6 @@ describe("OpenCode sign-in", () => {
       config: {},
       environment: {},
       providerState: testProviderState(directory, "isolated"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -1105,33 +1085,6 @@ describe("OpenCode sessions", () => {
       1,
     );
     expect(requests.every((row) => row.authorized === true)).toBe(true);
-  });
-
-  it("refuses to open a session on an isolated-service Runner", async () => {
-    const fixture = await setup("happy", {
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-    });
-    await expect(fixture.adapter.startSession(fixture.context)).rejects.toMatchObject({
-      code: "forbidden",
-      message: expect.stringContaining("no command sandbox"),
-    });
-    await fixture.adapter.close();
-  });
-
-  it("refuses to resume a session on an isolated-service Runner", async () => {
-    // Resume reaches the same guard as a fresh start: both launch a server that
-    // hands the model the account's credential home.
-    const fixture = await setup("happy", {
-      existingSession: "ses_fake_resumed",
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-    });
-    await expect(
-      fixture.adapter.resumeSession("ses_fake_resumed", fixture.context),
-    ).rejects.toMatchObject({
-      code: "forbidden",
-      message: expect.stringContaining("no command sandbox"),
-    });
-    await fixture.adapter.close();
   });
 
   it("refuses to replay durable history into a fresh provider session", async () => {
@@ -1955,7 +1908,6 @@ async function signIn(
       config,
       environment: {},
       providerState: testProviderState(directory, "isolated"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId,
       workingDirectory: directory,
@@ -1975,7 +1927,6 @@ async function inspect(options: {
   readonly config?: Record<string, unknown>;
   readonly fetchModels?: typeof fetch;
   readonly providerStateKind?: "ambient" | "isolated";
-  readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
 }): Promise<HarnessInspectionResult | undefined> {
   const directory = await temporaryDirectory();
   const driver = new OpencodeHarnessDriver(
@@ -1991,7 +1942,6 @@ async function inspect(options: {
     config: options.config ?? {},
     environment: {},
     providerState: testProviderState(directory, options.providerStateKind ?? "isolated"),
-    runtimeBoundary: options.runtimeBoundary ?? nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     sourceId: options.sourceId,
     workingDirectory: directory,
@@ -2008,7 +1958,6 @@ async function inspectWithCapture(
     config: {},
     environment: { FAKE_OPENCODE_CAPTURE_PATH: capturePath },
     providerState: testProviderState(directory, "isolated"),
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     sourceId,
     workingDirectory: directory,
@@ -2063,7 +2012,6 @@ interface SetupOptions {
   readonly maxEventLineBytes?: number;
   readonly maxResponseBytes?: number;
   readonly requestTimeoutMs?: number;
-  readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
   readonly skills?: HarnessSessionContext["skills"];
   readonly startupTimeoutMs?: number;
   readonly threadStateDirectory?: string;
@@ -2128,8 +2076,6 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     personalContext: true,
     personLineage: true,
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse({
       modelId: "union-alpha",
       nativeModelId: "union-alpha",
@@ -2138,7 +2084,6 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     }),
     platformGuide: "Opensteer platform guide.",
     providerState: testProviderState(directory, "isolated"),
-    runtimeBoundary: options.runtimeBoundary ?? nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     skills: options.skills ?? {
       skills: [

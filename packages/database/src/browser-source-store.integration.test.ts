@@ -411,7 +411,7 @@ integration.sequential("browser sign-in authority", () => {
       }),
     ).toEqual([]);
 
-    await store.transitionBrowserSession({ sessionId, state: "closed" });
+    await store.closeUnpooledBrowserSession({ sessionId });
     await expect(createSignInRequest(scope, run, sessionId)).rejects.toMatchObject({
       code: "conflict",
     });

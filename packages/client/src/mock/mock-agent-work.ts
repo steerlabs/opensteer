@@ -142,7 +142,7 @@ export function mockAgentWork(input: {
             tool: "browser_use",
             target: lisbon,
             mode: "auto",
-            decision: { by: "reviewer" },
+            decision: { by: "person", requestId: mockAgentOperationRequestId },
             outcome: "failed",
             state: "failed",
           },

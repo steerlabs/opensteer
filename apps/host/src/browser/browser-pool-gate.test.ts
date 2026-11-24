@@ -182,3 +182,53 @@ for (const during of ["park", "reconnect"] as const)
     expect(g.subject.phase).toBe("open");
     expect(g.wakes()).toBe(0);
   });
+
+it("lets only a command in flight hold a repair: a send with no demand neither keeps it from beginning nor vetoes it", async () => {
+  const subject = new BrowserPoolGate();
+  subject.set({ recovered: true, away: null, hold: null });
+  // A viewer's send, admitted: an ordinary park cannot begin under it; a repair can.
+  const frame = subject.backgroundNow()!;
+  expect(subject.commands).toBe(0);
+  expect(subject.beginPark()).toBe(false);
+  expect(subject.beginPark(true)).toBe(true);
+  // While the repair prepares, another send with no demand waits for the wake and vetoes nothing.
+  expect(subject.backgroundNow()).toBeUndefined();
+  const waiting = subject.background(AbortSignal.timeout(10_000));
+  expect(subject.demandedSince()).toBe(false);
+  expect(subject.committed()).toBe(true);
+  subject.set({ away: null });
+  (await waiting).release();
+  frame.release();
+
+  // A command in flight keeps a repair from beginning; its end lets it begin.
+  const command = await subject.reserve(AbortSignal.timeout(10_000));
+  expect(subject.commands).toBe(1);
+  expect(subject.beginPark(true)).toBe(false);
+  const idle = subject.commandsIdle();
+  command.release();
+  await idle;
+  expect(subject.commands).toBe(0);
+  // One that arrives while the repair prepares vetoes it, as it does any park.
+  expect(subject.beginPark(true)).toBe(true);
+  const late = subject.reserve(AbortSignal.timeout(10_000));
+  expect(subject.demandedSince()).toBe(true);
+  subject.endPark();
+  (await late).release();
+});
+
+it("marks waited on a reservation only when the caller actually suspended", async () => {
+  const g = gate();
+  const immediate = await g.subject.reserve(new AbortController().signal);
+  expect(immediate.waited).toBeUndefined();
+  immediate.release();
+
+  g.beforeCheck.resolve();
+  g.commit.resolve();
+  expect(await g.tryPark()).toBe("parked");
+  const waiting = g.subject.reserve(new AbortController().signal);
+  await vi.waitFor(() => expect(g.subject.phase).toBe("waking"));
+  g.wake.resolve();
+  const resumed = await waiting;
+  expect(resumed.waited).toBe(true);
+  resumed.release();
+});

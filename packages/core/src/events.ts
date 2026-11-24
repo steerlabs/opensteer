@@ -35,6 +35,7 @@ import {
   MessageViewSchema,
   RunFailureViewSchema,
   RunFailureSchema,
+  RunInterruptedCauseSchema,
   RunRetrySchema,
   RunRetryViewSchema,
   RunStatusSchema,
@@ -341,7 +342,7 @@ const eventDataSchemas = {
     startedAt: z.iso.datetime(),
     personWaiting: z.boolean(),
     startedBy: MessageAuthorSchema,
-    cause: z.enum(["lease-lost"]).optional(),
+    cause: RunInterruptedCauseSchema.optional(),
     status: z.literal("interrupted"),
   }),
   /**

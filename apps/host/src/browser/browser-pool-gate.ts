@@ -5,10 +5,16 @@ import { BrowserPoolAdmissionClosed } from "@opensteer/database";
 export type BrowserPoolAway = "parking" | "parked" | "waking" | "reconnecting";
 
 /** What holds admission closed whatever the browser is doing. */
-export type BrowserPoolHold = "restart" | "released";
+/**
+ * `restart`: until the fresh guest is installed. `released`: for good (the device was removed).
+ * `over`: the target answered, signed, that this Home's guest is gone; until a new target.
+ */
+export type BrowserPoolHold = "restart" | "released" | "over";
 
 export interface BrowserPoolReservation {
   release(): void;
+  /** True when the caller actually suspended before the gate opened (a wake, park, or hold). */
+  readonly waited?: boolean;
   /** Aborted when a restart or a removal needs every holder gone: the holder stops and settles. */
   readonly ended?: AbortSignal;
   /**
@@ -32,6 +38,12 @@ export class BrowserPoolGate {
   #demanded = false;
   #waiting = 0;
   #active = 0;
+  /** Of the active reservations, the ones taken with demand: a command in flight. */
+  #commands = 0;
+  #viewers = 0;
+  /** The park preparing is a repair: a send with no demand waits instead of vetoing it. */
+  #repairing = false;
+  readonly #commandsIdle: (() => void)[] = [];
   #changed = new AbortController();
   #ended = new AbortController();
   readonly #idle: (() => void)[] = [];
@@ -64,9 +76,17 @@ export class BrowserPoolGate {
   }
 
   /** One word for clients and logs; the facts themselves decide admission. */
-  get phase(): "recovering" | "open" | "preparing" | BrowserPoolAway | "restarting" | "released" {
+  get phase():
+    | "recovering"
+    | "open"
+    | "preparing"
+    | BrowserPoolAway
+    | "restarting"
+    | "released"
+    | "unavailable" {
     if (this.#hold === "released") return "released";
     if (this.#hold === "restart") return "restarting";
+    if (this.#hold === "over") return "unavailable";
     if (!this.#recovered) return "recovering";
     if (this.#preparing) return "preparing";
     return this.#away ?? "open";
@@ -81,6 +101,49 @@ export class BrowserPoolGate {
     return this.#active;
   }
 
+  /**
+   * Commands in flight: reservations taken with demand (`reserve`), each ended by its own bound.
+   * A send with no consumer (a viewer's frames, a person's input through the broker) is not one.
+   */
+  get commands(): number {
+    return this.#commands;
+  }
+
+  /**
+   * People watching now. A viewer is not a command (W10): it holds an ordinary park off (an idle
+   * park never takes a browser from under a watching person), never the proxy's repair, which
+   * brings back what the person is looking at.
+   */
+  get viewers(): number {
+    return this.#viewers;
+  }
+
+  /** A viewer attached: held until the returned release. */
+  viewing(): () => void {
+    this.#viewers++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#viewers--;
+    };
+  }
+
+  /** Resolves once no command is in flight. */
+  commandsIdle(): Promise<void> {
+    if (this.#commands === 0) return Promise.resolve();
+    return new Promise((resolve) => this.#commandsIdle.push(resolve));
+  }
+
+  /**
+   * Whether bytes may not leave for the guest now: a restart or a removal holds admission, or the
+   * reservation the write was admitted under has ended. Checked synchronously at the write
+   * itself, after its last await; a check at a caller does not count.
+   */
+  refusesWrite(reservation?: BrowserPoolReservation): boolean {
+    return this.#hold !== null || reservation?.ended?.aborted === true;
+  }
+
   /** Someone waits for the browser with demand: a parked browser should wake. */
   get demand(): boolean {
     return this.#waiting > 0;
@@ -91,11 +154,17 @@ export class BrowserPoolGate {
     return this.#away !== null;
   }
 
-  /** The park step's window before D: a send now vetoes it. False: it cannot begin. */
-  beginPark(): boolean {
-    if (!this.admits || this.#active) return false;
+  /**
+   * The park step's window before D: a send now vetoes it. False: it cannot begin. `repair`: a
+   * park that brings a broken guest back (its egress proxy is down): only a command in flight, or
+   * one that arrives before D, keeps it from beginning or vetoes it; a send with no demand waits
+   * for the wake, as it does after D. Sends already admitted finish at the retire's quiesce.
+   */
+  beginPark(repair = false): boolean {
+    if (!this.admits || (repair ? this.#commands : this.#active || this.#viewers)) return false;
     this.#demanded = false;
     this.#preparing = true;
+    this.#repairing = repair;
     this.#notify();
     return true;
   }
@@ -113,6 +182,7 @@ export class BrowserPoolGate {
   committed(): boolean {
     if (!this.#preparing) return false;
     this.#preparing = false;
+    this.#repairing = false;
     this.#away = "parking";
     // A send, a restart or a removal that came first vetoes it.
     const vetoed = this.demandedSince() || this.#hold !== null;
@@ -124,6 +194,7 @@ export class BrowserPoolGate {
   endPark(): void {
     if (!this.#preparing) return;
     this.#preparing = false;
+    this.#repairing = false;
     this.#notify();
   }
 
@@ -134,8 +205,8 @@ export class BrowserPoolGate {
 
   /** Taken when a send without a consumer is queued. Before D it vetoes the park. */
   backgroundNow(): BrowserPoolReservation | undefined {
-    if (this.admits) return this.#take();
-    if (this.#preparing) this.#demanded = true;
+    if (this.admits) return this.#take(false);
+    if (this.#preparing && !this.#repairing) this.#demanded = true;
     return undefined;
   }
 
@@ -150,13 +221,20 @@ export class BrowserPoolGate {
     return new Promise((resolve) => this.#idle.push(resolve));
   }
 
-  /** Every holder still here records its outcome; resolves once each one has. */
+  /**
+   * Every holder still here records its outcome; resolves once each one has. A settlement that
+   * failed rejects, so the restart keeps its hold and goes no further toward a Stop.
+   */
   async settleHolders(): Promise<void> {
-    await Promise.allSettled([...this.#settlers].map((settle) => settle()));
+    const results = await Promise.allSettled([...this.#settlers].map((settle) => settle()));
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed) throw (failed as PromiseRejectedResult).reason;
   }
 
   async #wait(signal: AbortSignal, demand: boolean): Promise<BrowserPoolReservation> {
     if (demand) this.#waiting++;
+    let asked = false;
+    let waited = false;
     try {
       for (;;) {
         if (signal.aborted)
@@ -167,11 +245,21 @@ export class BrowserPoolGate {
                 "The pooled browser did not wake in time. Nothing was sent.",
                 signal.reason,
               );
+        // A target that is over has no browser to wait for: refused at once, not at a deadline.
+        if (this.#hold === "over")
+          throw new BrowserPoolAdmissionClosed("This browser is not ready. Nothing was sent.");
         if (this.#hold === "released")
           throw new BrowserPoolAdmissionClosed("This device was removed. Nothing was sent.");
-        if (this.admits) return this.#take();
-        if (this.#preparing) this.#demanded = true;
-        if (demand) this.onChange();
+        if (this.admits) return this.#take(demand, waited);
+        if (this.#preparing && (demand || !this.#repairing)) this.#demanded = true;
+        // Demand asks the loop once, as it begins to wait: the loop keeps a change that came
+        // during a step for the turn after it, so asking again at every change of the gate
+        // (the loop's own publications included) would only end its backoff each time.
+        if (demand && !asked) {
+          asked = true;
+          this.onChange();
+        }
+        waited = true;
         await waitForChange(this.#changed.signal, signal);
       }
     } finally {
@@ -179,11 +267,13 @@ export class BrowserPoolGate {
     }
   }
 
-  #take(): BrowserPoolReservation {
+  #take(command: boolean, waited = false): BrowserPoolReservation {
     this.#active++;
+    if (command) this.#commands++;
     let released = false;
     let settler: (() => Promise<void>) | undefined;
     return {
+      ...(waited ? { waited: true } : {}),
       ended: this.#ended.signal,
       onForcedEnd: (settle) => {
         if (released) return;
@@ -195,6 +285,8 @@ export class BrowserPoolGate {
         if (released) return;
         released = true;
         if (settler) this.#settlers.delete(settler);
+        if (command && --this.#commands === 0)
+          for (const idle of this.#commandsIdle.splice(0)) idle();
         if (--this.#active === 0) for (const idle of this.#idle.splice(0)) idle();
       },
     };

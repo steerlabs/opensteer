@@ -1,3 +1,4 @@
+import { nodeTrustEnvironment } from "../../../../deploy/container/opensteer-node-trust.mjs";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import {
@@ -2213,6 +2214,17 @@ class PersonalReadinessError extends Error {
   }
 }
 
+/**
+ * A Home service or Runner this app starts trusts Node's certificate
+ * authorities and this computer's, and nothing the app's own environment names:
+ * any program running as the person could have set that, and none of it needs
+ * the password a keychain trust setting does. A development app is started
+ * the same way, as it already took nothing from its environment.
+ */
+function desktopNodeTrust(environment: Readonly<Record<string, string>>): Record<string, string> {
+  return nodeTrustEnvironment(environment, { environmentInputs: "drop" });
+}
+
 function postgresSpec(
   release: VerifiedPersonalRuntimeRelease,
   manifest: PersonalDeploymentManifest,
@@ -2268,37 +2280,41 @@ export function hostSpec(
     component: "host",
     cwd: paths.hostDataDirectory,
     environment: {
-      LANG: "en_US.UTF-8",
-      OPENSTEER_BIND_ADDRESS: "127.0.0.1",
-      OPENSTEER_CANONICAL_ORIGIN: origin,
-      OPENSTEER_CREDENTIAL_KEY_PATH: paths.credentialKeyPath,
-      OPENSTEER_DEPLOYMENT_ID: manifest.deploymentId,
-      OPENSTEER_DEPLOYMENT_NAME: manifest.name,
-      OPENSTEER_DEPLOYMENT_KIND: "personal",
-      OPENSTEER_HOST_DATA_DIR: paths.hostDataDirectory,
-      OPENSTEER_HOST_INSTANCE_ID: manifest.hostInstanceId,
-      OPENSTEER_HOST_KEY_FINGERPRINT: fingerprint,
-      OPENSTEER_HOST_PRIVATE_KEY_PATH: paths.hostPrivateKeyPath,
-      OPENSTEER_HOST_PUBLIC_KEY_PATH: paths.hostPublicKeyPath,
-      OPENSTEER_HOST_RELEASE_VERSION: release.assets.webDistribution.hostVersion,
-      OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
-      OPENSTEER_PASSKEYS: passkeys ? "1" : "0",
-      OPENSTEER_HOSTING_ENVIRONMENT_ID: manifest.environmentId,
-      OPENSTEER_MODE: "production",
-      OPENSTEER_NATIVE_OAUTH_ENABLED: "false",
-      OPENSTEER_PORT: String(manifest.hostPort),
-      ...(extensionDirectory ? { OPENSTEER_BROWSER_EXTENSION_DIRECTORY: extensionDirectory } : {}),
-      // Not a secret: secret values are redacted wherever they appear in logs, and a short name
-      // would be redacted out of unrelated words.
-      ...(ownerNameSeed ? { OPENSTEER_OWNER_NAME_SEED: ownerNameSeed } : {}),
-      ...(accountIssuer ? { OPENSTEER_PERSONAL_ACCOUNT_ISSUER: accountIssuer } : {}),
+      ...desktopNodeTrust({
+        LANG: "en_US.UTF-8",
+        OPENSTEER_BIND_ADDRESS: "127.0.0.1",
+        OPENSTEER_CANONICAL_ORIGIN: origin,
+        OPENSTEER_CREDENTIAL_KEY_PATH: paths.credentialKeyPath,
+        OPENSTEER_DEPLOYMENT_ID: manifest.deploymentId,
+        OPENSTEER_DEPLOYMENT_NAME: manifest.name,
+        OPENSTEER_DEPLOYMENT_KIND: "personal",
+        OPENSTEER_HOST_DATA_DIR: paths.hostDataDirectory,
+        OPENSTEER_HOST_INSTANCE_ID: manifest.hostInstanceId,
+        OPENSTEER_HOST_KEY_FINGERPRINT: fingerprint,
+        OPENSTEER_HOST_PRIVATE_KEY_PATH: paths.hostPrivateKeyPath,
+        OPENSTEER_HOST_PUBLIC_KEY_PATH: paths.hostPublicKeyPath,
+        OPENSTEER_HOST_RELEASE_VERSION: release.assets.webDistribution.hostVersion,
+        OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
+        OPENSTEER_PASSKEYS: passkeys ? "1" : "0",
+        OPENSTEER_HOSTING_ENVIRONMENT_ID: manifest.environmentId,
+        OPENSTEER_MODE: "production",
+        OPENSTEER_NATIVE_OAUTH_ENABLED: "false",
+        OPENSTEER_PORT: String(manifest.hostPort),
+        ...(extensionDirectory
+          ? { OPENSTEER_BROWSER_EXTENSION_DIRECTORY: extensionDirectory }
+          : {}),
+        // Not a secret: secret values are redacted wherever they appear in logs, and a short name
+        // would be redacted out of unrelated words.
+        ...(ownerNameSeed ? { OPENSTEER_OWNER_NAME_SEED: ownerNameSeed } : {}),
+        ...(accountIssuer ? { OPENSTEER_PERSONAL_ACCOUNT_ISSUER: accountIssuer } : {}),
+        ...(portalOrigin ? { OPENSTEER_PORTAL_ORIGIN: portalOrigin } : {}),
+        OPENSTEER_RUNTIME_ORIGIN: origin,
+        OPENSTEER_SIGNUP_POLICY: "closed",
+        OPENSTEER_WEB_DISTRIBUTION_DIRECTORY: release.assets.webDistribution.directory,
+        OPENSTEER_WEB_DISTRIBUTION_MANIFEST: release.assets.webDistribution.manifestPath,
+      }),
       // Node's own way to add an authority: only when someone set it for the app on purpose.
       ...(extraCertificateAuthorities ? { NODE_EXTRA_CA_CERTS: extraCertificateAuthorities } : {}),
-      ...(portalOrigin ? { OPENSTEER_PORTAL_ORIGIN: portalOrigin } : {}),
-      OPENSTEER_RUNTIME_ORIGIN: origin,
-      OPENSTEER_SIGNUP_POLICY: "closed",
-      OPENSTEER_WEB_DISTRIBUTION_DIRECTORY: release.assets.webDistribution.directory,
-      OPENSTEER_WEB_DISTRIBUTION_MANIFEST: release.assets.webDistribution.manifestPath,
     },
     executable: release.entrypoints.host,
     secretEnvironment: {
@@ -2329,7 +2345,7 @@ function messagingSpec(
     arguments: [],
     component: "messaging",
     cwd: paths.messagingDataDirectory,
-    environment: {
+    environment: desktopNodeTrust({
       LANG: "en_US.UTF-8",
       OPENSTEER_MESSAGING_BIND_ADDRESS: "127.0.0.1",
       OPENSTEER_MESSAGING_DATA_DIR: paths.messagingDataDirectory,
@@ -2337,7 +2353,7 @@ function messagingSpec(
       OPENSTEER_MESSAGING_NAME: "This computer's messaging",
       OPENSTEER_MESSAGING_PORT: String(port),
       OPENSTEER_MODE: "production",
-    },
+    }),
     executable: release.entrypoints.channelRuntime,
     secretInput: {
       OPENSTEER_RUNNER_ENROLLMENT_TOKEN: secrets.messagingEnrollmentToken,
@@ -2364,7 +2380,7 @@ function runnerSpec(
     arguments: [],
     component: "runner",
     cwd: paths.runnerDataDirectory,
-    environment: {
+    environment: desktopNodeTrust({
       ...baseEnvironment,
       OPENSTEER_AGENT_SKILLS_DIRECTORY: release.assets.agentSkills,
       OPENSTEER_BROWSER_BRIDGE_URL: browser.url.toString(),
@@ -2396,7 +2412,7 @@ function runnerSpec(
       OPENSTEER_RUNNER_ID: manifest.runnerId,
       OPENSTEER_RUNNER_KIND: "main",
       OPENSTEER_RUNNER_NAME: manifest.name,
-    },
+    }),
     executable: release.entrypoints.runner,
     // Never in the environment: every Runner credential travels on stdin,
     // which the Runner reads once, before it parses its configuration.

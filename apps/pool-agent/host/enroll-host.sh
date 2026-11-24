@@ -157,14 +157,11 @@ decide_profile_disk() {
 
 python_boot_spec_helper() {
     python3 - "$@" <<'PY'
-import base64
 import hashlib
-import ipaddress
 import json
 import os
 import re
 import sys
-from urllib.parse import urlparse
 
 HOST_ID_RE = re.compile(r"^ph_[0-9a-f-]{36}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -188,6 +185,7 @@ def reject_control_chars(value: object, field: str) -> str:
 
 
 def check_https_origin(value: object, field: str) -> str:
+    from urllib.parse import urlparse
     raw = reject_control_chars(value, field)
     if len(raw) > 255 or any(ch.isspace() for ch in raw):
         fail(f"{field} must be an https origin without whitespace")
@@ -212,6 +210,7 @@ def check_https_origin(value: object, field: str) -> str:
 
 
 def check_https_url(value: object, field: str) -> str:
+    from urllib.parse import urlparse
     raw = reject_control_chars(value, field)
     if len(raw) > 2048 or any(ch.isspace() for ch in raw):
         fail(f"{field} must be an https URL without whitespace")
@@ -235,6 +234,7 @@ def check_port(value: object, field: str) -> int:
 
 
 def check_cidr(value: object, field: str) -> str:
+    import ipaddress
     raw = reject_control_chars(value, field)
     if not IPV4_CIDR_RE.match(raw):
         fail(f"{field} must be an IPv4 CIDR")
@@ -246,6 +246,7 @@ def check_cidr(value: object, field: str) -> str:
 
 
 def check_spki(value: object, field: str) -> str:
+    import base64
     raw_str = reject_control_chars(value, field)
     if not SPKI_RE.match(raw_str):
         fail(f"{field} must be base64-encoded Ed25519 SPKI DER")
@@ -400,6 +401,31 @@ def render_agent_config(spec: dict, relay_uid: int, profiles_root: str, credenti
 mode = sys.argv[1]
 if mode == "parse-spec":
     print(json.dumps(load_boot_spec(sys.argv[2])))
+elif mode == "parse-and-emit-spec":
+    s = load_boot_spec(sys.argv[2])
+    fields = [
+        s["hostId"],
+        str(s["generation"]),
+        s["accountOrigin"],
+        s["homeCidr"],
+        s["provisionerCidr"],
+        s["profileDiskDevice"],
+        "true" if s["everEnrolled"] else "false",
+        str(s["agentPort"]),
+        str(s["adminPort"]),
+        str(s["relayPort"]),
+        "true" if "artifacts" in s else "false",
+        "osp-" + hashlib.sha256(s["hostId"].encode("utf-8")).hexdigest()[:12],
+    ]
+    if "artifacts" in s:
+        a = s["artifacts"]
+        fields.append(s["releaseVersion"])
+        for name in ("agent", "relay", "rootfs", "kernel", "egress"):
+            fields.append(a[f"{name}Url"])
+            fields.append(a[f"{name}Sha256"])
+    else:
+        fields.extend([""] * 11)
+    sys.stdout.write("\0".join(fields) + "\0")
 elif mode == "emit-spec-nul":
     s = json.loads(sys.argv[2])
     fields = [
@@ -451,6 +477,7 @@ elif mode == "parse-boot-response":
     expected_host = sys.argv[2]
     expected_gen = int(sys.argv[3])
     resp_path = sys.argv[4]
+    cache_path = sys.argv[5] if len(sys.argv) > 5 else None
     try:
         with open(resp_path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -467,7 +494,43 @@ elif mode == "parse-boot-response":
     if not version or len(version) > 128:
         fail("Account /boot response release.version is invalid")
     artifacts = validate_artifacts(release.get("artifacts"))
-    print(json.dumps({"hostId": expected_host, "generation": expected_gen, "releaseVersion": version, "artifacts": artifacts}))
+    payload = {"hostId": expected_host, "generation": expected_gen, "releaseVersion": version, "artifacts": artifacts}
+    if cache_path:
+        cache_dir = os.path.dirname(cache_path)
+        os.makedirs(cache_dir, mode=0o700, exist_ok=True)
+        cache_tmp = f"{cache_path}.tmp.{os.getpid()}"
+        fd = os.open(cache_tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+            fh.write("\n")
+        os.replace(cache_tmp, cache_path)
+        fields = [version]
+        for name in ("agent", "relay", "rootfs", "kernel", "egress"):
+            fields.append(artifacts[f"{name}Url"])
+            fields.append(artifacts[f"{name}Sha256"])
+        sys.stdout.write("\0".join(fields) + "\0")
+    else:
+        print(json.dumps(payload))
+elif mode == "read-cached-artifacts-nul":
+    expected_host = sys.argv[2]
+    expected_gen = int(sys.argv[3])
+    cache_path = sys.argv[4]
+    try:
+        with open(cache_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if data.get("hostId") != expected_host or data.get("generation") != expected_gen:
+            sys.exit(1)
+        version = reject_control_chars(data.get("releaseVersion"), "releaseVersion")
+        if not version or len(version) > 128:
+            sys.exit(1)
+        artifacts = validate_artifacts(data.get("artifacts"))
+        fields = [version]
+        for name in ("agent", "relay", "rootfs", "kernel", "egress"):
+            fields.append(artifacts[f"{name}Url"])
+            fields.append(artifacts[f"{name}Sha256"])
+        sys.stdout.write("\0".join(fields) + "\0")
+    except Exception:
+        sys.exit(1)
 elif mode == "read-cached-artifacts":
     expected_host = sys.argv[2]
     expected_gen = int(sys.argv[3])
@@ -741,12 +804,10 @@ run_enrolment() {
     [[ $setup_real_dir == "$self_dir" ]] ||
         die "REFUSED: setup-host.sh ($setup_script) is outside the verified release bundle directory ($self_dir)"
 
-    # 1. Validate boot spec strictly (no control characters, fixed profileDiskDevice).
-    local spec_json
-    spec_json=$(python_boot_spec_helper parse-spec "$boot_spec")
-
+    # 1. Validate boot spec strictly (no control characters, fixed profileDiskDevice) and extract fields.
     local host_id generation account_origin home_cidr provisioner_cidr profile_disk ever_enrolled
     local agent_port admin_port relay_port has_inline_artifacts expected_label
+    local release_version agent_url agent_sha relay_url relay_sha rootfs_url rootfs_sha kernel_url kernel_sha egress_url egress_sha
     {
         IFS= read -r -d '' host_id
         IFS= read -r -d '' generation
@@ -760,7 +821,18 @@ run_enrolment() {
         IFS= read -r -d '' relay_port
         IFS= read -r -d '' has_inline_artifacts
         IFS= read -r -d '' expected_label
-    } < <(python_boot_spec_helper emit-spec-nul "$spec_json")
+        IFS= read -r -d '' release_version
+        IFS= read -r -d '' agent_url
+        IFS= read -r -d '' agent_sha
+        IFS= read -r -d '' relay_url
+        IFS= read -r -d '' relay_sha
+        IFS= read -r -d '' rootfs_url
+        IFS= read -r -d '' rootfs_sha
+        IFS= read -r -d '' kernel_url
+        IFS= read -r -d '' kernel_sha
+        IFS= read -r -d '' egress_url
+        IFS= read -r -d '' egress_sha
+    } < <(python_boot_spec_helper parse-and-emit-spec "$boot_spec")
 
     log "enrolling pool host $host_id (generation $generation, everEnrolled=$ever_enrolled, label=$expected_label)"
 
@@ -774,54 +846,58 @@ run_enrolment() {
     prepare_profile_disk "$profile_disk" "$ever_enrolled" "$profiles_root" "$generation" "$expected_label" "$setup_script"
 
     # 3. Resolve release artifact URLs and SHA-256s (inline in spec, cached from earlier retry, or Account /boot).
-    local artifacts_json=""
-    if [[ $has_inline_artifacts == true ]]; then
-        artifacts_json=$(python3 - "$spec_json" <<'PY'
-import json, sys
-s = json.loads(sys.argv[1])
-print(json.dumps({"hostId": s["hostId"], "generation": s["generation"], "releaseVersion": s["releaseVersion"], "artifacts": s["artifacts"]}))
-PY
-        )
-    elif [[ -f $ARTIFACTS_CACHE_PATH && ! -L $ARTIFACTS_CACHE_PATH ]]; then
-        artifacts_json=$(python_boot_spec_helper read-cached-artifacts "$host_id" "$generation" "$ARTIFACTS_CACHE_PATH" 2>/dev/null || true)
+    if [[ $has_inline_artifacts != true ]]; then
+        local loaded_cached=false
+        if [[ -f $ARTIFACTS_CACHE_PATH && ! -L $ARTIFACTS_CACHE_PATH ]]; then
+            local cached_nul="$tmpdir/cached-artifacts.nul"
+            if python_boot_spec_helper read-cached-artifacts-nul "$host_id" "$generation" "$ARTIFACTS_CACHE_PATH" > "$cached_nul" 2>/dev/null; then
+                {
+                    IFS= read -r -d '' release_version
+                    IFS= read -r -d '' agent_url
+                    IFS= read -r -d '' agent_sha
+                    IFS= read -r -d '' relay_url
+                    IFS= read -r -d '' relay_sha
+                    IFS= read -r -d '' rootfs_url
+                    IFS= read -r -d '' rootfs_sha
+                    IFS= read -r -d '' kernel_url
+                    IFS= read -r -d '' kernel_sha
+                    IFS= read -r -d '' egress_url
+                    IFS= read -r -d '' egress_sha
+                } < "$cached_nul"
+                rm -f "$cached_nul"
+                loaded_cached=true
+            else
+                rm -f "$cached_nul"
+            fi
+        fi
+        if [[ $loaded_cached != true ]]; then
+            local boot_req="$tmpdir/boot-req.json" boot_resp="$tmpdir/boot-resp.json"
+            python_boot_spec_helper build-boot-request "$generation" "$token_file" "$boot_req"
+            local boot_url="${account_origin}/v1/browser-pool/hosts/${host_id}/boot"
+            local http_code
+            http_code=$(curl -q --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 \
+                -H 'content-type: application/json' \
+                -o "$boot_resp" -w '%{http_code}' \
+                --data-binary "@$boot_req" \
+                -- "$boot_url") || die "could not reach Account boot route at $boot_url"
+            rm -f "$boot_req"
+            [[ $http_code == 200 ]] || die "Account boot route refused enrolment (HTTP $http_code); verify bootstrap token is unexpired and matches host $host_id generation $generation"
+            {
+                IFS= read -r -d '' release_version
+                IFS= read -r -d '' agent_url
+                IFS= read -r -d '' agent_sha
+                IFS= read -r -d '' relay_url
+                IFS= read -r -d '' relay_sha
+                IFS= read -r -d '' rootfs_url
+                IFS= read -r -d '' rootfs_sha
+                IFS= read -r -d '' kernel_url
+                IFS= read -r -d '' kernel_sha
+                IFS= read -r -d '' egress_url
+                IFS= read -r -d '' egress_sha
+            } < <(python_boot_spec_helper parse-boot-response "$host_id" "$generation" "$boot_resp" "$ARTIFACTS_CACHE_PATH")
+            rm -f "$boot_resp"
+        fi
     fi
-
-    if [[ -z $artifacts_json ]]; then
-        local boot_req="$tmpdir/boot-req.json" boot_resp="$tmpdir/boot-resp.json"
-        python_boot_spec_helper build-boot-request "$generation" "$token_file" "$boot_req"
-        local boot_url="${account_origin}/v1/browser-pool/hosts/${host_id}/boot"
-        local http_code
-        http_code=$(curl -q --silent --show-error --proto '=https' --tlsv1.2 --max-time 30 \
-            -H 'content-type: application/json' \
-            -o "$boot_resp" -w '%{http_code}' \
-            --data-binary "@$boot_req" \
-            -- "$boot_url") || die "could not reach Account boot route at $boot_url"
-        rm -f "$boot_req"
-        [[ $http_code == 200 ]] || die "Account boot route refused enrolment (HTTP $http_code); verify bootstrap token is unexpired and matches host $host_id generation $generation"
-        artifacts_json=$(python_boot_spec_helper parse-boot-response "$host_id" "$generation" "$boot_resp")
-        rm -f "$boot_resp"
-        install -d -m 0700 "$ETC"
-        local cache_tmp
-        cache_tmp=$(mktemp "$ETC/.release-artifacts.XXXXXX")
-        chmod 0600 "$cache_tmp"
-        printf '%s\n' "$artifacts_json" > "$cache_tmp"
-        mv "$cache_tmp" "$ARTIFACTS_CACHE_PATH"
-    fi
-
-    local release_version agent_url agent_sha relay_url relay_sha rootfs_url rootfs_sha kernel_url kernel_sha egress_url egress_sha
-    {
-        IFS= read -r -d '' release_version
-        IFS= read -r -d '' agent_url
-        IFS= read -r -d '' agent_sha
-        IFS= read -r -d '' relay_url
-        IFS= read -r -d '' relay_sha
-        IFS= read -r -d '' rootfs_url
-        IFS= read -r -d '' rootfs_sha
-        IFS= read -r -d '' kernel_url
-        IFS= read -r -d '' kernel_sha
-        IFS= read -r -d '' egress_url
-        IFS= read -r -d '' egress_sha
-    } < <(python_boot_spec_helper emit-artifacts-nul "$artifacts_json")
 
     # 4. Install/verify host baseline, persist settings in host.env, and generate keys.
     OSP_HOME_CIDR="$home_cidr" \
@@ -889,6 +965,8 @@ PY
     # a crash or systemctl failure leaves the token for an idempotent retry (same keys -> HTTP 200).
     bash "$OPT/setup-host.sh" verify-profiles-mount
     systemctl enable --now opensteer-pool-agent.service opensteer-pool-relay.service >/dev/null
+    systemctl is-active --quiet opensteer-pool-agent.service || die "opensteer-pool-agent.service is not active after systemctl enable --now; keeping bootstrap token for retry"
+    systemctl is-active --quiet opensteer-pool-relay.service || die "opensteer-pool-relay.service is not active after systemctl enable --now; keeping bootstrap token for retry"
     rm -f "$token_file"
     # Y7: Scrub cloud-init's own copy of user-data once the token has been consumed and services are up.
     rm -f "$CLOUD_INIT_DIR/user-data.txt" "$CLOUD_INIT_DIR/user-data.txt.i" "$CLOUD_INIT_DIR/cloud-config.txt" 2>/dev/null || true

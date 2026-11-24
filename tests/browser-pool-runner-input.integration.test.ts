@@ -222,6 +222,7 @@ async function typeThroughRunner(options: { readonly profile: boolean }) {
   });
   try {
     await service.initialize();
+    await coordinator.recover();
     // The Home admits a Runner's local profiles once it reconciled their inventory.
     await vi.waitFor(
       () => {

@@ -6,7 +6,7 @@ unset release_env volume_env stage_project
 services=(host gateway runner browser-runtime browser-egress channel-runtime)
 default_home_dir=/etc/opensteer-home
 # The recipe a Home keeps in its directory and runs from.
-recipe_files=(compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh)
+recipe_files=(compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml compose.browser-pool.yaml common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh)
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
 lock_home() {
@@ -25,9 +25,12 @@ compose() {
     args+=(-f "$home_dir/compose.apparmor.yaml")
   fi
   if [[ -f "$home_dir/ipv6.enabled" ]]; then args+=(-f "$home_dir/compose.ipv6.yaml"); fi
+  # A Cloud Computer whose boot answer said browserPool: its browser runs on a pool host.
+  if [[ -f "$home_dir/browser-pool" ]]; then args+=(-f "$home_dir/compose.browser-pool.yaml"); fi
   if [[ -s "$home_dir/secrets/egress_url" ]]; then
     args+=(-f "$home_dir/compose.egress.yaml")
-  elif [[ -f "$home_dir/managed" ]]; then
+  elif [[ -f "$home_dir/managed" && ! -f "$home_dir/browser-pool" ]]; then
+    # A pooled Cloud Computer's browser leaves through its own address on the pool host.
     args+=(-f "$home_dir/compose.egress-pending.yaml")
   fi
   if [[ -s "$home_dir/secrets/oidc_client_secret" ]]; then
@@ -377,7 +380,7 @@ compose_down_home() {
 remove_home_files() {
   rm -rf -- "${home_dir:?}/"{secrets,boot,identity,restore.pending,update.pending,restore.pending.retired,update.pending.retired}
   rm -rf -- "$home_dir/"{install,backup,update,egress,images.placeholder}.??????
-  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,update-database.dump,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
+  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,compose.browser-pool.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,browser-pool,update-database.dump,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
 }
 
 # Whether this Home was installed with --local-images.

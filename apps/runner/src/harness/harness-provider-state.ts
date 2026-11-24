@@ -9,7 +9,6 @@ import type {
   HarnessProviderState,
   HarnessProviderStore,
   HarnessProviderStoreScope,
-  HarnessRuntimeBoundary,
 } from "@opensteer/harness";
 
 export interface HarnessProviderStateOptions {
@@ -21,7 +20,6 @@ export interface HarnessProviderStateOptions {
    * inside it, and so do the Runner's own keys and mount credentials.
    */
   readonly privateStateRoot: string;
-  readonly runtimeBoundary: HarnessRuntimeBoundary;
   /** Where profiles and stores are laid out; a subdirectory of `privateStateRoot`. */
   readonly stateDirectory: string;
   readonly storeScope: HarnessProviderStoreScope;
@@ -51,9 +49,6 @@ export async function prepareHarnessProviderState(
   definition: HarnessInstanceDefinition,
   options: HarnessProviderStateOptions,
 ): Promise<PreparedHarnessProviderState> {
-  if (definition.stateKind === "ambient" && options.runtimeBoundary.kind !== "native-user") {
-    throw new Error("Ambient harness profiles require a native-user Runner");
-  }
   const root = resolve(options.stateDirectory);
   const directory = profileDirectory(root, definition.id);
   const providerHomeDirectory =
@@ -180,7 +175,7 @@ function storeLayout(
   definition: HarnessInstanceDefinition,
   stateDirectory: string,
   providerHomeDirectory: string | undefined,
-  options: Pick<HarnessProviderStateOptions, "environment" | "runtimeBoundary" | "storeScope">,
+  options: Pick<HarnessProviderStateOptions, "environment" | "storeScope">,
 ): HarnessProviderStoreLayout {
   if (options.storeScope.kind === "profile") {
     const metadataDirectory = profileStoreDirectory(stateDirectory, definition);
@@ -193,16 +188,10 @@ function storeLayout(
     };
   }
   const metadataDirectory = driverStoreDirectory(stateDirectory, definition.driverKind);
-  if (options.runtimeBoundary.kind === "isolated-service") {
-    return { directory: join(metadataDirectory, "store"), metadataDirectory, runnerOwned: true };
-  }
-  // On a person's own computer the ambient CLI home is the store, so a profile
-  // Opensteer added and the CLI they already had share one conversation history.
+  // The Runner user's ambient CLI home is the store, so a profile Opensteer
+  // added and the CLI they already had share one conversation history.
   // Opensteer's own metadata deliberately stays under the private state root.
-  const directory = nativeUserStoreDirectory(
-    options.environment,
-    options.storeScope.nativeUserHome,
-  );
+  const directory = ambientStoreDirectory(options.environment, options.storeScope.ambientHome);
   return {
     directory,
     // A store the Runner owns is identified by its record; a store the person
@@ -220,27 +209,27 @@ function ambientStoreKey(storeDirectory: string): string {
   return createHash("sha256").update(storeDirectory).digest("hex").slice(0, 16);
 }
 
-function nativeUserStoreDirectory(
+function ambientStoreDirectory(
   environment: Readonly<Record<string, string>>,
-  nativeUserHome: Extract<
+  ambientHome: Extract<
     HarnessProviderStoreScope,
     { readonly kind: "driver-shared" }
-  >["nativeUserHome"],
+  >["ambientHome"],
 ): string {
-  const configured = environment[nativeUserHome.environmentVariable];
+  const configured = environment[ambientHome.environmentVariable];
   if (configured) {
     // The CLI would resolve a relative home against each process's own working
     // directory, which makes it a different store per Thread; refusing it is
     // the only answer that keeps one environment one store.
     if (!isAbsolute(configured)) {
       throw new Error(
-        `${nativeUserHome.environmentVariable} must be an absolute path to share a provider session store`,
+        `${ambientHome.environmentVariable} must be an absolute path to share a provider session store`,
       );
     }
     return resolve(configured);
   }
   const home = environment.HOME;
-  return join(home && isAbsolute(home) ? home : homedir(), nativeUserHome.relativeHomePath);
+  return join(home && isAbsolute(home) ? home : homedir(), ambientHome.relativeHomePath);
 }
 
 function profileDirectory(stateDirectory: string, instanceId: string): string {

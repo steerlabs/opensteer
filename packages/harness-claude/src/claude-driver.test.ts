@@ -28,8 +28,6 @@ import {
 import {
   harnessInputHeader,
   harnessThreadContextPrompt,
-  isolatedServiceHarnessRuntimeBoundary,
-  nativeUserHarnessRuntimeBoundary,
   threadTitlePrompt,
   type HarnessAdapter,
   type HarnessEvent,
@@ -37,7 +35,6 @@ import {
   type HarnessProcessLaunch,
   type HarnessSession,
   type HarnessSessionContext,
-  type HarnessRuntimeBoundary,
 } from "@opensteer/harness";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { workflowSessionRoot } from "./workflow-transcript.js";
@@ -54,7 +51,6 @@ import {
   type ClaudeAuthenticationProcessOptions,
   claudeAccessModeConfiguration,
   claudeShellApprovalHook,
-  managedClaudeSettings,
   type ClaudeAgentSdk,
   type ClaudeQueryHandle,
 } from "./index.js";
@@ -137,26 +133,6 @@ describe("Claude Agent SDK harness", () => {
     await adapter.close();
   });
 
-  it("opens only the platform-appropriate Unix socket sandbox access", async () => {
-    const providerState = (await context(await temporaryDirectory())).providerState;
-    expect(
-      managedClaudeSettings({
-        machineAccessPlatform: "darwin",
-        machineAccessRelaySocket: "/tmp/opensteer/relay.sock",
-        providerState,
-        runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-      }).sandbox?.network,
-    ).toEqual({ allowUnixSockets: ["/tmp/opensteer/relay.sock"] });
-    expect(
-      managedClaudeSettings({
-        machineAccessPlatform: "linux",
-        machineAccessRelaySocket: "/tmp/opensteer/relay.sock",
-        providerState,
-        runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-      }).sandbox?.network,
-    ).toEqual({ allowAllUnixSockets: true });
-  });
-
   it("runs the official CLI browser-code flow without forwarding credentials", async () => {
     const directory = await temporaryDirectory();
     const authentication = fakeAuthentication({
@@ -182,7 +158,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: sessionContext.environment,
       providerState: sessionContext.providerState,
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: sessionContext.signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -216,7 +191,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: {},
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -240,7 +214,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: {},
       providerState,
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -260,7 +233,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: {},
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: controller.signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -281,7 +253,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: {},
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -308,7 +279,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: { OPENSTEER_TEST_API_KEY: "deployment-secret" },
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -345,7 +315,6 @@ describe("Claude Agent SDK harness", () => {
     const removal = {
       config: {},
       environment: {},
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -390,7 +359,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: {},
       providerState,
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -417,7 +385,6 @@ describe("Claude Agent SDK harness", () => {
     const inspection = {
       environment: {},
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -501,7 +468,6 @@ describe("Claude Agent SDK harness", () => {
         config: {},
         environment: { ANTHROPIC_API_KEY: "deployment-key" },
         providerState,
-        runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
         signal,
         sourceId: "anthropic",
         workingDirectory: directory,
@@ -523,7 +489,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: { ANTHROPIC_API_KEY: "deployment-key" },
       providerState,
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -608,7 +573,7 @@ describe("Claude Agent SDK harness", () => {
     expect(sdk.calls[1]?.options.settings).toBeUndefined();
   });
 
-  it("leaves runtime resolution to the SDK and denies Runner-private state in an isolated service", async () => {
+  it("leaves runtime resolution to the SDK and enables no Claude sandbox for a private profile", async () => {
     const sdk = new FakeSdk((parameters) => {
       const sessionId = providerSessionId(parameters.options);
       return scriptedQuery([initMessage(sessionId), successMessage(sessionId, "Done.")]);
@@ -617,9 +582,7 @@ describe("Claude Agent SDK harness", () => {
       adapter,
       context: sessionContext,
       session,
-    } = await openSession(sdk, {
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-    });
+    } = await openSession(sdk, { providerStateKind: "isolated" });
 
     await send(session, "Inspect the workspace");
     await session.stop();
@@ -635,22 +598,11 @@ describe("Claude Agent SDK harness", () => {
     expect(options?.env?.CLAUDE_CONFIG_DIR).toBe(
       sessionContext.providerState.providerHomeDirectory,
     );
-    expect(options?.managedSettings).toMatchObject({
-      permissions: {
-        deny: [
-          `Read(${sessionContext.providerState.privateStateRoot}/**)`,
-          `Edit(${sessionContext.providerState.privateStateRoot}/**)`,
-        ],
-      },
-      sandbox: {
-        allowUnsandboxedCommands: false,
-        enabled: true,
-        failIfUnavailable: true,
-        filesystem: {
-          denyRead: [sessionContext.providerState.privateStateRoot],
-          denyWrite: [sessionContext.providerState.privateStateRoot],
-        },
-      },
+    expect(options?.managedSettings).toEqual({
+      disableAllHooks: true,
+      disableBundledSkills: true,
+      disableClaudeAiConnectors: true,
+      disableRemoteControl: true,
     });
   });
 
@@ -2569,7 +2521,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: {},
       providerState,
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -2819,11 +2770,11 @@ describe("Claude Agent SDK harness", () => {
   );
 
   it.each([
-    { name: "native-user", runtimeBoundary: nativeUserHarnessRuntimeBoundary },
-    { name: "isolated-service", runtimeBoundary: isolatedServiceHarnessRuntimeBoundary },
+    { name: "the computer's own sign-in", providerStateKind: "ambient" as const },
+    { name: "a private profile", providerStateKind: "isolated" as const },
   ])(
-    "continues a bounded Host transcript through Claude's native resume at the $name boundary",
-    async ({ runtimeBoundary }) => {
+    "continues a bounded Host transcript through Claude's native resume with $name",
+    async ({ providerStateKind }) => {
       const reference = "123e4567-e89b-42d3-a456-426614174001";
       const durableHistory = [
         historyMessage("Earlier durable request", "1"),
@@ -2855,7 +2806,7 @@ describe("Claude Agent SDK harness", () => {
         {},
         durableHistory,
         harnessInstanceId,
-        runtimeBoundary,
+        providerStateKind,
       );
       const session = await adapter.resumeSession(reference, {
         ...baseContext,
@@ -3329,7 +3280,6 @@ describe("Claude Agent SDK harness", () => {
       config: { effort: "medium", model: "sonnet" },
       environment: {},
       providerState: testProviderState(inspectionDirectory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: inspectionDirectory,
@@ -3426,7 +3376,6 @@ describe("Claude Code sources", () => {
       config: {},
       environment: {},
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       workingDirectory: directory,
     } as const;
@@ -3473,7 +3422,6 @@ describe("Claude Code sources", () => {
       config: {},
       environment: {},
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       workingDirectory: directory,
     } as const;
@@ -3521,7 +3469,6 @@ describe("Claude Code sources", () => {
         config: {},
         environment: {},
         providerState: testProviderState(directory, "ambient"),
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: cancelled.signal,
         sourceId: "bedrock",
         workingDirectory: directory,
@@ -4481,13 +4428,11 @@ async function openSession(
     readonly environment?: Readonly<Record<string, string>>;
     readonly history?: readonly Message[];
     readonly machineAccessNotice?: string;
-    readonly machineAccessPlatform?: "darwin" | "linux";
-    readonly machineAccessRelaySocket?: string;
     readonly modelSelection?: HarnessSessionContext["modelSelection"];
     readonly personalContext?: boolean;
     /** Defaults to `personalContext`: the person's own task unless a test says otherwise. */
     readonly personLineage?: boolean;
-    readonly runtimeBoundary?: HarnessRuntimeBoundary;
+    readonly providerStateKind?: "ambient" | "isolated";
     readonly sourceId?: string;
     readonly wrapProcessLaunch?: HarnessSessionContext["wrapProcessLaunch"];
   } = {},
@@ -4509,7 +4454,7 @@ async function openSession(
     overrides.environment,
     overrides.history,
     harnessInstanceId,
-    overrides.runtimeBoundary,
+    overrides.providerStateKind,
     overrides.additionalWritableDirectory,
   );
   const sessionContext: HarnessSessionContext = {
@@ -4517,8 +4462,6 @@ async function openSession(
     imageStore: createToolImageStore(directory),
     accessMode: overrides.accessMode ?? baseContext.accessMode,
     machineAccessNotice: overrides.machineAccessNotice ?? noComputersNotice,
-    machineAccessPlatform: overrides.machineAccessPlatform,
-    machineAccessRelaySocket: overrides.machineAccessRelaySocket,
     modelSelection: overrides.modelSelection ?? baseContext.modelSelection,
     personalContext: overrides.personalContext ?? baseContext.personalContext,
     personLineage:
@@ -4534,7 +4477,7 @@ async function context(
   environment: Readonly<Record<string, string>> = {},
   history: readonly Message[] = [],
   harnessInstanceId = createId("harnessInstance"),
-  runtimeBoundary: HarnessRuntimeBoundary = nativeUserHarnessRuntimeBoundary,
+  providerStateKind: "ambient" | "isolated" = "ambient",
   additionalWritableDirectory?: string,
 ): Promise<HarnessSessionContext> {
   await mkdir(join(workspacePath, "bundled-skills"), { recursive: true });
@@ -4551,8 +4494,6 @@ async function context(
     personalContext: false,
     personLineage: false,
     machineAccessNotice: noComputersNotice,
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     agentTools: {
       tools: [
         "host_only_tool",
@@ -4581,11 +4522,7 @@ async function context(
     },
     instructions: "Follow workspace policy.",
     platformGuide: "Opensteer platform guide.",
-    providerState: testProviderState(
-      workspacePath,
-      runtimeBoundary.kind === "isolated-service" ? "isolated" : "ambient",
-    ),
-    runtimeBoundary,
+    providerState: testProviderState(workspacePath, providerStateKind),
     modelSelection: ModelSelectionSchema.parse({
       modelId: "sonnet",
       options: { effort: "high" },

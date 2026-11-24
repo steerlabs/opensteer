@@ -1874,6 +1874,16 @@ export async function createHostServer(
           type: command.type,
         };
 
+      case "thread.stop.recheck":
+        return {
+          ...(await threadService.recheckThreadStop(
+            { kind: "person", userId },
+            command,
+            AbortSignal.timeout(35_000),
+          )),
+          type: command.type,
+        };
+
       case "thread.input.lease.take":
       case "thread.input.lease.renew":
       case "thread.input.lease.release":
@@ -2142,10 +2152,10 @@ export async function createHostServer(
           });
         }
         const agents = runner.modules.agents;
-        if (!agents?.providerStateModes.includes(command.stateKind)) {
+        if (!agents) {
           throw new OpensteerError({
             code: "conflict",
-            message: `This work location does not support ${command.stateKind} AI engine state`,
+            message: "This work location does not run AI engines",
           });
         }
         const driver = agents.harnessDrivers.find(
@@ -2603,7 +2613,7 @@ export async function createHostServer(
       case "tab.group.update":
       case "tab.group.delete":
       case "tab.group.close":
-        return dependencies.tabs.executeCommand(userId, command);
+        return dependencies.tabs.executeCommand(userId, command, readmit);
       case "app.rename":
       case "app.start":
       case "app.stop":
@@ -2611,6 +2621,12 @@ export async function createHostServer(
         return handleAppCommand(dependencies.apps, command, userId);
       case "browser.session.close":
         await dependencies.browser.stop(userId, BrowserSessionIdSchema.parse(command.sessionId));
+        return { type: command.type };
+      case "browser.session.dismiss":
+        await dependencies.browser.dismissUnconfirmedSession(
+          userId,
+          BrowserSessionIdSchema.parse(command.sessionId),
+        );
         return { type: command.type };
       case "browser.pool.notice.seen":
         await dependencies.browser.poolNoticeSeen(

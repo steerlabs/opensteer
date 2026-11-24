@@ -10,7 +10,6 @@ import { z } from "zod";
 import { ModelSelectionSchema, type RunId } from "../packages/core/src/index.js";
 import type { LaunchedBrowser } from "../packages/browser-runtime-core/src/index.js";
 import { serveHarnessActionsFixture } from "../packages/browser-runtime-core/src/test-support/harness-actions-fixture.js";
-import { nativeUserHarnessRuntimeBoundary } from "../packages/harness/src/index.js";
 import { parseAgentExecutionConfig } from "../apps/runner/src/app-config.js";
 import { createHarnessRegistry } from "../apps/runner/src/harness/harness-registry.js";
 import {
@@ -189,7 +188,6 @@ describe.sequential.each(matrix)("real $label browser element-action journey", (
             runtimeCacheDirectory: path.join(tmpdir(), "opensteer-test-runtime-cache"),
           },
         ),
-        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         runTimeoutMs: 600_000,
         runnerLogger: {
           info: (message, detail) => diagnostics.push({ level: "info", message, detail }),

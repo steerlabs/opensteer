@@ -28,7 +28,10 @@ import {
   workHomeMigrationName,
 } from "./one-person-home-migration.js";
 import { removePlatformVerificationMigrationName } from "./platform-verification-removal-migration.js";
-import { browserPoolMigrationName } from "./browser-pool-migration.js";
+import {
+  browserPoolMigrationName,
+  browserPoolSessionsMigrationName,
+} from "./browser-pool-migration.js";
 import { bridgeConnectionsMigrationName } from "./bridge-connections-migration.js";
 import { chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
 import { preparePersonalConversion } from "./personal-state.test-support.js";
@@ -121,6 +124,8 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         "0113_automations_contract",
         "0114_thread_inputs_written_by_connection",
         "0115_provider_session_person_lineage",
+        browserPoolSessionsMigrationName,
+        "0117_stop_truth_and_recovery",
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`

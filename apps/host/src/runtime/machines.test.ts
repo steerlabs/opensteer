@@ -32,7 +32,6 @@ function runner(overrides: Partial<MachineRunnerInput> = {}): MachineRunnerInput
         environmentIds: [createId("environment")],
         harnessDrivers: [],
         maxConcurrentRuns: 2,
-        providerStateModes: ["isolated"],
       },
     },
     name: "Laptop",

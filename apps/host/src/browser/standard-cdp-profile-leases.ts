@@ -6,8 +6,17 @@ export class StandardCdpProfileLeases {
   readonly #active = new Map<BrowserProfileId, { generation: number; bindingId: string }>();
   #generation = 0;
 
-  run<T>(profileId: BrowserProfileId | null, operation: () => Promise<T>): Promise<T> {
-    return profileId ? this.#lane.run(profileId, operation) : operation();
+  run<T>(
+    profileId: BrowserProfileId | null,
+    operation: (waited: boolean) => Promise<T>,
+  ): Promise<T> {
+    if (!profileId) return operation(false);
+    const waited = this.#lane.busy(profileId);
+    return this.#lane.run(profileId, () => operation(waited));
+  }
+
+  busy(profileId: BrowserProfileId): boolean {
+    return this.#lane.busy(profileId);
   }
 
   held(profileId: BrowserProfileId) {

@@ -41,14 +41,20 @@ function decodeOverlayCursor(cursor: string) {
 export function activeRunQueue(tx: Read, threadId: ThreadId) {
   return tx
     .selectFrom("runs")
-    .select(["id", "status", "revision", "createdAt", "runOrdinal"])
+    .select(["id", "status", "revision", "createdAt", "runOrdinal", "startHoldReason"])
     .select(sql<boolean>`finish_intent is not null`.as("finishing"))
     .where("threadId", "=", threadId)
     .where(sql<boolean>`status in ('queued','starting','running','waiting')`)
     .orderBy("runOrdinal")
     .limit(2)
     .execute()
-    .then((runs) => runs.map((run) => ({ ...run, createdAt: run.createdAt.toISOString() })));
+    .then((runs) =>
+      runs.map(({ startHoldReason, ...run }) => ({
+        ...run,
+        ...(startHoldReason ? { startHoldReason } : {}),
+        createdAt: run.createdAt.toISOString(),
+      })),
+    );
 }
 
 export async function overlayPage(

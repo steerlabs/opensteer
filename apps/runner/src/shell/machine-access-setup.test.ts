@@ -122,8 +122,8 @@ describe("machine access eligibility", () => {
       ["linux", "grok", "auto", false],
       ["linux", "grok", "full-access", false],
       ["win32", "grok", "full-access", false],
-      // OpenCode, Pi and Cursor have no command sandbox of their own and run
-      // only on native-user Runners, so a model-run command reaches the relay
+      // OpenCode, Pi and Cursor have no command sandbox of their own, so a
+      // model-run command reaches the relay
       // in every mode. The darwin rows were measured 2026-09-17; the linux rows
       // are inferred from the absence of a command sandbox, which holds because
       // for these engines the access mode decides only whether a command is
@@ -188,7 +188,6 @@ describe("machine access launch setup", () => {
         machineAccess: machineContext(),
         platform: process.platform === "linux" ? "linux" : "darwin",
         privateStateRoot: privateRoot,
-        runtimeBoundary: { kind: "native-user" },
         transport: {
           controlCaPath: undefined,
           hostUrl: new URL("http://127.0.0.1:1"),
@@ -215,45 +214,10 @@ describe("machine access launch setup", () => {
     await expect(stat(launch)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it.skipIf(!hasSsh())(
-    "validates an isolated-service Runner's launch surface with the production hook",
-    async () => {
-      const root = await shortTemporaryDirectory("opensteer-default-hook-");
-      const workspace = join(root, "workspace");
-      await mkdir(workspace);
-      const setup = ready(
-        await setupInWorkspace({
-          accessMode: "auto",
-          driverKind: "claude",
-          environment: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
-          helperBinary: nativeFsHelper,
-          machineAccess: machineContext(),
-          platform: process.platform === "linux" ? "linux" : "darwin",
-          privateStateRoot: join(root, "private"),
-          // The cloud path: nothing injects a hook, and setup must still prove
-          // its own launch surface rather than omit access.
-          runtimeBoundary: { kind: "isolated-service" },
-          temporaryDirectory: root,
-          transport: {
-            controlCaPath: undefined,
-            hostUrl: new URL("http://127.0.0.1:1"),
-            mode: "development",
-          },
-          workspacePath: workspace,
-        }),
-      );
-
-      expect(setup.machineAccessNotice).toContain("alpha");
-      expect(setup.environment.PATH?.startsWith(join(setup.launchDirectory, "bin"))).toBe(true);
-      await setup.close();
-    },
-  );
-
-  it.skipIf(!hasSsh())("sets up Codex on an isolated-service Runner at full access", async () => {
-    // The combination eligibility used to refuse outright: Codex's sandbox
-    // allows the relay socket once Full access turns its network on, and the
-    // Runner boundary no longer changes that.
-    const root = await shortTemporaryDirectory("opensteer-codex-isolated-");
+  it.skipIf(!hasSsh())("sets up Codex at Full access on the Runner's own user", async () => {
+    // Codex's own sandbox allows the relay socket once Full access turns its
+    // network on, so the combination is set up and proven like any other.
+    const root = await shortTemporaryDirectory("opensteer-codex-full-");
     const workspace = join(root, "workspace");
     await mkdir(workspace);
     const setup = ready(
@@ -265,7 +229,6 @@ describe("machine access launch setup", () => {
         machineAccess: machineContext(),
         platform: process.platform === "linux" ? "linux" : "darwin",
         privateStateRoot: join(root, "private"),
-        runtimeBoundary: { kind: "isolated-service" },
         temporaryDirectory: root,
         transport: {
           controlCaPath: undefined,
@@ -281,16 +244,45 @@ describe("machine access launch setup", () => {
     await setup.close();
   });
 
+  it.skipIf(!hasSsh())("validates the launch surface with the production hook", async () => {
+    const root = await shortTemporaryDirectory("opensteer-default-hook-");
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    const setup = ready(
+      await setupInWorkspace({
+        accessMode: "auto",
+        driverKind: "claude",
+        environment: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+        helperBinary: nativeFsHelper,
+        machineAccess: machineContext(),
+        platform: process.platform === "linux" ? "linux" : "darwin",
+        privateStateRoot: join(root, "private"),
+        // Nothing injects a hook, and setup must still prove its own launch
+        // surface rather than omit access.
+        temporaryDirectory: root,
+        transport: {
+          controlCaPath: undefined,
+          hostUrl: new URL("http://127.0.0.1:1"),
+          mode: "development",
+        },
+        workspacePath: workspace,
+      }),
+    );
+
+    expect(setup.machineAccessNotice).toContain("alpha");
+    expect(setup.environment.PATH?.startsWith(join(setup.launchDirectory, "bin"))).toBe(true);
+    await setup.close();
+  });
+
   it.skipIf(!hasSsh())(
     "runs the setup probe through the Runner's process-launch wrapper",
     async () => {
       // The probe proves the launch surface only if it goes through the same
-      // seam the harness process tree will: an isolated-service Runner wraps
-      // every launch, and a probe that skipped the wrapper would prove nothing.
+      // seam the harness process tree will; a probe that skipped the wrapper
+      // would prove nothing.
       const root = await shortTemporaryDirectory("opensteer-wrapped-probe-");
       const workspace = join(root, "workspace");
       await mkdir(workspace);
-      const wrapperDirectories: string[] = [];
       const wrapped: string[] = [];
       const execute = vi.fn(async (command: MachineAccessValidationCommand) => {
         // The wrapper's marker must survive all the way to the launch.
@@ -306,7 +298,6 @@ describe("machine access launch setup", () => {
           machineAccess: machineContext(),
           platform: process.platform === "linux" ? "linux" : "darwin",
           privateStateRoot: join(root, "private"),
-          runtimeBoundary: { kind: "isolated-service" },
           temporaryDirectory: root,
           transport: {
             controlCaPath: undefined,
@@ -315,21 +306,16 @@ describe("machine access launch setup", () => {
           },
           validationHook: { execute },
           // The harness's own command sandbox wraps first, the Runner's
-          // sandbox around it, exactly as a model command would be launched.
+          // launch seam around it, exactly as a model command would be launched.
           wrapModelCommand: (launch) => ({ ...launch, args: [modelMarker, ...launch.args] }),
-          wrapProcessLaunch: async (launchDirectory) => {
-            wrapperDirectories.push(launchDirectory);
-            return (launch) => {
-              wrapped.push(launch.executable);
-              return { ...launch, args: [wrapMarker, ...launch.args] };
-            };
+          wrapProcessLaunch: (launch) => {
+            wrapped.push(launch.executable);
+            return { ...launch, args: [wrapMarker, ...launch.args] };
           },
           workspacePath: workspace,
         }),
       );
 
-      // One wrapper per Run, built for the launch directory the Run got.
-      expect(wrapperDirectories).toEqual([setup.launchDirectory]);
       expect(wrapped).toEqual(["ssh", resolve(nativeFsHelper)]);
       expect(execute.mock.calls.map(([command]) => command.arguments)).toEqual([
         [wrapMarker, modelMarker, "-G", "alpha"],
@@ -338,7 +324,7 @@ describe("machine access launch setup", () => {
           modelMarker,
           "ssh-proxy",
           "--relay",
-          setup.machineAccessRelaySocket,
+          join(setup.launchDirectory, "relay.sock"),
           expect.stringMatching(/^rnr_/u),
         ],
       ]);
@@ -362,7 +348,6 @@ describe("machine access launch setup", () => {
         machineAccess: machineContext(),
         platform: process.platform === "linux" ? "linux" : "darwin",
         privateStateRoot: join(root, "private"),
-        runtimeBoundary: { kind: "isolated-service" },
         temporaryDirectory: root,
         transport: {
           controlCaPath: undefined,
@@ -414,7 +399,6 @@ describe("machine access launch setup", () => {
             machineAccess: machineContext(),
             platform: process.platform === "linux" ? "linux" : "darwin",
             privateStateRoot: join(root, "private"),
-            runtimeBoundary: { kind: "isolated-service" },
             temporaryDirectory: root,
             transport: {
               controlCaPath: undefined,
@@ -446,7 +430,6 @@ describe("machine access launch setup", () => {
         machineAccess: machineContext(),
         platform: process.platform === "linux" ? "linux" : "darwin",
         privateStateRoot: join(root, "private"),
-        runtimeBoundary: { kind: "isolated-service" },
         temporaryDirectory: root,
         transport: {
           controlCaPath: undefined,
@@ -482,7 +465,6 @@ describe("machine access launch setup", () => {
         machineAccess: machineContext(),
         platform: process.platform === "linux" ? "linux" : "darwin",
         privateStateRoot: join(root, "private"),
-        runtimeBoundary: { kind: "native-user" },
         temporaryDirectory: root,
         transport: {
           controlCaPath: undefined,
@@ -513,7 +495,6 @@ describe("machine access launch setup", () => {
       machineAccess: machineContext(),
       platform: process.platform === "linux" ? "linux" : "darwin",
       privateStateRoot: join(root, "private"),
-      runtimeBoundary: { kind: "isolated-service" },
       temporaryDirectory: root,
       transport: {
         controlCaPath: undefined,
@@ -535,44 +516,6 @@ describe("machine access launch setup", () => {
     );
   });
 
-  it.skipIf(!hasSsh())(
-    "fails the Run, not the probe, when the sandbox cannot be planned",
-    async () => {
-      const root = await mkdtemp("/tmp/opensteer-unplanned-");
-      temporaryDirectories.push(root);
-      const logger = { error: vi.fn(), info: vi.fn() };
-      const execute = vi.fn(executeValidationCommand);
-      await expect(
-        setupInWorkspace({
-          accessMode: "full-access",
-          driverKind: "claude",
-          environment: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
-          helperBinary: nativeFsHelper,
-          logger,
-          machineAccess: machineContext(),
-          platform: process.platform === "linux" ? "linux" : "darwin",
-          privateStateRoot: join(root, "private"),
-          runtimeBoundary: { kind: "isolated-service" },
-          temporaryDirectory: root,
-          transport: {
-            controlCaPath: undefined,
-            hostUrl: new URL("http://127.0.0.1:1"),
-            mode: "development",
-          },
-          validationHook: { execute },
-          wrapProcessLaunch: async () => {
-            throw new Error("Workspace overlaps the Runner data directory");
-          },
-        }),
-      ).rejects.toThrow("Workspace overlaps the Runner data directory");
-      // Nothing was probed, nothing was left behind, and nothing was logged as
-      // a probe failure: the caller reports this as the Run's own failure.
-      expect(execute).not.toHaveBeenCalled();
-      expect(await readdir(root)).toEqual([]);
-      expect(logger.error).not.toHaveBeenCalled();
-    },
-  );
-
   it("leaves no launch resources when the socket path is too long", async () => {
     const root = await temporaryDirectory("long-");
     const longBase = join(root, "x".repeat(90));
@@ -585,7 +528,6 @@ describe("machine access launch setup", () => {
       machineAccess: machineContext(),
       platform: "darwin",
       privateStateRoot: join(root, "private"),
-      runtimeBoundary: { kind: "native-user" },
       temporaryDirectory: longBase,
       transport: {
         controlCaPath: undefined,
@@ -608,7 +550,6 @@ describe("machine access launch setup", () => {
         machineAccess: machineContext(),
         platform: "linux",
         privateStateRoot: join(root, "private"),
-        runtimeBoundary: { kind: "native-user" },
         transport: {
           controlCaPath: undefined,
           hostUrl: new URL("http://127.0.0.1:1"),
@@ -621,31 +562,25 @@ describe("machine access launch setup", () => {
   it("reports why a Codex Run outside Full access has no computers", async () => {
     const root = await temporaryDirectory("codex-sandboxed-");
     const execute = vi.fn<MachineAccessValidationHook["execute"]>();
-    // Both boundaries: the sandbox denies connect() on either one outside Full
-    // access, so nothing is built and the Run is told which of the two it is.
-    for (const runtimeBoundary of [
-      { kind: "isolated-service" },
-      { kind: "native-user" },
-    ] as const) {
-      const setup = await setupInWorkspace({
-        accessMode: "auto",
-        driverKind: "codex",
-        environment: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
-        helperBinary: process.execPath,
-        machineAccess: machineContext(),
-        platform: "linux",
-        privateStateRoot: join(root, "private"),
-        runtimeBoundary,
-        transport: {
-          controlCaPath: undefined,
-          hostUrl: new URL("http://127.0.0.1:1"),
-          mode: "development",
-        },
-        validationHook: { execute },
-      });
+    // The sandbox denies connect() outside Full access, so nothing is built
+    // and the Run is told why.
+    const setup = await setupInWorkspace({
+      accessMode: "auto",
+      driverKind: "codex",
+      environment: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      helperBinary: process.execPath,
+      machineAccess: machineContext(),
+      platform: "linux",
+      privateStateRoot: join(root, "private"),
+      transport: {
+        controlCaPath: undefined,
+        hostUrl: new URL("http://127.0.0.1:1"),
+        mode: "development",
+      },
+      validationHook: { execute },
+    });
 
-      expect(setup).toEqual({ reason: "driver-access-mode" });
-    }
+    expect(setup).toEqual({ reason: "driver-access-mode" });
     expect(execute).not.toHaveBeenCalled();
     expect(await readdir(root)).toEqual([]);
   });
@@ -669,7 +604,7 @@ describe("machine access launch setup", () => {
       const context = machineContext();
       const setup = await createSetup(context, new URL(`http://127.0.0.1:${address.port}`));
       const response = await relayExchange(
-        setup.machineAccessRelaySocket,
+        join(setup.launchDirectory, "relay.sock"),
         `${JSON.stringify({ target: context.machines[0]?.runnerId })}\nssh-preface`,
         "ssh-preface",
       );
@@ -701,7 +636,7 @@ describe("machine access launch setup", () => {
       const setup = await createSetup(context, new URL(`http://127.0.0.1:${address.port}`));
 
       const response = await relayExchangeWrites(
-        setup.machineAccessRelaySocket,
+        join(setup.launchDirectory, "relay.sock"),
         `${JSON.stringify({ target: context.machines[0]?.runnerId })}\n`,
         "caller-early",
         "caller-early",
@@ -734,7 +669,7 @@ describe("machine access launch setup", () => {
     const context = machineContext();
     const setup = await createSetup(context, new URL(`http://127.0.0.1:${address.port}`));
     const response = await relayExchange(
-      setup.machineAccessRelaySocket,
+      join(setup.launchDirectory, "relay.sock"),
       `${JSON.stringify({ target: context.machines[0]?.runnerId })}\n`,
       "SSH-2.0-Opensteer\r\n",
     );
@@ -760,7 +695,7 @@ describe("machine access launch setup", () => {
     const context = machineContext();
     const setup = await createSetup(context, new URL(`http://127.0.0.1:${address.port}`));
     const response = await relayExchange(
-      setup.machineAccessRelaySocket,
+      join(setup.launchDirectory, "relay.sock"),
       `${JSON.stringify({ target: context.machines[0]?.runnerId })}\n`,
       "\n",
     );
@@ -773,7 +708,7 @@ describe("machine access launch setup", () => {
 
   it.skipIf(!hasSsh())("parses requests and emits responses with the relay schemas", async () => {
     const setup = await createSetup(machineContext(), new URL("http://127.0.0.1:1"));
-    const line = await relayExchange(setup.machineAccessRelaySocket, "{}\n", "\n");
+    const line = await relayExchange(join(setup.launchDirectory, "relay.sock"), "{}\n", "\n");
     expect(ShellRelayResponseSchema.parse(JSON.parse(line))).toEqual({
       message: "Shell relay request is invalid.",
       ok: false,
@@ -797,7 +732,6 @@ describe("OpenSSH configuration", () => {
         helperBinary: helper,
         knownHostsPath,
         machines,
-        nativeUser: true,
         relaySocket: join(root, `relay ' 100%.sock`),
       }).replace("Include ~/.ssh/config", `Include "${userConfig}"`);
       await writeFile(configPath, rendered);
@@ -1104,7 +1038,7 @@ async function setupInWorkspace(options: SetupOptions): Promise<NoticedOutcome> 
     // Most tests do not care how the Runner starts a process, only that the
     // probe goes through whatever seams there are: the identity wrappers.
     wrapModelCommand: (launch) => launch,
-    wrapProcessLaunch: async () => (launch) => launch,
+    wrapProcessLaunch: (launch) => launch,
     ...options,
     plan,
   });
@@ -1135,7 +1069,6 @@ async function createSetup(context: MachineAccessRunContext, hostUrl: URL) {
       machineAccess: context,
       platform: process.platform === "linux" ? "linux" : "darwin",
       privateStateRoot: join(tmpdir(), "opensteer-private-test"),
-      runtimeBoundary: { kind: "native-user" },
       transport: { controlCaPath: undefined, hostUrl, mode: "development" },
     }),
   );

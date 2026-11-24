@@ -403,7 +403,7 @@ integration("Machine access session lifecycle", () => {
 
     // The Runner owns the relay socket and takes it away with the Run.
     await launch.close();
-    await expect(connectToSocket(launch.machineAccessRelaySocket)).rejects.toThrow();
+    await expect(connectToSocket(join(launch.launchDirectory, "relay.sock"))).rejects.toThrow();
   }, 180_000);
 
   it("prints the offline sentence, queues nothing, and works again on reconnect", async () => {
@@ -458,6 +458,13 @@ integration("Machine access session lifecycle", () => {
     });
     const { alias, host, launch, target } = scenario;
     expect(await runShim(launch, "ssh", [alias, "true"])).toMatchObject({ code: 0 });
+    // The admitted session's end is recorded by the Home after the client has gone (its socket's
+    // close, or the Runner's): ssh exits before that write lands, so its own record is awaited.
+    const admitted = await shellSessionRows(host);
+    expect(admitted).toHaveLength(1);
+    await waitForCondition(async () =>
+      (await shellSessionRows(host)).every((row) => row.endReason !== null),
+    );
 
     await updateAccessPolicy(host, {
       expectedRevision: 2,
@@ -471,8 +478,11 @@ integration("Machine access session lifecycle", () => {
       `device-access-off: computerId=${target.runnerId}, capability=files.`,
     );
     expect(denied.stderr).toContain("Files and commands are off on Example Mac.");
-    // A refusal reserves nothing, so no row was ever written for it.
-    expect((await shellSessionRows(host)).every((row) => row.endReason !== null)).toBe(true);
+    // A refusal reserves nothing, so no row was ever written for it: the one row is the admitted
+    // session's, ended.
+    const rows = await shellSessionRows(host);
+    expect(rows.map((row) => row.id)).toEqual([admitted[0]!.id]);
+    expect(rows[0]!.endReason).not.toBeNull();
   }, 180_000);
 });
 

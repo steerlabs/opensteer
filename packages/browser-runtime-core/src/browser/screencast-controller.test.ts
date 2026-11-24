@@ -1948,7 +1948,7 @@ describe("the follow view, when a page loads forever and never paints (U6)", asy
       }
     });
 
-  it("keeps the armed timers equal to what the state asks for after every reconcile (paint backoff, first-frame limit, loading wait, stop answer)", async () => {
+  it("keeps the armed timers equal to what the state asks for at every checkpoint after reconcile (paint backoff, first-frame limit, loading wait, stop answer)", async () => {
     const { BrowserPaintTimeoutError } = await import("./backend.js");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
@@ -2474,6 +2474,99 @@ describe("the follow view, when a page loads forever and never paints (U6)", asy
       );
       expect(vi.getTimerCount()).toBe(0);
 
+      await follow.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resets paintDelay when a stale paint wait is cleared by a resize, and ignores mid-wake suspended bindings", async () => {
+    const { BrowserPaintTimeoutError } = await import("./backend.js");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const surface: {
+        active: boolean;
+        documentId: string;
+        geometryRevision: number;
+        id: never;
+        loading: boolean;
+        state: "live" | "suspended";
+        url: string;
+      } = {
+        active: true,
+        documentId: "doc-1",
+        geometryRevision: 1,
+        id: "tab-batch-f" as never,
+        loading: false,
+        state: "suspended",
+        url: "https://example.com/",
+      };
+      const cdp = new FakeCdpSession();
+      const captureListeners = new Set<() => void>();
+      let capture = { height: 600, rasterScale: 1, revision: 1, width: 800 };
+      let settleCalls = 0;
+      const page = {
+        applyGeometry: async () => undefined,
+        capture: {
+          read: () => capture,
+          subscribe: (listener: () => void) => {
+            captureListeners.add(listener);
+            return () => captureListeners.delete(listener);
+          },
+        },
+        invalidateSurface: async () => undefined,
+        settleRendering: async () => {
+          settleCalls += 1;
+          if (settleCalls <= 2) throw new BrowserPaintTimeoutError();
+        },
+      };
+      const binding = { cdp, page, surface };
+      const listeners = new Set<(event: unknown) => void>();
+      const ledger = {
+        active: () => binding,
+        binding: () => binding,
+        dialogOf: () => null,
+        dialogOpen: () => false,
+        recordPageScale: () => undefined,
+        subscribe: (listener: (event: unknown) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        use: async <T>(_surfaceId: unknown, operation: () => Promise<T>) => operation(),
+        viewportOf: () => ({ height: capture.height, width: capture.width }),
+        withGeometry: async <T>(_surfaceId: unknown, operation: () => Promise<T>) => operation(),
+      };
+      const follow = new ScreencastController({
+        frames: new LatestFrameStream({ sendFrame: async () => undefined }),
+        ledger: ledger as never,
+        onDialogChanged: () => undefined,
+      });
+
+      await follow.start();
+      await follow.setStreaming(true);
+      await settle();
+      // Mid-wake suspended binding: never binds or starts casting on about:blank.
+      expect(settleCalls).toBe(0);
+      expect(cdp.sent.filter((entry) => entry.method === "Page.startScreencast")).toHaveLength(0);
+
+      // Once live, first paint timeout arms a 1 s backoff (doubling next paintDelay to 2 s).
+      surface.state = "live";
+      for (const listener of listeners)
+        listener({ change: "updated", surface: { ...surface }, type: "changed" });
+      await settle();
+      expect(settleCalls).toBe(1);
+
+      // Resizing clears the stale paint wait and resets paintDelay back to 1 s (not 2 s).
+      capture = { height: 700, rasterScale: 1, revision: 2, width: 900 };
+      surface.geometryRevision = 2;
+      for (const listener of captureListeners) listener();
+      await settle();
+      expect(settleCalls).toBe(2);
+      // After 1,000 ms (the reset initial delay), the 3rd settle runs and starts casting.
+      await vi.advanceTimersByTimeAsync(1_000);
+      await settle();
+      expect(settleCalls).toBe(3);
+      expect(cdp.sent.filter((entry) => entry.method === "Page.startScreencast")).toHaveLength(1);
       await follow.close();
     } finally {
       vi.useRealTimers();

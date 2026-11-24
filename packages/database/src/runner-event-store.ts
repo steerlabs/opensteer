@@ -3,6 +3,7 @@ import { outsideName } from "@opensteer/shared/outsideName";
 import { executionDate } from "./personal-transaction.js";
 import {
   projectThreadState,
+  publishRunQueue,
   publishThreadSummary,
   replyPreview,
   writeThreadSummary,
@@ -24,6 +25,7 @@ import {
   transcriptPreview,
 } from "./transcript-store.js";
 import { completeRunReplacement, recoverLostRunTransaction } from "./run-recovery.js";
+import { clearThreadStartHold } from "./execution-recovery.js";
 import {
   contentSaysSomething,
   isPlaceContentPart,
@@ -955,6 +957,7 @@ export async function commitRunnerEvent(
   };
   let duplicateRunUsage = false;
   let revokedGrants: readonly RevokedRunGrant[] = [];
+  let clearHeldThreadId: ThreadId | null = null;
   const statement = { ...event, runnerId: input.runnerId, runnerBootId: input.runnerBootId };
   const accept = () =>
     commitPersonalMutation(database, async (tx, mutation) =>
@@ -963,6 +966,68 @@ export async function commitRunnerEvent(
         mutation,
         statement,
         async (digest, event, authority, { run, attempt, ...context }) => {
+          // Late confirmation from the Runner that an unproven stop has now settled:
+          // move the Run from failed/execution_termination_unproven to interrupted
+          // with stopConfirmedAt, lift any previous-stop-unconfirmed hold on queued
+          // Runs, and clear the failed task status. Never becomes completed.
+          if (
+            input.verifiedContainment !== false &&
+            run.status === "failed" &&
+            run.failure?.code === runTerminationUnprovenCode &&
+            event.type === "run.interrupted"
+          ) {
+            const confirmedAt = mutation.state.now;
+            clearHeldThreadId = run.threadId;
+            await lockStatementThread(tx, event.threadId);
+            await lockRunProjectionRows(tx, {
+              threadIds: [run.threadId],
+              runIds: [run.id],
+            });
+            await tx
+              .updateTable("runs")
+              .set({
+                status: "interrupted",
+                failure: null,
+                completedAt: confirmedAt,
+                stopConfirmedAt: confirmedAt,
+                runnerSafetyTerminal: true,
+                revision: mutation.sequence,
+              })
+              .where("id", "=", run.id)
+              .executeTakeFirstOrThrow();
+            await tx
+              .updateTable("threads")
+              .set({ unconfirmedStopRunId: null })
+              .where("id", "=", run.threadId)
+              .where("unconfirmedStopRunId", "=", run.id)
+              .execute();
+            if (run.providerSessionId) {
+              await tx
+                .updateTable("providerSessions")
+                .set({
+                  status: "ready",
+                  updatedAt: confirmedAt,
+                })
+                .where("id", "=", run.providerSessionId)
+                .where("status", "=", "broken")
+                .execute();
+            }
+            await tx
+              .updateTable("runAttempts")
+              .set({
+                outcome: "interrupted",
+                endedAt: confirmedAt,
+                terminalEvidenceAt: confirmedAt,
+                contactLostAt: null,
+              })
+              .where("runId", "=", run.id)
+              .where("bindingGeneration", "=", event.bindingGeneration)
+              .execute();
+            await projectThreadState(tx, run.threadId, confirmedAt, true);
+            await publishTranscriptRun(tx, mutation, run.id);
+            await publishRunQueue(tx, run.threadId);
+            return "applied";
+          }
           const lostExecution =
             event.type === "run.interrupted" && event.data.cause === "lease-lost";
           if (
@@ -1097,6 +1162,9 @@ export async function commitRunnerEvent(
                     ? "failed"
                     : "interrupted",
               ...(event.type === "run.failed" ? { failure: event.data } : {}),
+              ...(event.type === "run.interrupted" && event.data.cause
+                ? { interruptedCause: event.data.cause }
+                : {}),
               statement: {
                 ordinal: event.ordinal,
                 runnerId: input.runnerId,
@@ -1155,6 +1223,7 @@ export async function commitRunnerEvent(
             connectionId = run.connectionId;
           },
           allowExpiredLease: event.type === "run.interrupted" && event.data.cause === "lease-lost",
+          verifiedContainment: input.verifiedContainment,
         },
       ),
     );
@@ -1164,6 +1233,9 @@ export async function commitRunnerEvent(
       await drainRunFinish(database, links, event.runId);
       result = await accept();
       if ("finishing" in result) throw new Error("Run finish did not commit its Runner receipt");
+    }
+    if (clearHeldThreadId) {
+      await clearThreadStartHold(database, clearHeldThreadId);
     }
     await recordTerminalEvidence();
     return { ...result, duplicateRunUsage, revokedGrants };

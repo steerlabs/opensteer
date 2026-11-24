@@ -27,7 +27,6 @@ function environment(drivers: unknown[], connected = true): EnvironmentSummary {
     harnessDrivers: drivers,
     id: "env_main",
     kind: "main",
-    providerStateModes: ["ambient", "isolated"],
   } as unknown as EnvironmentSummary;
 }
 

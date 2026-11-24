@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -50,7 +51,7 @@ function runScript(
   input?: string,
 ): { status: number; stdout: string; stderr: string } {
   try {
-    const stdout = execFileSync("bash", [scriptPath, ...args], {
+    const stdout = execFileSync("/bin/bash", [scriptPath, ...args], {
       encoding: "utf8",
       env: { ...process.env, ...envOverrides },
       ...(input !== undefined
@@ -71,6 +72,21 @@ function runScript(
 function runEnroll(args: string[], envOverrides: Record<string, string> = {}) {
   return runScript(enrollScript, args, envOverrides);
 }
+
+const pregeneratedHostKey = (() => {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  return {
+    privatePem: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+    publicPem: publicKey.export({ format: "pem", type: "spki" }).toString(),
+  };
+})();
+const pregeneratedRelayKey = (() => {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  return {
+    privatePem: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+    publicPem: publicKey.export({ format: "pem", type: "spki" }).toString(),
+  };
+})();
 
 function ed25519SpkiBase64(): string {
   const { publicKey } = generateKeyPairSync("ed25519");
@@ -244,97 +260,68 @@ describe("pool host enrolment and setup scripts (Y1-Y7, X1)", () => {
       writeFileSync(mountedFile, opts.alreadyMountedSource, "utf8");
     }
 
-    // Fast bash stubs for high-frequency commands (avoids 70x python3 startups per enrolment while still recording every call).
-    const logCallBash = `printf '{"cmd":"%s","args":[' "$CMD" >> ${JSON.stringify(callsFile)}; first=1; for a in "$@"; do a=\${a//\\\\/\\\\\\\\}; a=\${a//\\"/\\\\\\"}; [[ $first == 1 ]] && first=0 || printf ',' >> ${JSON.stringify(callsFile)}; printf '"%s"' "$a" >> ${JSON.stringify(callsFile)}; done; printf ']}\\n' >> ${JSON.stringify(callsFile)}`;
-    writeExecutable(
-      binDir,
-      "id",
-      `#!/usr/bin/env bash
-CMD=id; ${logCallBash}
-if [[ \${1:-} == -u && \${2:-} == opensteer-pool-relay ]]; then echo 987; else echo 0; fi
-`,
-    );
-    writeExecutable(
-      binDir,
-      "chown",
-      `#!/usr/bin/env bash
-CMD=chown; ${logCallBash}
-exit 0
-`,
-    );
-    writeExecutable(
-      binDir,
-      "udevadm",
-      `#!/usr/bin/env bash
-CMD=udevadm; ${logCallBash}
-exit 0
-`,
-    );
-    writeExecutable(
-      binDir,
-      "uname",
-      `#!/usr/bin/env bash
-CMD=uname; ${logCallBash}
-if [[ " $* " == *" -m "* ]]; then echo x86_64; else echo Linux; fi
-`,
-    );
-    writeExecutable(
-      binDir,
-      "install",
-      `#!/usr/bin/env bash
-CMD=install; ${logCallBash}
-mode=""; is_dir=0; args=()
-while (( $# > 0 )); do
-  case "$1" in
-    -d) is_dir=1; shift ;;
-    -m) mode="$2"; shift 2 ;;
-    -o|-g) shift 2 ;;
-    *) args+=("$1"); shift ;;
-  esac
-done
-if (( is_dir )); then
-  for d in "\${args[@]}"; do
-    mkdir -p "$d"
-    [[ -n $mode ]] && chmod "$mode" "$d"
+    const bashEnvFile = join(root, "bash-env.sh");
+    const bashEnvBlocks: string[] = [
+      // Single BASH_ENV function suite: records every command identically while avoiding ~25 fresh
+      // executable spawns per test (and macOS first-exec scan latency on temp-dir scripts).
+      `_osp_log_call() {
+  local _cmd=$1; shift
+  local _l='{"cmd":"'"$_cmd"'","args":[' _f=1 _a
+  for _a in "$@"; do
+    _a=\${_a//\\\\/\\\\\\\\}
+    _a=\${_a//\\"/\\\\\\"}
+    if [[ $_f == 1 ]]; then _f=0; else _l+=,; fi
+    _l+="\\"$_a\\""
   done
-elif (( \${#args[@]} == 2 )); then
-  cp "\${args[0]}" "\${args[1]}"
-  [[ -n $mode ]] && chmod "$mode" "\${args[1]}"
-fi
-exit 0
-`,
-    );
-    // Z4(b): Every command that can write a device has a recording stand-in that exits non-zero.
+  printf '%s]}\\n' "$_l" >> ${JSON.stringify(callsFile)}
+}`,
+      `bash() { /bin/bash "$@"; }`,
+      `id() {
+  _osp_log_call id "$@"
+  if [[ \${1:-} == -u && \${2:-} == opensteer-pool-relay ]]; then echo 987; else echo 0; fi
+}`,
+      `chown() { _osp_log_call chown "$@"; return 0; }`,
+      `udevadm() { _osp_log_call udevadm "$@"; return 0; }`,
+      `uname() {
+  _osp_log_call uname "$@"
+  if [[ " $* " == *" -m "* ]]; then echo x86_64; else echo Linux; fi
+}`,
+      `install() {
+  _osp_log_call install "$@"
+  local _mode="" _is_dir=0 _d
+  local -a _args=()
+  while (( $# > 0 )); do
+    case "$1" in
+      -d) _is_dir=1; shift ;;
+      -m) _mode="$2"; shift 2 ;;
+      -o|-g) shift 2 ;;
+      *) _args+=("$1"); shift ;;
+    esac
+  done
+  if (( _is_dir )); then
+    if (( \${#_args[@]} > 0 )); then
+      for _d in "\${_args[@]}"; do
+        /bin/mkdir -p "$_d"
+        if [[ -n $_mode ]]; then /bin/chmod "$_mode" "$_d"; fi
+      done
+    fi
+  elif (( \${#_args[@]} == 2 )); then
+    /bin/cp "\${_args[0]}" "\${_args[1]}"
+    if [[ -n $_mode ]]; then /bin/chmod "$_mode" "\${_args[1]}"; fi
+  fi
+  return 0
+}`,
+    ];
+    // Z4(b): Every command that can write a device has a recording stand-in that returns non-zero.
     for (const writer of DEVICE_WRITING_COMMANDS) {
-      writeExecutable(
-        binDir,
-        writer,
-        `#!/usr/bin/env bash
-CMD=${writer}; ${logCallBash}
-exit 1
-`,
-      );
+      bashEnvBlocks.push(`${writer}() { _osp_log_call ${writer} "$@"; return 1; }`);
     }
     for (const noop of ["nft", "sysctl", "swapoff", "modprobe"]) {
-      writeExecutable(
-        binDir,
-        noop,
-        `#!/usr/bin/env bash
-CMD=${noop}; ${logCallBash}
-exit 0
-`,
-      );
+      bashEnvBlocks.push(`${noop}() { _osp_log_call ${noop} "$@"; return 0; }`);
     }
     if (opts.realInstallHostEnv) {
       for (const pkgCmd of ["apt-get", "getent", "useradd"]) {
-        writeExecutable(
-          binDir,
-          pkgCmd,
-          `#!/usr/bin/env bash
-CMD=${pkgCmd}; ${logCallBash}
-exit 0
-`,
-        );
+        bashEnvBlocks.push(`${pkgCmd}() { _osp_log_call ${pkgCmd} "$@"; return 0; }`);
       }
       // Provide pre-staged dummy binaries and matching sha256sum so real `setup-host.sh install`
       // runs all the way through install_packages -> install_binaries -> host_key -> save_host_env
@@ -344,36 +331,27 @@ exit 0
       mkdirSync(join(optDir, "node/bin"), { recursive: true });
       writeFileSync(join(optDir, "download/firecracker.tgz"), "fake-fc");
       writeFileSync(join(optDir, "download/node.tar.xz"), "fake-node");
-      writeExecutable(join(optDir, "node/bin"), "node", `#!/usr/bin/env bash\necho v24.15.0\n`);
-      writeExecutable(
-        binDir,
-        "tar",
-        `#!/usr/bin/env bash
-CMD=tar; ${logCallBash}
-dest=""
-while (( $# > 0 )); do
-  if [[ $1 == -C ]]; then dest="$2"; shift 2; else shift; fi
-done
-if [[ -n $dest ]]; then
-  mkdir -p "$dest/release-v1.18.0-x86_64"
-  printf 'fake-fc' > "$dest/release-v1.18.0-x86_64/firecracker-v1.18.0-x86_64"
-  printf 'fake-jailer' > "$dest/release-v1.18.0-x86_64/jailer-v1.18.0-x86_64"
-  mkdir -p "$dest/bin"
-  printf '#!/usr/bin/env bash\necho v24.15.0\n' > "$dest/bin/node"
-  chmod +x "$dest/bin/node"
-fi
-exit 0
-`,
-      );
+      writeExecutable(join(optDir, "node/bin"), "node", `#!/bin/bash\necho v24.15.0\n`);
+      bashEnvBlocks.push(`tar() {
+  _osp_log_call tar "$@"
+  local _dest=""
+  while (( $# > 0 )); do
+    if [[ $1 == -C ]]; then _dest="$2"; shift 2; else shift; fi
+  done
+  if [[ -n $_dest ]]; then
+    /bin/mkdir -p "$_dest/release-v1.18.0-x86_64" "$_dest/bin"
+    printf 'fake-fc' > "$_dest/release-v1.18.0-x86_64/firecracker-v1.18.0-x86_64"
+    printf 'fake-jailer' > "$_dest/release-v1.18.0-x86_64/jailer-v1.18.0-x86_64"
+    printf '#!/bin/bash\\necho v24.15.0\\n' > "$_dest/bin/node"
+    /bin/chmod +x "$_dest/bin/node"
+  fi
+  return 0
+}`);
     }
-    writeExecutable(
-      binDir,
-      "uuidgen",
-      `#!/usr/bin/env bash
-CMD=uuidgen; ${logCallBash}
-echo 11111111-2222-4333-8444-555555555555
-`,
-    );
+    bashEnvBlocks.push(`uuidgen() {
+  _osp_log_call uuidgen "$@"
+  echo 11111111-2222-4333-8444-555555555555
+}`);
     const blockDevicesSet = (
       opts.blockDevices ?? [
         poolProfileDiskDevicePath,
@@ -392,7 +370,7 @@ echo 11111111-2222-4333-8444-555555555555
         "/dev/sda1": "/dev/sda1",
       },
     )
-      .map(([k, v]) => `  ${JSON.stringify(k)}) echo ${JSON.stringify(v)}; exit 0 ;;`)
+      .map(([k, v]) => `    ${JSON.stringify(k)}) echo ${JSON.stringify(v)}; return 0 ;;`)
       .join("\n");
     const pknameCases = Object.entries(
       opts.pknameMap ?? {
@@ -400,176 +378,156 @@ echo 11111111-2222-4333-8444-555555555555
         "/dev/nvme0n1p1": "nvme0n1",
       },
     )
-      .map(([k, v]) => `  ${JSON.stringify(k)}) echo ${JSON.stringify(v)}; exit 0 ;;`)
+      .map(([k, v]) => `    ${JSON.stringify(k)}) echo ${JSON.stringify(v)}; return 0 ;;`)
       .join("\n");
     const profilesRootPath = join(stateDir, "profiles");
     const bootSrc = opts.bootSource ?? "/dev/sda1";
 
-    writeExecutable(
-      binDir,
-      "readlink",
-      `#!/usr/bin/env bash
-CMD=readlink; ${logCallBash}
-target="\${!#}"
-case "$target" in
+    bashEnvBlocks.push(`readlink() {
+  _osp_log_call readlink "$@"
+  local _target="\${!#}" _dir _base
+  case "$_target" in
 ${readlinkCases}
-esac
-if [[ -e "$target" ]]; then
-  dir="\${target%/*}"; base="\${target##*/}"
-  [[ $dir == "$target" ]] && dir="."
-  (cd "$dir" && printf '%s/%s\\n' "$(pwd -P)" "$base")
-else
-  printf '%s\\n' "$target"
-fi
-`,
-    );
+  esac
+  if [[ -e "$_target" ]]; then
+    _dir="\${_target%/*}"; _base="\${_target##*/}"
+    if [[ $_dir == "$_target" ]]; then _dir="."; fi
+    (cd "$_dir" && printf '%s/%s\\n' "$(pwd -P)" "$_base")
+  else
+    printf '%s\\n' "$_target"
+  fi
+}`);
     const statChecksFile = join(root, "stat-checks");
     const appearsOnCheck = opts.blockDeviceAppearsOnCheck ?? 0;
-    writeExecutable(
-      binDir,
-      "stat",
-      `#!/usr/bin/env bash
-CMD=stat; ${logCallBash}
-fmt=""; target="\${!#}"
-while (( $# > 0 )); do
-  if [[ $1 == -c ]]; then fmt="$2"; shift 2; else shift; fi
-done
-if [[ $fmt == "%F" ]]; then
-  if (( ${appearsOnCheck} > 0 )) && [[ $target == ${JSON.stringify(poolProfileDiskDevicePath)} ]]; then
-    n=$(cat ${JSON.stringify(statChecksFile)} 2>/dev/null || echo 0)
-    n=$(( n + 1 ))
-    echo "$n" > ${JSON.stringify(statChecksFile)}
-    if (( n < ${appearsOnCheck} )); then exit 1; fi
-  fi
-  for d in ${blockDevicesSet}; do
-    if [[ $target == "$d" ]]; then echo "block special file"; exit 0; fi
+    bashEnvBlocks.push(`stat() {
+  _osp_log_call stat "$@"
+  local _fmt="" _target="\${!#}" _n _d
+  while (( $# > 0 )); do
+    if [[ $1 == -c ]]; then _fmt="$2"; shift 2; else shift; fi
   done
-  if [[ -f $target ]]; then echo "regular file"; exit 0; fi
-  if [[ -d $target ]]; then echo "directory"; exit 0; fi
-  exit 1
-fi
-if [[ $fmt == "%u" ]]; then echo 0; exit 0; fi
-if [[ $fmt == "%a" ]]; then /usr/bin/stat -f '%Lp' "$target" 2>/dev/null || echo 600; exit 0; fi
-exit 1
-`,
-    );
-    writeExecutable(
-      binDir,
-      "lsblk",
-      `#!/usr/bin/env bash
-CMD=lsblk; ${logCallBash}
-target="\${!#}"
-case "$target" in
+  if [[ $_fmt == "%F" ]]; then
+    if (( ${appearsOnCheck} > 0 )) && [[ $_target == ${JSON.stringify(poolProfileDiskDevicePath)} ]]; then
+      _n=0
+      if [[ -f ${JSON.stringify(statChecksFile)} ]]; then _n=$(< ${JSON.stringify(statChecksFile)}); fi
+      _n=$(( _n + 1 ))
+      printf '%s' "$_n" > ${JSON.stringify(statChecksFile)}
+      if (( _n < ${appearsOnCheck} )); then return 1; fi
+    fi
+    for _d in ${blockDevicesSet}; do
+      if [[ $_target == "$_d" ]]; then echo "block special file"; return 0; fi
+    done
+    if [[ -f $_target ]]; then echo "regular file"; return 0; fi
+    if [[ -d $_target ]]; then echo "directory"; return 0; fi
+    return 1
+  fi
+  if [[ $_fmt == "%u" ]]; then echo 0; return 0; fi
+  if [[ $_fmt == "%a" ]]; then
+    ${process.platform === "darwin" ? `/usr/bin/stat -f '%Lp' "$_target"` : `/usr/bin/stat -c '%a' "$_target"`}
+    return $?
+  fi
+  return 1
+}`);
+    bashEnvBlocks.push(`lsblk() {
+  _osp_log_call lsblk "$@"
+  local _target="\${!#}"
+  case "$_target" in
 ${pknameCases}
-esac
-exit 0
-`,
-    );
-    writeExecutable(
-      binDir,
-      "mountpoint",
-      `#!/usr/bin/env bash
-CMD=mountpoint; ${logCallBash}
-target="\${!#}"
-if [[ $target == ${JSON.stringify(profilesRootPath)} && -f ${JSON.stringify(mountedFile)} ]]; then exit 0; fi
-exit 1
-`,
-    );
-    writeExecutable(
-      binDir,
-      "findmnt",
-      `#!/usr/bin/env bash
-CMD=findmnt; ${logCallBash}
-col=""; target="\${!#}"
-while (( $# > 0 )); do
-  if [[ $1 == -o ]]; then col="$2"; shift 2; else shift; fi
-done
-if [[ $target == "/" && $col == SOURCE ]]; then
-  if [[ -n ${JSON.stringify(bootSrc)} ]]; then echo ${JSON.stringify(bootSrc)}; exit 0; fi
-  exit 1
-fi
-if [[ $target == ${JSON.stringify(profilesRootPath)} && -f ${JSON.stringify(mountedFile)} ]]; then
-  if [[ $col == SOURCE ]]; then cat ${JSON.stringify(mountedFile)}; exit 0; fi
-  if [[ $col == OPTIONS ]]; then echo "rw,nosuid,nodev,noatime"; exit 0; fi
-fi
-exit 1
-`,
-    );
+  esac
+  return 0
+}`);
+    bashEnvBlocks.push(`mountpoint() {
+  _osp_log_call mountpoint "$@"
+  local _target="\${!#}"
+  if [[ $_target == ${JSON.stringify(profilesRootPath)} && -f ${JSON.stringify(mountedFile)} ]]; then return 0; fi
+  return 1
+}`);
+    bashEnvBlocks.push(`findmnt() {
+  _osp_log_call findmnt "$@"
+  local _col="" _target="\${!#}"
+  while (( $# > 0 )); do
+    if [[ $1 == -o ]]; then _col="$2"; shift 2; else shift; fi
+  done
+  if [[ $_target == "/" && $_col == SOURCE ]]; then
+    if [[ -n ${JSON.stringify(bootSrc)} ]]; then echo ${JSON.stringify(bootSrc)}; return 0; fi
+    return 1
+  fi
+  if [[ $_target == ${JSON.stringify(profilesRootPath)} && -f ${JSON.stringify(mountedFile)} ]]; then
+    if [[ $_col == SOURCE ]]; then printf '%s\\n' "$(< ${JSON.stringify(mountedFile)})"; return 0; fi
+    if [[ $_col == OPTIONS ]]; then echo "rw,nosuid,nodev,noatime"; return 0; fi
+  fi
+  return 1
+}`);
     const bootCompleteFlag = join(root, "boot-complete-seen");
     const fakeArtifactSha = createHash("sha256")
       .update("fake-artifact-content", "utf8")
       .digest("hex");
-    writeExecutable(
-      binDir,
-      "sha256sum",
-      `#!/usr/bin/env bash
-CMD=sha256sum; ${logCallBash}
-if [[ " $* " == *" -c "* ]]; then
-  if [[ ${opts.realInstallHostEnv ? "1" : "0"} == "1" ]]; then
-    exit 0
+    bashEnvBlocks.push(`sha256sum() {
+  _osp_log_call sha256sum "$@"
+  local _expected _path _actual _p _h _
+  if [[ " $* " == *" -c "* ]]; then
+    if [[ ${opts.realInstallHostEnv ? "1" : "0"} == "1" ]]; then
+      return 0
+    fi
+    while read -r _expected _path; do
+      if [[ -z $_expected ]]; then continue; fi
+      ${process.platform === "darwin" ? `read -r _actual _ < <(/usr/bin/openssl dgst -sha256 -r "$_path")` : `read -r _actual _ < <(/usr/bin/sha256sum "$_path")`}
+      if [[ $_actual != "$_expected" ]]; then return 1; fi
+    done
+    return 0
   fi
-  while read -r expected path; do
-    [[ -z $expected ]] && continue
-    read -r actual _ < <(openssl dgst -sha256 -r "$path")
-    [[ $actual == "$expected" ]] || exit 1
+  for _p in "$@"; do
+    ${process.platform === "darwin" ? `read -r _h _ < <(/usr/bin/openssl dgst -sha256 -r "$_p")` : `read -r _h _ < <(/usr/bin/sha256sum "$_p")`}
+    printf '%s  %s\\n' "$_h" "$_p"
   done
-  exit 0
-fi
-for p in "$@"; do
-  read -r h _ < <(openssl dgst -sha256 -r "$p")
-  printf '%s  %s\\n' "$h" "$p"
-done
-`,
-    );
-    writeExecutable(
-      binDir,
-      "curl",
-      `#!/usr/bin/env bash
-CMD=curl; ${logCallBash}
-out_file=""; write_code=0; url="\${!#}"
-while (( $# > 0 )); do
-  case "$1" in
-    -o|--output) out_file="$2"; shift 2 ;;
-    -w) write_code=1; shift 2 ;;
-    *) shift ;;
-  esac
-done
-if [[ $url == *"/computeMetadata/v1/instance/attributes/opensteer-bootstrap-ready"* ]]; then
-  if [[ -n ${JSON.stringify(opts.metadataReadyFile ?? "")} && -f ${JSON.stringify(opts.metadataReadyFile ?? "")} ]]; then
-    cat ${JSON.stringify(opts.metadataReadyFile ?? "")}
-    exit 0
+}`);
+    bashEnvBlocks.push(`curl() {
+  _osp_log_call curl "$@"
+  local _out_file="" _write_code=0 _url="\${!#}" _host_id
+  while (( $# > 0 )); do
+    case "$1" in
+      -o|--output) _out_file="$2"; shift 2 ;;
+      -w) _write_code=1; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ $_url == *"/computeMetadata/v1/instance/attributes/opensteer-bootstrap-ready"* ]]; then
+    if [[ -n ${JSON.stringify(opts.metadataReadyFile ?? "")} && -f ${JSON.stringify(opts.metadataReadyFile ?? "")} ]]; then
+      printf '%s' "$(< ${JSON.stringify(opts.metadataReadyFile ?? "")})"
+      return 0
+    fi
+    return 22
   fi
-  exit 22
-fi
-if [[ $url == *"/pool-host-bundle.tar.gz"* && -n ${JSON.stringify(opts.curlBundleFile ?? "")} ]]; then
-  cp ${JSON.stringify(opts.curlBundleFile ?? "")} "$out_file"
-  (( write_code )) && printf '200'
-  exit 0
-fi
-if [[ $url == *"/boot-complete"* ]]; then
-  touch ${JSON.stringify(bootCompleteFlag)}
-  [[ -n $out_file ]] && printf '{"completed":true}' > "$out_file"
-  (( write_code )) && printf '200'
-  exit 0
-fi
-if [[ $url == *"/boot" ]]; then
-  if [[ ${opts.bootEndpointFailsAfterComplete ? "1" : "0"} == "1" && -f ${JSON.stringify(bootCompleteFlag)} ]]; then
-    [[ -n $out_file ]] && printf '{"error":"already enrolled"}' > "$out_file"
-    (( write_code )) && printf '401'
-    exit 0
+  if [[ $_url == *"/pool-host-bundle.tar.gz"* && -n ${JSON.stringify(opts.curlBundleFile ?? "")} ]]; then
+    /bin/cp ${JSON.stringify(opts.curlBundleFile ?? "")} "$_out_file"
+    if (( _write_code )); then printf '200'; fi
+    return 0
   fi
-  host_id=$(printf '%s' "$url" | sed -E 's|.*/hosts/([^/]+)/boot$|\\1|')
-  [[ -n $out_file ]] && cat > "$out_file" <<JSON
-{"hostId":"$host_id","generation":1,"profileDiskName":"osp-disk-test","release":{"version":"1.0.0","installerUrl":"https://releases.example.test/pool-host-bundle.tar.gz","installerSha256":"${"a".repeat(64)}","artifacts":{"agentUrl":"https://releases.example.test/agent.mjs","agentSha256":"${fakeArtifactSha}","relayUrl":"https://releases.example.test/relay.mjs","relaySha256":"${fakeArtifactSha}","rootfsUrl":"https://releases.example.test/rootfs.ext4","rootfsSha256":"${fakeArtifactSha}","kernelUrl":"https://releases.example.test/vmlinux","kernelSha256":"${fakeArtifactSha}","egressUrl":"https://releases.example.test/egress.js","egressSha256":"${fakeArtifactSha}"}}}
+  if [[ $_url == *"/boot-complete"* ]]; then
+    : > ${JSON.stringify(bootCompleteFlag)}
+    if [[ -n $_out_file ]]; then printf '{"completed":true}' > "$_out_file"; fi
+    if (( _write_code )); then printf '200'; fi
+    return 0
+  fi
+  if [[ $_url == *"/boot" ]]; then
+    if [[ ${opts.bootEndpointFailsAfterComplete ? "1" : "0"} == "1" && -f ${JSON.stringify(bootCompleteFlag)} ]]; then
+      if [[ -n $_out_file ]]; then printf '{"error":"already enrolled"}' > "$_out_file"; fi
+      if (( _write_code )); then printf '401'; fi
+      return 0
+    fi
+    _host_id=\${_url%/boot}
+    _host_id=\${_host_id##*/}
+    if [[ -n $_out_file ]]; then
+      cat > "$_out_file" <<JSON
+{"hostId":"$_host_id","generation":1,"profileDiskName":"osp-disk-test","release":{"version":"1.0.0","installerUrl":"https://releases.example.test/pool-host-bundle.tar.gz","installerSha256":"${"a".repeat(64)}","artifacts":{"agentUrl":"https://releases.example.test/agent.mjs","agentSha256":"${fakeArtifactSha}","relayUrl":"https://releases.example.test/relay.mjs","relaySha256":"${fakeArtifactSha}","rootfsUrl":"https://releases.example.test/rootfs.ext4","rootfsSha256":"${fakeArtifactSha}","kernelUrl":"https://releases.example.test/vmlinux","kernelSha256":"${fakeArtifactSha}","egressUrl":"https://releases.example.test/egress.js","egressSha256":"${fakeArtifactSha}"}}}
 JSON
-  (( write_code )) && printf '200'
-  exit 0
-fi
-[[ -n $out_file ]] && printf 'fake-artifact-content' > "$out_file"
-(( write_code )) && printf '200'
-exit 0
-`,
-    );
+    fi
+    if (( _write_code )); then printf '200'; fi
+    return 0
+  fi
+  if [[ -n $_out_file ]]; then printf 'fake-artifact-content' > "$_out_file"; fi
+  if (( _write_code )); then printf '200'; fi
+  return 0
+}`);
 
     const blkidCallsFile = join(root, "blkid-calls");
     const blkidOut1File = join(root, "blkid-out-1");
@@ -594,116 +552,96 @@ exit 0
     writeFileSync(wipefsRc2File, String(opts.secondWipefsRc ?? opts.wipefsRc ?? 0), "utf8");
     writeFileSync(systemctlRcFile, String(opts.systemctlRc ?? 0), "utf8");
 
-    writeExecutable(
-      binDir,
-      "blkid",
-      `#!/usr/bin/env bash
-CMD=blkid; ${logCallBash}
-n=$(< ${JSON.stringify(blkidCallsFile)})
-n=$(( n + 1 ))
-printf '%s' "$n" > ${JSON.stringify(blkidCallsFile)}
-if (( n == 1 )); then
-  out_f=${JSON.stringify(blkidOut1File)}; rc_f=${JSON.stringify(blkidRc1File)}
-else
-  out_f=${JSON.stringify(blkidOut2File)}; rc_f=${JSON.stringify(blkidRc2File)}
-fi
-if [[ -s $out_f ]]; then
-  printf '%s\\n' "$(< "$out_f")"
-fi
-exit "$(< "$rc_f")"
-`,
-    );
-    writeExecutable(
-      binDir,
-      "wipefs",
-      `#!/usr/bin/env bash
-CMD=wipefs; ${logCallBash}
-if [[ " $* " == *" -n "* ]]; then
-  n=$(< ${JSON.stringify(wipefsCallsFile)})
-  n=$(( n + 1 ))
-  printf '%s' "$n" > ${JSON.stringify(wipefsCallsFile)}
-  if (( n == 1 )); then
-    out_f=${JSON.stringify(wipefsOut1File)}; rc_f=${JSON.stringify(wipefsRc1File)}
+    bashEnvBlocks.push(`blkid() {
+  _osp_log_call blkid "$@"
+  local _n _out_f _rc_f
+  _n=$(< ${JSON.stringify(blkidCallsFile)})
+  _n=$(( _n + 1 ))
+  printf '%s' "$_n" > ${JSON.stringify(blkidCallsFile)}
+  if (( _n == 1 )); then
+    _out_f=${JSON.stringify(blkidOut1File)}; _rc_f=${JSON.stringify(blkidRc1File)}
   else
-    out_f=${JSON.stringify(wipefsOut2File)}; rc_f=${JSON.stringify(wipefsRc2File)}
+    _out_f=${JSON.stringify(blkidOut2File)}; _rc_f=${JSON.stringify(blkidRc2File)}
   fi
-  if [[ -s $out_f ]]; then
-    printf '%s\\n' "$(< "$out_f")"
+  if [[ -s $_out_f ]]; then
+    printf '%s\\n' "$(< "$_out_f")"
   fi
-  exit "$(< "$rc_f")"
-fi
-exit 0
-`,
-    );
-    writeExecutable(
-      binDir,
-      "mount",
-      `#!/usr/bin/env bash
-CMD=mount; ${logCallBash}
-if (( ${opts.mountRc ?? 0} != 0 )); then exit ${opts.mountRc ?? 0}; fi
-args=("$@")
-src="\${args[\${#args[@]}-2]:-}"
-target="\${args[\${#args[@]}-1]:-}"
-if [[ $target == ${JSON.stringify(profilesRootPath)} ]]; then
-  printf '%s' "$src" > ${JSON.stringify(mountedFile)}
-fi
-exit 0
-`,
-    );
+  return "$(< "$_rc_f")"
+}`);
+    bashEnvBlocks.push(`wipefs() {
+  _osp_log_call wipefs "$@"
+  local _n _out_f _rc_f
+  if [[ " $* " == *" -n "* ]]; then
+    _n=$(< ${JSON.stringify(wipefsCallsFile)})
+    _n=$(( _n + 1 ))
+    printf '%s' "$_n" > ${JSON.stringify(wipefsCallsFile)}
+    if (( _n == 1 )); then
+      _out_f=${JSON.stringify(wipefsOut1File)}; _rc_f=${JSON.stringify(wipefsRc1File)}
+    else
+      _out_f=${JSON.stringify(wipefsOut2File)}; _rc_f=${JSON.stringify(wipefsRc2File)}
+    fi
+    if [[ -s $_out_f ]]; then
+      printf '%s\\n' "$(< "$_out_f")"
+    fi
+    return "$(< "$_rc_f")"
+  fi
+  return 0
+}`);
+    bashEnvBlocks.push(`mount() {
+  _osp_log_call mount "$@"
+  if (( ${opts.mountRc ?? 0} != 0 )); then return ${opts.mountRc ?? 0}; fi
+  local -a _args=("$@")
+  local _src="\${_args[\${#_args[@]}-2]:-}"
+  local _target="\${_args[\${#_args[@]}-1]:-}"
+  if [[ $_target == ${JSON.stringify(profilesRootPath)} ]]; then
+    printf '%s' "$_src" > ${JSON.stringify(mountedFile)}
+  fi
+  return 0
+}`);
     const tokenFileCheck = opts.tokenFile ?? "";
-    writeExecutable(
-      binDir,
-      "systemctl",
-      `#!/usr/bin/env bash
-tok_exists="false"
-if [[ -n ${JSON.stringify(tokenFileCheck)} && -e ${JSON.stringify(tokenFileCheck)} ]]; then tok_exists="true"; fi
-printf '{"cmd":"systemctl","args":[' >> ${JSON.stringify(callsFile)}
-first=1
-for a in "$@"; do
-  a=\${a//\\\\/\\\\\\\\}; a=\${a//\\"/\\\\\\"}
-  [[ $first == 1 ]] && first=0 || printf ',' >> ${JSON.stringify(callsFile)}
-  printf '"%s"' "$a" >> ${JSON.stringify(callsFile)}
-done
-if [[ -n ${JSON.stringify(tokenFileCheck)} ]]; then
-  printf '],"tokenExistsAtCall":%s}\\n' "$tok_exists" >> ${JSON.stringify(callsFile)}
-else
-  printf ']}\\n' >> ${JSON.stringify(callsFile)}
-fi
-exit "$(cat ${JSON.stringify(systemctlRcFile)})"
-`,
-    );
-    writeExecutable(
-      binDir,
-      "mkfs.ext4",
-      `#!/usr/bin/env bash
-IFS= read -r -d '' stdin_data || true
-stdin_esc=\${stdin_data//\\\\/\\\\\\\\}
-stdin_esc=\${stdin_esc//\\"/\\\\\\"}
-stdin_esc=\${stdin_esc//$'\\n'/\\\\n}
-stdin_esc=\${stdin_esc//$'\\r'/\\\\r}
-printf '{"cmd":"mkfs.ext4","args":[' >> ${JSON.stringify(callsFile)}
-first=1
-for a in "$@"; do
-  a=\${a//\\\\/\\\\\\\\}; a=\${a//\\"/\\\\\\"}
-  [[ $first == 1 ]] && first=0 || printf ',' >> ${JSON.stringify(callsFile)}
-  printf '"%s"' "$a" >> ${JSON.stringify(callsFile)}
-done
-printf '],"stdin":"%s"}\\n' "$stdin_esc" >> ${JSON.stringify(callsFile)}
-rc=${opts.mkfsRc ?? 0}
-if (( rc == 0 )); then
-  label=""
-  prev=""
-  for a in "$@"; do
-    if [[ $prev == -L ]]; then label="$a"; fi
-    prev="$a"
+    bashEnvBlocks.push(`systemctl() {
+  local _tok_exists="false" _l='{"cmd":"systemctl","args":[' _f=1 _a
+  if [[ -n ${JSON.stringify(tokenFileCheck)} && -e ${JSON.stringify(tokenFileCheck)} ]]; then _tok_exists="true"; fi
+  for _a in "$@"; do
+    _a=\${_a//\\\\/\\\\\\\\}; _a=\${_a//\\"/\\\\\\"}
+    if [[ $_f == 1 ]]; then _f=0; else _l+=,; fi
+    _l+="\\"$_a\\""
   done
-  dev="\${!#}"
-  printf 'DEVNAME=%s\\nLABEL=%s\\nTYPE=ext4\\nUSAGE=filesystem\\n' "$dev" "$label" > ${JSON.stringify(blkidOut2File)}
-  printf '0' > ${JSON.stringify(blkidRc2File)}
-fi
-exit "$rc"
-`,
-    );
+  if [[ -n ${JSON.stringify(tokenFileCheck)} ]]; then
+    printf '%s],"tokenExistsAtCall":%s}\\n' "$_l" "$_tok_exists" >> ${JSON.stringify(callsFile)}
+  else
+    printf '%s]}\\n' "$_l" >> ${JSON.stringify(callsFile)}
+  fi
+  return "$(< ${JSON.stringify(systemctlRcFile)})"
+}`);
+    bashEnvBlocks.push(`mkfs.ext4() {
+  local _stdin_data="" _stdin_esc _l='{"cmd":"mkfs.ext4","args":[' _f=1 _a _rc=${opts.mkfsRc ?? 0} _label="" _prev="" _dev
+  IFS= read -r -d '' _stdin_data || true
+  _stdin_esc=\${_stdin_data//\\\\/\\\\\\\\}
+  _stdin_esc=\${_stdin_esc//\\"/\\\\\\"}
+  _stdin_esc=\${_stdin_esc//$'\\n'/\\\\n}
+  _stdin_esc=\${_stdin_esc//$'\\r'/\\\\r}
+  for _a in "$@"; do
+    _a=\${_a//\\\\/\\\\\\\\}; _a=\${_a//\\"/\\\\\\"}
+    if [[ $_f == 1 ]]; then _f=0; else _l+=,; fi
+    _l+="\\"$_a\\""
+  done
+  printf '%s],"stdin":"%s"}\\n' "$_l" "$_stdin_esc" >> ${JSON.stringify(callsFile)}
+  if (( _rc == 0 )); then
+    for _a in "$@"; do
+      if [[ $_prev == -L ]]; then _label="$_a"; fi
+      _prev="$_a"
+    done
+    _dev="\${!#}"
+    printf 'DEVNAME=%s\\nLABEL=%s\\nTYPE=ext4\\nUSAGE=filesystem\\n' "$_dev" "$_label" > ${JSON.stringify(blkidOut2File)}
+    printf '0' > ${JSON.stringify(blkidRc2File)}
+  fi
+  return "$_rc"
+}`);
+    writeFileSync(bashEnvFile, `${bashEnvBlocks.join("\n")}\n`, "utf8");
+    const override = (name: string, body: string) => {
+      appendFileSync(bashEnvFile, `${name}() {\n${body}\n}\n`, "utf8");
+    };
 
     // Copy enroll-host.sh (and optionally real or stub setup-host.sh) into bundleDir.
     const bundledEnroll = join(bundleDir, "enroll-host.sh");
@@ -711,10 +649,24 @@ exit "$rc"
     const bundledSetup = join(bundleDir, "setup-host.sh");
     if (opts.setupInstallStub) {
       // Stub setup-host.sh that delegates verify-profiles-mount / boot to real checks, while making `install` fast & key-generating.
+      const stubKeysDir = join(root, "stub-keys");
+      mkdirSync(stubKeysDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(stubKeysDir, "host-key.pem"), pregeneratedHostKey.privatePem, {
+        mode: 0o600,
+      });
+      writeFileSync(join(stubKeysDir, "host-key.pub"), pregeneratedHostKey.publicPem, {
+        mode: 0o644,
+      });
+      writeFileSync(join(stubKeysDir, "relay-key.pem"), pregeneratedRelayKey.privatePem, {
+        mode: 0o600,
+      });
+      writeFileSync(join(stubKeysDir, "relay-key.pub"), pregeneratedRelayKey.publicPem, {
+        mode: 0o644,
+      });
       writeExecutable(
         bundleDir,
         "setup-host.sh",
-        `#!/usr/bin/env bash
+        `#!/bin/bash
 set -euo pipefail
 case "\${1:-}" in
   install)
@@ -722,12 +674,14 @@ case "\${1:-}" in
     cp "$0" "${optDir}/setup-host.sh"
     chmod 0755 "${optDir}/setup-host.sh"
     if [[ ! -f "${etcDir}/host-key.pem" ]]; then
-      openssl genpkey -algorithm ed25519 -out "${etcDir}/host-key.pem" 2>/dev/null
-      openssl pkey -in "${etcDir}/host-key.pem" -pubout -out "${etcDir}/host-key.pub" 2>/dev/null
+      cp "${stubKeysDir}/host-key.pem" "${etcDir}/host-key.pem"
+      cp "${stubKeysDir}/host-key.pub" "${etcDir}/host-key.pub"
+      chmod 0600 "${etcDir}/host-key.pem"
     fi
     if [[ ! -f "${etcDir}/relay-key.pem" ]]; then
-      openssl genpkey -algorithm ed25519 -out "${etcDir}/relay-key.pem" 2>/dev/null
-      openssl pkey -in "${etcDir}/relay-key.pem" -pubout -out "${relayEtcDir}/relay-key.pub" 2>/dev/null
+      cp "${stubKeysDir}/relay-key.pem" "${etcDir}/relay-key.pem"
+      cp "${stubKeysDir}/relay-key.pub" "${relayEtcDir}/relay-key.pub"
+      chmod 0600 "${etcDir}/relay-key.pem"
     fi
     cat > "${etcDir}/host.env" <<EOF
 OSP_HOME_CIDR=\${OSP_HOME_CIDR:-}
@@ -743,10 +697,10 @@ EOF
     chmod 0600 "${etcDir}/host.env"
     ;;
   boot)
-    exec bash "${setupScript}" verify-profiles-mount
+    exec /bin/bash "${setupScript}" verify-profiles-mount
     ;;
   verify-profiles-mount|wait-profile-disk|parent-whole-disk)
-    exec bash "${setupScript}" "$@"
+    exec /bin/bash "${setupScript}" "$@"
     ;;
   *)
     exit 0
@@ -782,6 +736,7 @@ esac
 
     const env: Record<string, string> = {
       PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin"}`,
+      BASH_ENV: bashEnvFile,
       OSP_OPT_DIR: optDir,
       OSP_STATE_DIR: stateDir,
       OSP_ARRAY_DIR: arrayDir,
@@ -805,6 +760,8 @@ esac
     return {
       root,
       binDir,
+      override,
+      mountedFile,
       optDir,
       stateDir,
       arrayDir,
@@ -1201,6 +1158,61 @@ esac
       expect(existsSync(ciUserData)).toBe(true);
     });
 
+    it("PH4: checks systemctl is-active --quiet for both units before scrubbing the bootstrap token and cloud-init user-data", () => {
+      const specDir = makeTempDir();
+      const specPath = join(specDir, "boot.json");
+      const tokenPath = join(specDir, "token");
+      writeFileSync(specPath, JSON.stringify(makeBootSpec({ everEnrolled: false }, true)), {
+        mode: 0o600,
+      });
+      writeFileSync(tokenPath, "t".repeat(43), { mode: 0o600 });
+
+      const h = createFakeHostEnv({
+        blkidRc: 2,
+        blkidOut: "",
+        wipefsRc: 0,
+        wipefsOut: "",
+        systemctlRc: 0,
+        tokenFile: tokenPath,
+        setupInstallStub: true,
+      });
+      // Type=simple units can exit immediately after `systemctl enable --now` returns 0:
+      // `enable --now` succeeds (rc 0), while `is-active` reports inactive/failed (rc 3) for the relay unit.
+      h.override(
+        "systemctl",
+        `  _osp_log_call systemctl "$@"
+  if [[ \${1:-} == is-active ]]; then
+    for _arg in "$@"; do
+      if [[ $_arg == opensteer-pool-relay.service ]]; then return 3; fi
+    done
+  fi
+  return 0`,
+      );
+      const ciUserData = join(h.cloudInitDir, "user-data.txt");
+      writeFileSync(ciUserData, "#cloud-config\nsecret-token", { mode: 0o600 });
+
+      const res = runScript(
+        h.bundledEnroll,
+        [
+          "--boot-spec",
+          specPath,
+          "--bootstrap-token-file",
+          tokenPath,
+          "--profiles-root",
+          join(h.stateDir, "profiles"),
+          "--credentials-root",
+          join(h.etcDir, "credentials"),
+        ],
+        h.env,
+        "y\ny\n",
+      );
+      expect(res.status).not.toBe(0);
+      const calls = h.readCalls().filter((c) => c.cmd === "systemctl");
+      expect(calls.some((c) => c.args.includes("is-active"))).toBe(true);
+      expect(existsSync(tokenPath)).toBe(true);
+      expect(existsSync(ciUserData)).toBe(true);
+    });
+
     const refusalHostA = "ph_11111111-1111-4111-8111-111111111111";
     const refusalLabelB = hostProfileDiskLabel("ph_22222222-2222-4222-8222-222222222222");
     it.each<readonly [string, boolean, FakeHostHarnessOptions]>([
@@ -1321,16 +1333,14 @@ esac
           .replace("[[ -c $KVM_DEV ]]", "[[ -e $KVM_DEV ]]"),
         { mode: 0o755 },
       );
-      writeExecutable(
-        h.binDir,
+      h.override(
         "rm",
-        `#!/usr/bin/env bash
-clean=()
-for a in "$@"; do [[ $a == --one-file-system ]] || clean+=("$a"); done
-exec /bin/rm "\${clean[@]}"
-`,
+        `  local -a _clean=()
+  local _a
+  for _a in "$@"; do if [[ $_a != --one-file-system ]]; then _clean+=("$_a"); fi; done
+  if (( \${#_clean[@]} > 0 )); then /bin/rm "\${_clean[@]}"; fi`,
       );
-      writeExecutable(h.binDir, "nproc", "#!/usr/bin/env bash\necho 8\n");
+      h.override("nproc", "  echo 8");
       const res = runScript(macSetupCopy, ["install"], {
         ...h.env,
         OSP_HOME_CIDR: "10.40.0.0/20",
@@ -1575,25 +1585,22 @@ exec /bin/rm "\${clean[@]}"
         );
 
         // Make saved_state_array see $ARRAY already mounted (we test mount_profile_disk + boot path here).
-        const mpPath = join(h.binDir, "mountpoint");
-        const existingMp = readFileSync(mpPath, "utf8");
-        writeFileSync(
-          mpPath,
-          existingMp.replace(
-            'if [[ -f "$MOUNT_STATE" ]]; then',
-            `if [[ "$target" == ${JSON.stringify(h.arrayDir)} ]]; then exit 0; fi\nif [[ -f "$MOUNT_STATE" ]]; then`,
-          ),
-          { mode: 0o755 },
+        h.override(
+          "mountpoint",
+          `  _osp_log_call mountpoint "$@"
+  local _target="\${!#}"
+  if [[ $_target == ${JSON.stringify(h.arrayDir)} ]]; then return 0; fi
+  if [[ $_target == ${JSON.stringify(join(h.stateDir, "profiles"))} && -f ${JSON.stringify(h.mountedFile)} ]]; then return 0; fi
+  return 1`,
         );
         // Handle `sed -i` cleanly across macOS BSD sed vs GNU sed in kernel_settings.
-        writeExecutable(
-          h.binDir,
-          "sed",
-          `#!/usr/bin/env bash
-if [[ $1 == -i ]]; then shift; exec /usr/bin/sed -i '' "$@"; fi
-exec /usr/bin/sed "$@"
-`,
-        );
+        if (process.platform === "darwin") {
+          h.override(
+            "sed",
+            `  if [[ \${1:-} == -i ]]; then shift; /usr/bin/sed -i '' "$@"; return $?; fi
+  /usr/bin/sed "$@"`,
+          );
+        }
 
         let text = readFileSync(setupScript, "utf8")
           .replace(
@@ -1650,7 +1657,8 @@ exec /usr/bin/sed "$@"
       const bootCopy = prepareBootTest(hAppears);
       const resAppears = runScript(bootCopy, ["boot"], {
         ...hAppears.env,
-        OSP_PROFILE_DISK_WAIT_SECONDS: "5",
+        OSP_PROFILE_DISK_WAIT_SECONDS: "1",
+        OSP_PROFILE_DISK_POLL_SECONDS: "0.02",
       });
       expect(resAppears.status, resAppears.stderr).toBe(0);
       const appearsCalls = hAppears.readCalls();
@@ -1675,47 +1683,186 @@ exec /usr/bin/sed "$@"
       const mutatedCopy = prepareBootTest(hMutated, true);
       const resMutated = runScript(mutatedCopy, ["boot"], {
         ...hMutated.env,
-        OSP_PROFILE_DISK_WAIT_SECONDS: "5",
+        OSP_PROFILE_DISK_WAIT_SECONDS: "1",
+        OSP_PROFILE_DISK_POLL_SECONDS: "0.02",
       });
       expect(resMutated.status).not.toBe(0);
       expect(hMutated.readCalls().some((c) => c.cmd === "mount")).toBe(false);
 
-      // Case 2 (J2 + J6): device NEVER appears, OSP_PROFILE_DISK_WAIT_SECONDS=2 with a slow 1s udevadm settle ->
-      // bounded by elapsed time (does not overshoot into 2 * (1s + 1s) = 4s!), non-zero exit, NO mount call.
+      // Case 2 (J2 + J6): device NEVER appears, OSP_PROFILE_DISK_WAIT_SECONDS=0.2, POLL=0.05 with a 0.1s udevadm settle ->
+      // bounded by elapsed time (does not multiply into 4+ iterations), non-zero exit, NO mount call.
       const hNever = createFakeHostEnv({
         blockDeviceAppearsOnCheck: 9999,
         blkidRc: 2,
         blkidOut: "",
         realInstallHostEnv: true,
       });
-      // Replace udevadm with a 1s-slow stand-in to prove the wait is bounded by elapsed wall time (J6).
-      writeExecutable(
-        hNever.binDir,
+      // Replace udevadm with a 0.1s-slow stand-in to prove the wait is bounded by elapsed wall time (J6).
+      hNever.override(
         "udevadm",
-        `#!/usr/bin/env bash
-python3 -c 'import json,os,sys; open(os.environ["OSP_TEST_CALLS"],"a").write(json.dumps({"cmd":"udevadm","args":sys.argv[1:]})+"\\n")' "$@"
-sleep 1
-exit 0
-`,
+        `  _osp_log_call udevadm "$@"
+  sleep 0.1
+  return 0`,
       );
       const bootNeverCopy = prepareBootTest(hNever);
       const t0 = Date.now();
       const resNever = runScript(bootNeverCopy, ["boot"], {
         ...hNever.env,
         OSP_TEST_CALLS: join(hNever.root, "calls.jsonl"),
-        OSP_PROFILE_DISK_WAIT_SECONDS: "2",
+        OSP_PROFILE_DISK_WAIT_SECONDS: "0.2",
+        OSP_PROFILE_DISK_POLL_SECONDS: "0.05",
       });
       const elapsedMs = Date.now() - t0;
       expect(resNever.status).not.toBe(0);
-      expect(resNever.stderr).toMatch(/did not appear as a block device after \d+s \(limit 2s\)/u);
+      expect(resNever.stderr).toMatch(
+        /did not appear as a block device after \d+(?:\.\d+)?s \(limit 0\.2s\)/u,
+      );
       expect(
         elapsedMs,
-        `wait must be bounded by elapsed time (~2s), took ${elapsedMs}ms`,
-      ).toBeLessThan(3500);
+        `wait must be bounded by elapsed time (~0.2s), took ${elapsedMs}ms`,
+      ).toBeLessThan(900);
       expect(
         hNever.readCalls().some((c) => c.cmd === "mount"),
         "must not attempt mount when durable profile disk never appears",
       ).toBe(false);
+    });
+
+    it("real-host proof: setup-host.sh boot never calls systemctl daemon-reexec (which severs D-Bus during systemctl enable --now), while install re-execs only when systemd drop-ins change", () => {
+      const labelA = hostProfileDiskLabel("ph_11111111-1111-4111-8111-111111111111");
+      const makeKernelSettingsHarness = () => {
+        const h = createFakeHostEnv({
+          blockDeviceAppearsOnCheck: 1,
+          blkidRc: 0,
+          blkidOut: `DEVNAME=/dev/sdb\nLABEL=${labelA}\nTYPE=ext4\nUSAGE=filesystem`,
+          realInstallHostEnv: true,
+        });
+        const fakeSys = join(h.root, "sys");
+        const fakeEtc = join(h.root, "etc");
+        mkdirSync(join(fakeSys, "vulns"), { recursive: true });
+        writeFileSync(join(fakeSys, "kvm"), "");
+        writeFileSync(join(fakeSys, "cgroup.controllers"), "cpu memory pids\n");
+        writeFileSync(join(fakeSys, "smt-active"), "0\n");
+        mkdirSync(join(fakeSys, "thp"), { recursive: true });
+        mkdirSync(join(fakeSys, "ksm"), { recursive: true });
+        mkdirSync(join(fakeEtc, "sysctl.d"), { recursive: true });
+        mkdirSync(join(fakeEtc, "systemd/coredump.conf.d"), { recursive: true });
+        mkdirSync(join(fakeEtc, "systemd/system.conf.d"), { recursive: true });
+        writeFileSync(join(fakeSys, "thp/enabled"), "[madvise]\n");
+        writeFileSync(join(fakeSys, "thp/defrag"), "[madvise]\n");
+        writeFileSync(join(fakeEtc, "fstab"), "# test fstab\n");
+        writeFileSync(join(fakeEtc, "nftables.conf"), "#!/usr/sbin/nft -f\n");
+
+        writeFileSync(
+          join(h.etcDir, "host.env"),
+          [
+            `OSP_LOCAL_SSDS=/dev/null/none`,
+            `OSP_HOME_CIDR=10.40.0.0/20`,
+            `OSP_PROVISIONER_CIDR=10.50.0.0/24`,
+            `OSP_AGENT_PORT=7310`,
+            `OSP_ADMIN_PORT=7311`,
+            `OSP_RELAY_PORT=7312`,
+            `OSP_PROFILES_ROOT=${join(h.stateDir, "profiles")}`,
+            `OSP_EGRESS_SLICE_MIB=1536`,
+            `OSP_SKIP_DEFAULT_KERNEL=1`,
+            `OSP_REQUIRE_PROFILE_DISK=1`,
+            `OSP_PROFILE_DISK=${poolProfileDiskDevicePath}`,
+            `OSP_PROFILE_DISK_LABEL=${labelA}`,
+            "",
+          ].join("\n"),
+          { mode: 0o600 },
+        );
+
+        h.override(
+          "mountpoint",
+          `  _osp_log_call mountpoint "$@"
+  local _target="\${!#}"
+  if [[ $_target == ${JSON.stringify(h.arrayDir)} ]]; then return 0; fi
+  if [[ $_target == ${JSON.stringify(join(h.stateDir, "profiles"))} && -f ${JSON.stringify(h.mountedFile)} ]]; then return 0; fi
+  return 1`,
+        );
+        if (process.platform === "darwin") {
+          h.override(
+            "sed",
+            `  if [[ \${1:-} == -i ]]; then shift; /usr/bin/sed -i '' "$@"; return $?; fi
+  /usr/bin/sed "$@"`,
+          );
+        }
+
+        const text = readFileSync(setupScript, "utf8")
+          .replace(
+            /^readonly KVM_DEV=.*$/mu,
+            `readonly KVM_DEV=${JSON.stringify(join(fakeSys, "kvm"))}`,
+          )
+          .replace(
+            /^readonly CGROUP_CONTROLLERS=.*$/mu,
+            `readonly CGROUP_CONTROLLERS=${JSON.stringify(join(fakeSys, "cgroup.controllers"))}`,
+          )
+          .replace(
+            /^readonly SMT_ACTIVE=.*$/mu,
+            `readonly SMT_ACTIVE=${JSON.stringify(join(fakeSys, "smt-active"))}`,
+          )
+          .replace(
+            /^readonly CPU_VULNS_DIR=.*$/mu,
+            `readonly CPU_VULNS_DIR=${JSON.stringify(join(fakeSys, "vulns"))}`,
+          )
+          .replace("[[ -c $KVM_DEV ]]", "[[ -e $KVM_DEV ]]")
+          .replaceAll("/sys/kernel/mm/transparent_hugepage", join(fakeSys, "thp"))
+          .replaceAll("/sys/kernel/mm/ksm", join(fakeSys, "ksm"))
+          .replaceAll("/etc/fstab", join(fakeEtc, "fstab"))
+          .replaceAll("/etc/sysctl.d", join(fakeEtc, "sysctl.d"))
+          .replaceAll("/etc/systemd/coredump.conf.d", join(fakeEtc, "systemd/coredump.conf.d"))
+          .replaceAll("/etc/systemd/system.conf.d", join(fakeEtc, "systemd/system.conf.d"))
+          .replaceAll("/etc/nftables.conf", join(fakeEtc, "nftables.conf"))
+          .replace(
+            "    check)\n        check\n        ;;",
+            "    check)\n        check\n        ;;\n    test-install-kernel-settings)\n        CMD=install\n        kernel_settings\n        ;;",
+          );
+        const copyPath = join(h.root, "setup-host-reexec.sh");
+        writeFileSync(copyPath, text, { mode: 0o755 });
+        return { h, copyPath, fakeEtc };
+      };
+
+      // 1. `setup-host.sh boot` writes the systemd drop-ins but must NEVER run `systemctl daemon-reexec`.
+      const bootHarness = makeKernelSettingsHarness();
+      const bootRes = runScript(bootHarness.copyPath, ["boot"], bootHarness.h.env);
+      expect(bootRes.status, bootRes.stderr).toBe(0);
+      expect(
+        readFileSync(
+          join(bootHarness.fakeEtc, "systemd/system.conf.d/opensteer-pool.conf"),
+          "utf8",
+        ),
+      ).toContain("DefaultLimitCORE=0");
+      expect(
+        bootHarness.h
+          .readCalls()
+          .some((c) => c.cmd === "systemctl" && c.args.includes("daemon-reexec")),
+        "setup-host.sh boot must not call systemctl daemon-reexec",
+      ).toBe(false);
+
+      // 2. `setup-host.sh install` calls `systemctl daemon-reexec` once when drop-ins change, and
+      //    does not re-exec again on an idempotent re-run when the files are unchanged.
+      const installHarness = makeKernelSettingsHarness();
+      const firstInstall = runScript(
+        installHarness.copyPath,
+        ["test-install-kernel-settings"],
+        installHarness.h.env,
+      );
+      expect(firstInstall.status, firstInstall.stderr).toBe(0);
+      const reexecCountAfterFirst = installHarness.h
+        .readCalls()
+        .filter((c) => c.cmd === "systemctl" && c.args.includes("daemon-reexec")).length;
+      expect(reexecCountAfterFirst).toBe(1);
+
+      const secondInstall = runScript(
+        installHarness.copyPath,
+        ["test-install-kernel-settings"],
+        installHarness.h.env,
+      );
+      expect(secondInstall.status, secondInstall.stderr).toBe(0);
+      const reexecCountAfterSecond = installHarness.h
+        .readCalls()
+        .filter((c) => c.cmd === "systemctl" && c.args.includes("daemon-reexec")).length;
+      expect(reexecCountAfterSecond).toBe(1);
     });
 
     it("Z4(c) + Z11: rendered download script rejects wrong SHA-256 before tar AND refuses any symlink inside the extracted bundle before running enroll-host.sh", () => {
@@ -1735,10 +1882,10 @@ exit 0
       mkdirSync(stageDir, { recursive: true });
       writeFileSync(
         join(stageDir, "enroll-host.sh"),
-        `#!/usr/bin/env bash\necho ran > ${JSON.stringify(markerPath)}\n`,
+        `#!/bin/bash\necho ran > ${JSON.stringify(markerPath)}\n`,
         { mode: 0o755 },
       );
-      writeFileSync(join(stageDir, "setup-host.sh"), "#!/usr/bin/env bash\nexit 0\n", {
+      writeFileSync(join(stageDir, "setup-host.sh"), "#!/bin/bash\nexit 0\n", {
         mode: 0o755,
       });
       const goodBundle = join(workDir, "good-bundle.tar.gz");
@@ -1766,10 +1913,10 @@ exit 0
       );
       const hWrongHash = createFakeHostEnv({ curlBundleFile: goodBundle });
       const tarLog = join(workDir, "tar-ran");
-      writeExecutable(
-        hWrongHash.binDir,
+      hWrongHash.override(
         "tar",
-        `#!/usr/bin/env bash\necho tar >> ${JSON.stringify(tarLog)}\nexec /usr/bin/tar "$@"\n`,
+        `  echo tar >> ${JSON.stringify(tarLog)}
+  /usr/bin/tar "$@"`,
       );
       const wrongScriptPath = join(workDir, "download-wrong-hash.sh");
       const rawWrongScript = extractDownloadScript(wrongHashUserData)
@@ -1852,7 +1999,7 @@ exit 0
         false,
       );
       const hFindFail = createFakeHostEnv({ curlBundleFile: goodBundle });
-      writeExecutable(hFindFail.binDir, "find", "#!/usr/bin/env bash\nexit 1\n");
+      hFindFail.override("find", "  return 1");
       const findFailScriptPath = join(workDir, "download-find-fail.sh");
       const rawFindFailScript = extractDownloadScript(findFailUserData)
         .replaceAll("/root/opensteer-pool-bundle.", `${workDir}/find-bundle.`)
@@ -1926,17 +2073,15 @@ exit 0
       // Remove pre-staged node binary so install_binaries runs the node unpack branch (hitting all 3 rm calls).
       execFileSync("/bin/rm", ["-rf", join(hRm.optDir, "node")]);
       // Install a recording rm stand-in that strips --one-file-system before invoking /bin/rm.
-      writeExecutable(
-        hRm.binDir,
+      hRm.override(
         "rm",
-        `#!/usr/bin/env bash
-python3 -c 'import json,os,sys; open(os.environ["OSP_TEST_CALLS"],"a").write(json.dumps({"cmd":"rm","args":sys.argv[1:]})+"\\n")' "$@"
-clean=()
-for a in "$@"; do [[ $a == --one-file-system ]] || clean+=("$a"); done
-exec /bin/rm "\${clean[@]}"
-`,
+        `  _osp_log_call rm "$@"
+  local -a _clean=()
+  local _a
+  for _a in "$@"; do if [[ $_a != --one-file-system ]]; then _clean+=("$_a"); fi; done
+  if (( \${#_clean[@]} > 0 )); then /bin/rm "\${_clean[@]}"; fi`,
       );
-      writeExecutable(hRm.binDir, "nproc", "#!/usr/bin/env bash\necho 8\n");
+      hRm.override("nproc", "  echo 8");
       runScript(copyPath, ["install"], {
         ...hRm.env,
         OSP_TEST_CALLS: join(hRm.root, "calls.jsonl"),
@@ -1988,16 +2133,14 @@ exec /bin/rm "\${clean[@]}"
           .replace("[[ -c $KVM_DEV ]]", "[[ -e $KVM_DEV ]]"),
         { mode: 0o755 },
       );
-      writeExecutable(
-        hNoNproc.binDir,
+      hNoNproc.override(
         "rm",
-        `#!/usr/bin/env bash
-clean=()
-for a in "$@"; do [[ $a == --one-file-system ]] || clean+=("$a"); done
-exec /bin/rm "\${clean[@]}"
-`,
+        `  local -a _clean=()
+  local _a
+  for _a in "$@"; do if [[ $_a != --one-file-system ]]; then _clean+=("$_a"); fi; done
+  if (( \${#_clean[@]} > 0 )); then /bin/rm "\${_clean[@]}"; fi`,
       );
-      writeExecutable(hNoNproc.binDir, "nproc", "#!/usr/bin/env bash\nexit 127\n");
+      hNoNproc.override("nproc", "  return 127");
       const noNprocRes = runScript(copyPath, ["install"], {
         ...hNoNproc.env,
         OSP_PROFILE_DISK: poolProfileDiskDevicePath,
@@ -2472,7 +2615,7 @@ exec /bin/rm "\${clean[@]}"
       const outsideSetup = join(dir, "outside-setup.sh");
       writeFileSync(specPath, JSON.stringify(makeBootSpec({}, true)), { mode: 0o600 });
       writeFileSync(tokenPath, "t".repeat(43), { mode: 0o600 });
-      writeFileSync(outsideSetup, "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+      writeFileSync(outsideSetup, "#!/bin/bash\nexit 0\n", { mode: 0o755 });
       const outsideRes = runScript(
         h.bundledEnroll,
         [
