@@ -46,7 +46,26 @@ try {
       // The ten native phases, each ended as it should (the crash phase by SIGKILL) with passing evidence.
       const value = local("results.json");
       assert.equal(value.passed, true);
-      assert.equal(value.phases.length, 10);
+      // The smoke's own nativeProfileSmokePhases, in order.
+      assert.deepEqual(
+        value.phases.map((phase) => phase.phase),
+        [
+          "native-create",
+          "native-quit-reopen",
+          "native-update-reopen",
+          "native-crash",
+          "native-crash-reopen",
+          "native-network",
+          "native-logout",
+          "native-logout-reopen",
+          "native-clear",
+          "native-clear-reopen",
+        ],
+      );
+      assert.equal(
+        value.phases.find((phase) => phase.phase === "native-crash").exit.signal,
+        "SIGKILL",
+      );
       assert(
         value.phases.every(
           (phase) =>

@@ -63,7 +63,7 @@ it("rejects early success without result evidence and records smoke failures", (
 it("requires every folded smoke in order under the explicit journey output", () => {
   const out = mkdtempSync(path.join(tmpdir(), "journey-evidence-"));
   // What the dispatcher runs, in its order: the aggregate must expect exactly that.
-  const smokes = /for smoke in ([\w -]+); do/
+  const smokes = /for smoke in \$\{OPENSTEER_ELECTRON_SMOKES:-([\w -]+)\}; do/
     .exec(readFileSync("apps/desktop/scripts/journey-command.sh", "utf8"))![1]!
     .split(" ");
   expect(smokes).toContain("menu-bar");
