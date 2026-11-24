@@ -1519,6 +1519,7 @@ export async function listPendingCommands(
           expression.and([
             expression("threads.inputQueuePaused", "=", false),
             expression("runs.status", "=", "queued"),
+            expression("runs.startHoldReason", "is", null),
           ]),
         ]),
       )
@@ -1816,8 +1817,22 @@ export async function retryCommand(
     const command = await retry.executeTakeFirst();
     if (command?.type === "run.execute") {
       if (!run) throw new Error("Retry Run lock was not established");
+      const causeReason =
+        typeof error === "object" &&
+        error !== null &&
+        "cause" in error &&
+        typeof error.cause === "object" &&
+        error.cause !== null &&
+        "reason" in error.cause &&
+        typeof error.cause.reason === "string"
+          ? error.cause.reason
+          : error instanceof OpensteerError
+            ? error.reason
+            : undefined;
       return returnRunToQueue(transaction, {
         run,
+        startHoldReason:
+          causeReason === "previous-stop-unconfirmed" ? "previous-stop-unconfirmed" : null,
       });
     } else if (command?.type === "trigger.execute") {
       await sql`

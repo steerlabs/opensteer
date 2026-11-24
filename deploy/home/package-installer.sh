@@ -6,7 +6,7 @@ version=$(jq -er .version "$home_source/../../package.json")
 package=$(mktemp -d)
 trap 'rm -rf -- "$package"' EXIT
 printf '%s\n' "$version" > "$package/version"
-for file in install.sh managed-boot.sh common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh install-managed-unit.sh compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml; do
+for file in install.sh managed-boot.sh common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh install-managed-unit.sh compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml compose.browser-pool.yaml; do
   install -m 0700 "$home_source/$file" "$package/$file"
 done
 {

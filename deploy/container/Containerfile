@@ -23,30 +23,6 @@ RUN curl --fail --location --show-error --connect-timeout 10 --max-time 300 \
     unzip -q /tmp/build-tools.zip -d /tmp/build-tools && mkdir -p build-tools && \
     mv /tmp/build-tools/android-16 build-tools/36.0.0 && rm /tmp/build-tools.zip
 
-FROM ${NODE_IMAGE} AS bubblewrap-build
-ARG BUBBLEWRAP_VERSION=0.11.2
-ARG BUBBLEWRAP_SHA256=69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6
-RUN apt-get update && \
-    apt-get install --no-install-recommends --yes build-essential ca-certificates curl libcap-dev meson pkg-config xz-utils && \
-    rm -rf /var/lib/apt/lists/*
-WORKDIR /source
-RUN curl --connect-timeout 10 --fail --location --max-time 120 --show-error \
-      --output bubblewrap.tar.xz \
-      "https://github.com/containers/bubblewrap/releases/download/v${BUBBLEWRAP_VERSION}/bubblewrap-${BUBBLEWRAP_VERSION}.tar.xz" && \
-    echo "${BUBBLEWRAP_SHA256}  bubblewrap.tar.xz" | sha256sum --check --strict && \
-    tar --extract --file bubblewrap.tar.xz --strip-components=1 && \
-    meson setup build \
-      -Dbash_completion=disabled \
-      -Dman=disabled \
-      -Dselinux=disabled \
-      -Dsupport_setuid=false \
-      -Dtests=false \
-      -Dzsh_completion=disabled && \
-    meson compile -C build bwrap && \
-    install --directory /output && \
-    install --owner root --group root --mode 0555 build/bwrap /output/bwrap && \
-    install --owner root --group root --mode 0444 COPYING /output/COPYING
-
 FROM ${CADDY_IMAGE} AS caddy-capability-free
 USER root
 # The upstream binary carries cap_net_bind_service for ports below 1024. This
@@ -413,6 +389,7 @@ RUN apt-get update && \
     install --directory --owner 10001 --group 10001 --mode 0700 /workspaces && \
     install --directory --owner root --group root --mode 0755 /usr/local/share/opensteer
 COPY --chmod=0555 deploy/container/opensteer-entrypoint.mjs /usr/local/bin/opensteer-entrypoint.mjs
+COPY --chmod=0444 deploy/container/opensteer-node-trust.mjs /usr/local/bin/opensteer-node-trust.mjs
 ENTRYPOINT ["tini", "--", "node", "/usr/local/bin/opensteer-entrypoint.mjs"]
 
 FROM node-runtime AS host
@@ -485,12 +462,12 @@ RUN apt-get update && \
     install --directory --owner root --group root --mode 0755 /opt/opensteer/control && \
     install --owner root --group root --mode 0555 \
       /usr/local/bin/opensteer-entrypoint.mjs \
-      /opt/opensteer/control/opensteer-entrypoint.mjs
+      /opt/opensteer/control/opensteer-entrypoint.mjs && \
+    install --owner root --group root --mode 0444 \
+      /usr/local/bin/opensteer-node-trust.mjs \
+      /opt/opensteer/control/opensteer-node-trust.mjs
 COPY --from=claude-code --chmod=0555 /output/claude /usr/local/bin/claude
 COPY --from=claude-code --chmod=0444 /output/LICENSE.md /usr/local/share/licenses/claude-code/LICENSE.md
-COPY --from=bubblewrap-build --chmod=0555 /output/bwrap /usr/local/bin/bwrap
-# bubblewrap is LGPL: its licence travels with the binary.
-COPY --from=bubblewrap-build --chmod=0444 /output/COPYING /usr/local/share/licenses/bubblewrap/COPYING
 COPY --from=sandbox-seccomp-profiles --chmod=0444 /runner-oci.json /usr/local/share/opensteer/runner-oci.json
 WORKDIR /app
 ENV OPENSTEER_BROWSER_HARNESS=/app/browser-harness/browser-harness.mjs \
@@ -507,9 +484,7 @@ COPY --chmod=0555 apps/runner/bin/opensteer /usr/local/bin/opensteer
 COPY --chmod=0555 apps/runner/browser-harness/browser-harness.mjs apps/runner/browser-harness/page.mjs apps/runner/browser-harness/page-functions.mjs apps/runner/browser-harness/keyboard-layout.mjs ./browser-harness/
 COPY --chmod=0444 apps/runner/browser-harness/LICENSE /usr/local/share/licenses/opensteer-browser-harness/LICENSE
 COPY --chmod=0444 apps/runner/browser-harness/PLAYWRIGHT-LICENSE /usr/local/share/licenses/opensteer-browser-harness/PLAYWRIGHT-LICENSE
-RUN test "$(bwrap --version)" = "bubblewrap 0.11.2" && \
-    test ! -u /usr/local/bin/bwrap && \
-    test "$("$OPENSTEER_BROWSER_HARNESS" --version)" = "0.5.0-opensteer" && \
+RUN test "$("$OPENSTEER_BROWSER_HARNESS" --version)" = "0.5.0-opensteer" && \
     opensteer --help >/dev/null 2>&1 && \
     node dist/verify-harness-runtimes-main.js --require-claude-version 2.1.294 && \
     test -x /opt/opensteer/control/opensteer-entrypoint.mjs && \
@@ -580,6 +555,7 @@ RUN ln -sf /usr/local/bin/node /usr/bin/node && \
 WORKDIR /app
 COPY --from=browser-runtime-build --chown=10001:10001 /output/browser-runtime ./
 COPY --chmod=0555 deploy/container/opensteer-entrypoint.mjs /usr/local/bin/opensteer-entrypoint.mjs
+COPY --chmod=0444 deploy/container/opensteer-node-trust.mjs /usr/local/bin/opensteer-node-trust.mjs
 # The host container supervisor extracts this exact profile before starting the
 # Runtime. Keeping the policy with the image prevents deployment drift between
 # the Chromium build and the syscalls its sandbox is allowed to use.

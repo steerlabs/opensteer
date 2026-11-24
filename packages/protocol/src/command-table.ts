@@ -307,6 +307,14 @@ export const commandTable: CommandTable = {
     governs: task,
     effect: "database",
   },
+  "thread.stop.recheck": {
+    family: "tasks",
+    scope: "task",
+    step: "none",
+    faces: [personView],
+    governsKinds: ["task"],
+    governs: task,
+  },
   "thread.input.steer": {
     family: "tasks",
     scope: "task",
@@ -1275,6 +1283,15 @@ export const commandTable: CommandTable = {
     faces: one("narrow"),
     governsKinds: ["browser-session"],
     governs: (c) => resource("browser-session", c.sessionId),
+  },
+  "browser.session.dismiss": {
+    family: "browser",
+    scope: "task",
+    step: "none",
+    faces: [personView],
+    governsKinds: ["browser-session"],
+    governs: (c) => resource("browser-session", c.sessionId),
+    effect: "database",
   },
   "browser.profile.create": {
     family: "browser",

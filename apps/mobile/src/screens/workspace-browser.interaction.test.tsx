@@ -3433,6 +3433,33 @@ describe("a Cloud Computer's browser", () => {
       "It didn’t come back as you left it. Reload to open it again.",
     );
   });
+
+  it("shows an unconfirmed-closing replaced-browser session and lets the person remove it from the list (X2)", async () => {
+    const dismissBrowserSession = vi.fn(async () => {});
+    const { container, render } = await setup({ sessionId: "chosen" });
+    state.hostClient.dismissBrowserSession = dismissBrowserSession;
+    state.snapshot = snapshot([session("chosen")]);
+    await render();
+    const raw = snapshot([session("chosen")]);
+    const tab = tabs.get(TabIdSchema.parse(firstPage.id));
+    if (tab?.kind !== "page") throw new Error("The first page is not listed");
+    state.snapshot = {
+      ...raw,
+      browserPools: [
+        {
+          ...mockBrowserPoolReport("awake", tab.computer.computerId, firstPage.id),
+          unconfirmedClosings: [{ sessionId: "chosen", surfaceIds: [firstPage.id] }],
+        },
+      ],
+    } as HostSnapshot;
+    await render();
+    expect(container.textContent).toContain("This page didn't confirm it closed");
+    expect(container.textContent).toContain(
+      "Its browser was replaced before it answered, and Opensteer can no longer ask it. Nothing more is sent to this page.",
+    );
+    await pressAsync(container, "Remove from list");
+    expect(dismissBrowserSession).toHaveBeenCalledWith("chosen");
+  });
 });
 
 /** An ask as the viewer sends it: the person's Open or not, and its answer's reader (V8). */

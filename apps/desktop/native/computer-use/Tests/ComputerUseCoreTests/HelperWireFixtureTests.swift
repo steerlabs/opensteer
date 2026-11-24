@@ -294,6 +294,7 @@ final class HelperWireFixtureTests: XCTestCase {
       ]),
       "session.open": Wire.SessionOpenResult(sessionId: Self.sessionId),
       "session.close": Wire.EmptyResult(),
+      "helper.exit": Wire.HelperExitResult(exiting: true),
       "session.observe": Wire.ObservationResult(observation: observation),
       "session.act": Wire.ActResult(
         performed: [
@@ -700,7 +701,7 @@ final class HelperWireFixtureTests: XCTestCase {
         "hello", "permissions.get", "permissions.request", "apps.installed", "app.resolve",
         "window.resolve", "view.windows", "view.open", "view.renew", "view.close", "view.activate",
         "session.open", "session.close", "session.windows", "session.windowsExisting", "session.bind", "session.bindExisting", "session.observe",
-        "session.act",
+        "session.act", "helper.exit",
         "display.resolve", "display.start", "display.demand", "display.refresh", "display.stop",
         "display.attach", "display.input-reset", "display.input",
         "data.status",
@@ -728,8 +729,8 @@ final class HelperWireFixtureTests: XCTestCase {
     let close = try XCTUnwrap(results["session.close"] as? [String: Any])
     XCTAssertTrue(close.isEmpty, "session.close answers with an empty object.")
     let hello = try XCTUnwrap(results["hello"] as? [String: Any])
-    XCTAssertEqual(hello["protocolVersion"] as? Int, 10)
-    XCTAssertEqual(hello["minProtocolVersion"] as? Int, 10)
+    XCTAssertEqual(hello["protocolVersion"] as? Int, 11)
+    XCTAssertEqual(hello["minProtocolVersion"] as? Int, 11)
   }
 
   @MainActor

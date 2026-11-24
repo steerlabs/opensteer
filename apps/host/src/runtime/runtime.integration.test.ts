@@ -217,7 +217,6 @@ integration("Host vertical slice", () => {
         device: { form: "laptop", platform: "macos" },
         maxConcurrentRuns: 2,
         name: "Local runner",
-        providerStateModes: ["ambient", "isolated"],
         runnerId,
         runnerKind: "main",
         runtimeVersion: "integration",
@@ -720,7 +719,6 @@ integration("Host vertical slice", () => {
       ],
       maxConcurrentRuns: 1,
       name: "Local Runner",
-      providerStateModes: ["ambient", "isolated"],
       runnerId,
       runnerKind: "main",
       runtimeVersion: "integration",
@@ -838,7 +836,6 @@ integration("Host vertical slice", () => {
           },
         ],
         name: "Invalidation recovery Runner",
-        providerStateModes: ["ambient", "isolated"],
         runnerId: createId("runner"),
         runnerKind: "main",
         runtimeVersion: "integration",
@@ -939,7 +936,6 @@ integration("Host vertical slice", () => {
       ],
       maxConcurrentRuns: 1,
       name: "Unknown persisted Runner",
-      providerStateModes: ["ambient", "isolated"],
       runnerId: createId("runner"),
       runnerKind: "main",
       runtimeVersion: "integration",
@@ -1395,7 +1391,6 @@ integration("Host vertical slice", () => {
           sources: [{ sourceId: "openai", stateKinds: ["ambient", "isolated"] }],
         },
       ],
-      providerStateModes: ["ambient", "isolated"],
     });
     expect(await runtime.store.listHarnessInstances({ environmentIds: [environmentId] })).toEqual(
       [],
@@ -1849,7 +1844,6 @@ integration("Host vertical slice", () => {
         ],
         maxConcurrentRuns: 1,
         name: "Restarted runner",
-        providerStateModes: ["ambient", "isolated"],
         runnerId,
         runnerKind: "main",
         runtimeVersion: "integration",
@@ -2272,7 +2266,6 @@ integration("Host vertical slice", () => {
             environmentIds: [ownerEnvironmentId],
             harnessDrivers: [],
             maxConcurrentRuns: 1,
-            providerStateModes: ["isolated"],
           },
         },
       }),
@@ -3848,7 +3841,6 @@ function agentsRunnerDescriptor(input: {
   readonly localStorage?: unknown;
   readonly maxConcurrentRuns?: number;
   readonly name: string;
-  readonly providerStateModes?: readonly string[];
   readonly runnerId: string;
   readonly runnerKind: string;
   readonly runtimeVersion: string;
@@ -3877,7 +3869,6 @@ function agentsRunnerDescriptor(input: {
         environmentIds: input.environmentIds,
         harnessDrivers: input.harnessDrivers,
         maxConcurrentRuns: input.maxConcurrentRuns ?? 1,
-        providerStateModes: input.providerStateModes ?? ["ambient", "isolated"],
         workspaceBackings: input.workspaceBackings ?? ["local-directory"],
         workspaceMounts: input.workspaceMounts ?? [],
       },

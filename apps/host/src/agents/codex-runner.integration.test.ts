@@ -1,9 +1,5 @@
 import { ModelSelectionSchema, type RunId } from "@opensteer/core";
-import {
-  HarnessRegistry,
-  isolatedServiceHarnessRuntimeBoundary,
-  nativeUserHarnessRuntimeBoundary,
-} from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -95,7 +91,6 @@ integration("Host, Runner, and Codex harness integration", () => {
         `--capture=${captureFile}`,
         ...engineArguments,
       ]),
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 30_000,
     });
     const threadId = await stack.createThread({
@@ -120,7 +115,6 @@ integration("Host, Runner, and Codex harness integration", () => {
           stateKind: "ambient",
         },
         harnesses: fakeCodexRegistry("signed-out-without-auth-flag"),
-        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         runTimeoutMs: 15_000,
       }),
     ).rejects.toThrow("authentication-required: Sign in to Codex on this Runner");
@@ -136,7 +130,6 @@ integration("Host, Runner, and Codex harness integration", () => {
         stateKind: "isolated",
       },
       harnesses: fakeCodexRegistry(),
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 15_000,
     });
     const { host } = stack;

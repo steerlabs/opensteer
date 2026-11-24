@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { threadPlacementOptions, unwrapRpcResult } from "@opensteer/client/host";
-import { HarnessRegistry, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CursorHarnessDriver } from "@opensteer/harness-cursor";
 import { RunnerRegistry } from "@opensteer/orchestration";
@@ -72,7 +72,6 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
         sourceId: "cursor",
         stateKind: "ambient",
       },
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       catalogTimeoutMs: 10_000,
       runTimeoutMs: 10_000,
     });

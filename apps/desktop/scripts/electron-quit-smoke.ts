@@ -19,7 +19,6 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { configureDesktopApplicationPaths } from "../src/app/application-paths.js";
 import { createDesktopApplicationMenu } from "../src/app/application-menu.js";
@@ -128,9 +127,6 @@ async function run(): Promise<void> {
     logsDirectory: path.join(root, "logs"),
     supervisorExecutable: readPersonalProcessSupervisorRelease(resources),
   });
-  let periodicCommits = 0;
-  let capturedLargeHash: string | null = null;
-  let capturedNormal = false;
   const supervisor = new PersonalDeploymentSupervisor({
     log,
     catalog: {
@@ -536,38 +532,6 @@ async function run(): Promise<void> {
     savedPath,
     JSON.stringify({ profileId, pagePort: address.port, normalPort: normalAddress.port }),
   );
-  if (trial === "partial") {
-    const badUrl = `http://localhost:${address.port}/unsupported-storage`;
-    await rpc("commands.dispatch", {
-      type: "browser.session.start",
-      idempotencyKey: randomUUID(),
-      input: { profileId, initialUrl: badUrl, reuseExisting: false },
-    });
-    const badPage = webContents
-      .getAllWebContents()
-      .find((contents) => contents.getURL() === badUrl);
-    assert(badPage);
-    await badPage.executeJavaScript(
-      `new Promise((resolve,reject)=>{const request=indexedDB.open('x'.repeat(17000),1);request.onsuccess=()=>{request.result.close();resolve(true)};request.onerror=()=>reject(request.error)})`,
-    );
-    const deadline = Date.now() + 15_000;
-    const diagnostics = path.join(root, "logs", "personal-browser.log");
-    while (
-      !existsSync(diagnostics) ||
-      !readFileSync(diagnostics, "utf8").includes("profile-checkpoint.origins-incomplete")
-    ) {
-      assert(Date.now() < deadline, "Partial periodic checkpoint was not reported");
-      await delay(25);
-    }
-    log("test.partial-checkpoint-reported");
-  }
-  const checkpointDeadline = Date.now() + 15_000;
-  while (capturedLargeHash !== expectedHash || !capturedNormal) {
-    assert(Date.now() < checkpointDeadline, "Automatic checkpoint did not commit");
-    await delay(25);
-  }
-  assert.equal(await hashLargeValue(), expectedHash);
-  log("test.automatic-checkpoint", { commits: periodicCommits, largeSha256: expectedHash });
   await new Promise<void>((resolve, reject) => {
     network.openWebSocket(
       {

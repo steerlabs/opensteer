@@ -63,9 +63,9 @@ final class NativeSafetyRegressionTests: XCTestCase {
     let connection = IPCConnection(
       id: 1, fileDescriptor: descriptors[0], onFrame: { _, _ in }, onClose: { _ in })
     XCTAssertFalse(connection.isGreeted)
-    connection.markGreeted(protocolVersion: 10)
+    connection.markGreeted(protocolVersion: 11)
     XCTAssertTrue(connection.isGreeted)
-    XCTAssertEqual(connection.negotiatedProtocolVersion, 10)
+    XCTAssertEqual(connection.negotiatedProtocolVersion, 11)
     XCTAssertThrowsError(
       try emptyParams.validatedPane()
     ) { error in

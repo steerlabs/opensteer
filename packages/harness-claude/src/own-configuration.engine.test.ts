@@ -5,11 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { query, type McpServerStatus, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createId, ModelSelectionSchema, type ThreadAccessMode } from "@opensteer/core";
-import {
-  nativeUserHarnessRuntimeBoundary,
-  type HarnessEvent,
-  type HarnessSessionContext,
-} from "@opensteer/harness";
+import { type HarnessEvent, type HarnessSessionContext } from "@opensteer/harness";
 import { afterEach, expect, it } from "vitest";
 import { ClaudeHarnessDriver } from "./claude-driver.js";
 
@@ -385,8 +381,6 @@ async function runOnce(input: {
     historyWindow: { byteCount: 2, hasEarlier: false, itemCount: 0 },
     instructions: "Instructions from Agent home AGENTS.md marker 2c9d.",
     machineAccessNotice: "No other computers are reachable.",
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse({
       modelId: "sonnet",
       options: {},
@@ -402,7 +396,6 @@ async function runOnce(input: {
       providerHomeDirectory: undefined,
       store: { directory: join(state, "store"), id: "own-configuration" },
     },
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: AbortSignal.timeout(180_000),
     skills: { skills: [] },
     threadId,

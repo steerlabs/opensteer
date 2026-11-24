@@ -3,12 +3,23 @@ import {
   admitAgentOperation,
   beginAgentSession,
   beginBrowserPoolPark,
+  bindBrowserPoolSession,
+  BrowserPoolAdmissionClosed,
+  closeBrowserPoolSessions,
   decideAgentOperation,
+  dismissBrowserPoolUnconfirmedSession,
   handOffAgentOperation,
   installBrowserPoolSlot,
+  lineageEndedMessage,
   listBrowserPoolDocumentLosses,
+  listBrowserPoolRetiredTargets,
+  listBrowserPoolUnconfirmedClosings,
+  listOpenBrowserPoolControllerCalls,
   readBrowserPoolSlot,
+  recordBrowserPoolControllerCall,
+  retireBrowserPoolTarget,
   settleBrowserPoolRelay,
+  TabStore,
   browserPoolRelayDeadlineMs,
   pruneBrowserPoolBookkeeping,
   type BrowserPoolTargetIdentity,
@@ -25,14 +36,38 @@ import {
   decodeBrowserFrameEnvelope,
 } from "../packages/protocol/src/browser.js";
 import { KeyedStreamPublisher } from "../packages/protocol/src/keyed-stream.js";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { sql } from "kysely";
 import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
+import { KeyedMutationQueue } from "../packages/shared/src/mutationQueue.js";
 import { BrowserPoolGate } from "../apps/host/src/browser/browser-pool-gate.js";
-import { HostedBrowserBroker } from "../apps/host/src/browser/browser-service.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
+import { BrowserService, HostedBrowserBroker } from "../apps/host/src/browser/browser-service.js";
+import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
+import { requireRunnerDeviceAccess } from "../apps/host/src/administration/device-access.js";
+import {
+  BrowserRuntime,
+  BrowserRuntimeServer,
+  Ed25519AttachTicketVerifier,
+  type BrowserPoolEndAnswer,
+  type BrowserPoolRuntimeState,
+} from "../packages/browser-runtime-core/src/index.js";
+import {
+  FakeIsolatingLauncher,
+  FakePage,
+} from "../packages/browser-runtime-core/src/test-support/fakes.js";
+import {
+  BrowserPoolCoordinator,
+  loopbackPoolChannel,
+} from "../apps/host/src/browser/browser-pool-coordinator.js";
+import { BrowserPoolUnanswered } from "../apps/host/src/browser/browser-pool-controller.js";
+import { BrowserPoolAgentSlotDeleted } from "../packages/browser-runtime-core/src/browser-pool-agent-wire.js";
+import type { BrowserSessionId } from "../packages/core/src/index.js";
 import { removeDevice } from "../apps/host/src/administration/device-removal.js";
 import {
   registerTriggerCdpBridge,
@@ -55,6 +90,7 @@ type FastifyLike = {
   readonly server: { address(): unknown };
 };
 import { BrowserLocalProfiles } from "../apps/host/src/browser/browser-local-profiles.js";
+import { LocalBrowserRuntimeBridge } from "../packages/runner-client/src/browser-bridge.js";
 import {
   before,
   dyingAfter,
@@ -87,6 +123,13 @@ it("vetoes D on an ended session with confined CDP contact loss", async () => {
       profileId: null,
       runnerId: target.runnerId,
       runtimeId: target.runtimeId,
+    });
+    // The session is this target's own, as one admitted on its slot is (W1).
+    await bindBrowserPoolSession(database, {
+      sessionId,
+      runnerId: target.runnerId,
+      slotId: target.slotId,
+      term: target.term,
     });
     const attachmentId = randomUUID();
     const lost = { runtimeBootId: target.instanceId, contactLostAt: new Date().toISOString() };
@@ -541,7 +584,8 @@ it("lets a Stop asked as the reattach ticket leaves wait for the broker, and clo
     }
     expect(stopping).toBeDefined();
     await stopping;
-    expect((await j.row(sessionId))?.state).toBe("closed");
+    // Closed once the runtime has said the session ended (P5), not the moment Stop returns.
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
     // Stop found the registered broker and closed it: the page ends now, not at a deadline.
     await until(() => expect(page.page.isClosed()).toBe(true));
     expect(home.service.pageInventory(sessionId)?.records.has(tabId) ?? false).toBe(false);
@@ -668,6 +712,350 @@ it("keeps a running browser's sessions through a Home crash and reattaches them"
   }
 });
 
+for (const away of ["within", "past"] as const)
+  it(`${away === "within" ? "brings a Home away longer than 20 seconds back to the same documents, inside the window" : "ends the sessions of a Home away longer than the window with their notes"}`, async () => {
+    const j = await journey(`away-${away}`);
+    // Time flows, and jumps: the clock (Date.now and new Date alike) is moved, never a timer.
+    vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+    try {
+      const home = await j.startHome();
+      const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("away"));
+      const page = await j.draft();
+      const original = home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId;
+      // The Home dies for an update while its Runner is away too, and starts again.
+      j.runnerDown();
+      const next = await j.crashHome(home);
+      await until(() => expect(next.coordinator.gate.phase).toBe("reconnecting"));
+      vi.setSystemTime(Date.now() + (away === "within" ? 30_000 : 11 * 60_000));
+      j.runnerUp();
+      await until(() => expect(next.coordinator.gate.phase).toBe("open"));
+      if (away === "within") {
+        expect((await j.row(sessionId))?.state).toBe("ready");
+        expect(next.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(
+          original,
+        );
+        expect(page.page.isClosed()).toBe(false);
+        expect(await page.value()).toBe('["unsent draft",99]');
+        expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toEqual([]);
+        // The reconnect is over: nothing of it holds the next sleep off.
+        expect(await next.coordinator.tryPark()).toBe("parked");
+      } else {
+        expect((await j.row(sessionId))?.state).toBe("failed");
+        expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject(
+          [{ sessionId, surfaceId: tabId, reason: "not-adopted" }],
+        );
+      }
+    } finally {
+      vi.useRealTimers();
+      j.runnerUp();
+      await j.close();
+    }
+  });
+
+for (const change of ["same tab, other picture options", "the viewer leaves the tab"] as const)
+  it(`${change === "the viewer leaves the tab" ? "cancels the keys queued for a tab its viewer leaves, as not applied" : "keeps keys queued behind a slow page through a same-tab change of picture options, in order"}`, async () => {
+    const j = await journey(`queued-${change === "the viewer leaves the tab" ? "leave" : "same"}`);
+    try {
+      const home = await j.startHome();
+      const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("queued"));
+      const page = await j.draft();
+      const watching = j.viewer(home, sessionId, "control");
+      const attached = await watching.attaching;
+      try {
+        const send = (message: Record<string, unknown>) =>
+          attached.handle(Buffer.from(JSON.stringify(message)), false);
+        await send({ type: "stream.subscribe", surfaceId: tabId });
+        await watching.next(0);
+        // The page is busy: the first key waits on it, the rest queue behind it in the runtime.
+        void page.cdp
+          .send("Runtime.evaluate", {
+            expression: "{ const until = Date.now() + 1500; while (Date.now() < until) {} }",
+          })
+          .catch(() => undefined);
+        for (const text of ["a", "b", "c", "d"])
+          for (const action of ["down", "up"])
+            await send({
+              type: "input.key",
+              surfaceId: tabId,
+              key: text,
+              code: `Key${text.toUpperCase()}`,
+              modifiers: [],
+              text,
+              action,
+            });
+        if (change === "the viewer leaves the tab")
+          await send({ type: "stream.unsubscribe", surfaceId: tabId });
+        // Other region and pacing options on the same tab, and back again.
+        else {
+          // A region change, then a window change, then back.
+          await send({ type: "stream.subscribe", surfaceId: tabId, captureRegion: true });
+          await send({ type: "stream.subscribe", surfaceId: tabId, frameWindow: 1 });
+          await send({ type: "stream.subscribe", surfaceId: tabId });
+        }
+        if (change === "same tab, other picture options") {
+          // Every key reaches the page, in the order it was typed.
+          await until(async () => expect(await page.value()).toBe('["unsent draftabcd",99]'));
+          expect(
+            watching.messages.filter(
+              (message) =>
+                (message.error as { reason?: string } | undefined)?.reason ===
+                "browser-input-canceled",
+            ),
+          ).toEqual([]);
+        } else {
+          // What had not started is refused, and said so; it never reaches the page.
+          await until(() =>
+            expect(
+              watching.messages.some(
+                (message) =>
+                  (message.error as { reason?: string } | undefined)?.reason ===
+                  "browser-input-canceled",
+              ),
+            ).toBe(true),
+          );
+          await until(async () =>
+            expect(await page.value()).toMatch(/^\["unsent draft[a]?",99\]$/u),
+          );
+        }
+      } finally {
+        attached.close();
+      }
+    } finally {
+      await j.close();
+    }
+  });
+
+/** A control viewer of the journey's first page, with a busy page to queue input behind. */
+async function queuedInput(key: string) {
+  const j = await journey(key);
+  const home = await j.startHome();
+  const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command(key));
+  const page = await j.draft();
+  // The page counts the clicks and wheel events it receives.
+  await page.cdp.send("Runtime.evaluate", {
+    expression: `window.__clicks = 0; window.__wheels = 0;
+      addEventListener("click", () => window.__clicks++, true);
+      addEventListener("wheel", () => window.__wheels++, true);`,
+  });
+  const counts = async () =>
+    (
+      await page.cdp.send<{ result: { value: string } }>("Runtime.evaluate", {
+        expression: "JSON.stringify([window.__clicks, window.__wheels])",
+        returnByValue: true,
+      })
+    ).result.value;
+  const size = async () =>
+    JSON.parse(
+      (
+        await page.cdp.send<{ result: { value: string } }>("Runtime.evaluate", {
+          expression: "JSON.stringify([innerWidth, innerHeight])",
+          returnByValue: true,
+        })
+      ).result.value,
+    ) as [number, number];
+  const viewer = async () => {
+    const watching = j.viewer(home, sessionId, "control");
+    const attached = await watching.attaching;
+    const send = (message: Record<string, unknown>) =>
+      attached.handle(Buffer.from(JSON.stringify(message)), false);
+    await send({ type: "stream.subscribe", surfaceId: tabId });
+    await watching.next(0);
+    const refused = (reason: string) =>
+      watching.messages.some(
+        (message) => (message.error as { reason?: string } | undefined)?.reason === reason,
+      );
+    return { attached, send, watching, refused };
+  };
+  // The page is busy: the first input waits on it, the rest queue behind it in the runtime.
+  const busy = () =>
+    void page.cdp
+      .send("Runtime.evaluate", {
+        expression: "{ const until = Date.now() + 1500; while (Date.now() < until) {} }",
+      })
+      .catch(() => undefined);
+  const keys = async (send: (message: Record<string, unknown>) => Promise<void>, text: string) => {
+    for (const key of text)
+      for (const action of ["down", "up"])
+        await send({
+          type: "input.key",
+          surfaceId: tabId,
+          key,
+          code: `Key${key.toUpperCase()}`,
+          modifiers: [],
+          text: key,
+          action,
+        });
+  };
+  return { j, home, tabId, page, counts, size, viewer, busy, keys };
+}
+
+it("refuses a pooled broker's send at its write when a restart hold began after it was queued", async () => {
+  const q = await queuedInput("write-hold");
+  try {
+    // Two producers: each viewer sends its own messages in order, so the queued key is the
+    // other viewer's, waiting in the broker behind the first.
+    const { send } = await q.viewer();
+    const { send: other } = await q.viewer();
+    // Only this test sets the gate's facts from here on: the loop's own publications are ignored.
+    const gate = q.home.coordinator.gate;
+    const facts = gate.set.bind(gate);
+    q.home.coordinator.close();
+    const pinned = vi.spyOn(gate, "set").mockImplementation(() => {});
+    const key = (text: string) => ({
+      type: "input.key",
+      surfaceId: q.tabId,
+      key: text,
+      code: `Key${text.toUpperCase()}`,
+      modifiers: [],
+      text,
+      action: "down",
+    });
+    const written: string[] = [];
+    const first = Promise.withResolvers<void>();
+    let holding = false;
+    const relay = LocalBrowserRuntimeBridge.prototype.send;
+    const spy = vi
+      .spyOn(LocalBrowserRuntimeBridge.prototype, "send")
+      .mockImplementation(async function (this: LocalBrowserRuntimeBridge, channel, message) {
+        if (message.type === "input.key") {
+          written.push(message.key);
+          // The first key is held on its way out: the next one queues behind it.
+          if (message.key === "a" && !holding) {
+            holding = true;
+            await first.promise;
+          }
+        }
+        return relay.call(this, channel, message);
+      });
+    try {
+      const before = gate.held;
+      void send(key("a")).catch(() => undefined);
+      await vi.waitFor(() => expect(holding).toBe(true));
+      // Admitted at queue time, before any hold: its reservation is held while it waits.
+      void other(key("b")).catch(() => undefined);
+      await vi.waitFor(() => expect(gate.held).toBe(before + 2));
+      // The restart's hold begins after that, while "b" waits behind "a".
+      facts({ hold: "restart" });
+      first.resolve();
+      await vi.waitFor(() => expect(gate.held).toBe(before));
+      // The hold ends; a later key is written, and "b" never was.
+      facts({ hold: null });
+      void other(key("c")).catch(() => undefined);
+      await vi.waitFor(() => expect(written).toContain("c"));
+      expect(written).toEqual(["a", "c"]);
+    } finally {
+      spy.mockRestore();
+      pinned.mockRestore();
+    }
+  } finally {
+    await q.j.close();
+  }
+});
+
+it("delivers no pointer or wheel event aimed at a size the page no longer has, from a peer without capture revisions", async () => {
+  const q = await queuedInput("queued-geometry");
+  try {
+    const { send, refused, attached } = await q.viewer();
+    const [width, height] = await q.size();
+    // Aimed at the picture before a resize: the size it names is not the page's now. Like an
+    // older peer, it names no capture or geometry revision.
+    const aimed = { surfaceId: q.tabId, viewportWidth: width + 13, viewportHeight: height + 7 };
+    q.busy();
+    await send({ type: "input.pointer", ...aimed, action: "down", button: "left", x: 0.5, y: 0.5 });
+    await send({ type: "input.pointer", ...aimed, action: "up", button: "left", x: 0.5, y: 0.5 });
+    await send({ type: "input.wheel", ...aimed, x: 0.5, y: 0.5, deltaX: 0, deltaY: 120 });
+    // A key after them is the barrier: once it reached the page, the lane passed them. For a
+    // peer without revisions on a page without capture, a stale point is dropped unannounced
+    // (`controller.ts`, dispatchPointer); with revisions it is refused as stale geometry.
+    await q.keys(send, "z");
+    await until(async () => expect(await q.page.value()).toBe('["unsent draftz",99]'));
+    expect(await q.counts()).toBe("[0,0]");
+    expect(refused("browser-input-canceled")).toBe(false);
+    attached.close();
+  } finally {
+    await q.j.close();
+  }
+});
+
+it("keeps keys queued before a resize in order, and refuses a pointer aimed at the old size", async () => {
+  const q = await queuedInput("queued-resize");
+  try {
+    const { send, attached } = await q.viewer();
+    const [width, height] = await q.size();
+    q.busy();
+    await q.keys(send, "ab");
+    // The resize waits behind what is queued on the page, so the keys meet the size they were
+    // typed at.
+    await send({
+      type: "viewport.set",
+      surfaceId: q.tabId,
+      width: width - 40,
+      height: height - 30,
+    });
+    await until(async () => expect(await q.page.value()).toBe('["unsent draftab",99]'));
+    await until(async () => expect((await q.size())[0]).toBe(width - 40));
+    await send({
+      type: "input.pointer",
+      surfaceId: q.tabId,
+      viewportWidth: width,
+      viewportHeight: height,
+      action: "down",
+      button: "left",
+      x: 0.5,
+      y: 0.5,
+    });
+    await q.keys(send, "z");
+    await until(async () => expect(await q.page.value()).toBe('["unsent draftabz",99]'));
+    expect(await q.counts()).toBe("[0,0]");
+    attached.close();
+  } finally {
+    await q.j.close();
+  }
+});
+
+it("ends the first viewer's queued keys when a second viewer takes over and the first goes, never the second's", async () => {
+  const q = await queuedInput("queued-takeover");
+  try {
+    const first = await q.viewer();
+    q.busy();
+    await q.keys(first.send, "abcd");
+    // A second viewer joins the same page: its own queue, which the first one's does not end.
+    const second = await q.viewer();
+    await q.keys(second.send, "x");
+    // Taken over, the first viewer's socket closes: what it had queued and not begun ends.
+    first.attached.close();
+    await until(async () => expect(await q.page.value()).toMatch(/^\["unsent draft[a]?x",99\]$/u));
+    expect(second.refused("browser-input-canceled")).toBe(false);
+    second.attached.close();
+  } finally {
+    await q.j.close();
+  }
+});
+
+for (const then of ["stays", "leaves"] as const)
+  it(`${then === "stays" ? "keeps a viewer's queued keys when it drops its pictures on the same tab" : "cancels a viewer's queued keys when it drops its pictures and then leaves"}`, async () => {
+    const q = await queuedInput(`queued-control-${then}`);
+    try {
+      const { send, refused, attached } = await q.viewer();
+      q.busy();
+      await q.keys(send, "abcd");
+      await send({ type: "stream.subscribe", surfaceId: q.tabId, frames: false });
+      if (then === "leaves") await send({ type: "stream.unsubscribe", surfaceId: q.tabId });
+      if (then === "stays") {
+        await until(async () => expect(await q.page.value()).toBe('["unsent draftabcd",99]'));
+        expect(refused("browser-input-canceled")).toBe(false);
+      } else {
+        await until(() => expect(refused("browser-input-canceled")).toBe(true));
+        await until(async () =>
+          expect(await q.page.value()).toMatch(/^\["unsent draft[a]?",99\]$/u),
+        );
+      }
+      attached.close();
+    } finally {
+      await q.j.close();
+    }
+  });
+
 it("finishes a removal a Home crash interrupted after the revocation, with the notes", async () => {
   const j = await journey("removal-crash");
   try {
@@ -734,11 +1122,12 @@ it("restarts through the service while a park is retiring, with no reconnect aft
   }
 });
 
-it("lets a Stop during a reconnect end that session's wait at once", async () => {
+it("lets a Stop during a reconnect end that session's wait at once, and say closed only with the runtime's answer", async () => {
   const j = await journey("stop-reconnect");
   try {
     const home = await j.startHome();
     const { sessionId } = await home.service.openTab(j.task.userId, j.command("stop-reconnect"));
+    const page = await j.draft();
     j.runnerDown();
     await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
     const stopped = Date.now();
@@ -746,7 +1135,586 @@ it("lets a Stop during a reconnect end that session's wait at once", async () =>
     // The stopped session no longer needs a channel: the gate does not hold for its window.
     await until(() => expect(home.coordinator.gate.phase).toBe("open"));
     expect(Date.now() - stopped).toBeLessThan(5_000);
+    // The awake guest still holds the page: the row is closing, never closed, and nothing new
+    // is admitted for it.
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    expect(page.page.isClosed()).toBe(false);
+    await expect(
+      home.service.openTab(j.task.userId, {
+        type: "browser.tab.open",
+        sessionId: BrowserSessionIdSchema.parse(sessionId),
+        idempotencyKey: "after-stop",
+      }),
+    ).rejects.toThrow("The browser has ended.");
+    const ticketsBefore = j.issued.length;
+    j.runnerUp();
+    // The Home asks the guest's runtime to end it; its answer, after its teardown, is the
+    // receipt. No channel is opened for a stopped session (P15).
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
+    expect(page.page.isClosed()).toBe(true);
+    expect(j.issued.length).toBe(ticketsBefore);
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
+it("never reads a pooled Stop closed while the guest still holds the page, whatever the Runner answers", async () => {
+  const j = await journey("stop-runner-ack");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("stop-ack"));
+    const page = await j.draft();
+    // The tunnel to the guest breaks as the Stop's close leaves; the Runner answers 1000 for the
+    // close it merely queued, as its relay does.
+    const acked = vi
+      .spyOn(TestRuntimeConnection.prototype, "close")
+      .mockImplementationOnce(function (this: TestRuntimeConnection) {
+        j.tunnelBreaks();
+        this.lose(1000, "closed");
+      });
+    try {
+      await home.service.stop(j.task.userId, sessionId);
+    } finally {
+      acked.mockRestore();
+    }
+    // The row leaves closing only for closed, and only once the guest's runtime ended the page.
+    const ended = await vi.waitFor(
+      async () => {
+        const state = (await j.row(sessionId))?.state;
+        expect(state).not.toBe("closing");
+        return state;
+      },
+      { timeout: 20_000 },
+    );
+    expect(ended).toBe("closed");
+    expect(page.page.isClosed()).toBe(true);
+  } finally {
+    await j.close();
+  }
+});
+
+it("keeps a Stop's row closing while the guest holds the session on a channel it never saw close, until its pages are gone", async () => {
+  const j = await journey("stop-stalled");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("stop-stalled"));
+    const page = await j.draft();
+    // The tunnel stalls as the Stop's close leaves: the Home's side ends with no answer, and the
+    // guest's channel stays open, so the guest still holds the session and its pages.
+    const stall = function (this: TestRuntimeConnection) {
+      this.lose(1006, "runtime did not answer");
+    };
+    const stalled = [
+      vi.spyOn(TestRuntimeConnection.prototype, "close").mockImplementationOnce(stall),
+      vi.spyOn(TestRuntimeConnection.prototype, "terminate").mockImplementationOnce(stall),
+    ];
+    try {
+      await home.service.stop(j.task.userId, sessionId);
+    } finally {
+      for (const spy of stalled) spy.mockRestore();
+    }
+    expect(page.page.isClosed()).toBe(false);
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    // The Home asks the guest's runtime to end it; the row leaves closing only for closed, and
+    // only once the guest's page is gone.
+    const ended = await vi.waitFor(
+      async () => {
+        const state = (await j.row(sessionId))?.state;
+        expect(state).not.toBe("closing");
+        return state;
+      },
+      { timeout: 20_000 },
+    );
+    expect(ended).toBe("closed");
+    expect(page.page.isClosed()).toBe(true);
+  } finally {
+    await j.close();
+  }
+});
+
+it("writes closed only for the runtime's ended, from a running runtime under the same fence, and asks again after anything else", async () => {
+  const j = await journey("stop-answers");
+  try {
+    // What the runtime answers first, before its own answer is let through.
+    const answers: ((state: BrowserPoolRuntimeState) => BrowserPoolEndAnswer)[] = [
+      (state) => ({ outcome: "not-yet", state }),
+      (state) => ({ outcome: "unknown", state }),
+      (state) => ({
+        outcome: "ended",
+        state: { ...state, fence: { ...state.fence!, epoch: state.fence!.epoch + 1 } },
+      }),
+      (state) => ({ outcome: "ended", state: { ...state, phase: "retired" } }),
+    ];
+    let sessionId: BrowserSessionId | undefined;
+    let pageClosed: (() => boolean) | undefined;
+    const rows: string[] = [];
+    const home = await j.startHome({
+      ...loopbackPoolChannel(j.guest),
+      endSession: async (ticket) => {
+        rows.push(`${(await j.row(sessionId!))?.state} ${pageClosed?.() ? "gone" : "open"}`);
+        const answer = answers.shift();
+        return answer ? answer(j.guest.poolState()!) : j.guest.endPoolSession(ticket);
+      },
+    });
+    ({ sessionId } = await home.service.openTab(j.task.userId, j.command("stop-answers")));
+    const page = await j.draft();
+    pageClosed = () => page.page.isClosed();
+    const stall = function (this: TestRuntimeConnection) {
+      this.lose(1006, "runtime did not answer");
+    };
+    const stalled = [
+      vi.spyOn(TestRuntimeConnection.prototype, "close").mockImplementationOnce(stall),
+      vi.spyOn(TestRuntimeConnection.prototype, "terminate").mockImplementationOnce(stall),
+    ];
+    try {
+      await home.service.stop(j.task.userId, sessionId!);
+    } finally {
+      for (const spy of stalled) spy.mockRestore();
+    }
+    await until(async () => expect((await j.row(sessionId!))?.state).toBe("closed"));
+    // Each answer before the runtime's own left the row closing, and the page in the guest.
+    expect(rows).toEqual(Array.from({ length: 5 }, () => "closing open"));
+    expect(page.page.isClosed()).toBe(true);
+  } finally {
+    await j.close();
+  }
+});
+
+it("never closes a pooled row the runtime ended on its own, closing status and clean close included: it is a loss with its note", async () => {
+  const j = await journey("closing-status", { channelDeadlineMs: 1_500 });
+  try {
+    let asked = 0;
+    const home = await j.startHome({
+      ...loopbackPoolChannel(j.guest),
+      endSession: (ticket) => {
+        asked++;
+        return j.guest.endPoolSession(ticket);
+      },
+    });
+    const { sessionId, tabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("closing-status"),
+    );
+    await j.draft();
+    // The runtime's closing status reaches the Home; then its channel closes with 1000, before
+    // the runtime said closed.
+    const emit = EventEmitter.prototype.emit;
+    const closingSeen: TestRuntimeConnection[] = [];
+    const frames = vi.spyOn(TestRuntimeConnection.prototype, "emit").mockImplementation(function (
+      this: TestRuntimeConnection,
+      event,
+      ...args
+    ) {
+      if (event === "message" && closingSeen.length) return true;
+      const sent = emit.call(this, event, ...args);
+      const [data, binary] = args as [Buffer, boolean];
+      if (event === "message" && !binary && /"state":"closing"/u.test(data.toString()))
+        closingSeen.push(this);
+      return sent;
+    });
+    try {
+      // The runtime ends the session on its own (here, an end request the Home did not send).
+      const fence = j.guest.poolState()!.fence!;
+      const ending = j.guest.endPoolSession(
+        j.signer.issue({
+          access: "read-write",
+          creationOrigin: "person",
+          actor: "person",
+          identity: { kind: "fresh" },
+          pool: { ...fence, end: true },
+          runtimeId: "pool-runtime",
+          sessionId,
+          subject: j.task.userId,
+        }),
+      );
+      await until(() => expect(closingSeen).toHaveLength(1));
+      // The Home took the closing status (the person asked nothing); then the channel closes
+      // cleanly.
+      expect((await j.row(sessionId))?.state).toBe("ready");
+      closingSeen[0]!.lose(1000, "closed");
+      await ending;
+    } finally {
+      frames.mockRestore();
+    }
+    // Neither closing nor closed: the person did not stop it. Its window ends it as a loss,
+    // with its note, and no end request was ever needed.
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("failed"));
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
+      { sessionId },
+    ]);
+    expect(asked).toBe(0);
+  } finally {
+    await j.close();
+  }
+});
+
+it("never reads a pooled session closed when its channel closes cleanly before it is ready", async () => {
+  const j = await journey("ready-1000");
+  try {
+    const home = await j.startHome();
+    // The first channel is refused by the runtime and closed with 1000, as a clean close.
+    const prototype = TestRuntimeConnection.prototype as unknown as {
+      end(code: number, reason: string): void;
+    };
+    const end = prototype.end;
+    let cleanly = 0;
+    const clean = vi.spyOn(prototype, "end").mockImplementationOnce(function (
+      this: unknown,
+      _code: number,
+      reason: string,
+    ) {
+      cleanly++;
+      end.call(this, 1000, reason);
+    });
+    j.withholdNextTicket();
+    let sessionId: string | undefined;
+    try {
+      await home.service
+        .start({
+          ownerId: j.task.userId,
+          fresh: true,
+          placement: { kind: "runner", runnerId: j.task.runnerId },
+        })
+        .catch(() => undefined);
+      sessionId = (
+        await j.database
+          .selectFrom("browserSessions")
+          .select("id")
+          .where("runnerId", "=", j.task.runnerId)
+          .orderBy("createdAt", "desc")
+          .executeTakeFirst()
+      )?.id;
+    } finally {
+      clean.mockRestore();
+    }
+    expect(cleanly).toBe(1);
+    expect(sessionId).toBeDefined();
+    expect((await j.row(sessionId!))?.state).not.toBe("closed");
+  } finally {
+    await j.close();
+  }
+});
+
+it("closes the live channels of a target that is over, with its sessions' end", async () => {
+  const j = await journey("over-live");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("over-live"));
+    await j.draft();
+    expect(home.service.pageInventory(sessionId)).toBeDefined();
+    // The host answers, signed, that the slot is gone, from the park's first read on.
+    vi.spyOn(j.controller, "status").mockRejectedValue(
+      new BrowserPoolAgentSlotDeleted("The slot was deleted."),
+    );
+    expect(await home.coordinator.tryPark()).toBe("vetoed");
+    // The session ends with its note, and its live channel here is closed with it.
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("failed"));
+    await until(() => expect(home.service.pageInventory(sessionId)).toBeUndefined());
+  } finally {
+    await j.close();
+  }
+});
+
+it("ends an abandoned pooled session through the pool loop when its runtime did not answer the close", async () => {
+  const j = await journey("abandon-stalled");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("abandon"));
+    const page = await j.draft();
+    const stall = function (this: TestRuntimeConnection) {
+      this.lose(1006, "runtime did not answer");
+    };
+    const stalled = [
+      vi.spyOn(TestRuntimeConnection.prototype, "close").mockImplementationOnce(stall),
+      vi.spyOn(TestRuntimeConnection.prototype, "terminate").mockImplementationOnce(stall),
+    ];
+    try {
+      home.service.abandonSession(BrowserSessionIdSchema.parse(sessionId));
+      await until(async () => expect((await j.row(sessionId))?.state).toBe("closing"));
+    } finally {
+      for (const spy of stalled) spy.mockRestore();
+    }
+    // The loop is told: it asks the runtime to end the session, and its answer is the receipt.
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
+    expect(page.page.isClosed()).toBe(true);
+  } finally {
+    await j.close();
+  }
+});
+
+it("never writes a pooled row the runtime ended on its own while the Home shuts down cleanly: it is a loss with its note", async () => {
+  const j = await journey("shutdown-frame", { channelDeadlineMs: 1_500 });
+  try {
+    let home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("shutdown-frame"),
+    );
+    await j.draft();
+    // The seam: the runtime's own closing and closed statuses are held on the channel, and
+    // handed to the Home exactly as its clean shutdown lets this broker go.
+    const emit = EventEmitter.prototype.emit;
+    const held: { connection: TestRuntimeConnection; args: unknown[] }[] = [];
+    let release = false;
+    const frames = vi.spyOn(TestRuntimeConnection.prototype, "emit").mockImplementation(function (
+      this: TestRuntimeConnection,
+      event,
+      ...args
+    ) {
+      const [data, binary] = args as [Buffer, boolean];
+      if (
+        !release &&
+        event === "message" &&
+        !binary &&
+        /"state":"clos(ing|ed)"/u.test(data.toString())
+      ) {
+        held.push({ connection: this, args: [event, ...args] });
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    });
+    const letGo = HostedBrowserBroker.prototype.letGoPooled;
+    const letting = vi
+      .spyOn(HostedBrowserBroker.prototype, "letGoPooled")
+      .mockImplementation(function (this: HostedBrowserBroker, reason: string) {
+        // The frames arrive first, still queued behind the broker's frame tail when it is let go.
+        release = true;
+        for (const frame of held.splice(0))
+          emit.call(frame.connection, ...(frame.args as [string, ...unknown[]]));
+        return letGo.call(this, reason);
+      });
+    try {
+      // The runtime ends the session on its own (an end request the Home did not send).
+      const fence = j.guest.poolState()!.fence!;
+      void j.guest
+        .endPoolSession(
+          j.signer.issue({
+            access: "read-write",
+            creationOrigin: "person",
+            actor: "person",
+            identity: { kind: "fresh" },
+            pool: { ...fence, end: true },
+            runtimeId: "pool-runtime",
+            sessionId,
+            subject: j.task.userId,
+          }),
+        )
+        .catch(() => undefined);
+      await until(() => expect(held.length).toBeGreaterThan(0));
+      home = await j.restartHome(home);
+      // The person never stopped it: not closing, not closed, whatever the frames said.
+      expect((await j.row(sessionId))?.state).toBe("ready");
+    } finally {
+      letting.mockRestore();
+      frames.mockRestore();
+    }
+    // Its end is a loss, with its note, by the window.
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("failed"));
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
+      { sessionId },
+    ]);
+  } finally {
+    await j.close();
+  }
+});
+
+it("keeps the person's pooled tabs through a clean Home shutdown, and stops none of them", async () => {
+  const j = await journey("clean-shutdown");
+  try {
+    let home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("clean"));
+    const page = await j.draft();
+    home = await j.restartHome(home);
+    await until(() => expect(home.service.pageInventory(sessionId)).toBeDefined());
+    // The session stayed the person's: ready, its page alive, reattached by the new Home.
+    expect((await j.row(sessionId))?.state).toBe("ready");
+    expect(page.page.isClosed()).toBe(false);
+    expect(JSON.parse(await page.value())).toEqual(["unsent draft", 99]);
+  } finally {
+    await j.close();
+  }
+});
+
+it("neither reuses nor ends a pooled session a Stop left closing, at any door", async () => {
+  const j = await journey("closing-doors");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("doors"));
+    j.runnerDown();
+    await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    await home.service.stop(j.task.userId, sessionId);
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    // A person's start that would reuse their browser: the closing session is left to its
+    // receipt, neither reused nor failed.
+    const started = await home.service
+      .start({
+        ownerId: j.task.userId,
+        fresh: true,
+        reuseExisting: true,
+        placement: { kind: "runner", runnerId: j.task.runnerId },
+        operationBudget: { signal: AbortSignal.timeout(2_000), expiresAt: Date.now() + 2_000 },
+      })
+      .then(
+        ({ session }) => session.id,
+        () => undefined,
+      );
+    expect(started).not.toBe(sessionId);
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    // A viewer is refused at once, and raises no demand for it.
+    await expect(j.viewer(home, sessionId).attaching).rejects.toThrow();
+    expect(home.coordinator.gate.demand).toBe(false);
+    j.runnerUp();
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
+it("hands a stopped session whose guest died under a running slot to recovery, and spends no attachment meanwhile", async () => {
+  const j = await journey("closing-dead-guest");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("dead"));
+    j.runnerDown();
+    await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    await home.service.stop(j.task.userId, sessionId);
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    // Nothing is reconnecting any more: from here only the end step could spend an attachment.
+    await until(() => expect(home.coordinator.gate.phase).toBe("open"));
+    const attachments = (await j.slot())!.attachmentGeneration;
+    // The guest dies while the slot reads running.
+    j.controller.observe({ phase: "stopped", savedState: null, instance: null, epoch: null });
+    // Recovery replaces the guest, and its end is the stopped session's evidence.
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
+    expect(j.controller.effects).toEqual(["start", "start"]);
+    // No attachment was spent while the runtime could not be reached.
+    expect((await j.slot())!.attachmentGeneration).toBe(attachments);
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
+it("closes a session stopped while a park is under way once the park commits", async () => {
+  const j = await journey("closing-during-park");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("park-stop"));
+    // The park has retired the runtime and waits at its pause: the Stop lands in between.
+    const pausing = Promise.withResolvers<void>();
+    const pause = Promise.withResolvers<void>();
+    j.controller.hold("pause", async () => {
+      pausing.resolve();
+      await pause.promise;
+    });
+    const parking = home.coordinator.tryPark();
+    await pausing.promise;
+    await home.service.stop(j.task.userId, sessionId);
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    pause.resolve();
+    expect(await parking).toBe("parked");
+    // Parked, the guest is paused and its next adoption leaves the session out: closed.
     expect((await j.row(sessionId))?.state).toBe("closed");
+    expect(j.controller.effects).toEqual(["start", "pause"]);
+    // The next wake leaves it out; the person stopped it, so its tab is not one the browser lost.
+    (await home.coordinator.gate.reserve(AbortSignal.timeout(20_000))).release();
+    expect(j.controller.effects).toEqual(["start", "pause", "resume"]);
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toEqual([]);
+  } finally {
+    await j.close();
+  }
+});
+
+it("keeps a pooled Stop with a viewer attached closing while the runtime is silent, and closed once it answers", async () => {
+  const j = await journey("stop-viewer-silent");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("stop-viewer"));
+    const page = await j.draft();
+    const watching = j.viewer(home, sessionId);
+    const attached = await watching.attaching;
+    // The Runner goes as the Stop's close leaves: the runtime never receives it.
+    const silent = vi
+      .spyOn(TestRuntimeConnection.prototype, "close")
+      .mockImplementationOnce(() => j.runnerDown());
+    try {
+      await home.service.stop(j.task.userId, sessionId);
+    } finally {
+      silent.mockRestore();
+    }
+    attached.close();
+    // Nothing heard: the row is closing, never closed, and nothing new is admitted for it.
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    expect(page.page.isClosed()).toBe(false);
+    await expect(
+      home.service.openTab(j.task.userId, {
+        type: "browser.tab.open",
+        sessionId: BrowserSessionIdSchema.parse(sessionId),
+        idempotencyKey: "after-silent-stop",
+      }),
+    ).rejects.toThrow("The browser has ended.");
+    // The runtime is reached again: the end step closes it, and its answer is the receipt.
+    j.runnerUp();
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
+    await until(() => expect(page.page.isClosed()).toBe(true));
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
+it("keeps a pooled Trigger's stopped session closing while the runtime is silent, and closed once it answers", async () => {
+  const j = await journey("stop-trigger-silent");
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      fresh: true,
+      origin: "trigger",
+      placement: { kind: "runner", runnerId: j.task.runnerId },
+    });
+    expect((await j.row(session.id))?.origin).toBe("trigger");
+    // The Runner is away: the session has no channel here, and the runtime hears nothing.
+    j.runnerDown();
+    await vi.waitFor(() => expect(home.service.pageInventory(session.id)).toBeUndefined());
+    await home.service.stop(j.task.userId, session.id);
+    expect((await j.row(session.id))?.state).toBe("closing");
+    await expect(
+      home.service.openTab(j.task.userId, {
+        type: "browser.tab.open",
+        sessionId: session.id,
+        idempotencyKey: "after-trigger-stop",
+      }),
+    ).rejects.toThrow("The browser has ended.");
+    j.runnerUp();
+    await until(async () => expect((await j.row(session.id))?.state).toBe("closed"));
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
+it("keeps a stopped session closing while its guest cannot be reached, across a Home restart", async () => {
+  const j = await journey("stop-unreachable", { channelDeadlineMs: 1_500 });
+  try {
+    let home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("stop-away"));
+    const page = await j.draft();
+    j.runnerDown();
+    await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    await home.service.stop(j.task.userId, sessionId);
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    home = await j.restartHome(home);
+    // The guest's own window ends the page; the Home has heard nothing, so it says nothing.
+    await until(() => expect(page.page.isClosed()).toBe(true));
+    await until(() => expect(home.coordinator.gate.phase).toBe("open"));
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    // Reached again, the runtime answers that the session has ended: that is the receipt.
+    j.runnerUp();
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
+    expect(j.controller.effects).toEqual(["start"]);
   } finally {
     j.runnerUp();
     await j.close();
@@ -776,9 +1744,8 @@ it("stops a parked session while its viewer waits and never reattaches it", asyn
     );
     expect(j.issued.length).toBe(attachesBefore);
     expect(page.page.isClosed()).toBe(true);
-    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
-      { sessionId },
-    ]);
+    // The person stopped it: its tab is not one the browser lost (P20).
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toEqual([]);
   } finally {
     await j.close();
   }
@@ -1443,10 +2410,15 @@ it("D counts a program's open browser session and nothing else of the program", 
       profileId: null,
       runnerId: task.runnerId,
       runtimeId: target.runtimeId,
+      // Admitted on this slot: the session is this target's own (W1).
+      pooled: true,
     });
     await fixture.store.transitionBrowserSession({ sessionId, state: "ready" });
     expect(await begin()).toBeUndefined();
-    await fixture.store.transitionBrowserSession({ sessionId, state: "closed" });
+    // Closed as a pooled session is: by its runtime's word about its own target.
+    await closeBrowserPoolSessions(fixture.database, target, [sessionId], {
+      kind: "runtime-ended",
+    });
     expect(await begin()).toMatchObject({ phase: "preparing" });
   } finally {
     await fixture.close();
@@ -1795,6 +2767,1703 @@ it("reports the pooled browser's phase, a fresh start's reason and the pages not
   }
 });
 
+/** A store with a running pooled slot and one session admitted on it, ready. */
+async function pooledStore(key: string) {
+  const fixture = await createStoreFixture();
+  const task = await fixture.createRunFixture(key);
+  const target: BrowserPoolTargetIdentity = {
+    runnerId: task.runnerId,
+    runtimeId: "pool-runtime",
+    slotId: `slot-${key}`,
+    term: 1,
+    instanceId: randomUUID(),
+    epoch: 1,
+  };
+  await installBrowserPoolSlot(fixture.database, target);
+  const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+  await personalBrowserRepository(fixture.store).createBrowserSession({
+    ownerId: task.userId,
+    id: sessionId,
+    origin: "agent",
+    placementKey: "pool-test",
+    profileId: null,
+    runnerId: task.runnerId,
+    runtimeId: target.runtimeId,
+    pooled: true,
+  });
+  await fixture.store.transitionBrowserSession({ sessionId, state: "ready" });
+  const state = async () =>
+    (
+      await fixture.database
+        .selectFrom("browserSessions")
+        .select("state")
+        .where("id", "=", sessionId)
+        .executeTakeFirstOrThrow()
+    ).state;
+  return { fixture, task, target, sessionId, state };
+}
+
+it("refuses, in the statement itself, to close a pooled session as unpooled: with its slot, and without it", async () => {
+  const s = await pooledStore("unpooled-refusal");
+  try {
+    await expect(
+      s.fixture.store.closeUnpooledBrowserSession({ sessionId: s.sessionId }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await s.state()).toBe("ready");
+    // Its target replaced: no slot row, the binding still says whose it is.
+    await retireBrowserPoolTarget(s.fixture.database, s.task.runnerId);
+    await expect(
+      s.fixture.store.closeUnpooledBrowserSession({ sessionId: s.sessionId }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await s.state()).toBe("ready");
+  } finally {
+    await s.fixture.close();
+  }
+});
+
+it("keeps a pooled session a Stop left closing through a Home restart with no slot row: it is not failed (W14)", async () => {
+  const s = await pooledStore("restart-closing");
+  try {
+    await s.fixture.store.transitionBrowserSession({ sessionId: s.sessionId, state: "closing" });
+    // Mid-swap, or after a release: no slot row.
+    await retireBrowserPoolTarget(s.fixture.database, s.task.runnerId);
+    await s.fixture.store.failActiveBrowserSessions(undefined, s.task.runnerId);
+    expect(await s.state()).toBe("closing");
+  } finally {
+    await s.fixture.close();
+  }
+});
+
+it("creates no unbound session on a pooled computer: an unpooled create on its runner is refused (W11)", async () => {
+  const s = await pooledStore("unbound-create");
+  try {
+    for (const slot of ["with its slot", "between targets"]) {
+      if (slot === "between targets")
+        await retireBrowserPoolTarget(s.fixture.database, s.task.runnerId);
+      const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+      await expect(
+        personalBrowserRepository(s.fixture.store).createBrowserSession({
+          ownerId: s.task.userId,
+          id: sessionId,
+          origin: "agent",
+          placementKey: "pool-test",
+          profileId: null,
+          runnerId: s.task.runnerId,
+          runtimeId: s.target.runtimeId,
+          onPooledComputer: true,
+        }),
+      ).rejects.toThrow("between states");
+      expect(
+        await s.fixture.database
+          .selectFrom("browserSessions")
+          .select("id")
+          .where("id", "=", sessionId)
+          .execute(),
+      ).toEqual([]);
+    }
+  } finally {
+    await s.fixture.close();
+  }
+});
+
+it("refuses a tab open on a pooled computer with no coordinator here, before any row (W11), and stops a pooled session as closing (W17)", async () => {
+  const j = await journey("no-coordinator");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("no-coordinator"));
+    await j.draft();
+    // Between two targets: the coordinator is retired, and no other is adopted yet.
+    await home.service.retirePool(j.task.runnerId, "browser-replaced");
+    await retireBrowserPoolTarget(j.database, j.task.runnerId);
+    const before = await j.database.selectFrom("browserSessions").select("id").execute();
+    // Refused (the open says it could not open the page), with no row written.
+    await expect(
+      home.service.openTab(j.task.userId, j.command("no-coordinator-second")),
+    ).rejects.toThrow();
+    expect(await j.database.selectFrom("browserSessions").select("id").execute()).toEqual(before);
+    // The retirement ended the open session with its note; a session left closing by a Stop is
+    // the case #stopRecord must keep: closing, never closed without evidence.
+    const s = await pooledStoreOn(j);
+    await home.service.stop(j.task.userId, s);
+    expect((await j.row(s))?.state).toBe("closing");
+    void sessionId;
+  } finally {
+    await j.close();
+  }
+});
+
+/** A pooled session bound to the journey's slot, ready, with no broker (its row only). */
+async function pooledStoreOn(j: Awaited<ReturnType<typeof journey>>) {
+  const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+  await j.database
+    .insertInto("browserSessions")
+    .values({
+      tabGroupId: sessionId,
+      closedAt: null,
+      runnerId: j.task.runnerId,
+      id: sessionId,
+      origin: "person",
+      opener: { kind: "person", userId: j.task.userId },
+      placementKey: "pool-test",
+      profileId: null,
+      runtimeId: "pool-runtime",
+      state: "ready",
+    })
+    .execute();
+  await bindBrowserPoolSession(j.database, {
+    sessionId,
+    runnerId: j.task.runnerId,
+    slotId: `slot-no-coordinator`,
+    term: 1,
+  });
+  return sessionId;
+}
+
+it("lets a person watch while the proxy's one repair parks and wakes the guest: a viewer is not a command (W10)", async () => {
+  const j = await journey("viewer-repair", { statusEveryMs: 50 });
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("viewer-repair"));
+    await j.draft();
+    const watching = j.viewer(home, sessionId, "watch");
+    await watching.attaching;
+    // Attached through the service's own door: a viewer, not a command in flight.
+    expect(home.coordinator.gate.commands).toBe(0);
+    expect(home.coordinator.gate.viewers).toBe(1);
+    const shown: string[] = [];
+    j.controller.observe({ proxy: "down" });
+    await until(() => {
+      const report = home.coordinator.report();
+      if (report) shown.push(report.proxyDown ? "paused" : report.phase);
+      expect(j.controller.effects).toEqual(["start", "pause", "resume"]);
+    });
+    // While it ran the person was told the browser was waking, never that browsing was paused.
+    expect(shown).not.toContain("paused");
+    expect(shown).toContain("waking");
+    // The park retires the guest's channels, the viewer's with them: a client attaches again to
+    // the woken browser, as after any park.
+  } finally {
+    await j.close();
+  }
+});
+
+it("never writes a pooled row the runtime ended on its own while the Home detaches its channels for a restart (W17)", async () => {
+  const j = await journey("detach-frame", { channelDeadlineMs: 1_500 });
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("detach-frame"),
+    );
+    await j.draft();
+    const emit = EventEmitter.prototype.emit;
+    const held: { connection: TestRuntimeConnection; args: unknown[] }[] = [];
+    let release = false;
+    const frames = vi.spyOn(TestRuntimeConnection.prototype, "emit").mockImplementation(function (
+      this: TestRuntimeConnection,
+      event,
+      ...args
+    ) {
+      const [data, binary] = args as [Buffer, boolean];
+      if (
+        !release &&
+        event === "message" &&
+        !binary &&
+        /"state":"clos(ing|ed)"/u.test(data.toString())
+      ) {
+        held.push({ connection: this, args: [event, ...args] });
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    });
+    const detach = HostedBrowserBroker.prototype.detachPooled;
+    const detaching = vi
+      .spyOn(HostedBrowserBroker.prototype, "detachPooled")
+      .mockImplementation(function (this: HostedBrowserBroker, reason: string, signal) {
+        // The frames arrive first, still queued behind the broker's frame tail as it detaches.
+        release = true;
+        for (const frame of held.splice(0))
+          emit.call(frame.connection, ...(frame.args as [string, ...unknown[]]));
+        return detach.call(this, reason, signal);
+      });
+    try {
+      const fence = j.guest.poolState()!.fence!;
+      void j.guest
+        .endPoolSession(
+          j.signer.issue({
+            access: "read-write",
+            creationOrigin: "person",
+            actor: "person",
+            identity: { kind: "fresh" },
+            pool: { ...fence, end: true },
+            runtimeId: "pool-runtime",
+            sessionId,
+            subject: j.task.userId,
+          }),
+        )
+        .catch(() => undefined);
+      await until(() => expect(held.length).toBeGreaterThan(0));
+      // A restart detaches every channel of the runtime, then starts a fresh guest.
+      await home.coordinator.restart();
+    } finally {
+      detaching.mockRestore();
+      frames.mockRestore();
+    }
+    // The person never stopped it: it ended as a loss with its note, never closing or closed.
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("failed"));
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
+      { sessionId },
+    ]);
+  } finally {
+    await j.close();
+  }
+});
+
+for (const revoke of ["device-off", "grant-narrowed", "disconnect"] as const)
+  it(`re-checks authority after #holdForAgent waits on a wake (${revoke}): no attachment row, same refusal (X1)`, async () => {
+    let j: Awaited<ReturnType<typeof journey>> | undefined;
+    j = await journey(`x1-wake-${revoke}`, {
+      chromium: false,
+      profile: true,
+      requireAgentAccess: (runnerId) =>
+        requireRunnerDeviceAccess(j!.database, runnerId, "browser", true),
+      detachRunnerAgents: async (runnerId) => {
+        const rows = await j!.database
+          .selectFrom("browserSessions")
+          .select("id")
+          .where("runnerId", "=", runnerId)
+          .execute();
+        if (!rows.length) return [];
+        const ids = rows.map(({ id }) => id);
+        await j!.database
+          .deleteFrom("browserSessionAttachments")
+          .where("sessionId", "in", ids)
+          .execute();
+        return ids;
+      },
+    });
+    try {
+      const home = await j.startHome();
+      const profile = j.profile!;
+      // Use the self Device already attached to this runner so requireRunnerDeviceAccess reads its switch.
+      const driverRow = await j.database
+        .selectFrom("deviceDrivers")
+        .select("deviceId")
+        .where("runnerId", "=", j.task.runnerId)
+        .where("role", "=", "self")
+        .where("detachedAt", "is", null)
+        .executeTakeFirstOrThrow();
+      const deviceId = driverRow.deviceId;
+      await j.database
+        .updateTable("devices")
+        .set({
+          kind: "computer",
+          ownerKind: "user",
+          ownerUserId: j.task.userId,
+          accessPolicy: {
+            reach: "owner",
+            commands: true,
+            forwarding: true,
+            shares: [],
+            browser: true,
+            apps: true,
+          },
+          accessPolicyRevision: 1,
+        })
+        .where("id", "=", deviceId)
+        .execute();
+
+      const connections = new AgentConnectionStore(j.database);
+      const connection = await connections.create({
+        userId: j.task.userId,
+        label: "Pooled agent",
+        clientName: "Pooled agent",
+        accessMode: "full-access",
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [{ kind: "browser-profile", profileId: profile.id }],
+        },
+        resource: "https://pooled.test/mcp",
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      expect(await connections.activate(connection.id, randomUUID())).toBe(true);
+      const { session: agentSession } = await beginAgentSession(j.database, {
+        userId: j.task.userId,
+        agentConnectionId: connection.id,
+      });
+      const agent = {
+        agentBindingId: `session:${agentSession.id}`,
+        ownerId: j.task.userId,
+        environmentId: j.task.environmentId,
+        threadId: agentSession.threadId,
+      };
+
+      // Open the profile session as the person first so the tab exists before the agent holds it.
+      const personTab = await home.service.openTab(j.task.userId, {
+        type: "browser.tab.open",
+        identity: { kind: "profile", profileId: profile.id },
+        placement: { kind: "runner", runnerId: j.task.runnerId },
+        idempotencyKey: `x1-person-${revoke}`,
+      });
+
+      // Let openAgentTab proceed directly to #admitAgentBackend -> #holdForAgent on personTab
+      // (which has runs === 0 so it can park), then park the real host right as #holdForAgent
+      // calls pool.gate.reserve so it suspends on a real wake.
+      const resume = holdResume(j.controller);
+      const realReserve = home.coordinator.gate.reserve.bind(home.coordinator.gate);
+      let parkNextReserve = false;
+      vi.spyOn(home.service, "openTab").mockImplementationOnce(async () => {
+        parkNextReserve = true;
+        return personTab;
+      });
+      vi.spyOn(home.coordinator.gate, "reserve").mockImplementation(async (...args) => {
+        if (parkNextReserve) {
+          parkNextReserve = false;
+          await until(() => expect(home.coordinator.gate.held).toBe(0));
+          expect(await home.coordinator.tryPark()).toBe("parked");
+        }
+        return realReserve(...args);
+      });
+
+      const opening = home.service.openAgentTab(agent, {
+        identity: { kind: "profile", profile: profile.id },
+        operationKey: `x1-agent-${revoke}`,
+      });
+      try {
+        await before(resume.seen, opening, "Agent hold during wake");
+        expect(await j.store.listBrowserSessionAttachmentBindings(personTab.sessionId)).toEqual([]);
+
+        if (revoke === "device-off") {
+          await home.service.withRunnerAdmission(j.task.runnerId, async () => {
+            const updated = await j!.store.updateDeviceAccessPolicy({
+              deviceId,
+              ownerId: j!.task.userId,
+              allowDeployment: true,
+              expectedRevision: 1,
+              policy: {
+                reach: "owner",
+                commands: true,
+                forwarding: true,
+                shares: [],
+                browser: false,
+                apps: true,
+              },
+              idempotency: { key: `x1-off-${revoke}`, requestedBy: j!.task.userId },
+            });
+            expect(updated.outcome).toBe("updated");
+            await home.service.disableAgentAccess(j!.task.runnerId);
+          });
+        } else if (revoke === "grant-narrowed") {
+          const updated = await connections.update(j.task.userId, {
+            connectionId: connection.id,
+            expectedRevision: connection.grantRevision!,
+            grant: { scope: "selected", tasks: false, resources: [] },
+          });
+          expect(updated.narrowed).toBe(true);
+        } else {
+          const revoked = await connections.revoke(j.task.userId, connection.id);
+          expect(revoked).toBe(true);
+        }
+
+        resume.allow();
+        const refused = await opening.then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        // Must match the first admission's refusal verbatim, and write no attachment row.
+        const firstAdmissionRefusal = await home.service
+          .agentBackend({
+            agentBindingId: agent.agentBindingId,
+            ownerId: agent.ownerId,
+            sessionId: personTab.sessionId,
+          })
+          .then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+        expect(refused).toBeDefined();
+        expect(firstAdmissionRefusal).toBeDefined();
+        expect(refused).toMatchObject({
+          code: (firstAdmissionRefusal as { code?: string }).code,
+          message: (firstAdmissionRefusal as { message?: string }).message,
+          ...(revoke === "device-off" ? { reason: "device-access-off" } : {}),
+        });
+        if (revoke === "disconnect") expect((refused as Error).message).toBe(lineageEndedMessage);
+        expect(await j.store.listBrowserSessionAttachmentBindings(personTab.sessionId)).toEqual([]);
+      } finally {
+        resume.allow();
+        await opening.catch(() => undefined);
+      }
+    } finally {
+      await j.close();
+    }
+  });
+
+it("re-checks authority after #holdForAgent waits in the profile queue on a personal Home (X1)", async () => {
+  const fixture = await createStoreFixture();
+  const root = await mkdtemp(join(tmpdir(), "opensteer-personal-queue-"));
+  const runtimeServerRef: { server?: BrowserRuntimeServer } = {};
+  try {
+    const task = await fixture.startRunFixture("x1-personal-profile-queue");
+    const { database, store } = fixture;
+    await database
+      .updateTable("runners")
+      .set({ allowedModules: sql`'["agents","browser"]'::jsonb` })
+      .where("id", "=", task.runnerId)
+      .execute();
+    const profile = await store.createBrowserProfile({
+      name: "Personal saved browser",
+      ownerId: task.userId,
+      homeRunnerId: task.runnerId,
+      idempotencyKey: "x1-personal-profile",
+    });
+    const tickets = generateKeyPairSync("ed25519");
+    const runtime = new BrowserRuntime({
+      runtimeId: "personal-runtime",
+      launcher: Object.assign(new FakeIsolatingLauncher(), {
+        localProfiles: {
+          engine: "chromium" as const,
+          createFiles: async () => {},
+          release: async () => "released" as const,
+        },
+      }),
+      sessionFilesRoot: join(root, "sessions"),
+      localProfiles: { root: join(root, "profiles") },
+      ticketVerifier: await Ed25519AttachTicketVerifier.create({
+        replayLedgerPath: join(root, "private", "tickets.json"),
+        resolvePublicKey: (id) => (id === "test" ? tickets.publicKey : null),
+      }),
+    });
+    const bridgeToken = randomUUID();
+    const server = new BrowserRuntimeServer({
+      runtime,
+      port: 0,
+      relayBridge: {
+        token: bridgeToken,
+        updateAttachKeys: () => {},
+      },
+    });
+    runtimeServerRef.server = server;
+    const address = await server.start();
+    const bridge = new LocalBrowserRuntimeBridge({
+      bridgeToken,
+      runtimeId: "personal-runtime",
+      url: new URL(`http://${address.host}:${address.port}`),
+    });
+    bridge.setAttachPublicKeys([
+      {
+        keyId: "test",
+        publicKeyPem: tickets.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      },
+    ]);
+    const baseRepository = personalBrowserRepository(store);
+    const realCreate = baseRepository.createBrowserSession.bind(baseRepository);
+    let pauseNextCreate: { entered: () => void; release: Promise<void> } | undefined;
+    const personal = new BrowserService({
+      deploymentId: task.deploymentId,
+      hostOrigin: new URL("http://127.0.0.1"),
+      personal: true,
+      tabs: new TabStore(database),
+      tabPlaces: { write: async () => false, notice: () => {} },
+      repository: Object.assign(baseRepository, {
+        createBrowserSession: async (
+          input: Parameters<typeof baseRepository.createBrowserSession>[0],
+        ) => {
+          const pause = pauseNextCreate;
+          if (pause) {
+            pauseNextCreate = undefined;
+            pause.entered();
+            await pause.release;
+          }
+          return realCreate(input);
+        },
+      }),
+      localProfiles: new BrowserLocalProfiles({
+        deploymentId: task.deploymentId,
+        repository: store,
+        baseUrl: new URL("http://127.0.0.1"),
+      }),
+      signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: tickets.privateKey }),
+      onError: () => {},
+      onSessionsChanged: () => {},
+      targetResolver: {
+        placements: () => [
+          {
+            kind: "runner" as const,
+            runnerId: task.runnerId,
+            label: "Personal test browser",
+            runtimeId: "personal-runtime",
+            environmentIds: [task.environmentId],
+            available: true,
+          },
+        ],
+        resolve: () => ({
+          runtimeId: "personal-runtime",
+          placementKey: "personal-test",
+          main: true,
+          surfaceState: 1,
+          tabRestoreVersion: true,
+          sharedControl: true,
+          cdpBoundary: true,
+          ...(runtime.localProfileStorage
+            ? { localProfileStorage: runtime.localProfileStorage }
+            : {}),
+          connect: (ticket) => new TestRuntimeConnection(bridge, ticket),
+          connectionCommands: true,
+          targetControl: true,
+        }),
+      },
+    });
+    try {
+      await personal.initialize();
+
+      const personTab = await personal.openTab(task.userId, {
+        type: "browser.tab.open",
+        identity: { kind: "profile", profileId: profile.id },
+        placement: { kind: "runner", runnerId: task.runnerId },
+        idempotencyKey: "x1-personal-person",
+      });
+
+      const connections = new AgentConnectionStore(database);
+      const connection = await connections.create({
+        userId: task.userId,
+        label: "Personal agent",
+        clientName: "Personal agent",
+        accessMode: "full-access",
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [{ kind: "browser-profile", profileId: profile.id }],
+        },
+        resource: "https://personal.test/mcp",
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      expect(await connections.activate(connection.id, randomUUID())).toBe(true);
+      const { session: agentSession } = await beginAgentSession(database, {
+        userId: task.userId,
+        agentConnectionId: connection.id,
+      });
+      const agent = {
+        agentBindingId: `session:${agentSession.id}`,
+        ownerId: task.userId,
+      };
+
+      // Hold the profile queue (without holding withRunnerAdmission) via a person start on the
+      // same profile paused inside createBrowserSession.
+      const enteredQueue = Promise.withResolvers<void>();
+      const releaseQueue = Promise.withResolvers<void>();
+      pauseNextCreate = { entered: () => enteredQueue.resolve(), release: releaseQueue.promise };
+      const blocker = personal
+        .start({
+          origin: "person",
+          ownerId: task.userId,
+          profileId: profile.id,
+          placement: { kind: "runner", runnerId: task.runnerId },
+          reuseExisting: false,
+        })
+        .catch(() => undefined);
+      try {
+        await enteredQueue.promise;
+
+        // Agent attaches while the profile queue is held: first admission passes, then
+        // #holdForAgent suspends behind `blocker` in the profile queue.
+        const agentQueued = Promise.withResolvers<void>();
+        const queueRun = KeyedMutationQueue.prototype.run;
+        const queueSpy = vi.spyOn(KeyedMutationQueue.prototype, "run").mockImplementation(function (
+          this: KeyedMutationQueue,
+          key,
+          operation,
+        ) {
+          if (key === profile.id) agentQueued.resolve();
+          return queueRun.call(this, key, operation);
+        });
+        const attaching = personal.attachCdpForAgent(
+          { ...agent, sessionId: personTab.sessionId },
+          () => {},
+        );
+        try {
+          await agentQueued.promise;
+        } finally {
+          queueSpy.mockRestore();
+        }
+
+        // Narrow the grant while #holdForAgent is waiting in the profile queue.
+        const updated = await connections.update(task.userId, {
+          connectionId: connection.id,
+          expectedRevision: connection.grantRevision!,
+          grant: { scope: "selected", tasks: false, resources: [] },
+        });
+        expect(updated.narrowed).toBe(true);
+
+        releaseQueue.resolve();
+        const refused = await attaching.then(
+          (attached) => {
+            attached.close();
+            return undefined;
+          },
+          (error: unknown) => error,
+        );
+        await blocker;
+
+        const firstAdmissionRefusal = await personal
+          .agentBackend({ ...agent, sessionId: personTab.sessionId })
+          .then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+        expect(refused).toBeDefined();
+        expect(firstAdmissionRefusal).toBeDefined();
+        expect(refused).toMatchObject({
+          code: (firstAdmissionRefusal as { code?: string }).code,
+          message: (firstAdmissionRefusal as { message?: string }).message,
+        });
+        expect(await store.listBrowserSessionAttachmentBindings(personTab.sessionId)).toEqual([]);
+      } finally {
+        releaseQueue.resolve();
+        await blocker;
+      }
+    } finally {
+      await personal.close().catch(() => undefined);
+    }
+  } finally {
+    await runtimeServerRef.server?.close().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+    await fixture.close();
+  }
+});
+
+it("never resolves broker.ready() or confirms openTab while the broker is detaching or stopping (X6)", async () => {
+  const j = await journey("x6-detach-ready", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const emit = EventEmitter.prototype.emit;
+    const held: { connection: TestRuntimeConnection; args: unknown[] }[] = [];
+    let release = false;
+    const brokers: HostedBrowserBroker[] = [];
+    const readyOriginal = HostedBrowserBroker.prototype.ready;
+    const captureBroker = vi
+      .spyOn(HostedBrowserBroker.prototype, "ready")
+      .mockImplementation(function (this: HostedBrowserBroker) {
+        brokers.push(this);
+        return readyOriginal.call(this);
+      });
+    const frames = vi.spyOn(TestRuntimeConnection.prototype, "emit").mockImplementation(function (
+      this: TestRuntimeConnection,
+      event,
+      ...args
+    ) {
+      const [data, binary] = args as [Buffer, boolean];
+      if (
+        !release &&
+        event === "message" &&
+        !binary &&
+        /"type":"browser\.tabs"/u.test(data.toString())
+      ) {
+        held.push({ connection: this, args: [event, ...args] });
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    });
+    try {
+      const opening = home.service.openTab(j.task.userId, j.command("x6-detach-ready"));
+      await until(() => {
+        expect(brokers[0]).toBeDefined();
+        expect(held.some(({ args }) => /"op":"end"/u.test((args[1] as Buffer).toString()))).toBe(
+          true,
+        );
+      });
+      // Exact Finding 1 sequence: browser.tabs (rows + end) are queued on #runtimeFrameTail right
+      // as letGoPooled sets #detaching = true before rows executes.
+      release = true;
+      for (const frame of held.splice(0))
+        emit.call(frame.connection, ...(frame.args as [string, ...unknown[]]));
+      const lettingGo = brokers[0]!.letGoPooled("The Home is shutting down.");
+      const opened = await opening.then(
+        (result) => ({ ok: true as const, result }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      await lettingGo;
+      // On unfixed code, openTab falsely resolves while the session is still "starting", so a
+      // Home restart (failActiveBrowserSessions) fails the served session with zero loss notes.
+      if (opened.ok) {
+        await j.store.failActiveBrowserSessions(undefined, j.task.runnerId);
+        const losses = await listBrowserPoolDocumentLosses(
+          j.database,
+          j.task.userId,
+          opened.result.tabId,
+        );
+        expect(
+          losses,
+          "served session was confirmed during detach and lost with no note",
+        ).not.toEqual([]);
+      }
+      expect(opened.ok).toBe(false);
+    } finally {
+      captureBroker.mockRestore();
+      frames.mockRestore();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
+it("rejects openTab and preserves closing when Stop races attach before ready (X6)", async () => {
+  const j = await journey("x6-stop-during-attach", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const emit = EventEmitter.prototype.emit;
+    const held: { connection: TestRuntimeConnection; args: unknown[] }[] = [];
+    let release = false;
+    const frames = vi.spyOn(TestRuntimeConnection.prototype, "emit").mockImplementation(function (
+      this: TestRuntimeConnection,
+      event,
+      ...args
+    ) {
+      const [data, binary] = args as [Buffer, boolean];
+      if (
+        !release &&
+        event === "message" &&
+        !binary &&
+        /"type":"browser\.tabs"/u.test(data.toString())
+      ) {
+        held.push({ connection: this, args: [event, ...args] });
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    });
+    const stopBroker = HostedBrowserBroker.prototype.stop;
+    const stopping = vi.spyOn(HostedBrowserBroker.prototype, "stop").mockImplementation(function (
+      this: HostedBrowserBroker,
+    ) {
+      release = true;
+      for (const frame of held.splice(0))
+        emit.call(frame.connection, ...(frame.args as [string, ...unknown[]]));
+      return stopBroker.call(this);
+    });
+    try {
+      const opening = home.service.openTab(j.task.userId, j.command("x6-stop-during-attach"));
+      await until(() =>
+        expect(held.some(({ args }) => /"op":"end"/u.test((args[1] as Buffer).toString()))).toBe(
+          true,
+        ),
+      );
+      const [row] = await j.database
+        .selectFrom("browserSessions")
+        .select("id")
+        .where("state", "=", "starting")
+        .execute();
+      expect(row).toBeDefined();
+      const stopResult = home.service.stop(j.task.userId, row!.id);
+      const opened = await opening.then(
+        (result) => ({ ok: true as const, result }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      await stopResult;
+      expect(opened.ok).toBe(false);
+      // A Stop never turns into "failed" (W14 / Rule 4): it ends closed (with evidence) or stays closing.
+      const finalState = (await j.row(row!.id))?.state;
+      expect(["closing", "closed"]).toContain(finalState);
+    } finally {
+      stopping.mockRestore();
+      frames.mockRestore();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
+it("writes a loss note when failActiveBrowserSessions ends a pooled session with an open tab (X6)", async () => {
+  const j = await journey("x6-restart-note", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("x6-restart-note"),
+    );
+    await home.service.close();
+    // Simulate a Home restart while no slot row exists (mid-swap): failActiveBrowserSessions ends
+    // the ready pooled session, and must still write its loss note so the served page has one.
+    await retireBrowserPoolTarget(j.database, j.task.runnerId);
+    await j.store.failActiveBrowserSessions(undefined, j.task.runnerId);
+    expect((await j.row(sessionId))?.state).toBe("failed");
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
+      { sessionId },
+    ]);
+  } finally {
+    await j.close();
+  }
+});
+
+it("bounds controller.apply(stop) in #drainStep with callTimeoutMs and signal, keeping the session closing (X7)", async () => {
+  const j = await journey("x7-drain-stop-bound", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(
+      j.task.userId,
+      j.command("x7-drain-stop-bound"),
+    );
+    const slot = (await readBrowserPoolSlot(j.database, j.task.runnerId))!;
+    home.coordinator.close();
+    await j.store.transitionBrowserSession({ sessionId, state: "closing" });
+    await home.service.close();
+    await retireBrowserPoolTarget(j.database, j.task.runnerId, {
+      target: { slotId: slot.slotId, term: slot.term },
+    });
+    expect(await listBrowserPoolRetiredTargets(j.database, j.task.runnerId)).toHaveLength(1);
+
+    // Start a fresh service with no broker and no competing coordinator on the retired slot,
+    // then attach a drain coordinator whose runtime restarted (poolState === null) and whose
+    // controller.apply("stop") hangs until released.
+    const drainService = new BrowserService({
+      deploymentId: j.task.deploymentId,
+      hostOrigin: new URL("http://127.0.0.1"),
+      onSessionsChanged: () => {},
+      personal: true,
+      pooledRunner: j.task.runnerId,
+      repository: personalBrowserRepository(j.store),
+      signer: new BrowserAttachTicketSigner({
+        keyId: "test-drain",
+        privateKey: generateKeyPairSync("ed25519").privateKey,
+      }),
+    });
+    const stopCalled = Promise.withResolvers<void>();
+    const releaseStop = Promise.withResolvers<void>();
+    const errors: unknown[] = [];
+    const drain = new BrowserPoolCoordinator({
+      database: j.database,
+      runnerId: j.task.runnerId,
+      runtimeId: slot.runtimeId,
+      slotId: slot.slotId,
+      term: slot.term,
+      callTimeoutMs: 150,
+      retryMs: 50,
+      drain: { instanceId: slot.instanceId, epoch: slot.epoch },
+      onError: (error) => errors.push(error),
+      runtime: {
+        poolState: async () => null,
+        controlPool: async () => {
+          throw new Error("drain must not send controlPool");
+        },
+        endSession: async () => {
+          throw new Error("drain must not call endSession when poolState is null");
+        },
+      },
+      controller: {
+        status: async () => ({
+          slotId: slot.slotId,
+          term: slot.term,
+          instance: slot.instanceId,
+          epoch: slot.epoch,
+          phase: "running",
+          savedState: null,
+        }),
+        result: async () => null,
+        apply: async (call) => {
+          stopCalled.resolve();
+          await releaseStop.promise;
+          return {
+            id: call.id,
+            applied: false,
+            reason: "test-cleanup",
+            status: {
+              slotId: slot.slotId,
+              term: slot.term,
+              instance: slot.instanceId,
+              epoch: slot.epoch,
+              phase: "running",
+              savedState: null,
+            },
+          };
+        },
+      },
+    });
+    try {
+      void drainService.drainPool(j.task.runnerId, drain).catch(() => undefined);
+      await stopCalled.promise;
+      // Must time out at callTimeoutMs (150ms) with BrowserPoolUnanswered instead of hanging forever.
+      await vi.waitFor(
+        () => expect(errors.some((error) => error instanceof BrowserPoolUnanswered)).toBe(true),
+        { timeout: 2_000, interval: 25 },
+      );
+      // Clean teardown via close() must not hang, and Rule 4: session stays closing honestly.
+      drain.close();
+      expect((await j.row(sessionId))?.state).toBe("closing");
+      expect(await listBrowserPoolRetiredTargets(j.database, j.task.runnerId)).toHaveLength(1);
+    } finally {
+      releaseStop.resolve();
+      drain.close();
+      await drainService.close();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
+it("never forgets a retired target while a closing session still has an active broker in #brokers (X7)", async () => {
+  const j = await journey("x7-drain-active-broker", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(
+      j.task.userId,
+      j.command("x7-drain-active-broker"),
+    );
+    const slot = (await readBrowserPoolSlot(j.database, j.task.runnerId))!;
+
+    // Hold FakePage.prototype.close so stopWithReceipt keeps the broker in #brokers while the
+    // session row is already "closing".
+    const realClose = FakePage.prototype.close;
+    const releaseClose = Promise.withResolvers<void>();
+    const closeSpy = vi.spyOn(FakePage.prototype, "close").mockImplementation(async function (
+      this: FakePage,
+    ) {
+      await releaseClose.promise;
+      return realClose.call(this);
+    });
+    const stopEntered = Promise.withResolvers<void>();
+    const releaseReceipt = Promise.withResolvers<void>();
+    const receiptSpy = vi
+      .spyOn(HostedBrowserBroker.prototype, "stopWithReceipt")
+      .mockImplementation(async function (this: HostedBrowserBroker) {
+        stopEntered.resolve();
+        await releaseReceipt.promise;
+        // Finish "pooled" (no runtime closed frame heard) so the row stays closing for drain.
+        await this.letGoPooled("unanswered stop");
+        return false;
+      });
+    try {
+      const stopping = home.service.stop(j.task.userId, sessionId);
+      await stopEntered.promise;
+      home.coordinator.close();
+      expect((await j.row(sessionId))?.state).toBe("closing");
+
+      // Retire the target while the closing session still has its broker in #brokers.
+      await retireBrowserPoolTarget(j.database, j.task.runnerId, {
+        target: { slotId: slot.slotId, term: slot.term },
+      });
+      expect(await listBrowserPoolRetiredTargets(j.database, j.task.runnerId)).toHaveLength(1);
+
+      let drainedSettled = false;
+      const drain = new BrowserPoolCoordinator({
+        database: j.database,
+        runnerId: j.task.runnerId,
+        runtimeId: slot.runtimeId,
+        slotId: slot.slotId,
+        term: slot.term,
+        retryMs: 30,
+        drain: { instanceId: slot.instanceId, epoch: slot.epoch },
+        runtime: loopbackPoolChannel(j.guest),
+        controller: j.controller,
+      });
+      let closingChecks = 0;
+      const setAdopterOriginal = drain.setAdopter.bind(drain);
+      vi.spyOn(drain, "setAdopter").mockImplementation((adopter) => {
+        setAdopterOriginal({
+          ...adopter,
+          ending: async (target) => {
+            closingChecks++;
+            return (await adopter.ending?.(target)) ?? [];
+          },
+        });
+      });
+      const drained = home.service.drainPool(j.task.runnerId, drain).then(() => {
+        drainedSettled = true;
+      });
+      // Give #drainStep several ticks while the broker is still in #brokers.
+      await until(() => {
+        expect(closingChecks).toBeGreaterThanOrEqual(4);
+      });
+      // Must NOT have forgotten the retired target or resolved drain while the row is closing!
+      expect(drainedSettled).toBe(false);
+      expect(await listBrowserPoolRetiredTargets(j.database, j.task.runnerId)).toHaveLength(1);
+
+      // Now let the broker finish "pooled" (leaving row closing) and let the page close answer.
+      releaseClose.resolve();
+      releaseReceipt.resolve();
+      await stopping;
+      await drained;
+      expect((await j.row(sessionId))?.state).toBe("closed");
+      expect(await listBrowserPoolRetiredTargets(j.database, j.task.runnerId)).toEqual([]);
+    } finally {
+      releaseClose.resolve();
+      releaseReceipt.resolve();
+      receiptSpy.mockRestore();
+      closeSpy.mockRestore();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
+it("marks an unconfirmed-closing replaced-browser session closeUnconfirmed, sorts it with ended rows, and dismisses it without closing the row (X2)", async () => {
+  const j = await journey("x2-unconfirmed-closing-lifecycle", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const { sessionId: oldSessionId, tabId: oldTabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("x2-old"),
+    );
+    const oldSlot = (await readBrowserPoolSlot(j.database, j.task.runnerId))!;
+    home.coordinator.close();
+    await j.store.transitionBrowserSession({ sessionId: oldSessionId, state: "closing" });
+    await home.service.close();
+
+    // Retire the old target and install a replacement target on the same runner, leaving the
+    // old session closing with no host confirmation.
+    await retireBrowserPoolTarget(j.database, j.task.runnerId, {
+      target: { slotId: oldSlot.slotId, term: oldSlot.term },
+    });
+    const nextSlot = {
+      runnerId: j.task.runnerId,
+      runtimeId: `rt-x2-${randomUUID().slice(0, 8)}`,
+      slotId: `slot-x2-${randomUUID().slice(0, 8)}`,
+      term: 1,
+      instanceId: randomUUID(),
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(j.database, nextSlot);
+    const activeSessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    await j.store.createBrowserSession({
+      id: activeSessionId,
+      ownerId: j.task.userId,
+      placementKey: `runner:${j.task.runnerId}`,
+      runnerId: j.task.runnerId,
+      runtimeId: nextSlot.runtimeId,
+      origin: "agent",
+      profileId: null,
+      pooled: true,
+    });
+    await j.store.transitionBrowserSession({ sessionId: activeSessionId, state: "ready" });
+
+    const newService = new BrowserService({
+      deploymentId: j.task.deploymentId,
+      hostOrigin: new URL("http://127.0.0.1"),
+      onSessionsChanged: () => {},
+      personal: true,
+      pooledRunner: j.task.runnerId,
+      repository: personalBrowserRepository(j.store),
+      signer: new BrowserAttachTicketSigner({
+        keyId: "test-x2",
+        privateKey: generateKeyPairSync("ed25519").privateKey,
+      }),
+    });
+    const nextRuntimeState = {
+      fence: {
+        slot: nextSlot.slotId,
+        term: nextSlot.term,
+        instance: nextSlot.instanceId,
+        epoch: nextSlot.epoch,
+      },
+      revision: 1,
+      phase: "running" as const,
+      intent: null,
+      cancelled: false,
+      retired: null,
+      blockers: [],
+      adoption: null,
+      sessions: [],
+    };
+    const nextCoordinator = new BrowserPoolCoordinator({
+      database: j.database,
+      runnerId: j.task.runnerId,
+      runtimeId: nextSlot.runtimeId,
+      slotId: nextSlot.slotId,
+      term: nextSlot.term,
+      runtime: {
+        poolState: async () => nextRuntimeState,
+        controlPool: async () => nextRuntimeState,
+        endSession: async () => ({ outcome: "ended", state: nextRuntimeState }),
+      },
+      controller: {
+        status: async () => ({
+          slotId: nextSlot.slotId,
+          term: nextSlot.term,
+          instance: nextSlot.instanceId,
+          epoch: nextSlot.epoch,
+          phase: "running",
+          savedState: null,
+        }),
+        result: async () => null,
+        apply: async (call) => ({
+          id: call.id,
+          applied: true,
+          status: {
+            slotId: nextSlot.slotId,
+            term: nextSlot.term,
+            instance: nextSlot.instanceId,
+            epoch: nextSlot.epoch,
+            phase: "running",
+            savedState: null,
+          },
+        }),
+      },
+    });
+    await newService.adoptPool(j.task.runnerId, nextCoordinator);
+    try {
+      const listed = await j.store.listBrowserSessions(j.task.userId, { pooled: true });
+      const oldRow = listed.find((row) => row.id === oldSessionId);
+      const activeRow = listed.find((row) => row.id === activeSessionId);
+      expect(oldRow?.state).toBe("closing");
+      expect(oldRow?.closeUnconfirmed).toBe(true);
+      expect(activeRow?.closeUnconfirmed).toBeUndefined();
+      // Active ready row sorts before the unconfirmed-closing row (bucket 0 before bucket 1).
+      expect(listed.findIndex((row) => row.id === activeSessionId)).toBeLessThan(
+        listed.findIndex((row) => row.id === oldSessionId),
+      );
+
+      // Pool report exposes the unconfirmed-closing session and its tab for live clients.
+      const unconfirmed = await listBrowserPoolUnconfirmedClosings(j.database, j.task.runnerId);
+      expect(unconfirmed).toEqual([{ sessionId: oldSessionId, surfaceIds: [oldTabId] }]);
+      const reports = await newService.resourcePools([j.task.runnerId]);
+      expect(reports[0]?.unconfirmedClosings).toEqual([
+        { sessionId: oldSessionId, surfaceIds: [oldTabId] },
+      ]);
+
+      // Dismissing hides it from the person's list and pool report while keeping the DB row closing (Rule 4).
+      await newService.dismissUnconfirmedSession(j.task.userId, oldSessionId);
+      expect((await j.row(oldSessionId))?.state).toBe("closing");
+      const afterDismiss = await j.store.listBrowserSessions(j.task.userId, { pooled: true });
+      expect(afterDismiss.some((row) => row.id === oldSessionId)).toBe(false);
+      expect(await listBrowserPoolUnconfirmedClosings(j.database, j.task.runnerId)).toEqual([]);
+      const reportsAfter = await newService.resourcePools([j.task.runnerId]);
+      expect(reportsAfter[0]?.unconfirmedClosings).toBeUndefined();
+
+      // Re-dismissing is idempotent; dismissing a live ready session is refused.
+      await newService.dismissUnconfirmedSession(j.task.userId, oldSessionId);
+      await expect(
+        newService.dismissUnconfirmedSession(j.task.userId, activeSessionId),
+      ).rejects.toMatchObject({ code: "conflict" });
+    } finally {
+      nextCoordinator.close();
+      await newService.close();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
+it("enforces authority on dismissBrowserPoolUnconfirmedSession: outside grant is not_found, read-only is forbidden, in-grant write succeeds (X2)", async () => {
+  const j = await journey("x2-unconfirmed-closing-authority", { chromium: false });
+  try {
+    const profileA = await j.store.createBrowserProfile({
+      idempotencyKey: `x2-prof-a-${randomUUID()}`,
+      name: "Profile A",
+      ownerId: j.task.userId,
+      homeRunnerId: j.task.runnerId,
+    });
+    const profileB = await j.store.createBrowserProfile({
+      idempotencyKey: `x2-prof-b-${randomUUID()}`,
+      name: "Profile B",
+      ownerId: j.task.userId,
+      homeRunnerId: j.task.runnerId,
+    });
+    await j.database
+      .updateTable("browserProfiles")
+      .set({ storageState: "local", storageRunnerId: j.task.runnerId })
+      .where("id", "=", profileA.id)
+      .execute();
+    const oldSlot = {
+      runnerId: j.task.runnerId,
+      runtimeId: `rt-x2-auth-${randomUUID().slice(0, 8)}`,
+      slotId: `slot-x2-auth-${randomUUID().slice(0, 8)}`,
+      term: 1,
+      instanceId: randomUUID(),
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(j.database, oldSlot);
+    const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    await j.store.createBrowserSession({
+      id: sessionId,
+      ownerId: j.task.userId,
+      placementKey: `runner:${j.task.runnerId}`,
+      runnerId: j.task.runnerId,
+      runtimeId: oldSlot.runtimeId,
+      origin: "agent",
+      profileId: profileA.id,
+      pooled: true,
+    });
+    await j.store.transitionBrowserSession({ sessionId, state: "closing" });
+    await retireBrowserPoolTarget(j.database, j.task.runnerId, {
+      target: { slotId: oldSlot.slotId, term: oldSlot.term },
+    });
+
+    const connections = new AgentConnectionStore(j.database);
+    const outsideGrant = await connections.create({
+      userId: j.task.userId,
+      label: "Outside grant",
+      clientName: "Outside agent",
+      accessMode: "full-access",
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: profileB.id }],
+      },
+      resource: "https://x2.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(await connections.activate(outsideGrant.id, randomUUID())).toBe(true);
+
+    const readOnlyGrant = await connections.create({
+      userId: j.task.userId,
+      label: "Read-only grant",
+      clientName: "Read-only agent",
+      accessMode: "approval-required",
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: profileA.id }],
+      },
+      resource: "https://x2.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(await connections.activate(readOnlyGrant.id, randomUUID())).toBe(true);
+
+    const writeGrant = await connections.create({
+      userId: j.task.userId,
+      label: "Write grant",
+      clientName: "Write agent",
+      accessMode: "full-access",
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: profileA.id }],
+      },
+      resource: "https://x2.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(await connections.activate(writeGrant.id, randomUUID())).toBe(true);
+
+    // Outside grant reads identically to non-existent (Rule 5).
+    const missingId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    const nonExistentErr = await dismissBrowserPoolUnconfirmedSession(j.database, {
+      ownerId: j.task.userId,
+      sessionId: missingId,
+      subject: { kind: "connection", agentConnectionId: outsideGrant.id },
+    }).catch((err: unknown) => err);
+    const outsideErr = await dismissBrowserPoolUnconfirmedSession(j.database, {
+      ownerId: j.task.userId,
+      sessionId,
+      subject: { kind: "connection", agentConnectionId: outsideGrant.id },
+    }).catch((err: unknown) => err);
+    expect(outsideErr).toMatchObject({
+      code: "not_found",
+      message: (nonExistentErr as Error).message,
+    });
+
+    // Read-only grant on the session's profile is forbidden (Rule 1).
+    await expect(
+      dismissBrowserPoolUnconfirmedSession(j.database, {
+        ownerId: j.task.userId,
+        sessionId,
+        subject: { kind: "connection", agentConnectionId: readOnlyGrant.id },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+
+    // Read-write grant on the session's profile succeeds while keeping state closing (Rule 4).
+    await dismissBrowserPoolUnconfirmedSession(j.database, {
+      ownerId: j.task.userId,
+      sessionId,
+      subject: { kind: "connection", agentConnectionId: writeGrant.id },
+    });
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    expect(
+      (await j.store.listBrowserSessions(j.task.userId, { pooled: true })).some(
+        (row) => row.id === sessionId,
+      ),
+    ).toBe(false);
+  } finally {
+    await j.close();
+  }
+});
+
+it("aborts an in-flight pooled openTab as soon as reservation.ended fires on restart (X8)", async () => {
+  const j = await journey("x8-opentab-reservation-ended", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const enteredCreate = Promise.withResolvers<void>();
+    const releaseCreate = Promise.withResolvers<void>();
+    let observedAborted = false;
+    let tearingDown = false;
+    const storeProto = Object.getPrototypeOf(j.store) as typeof j.store;
+    const origCreate = storeProto.createBrowserSession;
+    const createSpy = vi
+      .spyOn(storeProto, "createBrowserSession")
+      .mockImplementation(async function (this: typeof j.store, input) {
+        enteredCreate.resolve();
+        await releaseCreate.promise;
+        if (tearingDown) throw new Error("test teardown");
+        return origCreate.call(this, input);
+      });
+    try {
+      const opening = home.service.openTab(j.task.userId, j.command("x8-open-aborted")).then(
+        () => "opened",
+        () => {
+          observedAborted = true;
+          return "rejected";
+        },
+      );
+      await enteredCreate.promise;
+      // Start a restart while openTab holds its pool reservation BEFORE any broker exists:
+      // reservation.ended must abort openTab immediately instead of waiting for browserOpenWorkMs.
+      const restarting = home.coordinator.restart({ key: "x8-restart" }).catch(() => undefined);
+      await vi.waitFor(() => expect(observedAborted).toBe(true), { timeout: 1_500, interval: 25 });
+      tearingDown = true;
+      releaseCreate.resolve();
+      await opening;
+      await restarting;
+    } finally {
+      tearingDown = true;
+      releaseCreate.resolve();
+      createSpy.mockRestore();
+      home.coordinator.close();
+      await home.service.close();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
+it("refuses an unpooled createBrowserSession on a pooled runner even before first install with 0 pool rows (X8)", async () => {
+  const j = await journey("x8-pre-install", { chromium: false });
+  try {
+    // Zero rows in browser_pool_slots and zero rows in browser_pool_sessions (before startHome).
+    expect(await readBrowserPoolSlot(j.database, j.task.runnerId)).toBeUndefined();
+    const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    await expect(
+      j.store.createBrowserSession({
+        id: sessionId,
+        ownerId: j.task.userId,
+        placementKey: `runner:${j.task.runnerId}`,
+        runnerId: j.task.runnerId,
+        runtimeId: "rt-unpooled",
+        origin: "agent",
+        profileId: null,
+        pooledRunner: j.task.runnerId,
+      }),
+    ).rejects.toBeInstanceOf(BrowserPoolAdmissionClosed);
+    expect(await j.store.getBrowserSessionForOwner(sessionId, j.task.userId)).toBeNull();
+  } finally {
+    await j.close();
+  }
+});
+
+it("returns null from closeAgentSession on a pooled closing session without re-invoking stop (X8)", async () => {
+  const j = await journey("x8-close-agent-closing", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("x8-agent-closing"));
+    home.coordinator.close();
+    await j.store.transitionBrowserSession({ sessionId, state: "closing" });
+    const stopSpy = vi.spyOn(home.service, "stop");
+    try {
+      const closed = await home.service.closeAgentSession({
+        agentBindingId: `run:${j.task.runId}`,
+        ownerId: j.task.userId,
+        sessionId,
+      });
+      expect(closed).toBeNull();
+      expect(stopSpy).not.toHaveBeenCalled();
+    } finally {
+      stopSpy.mockRestore();
+      await home.service.close();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
+it("refuses to write a hold and still parks when device access is turned off during pooled openTab's request (PH2)", async () => {
+  let j: Awaited<ReturnType<typeof journey>> | undefined;
+  j = await journey("ph2-opentab-access-off", {
+    chromium: false,
+    profile: true,
+    requireAgentAccess: (runnerId) =>
+      requireRunnerDeviceAccess(j!.database, runnerId, "browser", true),
+    detachRunnerAgents: async (runnerId) => {
+      const rows = await j!.database
+        .selectFrom("browserSessions")
+        .select("id")
+        .where("runnerId", "=", runnerId)
+        .execute();
+      if (!rows.length) return [];
+      const ids = rows.map(({ id }) => id);
+      await j!.database
+        .deleteFrom("browserSessionAttachments")
+        .where("sessionId", "in", ids)
+        .execute();
+      return ids;
+    },
+  });
+  try {
+    const home = await j.startHome();
+    const profile = j.profile!;
+    const driverRow = await j.database
+      .selectFrom("deviceDrivers")
+      .select("deviceId")
+      .where("runnerId", "=", j.task.runnerId)
+      .where("role", "=", "self")
+      .where("detachedAt", "is", null)
+      .executeTakeFirstOrThrow();
+    const deviceId = driverRow.deviceId;
+    await j.database
+      .updateTable("devices")
+      .set({
+        kind: "computer",
+        ownerKind: "user",
+        ownerUserId: j.task.userId,
+        accessPolicy: {
+          reach: "owner",
+          commands: true,
+          forwarding: true,
+          shares: [],
+          browser: true,
+          apps: true,
+        },
+        accessPolicyRevision: 1,
+      })
+      .where("id", "=", deviceId)
+      .execute();
+    const personTab = await home.service.openTab(j.task.userId, {
+      type: "browser.tab.open",
+      identity: { kind: "profile", profileId: profile.id },
+      placement: { kind: "runner", runnerId: j.task.runnerId },
+      idempotencyKey: "ph2-person-tab",
+    });
+
+    const requestSent = Promise.withResolvers<void>();
+    const releaseRequest = Promise.withResolvers<void>();
+    const origSend = TestRuntimeConnection.prototype.send;
+    const sendSpy = vi.spyOn(TestRuntimeConnection.prototype, "send").mockImplementation(function (
+      this: TestRuntimeConnection,
+      ...args: Parameters<TestRuntimeConnection["send"]>
+    ) {
+      const message = JSON.parse(args[0]) as {
+        type?: string;
+        command?: { method?: string };
+      };
+      if (
+        message.type === "cdp.command" &&
+        message.command?.method === browserHostMethods.openTab
+      ) {
+        requestSent.resolve();
+        void releaseRequest.promise.then(() => origSend.apply(this, args));
+        return;
+      }
+      return origSend.apply(this, args);
+    });
+
+    try {
+      const opening = home.service.openTab(
+        j.task.userId,
+        {
+          type: "browser.tab.open",
+          identity: { kind: "profile", profileId: profile.id },
+          placement: { kind: "runner", runnerId: j.task.runnerId },
+          idempotencyKey: "ph2-agent-tab",
+        },
+        {
+          agentBindingId: `run:${j.task.runId}`,
+          ownerId: j.task.userId,
+          threadId: j.task.threadId,
+        },
+      );
+      await before(requestSent.promise, opening, "agent openTab request in flight");
+
+      // Turn browser access off on this computer while openTab awaits the runtime's reply.
+      await home.service.withRunnerAdmission(j.task.runnerId, async () => {
+        const updated = await j.store.updateDeviceAccessPolicy({
+          deviceId,
+          ownerId: j.task.userId,
+          allowDeployment: true,
+          expectedRevision: 1,
+          policy: {
+            reach: "owner",
+            commands: true,
+            forwarding: true,
+            shares: [],
+            browser: false,
+            apps: true,
+          },
+          idempotency: { key: "ph2-device-off", requestedBy: j.task.userId },
+        });
+        expect(updated.outcome).toBe("updated");
+        await home.service.disableAgentAccess(j.task.runnerId);
+      });
+
+      releaseRequest.resolve();
+      await expect(opening).rejects.toThrow();
+
+      // No attachment row was written, and the pooled browser can park cleanly.
+      expect(await j.store.listBrowserSessionAttachmentBindings(personTab.sessionId)).toEqual([]);
+      await until(() => expect(home.coordinator.gate.held).toBe(0));
+      expect(await home.coordinator.tryPark()).toBe("parked");
+    } finally {
+      releaseRequest.resolve();
+      sendSpy.mockRestore();
+      home.coordinator.close();
+      await home.service.close();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
+it("journals the drain coordinator's stop call, settles it by the same id across retries, and scopes open rows to the draining target (PH3)", async () => {
+  const j = await journey("ph3-drain-stop-journal", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(
+      j.task.userId,
+      j.command("ph3-drain-stop-journal"),
+    );
+    const slot = (await readBrowserPoolSlot(j.database, j.task.runnerId))!;
+    home.coordinator.close();
+    await j.store.transitionBrowserSession({ sessionId, state: "closing" });
+    await home.service.close();
+    await retireBrowserPoolTarget(j.database, j.task.runnerId, {
+      target: { slotId: slot.slotId, term: slot.term },
+    });
+
+    // Seed an unrelated open Start row for a newer live target on the same runner so we prove
+    // the drain coordinator's scoped journal never delivers or settles the live target's rows.
+    const liveCallId = randomUUID();
+    await recordBrowserPoolControllerCall(j.database, {
+      id: liveCallId,
+      runnerId: j.task.runnerId,
+      slotId: "live-slot-other",
+      term: slot.term + 1,
+      intentId: null,
+      kind: "start",
+      request: {
+        id: liveCallId,
+        slotId: "live-slot-other",
+        term: slot.term + 1,
+        kind: "start",
+        expect: { instance: null, epoch: 0, phase: "stopped", savedStateId: null },
+      },
+    });
+
+    const drainService = new BrowserService({
+      deploymentId: j.task.deploymentId,
+      hostOrigin: new URL("http://127.0.0.1"),
+      onSessionsChanged: () => {},
+      personal: true,
+      pooledRunner: j.task.runnerId,
+      repository: personalBrowserRepository(j.store),
+      signer: new BrowserAttachTicketSigner({
+        keyId: "test-drain-ph3",
+        privateKey: generateKeyPairSync("ed25519").privateKey,
+      }),
+    });
+
+    const appliedCalls: { id: string; slotId: string; term: number; kind: string }[] = [];
+    const firstStopCalled = Promise.withResolvers<void>();
+    const releaseHanging = Promise.withResolvers<void>();
+    let allowAnswer = false;
+    const errors: unknown[] = [];
+
+    const drain = new BrowserPoolCoordinator({
+      database: j.database,
+      runnerId: j.task.runnerId,
+      runtimeId: slot.runtimeId,
+      slotId: slot.slotId,
+      term: slot.term,
+      callTimeoutMs: 150,
+      retryMs: 50,
+      drain: { instanceId: slot.instanceId, epoch: slot.epoch },
+      onError: (error) => errors.push(error),
+      runtime: {
+        poolState: async () => null,
+        controlPool: async () => {
+          throw new Error("drain must not send controlPool");
+        },
+        endSession: async () => {
+          throw new Error("drain must not call endSession when poolState is null");
+        },
+      },
+      controller: {
+        status: async () => ({
+          slotId: slot.slotId,
+          term: slot.term,
+          instance: slot.instanceId,
+          epoch: slot.epoch,
+          phase: "running",
+          savedState: null,
+        }),
+        result: async () => {
+          if (!allowAnswer) {
+            await releaseHanging.promise;
+            return null;
+          }
+          return null;
+        },
+        apply: async (call) => {
+          appliedCalls.push({
+            id: call.id,
+            slotId: call.slotId,
+            term: call.term,
+            kind: call.kind,
+          });
+          firstStopCalled.resolve();
+          if (!allowAnswer) {
+            await releaseHanging.promise;
+          }
+          return {
+            id: call.id,
+            applied: true,
+            status: {
+              slotId: slot.slotId,
+              term: slot.term,
+              instance: slot.instanceId,
+              epoch: slot.epoch,
+              phase: "stopped",
+              savedState: null,
+            },
+          };
+        },
+      },
+    });
+    try {
+      const drained = drainService.drainPool(j.task.runnerId, drain);
+      await firstStopCalled.promise;
+      // Wait for the first stop call to hit callTimeoutMs and fail as unanswered.
+      await vi.waitFor(
+        () => expect(errors.some((error) => error instanceof BrowserPoolUnanswered)).toBe(true),
+        { timeout: 2_000, interval: 25 },
+      );
+
+      // Rule 4: an open stop row must exist in the journal with the exact id that timed out.
+      const openRows = await listOpenBrowserPoolControllerCalls(j.database, j.task.runnerId);
+      const openDrainStops = openRows.filter(
+        (row) => row.slotId === slot.slotId && row.term === slot.term && row.kind === "stop",
+      );
+      expect(openDrainStops).toHaveLength(1);
+      const firstId = appliedCalls[0]!.id;
+      expect(openDrainStops[0]!.id).toBe(firstId);
+
+      // Now let the controller answer on the next turn: the drain coordinator must re-deliver the
+      // SAME stop id, settle that single row, never touch the live target's row, and finish drain.
+      allowAnswer = true;
+      await drained;
+
+      expect(appliedCalls.length).toBeGreaterThanOrEqual(2);
+      expect(appliedCalls.every((call) => call.id === firstId)).toBe(true);
+      expect(appliedCalls.some((call) => call.slotId === "live-slot-other")).toBe(false);
+
+      const remainingOpen = await listOpenBrowserPoolControllerCalls(j.database, j.task.runnerId);
+      expect(remainingOpen.map((row) => row.id)).toEqual([liveCallId]);
+      expect((await j.row(sessionId))?.state).toBe("closed");
+    } finally {
+      allowAnswer = true;
+      releaseHanging.resolve();
+      drain.close();
+      await drainService.close();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
 it("vetoes a park attempted during the first session.state send after a re-attach", async () => {
   const gate = new BrowserPoolGate();
   gate.set({ recovered: true });
@@ -1820,6 +4489,8 @@ it("vetoes a park attempted during the first session.state send after a re-attac
       now: () => gate.backgroundNow(),
       wait: (signal: AbortSignal) => gate.background(signal),
       retiring: () => gate.retiringOrAdopting,
+      refusesWrite: (reservation: Parameters<BrowserPoolGate["refusesWrite"]>[0]) =>
+        gate.refusesWrite(reservation),
     },
     readSessionState: async () => {
       stateReads += 1;
@@ -1835,7 +4506,7 @@ it("vetoes a park attempted during the first session.state send after a re-attac
     sharedControl: true,
     connectTimeoutMs: 1_000,
     passkeys: false,
-    onState: async () => ({}),
+    onState: async (state: string) => ({ state }),
     onTerminal: () => undefined,
     onTabsChanged: () => undefined,
     onRecordsChanged: () => undefined,

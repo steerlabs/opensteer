@@ -3,6 +3,7 @@ import { pageSiteLabel } from "./surfaces.js";
 import {
   imageGenerationToolName,
   isIntegrationGatewayTool,
+  runTerminationUnprovenCode,
   type AnsweredQuestion,
   type AssignmentSummary,
   type WaitingRequest,
@@ -3212,6 +3213,50 @@ function clipText(value: string): string {
   return value.length <= max ? value : `…${value.slice(value.length - max)}`;
 }
 
+export { runTerminationUnprovenCode };
+
+export function isRunTerminationUnproven(run: Pick<RunEntry, "error" | "status">): boolean {
+  return run.status === "failed" && run.error?.code === runTerminationUnprovenCode;
+}
+
+export function isRunEngineRetired(run: Pick<RunEntry, "interruptedCause" | "status">): boolean {
+  return run.status === "interrupted" && run.interruptedCause === "engine-retired";
+}
+
+export function runInterruptedTitle(
+  run: Pick<RunEntry, "interruptedCause" | "status">,
+  options?: { readonly conversation?: boolean | undefined; readonly mobile?: boolean | undefined },
+): string {
+  if (isRunEngineRetired(run)) return "Run cut short";
+  if (options?.conversation === true) return "Stopped.";
+  return options?.mobile === true ? "This run stopped." : "Run stopped.";
+}
+
+export function runInterruptedMessage(
+  run: Pick<RunEntry, "interruptedCause" | "status">,
+): string | null {
+  if (isRunEngineRetired(run)) {
+    return "This Run was cut short: Opensteer had to end its shared engine to make sure another task had stopped; it will start again when work next needs it. What it was doing at that moment may not have finished; send a message to continue.";
+  }
+  return null;
+}
+
+export function runOutcomeTitle(
+  run: Pick<RunEntry, "error" | "status">,
+  options?: { readonly conversation?: boolean | undefined; readonly mobile?: boolean | undefined },
+): string {
+  if (isRunTerminationUnproven(run)) return "Couldn’t confirm this stopped";
+  if (options?.conversation === true) return "Opensteer couldn’t finish";
+  return options?.mobile === true ? "This run failed" : "Run failed";
+}
+
+export function runOutcomeMessage(run: Pick<RunEntry, "error" | "status">): string | null {
+  if (isRunTerminationUnproven(run)) {
+    return "Stopping could not be confirmed. Something from this Run may still be running on that device.";
+  }
+  return run.error?.ownerMessage ?? run.error?.message ?? null;
+}
+
 interface ActivityFeedPresentation {
   detail: string;
   detailKind: "code" | "prose";
@@ -3222,11 +3267,20 @@ interface ActivityFeedPresentation {
 
 export function activityFeedPresentation(entry: ActivityFeedEntry): ActivityFeedPresentation {
   if (entry.kind === "run") {
+    if (entry.status === "interrupted") {
+      return {
+        detail: runInterruptedMessage(entry) ?? "",
+        detailKind: "prose",
+        icon: isRunEngineRetired(entry) ? "alert-circle" : "stop",
+        label: runInterruptedTitle(entry),
+        marker: "stopped",
+      };
+    }
     return {
-      detail: entry.error?.message ?? "",
+      detail: runOutcomeMessage(entry) ?? "",
       detailKind: "prose",
       icon: "alert-circle",
-      label: "Run failed",
+      label: runOutcomeTitle(entry),
       marker: "failed",
     };
   }

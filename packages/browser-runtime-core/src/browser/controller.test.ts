@@ -410,6 +410,54 @@ describe("BrowserController", () => {
     }
   });
 
+  it("holds a viewer joining mid-wake until wake finishes instead of casting about:blank", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const id = ledger.snapshot()[0]!.id;
+    const navStarted = Promise.withResolvers<void>();
+    const finishNav = Promise.withResolvers<void>();
+    let wokenPage: FakePage | null = null;
+    try {
+      await ledger.sleep(id, () => null);
+      const createPage = context.createPage.bind(context);
+      vi.spyOn(context, "createPage").mockImplementationOnce(async (...args) => {
+        const next = (await createPage(...args)) as FakePage;
+        wokenPage = next;
+        next.cdpSession.responses.set("Page.navigate", async (params?: Record<string, unknown>) => {
+          navStarted.resolve();
+          await finishNav.promise;
+          next.navigate(String(params?.url ?? "https://example.test/"), "Example");
+          return { frameId: await next.targetId(), loaderId: next.loaderId };
+        });
+        return next;
+      });
+      const waking = ledger.wake(id);
+      await navStarted.promise;
+      // Mid-wake: record.live exists (binding is non-null) with surface.state === "suspended".
+      expect(ledger.binding(id)?.surface.state).toBe("suspended");
+      expect(ledger.waking(id)).not.toBeNull();
+      let subscribedSettled = false;
+      const subscribed = controller.handle({ type: "stream.subscribe", surfaceId: id }).then(() => {
+        subscribedSettled = true;
+      });
+      for (let turn = 0; turn < 10; turn += 1) await flushMicrotasks();
+      expect(subscribedSettled).toBe(false);
+      expect(commandsNamed("Page.startScreencast", wokenPage!)).toHaveLength(0);
+      finishNav.resolve();
+      await waking;
+      await subscribed;
+      expect(subscribedSettled).toBe(true);
+      await vi.waitFor(() =>
+        expect(commandsNamed("Page.startScreencast", wokenPage!)).toHaveLength(1),
+      );
+    } finally {
+      finishNav.resolve();
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
   it("waits for the page's load on every try of an agent's resume, and ends the wait with its operation (V3)", async () => {
     const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
     await controller.start();

@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { claudeInstallGuidance } from "@opensteer/harness-claude";
 import { createHarnessRegistry } from "./harness-registry.js";
 
 const harnessExecutables = harnessKindRecord((kind) => `/opt/fake/${kind}`);
@@ -65,51 +65,41 @@ describe("Runner harness registry", () => {
     await harnesses.close();
   });
 
-  it("on a Linux Home, offers only engines that can run sandboxed, and says why the rest can't", () => {
+  it("offers the engines a computer ships and says how to install the rest", () => {
     vi.stubEnv("PATH", "/nonexistent");
     const harnesses = createHarnessRegistry(harnessExecutables, harnessRuntime);
-    harnesses.adoptRuntimeBoundary(isolatedServiceHarnessRuntimeBoundary);
-    const sandboxed = "runs only on a computer where Opensteer runs as you.";
+    const finds = "Opensteer finds it within a minute; if it doesn't, restart Opensteer.";
     expect(
       Object.fromEntries(harnesses.listDrivers().map(({ kind, readiness }) => [kind, readiness])),
     ).toEqual({
-      antigravity: {
-        reason: `Antigravity keeps its sign-in in the computer's own account, so it ${sandboxed}`,
-        status: "unavailable",
-      },
-      // Shipped only when the Home's image includes it; never "install it yourself".
-      claude: {
-        reason: "Claude Code isn’t included on this computer, so it can’t run here.",
-        status: "unavailable",
-      },
+      antigravity: expect.objectContaining({ status: "runtime-check" }),
+      claude: { reason: claudeInstallGuidance, status: "unavailable" },
       codex: expect.objectContaining({ status: "runtime-check" }),
       cursor: {
-        reason: `Cursor keeps its sign-in in the computer's own account, so it ${sandboxed}`,
+        reason: `Cursor's CLI is not installed on this computer. Install it from https://cursor.com/install. ${finds}`,
         status: "unavailable",
       },
       grok: {
-        reason: `Grok keeps its sign-in in the computer's own account, so it ${sandboxed}`,
+        reason: `Grok's CLI is not installed on this computer. Install it from https://x.ai/cli. ${finds}`,
         status: "unavailable",
       },
       muse: {
-        reason: `Muse Code keeps its sign-in in the computer's own account, so it ${sandboxed}`,
+        reason: `Muse Code's CLI is not installed on this computer. Install it from https://dev.meta.ai/docs/muse-code. ${finds}`,
         status: "unavailable",
       },
-      opencode: {
-        reason: `OpenCode has no command sandbox of its own, so it ${sandboxed}`,
-        status: "unavailable",
-      },
-      pi: {
-        reason: `Pi has no command sandbox of its own, so it ${sandboxed}`,
-        status: "unavailable",
-      },
+      opencode: expect.objectContaining({ status: "runtime-check" }),
+      pi: expect.objectContaining({ status: "runtime-check" }),
     });
-    expect(harnesses.driverSources(HarnessIdSchema.parse("codex"))).not.toHaveLength(0);
+    // Without the person's own Codex, only an Opensteer-managed account is on offer.
+    expect(
+      harnesses
+        .driverSources(HarnessIdSchema.parse("codex"))
+        ?.flatMap(({ stateKinds }) => stateKinds),
+    ).not.toContain("ambient");
   });
 
-  it("offers a Claude Code a Linux Home's image includes", () => {
+  it("offers a Claude Code found on PATH", () => {
     const harnesses = createHarnessRegistry(harnessExecutables, harnessRuntime);
-    harnesses.adoptRuntimeBoundary(isolatedServiceHarnessRuntimeBoundary);
     expect(harnesses.canRunDriver(HarnessIdSchema.parse("claude"))).toBe(true);
     expect(
       harnesses.driverSources(HarnessIdSchema.parse("claude"))?.map(({ sourceId }) => sourceId),

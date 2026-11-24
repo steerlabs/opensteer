@@ -1254,3 +1254,49 @@ describe("targeted tab mutations, single-tab reads, and projection batching", ()
     f.service.dispose();
   });
 });
+
+describe("closing a group", () => {
+  it("answers a replay with the same key exactly as the first call answered", async () => {
+    const [kept, closed] = [row(), row()];
+    const groupId = TabGroupIdSchema.parse(`tgp_${randomUUID()}`);
+    const f = fixture([kept, closed]);
+    const group = (tabIds: TabRecord["id"][]): TabLayout["items"][number] => ({
+      kind: "group",
+      group: { groupId, name: "Research", color: "blue", collapsed: false, tabIds },
+    });
+    let layout: TabLayout = { revision: 1, items: [group([kept.id, closed.id])] };
+    const answered = new Map<string, { tabIds: TabRecord["id"][]; layout: TabLayout }>();
+    // As the store does: authority first, then a replay's stored answer or the close itself.
+    (f.options.store as unknown as Record<string, unknown>).closeGroup = async (
+      _owner: unknown,
+      _group: unknown,
+      key: string,
+      authorize: TabAuthorization,
+      canClose: (row: TabRecord) => boolean,
+    ) => {
+      const open = [kept, closed].filter((row) => !row.closedAt);
+      await authorize({} as never, open, structuredClone(layout));
+      const stored = answered.get(key);
+      if (stored) return { ...structuredClone(stored), replayed: true, currentLayout: layout };
+      const tabIds = open.filter(canClose).map((row) => row.id);
+      for (const row of open) if (tabIds.includes(row.id)) row.closedAt = new Date();
+      const remaining = open.filter((row) => !tabIds.includes(row.id)).map((row) => row.id);
+      layout = { revision: 2, items: remaining.length ? [group(remaining)] : [] };
+      answered.set(key, { tabIds, layout: structuredClone(layout) });
+      return { tabIds, layout: structuredClone(layout) };
+    };
+    // The first call may not close `kept`; by the replay that refusal has gone.
+    let refused = new Set([kept.id]);
+    f.options.deniedRows = async () => refused;
+    const first = await f.service.closeGroup(actor, groupId, "close-group");
+    expect(first).toMatchObject({
+      closed: [closed.id],
+      failed: [{ tabId: kept.id }],
+      groupClosed: false,
+    });
+    refused = new Set();
+    const replay = await f.service.closeGroup(actor, groupId, "close-group");
+    expect({ ...replay, layout: undefined }).toEqual({ ...first, layout: undefined });
+    f.service.dispose();
+  });
+});

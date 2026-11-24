@@ -61,6 +61,7 @@ try {
       "usb",
       "profile-restore",
       "cookies",
+      "system-ca",
     ];
     const rows = fs
       .readFileSync(path.join(root, "results.jsonl"), "utf8")

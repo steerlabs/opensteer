@@ -20,6 +20,7 @@ import {
 import {
   isConstraintViolation,
   isTransactionConflict,
+  runDatabaseTransactionOnce,
   withDatabaseTransaction,
 } from "./connection.js";
 import { inheritExecutionClock } from "./personal-transaction.js";
@@ -672,7 +673,12 @@ export async function commitPersonalMutation<Result>(
   database: TargetDb,
   action: (tx: PersonalMutationTransaction, mutation: PersonalMutation) => Promise<Result>,
   retryDiscovery?: (error: unknown) => boolean,
-  mode?: "non-retrying",
+  /**
+   * `non-retrying`: one attempt, as the command store needs it. `once-bounded`: one attempt under
+   * the operation's transaction budget, every statement's timeout and its cancel on the signal
+   * included (the pooled browser's store, P17); no other caller uses it.
+   */
+  mode?: "non-retrying" | "once-bounded",
 ): Promise<Result> {
   if (database.isTransaction) {
     const tx = database as PersonalMutationTransaction;
@@ -733,7 +739,12 @@ export async function commitPersonalMutation<Result>(
             rollback(error);
             throw error;
           })
-      : await withDatabaseTransaction(database, actionUnderFence, undefined, rollback);
+      : mode === "once-bounded"
+        ? await runDatabaseTransactionOnce(database, actionUnderFence).catch((error: unknown) => {
+            rollback(error);
+            throw error;
+          })
+        : await withDatabaseTransaction(database, actionUnderFence, undefined, rollback);
   if (suspended) notify(listener, "authority", () => suspended?.committed());
   committed.mutation.publish(listener, committed.notice);
   return committed.result;

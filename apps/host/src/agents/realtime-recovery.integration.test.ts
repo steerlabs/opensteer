@@ -1,7 +1,7 @@
 import type { HostNetwork } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
 import { ModelSelectionSchema, createId, type ThreadId } from "@opensteer/core";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { hostApiCurrentHeader, hostApiVersionHeader } from "@opensteer/protocol";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
@@ -138,7 +138,6 @@ integration("Personal realtime stream through the Desktop bridge", () => {
         stateKind: "isolated",
       },
       harnesses,
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 15_000,
     });
   }, 120_000);

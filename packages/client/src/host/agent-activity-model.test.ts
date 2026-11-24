@@ -807,6 +807,36 @@ describe("a task's turn", () => {
     const failed = turns([run({ status: "failed" }), note, command("ls")])[0]!;
     expect(turnWords(failed)).toEqual([note]);
 
+    const unproven = activityFeedPresentation(
+      run({
+        error: {
+          code: "execution_termination_unproven",
+          message: "The Runner could not verify that all Run processes stopped.",
+          retryable: false,
+        },
+        status: "failed",
+      }),
+    );
+    expect(unproven.label).toBe("Couldn’t confirm this stopped");
+    expect(unproven.detail).toContain("may still be running on that device");
+
+    const retired = activityFeedPresentation(
+      run({
+        interruptedCause: "engine-retired",
+        status: "interrupted",
+      }),
+    );
+    expect(retired.label).toBe("Run cut short");
+    expect(retired.detail).toContain(
+      "end its shared engine to make sure another task had stopped; it will start again when work next needs it",
+    );
+    expect(retired.marker).toBe("stopped");
+
+    const stopped = activityFeedPresentation(run({ status: "interrupted" }));
+    expect(stopped.label).toBe("Run stopped.");
+    expect(stopped.detail).toBe("");
+    expect(stopped.marker).toBe("stopped");
+
     const joined = groupTranscriptEntries([
       run({ status: "running" }),
       command("ls"),

@@ -479,7 +479,6 @@ function environment(
     id,
     kind,
     name,
-    providerStateModes: ["ambient", "isolated"],
     runnerId: `runner-${id}`,
     status: "connected",
   };

@@ -780,17 +780,20 @@
     },
     "hello" : {
       "helperVersion" : "0.1.79",
-      "minProtocolVersion" : 10,
+      "minProtocolVersion" : 11,
       "ownerViewVersion" : 3,
       "permissions" : {
         "accessibility" : "granted",
         "screenRecording" : "granted"
       },
-      "protocolVersion" : 10,
+      "protocolVersion" : 11,
       "routes" : {
         "windowGroups" : true,
         "windowLocation" : true
       }
+    },
+    "helper.exit" : {
+      "exiting" : true
     },
     "imessage.account" : {
       "account" : {

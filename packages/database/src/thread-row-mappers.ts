@@ -229,6 +229,8 @@ export function runFromRow(row: {
   readonly causalChainId: CausalChainId;
   readonly environmentId: EnvironmentId;
   readonly failure: RunFailure | null;
+  readonly interruptedCause?: import("@opensteer/core").RunInterruptedCause | null;
+  readonly stopConfirmedAt?: Date | null;
   readonly providerRetry?: import("@opensteer/core").RunRetry | null;
   readonly harnessInstanceId: HarnessInstanceId;
   readonly modelSelection: ModelSelection;
@@ -258,6 +260,10 @@ export function runFromRow(row: {
     createdAt: row.createdAt.toISOString(),
     environmentId: row.environmentId,
     failure: row.failure,
+    ...(row.interruptedCause !== undefined ? { interruptedCause: row.interruptedCause } : {}),
+    ...(row.stopConfirmedAt !== undefined
+      ? { stopConfirmedAt: row.stopConfirmedAt?.toISOString() ?? null }
+      : {}),
     harnessInstanceId: row.harnessInstanceId,
     id: row.id,
     providerSessionId: row.providerSessionId,

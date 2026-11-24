@@ -1,3 +1,4 @@
+import { nodeTrustEnvironment } from "../../../../deploy/container/opensteer-node-trust.mjs";
 import { DesktopBrowserProfileErasure } from "./browser-profile-erasure.js";
 import { logShutdownError, type ShutdownLog } from "../app/desktop-shutdown.js";
 import { RestartPolicy } from "@opensteer/shared/restartPolicy";
@@ -1767,27 +1768,33 @@ export class LocalRunnerService {
       await this.#stopSlotComputerUse(slot);
       this.#assertCurrentIntent(slot, intentGeneration);
     }
-    const environment = runnerEnvironment({
-      ...(browser ? { browser } : {}),
-      ...(computerUse ? { computerUse } : {}),
-      baseEnvironment: userEnvironment,
-      config: this.#config,
-      deploymentShape: target.deploymentShape,
-      hostUrl: target.hostUrl,
-      homeDirectory: this.#homeDirectory,
-      nodeExecutable: runtimeRelease.nodeExecutable,
-      runnerDataDirectory,
-      runnerName,
-      ...(runAgents
-        ? {
-            execution: {
-              agentSkillsDirectory: runtimeRelease.agentSkillsDirectory,
-              browserHarnessExecutable: runtimeRelease.browserHarnessExecutable,
-              harnessExecutables: runtimeRelease.harnessExecutables,
-            },
-          }
-        : {}),
-    });
+    // This Runner dials its Home over TLS from Electron's utility process,
+    // which takes Node's own variable for the computer's certificates but not
+    // the argument (`opensteer-node-trust.mjs`).
+    const environment = nodeTrustEnvironment(
+      runnerEnvironment({
+        ...(browser ? { browser } : {}),
+        ...(computerUse ? { computerUse } : {}),
+        baseEnvironment: userEnvironment,
+        config: this.#config,
+        deploymentShape: target.deploymentShape,
+        hostUrl: target.hostUrl,
+        homeDirectory: this.#homeDirectory,
+        nodeExecutable: runtimeRelease.nodeExecutable,
+        runnerDataDirectory,
+        runnerName,
+        ...(runAgents
+          ? {
+              execution: {
+                agentSkillsDirectory: runtimeRelease.agentSkillsDirectory,
+                browserHarnessExecutable: runtimeRelease.browserHarnessExecutable,
+                harnessExecutables: runtimeRelease.harnessExecutables,
+              },
+            }
+          : {}),
+      }),
+      { environmentInputs: "drop" },
+    );
     const networkSecrets = networkCredentialSecrets(environment);
     this.#assertCurrentIntent(slot, intentGeneration);
     const stoppedSince = this.#agentsStoppedSince?.();
