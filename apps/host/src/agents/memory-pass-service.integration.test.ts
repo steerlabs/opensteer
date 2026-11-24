@@ -1471,7 +1471,7 @@ describeStore("managed memory passes", (it) => {
     const base = await fixture(f, "resolution", {
       light: false,
     });
-    const { account: claude } = await claudeAccount(f, base);
+    const { account: claude, catalog: claudeCatalog } = await claudeAccount(f, base);
     // The remembered model retains the person's explicit options.
     const chatModel = ModelSelectionSchema.parse({
       providerId: "openai",
@@ -1599,6 +1599,143 @@ describeStore("managed memory passes", (it) => {
         options: {},
       },
     });
+    // An explicit deep entry matching Chat's remembered model stays ahead of built-in deep defaults.
+    await f.store.recordHarnessCatalogs({
+      environmentId: base.environmentId,
+      expectedRevisions: new Map([[claude.id, claude.runtimeRevision]]),
+      catalogs: [
+        {
+          ...claudeCatalog,
+          models: [
+            ...claudeCatalog.models,
+            {
+              ...claudeCatalog.models[0]!,
+              displayName: "Claude Opus 5.5",
+              isDefault: false,
+              modelId: ModelSelectionSchema.shape.modelId.parse("claude-opus-5-5"),
+              nativeModelId: "claude-opus-5-5",
+            },
+          ],
+        },
+      ],
+    });
+    await f.store.rememberExecutionChoice(base.userId, {
+      selection: {
+        environmentId: base.environmentId,
+        harnessInstanceId: claude.id,
+        modelSelection: ModelSelectionSchema.parse({
+          providerId: "anthropic",
+          modelId: "claude-haiku-5-5",
+          options: {},
+        }),
+      },
+    });
+    expect(
+      await instance.admissionSelection(nightlyTick.occurrence.id, nightly.anchorThread!),
+    ).toEqual({
+      harnessInstanceId: claude.id,
+      harnessRevision: claude.runtimeRevision,
+      modelSelection: {
+        providerId: "anthropic",
+        modelId: "claude-haiku-5-5",
+        nativeModelId: "claude-haiku-5-5",
+        options: {},
+      },
+    });
+    // A healthy remembered model beats an exhausted deep default instead of running on a spent account.
+    await writeAgentHomeSettings(f.database, {});
+    await f.store.recordHarnessCatalogs({
+      environmentId: base.environmentId,
+      expectedRevisions: new Map([[claude.id, claude.runtimeRevision]]),
+      catalogs: [
+        {
+          ...claudeCatalog,
+          connections: [
+            {
+              connectionSlot: "primary",
+              label: "Subscription",
+              status: "connected",
+              usage: {
+                limitReached: true,
+                observedAt: "2026-11-01T00:00:00.000Z",
+                windows: [{ label: "weekly", resetsAt: null, usedPercent: 100 }],
+              },
+            },
+          ],
+          models: [
+            ...claudeCatalog.models,
+            {
+              ...claudeCatalog.models[0]!,
+              displayName: "Claude Opus 5.5",
+              isDefault: false,
+              modelId: ModelSelectionSchema.shape.modelId.parse("claude-opus-5-5"),
+              nativeModelId: "claude-opus-5-5",
+            },
+          ],
+        },
+      ],
+    });
+    await f.store.rememberExecutionChoice(base.userId, {
+      selection: {
+        environmentId: base.environmentId,
+        harnessInstanceId: base.harnessInstance.id,
+        modelSelection: chatModel,
+      },
+    });
+    expect(
+      await instance.admissionSelection(nightlyTick.occurrence.id, nightly.anchorThread!),
+    ).toEqual({
+      harnessInstanceId: base.harnessInstance.id,
+      harnessRevision: base.harnessInstance.runtimeRevision,
+      modelSelection: chatModel,
+    });
+    // Settings preview follows a provisioned worker's persisted accessMode, matching admission.
+    await f.store.recordHarnessCatalogs({
+      environmentId: base.environmentId,
+      expectedRevisions: new Map([[claude.id, claude.runtimeRevision]]),
+      catalogs: [claudeCatalog],
+    });
+    await f.database
+      .updateTable("threads")
+      .set({ accessMode: "approval-required" })
+      .where("id", "=", light.anchorThread!.id)
+      .execute();
+    const fullAccessOnly = {
+      ...s.runners,
+      identityForEnvironment: () => ({ capabilities: ["background-text-v1"] }),
+      harnessAccessModes: () => ["full-access" as const],
+    };
+    const { readAutomaticModelPreview } = await import("./automatic-models.js");
+    const restricted = await readAutomaticModelPreview(
+      {
+        store: f.store,
+        runners: fullAccessOnly as unknown as Parameters<
+          typeof readAutomaticModelPreview
+        >[0]["runners"],
+      },
+      base.userId,
+    );
+    expect(restricted.light).toBeNull();
+    expect(restricted.deep?.harnessInstanceId).toBe(base.harnessInstance.id);
+    const restrictedService = new MemoryPassService({
+      store: f.store,
+      runners: fullAccessOnly,
+      readAgentInstructions: s.preview,
+      onChanged: vi.fn(),
+      onError: vi.fn(),
+    });
+    const restrictedLight = (await role(f, base.userId)).anchorThread!;
+    await expect(
+      restrictedService.admissionSelection(lightTick.occurrence.id, restrictedLight),
+    ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
+    expect(
+      await restrictedService.admissionSelection(nightlyTick.occurrence.id, nightly.anchorThread!),
+    ).toMatchObject({ harnessInstanceId: base.harnessInstance.id });
+    await f.database
+      .updateTable("threads")
+      .set({ accessMode: "full-access" })
+      .where("id", "=", light.anchorThread!.id)
+      .execute();
     await writeAgentHomeSettings(f.database, {});
 
     // Memory turned off stays off while models come and go.
