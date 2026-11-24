@@ -35,6 +35,11 @@ import {
 export type ThreadCallerAuthority = {
   readonly userId: UserId;
   readonly accessMode: ThreadAccessMode;
+  /**
+   * The door's last admission of the command this write is (rule 2, A3): run in the write's own
+   * transaction, where its caller is checked, so a change since the door admitted it refuses.
+   */
+  readonly admit?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
 } & (
   | {
       readonly kind: "run";
@@ -186,6 +191,8 @@ export async function assertThreadCaller(
   },
 ): Promise<void> {
   if (!caller) return;
+  // A write the door admitted is admitted again here, in the transaction that makes it (A3).
+  if (caller.admit && !target?.readOnly) await caller.admit(tx);
   await requirePersonalOwner(tx, caller.userId);
   let sourceId: ThreadId | undefined;
   const lineageId = await threadCallerLineageId(tx, caller);

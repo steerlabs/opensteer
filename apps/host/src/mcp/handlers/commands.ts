@@ -1,12 +1,15 @@
 import { connectionStateAreas } from "@opensteer/agent-tools/tools";
 import {
   OpensteerError,
+  raisedBeforeEffect,
   type RequestId,
   type ThreadAccessMode,
   type ThreadId,
 } from "@opensteer/core";
 import {
   beginAgentSession,
+  chatWaitingError,
+  readConnectionRowStanding,
   commandHolds,
   commandNotFoundMessage,
   commandRule,
@@ -33,6 +36,7 @@ import {
   commandVariants,
   dispatchCommand,
   type AgentCommandOutcome,
+  type CommandAuthority,
 } from "../../commands/dispatch.js";
 import type { CommandRegistry } from "../../commands/registry.js";
 import {
@@ -129,6 +133,88 @@ export class CommandTools {
     };
   }
 
+  /**
+   * An older task tool's write, as the same command through the one door, whoever sends it
+   * (rule 2, A3): admitted by admitCommand (the table's lineage and widening faces included),
+   * put to the person by the door's own Request where the table says so, and run only by the
+   * door, with the authority its write admits again in its own transaction. These writes are one
+   * store transaction each: the Home's own refusal there wrote nothing.
+   */
+  async through<T>(
+    caller: AgentCaller,
+    command: HostApiCommand,
+    act: (authority: CommandAuthority) => Promise<T>,
+  ): Promise<T> {
+    let ran: { readonly value: T } | undefined;
+    const registry = {
+      ...this.#registry,
+      [command.type]: {
+        accepts: "any",
+        run: async (
+          _actor: unknown,
+          _command: unknown,
+          on: { readonly authority: CommandAuthority | null },
+        ) => {
+          if (!on.authority)
+            throw new OpensteerError({ code: "internal", message: "Not the person's door" });
+          try {
+            ran = { value: await act(on.authority) };
+          } catch (error) {
+            throw error instanceof OpensteerError ? raisedBeforeEffect(error) : error;
+          }
+          return { type: command.type };
+        },
+      },
+    } as unknown as CommandRegistry;
+    const door =
+      caller.kind === "connection"
+        ? this.#connectionDoor(caller, undefined, undefined, registry)
+        : this.#door(
+            caller,
+            caller.kind === "run"
+              ? { runId: caller.claims.runId }
+              : caller.program.kind === "watch"
+                ? { watchActivationId: caller.program.activationId }
+                : { occurrenceId: caller.program.occurrenceId },
+            caller.kind === "run" ? caller.thread.id : caller.anchor.id,
+            undefined,
+            registry,
+          );
+    let outcome: AgentCommandOutcome;
+    try {
+      outcome = await dispatchCommand(caller, command, door);
+    } catch (error) {
+      // A chat's message whose chat was paused meanwhile waits for it, as it always has: the one
+      // standing read says whether the chat is paused or has ended.
+      if (
+        caller.kind === "connection" &&
+        caller.chat &&
+        error instanceof OpensteerError &&
+        error.code === "not_found" &&
+        (await readConnectionRowStanding(this.#database, caller.userId, caller.connectionId))
+          .waiting
+      )
+        throw chatWaitingError();
+      throw error;
+    }
+    if (outcome.status === "done" && ran) return ran.value;
+    // Put to the person: the tool says so, and where it waits; nothing ran.
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "asks-person",
+      message:
+        outcome.status === "pending"
+          ? "This waits for the person in Opensteer."
+          : "This needs the person in Opensteer.",
+      ...(outcome.status === "pending"
+        ? {
+            next: "See it with opensteer_state, area requests.",
+            details: { requestId: outcome.requestId },
+          }
+        : {}),
+    });
+  }
+
   async opensteer_command({ caller, input, operationKey }: ToolCall<"opensteer_command">) {
     const requests = this.#requests();
     if ((input.command === undefined) === (input.withdraw === undefined))
@@ -174,11 +260,12 @@ export class CommandTools {
     caller: Extract<AgentCaller, { readonly kind: "connection" }>,
     taskId: string | undefined,
     reason: string | undefined,
+    registry: CommandRegistry = this.#registry,
   ) {
     const requests = this.#requests();
     return agentCommandDoor({
       database: this.#database,
-      registry: this.#registry,
+      registry,
       ...(taskId ? { taskId } : {}),
       ...(requests
         ? {
@@ -345,11 +432,12 @@ export class CommandTools {
     origin: CommandRequestOrigin,
     originatingThreadId: ThreadId,
     reason: string | undefined,
+    registry: CommandRegistry = this.#registry,
   ) {
     const requests = this.#requests();
     return agentCommandDoor({
       database: this.#database,
-      registry: this.#registry,
+      registry,
       ...(requests
         ? {
             propose: async (agent, command, ask, face) =>
