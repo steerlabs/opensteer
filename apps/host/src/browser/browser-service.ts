@@ -7842,13 +7842,14 @@ export class BrowserService {
   }
 
   async #reservePool(gate: BrowserPoolGate, signal: AbortSignal, sessionId?: BrowserSessionId) {
-    if (!sessionId) return gate.reserve(signal);
+    const reserveSignal = AbortSignal.any([signal, this.#closing.signal]);
+    if (!sessionId) return gate.reserve(reserveSignal);
     const waiters = this.#poolWaiters.get(sessionId) ?? new Set<AbortController>();
     const waiter = new AbortController();
     waiters.add(waiter);
     this.#poolWaiters.set(sessionId, waiters);
     try {
-      return await gate.reserve(AbortSignal.any([signal, waiter.signal]));
+      return await gate.reserve(AbortSignal.any([reserveSignal, waiter.signal]));
     } finally {
       waiters.delete(waiter);
       if (!waiters.size) this.#poolWaiters.delete(sessionId);
