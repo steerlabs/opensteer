@@ -97,7 +97,14 @@ it("waits for a Home's own exit address only on a Cloud Computer whose browser r
 function homeLimits(memoryMib: number, cpus: number): Record<string, string> {
   const printed = execFileSync(
     "bash",
-    ["-c", 'source "$1"; home_limits "$2" "$3"', "limits", join(home, "common.sh"), `${memoryMib}`, `${cpus}`],
+    [
+      "-c",
+      'source "$1"; home_limits "$2" "$3"',
+      "limits",
+      join(home, "common.sh"),
+      `${memoryMib}`,
+      `${cpus}`,
+    ],
     { encoding: "utf8", env: { ...process.env, OPENSTEER_HOME_DIR: tmpdir() } },
   );
   return Object.fromEntries(
@@ -133,7 +140,10 @@ it("sizes a Cloud Computer's Home from its machine: no limit adds up past it, ro
     const limits = homeLimits(memory, cpus);
     expect(Object.keys(limits).sort()).toEqual(
       Object.values(pooledServices)
-        .flatMap((name) => [`OPENSTEER_HOME_LIMIT_${name}_CPUS`, `OPENSTEER_HOME_LIMIT_${name}_MEMORY`])
+        .flatMap((name) => [
+          `OPENSTEER_HOME_LIMIT_${name}_CPUS`,
+          `OPENSTEER_HOME_LIMIT_${name}_MEMORY`,
+        ])
         .sort(),
     );
     const total = Object.values(pooledServices).reduce(
@@ -266,10 +276,14 @@ function runningServices(markers: readonly string[]): string[] {
   const directory = mkdtempSync(join(tmpdir(), "opensteer-home-running-"));
   try {
     for (const marker of markers) writeFileSync(join(directory, marker), "");
-    return execFileSync("bash", ["-c", 'source "$1"; running_services', "running", join(home, "common.sh")], {
-      env: { ...process.env, OPENSTEER_HOME_DIR: directory },
-      encoding: "utf8",
-    })
+    return execFileSync(
+      "bash",
+      ["-c", 'source "$1"; running_services', "running", join(home, "common.sh")],
+      {
+        env: { ...process.env, OPENSTEER_HOME_DIR: directory },
+        encoding: "utf8",
+      },
+    )
       .trim()
       .split("\n");
   } finally {
