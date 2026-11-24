@@ -85,7 +85,8 @@ holds at most 64 resources.
 A connection also has a label, the mode ceiling the person chose (default Supervised), a consent
 version, an expiry 30 days after consent and a revocation time. Connections made before direct
 work existed have `everything` at consent version 1; direct tools need a consent made on the
-current screen (version 2).
+current screen (version 2). A version-1 connection is listed none of the direct tools, so what it
+is shown is what it can call: the listing and the call ask the same consent rule.
 
 ### How a connected agent connects
 
@@ -128,6 +129,7 @@ does not imply is neither listed nor callable.
 
 | Grant part        | Tools it brings                                                                                                          |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| any grant         | `opensteer_commands`, `opensteer_command`, `opensteer_state`, each cut to what the grant holds                           |
 | any part below    | `discover`, `ask_person`                                                                                                 |
 | a browser profile | `browser_use`, `browser_connect`, `saved_login_request`, `card_request`                                                  |
 | Chrome tabs       | `browser_use`, `browser_connect`                                                                                         |
@@ -140,9 +142,10 @@ The saved-fill tools require a managed browser profile and the Home's Passwords 
 find child tasks and use their IDs to read or wait for results. If the person pauses a task
 queue, messages sent in queue mode wait there until the person resumes it.
 
-An `everything` connection lists all 15 tools on a Home with Passwords. Full access and Supervised
+An `everything` connection lists all 18 tools on a Home with Passwords. Full access and Supervised
 list the same tools, and the grant and access mode still govern each call. Connections have no
-settings tools or output schemas. Server instructions are built from the same grant, and
+separate settings tools or output schemas: a change to the Home is `opensteer_command`, through
+the one door below. Shared Chrome tabs and device apps are found with `discover`. Server instructions are built from the same grant, and
 `apps/host/src/mcp/connection-contract.test.ts` checks the exact tools for eight grant shapes.
 Listing sizes are pinned in `tests/agent-context-budget.json`.
 
@@ -174,9 +177,21 @@ have. There are no per-site or per-app tools.
 ### One door
 
 Every direct call goes through one function, `AgentSessionService.run()` in
-`apps/host/src/agent-sessions/agent-session-service.ts`. That covers `tab_list`, `browser_use`,
-`browser_connect`, `computer_use`, the live listing of `computer_apps`, `plugin_call`,
+`apps/host/src/agent-sessions/agent-session-service.ts`. That covers `browser_use`,
+`browser_connect`, `computer_use`, `plugin_call`,
 `plugin_execute`, `plugin_resume`, `saved_login_request`, `card_request` and `ask_person`.
+
+A change to the Home is a second door, the same for every sender: `dispatchCommand`
+(`apps/host/src/commands/dispatch.ts`), admitted by `admitCommand`. The older task tools
+(`opensteer_task_create`, `_send`, `_resume`, `_queue`, `_configure`, `_update`,
+`opensteer_request_answer`, and a chat's messages, which reach the same tools) build their table
+command and send it through it, so the table's lineage and widening faces apply to your own agents
+as to a connected agent. What stays outside it is one of three kinds: a Run's or program's own
+tool under its own admission in `packages/database/src/resource-access.ts` (delegation, tabs, apps,
+plugins, Requests to the person, with the door's own answer where the two could differ, as for an
+app's start); a step that can only take authority away (cancel, interrupt, Stop, withdraw); or an
+identity step under its own proof (sign-in, the Cloud Computer claim, the consent screen, a
+Runner's or a device's signed frames).
 
 Each call is one reviewed **operation** of an **agent session**:
 
@@ -471,7 +486,7 @@ case there.
 
 **Chrome tabs the person shares.** The companion extension, listed as "Opensteer tab sharing",
 shares tabs from the person's own Chrome (a `chrome-tabs` grant). The agent finds them with
-`tab_list` and works in them through `browser_use` or `browser_connect`. Stop, Disconnect and a
+`discover` and works in them through `browser_use` or `browser_connect`. Stop, Disconnect and a
 narrowed grant detach them; ending the share makes the tab not found. The extension replays its
 detach receipts until the Home acknowledges them.
 
@@ -744,7 +759,7 @@ public certificates, real IPv6, a pristine Ubuntu install or a VM reboot.
 - **The egress proxy is a browser setting**, not a boundary against an agent that controls the
   browser.
 - **A connection lasts 30 days** and then needs a new sign-in; there are no refresh tokens.
-- **An `everything` connection lists up to 15 tools.** The person’s own agents can administer the Home.
+- **An `everything` connection lists up to 18 tools.** The person’s own agents can administer the Home.
 - **Stop while watching** interrupts the picture until the viewer reconnects.
 - **A Mac's sleep notice** reaches the device Runners it serves, not the Runner of a Home on the
   same Mac, and ends only connected agents' computer-use scripts.
