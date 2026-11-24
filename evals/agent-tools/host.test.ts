@@ -17,7 +17,10 @@ it("returns a fixture refusal as an MCP tool error after validation", async () =
       profile: "task",
       source: { commit: "a".repeat(40), note: "Mock errors retain production input validation" },
       turns: ["Inspect availability"],
-      mocks: { plugin_search: { $error: "Service is offline." } },
+      mocks: {
+        plugin_search: { $error: "Service is offline." },
+        chrome_cookies_request: { status: "unavailable" },
+      },
       expect: { calls: [{ tool: "plugin_search", args: { query: "mail" } }] },
     }),
   )[0]!;
@@ -40,13 +43,25 @@ it("returns a fixture refusal as an MCP tool error after validation", async () =
     expect(host.calls).toMatchObject([
       { ...call, valid: true, result: { $error: "Service is offline." } },
     ]);
+    // A configured answer that does not fit the tool's output is the case's fault, and flagged.
     const badOutput = await client.callTool({
-      name: "saved_login_request",
+      name: "chrome_cookies_request",
       arguments: { tabId: "sign-in-tab", site: "https://example.com", reason: "Sign in" },
     });
     expect(badOutput.isError).toBe(true);
-    expect(JSON.stringify(badOutput)).toContain("invalid mock output for saved_login_request");
+    expect(JSON.stringify(badOutput)).toContain("invalid mock output for chrome_cookies_request");
     expect(host.calls.at(-1)?.valid).toBe(false);
+    // Nothing configured, and no empty answer fits: an unavailable refusal, not the agent's fault.
+    const unconfigured = await client.callTool({
+      name: "saved_login_request",
+      arguments: { tabId: "sign-in-tab", site: "https://example.com", reason: "Sign in" },
+    });
+    expect(unconfigured).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: "unavailable", next: null } },
+    });
+    expect(JSON.stringify(unconfigured)).not.toContain("invalid mock output");
+    expect(host.calls.at(-1)?.valid).toBe(true);
     const invalid = await client.callTool({ name: call.tool, arguments: { unexpected: true } });
     expect(invalid.isError).toBe(true);
     expect(invalid.content).not.toEqual(result.content);
@@ -278,9 +293,11 @@ it("validates the new surface cases with each caller's production inventory", as
         });
         expect(apps.isError).not.toBe(true);
         expect(host.calls.at(-1)?.valid).toBe(true);
+        // A tool outside a connection's inventory is refused, and counts as invalid. (A
+        // connected agent's saved_login_request is offered since direct tools, a1a669ecf.)
         const result = await client.callTool({
-          name: "saved_login_request",
-          arguments: { site: "example.com", reason: "Check account" },
+          name: "tab_open",
+          arguments: { url: "https://example.com" },
         });
         expect(result.isError).toBe(true);
         expect(host.calls.at(-1)?.valid).toBe(false);
@@ -450,6 +467,37 @@ it("reads back successful automation changes and the requested one-shot time", a
       arguments: { automationId: "trg_00000000-0000-4000-8000-000000000099" },
     });
     expect(host.calls.at(-1)?.result).toMatchObject({ automation: created.automation });
+  } finally {
+    await client.close();
+    await host.close();
+  }
+});
+
+it("keeps a listed automation's summary fields after a write changes it", async () => {
+  const c = parseCases(
+    await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"),
+  ).find((c) => c.id === "memory-resume-passes")!;
+  const host = await startFakeHost(c);
+  const client = new Client({ name: "eval-trigger-summary", version: "1" });
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+      }) as unknown as Transport,
+    );
+    const resume = c.expect.calls.find(
+      (call) => call.tool === "opensteer_automation_control" && call.args.action === "resume",
+    )!;
+    await client.callTool({ name: resume.tool, arguments: resume.args });
+    expect(host.calls.at(-1)?.valid).toBe(true);
+    await client.callTool({
+      name: "opensteer_automation_list",
+      arguments: { systemRole: "memory-light" },
+    });
+    expect(host.calls.at(-1)).toMatchObject({
+      valid: true,
+      result: { automations: [{ taskTitle: "Light memory pass", source: { kind: "schedule" } }] },
+    });
   } finally {
     await client.close();
     await host.close();

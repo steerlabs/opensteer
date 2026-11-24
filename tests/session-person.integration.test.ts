@@ -1133,6 +1133,38 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       if (!(await connection.activate(lostAgent.id, credentialHash(lostToken))))
         throw new Error("Failed to activate lost-reply connection");
       const lostCall = await connectAgent(lostToken);
+
+      // A7: a command the page ran, whose reply the browser cannot return (deeper than the reply
+      // may be): the agent is told its outcome is unknown, and the row says so; it happened.
+      const ranUrl = `${site.origin}/?reply-limit`;
+      const tooDeep = await lostCall("browser_use", {
+        profileId: profile.id,
+        code: `const page = await newPage(${JSON.stringify(ranUrl)});
+          await page.cdp("Runtime.evaluate", {
+            expression: "document.title = 'ran'; let o = {}; for (let i = 0; i < 40; i++) o = { o }; o",
+            returnByValue: true,
+          });`,
+        operationKey: "reply-limit-after-effect",
+      });
+      const uncertain = z
+        .object({ operationId: AgentOperationIdSchema })
+        .passthrough()
+        .parse(tooDeep.structuredContent);
+      expect(uncertain).toMatchObject({ status: "unknown", operationId: expect.any(String) });
+      const uncertainRow = await host.store.database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome"])
+        .where("id", "=", AgentOperationIdSchema.parse(uncertain.operationId))
+        .executeTakeFirstOrThrow();
+      expect(uncertainRow).toEqual({ state: "unknown", outcome: "unknown" });
+      const seen = await lostCall("browser_use", {
+        profileId: profile.id,
+        code: `const tab = (await pages()).find((entry) => entry.url === ${JSON.stringify(ranUrl)});
+          return tab ? await (await openPage(tab.tabId)).title() : null;`,
+        operationKey: "reply-limit-effect-seen",
+      });
+      expect(JSON.stringify(seen.content)).toContain("ran");
+
       const loseOpenReply = { url: `${site.origin}/?drop-open-reply`, observed: false };
       setLoseOpenReply(loseOpenReply);
       const lost = await lostCall("browser_use", {

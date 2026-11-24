@@ -131,11 +131,18 @@ export interface StandardCdpAttachment {
 
 export class SessionCdpRouterError extends Error {
   readonly code: "bad_command" | "conflict" | "forbidden" | "not_found" | "too_large";
+  /** A7: refused before the command was handed on toward the browser: nothing happened. */
+  readonly unsent: boolean;
 
-  constructor(code: SessionCdpRouterError["code"], message: string, options?: ErrorOptions) {
+  constructor(
+    code: SessionCdpRouterError["code"],
+    message: string,
+    options?: ErrorOptions & { readonly unsent?: boolean },
+  ) {
     super(message, options);
     this.name = "SessionCdpRouterError";
     this.code = code;
+    this.unsent = options?.unsent === true;
   }
 }
 
@@ -596,7 +603,9 @@ export class SessionCdpRouter {
     if (session.session.scripts.has(id))
       throw new SessionCdpRouterError("conflict", "Browser script attachment already exists.");
     if (session.session.scripts.size >= 128)
-      throw new SessionCdpRouterError("too_large", "Too many browser script attachments.");
+      throw new SessionCdpRouterError("too_large", "Too many browser script attachments.", {
+        unsent: true,
+      });
     const state = this.#openConnection(
       session.session,
       undefined,
@@ -639,7 +648,9 @@ export class SessionCdpRouter {
     if (!attachmentId) return state;
     const script = state.session.scripts.get(attachmentId);
     if (!script || script.script?.closing)
-      throw new SessionCdpRouterError("not_found", "Browser script attachment ended.");
+      throw new SessionCdpRouterError("not_found", "Browser script attachment ended.", {
+        unsent: true,
+      });
     return script;
   }
 
@@ -763,6 +774,7 @@ export class SessionCdpRouter {
       throw new SessionCdpRouterError(
         "too_large",
         "CDP connection has too many commands in flight.",
+        { unsent: true },
       );
     state.pendingBytes += bytes;
     state.pendingCount++;
@@ -850,7 +862,9 @@ export class SessionCdpRouter {
 
     if (state.standard) {
       if (command.sessionId && !state.channels.has(command.sessionId))
-        throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
+        throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+          unsent: true,
+        });
       if (command.method === "Opensteer.fillLogin" || command.method === "Opensteer.fillCard")
         throw new SessionCdpRouterError(
           "forbidden",
@@ -983,7 +997,9 @@ export class SessionCdpRouter {
         const virtualSessionId = requiredString(parameters, "sessionId");
         const attached = state.channels.get(virtualSessionId);
         if (!attached || (root.aliasId && attached.rootAlias !== root))
-          throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
+          throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+            unsent: true,
+          });
         const nested = decodeNestedCdpMessage(parameters.message);
         if (!nested) throw new SessionCdpRouterError("bad_command", invalidNestedMessageRefusal);
         const result = await this.#send(state, {
@@ -1119,7 +1135,9 @@ export class SessionCdpRouter {
           );
         if (!attached) {
           if (state.retiredTargets.delete(virtualSessionId)) return {};
-          throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
+          throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+            unsent: true,
+          });
         }
         void this.#endChannel(state, attached);
         return {};
@@ -1545,7 +1563,9 @@ export class SessionCdpRouter {
     state.closed.signal.throwIfAborted();
     attached.ended.signal.throwIfAborted();
     if (state.channels.get(attached.virtualSessionId) !== attached)
-      throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
+      throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+        unsent: true,
+      });
     this.#assertCurrentClaim(state, attached.physicalTargetId, claim);
     const entry = Array.isArray(entries)
       ? entries.find((candidate: unknown) => asRecord(candidate).id === entryId)
@@ -1602,7 +1622,9 @@ export class SessionCdpRouter {
   #admitAttachedCommand(state: ConnectionState, command: CdpCommand): AttachedChannel {
     const attached = state.channels.get(command.sessionId ?? "");
     if (!attached) {
-      throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
+      throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+        unsent: true,
+      });
     }
     const parameters = command.parameters ?? {};
     this.#assertOwnedTarget(state, attached.physicalTargetId);

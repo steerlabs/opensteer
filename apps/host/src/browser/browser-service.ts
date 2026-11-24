@@ -225,7 +225,10 @@ import {
   type BrowserPoolSessionLoss,
   type BrowserPoolTargetIdentity,
 } from "@opensteer/database";
-import type { PooledBrowserSend } from "../agent-sessions/agent-session-service.js";
+import {
+  OperationOutcomeUnknown,
+  type PooledBrowserSend,
+} from "../agent-sessions/agent-session-service.js";
 import { browserViewerEditingVersion, browserViewerMessage } from "./browser-viewer-protocol.js";
 import type { ShadowCatalog, ShadowInventory } from "./shadow-comparison.js";
 import { ShadowHostSession, ShadowReader } from "./shadow-host.js";
@@ -7889,13 +7892,14 @@ export class BrowserService {
   }
 
   async #reservePool(gate: BrowserPoolGate, signal: AbortSignal, sessionId?: BrowserSessionId) {
-    if (!sessionId) return gate.reserve(signal);
+    const reserveSignal = AbortSignal.any([signal, this.#closing.signal]);
+    if (!sessionId) return gate.reserve(reserveSignal);
     const waiters = this.#poolWaiters.get(sessionId) ?? new Set<AbortController>();
     const waiter = new AbortController();
     waiters.add(waiter);
     this.#poolWaiters.set(sessionId, waiters);
     try {
-      return await gate.reserve(AbortSignal.any([signal, waiter.signal]));
+      return await gate.reserve(AbortSignal.any([reserveSignal, waiter.signal]));
     } finally {
       waiters.delete(waiter);
       if (!waiters.size) this.#poolWaiters.delete(sessionId);
@@ -10735,6 +10739,13 @@ export class HostedBrowserBroker {
       if (pending.submitted) pending.acknowledge?.();
       const cause = agentProtocolError(message.error);
       if (pending.bounded) {
+        // A7: an agent's command. Only an error the runtime says came before the command reached
+        // the page is a refusal; any other (or one that does not say) may have come after its
+        // effect, and its outcome is unknown: never failed, never retried here.
+        if (message.error.unsent !== true) {
+          pending.reject(new OperationOutcomeUnknown(browserOutcomeUnknownWords));
+          return;
+        }
         const words = {
           bad_message: "The browser rejected the CDP command or its parameters.",
           conflict:
@@ -12297,6 +12308,10 @@ interface BrowserTabOpenBudget {
     reservation: BrowserPoolReservation;
   };
 }
+
+/** A7: what an agent reads when a browser command may have run and its reply cannot tell. */
+const browserOutcomeUnknownWords =
+  "A browser action did not confirm its outcome. Observe the page before trying again.";
 
 class BrowserCdpRefusal extends OpensteerError {
   constructor(cause: OpensteerError) {

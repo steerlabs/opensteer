@@ -319,6 +319,7 @@ export const connectedAgentsCopy = {
   "disconnect.uncertain.label": "Check its last action",
   "disconnect.uncertain.detailGeneric":
     "Contact was lost while {agent} was in the middle of something. It may have finished. Check what it was working on before you rely on it.",
+  "disconnect.uncertain.device": "It was on {device}.",
 } as const;
 
 export type ConnectedAgentsCopyId = keyof typeof connectedAgentsCopy;

@@ -141,9 +141,12 @@ const replyTooLarge = () =>
 function publicFailure(error: unknown): ReplFailure {
   if (error instanceof OperationOutcomeUnknown)
     return { code: "outcome-unknown", message: error.message, performed: [] };
+  // A7: the browser's reply limit is reached only after the command ran: its effect is unknown.
   if (
     error instanceof OpensteerError &&
-    (error.reason === "outcome-unknown" || error.reason === "browser-tab-open-outcome-unknown")
+    (error.reason === "outcome-unknown" ||
+      error.reason === "browser-tab-open-outcome-unknown" ||
+      error.reason === "browser-reply-limit")
   )
     return {
       code: "outcome-unknown",
