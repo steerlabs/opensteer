@@ -473,6 +473,9 @@ integration("every Cloud Computer's browser in the pool (0040_browser_always_poo
         add constraint cloud_computers_browser_mode_check check (browser_mode in ('local', 'pool')),
         alter column browser_mode set default 'local';
       alter table public.cloud_computer_provisioner_lease drop column pool_network;
+      drop index public.browser_pool_slots_one_live_per_computer;
+      alter table public.browser_pool_slots
+        add constraint browser_pool_slots_computer_id_key unique (computer_id);
       -- This migration and any after it, which the migrator then runs again in name order.
       delete from public.kysely_migration where name >= '0040_browser_always_pooled';
     `.execute(database);
@@ -546,6 +549,17 @@ integration("every Cloud Computer's browser in the pool (0040_browser_always_poo
         database,
       ),
     ).rejects.toThrow(/cloud_computers_browser_mode_check/u);
+    // One live slot per Cloud Computer; a tombstoned one leaves room for its next Home's.
+    const slot = (n: string, tombstoned: boolean) => sql`
+      insert into public.browser_pool_slots
+        (slot_id, computer_id, state, phase, guest_vcpus, guest_memory_mib, profile_mib, tombstoned_at)
+      values (${`bps_00000000-0000-4000-8000-0000000000${n}`}, ${id(1)}, 'active', 'preparing',
+        2, 2048, 2048, ${tombstoned ? sql`now()` : null})
+    `;
+    await expect(slot("e1", false).execute(database)).rejects.toThrow(
+      /browser_pool_slots_one_live_per_computer/u,
+    );
+    await slot("e2", true).execute(database);
     // The lease keeps the pool network its provisioner reported, a private one only.
     await expect(
       sql`

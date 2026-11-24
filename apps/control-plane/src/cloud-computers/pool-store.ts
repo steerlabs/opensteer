@@ -141,6 +141,66 @@ export class BrowserPoolStore {
   }
 
   /**
+   * A fresh Home replaces this Cloud Computer's (a new deployment, without the old one's
+   * profiles): its slot is erased as a deletion erases one, profile included, and the computer
+   * gets a new slot once that one is gone. Its own profiles' bindings would otherwise make the
+   * pool host refuse the fresh Home's whole inventory. Caller holds the `cloudComputers` lock.
+   */
+  async retireSlotForFreshHome(
+    tx: TransactionDb,
+    computerId: CloudComputerId,
+    now: Date,
+  ): Promise<void> {
+    const slot = await tx
+      .selectFrom("browserPoolSlots")
+      .select([
+        "slotId",
+        "hostId",
+        "state",
+        "slotErasedAt",
+        "profileErasedAt",
+        "credentialsErasedAt",
+      ])
+      .where("computerId", "=", computerId)
+      .where("tombstonedAt", "is", null)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    if (slot?.hostId === null) {
+      // Never placed on a host: nothing to erase there.
+      await tx
+        .updateTable("browserPoolSlots")
+        .where("slotId", "=", slot.slotId)
+        .set({
+          state: "deleted",
+          phase: "deleted",
+          controlKey: null,
+          slotErasedAt: slot.slotErasedAt ?? now,
+          profileErasedAt: slot.profileErasedAt ?? now,
+          credentialsErasedAt: slot.credentialsErasedAt ?? now,
+          failedAt: null,
+          tombstonedAt: now,
+          lastError: null,
+          updatedAt: now,
+        })
+        .executeTakeFirstOrThrow();
+    } else if (slot?.state === "active") {
+      await tx
+        .updateTable("browserPoolSlots")
+        .where("slotId", "=", slot.slotId)
+        .set({
+          state: "deleting",
+          phase: "deleting",
+          failedAt: null,
+          lastError: null,
+          updatedAt: now,
+        })
+        .executeTakeFirstOrThrow();
+      return;
+    } else if (slot) return;
+    await this.createSlotForComputer(tx, computerId, now);
+  }
+
+  /**
    * Transitions a deleted Cloud Computer's browser slot to `deleting` (or tombstones it immediately
    * when it was never placed on any pool host). Caller must already hold `cloudComputers` lock.
    */
@@ -1053,6 +1113,8 @@ export class BrowserPoolStore {
               .selectFrom("cloudComputers")
               .select([
                 "id",
+                "state",
+                "deletionRequestedAt",
                 "vmDestroyedAt",
                 "backupsUnreadableAt",
                 "browserSlotErasedAt",
@@ -1134,7 +1196,17 @@ export class BrowserPoolStore {
         })
         .executeTakeFirstOrThrow();
 
-      if (deleted && computer) {
+      if (
+        deleted &&
+        computer &&
+        computer.state !== "deleted" &&
+        computer.deletionRequestedAt === null &&
+        computer.tombstonedAt === null
+      ) {
+        // The slot of a Home a fresh one replaced (retireSlotForFreshHome): the computer lives on
+        // and its new Home gets a slot of its own.
+        await this.createSlotForComputer(tx, computer.id, now);
+      } else if (deleted && computer) {
         const settled =
           computer.vmDestroyedAt !== null &&
           computer.backupsUnreadableAt !== null &&
@@ -1245,6 +1317,7 @@ export class BrowserPoolStore {
         .selectFrom("browserPoolSlots")
         .select("hostId")
         .where("computerId", "=", computer.id)
+        .where("tombstonedAt", "is", null)
         .executeTakeFirst();
       const host = slotPeek?.hostId
         ? await tx
@@ -1259,6 +1332,7 @@ export class BrowserPoolStore {
         .selectFrom("browserPoolSlots")
         .selectAll()
         .where("computerId", "=", computer.id)
+        .where("tombstonedAt", "is", null)
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!slot || slot.state !== "active" || slot.tombstonedAt !== null) {
@@ -1339,8 +1413,11 @@ export class BrowserPoolStore {
       .selectFrom("browserPoolSlots")
       .selectAll()
       .where("computerId", "=", computer.id)
+      .where("tombstonedAt", "is", null)
       .executeTakeFirst();
-    if (!slot || slot.tombstonedAt !== null || slot.state !== "active") {
+    // The previous Home's slot is being erased; this Home's own comes once it is gone.
+    if (slot?.state === "deleting") return { status: "preparing" };
+    if (!slot || slot.state !== "active") {
       return { status: "failed" };
     }
     const host = slot.hostId

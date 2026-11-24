@@ -2472,6 +2472,10 @@ export class CloudComputerStore {
         };
         // The next generation is a new Home; the Account forgets the one it replaces.
         await forgetHome(tx, row, action === "reissue");
+        // Restored from a snapshot it is the same Home (its deployment and profiles come back
+        // with its database), and keeps its browser slot. A fresh Home does not have the old
+        // one's profiles: that slot is erased and the fresh Home gets its own.
+        if (!changes.restoreSnapshot) await this.#pool.retireSlotForFreshHome(tx, id, now);
         if (action === "reissue" && credentialsIssued) {
           await tx
             .updateTable("cloudComputerEgressEndpoints")

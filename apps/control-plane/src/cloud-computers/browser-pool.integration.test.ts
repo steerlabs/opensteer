@@ -740,6 +740,86 @@ integration("Browser pool Account service", () => {
     }
   });
 
+  it("erases the browser slot of a Home a fresh one replaces, then gives the fresh Home its own", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { computer, slot } = await h.setupPooledHomeAndHost();
+      const liveSlots = () =>
+        database
+          .selectFrom("browserPoolSlots")
+          .select(["slotId", "state", "phase", "hostId", "tombstonedAt"])
+          .where("computerId", "=", computer.id)
+          .orderBy("createdAt")
+          .execute();
+      // A reissue makes a new Home: a new deployment that never had the old one's profiles,
+      // whose bindings would make its pool host refuse the new Home's whole inventory.
+      await h.cloudStore.addBackupTarget({
+        endpoint: "https://s3.example.test",
+        bucket: "opensteer-backups",
+        prefix: `reissue-${randomUUID().slice(0, 8)}`,
+        accessKeyId: `ak_${randomUUID()}`,
+        secretAccessKey: `sk_${randomUUID()}`,
+      });
+      await h.cloudStore.mutate(computer.id, "reissue");
+      const [deleting] = (await h.getDesiredSlots()).filter((s) => s.slotId === slot.slotId);
+      expect(deleting?.state).toBe("deleting");
+      const res = await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(slot.slotId),
+        headers: h.leaseHeaders,
+        payload: {
+          slotId: slot.slotId,
+          hostGeneration: 1,
+          revision: deleting!.revision,
+          term: deleting!.term,
+          phase: "deleted",
+          controlKey: null,
+          slotErased: true,
+          profileErased: true,
+          credentialsErased: true,
+          lastError: null,
+        },
+      });
+      expect(CloudComputerReportResponseSchema.parse(JSON.parse(res.body)).recorded).toBe(true);
+      const after = await liveSlots();
+      expect(after).toHaveLength(2);
+      expect(after[0]).toMatchObject({ slotId: slot.slotId, state: "deleted" });
+      expect(after[0]!.tombstonedAt).not.toBeNull();
+      expect(after[1]).toMatchObject({ state: "active", phase: "preparing", hostId: null });
+      expect(after[1]!.slotId).not.toBe(slot.slotId);
+      // The Cloud Computer itself lives on: nothing of its deletion was settled.
+      const row = await database
+        .selectFrom("cloudComputers")
+        .select(["browserSlotErasedAt", "tombstonedAt", "state"])
+        .where("id", "=", computer.id)
+        .executeTakeFirstOrThrow();
+      expect(row).toEqual({ browserSlotErasedAt: null, tombstonedAt: null, state: "active" });
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("keeps the browser slot of a Home restored from its snapshot, which is the same Home", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { computer, slot } = await h.setupPooledHomeAndHost();
+      await database
+        .updateTable("cloudComputers")
+        .set({ everReady: true })
+        .where("id", "=", computer.id)
+        .execute();
+      await h.cloudStore.mutate(computer.id, "replace", undefined, "abcdef0123456789");
+      const slots = await database
+        .selectFrom("browserPoolSlots")
+        .select(["slotId", "state", "tombstonedAt"])
+        .where("computerId", "=", computer.id)
+        .execute();
+      expect(slots).toEqual([{ slotId: slot.slotId, state: "active", tombstonedAt: null }]);
+    } finally {
+      await h.app.close();
+    }
+  });
+
   it("gives a Home no pool network when the provisioner holding the lease reported none", async () => {
     const h = await buildHarness("2");
     try {

@@ -192,6 +192,15 @@ export const browserPoolMigration = {
 export async function upBrowserAlwaysPooledMigration(
   db: Kysely<ControlPlaneDatabaseSchema>,
 ): Promise<void> {
+  // One live slot per Cloud Computer, not one ever: a Home a fresh one replaces has its slot
+  // erased, and the fresh Home gets its own once that one is tombstoned.
+  await sql`
+    alter table browser_pool_slots drop constraint if exists browser_pool_slots_computer_id_key
+  `.execute(db);
+  await sql`
+    create unique index if not exists browser_pool_slots_one_live_per_computer
+      on browser_pool_slots (computer_id) where tombstoned_at is null
+  `.execute(db);
   await sql`
     insert into browser_pool_slots
       (slot_id, computer_id, term, state, phase, guest_vcpus, guest_memory_mib, profile_mib)
@@ -201,7 +210,7 @@ export async function upBrowserAlwaysPooledMigration(
         and state in ('active', 'suspended')
         and deletion_requested_at is null
         and tombstoned_at is null
-    on conflict (computer_id) do nothing
+    on conflict (computer_id) where tombstoned_at is null do nothing
   `.execute(db);
   await sql`
     update cloud_computers
