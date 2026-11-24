@@ -7854,7 +7854,7 @@ class MockHostState {
     const at = this.now().toISOString();
     // The working agent uses a tab of its own; the waiting one, a tab the person shares.
     const placed: Readonly<Record<string, string>> =
-      options.livePanel === "one"
+      options.livePanel === "one" || options.livePanel === "long-one"
         ? { "mock-tab-1-0": mockAgentWorkThreads.shopping }
         : {
             "mock-tab-1-0": mockAgentWorkThreads.working,

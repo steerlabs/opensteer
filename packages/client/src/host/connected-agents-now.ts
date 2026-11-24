@@ -14,6 +14,7 @@ export type ConnectedAgentNowTask = Pick<ThreadSummary, "id" | "status" | "exter
 
 export interface ConnectedAgentNow {
   readonly agent: SessionAgent;
+  readonly connectionId: string;
   readonly threadId: string;
   readonly sessionId: string;
   readonly state: "working" | "needs-you";
@@ -54,22 +55,31 @@ export function connectedAgentsNow(input: {
     ].filter((target): target is AgentOperationTarget => target !== undefined);
     // When no action is in flight, the latest recorded action is the only place we can name.
     if (targets.length === 0 && latest) targets.push(latest.target);
-    const places = new Map(
-      targets.map((target) => [JSON.stringify([target.grant, target.device?.id]), target]),
-    );
     const entry: ConnectedAgentNow = {
       agent: sessionAgent(work.connection),
+      connectionId: work.connection.id,
       threadId: task.id,
       sessionId: work.sessionId,
       state: waiting || task.status === "waiting" ? "needs-you" : "working",
-      places: [...places.values()],
+      places: distinctPlaces(targets),
       action: waiting?.request.presentation.title ?? (latest ? operationAction(latest) : null),
       waiting,
     };
     (entry.state === "needs-you" ? needsYou : working).push(entry);
   }
 
-  const headlineParts = headlineFor(needsYou, working);
+  const waitingConnections = new Map(needsYou.map((entry) => [entry.connectionId, entry]));
+  const workingConnections = new Map<string, ConnectedAgentNow[]>();
+  for (const entry of working) {
+    if (waitingConnections.has(entry.connectionId)) continue;
+    const sessions = workingConnections.get(entry.connectionId);
+    if (sessions) sessions.push(entry);
+    else workingConnections.set(entry.connectionId, [entry]);
+  }
+  const headlineParts = headlineFor(
+    [...waitingConnections.values()],
+    [...workingConnections.values()],
+  );
   return {
     agents: [...needsYou, ...working],
     headline: headlineParts.length ? plainSentence(headlineParts) : null,
@@ -77,9 +87,17 @@ export function connectedAgentsNow(input: {
   };
 }
 
+function distinctPlaces(targets: readonly AgentOperationTarget[]): AgentOperationTarget[] {
+  return [
+    ...new Map(
+      targets.map((target) => [JSON.stringify([target.grant, target.device?.id]), target]),
+    ).values(),
+  ];
+}
+
 function headlineFor(
   needsYou: readonly ConnectedAgentNow[],
-  working: readonly ConnectedAgentNow[],
+  working: readonly (readonly ConnectedAgentNow[])[],
 ): readonly SentencePart[] {
   const name = ({ agent }: ConnectedAgentNow) =>
     agent.who?.verified ? agent.name : sessionAgentPart(agent);
@@ -95,9 +113,10 @@ function headlineFor(
   }
 
   if (working.length > 1) return [workWords("now.workingCount", { count: working.length })];
-  const only = working[0];
+  const sessions = working[0];
+  const only = sessions?.[0];
   if (!only) return [];
-  const { places } = only;
+  const places = distinctPlaces(sessions.flatMap((entry) => entry.places));
   if (places.length > 1)
     return workSentence("now.workingInPlaces", { agent: name(only) }, { count: places.length });
   if (places[0])

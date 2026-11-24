@@ -110,3 +110,41 @@ describe("connected agents working now", () => {
     );
   });
 });
+
+describe("headline counts distinct connections", () => {
+  const anotherSession = {
+    ...grok,
+    externalWork: { ...grok.externalWork!, connection: chatgpt.externalWork!.connection },
+  };
+  const otherPlace = operations.find(({ taskId }) => taskId === anotherSession.id)!;
+  const activity = [
+    ...operations.filter((operation) => operation !== otherPlace),
+    {
+      ...otherPlace,
+      target: {
+        ...otherPlace.target,
+        grant: { kind: "browser-profile" as const, profileId: "work" },
+      },
+    },
+  ];
+
+  it("names both places across one agent's two working sessions", () => {
+    const result = connectedAgentsNow({
+      tasks: [chatgpt, anotherSession],
+      waitingRequests: [],
+      operations: activity,
+    });
+    expect(result.headline).toBe("ChatGPT is working in 2 places");
+    expect(result.agents).toHaveLength(2);
+  });
+
+  it("counts an agent with a waiting session only in needs you", () => {
+    const result = view([chatgpt, { ...anotherSession, status: "waiting" }]);
+    expect(result.headline).toBe("ChatGPT needs you");
+    expect(result.agents).toHaveLength(2);
+  });
+
+  it("counts two agents across three working sessions", () => {
+    expect(view([chatgpt, anotherSession, claudeWorking]).headline).toBe("2 agents working");
+  });
+});

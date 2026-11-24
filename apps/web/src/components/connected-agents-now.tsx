@@ -182,10 +182,15 @@ function ActiveAgents({
   };
   const first = agents[0]!;
   const oneWorking = !compact && agents.length === 1 && first.state === "working";
+  const connections = new Map(agents.map(({ connectionId, agent }) => [connectionId, agent]));
   const marks =
     !compact && first.state === "needs-you"
-      ? agents.filter(({ state }) => state === "needs-you")
-      : agents;
+      ? new Map(
+          agents
+            .filter(({ state }) => state === "needs-you")
+            .map(({ connectionId, agent }) => [connectionId, agent]),
+        )
+      : connections;
   const headline = isolatedPlainSentence(headlineParts);
   return (
     <div className={compact ? "agents-now agents-now--compact" : "agents-now side-task is-open"}>
@@ -196,6 +201,7 @@ function ActiveAgents({
         aria-label={headline}
         className="side-task__main agents-now__trigger"
         data-needs-you={first.state === "needs-you" || undefined}
+        data-single-agent={connections.size === 1 || undefined}
         onClick={(event) => {
           if (anchor) close();
           else {
@@ -208,13 +214,13 @@ function ActiveAgents({
         type="button"
       >
         <span aria-hidden className="agents-now__marks">
-          {marks.slice(0, 3).map(({ agent, sessionId }) => (
-            <AgentMark identity={agent} key={sessionId} />
+          {[...marks].slice(0, 3).map(([connectionId, agent]) => (
+            <AgentMark identity={agent} key={connectionId} />
           ))}
-          {marks.length > 3 ? <span>+{marks.length - 3}</span> : null}
+          {marks.size > 3 ? <span>+{marks.size - 3}</span> : null}
         </span>
         {compact ? (
-          <span aria-hidden>{agents.length}</span>
+          <span aria-hidden>{connections.size}</span>
         ) : (
           <>
             {oneWorking ? <span aria-hidden className="status-dot status-dot--running" /> : null}

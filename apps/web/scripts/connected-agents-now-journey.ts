@@ -26,6 +26,31 @@ async function showPanel(page: Page) {
   if (!fits) throw new Error("The connected agent panel exceeds the viewport.");
 }
 
+async function checkSoloLine(page: Page, { clipped }: { clipped: boolean }) {
+  const layout = await trigger(page).evaluate((button) => {
+    const text = button.querySelector<HTMLElement>(".agents-now__headline")!;
+    const stop = button.parentElement!.querySelector<HTMLElement>(".agents-now__quick-stop")!;
+    const line = button.getBoundingClientRect();
+    const action = stop.getBoundingClientRect();
+    return {
+      title: button.getAttribute("title"),
+      label: button.getAttribute("aria-label"),
+      height: text.clientHeight,
+      fullHeight: text.scrollHeight,
+      lineHeight: Number.parseFloat(getComputedStyle(text).lineHeight),
+      centreOffset: Math.abs((line.top + line.bottom - action.top - action.bottom) / 2),
+    };
+  });
+  if (
+    !layout.title ||
+    layout.title !== layout.label ||
+    layout.height > 2 * layout.lineHeight + 1 ||
+    layout.fullHeight > layout.height + 1 !== clipped ||
+    layout.centreOffset > 1
+  )
+    throw new Error(`The single-agent line did not fit: ${JSON.stringify(layout)}`);
+}
+
 async function save(page: Page, name: string) {
   await page.evaluate(() => document.fonts.ready);
   await page.screenshot({ path: path.join(output!, `${name}.png`), animations: "disabled" });
@@ -49,6 +74,8 @@ try {
     };
     await open("one");
     await page.getByRole("button", { name: "ChatGPT is working in Shopping" }).waitFor();
+    await page.evaluate(() => document.fonts.ready);
+    await checkSoloLine(page, { clipped: false });
     await save(page, `one-${colorScheme}`);
 
     await open("three");
@@ -80,6 +107,23 @@ try {
     await save(page, `idle-${colorScheme}`);
 
     if (colorScheme === "dark") {
+      await open("long-one");
+      await page
+        .getByRole("button", {
+          name: /Grok research assistant.*Household shopping and weekly groceries shared with family/,
+        })
+        .waitFor();
+      await checkSoloLine(page, { clipped: true });
+      const resize = page.getByRole("separator", { name: "Resize navigation sidebar" });
+      await resize.press("Home");
+      if (
+        (await resize.getAttribute("aria-valuenow")) !==
+        (await resize.getAttribute("aria-valuemin"))
+      )
+        throw new Error("The sidebar did not reach its minimum width.");
+      await checkSoloLine(page, { clipped: true });
+      await save(page, "one-long-dark");
+
       await page.setViewportSize({ width: 728, height: 820 });
       await page.goto(`${web.origin}/?mock-agents&mock-agent-work=long-panel`);
       await page.getByRole("button", { name: /Open sidebar/ }).click();

@@ -3138,6 +3138,7 @@ button.start-apps__row--away:focus-visible {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+  line-height: 1.25;
   white-space: normal;
 }
 .side-tab--grouped::before,
@@ -4341,6 +4342,15 @@ html[data-tab-sorting] * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agents-now__trigger[data-single-agent] .agents-now__headline {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .agents-now__trigger > .icon,

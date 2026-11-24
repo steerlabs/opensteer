@@ -51,7 +51,13 @@ function connectionOf(connections: readonly AgentConnection[], label: string): S
   return found;
 }
 
-export const mockAgentWorkLiveScenes = ["one", "three", "needs-you", "long-panel"] as const;
+export const mockAgentWorkLiveScenes = [
+  "one",
+  "three",
+  "needs-you",
+  "long-panel",
+  "long-one",
+] as const;
 export type MockAgentWorkLiveScene = (typeof mockAgentWorkLiveScenes)[number];
 
 export function mockAgentWork(input: {
@@ -116,15 +122,13 @@ export function mockAgentWork(input: {
   const livePanel = input.livePanel;
   const liveWaiting = livePanel === "needs-you";
   const longPanel = livePanel === "long-panel";
+  const longSolo = livePanel === "long-one";
+  const solo = livePanel === "one" || longSolo;
+  const longAgent = { ...grok, label: "Grok research assistant for the entire household" };
+  const longPlace = "Household shopping and weekly groceries shared with family";
   const workingAgent = liveWaiting ? grok : claude;
-  const otherAgent = liveWaiting
-    ? claude
-    : longPanel
-      ? { ...grok, label: "Grok research assistant for the entire household" }
-      : grok;
-  const otherPlace = liveWaiting
-    ? lisbon
-    : profile(longPanel ? "Household shopping and weekly groceries shared with family" : "Work");
+  const otherAgent = liveWaiting ? claude : longPanel ? longAgent : grok;
+  const otherPlace = liveWaiting ? lisbon : profile(longPanel ? longPlace : "Work");
   const shopping = input.long
     ? "Household shopping and weekly groceries (shared with family)"
     : "Shopping";
@@ -283,7 +287,7 @@ export function mockAgentWork(input: {
   if (livePanel) {
     slots[mockAgentWorkThreads.shopping] = {
       sessionId: shopperSession,
-      connection: connectionOf(input.connections, "ChatGPT"),
+      connection: longSolo ? longAgent : connectionOf(input.connections, "ChatGPT"),
       status: "active",
       endReason: null,
       operations: [
@@ -292,7 +296,7 @@ export function mockAgentWork(input: {
           shopperSession,
           {
             tool: "browser_use",
-            target: profile("Shopping"),
+            target: profile(longSolo ? longPlace : "Shopping"),
             state: "handed-off",
             outcome: null,
             completedAt: null,
@@ -458,7 +462,7 @@ export function mockAgentWork(input: {
             ),
           ]
         : []),
-      ...(livePanel === "one"
+      ...(solo
         ? []
         : [
             task(
