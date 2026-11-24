@@ -1,6 +1,6 @@
 import { readVerticalRunTools } from "../agents/vertical-stack.test-support.js";
 import type { VerticalTurn } from "../agents/vertical-stack.test-support.js";
-import { forkRunnerChild } from "../agents/runner-child.test-support.js";
+import { forkRunnerChild, type RunnerCrashOptions } from "../agents/runner-child.test-support.js";
 import { processStopTimeoutMs } from "@opensteer/shared/processControl";
 import { integrationBundleEntry } from "@opensteer/shared/test-support/integrationRunnerBuild";
 import {
@@ -76,7 +76,7 @@ export interface PersonalRuntime {
     signal: AbortSignal,
     replacementRunId?: RunId,
   ): Promise<VerticalTurn>;
-  crashRunner(beforeRestart?: () => Promise<void>): Promise<void>;
+  crashRunner(beforeRestart?: () => Promise<void>, options?: RunnerCrashOptions): Promise<void>;
   restartHost(outage?: {
     readonly downForMs?: number;
     readonly whileDown?: () => Promise<void>;
@@ -649,9 +649,9 @@ export async function startPersonalRuntime(input: {
       get host() {
         return host!;
       },
-      async crashRunner(beforeRestart) {
+      async crashRunner(beforeRestart, options) {
         if (!child) throw new Error("A Runner crash requires runnerChild");
-        await child.crash();
+        await child.crash(options);
         await beforeRestart?.();
         await startRunner();
       },

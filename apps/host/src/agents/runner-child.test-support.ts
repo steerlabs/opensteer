@@ -1,7 +1,110 @@
 import { fork } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
+import { vi } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { isNodeError } from "@opensteer/shared/nodeError";
+
+export interface RunnerCrashOptions {
+  /**
+   * On Linux, `opensteer-process-supervisor` enables `PR_SET_CHILD_SUBREAPER`
+   * and kills even detached descendants as soon as the Runner's control pipe
+   * closes. Setting `killSupervisors` models a crash where the supervisor is
+   * SIGKILLed alongside the Runner (before it can drain its tree): freeze the
+   * Runner with SIGSTOP so it cannot classify supervisor death as a failure or
+   * close its control pipe early, SIGKILL its process-supervisor children until
+   * dead/zombie, then SIGKILL the Runner. On macOS this is a no-op because
+   * detached `setsid` descendants already survive a Runner-only SIGKILL.
+   */
+  readonly killSupervisors?: boolean;
+}
+
+function readLinuxProcStatFields(
+  pid: number,
+): { readonly state: string; readonly ppid: number } | undefined {
+  try {
+    const raw = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const close = raw.lastIndexOf(")");
+    if (close < 0) return undefined;
+    const fields = raw
+      .slice(close + 2)
+      .trim()
+      .split(/\s+/u);
+    const state = fields[0];
+    const ppid = Number(fields[1]);
+    if (!state || !Number.isInteger(ppid)) return undefined;
+    return { state, ppid };
+  } catch {
+    return undefined;
+  }
+}
+
+function findLinuxChildSupervisors(runnerPid: number): number[] {
+  const supervisors: number[] = [];
+  for (const entry of readdirSync("/proc")) {
+    const pid = Number(entry);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    const stat = readLinuxProcStatFields(pid);
+    if (!stat || stat.ppid !== runnerPid) continue;
+    try {
+      const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      const argv0 = cmdline.split("\0", 1)[0] ?? "";
+      if (
+        argv0 === "opensteer-process-supervisor" ||
+        argv0.endsWith("/opensteer-process-supervisor")
+      ) {
+        supervisors.push(pid);
+      }
+    } catch {
+      // Process exited between stat and cmdline read.
+    }
+  }
+  return supervisors;
+}
+
+async function crashRunnerAndLinuxSupervisors(
+  runnerPid: number,
+  exited: Promise<void>,
+): Promise<void> {
+  let killError: unknown;
+  try {
+    process.kill(runnerPid, "SIGSTOP");
+    await vi.waitUntil(
+      () => {
+        const state = readLinuxProcStatFields(runnerPid)?.state;
+        return state === "T" || state === "t";
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+    const supervisors = findLinuxChildSupervisors(runnerPid);
+    if (supervisors.length === 0) {
+      throw new Error(`Expected an opensteer-process-supervisor child under Runner ${runnerPid}`);
+    }
+    for (const pid of supervisors) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== "ESRCH") throw error;
+      }
+    }
+    await vi.waitUntil(
+      () =>
+        supervisors.every((pid) => {
+          const state = readLinuxProcStatFields(pid)?.state;
+          return state === undefined || state === "Z" || state === "X";
+        }),
+      { interval: 10, timeout: 5_000 },
+    );
+  } finally {
+    try {
+      process.kill(runnerPid, "SIGKILL");
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "ESRCH") killError = error;
+    }
+  }
+  if (killError !== undefined) throw killError;
+  await exited;
+}
 
 // The fixture also bounds signallable groups that survive KILL. The shared
 // processGroup helper currently bounds only groups it cannot signal.
@@ -89,9 +192,19 @@ export function forkRunnerChild(
     child,
     exited,
     close,
-    // A crash journey deliberately kills only the leader; final cleanup still
-    // owns its whole group, and production recovery must reap the old executions.
-    crash: async () => {
+    // A crash journey deliberately kills only the leader (or the leader plus
+    // its Linux subreaper supervisors when modeling a crash that leaves
+    // surviving marked descendants); final cleanup still owns its whole group,
+    // and production recovery must reap the old executions.
+    crash: async (crashOptions?: RunnerCrashOptions) => {
+      if (
+        crashOptions?.killSupervisors &&
+        process.platform === "linux" &&
+        child.pid !== undefined
+      ) {
+        await crashRunnerAndLinuxSupervisors(child.pid, exited);
+        return;
+      }
       child.kill("SIGKILL");
       await exited;
     },
