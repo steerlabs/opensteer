@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  commandRequestAnswers,
   OpensteerError,
   raisedBeforeEffect,
   RequestJsonObjectSchema,
@@ -42,6 +43,7 @@ import {
 import {
   commandReviewFields,
   commandReviewText,
+  outsideName,
   type CommandReviewNote,
 } from "@opensteer/protocol/command-review";
 import { sql, type Kysely } from "kysely";
@@ -130,7 +132,7 @@ export type CommandProposed =
     };
 
 /** The form field an app without the command part answers; whatever it sends declines. */
-export const commandDecisionFieldId = "decision";
+export const commandDecisionFieldId = commandRequestAnswers.field;
 const maxResultBytes = 64 * 1_024;
 /** A name inside the Home's sentence is cut, so the sentence itself always fits whole. */
 const maxNameLength = 80;
@@ -140,11 +142,15 @@ const homeScriptPlaces: Readonly<Record<HostHomeKind, CommandScriptPlace>> = {
   "cloud-computer": { where: "on this Cloud Computer", name: null, as: "its user" },
   server: { where: "on this server", name: null, as: "its user" },
 };
-/** A name from outside the Home, as every approval sentence carries one: quoted and bounded. */
-const quotedName = (value: string | null | undefined) =>
-  value
-    ? `“${value.length > maxNameLength ? `${value.slice(0, maxNameLength - 1)}…` : value}”`
-    : null;
+/**
+ * A name from outside the Home, as every approval sentence carries one: quoted, bounded, on one
+ * line, with nothing in it that closes the quotes or turns the text around.
+ */
+const quotedName = (value: string | null | undefined) => {
+  if (!value) return null;
+  const name = outsideName(value);
+  return `“${name.length > maxNameLength ? `${name.slice(0, maxNameLength - 1)}…` : name}”`;
+};
 /** What the proposer is told of a refusal: the Home's words, never the handler's. */
 export const commandRefusedWords = "The Home refused it, so nothing changed.";
 
@@ -267,8 +273,10 @@ export class CommandRequestService {
   }
 
   /**
-   * The person approves the command, as proposed or as they changed it on its screen. It must be
-   * the same type and change the same thing; it runs as the person through `run`, the door. The
+   * The person approves the command exactly as proposed: anything else is refused, so what the
+   * card showed is what runs. A command that carries a value only the person types is never
+   * approved here; it is done on its own screen. Whoever proposed it must still be able to ask for
+   * it, read in the approval's own transaction. It runs as the person through `run`, the door. The
    * answer is recorded before it runs and its outcome after; an outcome lost in between is
    * `unknown`, and nothing runs it again.
    */
@@ -295,46 +303,46 @@ export class CommandRequestService {
       type: pending.command.type,
       idempotencyKey: `command-request:${input.requestId}`,
     });
-    if (!parsed.success)
+    if (pending.command.secretPaths.length > 0)
       throw new OpensteerError({
-        code: "bad_request",
-        message: "That command is not valid as changed. Check its fields and approve again.",
+        code: "conflict",
+        reason: "command-needs-person-screen",
+        message: "This needs something only you type. Do it on its own screen in Opensteer.",
       });
+    if (!parsed.success) throw changesWhatWasAsked();
     const command = parsed.data;
     if (input.command.type !== undefined && input.command.type !== pending.command.type)
       throw changesWhatWasAsked();
     const row = commandRow(command.type) as CommandRow;
     const governs = (row.governs as (c: HostApiCommand) => CommandResource)(command);
-    // A connection's ask is answerable only while it could still ask for this: a Disconnect or a
-    // narrowing since closes it, and nothing runs.
     const connectionId = pending.command.proposer.connectionId;
     const approved = RequestJsonObjectSchema.parse(
       JSON.parse(JSON.stringify(proposedCommand(row, command))),
     );
+    // Exactly what was proposed, or nothing.
+    if (digest(approved) !== pending.command.argumentsDigest) throw changesWhatWasAsked();
     const begun = await this.#store.beginApproval({
-      ...(connectionId
-        ? {
-            // As the connection the door admitted it under (`connection:<id>`), in the approval's
-            // own transaction.
-            stillAsks: (transaction) =>
-              this.#stillAsks(
-                transaction,
-                actor.userId,
-                connectionId,
-                pending.originatingAgentSessionId ?? null,
-                command,
-              ),
-          }
-        : {}),
+      // Whoever asked must still be able to ask for this, as it stands now, in the approval's own
+      // transaction: a Disconnect, a narrowing, a lowered task mode or a paused automation since
+      // closes the ask, and nothing runs. A connection's as the door admitted it
+      // (`connection:<id>`, or its direct session); your own agents' and an automation's as the
+      // task they work in (`thread:<id>`).
+      stillAsks: (transaction) =>
+        connectionId
+          ? this.#stillAsks(
+              transaction,
+              actor.userId,
+              connectionId,
+              pending.originatingAgentSessionId ?? null,
+              command,
+            )
+          : this.#ownStillAsks(transaction, actor.userId, pending, command),
       requestId: input.requestId,
       expectedRevision: input.expectedRevision,
       resolvedBy: actor.userId,
       settlementSessionId: actor.session.id,
       approvalKey: input.idempotencyKey,
-      approved: {
-        command: approved,
-        changed: digest(approved) !== pending.command.argumentsDigest,
-      },
+      approved: { command: approved, changed: false },
       accept: (part) => {
         if (part.type !== command.type) throw changesWhatWasAsked();
         if (
@@ -453,6 +461,48 @@ export class CommandRequestService {
         }
     }
     return [...notes].map(([path, note]) => ({ path, ...note }));
+  }
+
+  /**
+   * Whether your own agent's or an automation's ask could still be asked, as it is now: as the
+   * work of the task it came from, and, for an automation, while the automation is still on.
+   */
+  async #ownStillAsks(
+    database: Kysely<DatabaseSchema>,
+    owner: UserId,
+    request: Request,
+    command: HostApiCommand,
+  ): Promise<boolean> {
+    const occurrenceId = request.originatingOccurrenceId;
+    const watchActivationId = request.originatingWatchActivationId;
+    if (occurrenceId || watchActivationId) {
+      const trigger = await (
+        occurrenceId
+          ? database
+              .selectFrom("triggerOccurrences")
+              .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+              .select("triggers.status")
+              .where("triggerOccurrences.id", "=", occurrenceId)
+          : database
+              .selectFrom("triggerWatchActivations")
+              .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
+              .select("triggers.status")
+              .where("triggerWatchActivations.id", "=", watchActivationId!)
+      ).executeTakeFirst();
+      if (trigger?.status !== "active") return false;
+    }
+    try {
+      const admission = await admitCommand(database, {
+        ownerUserId: owner,
+        subject: { kind: "binding", bindingId: `thread:${request.originatingThreadId}` },
+        command,
+      });
+      return admission.answer !== "not_found";
+    } catch (error) {
+      if (error instanceof OpensteerError && ["forbidden", "not_found"].includes(error.code))
+        return false;
+      throw error;
+    }
   }
 
   /** Whether the proposing connection could still ask for this command, as it is now. */
@@ -640,8 +690,8 @@ const idKinds: Readonly<Record<string, CommandResource["kind"]>> = {
 function askedBy(proposer: CommandProposer): string {
   const who = proposer.kind === "connection" ? "the connected agent" : "the agent";
   return proposer.taskTitle
-    ? `Asked by ${who} “${proposer.name}”, in its task “${proposer.taskTitle}”`
-    : `Asked by ${who} “${proposer.name}”`;
+    ? `Asked by ${who} ${quotedName(proposer.name)}, in its task ${quotedName(proposer.taskTitle)}`
+    : `Asked by ${who} ${quotedName(proposer.name)}`;
 }
 
 /** The Home's sentence first and whole; whatever follows is cut to fit the title. */
@@ -673,8 +723,19 @@ export function commandPresentation(
     fields: [
       {
         id: commandDecisionFieldId,
-        prompt: "Approve runs it as you, exactly as shown. Decline tells the agent no.",
-        choices: [{ label: "Decline", value: "decline" }],
+        ...(part.secretPaths.length > 0
+          ? {
+              prompt:
+                "It needs something only you type, so it is not approved here. Do it yourself on its own screen, then say so here, or decline.",
+              choices: [
+                { label: "I did it myself", value: commandRequestAnswers.doneMyself },
+                { label: "Decline", value: commandRequestAnswers.decline },
+              ],
+            }
+          : {
+              prompt: "Approve runs it as you, exactly as shown. Decline tells the agent no.",
+              choices: [{ label: "Decline", value: commandRequestAnswers.decline }],
+            }),
         custom: true,
         multiSelect: false,
         secret: false,

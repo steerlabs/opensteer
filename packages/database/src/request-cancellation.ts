@@ -16,6 +16,8 @@ interface Cancellation {
   readonly resolvedAt: Date;
   readonly runId?: RunId;
   readonly cancelHandedOffPlugins?: boolean;
+  /** A Run stopped: the commands it proposed close too, as nothing it asked may run after. */
+  readonly cancelProposals?: boolean;
   readonly originatingThreadId?: ThreadId;
   readonly requestIds?: readonly RequestId[];
   readonly requestedBy?: UserId;
@@ -47,6 +49,7 @@ function pendingCancellationQuery(transaction: Transaction<DatabaseSchema>, inpu
       .where((eb) =>
         eb.or([
           eb("mode", "=", "live"),
+          input.cancelProposals ? eb("command", "is not", null) : eb.val(false),
           eb.and([
             eb("kind", "in", ["plugin.approval", "plugin.input"]),
             input.cancelHandedOffPlugins

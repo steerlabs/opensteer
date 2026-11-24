@@ -1098,12 +1098,13 @@ export async function enqueueRunnerControlInTransaction(
     }
     // Finalizing a Run that ends here settles its Requests and Thread state.
     if (!endsHere) {
-      // Nothing a stopped Run asked for can be answered any more.
+      // Nothing a stopped Run asked for can be answered any more, nor any command it proposed.
       await cancelPending(transaction, {
         reason: "run-ended",
         resolvedAt: new Date(),
         runId: input.runId,
         cancelHandedOffPlugins: true,
+        cancelProposals: input.type === "run.interrupt",
       });
       // With nothing left to answer, the Run is running again until it stops.
       await transaction

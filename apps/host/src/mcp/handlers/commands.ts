@@ -374,9 +374,9 @@ export class CommandTools {
       case "requests": {
         const view = await read("requests.list", {});
         // Each item as the person's Needs you list holds it: the Request, and how it is shown.
-        const requests = (view.requests ?? []) as readonly {
-          readonly request: { readonly id: string };
-        }[];
+        // The Home's notes beside a proposal (what an id names, what a setting is now) are the
+        // person's to read: an agent could learn through them what lies outside its reach (rule 5).
+        const requests = ((view.requests ?? []) as readonly AgentReadRequest[]).map(withoutNotes);
         // Your own agents at Full access see what the person sees; anyone else, its lineage's:
         // a connected agent's, the task tree it works in, or the automation's own task.
         if (!connectionId && mode === "full-access")
@@ -648,4 +648,19 @@ async function lineageRequests(
     database,
   );
   return rows.map(({ id }) => id);
+}
+
+type AgentReadRequest = {
+  readonly request: {
+    readonly id: string;
+    readonly command?: { readonly notes?: unknown } | null | undefined;
+  };
+};
+
+/** A Request as an agent reads it: without the notes the Home wrote for the person. */
+function withoutNotes(item: AgentReadRequest): AgentReadRequest {
+  const command = item.request.command;
+  if (!command || !("notes" in command)) return item;
+  const { notes: _notes, ...rest } = command;
+  return { ...item, request: { ...item.request, command: rest } };
 }

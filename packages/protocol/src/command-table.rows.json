@@ -559,7 +559,7 @@
     {
       "type": "request.command.approve",
       "family": "tasks",
-      "governs": "a command Request ← `requestId`; the person approves the command, as proposed or changed",
+      "governs": "a command Request ← `requestId`; the person approves the command exactly as proposed",
       "faces": [
         {
           "when": null,

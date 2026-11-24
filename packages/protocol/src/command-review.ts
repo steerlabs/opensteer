@@ -136,3 +136,27 @@ export function commandReviewText(value: unknown): string {
   );
   return lines.length ? lines.join("\n") : "None";
 }
+
+/**
+ * Characters that change how text reads without being seen: controls, bidirectional overrides
+ * and isolates, zero-width marks. Tab, newline and carriage return are layout, handled apart.
+ */
+const hidden = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f؜​-‏‪-‮⁠-⁩﻿]/gu;
+
+/**
+ * Text from outside the Home (an agent's or a person's), as a card shows it: every hidden or
+ * direction-changing character written out as its code, so what is shown is what is there.
+ * On one line, line breaks and tabs read as spaces.
+ */
+export function visibleText(value: string, lines: "keep" | "one" = "keep"): string {
+  const shown = value.replace(
+    hidden,
+    (character) => `[U+${character.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}]`,
+  );
+  return lines === "one" ? shown.replace(/[\r\n\t]+/gu, " ") : shown;
+}
+
+/** A name from outside the Home, to sit inside the Home's “…”: one line, never closing them. */
+export function outsideName(value: string): string {
+  return visibleText(value, "one").replace(/[“”„"«»]/gu, "'");
+}

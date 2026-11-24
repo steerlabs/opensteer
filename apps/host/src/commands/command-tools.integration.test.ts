@@ -676,6 +676,47 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
     });
     expect(onB.isError).toBe(true);
     expect(JSON.stringify(onB.content)).toBe(JSON.stringify(nothing.content));
+    // Nor can a selected grant learn through its own Request what lies outside it (rule 5): one
+    // that holds Tasks (so it reads its Requests) and profile A proposes a grant naming profile B,
+    // and reads that Request back. The person's card names the profile; what the agent reads
+    // carries no note at all.
+    const profileAsker = await connect(
+      {
+        scope: "selected",
+        tasks: true,
+        resources: [{ kind: "browser-profile", profileId: a.id }],
+      },
+      "Asking agent",
+    );
+    const widening = await call(profileAsker.client, "opensteer_command", {
+      command: {
+        type: "connection.update",
+        connectionId: profileAsker.id,
+        expectedRevision: 1,
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [
+            { kind: "browser-profile", profileId: a.id },
+            { kind: "browser-profile", profileId: b.id },
+          ],
+        },
+      },
+    });
+    expect(widening.structuredContent, JSON.stringify(widening.content)).toMatchObject({
+      status: "pending",
+    });
+    const widenAsk = (await host.store.requests.get(
+      (widening.structuredContent as { requestId: string }).requestId as never,
+    ))!;
+    expect(widenAsk.command!.notes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "“Private”" })]),
+    );
+    const readBack = await call(profileAsker.client, "opensteer_state", { area: "requests" });
+    const readText = JSON.stringify(readBack.structuredContent);
+    expect(readText).toContain(widenAsk.id);
+    expect(readText).not.toContain("Private");
+    expect(readText).not.toContain('"notes"');
 
     // The reads sent as POST write nothing (AD10 2d): every statement the Home issues while the
     // person makes each is a read, apart from what signing a request in does for any call, which

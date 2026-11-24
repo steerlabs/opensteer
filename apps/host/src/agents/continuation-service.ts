@@ -1,7 +1,7 @@
 import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
 import { dataAppName } from "../devices/access-requests.js";
 import { localTargetBlocked } from "../devices/target-blocked.js";
-import { isPhoneDisplayDefinitionId } from "@opensteer/core";
+import { commandRequestAnswers, isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { createHash } from "node:crypto";
 import {
   BrowserRequestOutcomeSchema,
@@ -692,14 +692,14 @@ export function commandContinuation(request: Request): string {
       ? `${Asked} closed: you can no longer ask for it, so nothing changed.`
       : `${Asked} was cancelled (${request.cancellationReason}); nothing changed.`;
   if (request.status === "declined") {
-    const words =
-      request.response?.kind === "form"
-        ? Object.values(request.response.answers)
-            .flat()
-            .filter((value) => value !== "decline")
-            .join(" ")
-            .trim()
-        : "";
+    const answers =
+      request.response?.kind === "form" ? Object.values(request.response.answers).flat() : [];
+    if (answers.includes(commandRequestAnswers.doneMyself))
+      return `The person did ${asked} themselves, on its own screen in Opensteer; your proposal itself did not run. Read the current state before relying on it, and do not propose it again.`;
+    const words = answers
+      .filter((value) => value !== commandRequestAnswers.decline)
+      .join(" ")
+      .trim();
     return [
       `The person declined ${asked}.`,
       ...(words ? [`They said: ${JSON.stringify(words.slice(0, 2_000))}`] : []),

@@ -13,6 +13,7 @@ import {
   admitCommand,
   beginAgentSession,
   CommandRequestStore,
+  TriggerStore,
   commandSubject,
   needsYouPage,
 } from "@opensteer/database";
@@ -162,7 +163,7 @@ describeStore("command Requests at the Home", (it) => {
     };
   }
 
-  it("puts a command to the person and runs it as the person, as they changed it", async ({
+  it("puts a command to the person and runs exactly what was proposed, as the person, refusing anything else", async ({
     storeFixture,
   }) => {
     const { f, store, ran, run, door, rename, approve } = await setup(storeFixture);
@@ -194,16 +195,18 @@ describeStore("command Requests at the Home", (it) => {
       }),
     ).rejects.toMatchObject({ code: "conflict", reason: "command-changed" });
     expect(ran).toEqual([]);
-    const outcome = await approve(requestId, {
-      ...request.command!.command,
-      name: "Work, renamed",
-    });
+    // Changing how is refused too: what the card showed is what runs, or nothing.
+    await expect(
+      approve(requestId, { ...request.command!.command, name: "Work, renamed" }),
+    ).rejects.toMatchObject({ code: "conflict", reason: "command-changed" });
+    expect(ran).toEqual([]);
+    const outcome = await approve(requestId, request.command!.command);
     expect(outcome).toEqual({
       status: "done",
-      result: { type: "harness.rename", harness: { name: "Work, renamed" } },
+      result: { type: "harness.rename", harness: { name: "Work" } },
     });
     expect(ran).toHaveLength(1);
-    expect(ran[0]!.command).toMatchObject({ name: "Work, renamed" });
+    expect(ran[0]!.command).toMatchObject({ name: "Work" });
     // It ran as the person, on the person's session, with the proposer recorded.
     expect(ran[0]!.actor).toMatchObject({
       kind: "person",
@@ -522,7 +525,7 @@ describeStore("command Requests at the Home", (it) => {
     );
   });
 
-  it("records what ran apart from what was proposed, and who proposed it (X2)", async ({
+  it("records what ran, exactly what was proposed, and who proposed it (X2)", async ({
     storeFixture,
   }) => {
     const { f, database, store, run, door, rename, approve } = await setup(storeFixture);
@@ -532,13 +535,10 @@ describeStore("command Requests at the Home", (it) => {
       door(run),
     )) as { requestId: string };
     const asked = (await store.requests.get(proposed.requestId as never))!.command!;
-    await approve(proposed.requestId, { ...asked.command, name: "Work, renamed" });
+    await approve(proposed.requestId, asked.command);
     const settled = (await store.requests.get(proposed.requestId as never))!.command!;
     expect(settled.command).toMatchObject({ name: "Work" });
-    expect(settled.approved).toEqual({
-      command: { ...asked.command, name: "Work, renamed" },
-      changed: true,
-    });
+    expect(settled.approved).toEqual({ command: asked.command, changed: false });
     const record = await database
       .selectFrom("securityAudit")
       .selectAll()
@@ -550,7 +550,7 @@ describeStore("command Requests at the Home", (it) => {
       metadata: {
         type: "harness.rename",
         proposedBy: { kind: "run", name: "Claude Code" },
-        changed: true,
+        changed: false,
       },
     });
   });
@@ -1157,7 +1157,7 @@ describeStore("command Requests at the Home", (it) => {
   it("is never an agent's to approve: to any agent the approval reads as a command that does not exist", async ({
     storeFixture,
   }) => {
-    const { store, ran, run, door, rename } = await setup(storeFixture);
+    const { f, store, ran, run, door, rename } = await setup(storeFixture);
     const proposed = await dispatchCommand(run, rename("Work"), door(run));
     const requestId = (proposed as { requestId: string }).requestId;
     const request = (await store.requests.get(requestId as never))!;
@@ -1183,7 +1183,322 @@ describeStore("command Requests at the Home", (it) => {
     ).catch(said);
     expect(approving).toBe(nothing);
     expect(JSON.parse(approving as string)).toMatchObject({ code: "not_found" });
+    // The same for a connected agent with everything, one with a selected grant, and an
+    // automation; each is live, as a command it does hold shows.
+    const connections = new AgentConnectionStore(storeFixture.database);
+    const connected = async (grant: AgentGrant) => {
+      const record = await connections.create({
+        userId: f.userId,
+        label: `Agent ${grant.scope}`,
+        clientName: "Client",
+        accessMode: "full-access",
+        resource: "https://home.test/mcp",
+        expiresAt: new Date(Date.now() + 60 * 60_000),
+        grant,
+      });
+      await connections.activate(record.id, randomUUID());
+      return {
+        kind: "connection",
+        key: `connection:${record.id}`,
+        connectionId: record.id,
+        userId: f.userId,
+        accessMode: "full-access",
+        grant,
+        grantRevision: 1,
+        agentConnection: {
+          agentConnectionId: record.id,
+          grant,
+          grantRevision: 1,
+          consentVersion: 2,
+          accessMode: "full-access",
+          bridgeSenders: null,
+        },
+      } as unknown as AgentCaller;
+    };
+    const triggers = new TriggerStore(storeFixture.database);
+    const automation = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: f.threadId,
+      createdBy: f.userId,
+      idempotencyKey: randomUUID(),
+      name: "Morning plan",
+      source: {
+        kind: "schedule",
+        schedule: { kind: "cron", expression: "0 0 * * *", timezone: "UTC" },
+      },
+      script: { interpreter: null, text: "console.log('ok');" },
+    });
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: f.userId,
+      triggerId: automation.trigger.id,
+      idempotencyKey: randomUUID(),
+    });
+    const thread = await store.getThreadForOwner(f.threadId, f.userId);
+    const program = {
+      kind: "program",
+      key: `trigger:${occurrence.id}`,
+      userId: f.userId,
+      accessMode: "full-access",
+      anchor: thread,
+      program: { kind: "trigger", occurrenceId: occurrence.id },
+    } as unknown as AgentCaller;
+    const callers: [string, AgentCaller, HostApiCommand][] = [];
+    for (const grant of [
+      { scope: "everything" },
+      { scope: "selected", tasks: false, resources: [] },
+    ] as AgentGrant[]) {
+      const caller = await connected(grant);
+      const own = (caller as unknown as { connectionId: string }).connectionId;
+      callers.push([
+        `connection ${grant.scope}`,
+        caller,
+        {
+          type: "connection.update",
+          idempotencyKey: randomUUID(),
+          connectionId: own,
+          expectedRevision: 1,
+          label: "Renamed",
+        } as unknown as HostApiCommand,
+      ]);
+    }
+    callers.push(["automation", program, rename("By the automation")]);
+    for (const [name, caller, held] of callers) {
+      const sent = await dispatchCommand(
+        caller,
+        {
+          type: "request.command.approve",
+          idempotencyKey: randomUUID(),
+          requestId,
+          expectedRevision: (await store.requests.revision(requestId as never))!,
+          command: request.command!.command,
+        } as unknown as HostApiCommand,
+        door(caller),
+      ).catch(said);
+      const unknown = await dispatchCommand(
+        caller,
+        { type: "no.such.command", idempotencyKey: randomUUID() } as unknown as HostApiCommand,
+        door(caller),
+      ).catch(said);
+      expect(sent, name).toBe(unknown);
+      expect(JSON.parse(sent as string), name).toMatchObject({ code: "not_found" });
+      // It is live: a command it holds is not read as missing.
+      const holds = await dispatchCommand(caller, held, door(caller)).catch(said);
+      expect(typeof holds === "string" ? JSON.parse(holds) : holds, name).not.toMatchObject({
+        code: "not_found",
+      });
+    }
     expect(ran).toEqual([]);
     expect((await store.requests.get(requestId as never))!.status).toBe("pending");
+  });
+
+  it("never approves a command that carries a secret on the card; the person says they did it themselves", async ({
+    storeFixture,
+  }) => {
+    const { f, store, service, ran, context, door, run } = await setup(storeFixture);
+    const proposed = await service.propose({
+      ownerUserId: f.userId,
+      command: {
+        type: "harness.authentication.submit",
+        idempotencyKey: randomUUID(),
+        environmentId: f.environmentId,
+        harnessInstanceId: "hin_00000000-0000-4000-8000-000000000009",
+        value: "sk-typed-by-the-agent",
+      } as unknown as HostApiCommand,
+      ask: { status: "ask", reason: "secret" },
+      face: 0,
+      proposer: {
+        kind: "run",
+        name: "Claude Code",
+        taskTitle: null,
+        key: `task:${f.threadId}` as ProposerLineageKey,
+      },
+      origin: { runId: f.run.id },
+      originatingThreadId: f.threadId,
+      callKey: randomUUID(),
+    });
+    const requestId = (proposed as { requestId: string }).requestId as never;
+    const request = (await store.requests.get(requestId))!;
+    const field = request.presentation.kind === "form" ? request.presentation.fields[0]! : null;
+    expect(field?.choices?.map(({ value }) => value)).toEqual(["done-myself", "decline"]);
+    await expect(
+      service.approve(
+        personActor(context),
+        {
+          requestId,
+          expectedRevision: (await store.requests.revision(requestId))!,
+          command: request.command!.command,
+          idempotencyKey: randomUUID(),
+        },
+        (person, approved) =>
+          dispatchCommand(person, approved, { registry: door(run).registry }, context),
+        (proposal) => personActor(context, proposal),
+      ),
+    ).rejects.toMatchObject({ code: "conflict", reason: "command-needs-person-screen" });
+    expect(ran).toEqual([]);
+    // The person did it on its own screen and says so: the proposal itself never runs.
+    await service.decline({
+      requestId,
+      expectedRevision: (await store.requests.revision(requestId))!,
+      resolvedBy: f.userId,
+      response: { kind: "form", answers: { decision: ["done-myself"] } },
+    });
+    const settled = (await store.requests.get(requestId))!;
+    expect(settled.status).toBe("declined");
+    expect(commandContinuation(settled)).toMatch(/did .* themselves, on its own screen/u);
+    expect(ran).toEqual([]);
+  });
+
+  it("answers the same proposal the person declined within a day as declined, opening nothing", async ({
+    storeFixture,
+  }) => {
+    const { database, store, service, run, door, rename, f } = await setup(storeFixture);
+    const ask = (name: string) => dispatchCommand(run, rename(name), door(run));
+    const first = (await ask("Work")) as { requestId: string };
+    await service.decline({
+      requestId: first.requestId as never,
+      expectedRevision: (await store.requests.revision(first.requestId as never))!,
+      resolvedBy: f.userId,
+      response: { kind: "form", answers: { decision: ["decline"] } },
+    });
+    const count = async () =>
+      (
+        await database
+          .selectFrom("requests")
+          .select("id")
+          .where("command", "is not", null)
+          .execute()
+      ).length;
+    const before = await count();
+    // The same proposal again, by another call: the person's no, and nothing new.
+    expect(await ask("Work")).toEqual({ status: "declined", requestId: first.requestId });
+    expect(await count()).toBe(before);
+    // Other arguments are another proposal, put to the person.
+    const other = (await ask("Work, smaller")) as { status: string; requestId: string };
+    expect(other).toMatchObject({ status: "pending", existing: false });
+    await service.decline({
+      requestId: other.requestId as never,
+      expectedRevision: (await store.requests.revision(other.requestId as never))!,
+      resolvedBy: f.userId,
+      response: { kind: "form", answers: { decision: ["decline"] } },
+    });
+    // After a day the same proposal may be asked again.
+    await database
+      .updateTable("requests")
+      .set({ resolvedAt: new Date(Date.now() - 25 * 60 * 60_000) })
+      .where("id", "=", first.requestId as never)
+      .execute();
+    expect(await ask("Work")).toMatchObject({ status: "pending", existing: false });
+  });
+
+  it("closes a Run's proposals when the person stops it, and an approval after runs nothing", async ({
+    storeFixture,
+  }) => {
+    const { f, database, store, ran, run, door, rename, approve } = await setup(storeFixture);
+    await database
+      .updateTable("runs")
+      .set({ status: "running" })
+      .where("id", "=", f.run.id)
+      .execute();
+    const proposed = (await dispatchCommand(run, rename("Work"), door(run))) as {
+      requestId: string;
+    };
+    const asked = (await store.requests.get(proposed.requestId as never))!;
+    await store.enqueueRunnerControl({
+      type: "run.interrupt",
+      threadId: f.threadId,
+      runId: f.run.id,
+      requestedBy: f.userId,
+      idempotencyKey: randomUUID(),
+    });
+    expect(await store.requests.get(proposed.requestId as never)).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "run-ended",
+    });
+    await expect(approve(proposed.requestId, asked.command!.command)).rejects.toMatchObject({
+      code: "conflict",
+    });
+    expect(ran).toEqual([]);
+  });
+
+  it("refuses an automation's proposal once the automation is paused, and closes it", async ({
+    storeFixture,
+  }) => {
+    const { f, database, store, service, ran, rename, approve } = await setup(storeFixture);
+    const triggers = new TriggerStore(database);
+    const created = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: f.threadId,
+      createdBy: f.userId,
+      idempotencyKey: randomUUID(),
+      name: "Morning plan",
+      source: {
+        kind: "schedule",
+        schedule: { kind: "cron", expression: "0 0 * * *", timezone: "UTC" },
+      },
+      script: { interpreter: null, text: "console.log('ok');" },
+    });
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: f.userId,
+      triggerId: created.trigger.id,
+      idempotencyKey: randomUUID(),
+    });
+    // The occurrence's script is running: it is the one asking.
+    await database
+      .updateTable("triggerOccurrences")
+      .set({ status: "running", startedAt: new Date() })
+      .where("id", "=", occurrence.id)
+      .execute();
+    const command = rename("Work");
+    const proposed = (await service.propose({
+      ownerUserId: f.userId,
+      command,
+      ask: { status: "ask", reason: "approval" },
+      face: undefined,
+      proposer: {
+        kind: "program",
+        name: "Morning plan",
+        taskTitle: null,
+        key: `automation:${created.trigger.id}` as ProposerLineageKey,
+      },
+      origin: { occurrenceId: occurrence.id },
+      originatingThreadId: f.threadId,
+      callKey: randomUUID(),
+    })) as { requestId: string };
+    const asked = (await store.requests.get(proposed.requestId as never))!;
+    await database
+      .updateTable("triggers")
+      .set({ status: "paused" })
+      .where("id", "=", created.trigger.id)
+      .execute();
+    await expect(approve(proposed.requestId, asked.command!.command)).rejects.toMatchObject({
+      code: "forbidden",
+      reason: "proposer-gone",
+    });
+    expect(ran).toEqual([]);
+    expect(await store.requests.get(proposed.requestId as never)).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "authority-revoked",
+    });
+  });
+
+  it("re-admits your own agent's proposal as its task now: a lowered mode still asks, so it runs as the person", async ({
+    storeFixture,
+  }) => {
+    const { f, database, store, ran, run, door, rename, approve } = await setup(storeFixture);
+    const proposed = (await dispatchCommand(run, rename("Work"), door(run))) as {
+      requestId: string;
+    };
+    const asked = (await store.requests.get(proposed.requestId as never))!;
+    await database
+      .updateTable("threads")
+      .set({ accessMode: "approval-required" })
+      .where("id", "=", f.threadId)
+      .execute();
+    expect(await approve(proposed.requestId, asked.command!.command)).toMatchObject({
+      status: "done",
+    });
+    expect(ran).toHaveLength(1);
   });
 });

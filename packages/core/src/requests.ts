@@ -604,6 +604,18 @@ export const RequestAnswererViewSchema = z.union([
  * types), who proposed it, and the agent's own reason, kept apart. A client that knows it shows
  * the change and the screen that performs it; one that does not shows the Request's form.
  */
+/**
+ * The person's answers to a command Request on its form field (`decision`), besides Approve:
+ * a no, or, for a command only the person can do (one that carries a value only they type),
+ * that they did it themselves on its own screen. Either settles the Request as declined: the
+ * proposal itself never runs.
+ */
+export const commandRequestAnswers = {
+  field: "decision",
+  decline: "decline",
+  doneMyself: "done-myself",
+} as const;
+
 export const commandRequestOutcomeSchema = z.discriminatedUnion("status", [
   /** The person approved it and it is running. */
   z.object({ status: z.literal("running") }),

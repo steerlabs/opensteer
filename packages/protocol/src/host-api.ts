@@ -722,8 +722,8 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     /** The revision of the Request the person reviewed. */
     expectedRevision: PersonalRevisionSchema,
     /**
-     * The command as the person approves it: as proposed, or changed on its screen, with the values
-     * only the person types. Its type and what it changes must be what was asked.
+     * The command exactly as it was proposed and shown; anything else is refused. A command that
+     * carries a value only the person types is never approved this way.
      */
     command: z.record(z.string().max(200), z.unknown()),
     type: z.literal("request.command.approve"),

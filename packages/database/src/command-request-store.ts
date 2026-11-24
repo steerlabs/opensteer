@@ -111,6 +111,9 @@ function partValue(part: CommandRequestPart) {
   return jsonValue(CommandRequestPartSchema.parse(part));
 }
 
+/** How long the person's no to a proposal answers the same proposal again. */
+export const declineRemembered = 24 * 60 * 60_000;
+
 const pendingCommand = (database: Kysely<DatabaseSchema>, owner: UserId) =>
   database
     .selectFrom("requests")
@@ -132,8 +135,8 @@ export class CommandRequestStore {
    * Opens the person's Request for a command an agent proposed, or answers from what is already
    * there: the same call again is the same Request; the same ask (proposer and thing) with the same
    * arguments is the open one; with other arguments it is a conflict. That is the one rule: an
-   * ask waits until the person answers or its proposer withdraws it, and a declined ask may be
-   * asked again (whether to is the agent's judgement).
+   * ask waits until the person answers or its proposer withdraws it, and the same proposal the
+   * person declined is answered as declined for a day (`declineRemembered`).
    */
   async open(input: {
     readonly ownerUserId: UserId;
@@ -195,6 +198,21 @@ export class CommandRequestStore {
           });
         return { status: "pending" as const, request: requestFromRow(open), replayed: true };
       }
+      // The same proposal (proposer, type, thing and arguments) the person declined within the
+      // last day is answered as declined again: nothing opens, so a no cannot be worn down.
+      const declined = await transaction
+        .selectFrom("requests")
+        .select(["id", "command"])
+        .where("requestedBy", "=", owner)
+        .where("status", "=", "declined")
+        .where("command", "is not", null)
+        .where(sql<boolean>`command->>'askKey' = ${input.part.askKey}`)
+        .where(sql<boolean>`command->>'argumentsDigest' = ${input.part.argumentsDigest}`)
+        .where("resolvedAt", ">", new Date(this.#now().getTime() - declineRemembered))
+        .orderBy("resolvedAt", "desc")
+        .limit(1)
+        .executeTakeFirst();
+      if (declined) return { status: "declined" as const, requestId: declined.id };
       const origin = input.origin;
       const created = await this.#requests.create(
         {
