@@ -166,6 +166,23 @@ async function browserUseHome() {
   const queuedCommand = Promise.withResolvers<string>();
   const cancelledRequests = new Set<string>();
   const cancellationAcknowledged = Promise.withResolvers<string>();
+  // Faults a journey injects into the Device's commands and replies.
+  const faults: {
+    dropBrowserReply: boolean;
+    replaceBrowserResponse: ((message: unknown) => unknown) | undefined;
+    beforeClientCommand:
+      | ((command: {
+          readonly method: string;
+          readonly parameters?: Record<string, unknown>;
+        }) => Promise<void> | void)
+      | undefined;
+    onServerMessage: ((message: unknown) => void) | undefined;
+  } = {
+    dropBrowserReply: false,
+    replaceBrowserResponse: undefined,
+    beforeClientCommand: undefined,
+    onServerMessage: undefined,
+  };
   const peer = {
     id: "browser-device",
     close: () => runner.detach(),
@@ -181,6 +198,9 @@ async function browserUseHome() {
         typeof command.command.parameters?.requestId === "string"
       ) {
         cancelledRequests.add(command.command.parameters.requestId);
+      }
+      if (command?.type === "cdp.command" && faults.beforeClientCommand) {
+        await faults.beforeClientCommand(command.command);
       }
       await runner.handleFrame(Buffer.from(JSON.stringify(message)), false);
       if (
@@ -309,9 +329,13 @@ async function browserUseHome() {
     response.end(
       request.url === "/popup"
         ? "<title>Popup</title><h1>Popup</h1>"
-        : request.url === "/helpers"
-          ? helpersPage
-          : `
+        : request.url === "/form-login"
+          ? `<title>Sign in</title><h1>Sign in</h1><form id="f" method="post" action="/signed-in"><button type="button" onclick="fetch('/arm-submit').then(() => document.getElementById('f').submit())">Sign in</button></form>`
+          : request.url === "/signed-in"
+            ? "<title>Signed in</title><h1>Signed in</h1>"
+            : request.url === "/helpers"
+              ? helpersPage
+              : `
         <title>Home browser fixture</title><h1>Home browser fixture</h1>
         <button onclick="this.textContent = 'Clicked'">Click me</button>
         <button onclick="window.open('/popup')">Open popup</button>
@@ -329,11 +353,6 @@ async function browserUseHome() {
       if (site.listening) await new Promise<void>((resolve) => site.close(() => resolve()));
     },
   }));
-  // Faults a journey injects into the Device's replies.
-  const faults: {
-    dropBrowserReply: boolean;
-    replaceBrowserResponse: ((message: unknown) => unknown) | undefined;
-  } = { dropBrowserReply: false, replaceBrowserResponse: undefined };
   await runner.attach({
     fence,
     browserWireVersion: 2,
@@ -348,6 +367,7 @@ async function browserUseHome() {
       else {
         const message = BrowserRuntimeRelayToHostMessageSchema.parse(JSON.parse(String(frame)));
         if (message.type === "browser.server-message") {
+          faults.onServerMessage?.(message.message);
           const response = BrowserServerMessageSchema.safeParse(message.message).data;
           if (
             response?.type === "cdp.error" &&
@@ -984,5 +1004,62 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         `,
       ),
     ).toEqual([outsideMessage("Page.crash"), outsideMessage("Page.close")]);
+  },
+);
+
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "retries getByRole().waitFor() when a form navigation destroys the document context between Runtime.evaluate and Accessibility.queryAXTree",
+  async () => {
+    const { origin, profile, run, text, hold, faults } = await browserUseHome();
+    const armSubmit = hold("/arm-submit");
+    const navigatedToSignedIn = Promise.withResolvers<void>();
+    faults.onServerMessage = (message) => {
+      if (
+        message &&
+        typeof message === "object" &&
+        "type" in message &&
+        message.type === "cdp.event" &&
+        "event" in message &&
+        message.event &&
+        typeof message.event === "object" &&
+        "method" in message.event &&
+        message.event.method === "Page.frameNavigated" &&
+        JSON.stringify(message.event).includes(`${origin}/signed-in`)
+      ) {
+        navigatedToSignedIn.resolve();
+      }
+    };
+    let heldHeadingQuery = false;
+    faults.beforeClientCommand = async (command) => {
+      if (
+        !heldHeadingQuery &&
+        command.method === "Accessibility.queryAXTree" &&
+        command.parameters?.role === "heading"
+      ) {
+        heldHeadingQuery = true;
+        // Let Runtime.evaluate("document") return the pre-navigation objectId first, then release
+        // the form submission and wait for Page.frameNavigated to commit the new document before
+        // forwarding this stale Accessibility.queryAXTree to Chromium.
+        await armSubmit.started.promise;
+        armSubmit.release.resolve();
+        await navigatedToSignedIn.promise;
+      }
+    };
+    try {
+      const result = await run(`
+        const page = await newPage(${JSON.stringify(`${origin}/form-login`)}, { profileId: ${JSON.stringify(profile.id)} });
+        await page.getByRole("button", { name: "Sign in" }).click();
+        const signedIn = page.getByRole("heading", { name: "Signed in" });
+        await signedIn.waitFor();
+        print(await signedIn.innerText());
+      `);
+      expect(text(result)).toContain("Signed in");
+      expect(heldHeadingQuery).toBe(true);
+    } finally {
+      armSubmit.release.resolve();
+      navigatedToSignedIn.resolve();
+      faults.beforeClientCommand = undefined;
+      faults.onServerMessage = undefined;
+    }
   },
 );

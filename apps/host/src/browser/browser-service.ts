@@ -10706,7 +10706,8 @@ export class HostedBrowserBroker {
               ...(cause.reason === "browser-reply-limit" ||
               cause.reason === "browser-command-cancelled" ||
               cause.reason === "browser-input-canceled" ||
-              cause.reason === "browser-tab-open-closed"
+              cause.reason === "browser-tab-open-closed" ||
+              cause.reason === "browser-cdp-protocol-error"
                 ? { reason: cause.reason }
                 : {}),
             }),

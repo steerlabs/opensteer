@@ -1476,7 +1476,7 @@ export class BrowserController {
       else await this.dispatch(message, surfaceId);
     } catch (error) {
       await this.refuseClipboard(message);
-      const normalized = normalizeControllerError(error);
+      const normalized = normalizeControllerError(error, isCdpRequest(message));
       if (isCdpRequest(message) && message.replyBudget && normalized.code === "internal")
         console.error("browser.script.runtime.failed", error);
       const reservation = surfaceId ? this.reservation(message, surfaceId) : null;
@@ -4433,7 +4433,28 @@ function isDialogAnswer(message: BrowserClientMessage): boolean {
   return message.type === "cdp.command" && message.command.method === "Page.handleJavaScriptDialog";
 }
 
-function normalizeControllerError(error: unknown): BrowserRuntimeError {
+function isChromiumCdpProtocolError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    /^(?:cdpSession\.send:\s*)?Protocol error \([^)]+\):/u.test(error.message) ||
+    /Cannot find context with specified id|Cannot find execution context with given id|Execution context was destroyed|Could not find node with given id|No node with given id found|Node with given id does not belong to the document|Cannot find default execution context|Inspected target navigated or closed/u.test(
+      error.message,
+    )
+  );
+}
+
+function normalizeControllerError(error: unknown, cdpRequest = false): BrowserRuntimeError {
+  if (
+    cdpRequest &&
+    !(error instanceof SessionCdpRouterError) &&
+    !(error instanceof BrowserRuntimeError) &&
+    isChromiumCdpProtocolError(error)
+  ) {
+    return new BrowserRuntimeError("conflict", "The browser rejected the CDP command.", {
+      cause: error,
+      reason: "browser-cdp-protocol-error",
+    });
+  }
   if (!(error instanceof SessionCdpRouterError)) return toBrowserRuntimeError(error);
   const code =
     error.code === "bad_command" || error.code === "too_large"
