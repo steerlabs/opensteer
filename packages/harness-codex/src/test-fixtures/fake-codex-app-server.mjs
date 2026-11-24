@@ -1168,6 +1168,20 @@ function handleClientMethod(message) {
         }
         if (!process.argv.includes("--ignore-interrupt")) {
           sendChildTurnCompleted(message.params.threadId, message.params.turnId, "interrupted");
+          if (
+            process.argv.includes("--second-child-turn-after-interrupt") &&
+            message.params.turnId === "child-turn-1"
+          ) {
+            send({
+              method: "turn/started",
+              params: {
+                threadId: message.params.threadId,
+                turn: childTurn("child-turn-2", "inProgress"),
+              },
+            });
+            sendChildTurnCompleted(message.params.threadId, "child-turn-2", "completed");
+            sendTurnCompleted("completed");
+          }
         }
         const starting = current().followUpStart;
         current().followUpStart = undefined;

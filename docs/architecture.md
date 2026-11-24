@@ -746,11 +746,12 @@ public certificates, real IPv6, a pristine Ubuntu install or a VM reboot.
   person's own agents did for a connected agent with `tasks`, and anything an agent copied out.
 - **What a confirmed Stop proves.** A confirmed Stop proves that the engine and every process of
   it that this device can attribute to the task have ended (on Linux, the process supervisor also
-  acts as a child subreaper; on Windows, it uses a Job Object). If the device cannot complete a
-  clean process scan, Stop stays unconfirmed and holds the task. A program an agent asked the
-  system to start outside its own process tree — such as an app opened through the system, a
-  launch agent, a container, or work on a remote machine — is not ended by Stop and is not part
-  of the proof.
+  acts as a child subreaper; on Windows, it uses a Job Object; on macOS, detached `setsid`
+  descendants can stay alive after a Runner crash until the Runner's next boot reaps earlier boots).
+  If the device cannot complete a clean process scan, Stop stays unconfirmed and holds the task. A
+  program an agent asked the system to start outside its own process tree — such as an app opened
+  through the system, a launch agent, a container, or work on a remote machine — is not ended by
+  Stop and is not part of the proof.
 - **Two agents granted the same profile share its signed-in state.** Each sees only its own pages
   over `browser_connect`, but cookies and sign-ins belong to the profile. Give each agent its own
   profile to keep accounts apart.

@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestSubreaperStopsDoubleForkedClearedEnvWorker(t *testing.T) {
@@ -94,4 +96,100 @@ os._exit(0)
 		}
 	}
 	requireProcessGone(t, payload.Grandchild)
+}
+
+func TestSignalLinuxDescendantRefusesReusedPID(t *testing.T) {
+	t.Run("pidfd refuses kill when startTime changed", func(t *testing.T) {
+		closed := 0
+		signaled := 0
+		killed := 0
+		s := linuxDescendantSignaler{
+			selfPID: 100,
+			openPidfd: func(pid int, flags int) (int, error) {
+				if pid != 555 || flags != 0 {
+					t.Fatalf("unexpected openPidfd(%d, %d)", pid, flags)
+				}
+				return 42, nil
+			},
+			closeFd: func(fd int) error {
+				if fd != 42 {
+					t.Fatalf("unexpected closeFd(%d)", fd)
+				}
+				closed++
+				return nil
+			},
+			readStartTime: func(pid int) (string, error) {
+				return "999999", nil // PID reused by a newer process
+			},
+			sendPidfdSignal: func(fd int, sig unix.Signal, info *unix.Siginfo, flags int) error {
+				signaled++
+				return nil
+			},
+			killPID: func(pid int, sig syscall.Signal) error {
+				killed++
+				return nil
+			},
+		}
+		s.signalOne(linuxProcEntry{pid: 555, ppid: 200, state: 'S', startTime: "123456"}, syscall.SIGKILL)
+		if closed != 1 || signaled != 0 || killed != 0 {
+			t.Fatalf("expected closed=1 signaled=0 killed=0, got closed=%d signaled=%d killed=%d", closed, signaled, killed)
+		}
+	})
+
+	t.Run("pidfd delivers signal when startTime matches", func(t *testing.T) {
+		closed := 0
+		var gotSig unix.Signal
+		signaled := 0
+		s := linuxDescendantSignaler{
+			selfPID:   100,
+			openPidfd: func(pid int, flags int) (int, error) { return 43, nil },
+			closeFd:   func(fd int) error { closed++; return nil },
+			readStartTime: func(pid int) (string, error) {
+				return "123456", nil
+			},
+			sendPidfdSignal: func(fd int, sig unix.Signal, info *unix.Siginfo, flags int) error {
+				if fd != 43 {
+					t.Fatalf("unexpected fd %d", fd)
+				}
+				gotSig = sig
+				signaled++
+				return nil
+			},
+			killPID: func(pid int, sig syscall.Signal) error {
+				t.Fatalf("killPID must not be used when pidfd succeeds")
+				return nil
+			},
+		}
+		s.signalOne(linuxProcEntry{pid: 555, ppid: 200, state: 'S', startTime: "123456"}, syscall.SIGKILL)
+		if closed != 1 || signaled != 1 || gotSig != unix.Signal(syscall.SIGKILL) {
+			t.Fatalf("expected closed=1 signaled=1 SIGKILL, got closed=%d signaled=%d sig=%v", closed, signaled, gotSig)
+		}
+	})
+
+	t.Run("ENOSYS fallback signals only direct children with matching startTime", func(t *testing.T) {
+		var killed []int
+		currentStart := "123456"
+		s := linuxDescendantSignaler{
+			selfPID:         100,
+			openPidfd:       func(pid int, flags int) (int, error) { return -1, unix.ENOSYS },
+			closeFd:         func(fd int) error { return nil },
+			readStartTime:   func(pid int) (string, error) { return currentStart, nil },
+			sendPidfdSignal: func(fd int, sig unix.Signal, info *unix.Siginfo, flags int) error { return nil },
+			killPID: func(pid int, sig syscall.Signal) error {
+				killed = append(killed, pid)
+				return nil
+			},
+		}
+		// Non-direct grandchild: never kill without pidfd.
+		s.signalOne(linuxProcEntry{pid: 601, ppid: 200, state: 'S', startTime: "123456"}, syscall.SIGKILL)
+		// Direct child with mismatched startTime: never kill.
+		currentStart = "999999"
+		s.signalOne(linuxProcEntry{pid: 602, ppid: 100, state: 'S', startTime: "123456"}, syscall.SIGKILL)
+		// Direct child with matching startTime: allowed.
+		currentStart = "123456"
+		s.signalOne(linuxProcEntry{pid: 603, ppid: 100, state: 'S', startTime: "123456"}, syscall.SIGKILL)
+		if len(killed) != 1 || killed[0] != 603 {
+			t.Fatalf("expected only direct matching child 603 killed, got %v", killed)
+		}
+	})
 }

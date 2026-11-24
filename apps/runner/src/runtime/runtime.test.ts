@@ -317,6 +317,64 @@ describe("RunnerRuntime", () => {
     }
   });
 
+  it("W2: holds the thread before emitting an unproven terminal event, including when containment is unverifiable", async () => {
+    const registry = new HarnessRegistry();
+    registry.registerDriver(new FakeHarnessDriver());
+    const environmentId = createId("environment");
+    const command = executeCommand(environmentId);
+    const containment = new ExecutionContainment({
+      bootId: "w2-unverifiable-hold",
+      dataDirectory: testPrivateStateRoot,
+      listProcesses: async () => [],
+    });
+    vi.spyOn(containment, "terminate").mockResolvedValue("unverifiable");
+    const runtime = configuredRuntime({ environmentId, registry, containment });
+    const followUpResult =
+      Promise.withResolvers<Awaited<ReturnType<typeof runtime.handleCommand>>>();
+    const sink: RunnerMessageSink = {
+      async send(report) {
+        if (
+          report.type === "runner.event" &&
+          report.event.type === "run.failed" &&
+          report.event.data.code === runTerminationUnprovenCode
+        ) {
+          // Immediately dispatch a follow-up Run on the same thread FROM INSIDE the
+          // terminal event emit, before the #execute finally block finishes.
+          const base = executeCommand(environmentId);
+          const followUp = {
+            ...base,
+            context: {
+              ...base.context,
+              bindingGeneration: command.context.bindingGeneration + 1,
+              threadId: command.context.threadId,
+            },
+          };
+          followUpResult.resolve(await runtime.handleCommand(followUp, sink));
+        }
+      },
+    };
+    try {
+      await reconcile(registry, command);
+      await runtime.attach(
+        { ...testConnectionFence, type: "host.executions.attached", leaseMs: 60_000, results: [] },
+        sink,
+      );
+      await expect(runtime.handleCommand(command, sink)).resolves.toMatchObject({
+        status: "accepted",
+      });
+      await expect(followUpResult.promise).resolves.toMatchObject({
+        status: "rejected",
+        error: {
+          code: "conflict",
+          reason: "previous-stop-unconfirmed",
+          retryable: true,
+        },
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it.each(["timeout", "shutdown"] as const)("reaps background processes on %s", async (mode) => {
     const registry = new HarnessRegistry();
     const driver = new FakeHarnessDriver();

@@ -993,45 +993,36 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       // Trigger setup can cross a stop transaction. Make the
       // running occurrence generation and its execution authority current at the
       // same boundary where the command leaves the Host.
-      await this.#runners
-        .dispatch(runnerCommand, signal, {
-          connectionGeneration: identity.connectionGeneration,
-          beforeAck: () =>
-            this.#triggers.acceptExecution({
-              commandId: command.id,
+      await this.#runners.dispatch(runnerCommand, signal, {
+        connectionGeneration: identity.connectionGeneration,
+        beforeAck: () =>
+          this.#triggers.acceptExecution({
+            commandId: command.id,
+            executionGeneration,
+            runnerBootId: identity.bootId,
+            runnerId: identity.runnerId,
+          }),
+        // Held here, the Runner never had it: the registry records it not admitted, which undoes
+        // the running stamp, and the coordinator returns it to pending.
+        beforeSend: async () => {
+          await heldIfWaiting(() =>
+            this.#triggers.assertActiveExecutionBinding({
+              environmentId: context.anchorThread.environmentId,
               executionGeneration,
+              occurrenceId: context.occurrence.id,
+              rejectHeldAnchor: true,
+              requestedBy: context.trigger.createdBy,
               runnerBootId: identity.bootId,
               runnerId: identity.runnerId,
+              threadId: context.anchorThread.id,
             }),
-          // Held here, the Runner never had it: the registry records it not admitted, which undoes
-          // the running stamp, and the coordinator returns it to pending.
-          beforeSend: async () => {
-            await heldIfWaiting(() =>
-              this.#triggers.assertActiveExecutionBinding({
-                environmentId: context.anchorThread.environmentId,
-                executionGeneration,
-                occurrenceId: context.occurrence.id,
-                requestedBy: context.trigger.createdBy,
-                runnerBootId: identity.bootId,
-                runnerId: identity.runnerId,
-                threadId: context.anchorThread.id,
-              }),
-            );
-          },
-          // Z4: Stamp frame_sent_at at the point of no return inside RunnerRegistry.dispatch,
-          // after every refusing check (offline, connection replaced, agents stopped, aborted).
-          beforeWireSend: () => this.#store.markCommandFrameSent(command.id),
-          ...(notAdmitted ? { onNotAdmitted: notAdmitted } : {}),
-        })
-        .catch((error: unknown) => {
-          if (
-            error instanceof CommandDispatchError &&
-            ProtocolErrorSchema.safeParse(error.cause).data?.reason === "previous-stop-unconfirmed"
-          ) {
-            throw anchorStopHeld();
-          }
-          throw error;
-        });
+          );
+        },
+        // Z4: Stamp frame_sent_at at the point of no return inside RunnerRegistry.dispatch,
+        // after every refusing check (offline, connection replaced, agents stopped, aborted).
+        beforeWireSend: () => this.#store.markCommandFrameSent(command.id),
+        ...(notAdmitted ? { onNotAdmitted: notAdmitted } : {}),
+      });
     } finally {
       this.#dispatchingTriggers.delete(initial.occurrence.id);
     }

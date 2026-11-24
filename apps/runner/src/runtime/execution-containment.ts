@@ -73,6 +73,7 @@ interface ListedProcess {
 interface ProcessInventory {
   readonly processes: readonly ListedProcess[];
   readonly incomplete?: boolean;
+  readonly vanishedPids?: ReadonlySet<number>;
 }
 
 /** Every process of the Runner's user, with the marker each carries. */
@@ -83,20 +84,101 @@ type ProcessProbe = (pid: number) => "alive" | "gone" | "unknown";
 function normalizeInventory(result: readonly ListedProcess[] | ProcessInventory): {
   readonly processes: readonly ListedProcess[];
   readonly incomplete: boolean;
+  readonly vanishedPids: ReadonlySet<number>;
 } {
   if (Array.isArray(result)) {
     return {
       processes: result,
-      incomplete: result.some((process) => process.unreadable === true),
+      incomplete: false,
+      vanishedPids: new Set(),
     };
   }
   const inventory = result as ProcessInventory;
   return {
     processes: inventory.processes,
-    incomplete:
-      inventory.incomplete === true ||
-      inventory.processes.some((process) => process.unreadable === true),
+    incomplete: inventory.incomplete === true,
+    vanishedPids: inventory.vanishedPids ?? new Set(),
   };
+}
+
+function ownRootPids(): ReadonlySet<number> {
+  const roots = new Set<number>([process.pid]);
+  for (const running of runningSupervisedProcesses()) {
+    if (running.pid > 0) roots.add(running.pid);
+  }
+  return roots;
+}
+
+/**
+ * An unreadable process entry (e.g. setuid EACCES on `/proc/<pid>/environ` or
+ * `hidepid` EPERM on `/proc/<pid>/stat`) makes a scope unverifiable only when
+ * that entry is a member or could be one: it is in the member/noted/Runner-or-
+ * supervisor set, or its parent chain reaches one of those without passing
+ * through a readable ancestor carrying a different execution's scope. An
+ * unreadable process whose parent chain reaches PID 1 through non-members says
+ * nothing about this execution.
+ */
+function hasRelevantUnreadable(
+  processes: readonly ListedProcess[],
+  members: readonly ListedProcess[],
+  matches: (scope: string) => boolean,
+  found: ReadonlySet<string>,
+  roots: ReadonlySet<number>,
+): boolean {
+  let hasAnyUnreadable = false;
+  for (const proc of processes) {
+    if (proc.unreadable === true) {
+      hasAnyUnreadable = true;
+      break;
+    }
+  }
+  if (!hasAnyUnreadable) return false;
+  const byPid = new Map(processes.map((proc) => [proc.pid, proc]));
+  const memberPids = new Set(members.map((member) => member.pid));
+  const notedPids = new Set<number>();
+  for (const identity of found) {
+    const pid = pidFromIdentity(identity);
+    if (pid > 0) notedPids.add(pid);
+  }
+  for (const proc of processes) {
+    if (proc.unreadable !== true) continue;
+    if (memberPids.has(proc.pid) || notedPids.has(proc.pid) || roots.has(proc.pid)) {
+      return true;
+    }
+    const visited = new Set<number>([proc.pid]);
+    let currentPpid = proc.ppid;
+    while (currentPpid > 1 && !visited.has(currentPpid)) {
+      visited.add(currentPpid);
+      if (memberPids.has(currentPpid) || notedPids.has(currentPpid) || roots.has(currentPpid)) {
+        return true;
+      }
+      const parent = byPid.get(currentPpid);
+      if (!parent) break;
+      if (parent.scope !== null && !matches(parent.scope)) break;
+      currentPpid = parent.ppid;
+    }
+  }
+  return false;
+}
+
+function hasVanishedMemberCandidate(
+  vanishedPids: ReadonlySet<number>,
+  members: readonly ListedProcess[],
+  found: ReadonlySet<string>,
+  roots: ReadonlySet<number>,
+): boolean {
+  if (vanishedPids.size === 0) return false;
+  for (const member of members) {
+    if (vanishedPids.has(member.pid)) return true;
+  }
+  for (const identity of found) {
+    const pid = pidFromIdentity(identity);
+    if (pid > 0 && vanishedPids.has(pid)) return true;
+  }
+  for (const root of roots) {
+    if (vanishedPids.has(root)) return true;
+  }
+  return false;
 }
 
 function defaultProbeAlive(pid: number): "alive" | "gone" | "unknown" {
@@ -240,9 +322,17 @@ export class ExecutionContainment {
     const list = this.#list;
     if (!list) return "unverifiable";
     const scope = this.scope(executionId);
+    const matches = (candidate: string) => candidate === scope;
     const scan = normalizeInventory(await list(executionScopeVariable));
     if (scan.incomplete) return "unverifiable";
-    const members = membersOf(scan.processes, (candidate) => candidate === scope, new Set());
+    const members = membersOf(scan.processes, matches, new Set());
+    const roots = ownRootPids();
+    if (
+      hasRelevantUnreadable(scan.processes, members, matches, new Set(), roots) ||
+      hasVanishedMemberCandidate(scan.vanishedPids, members, new Set(), roots)
+    ) {
+      return "unverifiable";
+    }
     const pids = new Set(members.map(({ pid }) => pid));
     return members.filter(({ ppid }) => !pids.has(ppid)).length;
   }
@@ -315,7 +405,7 @@ export class ExecutionContainment {
       const members = membersOf(scan.processes, matches, found);
       observe?.(members);
       const presentIdentities = new Set(members.map(({ identity }) => identity));
-      const listedByPid = new Map(scan.processes.map((process) => [process.pid, process.identity]));
+      const listedByPid = new Map(scan.processes.map((process) => [process.pid, process]));
       let unobservedFate = false;
       const nextFound = new Set<string>();
       for (const member of members) {
@@ -332,17 +422,28 @@ export class ExecutionContainment {
         const pid = foundPids.get(previous) ?? pidFromIdentity(previous);
         if (pid > 0) {
           const currentAtPid = listedByPid.get(pid);
-          // A different start identity at the same PID proves PID reuse after exit.
-          if (currentAtPid !== undefined && currentAtPid !== previous) continue;
+          // A different readable start identity at the same PID proves PID reuse after exit.
+          if (currentAtPid && !currentAtPid.unreadable && currentAtPid.identity !== previous)
+            continue;
           if (this.#probeAlive && this.#probeAlive(pid) !== "gone") {
             nextFound.add(previous);
             unobservedFate = true;
           }
         }
       }
+      const roots = ownRootPids();
+      const unreadableRelevant = hasRelevantUnreadable(
+        scan.processes,
+        members,
+        matches,
+        found,
+        roots,
+      );
+      const vanishedRelevant = hasVanishedMemberCandidate(scan.vanishedPids, members, found, roots);
       found.clear();
       for (const identity of nextFound) found.add(identity);
-      lastScanUnverifiable = scan.incomplete || unobservedFate;
+      lastScanUnverifiable =
+        scan.incomplete || unobservedFate || unreadableRelevant || vanishedRelevant;
       return members;
     };
     let processes: readonly ListedProcess[];
@@ -463,21 +564,21 @@ export async function listLinuxProcesses(
 ): Promise<ProcessInventory> {
   const maxAttempts = 3;
   let previousVanished: ReadonlySet<number> | undefined;
-  let last: { readonly processes: readonly ListedProcess[]; readonly incomplete: boolean } = {
+  let last: ProcessInventory = {
     processes: [],
     incomplete: true,
   };
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const scan = await scanLinuxProcOnce(variable, procRoot);
     if (scan.incomplete) {
-      return { processes: scan.processes, incomplete: true };
+      return { processes: scan.processes, incomplete: true, vanishedPids: scan.vanishedPids };
     }
     if (previousVanished) {
       // A PID that stays listed and keeps failing with ENOENT/ESRCH across
       // passes indicates an unstable or broken /proc listing, not a normal exit.
       for (const pid of scan.vanishedPids) {
         if (previousVanished.has(pid)) {
-          return { processes: scan.processes, incomplete: true };
+          return { processes: scan.processes, incomplete: true, vanishedPids: scan.vanishedPids };
         }
       }
     }
@@ -487,8 +588,8 @@ export async function listLinuxProcesses(
     previousVanished = scan.vanishedPids;
     // After retrying so any child forked before prior vanished PIDs exited is
     // captured in a fresh readdirSync, strictly disjoint exits on a busy host
-    // do not poison containment unless a PID keeps vanishing or errors.
-    last = { processes: scan.processes, incomplete: false };
+    // do not poison containment unless a PID keeps vanishing or a member vanished.
+    last = { processes: scan.processes, incomplete: false, vanishedPids: scan.vanishedPids };
   }
   return last;
 }
@@ -512,15 +613,7 @@ async function scanLinuxProcOnce(
     };
   }
   const prefix = `${variable}=`;
-  const myUid = process.getuid?.();
   const found: ListedProcess[] = [];
-  const readablePids = new Set<number>();
-  const deferredDenied: {
-    readonly pid: number;
-    readonly ppid: number;
-    readonly processGroupId: number;
-    readonly startTime: string;
-  }[] = [];
   const vanishedPids = new Set<number>();
   let incomplete = false;
   let sliceStart = performance.now();
@@ -540,8 +633,22 @@ async function scanLinuxProcOnce(
       stat = readFileSync(`${procRoot}/${entry}/stat`, "latin1");
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
-      if (code === "ENOENT" || code === "ESRCH") vanishedPids.add(pid);
-      else incomplete = true;
+      if (code === "ENOENT" || code === "ESRCH") {
+        vanishedPids.add(pid);
+      } else if (code === "EACCES" || code === "EPERM") {
+        // Under hidepid, other users' /proc/<pid>/stat returns EACCES/EPERM.
+        // Mark the entry unreadable so only a previously noted or related PID
+        // affects containment instead of poisoning every Stop on the machine.
+        found.push({
+          identity: `${pid}@unreadable`,
+          pid,
+          ppid: 0,
+          scope: null,
+          unreadable: true,
+        });
+      } else {
+        incomplete = true;
+      }
       continue;
     }
     // The command name is parenthesized and may hold anything; after its
@@ -591,7 +698,6 @@ async function scanLinuxProcOnce(
           processGroupId,
           scope: null,
         });
-        readablePids.add(pid);
         continue;
       }
       if (code === "ENOENT") {
@@ -599,52 +705,16 @@ async function scanLinuxProcOnce(
         continue;
       }
       if (code === "EACCES" || code === "EPERM") {
-        // Check inline whether an unreadable /proc/<pid>/environ is a direct child
-        // of this Runner or a setuid child of our user (realUid === myUid &&
-        // effectiveUid !== myUid). Pre-existing non-dumpable login daemons and
-        // unrelated system daemons are kept only if their parent is readable.
-        if (ppid === process.pid) {
-          incomplete = true;
-          found.push({
-            identity: `${pid}@${startTime}`,
-            pid,
-            ppid,
-            processGroupId,
-            scope: null,
-            unreadable: true,
-          });
-          continue;
-        }
-        let status: string;
-        try {
-          status = readFileSync(`${procRoot}/${entry}/status`, "latin1");
-        } catch (statusError) {
-          const statusCode = (statusError as NodeJS.ErrnoException)?.code;
-          if (statusCode === "ENOENT" || statusCode === "ESRCH") vanishedPids.add(pid);
-          else incomplete = true;
-          continue;
-        }
-        const uidLine = /^Uid:\s+(\d+)\s+(\d+)/mu.exec(status);
-        if (!uidLine) {
-          incomplete = true;
-          continue;
-        }
-        const realUid = Number(uidLine[1]);
-        const effectiveUid = Number(uidLine[2]);
-        const isSetuidForUs = myUid === undefined || (realUid === myUid && effectiveUid !== myUid);
-        if (isSetuidForUs) {
-          incomplete = true;
-          found.push({
-            identity: `${pid}@${startTime}`,
-            pid,
-            ppid,
-            processGroupId,
-            scope: null,
-            unreadable: true,
-          });
-        } else {
-          deferredDenied.push({ pid, ppid, processGroupId, startTime });
-        }
+        // Record the entry unreadable with its parent and process group so
+        // membership and ancestry decide whether it can belong to this scope.
+        found.push({
+          identity: `${pid}@${startTime}`,
+          pid,
+          ppid,
+          processGroupId,
+          scope: null,
+          unreadable: true,
+        });
         continue;
       }
       incomplete = true;
@@ -658,18 +728,6 @@ async function scanLinuxProcOnce(
       processGroupId,
       scope: scope ? scope.slice(prefix.length) : null,
     });
-    readablePids.add(pid);
-  }
-  for (const denied of deferredDenied) {
-    if (readablePids.has(denied.ppid)) {
-      found.push({
-        identity: `${denied.pid}@${denied.startTime}`,
-        pid: denied.pid,
-        ppid: denied.ppid,
-        processGroupId: denied.processGroupId,
-        scope: null,
-      });
-    }
   }
   return { processes: found, incomplete, vanishedPids };
 }

@@ -3982,6 +3982,47 @@ describe("one Codex app-server per account", () => {
     }
   });
 
+  it("W7: clears remembered stopNode state once sent so a later turn of the same child in the same Run is not interrupted", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "opensteer-codex-w7-"));
+    const releaseFile = join(dir, "release-child-turn");
+    const fixture = await setup("subagents-hold", {
+      requestTimeoutMs: 2_000,
+      serverArguments: [
+        "--unique-threads",
+        "--second-child-turn-after-interrupt",
+        `--hold-child-turn-start-file=${releaseFile}`,
+      ],
+    });
+    try {
+      const session = await fixture.adapter.startSession(taskContext(fixture, "w7-second-turn"));
+      const observer = observe(session.events);
+      const executing = session.execute(fixture.turn("Delegate to a researcher"));
+      const nodeStarted = await observer.waitFor("node.started");
+      const childThreadId = nodeStarted.data.sessionRef!;
+
+      // Remember stopNode before child-turn-1 starts.
+      const stoppingNode = session.stopNode!(nodeStarted.data.nodeId);
+      await writeFile(releaseFile, "go", "utf8");
+      await stoppingNode;
+      await executing;
+      await session.stop();
+      await observer.done;
+
+      const captured = await fixture.capture();
+      const childInterrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === childThreadId,
+      );
+      expect(childInterrupts).toHaveLength(1);
+      expect((childInterrupts[0]!.params as JsonRecord).turnId).toBe("child-turn-1");
+      expect(observer.events.some((event) => event.type === "run.completed")).toBe(true);
+    } finally {
+      await fixture.adapter.close();
+      await rm(dir, { force: true, recursive: true });
+    }
+  });
+
   it("H2(a): interrupts a late follow-up turn/start reply after the old active-turn path is unavailable and retries root unload without retiring neighbours", async () => {
     const dir = await mkdtemp(join(tmpdir(), "opensteer-codex-late-turn-start-"));
     const turnStartRelease = join(dir, "turn-start-release");

@@ -12,6 +12,7 @@ import {
 import { createHash } from "node:crypto";
 import {
   createId,
+  runTerminationUnprovenCode,
   utf8Prefix,
   MessageContentSchema,
   messageContentMaxSerializedBytes,
@@ -116,6 +117,15 @@ export async function recoverLostRunTransaction(
     userId: run.requestedBy,
     agentConnectionId: run.connectionId ?? thread.originConnectionId,
   });
+  if (standing.kind === "held") {
+    return fail("failed", {
+      code: runTerminationUnprovenCode,
+      message:
+        "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+      retryable: false,
+      status: "failed",
+    });
+  }
   if (standing.kind !== "admitted") {
     return fail("failed", {
       code: "task_access_revoked",

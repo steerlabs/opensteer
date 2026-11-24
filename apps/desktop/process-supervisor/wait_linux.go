@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -27,9 +28,38 @@ func enableChildSubreaper() error {
 }
 
 type linuxProcEntry struct {
-	pid   int
-	ppid  int
-	state byte
+	pid       int
+	ppid      int
+	state     byte
+	startTime string
+}
+
+func parseLinuxProcStat(text string) (ppid int, state byte, startTime string, ok bool) {
+	closeIndex := strings.LastIndexByte(text, ')')
+	if closeIndex < 0 || closeIndex+2 >= len(text) {
+		return 0, 0, "", false
+	}
+	fields := strings.Fields(text[closeIndex+2:])
+	if len(fields) < 20 || len(fields[0]) == 0 {
+		return 0, 0, "", false
+	}
+	parsedPpid, ppidErr := strconv.Atoi(fields[1])
+	if ppidErr != nil || fields[19] == "" {
+		return 0, 0, "", false
+	}
+	return parsedPpid, fields[0][0], fields[19], true
+}
+
+func readLinuxProcStartTime(pid int) (string, error) {
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return "", err
+	}
+	_, _, startTime, ok := parseLinuxProcStat(string(raw))
+	if !ok {
+		return "", errors.New("malformed /proc stat")
+	}
+	return startTime, nil
 }
 
 func readLinuxSubreaperDescendants() ([]linuxProcEntry, error) {
@@ -48,23 +78,15 @@ func readLinuxSubreaperDescendants() ([]linuxProcEntry, error) {
 		if readErr != nil {
 			continue
 		}
-		text := string(raw)
-		closeIndex := strings.LastIndexByte(text, ')')
-		if closeIndex < 0 || closeIndex+2 >= len(text) {
-			continue
-		}
-		fields := strings.Fields(text[closeIndex+2:])
-		if len(fields) < 2 || len(fields[0]) == 0 {
-			continue
-		}
-		ppid, ppidErr := strconv.Atoi(fields[1])
-		if ppidErr != nil {
+		ppid, state, startTime, ok := parseLinuxProcStat(string(raw))
+		if !ok {
 			continue
 		}
 		children[ppid] = append(children[ppid], linuxProcEntry{
-			pid:   pid,
-			ppid:  ppid,
-			state: fields[0][0],
+			pid:       pid,
+			ppid:      ppid,
+			state:     state,
+			startTime: startTime,
 		})
 	}
 	var result []linuxProcEntry
@@ -83,12 +105,63 @@ func readLinuxSubreaperDescendants() ([]linuxProcEntry, error) {
 	return result, nil
 }
 
+type linuxDescendantSignaler struct {
+	selfPID         int
+	openPidfd       func(pid int, flags int) (int, error)
+	closeFd         func(fd int) error
+	readStartTime   func(pid int) (string, error)
+	sendPidfdSignal func(fd int, sig unix.Signal, info *unix.Siginfo, flags int) error
+	killPID         func(pid int, sig syscall.Signal) error
+}
+
+func defaultLinuxDescendantSignaler() linuxDescendantSignaler {
+	return linuxDescendantSignaler{
+		selfPID:         os.Getpid(),
+		openPidfd:       unix.PidfdOpen,
+		closeFd:         unix.Close,
+		readStartTime:   readLinuxProcStartTime,
+		sendPidfdSignal: unix.PidfdSendSignal,
+		killPID:         syscall.Kill,
+	}
+}
+
+// signalOne pins proc's kernel struct pid with pidfd_open, verifies the
+// process's start time in /proc/<pid>/stat still matches what was discovered,
+// and delivers sig atomically via pidfd_send_signal so PID reuse can never
+// redirect a signal to an unrelated process.
+func (s linuxDescendantSignaler) signalOne(proc linuxProcEntry, sig syscall.Signal) {
+	if proc.pid <= 0 || proc.startTime == "" {
+		return
+	}
+	fd, err := s.openPidfd(proc.pid, 0)
+	if err == nil {
+		defer func() { _ = s.closeFd(fd) }()
+		currentStart, readErr := s.readStartTime(proc.pid)
+		if readErr != nil || currentStart != proc.startTime {
+			return
+		}
+		_ = s.sendPidfdSignal(fd, unix.Signal(sig), nil, 0)
+		return
+	}
+	// On pre-5.3 kernels without pidfd_open (ENOSYS), only signal direct
+	// unreaped children (whose PID the kernel holds until we reap them) after
+	// confirming their start time still matches.
+	if errors.Is(err, unix.ENOSYS) && proc.ppid == s.selfPID {
+		currentStart, readErr := s.readStartTime(proc.pid)
+		if readErr != nil || currentStart != proc.startTime {
+			return
+		}
+		_ = s.killPID(proc.pid, sig)
+	}
+}
+
 func signalSubreaperDescendants(rootPID int, sig syscall.Signal) error {
 	descendants, err := readLinuxSubreaperDescendants()
 	if err != nil {
 		return err
 	}
 	self := os.Getpid()
+	signaler := defaultLinuxDescendantSignaler()
 	for _, proc := range descendants {
 		if proc.pid == rootPID {
 			continue
@@ -98,7 +171,7 @@ func signalSubreaperDescendants(rootPID int, sig syscall.Signal) error {
 			_, _ = unix.Wait4(proc.pid, &status, unix.WNOHANG, nil)
 			continue
 		}
-		_ = syscall.Kill(proc.pid, sig)
+		signaler.signalOne(proc, sig)
 	}
 	return nil
 }

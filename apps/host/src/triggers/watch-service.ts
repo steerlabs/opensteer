@@ -226,7 +226,7 @@ export class WatchService {
         filterDesired: async () => {
           for (const scope of toVerify) {
             try {
-              await this.#store.assertActiveWatchBinding(scope);
+              await this.#store.assertActiveWatchBinding({ ...scope, rejectHeldAnchor: true });
             } catch (error) {
               if (!(error instanceof OpensteerError) || error.code !== "forbidden") throw error;
               const index = desired.findIndex(

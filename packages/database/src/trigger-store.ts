@@ -161,6 +161,8 @@ export interface ActiveWatchBindingInput {
   readonly createdBy: UserId;
   readonly environmentId: EnvironmentId;
   readonly executionGeneration: number;
+  /** True at new-launch/reconcile hand-off boundaries; false for already-running Watch tool calls. */
+  readonly rejectHeldAnchor?: boolean;
   readonly revisionId: TriggerRevisionId;
   readonly triggerId: TriggerId;
 }
@@ -168,6 +170,8 @@ export interface ActiveTriggerExecutionBindingInput {
   readonly environmentId: EnvironmentId;
   readonly executionGeneration: number;
   readonly occurrenceId: TriggerOccurrenceId;
+  /** True at new-dispatch hand-off boundaries; false for already-running firing tool calls. */
+  readonly rejectHeldAnchor?: boolean;
   readonly requestedBy: UserId;
   readonly runnerBootId: string;
   readonly runnerId: RunnerId;
@@ -276,7 +280,8 @@ export async function assertActiveTriggerExecutionBinding(
         },
       )
     : null;
-  if (row.threadUnconfirmedStopRunId !== null) throw new TriggerAnchorStopHeld();
+  if (input.rejectHeldAnchor && row.threadUnconfirmedStopRunId !== null)
+    throw new TriggerAnchorStopHeld();
   if (
     !(await admitThreadExecution(database, row.anchorThreadId, row.createdBy)) ||
     (connection &&
@@ -324,7 +329,7 @@ export async function assertActiveWatchBinding(
     row.threadStatus === "archived" ||
     row.threadDoneAt !== null ||
     row.threadRemovedAt !== null ||
-    row.threadUnconfirmedStopRunId !== null ||
+    (input.rejectHeldAnchor && row.threadUnconfirmedStopRunId !== null) ||
     row.anchorThreadId !== input.anchorThreadId ||
     row.createdBy !== input.createdBy ||
     row.environmentId !== input.environmentId

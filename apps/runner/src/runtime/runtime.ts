@@ -738,6 +738,7 @@ export class RunnerRuntime {
       options.watchSupervisor ??
       new WatchSupervisor({
         environmentId: options.environmentId,
+        isAnchorHeld: (anchorThreadId) => this.#uncontainedThreads.has(anchorThreadId),
         nodeExecutable: options.nodeExecutable ?? process.execPath,
         planLaunch: (executionId) => this.#planProgramLaunch(executionId),
         privateStateDirectory: this.#privateStateDirectory,
@@ -3035,9 +3036,6 @@ export class RunnerRuntime {
         ? reject("conflict", "The Run's previous attempt is still stopping", true)
         : reject("conflict", "Run is already active", false);
     }
-    if (this.#threads.has(command.context.threadId)) {
-      return reject("conflict", "Thread already has an active run", true);
-    }
     if (this.#uncontainedThreads.has(command.context.threadId)) {
       return reject(
         "conflict",
@@ -3045,6 +3043,9 @@ export class RunnerRuntime {
         true,
         { reason: "previous-stop-unconfirmed" },
       );
+    }
+    if (this.#threads.has(command.context.threadId)) {
+      return reject("conflict", "Thread already has an active run", true);
     }
     if (this.#runs.size >= this.#maxConcurrentRuns) {
       return reject("conflict", "Runner Run concurrency limit is saturated", true);
@@ -3998,6 +3999,16 @@ export class RunnerRuntime {
             }),
           },
         });
+        // Hold the thread BEFORE emitting the unproven terminal event so no
+        // follow-up Run, firing, or Watch can slip into the gap, and cover
+        // both "unknown" and "unverifiable" containment proofs (W2).
+        this.#holdUncontainedThread(
+          context.threadId,
+          context.runId,
+          warmEngine?.scope ?? active.containmentScope,
+          engineStopping,
+          engineLastResort,
+        );
       } else this.#endedAttempts.set(`${context.runId}:${context.bindingGeneration}`, "ended");
       if (terminal.type === "run.failed") {
         // The logger names the line `message`; the reason is `detail`.
@@ -4023,15 +4034,6 @@ export class RunnerRuntime {
         });
       this.#runs.delete(context.runId);
       this.#activityChanged();
-      if (termination === "unknown") {
-        this.#holdUncontainedThread(
-          context.threadId,
-          context.runId,
-          warmEngine?.scope ?? active.containmentScope,
-          engineStopping,
-          engineLastResort,
-        );
-      }
       if (this.#threads.get(context.threadId) === context.runId) {
         this.#threads.delete(context.threadId);
       }

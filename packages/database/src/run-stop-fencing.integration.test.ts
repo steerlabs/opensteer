@@ -1256,6 +1256,43 @@ integration.sequential("Run stop fencing", () => {
     });
     expect(bound.runnerBootId).toBe(boot2);
   });
+
+  it("W5: recoverLostRun fails a lost Run with execution_termination_unproven (never task_access_revoked) when its thread is Stop-held", async ({
+    storeFixture,
+  }) => {
+    const { fixture, running, database, store } = storeFixture;
+    const f = await fixture("w5-lost-run-held");
+    const run1 = await running(f, "w5-lost-run-1");
+    await database
+      .updateTable("providerSessions")
+      .set({ providerSessionReference: "native-session-w5" })
+      .where("threadId", "=", f.thread.id)
+      .execute();
+    await database
+      .updateTable("threads")
+      .set({ unconfirmedStopRunId: run1.id })
+      .where("id", "=", f.thread.id)
+      .execute();
+
+    // Runner reconnects on the same boot without announcing run1 -> recoverLostRunTransaction runs
+    // and sees standing.kind === "held".
+    await store.attachRunnerExecutions({
+      dispatchingRunIds: [],
+      executions: [],
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
+
+    const after = await database
+      .selectFrom("runs")
+      .select(["status", "failure"])
+      .where("id", "=", run1.id)
+      .executeTakeFirstOrThrow();
+    expect(after.status).toBe("failed");
+    expect(after.failure?.code).toBe("execution_termination_unproven");
+    expect(after.failure?.code).not.toBe("task_access_revoked");
+  });
   it("counts a lineaged shell reservation as outstanding when the connection is revoked", async ({
     storeFixture,
   }) => {

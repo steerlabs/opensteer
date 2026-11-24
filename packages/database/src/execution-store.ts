@@ -1,4 +1,4 @@
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, wakeTriggerSchedules, wakeWatches } from "./personal-mutation.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { compactionIsEligible } from "./compaction-eligibility.js";
 import { freshContextBoundary } from "./fresh-context.js";
@@ -827,12 +827,17 @@ export async function acquireExecutionBinding(
           reason: "previous-stop-unconfirmed",
         });
       }
-      await transaction
+      const clearedThread = await transaction
         .updateTable("threads")
         .set({ unconfirmedStopRunId: null })
         .where("id", "=", input.threadId)
         .where("unconfirmedStopRunId", "=", thread.unconfirmedStopRunId)
-        .execute();
+        .returning("environmentId")
+        .executeTakeFirst();
+      if (clearedThread) {
+        await wakeTriggerSchedules(transaction);
+        await wakeWatches(transaction, clearedThread.environmentId);
+      }
     }
     // A reference only identifies native state; it does not prove that the
     // first input was accepted. Earlier unstarted attempts need an ordered
