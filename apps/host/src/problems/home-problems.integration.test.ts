@@ -72,6 +72,7 @@ describe("a Home's problems and its one report", () => {
         database,
         dataDirectory: directory,
         home: "server",
+        readsMachineStatus: true,
         version: "1.4.0 /home/alex",
         destination: {
           kind: "opensteer",
@@ -99,6 +100,7 @@ describe("a Home's problems and its one report", () => {
         database,
         dataDirectory: directory,
         home: "mac",
+        readsMachineStatus: false,
         version: "1.4.0",
         destination: { kind: "none" },
       });
@@ -154,6 +156,7 @@ describe("a Home's problems and its one report", () => {
         database,
         dataDirectory: directory,
         home: "cloud-computer",
+        readsMachineStatus: true,
         version: "1.4.0",
         destination: problemReportDestination(managed),
         fetch: fetch as typeof globalThis.fetch,

@@ -9,12 +9,12 @@ import type { Migration } from "kysely/migration";
 export const problemReportsMigration: Migration = {
   async up(database) {
     await sql`
-      create table public.cloud_computer_health (
+      create table if not exists public.cloud_computer_health (
         computer_id text primary key references public.cloud_computers(id) on delete cascade,
         received_at timestamptz not null,
         report jsonb not null
       );
-      create table public.problem_report_counts (
+      create table if not exists public.problem_report_counts (
         day date not null,
         code text not null,
         reports integer not null default 0 check (reports >= 0),

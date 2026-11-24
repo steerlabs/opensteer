@@ -33,7 +33,7 @@ import {
   TabIdSchema,
 } from "@opensteer/core";
 import { MachineListSummarySchema } from "./machines.js";
-import { HomeHealthReportSchema, ProblemSchema, problemsLimit } from "./problems.js";
+import { HomeHealthReportViewSchema, ProblemViewSchema, problemsLimit } from "./problems.js";
 import { OwnerWindowInfoSchema } from "./computer-use.js";
 import {
   TabCommandSchema,
@@ -2304,9 +2304,9 @@ const workspaceHostApi = defineRpc({
     "GET",
     emptyInputSchema,
     z.object({
-      problems: z.array(ProblemSchema).max(problemsLimit),
+      problems: z.array(ProblemViewSchema).max(problemsLimit),
       reporting: ProblemReportingSchema,
-      report: HomeHealthReportSchema,
+      report: HomeHealthReportViewSchema,
     }),
   ),
   "machines.list": declaration(

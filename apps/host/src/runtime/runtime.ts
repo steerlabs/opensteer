@@ -3286,6 +3286,7 @@ export async function createHostRuntime(
       database: store.database,
       dataDirectory: resolve(config.dataDirectory),
       home: personalHomeKind(config) ?? "other",
+      readsMachineStatus: config.exposure === "networked",
       version: process.env.OPENSTEER_RELEASE_VERSION ?? "0.0.0",
       destination: problemReportDestination(config),
     });

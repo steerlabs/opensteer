@@ -78,6 +78,7 @@ export class HomeProblems {
   readonly #database: Kysely<DatabaseSchema>;
   readonly #dataDirectory: string;
   readonly #home: HomeHealthReport["home"];
+  readonly #readsMachineStatus: boolean;
   readonly #version: string;
   readonly #destination: Destination;
   readonly #fetch: typeof fetch;
@@ -90,6 +91,12 @@ export class HomeProblems {
     readonly database: Kysely<DatabaseSchema>;
     readonly dataDirectory: string;
     readonly home: HomeHealthReport["home"];
+    /**
+     * Whether root's maintenance writes the machine status here: a networked Linux Home, where
+     * the file is in a volume no Runner mounts. Never on a Mac, where nothing of root's writes
+     * it and the person's own agents could.
+     */
+    readonly readsMachineStatus: boolean;
     readonly version: string;
     readonly destination: Destination;
     readonly fetch?: typeof fetch;
@@ -98,6 +105,7 @@ export class HomeProblems {
     this.#database = options.database;
     this.#dataDirectory = options.dataDirectory;
     this.#home = options.home;
+    this.#readsMachineStatus = options.readsMachineStatus;
     this.#version = reportVersion(options.version);
     this.#destination = options.destination;
     this.#fetch = options.fetch ?? fetch;
@@ -225,9 +233,7 @@ export class HomeProblems {
   }
 
   async #machine(): Promise<{ readonly status: MachineStatus; readonly at?: number }> {
-    // Only a Linux Home's root maintenance writes it, into a volume no Runner mounts. Anywhere
-    // else nothing of root's writes it and the person's own agents could, so it is not read.
-    if (this.#home !== "server" && this.#home !== "cloud-computer") return { status: {} };
+    if (!this.#readsMachineStatus) return { status: {} };
     const path = join(this.#dataDirectory, machineStatusFile);
     try {
       const [text, info] = await Promise.all([readFile(path, "utf8"), stat(path)]);

@@ -293,6 +293,21 @@ export type CloudComputerHealthView = z.infer<typeof CloudComputerHealthViewSche
 export const accountCloudComputerHealthPath = (id: string) =>
   `/v1/account/cloud-computers/${id}/health`;
 
+/**
+ * The same problem and report as the Host's API answers them, tolerant of fields a newer Host
+ * adds (tests/host-response-tolerance.test.ts). What leaves a Home is always the strict schema.
+ */
+export const ProblemViewSchema = z.object({
+  ...ProblemSchema.shape,
+  fields: z.object(ProblemFieldsSchema.shape),
+});
+export const HomeHealthReportViewSchema = z.object({
+  ...HomeHealthReportSchema.shape,
+  lastBackup: z.object(MachineStatusSchema.shape.lastBackup.unwrap().shape).optional(),
+  lastUpdate: z.object(MachineStatusSchema.shape.lastUpdate.unwrap().shape).optional(),
+  problems: z.array(ProblemViewSchema).max(problemsLimit),
+});
+
 /** The bucket a used share of a disk falls in. */
 export function diskBucket(usedFraction: number): DiskBucket {
   if (usedFraction >= 0.95) return "over-95";
