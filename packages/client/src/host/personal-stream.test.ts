@@ -4662,7 +4662,7 @@ test("a repair snapshot retires stale live text for finalized items and checkpoi
   expect(saved!.nextBefore?.beforeId).toBe(saved!.items[0]?.id);
 });
 
-test("retains browser usage across task switches, skips unchanged revisits, refreshes after invalidation in one snapshot update, and merges incremental runs without duplicating thread summaries", async () => {
+test("retains browser usage for first paint across task switches, revalidates on revisit in one update (or none if unchanged), and merges incremental runs without duplicating thread summaries", async () => {
   const threadA = createId("thread");
   const threadB = createId("thread");
   const sessionId = `bsn_${crypto.randomUUID()}`;
@@ -4821,23 +4821,35 @@ test("retains browser usage across task switches, skips unchanged revisits, refr
       initialUsesA,
     );
 
-    // 3. Revisiting unchanged task A shows retained uses immediately and makes ZERO RPC calls.
+    // 3. Revisiting unchanged task A paints retained uses immediately (loading: false),
+    //    always revalidates on show, and causes ZERO browserUses snapshot updates when unchanged.
+    let unchangedUpdates = 0;
+    let unchangedRef = client.getSnapshot().browserUses;
+    const stopUnchanged = client.subscribe(() => {
+      const snap = client.getSnapshot();
+      expect(snap.browserUsage?.[threadA]?.loading).toBe(false);
+      if (snap.browserUses !== unchangedRef) {
+        unchangedRef = snap.browserUses;
+        unchangedUpdates += 1;
+      }
+    });
     client.activateThread(threadA);
     await vi.waitFor(() => expect(detailASyncs).toBe(2));
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(5));
     await Promise.resolve();
-    expect(usageCalls).toHaveLength(3);
+    stopUnchanged();
+    expect(unchangedUpdates).toBe(0);
     expect(client.getSnapshot().browserUses.filter((use) => use.threadId === threadA)).toEqual(
       initialUsesA,
     );
 
-    // 4. Leaving task A, receiving host.browser-usage-changed for A while away, then revisiting A:
+    // 4. Leaving task A, server usage changing while A is hidden WITHOUT any notice
+    //    (e.g., older v65 Host or subscribed-only RealtimeHub), then revisiting A:
     //    - last known V1 uses stay visible immediately (never blanked or set loading: true)
-    //    - one refresh runs (2 batches for 24 runs) and lands in ONE snapshot update with V2 uses.
+    //    - one revalidation runs (2 batches for 24 runs) and lands in ONE snapshot update with V2.
     client.activateThread(threadB);
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(6));
     versionA = 2;
-    socket.deliver({ type: "host.browser-usage-changed", threadIds: [threadA] } as never);
-    // Not shown -> no RPC yet, and last known data stays visible.
-    expect(usageCalls).toHaveLength(3);
     expect(client.getSnapshot().browserUses.filter((use) => use.threadId === threadA)).toEqual(
       initialUsesA,
     );
@@ -4852,7 +4864,7 @@ test("retains browser usage across task switches, skips unchanged revisits, refr
       }
     });
     client.activateThread(threadA);
-    await vi.waitFor(() => expect(usageCalls).toHaveLength(5));
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(8));
     await vi.waitFor(() =>
       expect(
         client
@@ -4862,7 +4874,7 @@ test("retains browser usage across task switches, skips unchanged revisits, refr
     );
     stopCounting();
     expect(usageUpdates).toBe(1);
-    expect(usageCalls.slice(3, 5)).toEqual([
+    expect(usageCalls.slice(6, 8)).toEqual([
       { threadId: threadA, runIds: sortedRunsA.slice(0, 16) },
       { threadId: threadA, runIds: sortedRunsA.slice(16) },
     ]);
@@ -4897,8 +4909,8 @@ test("retains browser usage across task switches, skips unchanged revisits, refr
         },
       ],
     } as never);
-    await vi.waitFor(() => expect(usageCalls).toHaveLength(6));
-    expect(usageCalls[5]).toEqual({
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(9));
+    expect(usageCalls[8]).toEqual({
       threadId: threadA,
       runIds: [extraRunA],
     });
@@ -4919,13 +4931,14 @@ test("retains browser usage across task switches, skips unchanged revisits, refr
   }
 });
 
-test("evicts oldest retained browser usage past the bounded cap and invalidates retained usage on reconnect", async () => {
-  const threads = Array.from({ length: 18 }, (_, index) => ({
+test("browser usage retention follows reader eviction, drops on task tombstone, and refreshes on notice/profile changes", async () => {
+  const threads = Array.from({ length: 11 }, (_, index) => ({
     ...task,
     id: createId("thread"),
     title: `Task ${index}`,
   }));
   const sessionId = `bsn_${crypto.randomUUID()}`;
+  const profileId = `bpr_${crypto.randomUUID()}`;
   const runsByThread = new Map(threads.map((t) => [t.id, createId("run")]));
   const itemsByThread = new Map(
     threads.map((t) => {
@@ -4946,11 +4959,16 @@ test("evicts oldest retained browser usage past the bounded cap and invalidates 
       ];
     }),
   );
+  const titleByThread = new Map<string, string>(threads.map((t, index) => [t.id, `V1-${index}`]));
+  let profileArchived = false;
+  let holdNextUsageFor: string | null = null;
+  let releaseHeldUsage: (() => void) | null = null;
   const usageCalls: string[] = [];
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
-    const name = new URL(String(input)).pathname.slice("/v1/rpc/".length);
+    const url = new URL(String(input));
+    const name = url.pathname.slice("/v1/rpc/".length);
     if (name === "thread.assignments.list") {
-      const tid = new URL(String(input)).searchParams.get("threadId")!;
+      const tid = url.searchParams.get("threadId")!;
       return Response.json({
         ok: true,
         data: {
@@ -4960,25 +4978,55 @@ test("evicts oldest retained browser usage past the bounded cap and invalidates 
         },
       });
     }
+    if (name === "resources.detail.get") {
+      const asked = JSON.parse(url.searchParams.get("input")!) as { kind: string };
+      if (asked.kind === "browser-profile") {
+        return Response.json({
+          ok: true,
+          data: {
+            kind: "browser-profile",
+            revision: profileArchived ? "2" : "1",
+            next: null,
+            data: {
+              kind: "browser-profile",
+              profiles: profileArchived
+                ? []
+                : [{ id: profileId, name: "Work", homeRunnerId: null, revision: 1 }],
+              deletions: [],
+            },
+          },
+        });
+      }
+    }
     if (name === "thread.browserUsage.get") {
       const body = JSON.parse(String(init?.body ?? "{}")) as { threadId: string; runIds: string[] };
       usageCalls.push(body.threadId);
+      const snapshotTitle = titleByThread.get(body.threadId) ?? "Unknown";
+      const archivedAtCall = profileArchived;
+      if (holdNextUsageFor === body.threadId) {
+        holdNextUsageFor = null;
+        await new Promise<void>((resolve) => {
+          releaseHeldUsage = resolve;
+        });
+      }
       return Response.json({
         ok: true,
         data: {
           threadId: body.threadId,
-          uses: [
-            {
-              sessionId,
-              threadId: body.threadId,
-              runId: null,
-              tabId: null,
-              pageTitle: `Use ${body.threadId.slice(-4)}`,
-              pageSite: "https://example.test",
-              firstUsedAt: "2026-11-23T00:00:00.000Z",
-              lastUsedAt: "2026-11-23T00:00:01.000Z",
-            },
-          ],
+          uses: archivedAtCall
+            ? []
+            : [
+                {
+                  sessionId,
+                  threadId: body.threadId,
+                  runId: null,
+                  tabId: null,
+                  pageTitle: snapshotTitle,
+                  pageSite: "https://example.test",
+                  firstUsedAt: "2026-11-23T00:00:00.000Z",
+                  lastUsedAt: "2026-11-23T00:00:01.000Z",
+                },
+              ],
         },
       });
     }
@@ -4988,6 +5036,8 @@ test("evicts oldest retained browser usage past the bounded cap and invalidates 
     );
   });
   let socket!: MockPersonalSocket;
+  let shellGen = 0;
+  let shellSeq = 1;
   const connect = () =>
     (socket = new MockPersonalSocket((raw) => {
       const message = JSON.parse(raw) as ScopedClientMessage;
@@ -5014,12 +5064,27 @@ test("evicts oldest retained browser usage past the bounded cap and invalidates 
           } as never);
           socket.deliver({ ...address, type: "host.synchronized" } as never);
         }
+        if (message.type === "client.resources.watch") {
+          if (message.interests.includes("browser-profile")) {
+            socket.deliver({
+              type: "host.resource",
+              scope: shellScope,
+              subscriptionId: "shell",
+              generation: shellGen,
+              throughSequence: String(shellSeq),
+              revisions: { "browser-profile": profileArchived ? "2" : "1" },
+              reply: true,
+            } as never);
+          }
+          return;
+        }
         if (message.type !== "client.attach") return;
+        shellGen = message.generation;
         const shell = {
           scope: shellScope,
           subscriptionId: "shell" as const,
           generation: message.generation,
-          throughSequence: "1",
+          throughSequence: String(shellSeq),
         };
         socket.deliver({
           ...shell,
@@ -5070,7 +5135,8 @@ test("evicts oldest retained browser usage past the bounded cap and invalidates 
   });
   try {
     await client.load();
-    // Visit 18 threads sequentially: retention stays bounded to 16, evicting the oldest 2.
+
+    // 1. Retention follows the reader (ScopedPersonalStream keeps 8 inactive details + 1 active).
     for (let index = 0; index < threads.length; index++) {
       client.activateThread(threads[index]!.id);
       await vi.waitFor(() => expect(usageCalls).toHaveLength(index + 1));
@@ -5079,17 +5145,111 @@ test("evicts oldest retained browser usage past the bounded cap and invalidates 
       );
     }
     const retainedIds = new Set(client.getSnapshot().browserUses.map((use) => use.threadId));
-    expect(retainedIds.size).toBe(16);
+    expect(retainedIds.size).toBe(9);
     expect(retainedIds.has(threads[0]!.id)).toBe(false);
     expect(retainedIds.has(threads[1]!.id)).toBe(false);
+    expect(client.getSnapshot().browserUsage?.[threads[0]!.id]).toBeUndefined();
+    expect(client.getSnapshot().browserUsage?.[threads[1]!.id]).toBeUndefined();
     expect(retainedIds.has(threads[2]!.id)).toBe(true);
-    expect(retainedIds.has(threads[17]!.id)).toBe(true);
+    expect(retainedIds.has(threads[10]!.id)).toBe(true);
 
-    // Reconnect: retained threads keep last known data visible, but revisit refreshes after gap.
-    const retainedTarget = threads[16]!.id;
+    // 2. Notice during in-flight refresh, then switching away before it completes, then returning:
+    //    must refresh on return and pick up the latest page title (never keep stale data).
+    const taskA = threads[10]!.id;
+    const taskB = threads[9]!.id;
+    titleByThread.set(taskA, "V2-inflight");
+    holdNextUsageFor = taskA;
+    const callsBeforeNotice = usageCalls.length;
+    socket.deliver({ type: "host.browser-usage-changed", threadIds: [taskA] } as never);
+    await vi.waitFor(() => expect(usageCalls.length).toBe(callsBeforeNotice + 1));
+    // Switch away to taskB while taskA's refresh is still in flight.
+    client.activateThread(taskB);
+    await vi.waitFor(() => expect(usageCalls.length).toBe(callsBeforeNotice + 2));
+    // Complete the abandoned in-flight read for taskA; taskA's retained title stays V1-10 for first paint.
+    releaseHeldUsage!();
+    releaseHeldUsage = null;
+    await Promise.resolve();
+    expect(client.getSnapshot().browserUses.find((use) => use.threadId === taskA)?.pageTitle).toBe(
+      "V1-10",
+    );
+    // Return to taskA: first paint has V1-10, and revalidation refreshes to V3-returned!
+    titleByThread.set(taskA, "V3-returned");
+    client.activateThread(taskA);
+    await vi.waitFor(() =>
+      expect(
+        client.getSnapshot().browserUses.find((use) => use.threadId === taskA)?.pageTitle,
+      ).toBe("V3-returned"),
+    );
+
+    // 3. Notice arriving while an earlier refresh is in flight on a SHOWN task:
+    //    the pre-notice response must not suppress the post-notice refresh.
+    titleByThread.set(taskA, "V4-pre-second-notice");
+    holdNextUsageFor = taskA;
+    socket.deliver({ type: "host.browser-usage-changed", threadIds: [taskA] } as never);
+    await vi.waitFor(() => expect(releaseHeldUsage).not.toBeNull());
+    // Second notice lands while V4 read is still in flight.
+    titleByThread.set(taskA, "V5-post-second-notice");
+    socket.deliver({ type: "host.browser-usage-changed", threadIds: [taskA] } as never);
+    const releaseV4 = releaseHeldUsage!;
+    releaseHeldUsage = null;
+    releaseV4();
+    await vi.waitFor(() =>
+      expect(
+        client.getSnapshot().browserUses.find((use) => use.threadId === taskA)?.pageTitle,
+      ).toBe("V5-post-second-notice"),
+    );
+
+    // 4. Tombstoning an inactive retained task through the shell drops its browser usage immediately.
+    const tombstoned = threads[8]!.id;
+    expect(client.getSnapshot().browserUses.some((use) => use.threadId === tombstoned)).toBe(true);
+    expect(client.getSnapshot().browserUsage?.[tombstoned]).toBeDefined();
+    shellSeq += 1;
+    socket.deliver({
+      type: "host.changes",
+      subscriptionId: "shell",
+      generation: shellGen,
+      scope: shellScope,
+      fromSequence: String(shellSeq - 1),
+      throughSequence: String(shellSeq),
+      changes: [
+        {
+          sequence: String(shellSeq),
+          ordinal: 0,
+          entityKind: "task",
+          entityId: tombstoned,
+          operation: "remove",
+        },
+      ],
+    } as never);
+    expect(client.getSnapshot().browserUses.some((use) => use.threadId === tombstoned)).toBe(false);
+    expect(client.getSnapshot().browserUsage?.[tombstoned]).toBeUndefined();
+
+    // 5. Archiving a browser profile (live `browser-profile` resource revision bump) refreshes
+    //    the currently shown task's browser usage without needing `host.browser-usage-changed`.
+    const stopProfileWatch = client.subscribe(() => void client.getSnapshot().browserProfiles);
+    void client.getSnapshot().browserProfiles;
+    await vi.waitFor(() => expect(client.getSnapshot().browserProfiles).toHaveLength(1));
+    profileArchived = true;
+    const callsBeforeProfileBump = usageCalls.length;
+    socket.deliver({
+      type: "host.resource",
+      scope: shellScope,
+      subscriptionId: "shell",
+      generation: shellGen,
+      throughSequence: String(shellSeq),
+      revisions: { "browser-profile": "2" },
+    } as never);
+    await vi.waitFor(() => expect(usageCalls.length).toBeGreaterThan(callsBeforeProfileBump));
+    await vi.waitFor(() =>
+      expect(client.getSnapshot().browserUses.some((use) => use.threadId === taskA)).toBe(false),
+    );
+    stopProfileWatch();
+
+    // 6. Reconnect: retained threads keep last known data visible and revalidate on revisit.
+    profileArchived = false;
+    const retainedTarget = threads[7]!.id;
     const beforeReconnectCalls = usageCalls.length;
     socket.close();
-    // Wait for reconnect + re-read of currently active thread (threads[17]).
     await vi.waitFor(() => expect(usageCalls.length).toBeGreaterThan(beforeReconnectCalls));
     expect(client.getSnapshot().browserUses.some((use) => use.threadId === retainedTarget)).toBe(
       true,
