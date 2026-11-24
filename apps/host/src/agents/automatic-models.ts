@@ -1,12 +1,12 @@
 import {
   backgroundModelWants,
+  DEFAULT_THREAD_ACCESS_MODE,
   excludedBackgroundAccounts,
   ExecutionPreferencesSchema,
   modelEffortLabel,
   resolveModelCandidates,
   type AgentHomeSettings,
   type AuthorizedModelAccountSnapshot,
-  type BackgroundModelRole,
   type EnvironmentId,
   type ModelRunEligibility,
   type ModelUsageFact,
@@ -243,10 +243,28 @@ export async function resolveAutomaticModels(
   return resolveWithin(settings, snapshot, request);
 }
 
+export function memoryPassModelRequest(input: {
+  readonly role: "light" | "deep";
+  readonly environmentId: EnvironmentId;
+  readonly accessMode?: ThreadAccessMode;
+  readonly original?: OriginalModelSelection | undefined;
+  readonly runners: Pick<Runners, "canRunHarness" | "harnessAccessModes">;
+}): Omit<AutomaticModelRequest, "userId"> {
+  return {
+    wants: (settings) => backgroundModelWants(settings, input.role),
+    ...(input.role === "deep" && input.original ? { original: input.original } : {}),
+    canRun: personalExecution(input.runners, {
+      environmentId: input.environmentId,
+      accessMode: input.accessMode ?? DEFAULT_THREAD_ACCESS_MODE,
+    }),
+  };
+}
+
 /**
  * What runs each background job now, as Settings shows it. Naming needs
- * background text on the account's computer; memory runs on the hosting
- * computer in the person's access mode, and nightly memory ends with Chat's model.
+ * background text on the account's computer; memory runs on each managed
+ * worker's computer and access mode (or the hosting computer in full access
+ * before provisioning), and nightly memory falls back to Chat's model.
  */
 export async function readAutomaticModelPreview(
   dependencies: AutomaticModelDependencies & {
@@ -268,28 +286,32 @@ export async function readAutomaticModelPreview(
     await requirePersonalOwner(store.database, userId);
     throw hostingComputerNotReady();
   }
-  const environment = await store.database
-    .selectFrom("executionEnvironments")
-    .select("id")
-    .where("runnerId", "=", personal.agentHomeComputerId)
-    .executeTakeFirstOrThrow();
-  const preferences = ExecutionPreferencesSchema.parse(personal.executionPreferences);
-  const memory = personalExecution(runners, {
-    environmentId: environment.id,
-    accessMode: preferences.accessMode,
-  });
-  const [{ settings, file }, snapshot] = await Promise.all([
+  const [environment, workers, { settings, file }, snapshot] = await Promise.all([
+    store.database
+      .selectFrom("executionEnvironments")
+      .select("id")
+      .where("runnerId", "=", personal.agentHomeComputerId)
+      .executeTakeFirstOrThrow(),
+    store.database
+      .selectFrom("triggers")
+      .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
+      .select(["triggers.systemRole", "threads.environmentId", "threads.accessMode"])
+      .where("triggers.createdBy", "=", userId)
+      .where("triggers.systemRole", "in", ["memory-light", "memory-nightly"])
+      .execute(),
     store.getAgentHomeSettings(userId),
     readAuthorizedModelAccounts(dependencies, userId),
   ]);
-  const inUse = (
-    role: BackgroundModelRole,
-    request: Omit<AutomaticModelRequest, "userId" | "wants">,
-  ) => {
-    const chosen = resolveWithin(settings, snapshot, {
-      ...request,
-      wants: (current) => backgroundModelWants(current, role),
-    }).candidates[0];
+  const preferences = ExecutionPreferencesSchema.parse(personal.executionPreferences);
+  const memoryBoundary = (systemRole: "memory-light" | "memory-nightly") => {
+    const worker = workers.find((row) => row.systemRole === systemRole);
+    return {
+      environmentId: worker?.environmentId ?? environment.id,
+      accessMode: worker?.accessMode ?? DEFAULT_THREAD_ACCESS_MODE,
+    };
+  };
+  const inUse = (request: Omit<AutomaticModelRequest, "userId">) => {
+    const chosen = resolveWithin(settings, snapshot, request).candidates[0];
     if (!chosen) return null;
     const { modelId, providerId } = chosen.storedModelSelection;
     const harness = snapshot.harnesses.find(({ id }) => id === chosen.harnessInstanceId);
@@ -309,8 +331,24 @@ export async function readAutomaticModelPreview(
   return {
     file,
     excludedAccounts: [...excludedBackgroundAccounts(settings)],
-    naming: inUse("naming", { canRun: backgroundTextSupport(runners) }),
-    light: inUse("light", { canRun: memory }),
-    deep: inUse("deep", { canRun: memory, original: preferences.history[0] }),
+    naming: inUse({
+      wants: (current) => backgroundModelWants(current, "naming"),
+      canRun: backgroundTextSupport(runners),
+    }),
+    light: inUse(
+      memoryPassModelRequest({
+        role: "light",
+        ...memoryBoundary("memory-light"),
+        runners,
+      }),
+    ),
+    deep: inUse(
+      memoryPassModelRequest({
+        role: "deep",
+        ...memoryBoundary("memory-nightly"),
+        original: preferences.history[0],
+        runners,
+      }),
+    ),
   };
 }

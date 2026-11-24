@@ -117,12 +117,11 @@ export function modelCandidateKey(
   >,
 ): string {
   const selection = candidate.runModelSelection;
-  const canonical = canonicalModelReference(selection.modelId, selection.providerId);
   return JSON.stringify([
     candidate.environmentId,
     candidate.harnessInstanceId,
-    canonical.providerId,
-    canonical.modelId,
+    selection.providerId,
+    selection.modelId,
     Object.entries(selection.options).sort(([a], [b]) => a.localeCompare(b)),
   ]);
 }
@@ -183,13 +182,12 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
     const eligibility = automaticAccountEligibility(account, input);
     return eligibility.ok || (skip(account, want, eligibility.reason, eligibility.detail) ?? false);
   };
-  const inspect = (
-    account: AuthorizedModelAccountSnapshot,
+  const buildCandidate = (
+    account: AuthorizedModelAccountSnapshot & { readonly catalog: SelectionCatalog },
     selection: ModelSelection,
     want: ModelWant | null,
     original: boolean,
   ): ResolvedModelCandidate | null => {
-    if (!usable(account, want)) return null;
     const match = matchModelSelection(account.catalog.models, selection, "refuse");
     if (match.kind === "model-unavailable")
       return skip(account, want, "model-unavailable", match.reason);
@@ -213,48 +211,28 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
       ),
     };
   };
-  let original: ResolvedModelCandidate | null = null;
-  if (input.original) {
-    const own = input.original;
-    const account = input.accounts.find(
-      (a) => a.environmentId === own.environmentId && a.harnessInstanceId === own.harnessInstanceId,
-    );
-    if (!account)
-      skipped.push({
-        want: null,
-        harnessInstanceId: own.harnessInstanceId,
-        reason: "unauthorized",
-      });
-    else if (own.fromPastRun && account.sourceId === "openai-compatible")
-      skipped.push({
-        want: null,
-        harnessInstanceId: own.harnessInstanceId,
-        reason: "endpoint-binding-required",
-      });
-    else original = inspect(account, own.modelSelection, null, true);
-  }
-  const seen = new Set<string>(original ? [modelCandidateKey(original)] : []);
+  const seen = new Map<string, number>();
   const candidates: ResolvedModelCandidate[] = [];
   const accounts = automaticAccountOrder(input.accounts);
-  for (const want of input.wants)
+  for (const want of input.wants) {
+    const engine = "kind" in want ? want.driverKind : want.engine;
+    const named = "kind" in want || !("account" in want) ? undefined : want.account;
+    if (named && !accounts.some((account) => account.harnessInstanceId === named)) {
+      skipped.push({ want, harnessInstanceId: named, reason: "unauthorized" });
+      continue;
+    }
     for (const account of accounts) {
-      const engine = "kind" in want ? want.driverKind : want.engine;
       if (account.driverKind !== engine) continue;
-      const named = "kind" in want || !("account" in want) ? undefined : want.account;
       if (named && named !== account.harnessInstanceId) continue;
       if (account.sourceId === "openai-compatible" && !named) {
-        skipped.push({
-          want,
-          harnessInstanceId: account.harnessInstanceId,
-          reason: "endpoint-binding-required",
-        });
+        skip(account, want, "endpoint-binding-required");
         continue;
       }
+      if (!usable(account, want)) continue;
       let selection: ModelSelection;
       const exact =
         "kind" in want || want.model === undefined ? null : { ...want, model: want.model };
       if (exact === null && !("kind" in want && want.kind === "model")) {
-        if (!usable(account, want)) continue;
         const light = account.catalog.lightModel;
         if (!light) {
           skip(account, want, "model-unavailable", "This account has no small model");
@@ -265,7 +243,7 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
         if (!("kind" in want) || want.kind !== "model") continue;
         selection = { providerId: want.providerId, modelId: want.modelId, options: {} };
       } else {
-        const models = account.catalog?.models ?? [];
+        const models = account.catalog.models;
         // The catalog's own provider/model pair is exact for any lab, listed or not.
         const pair = models.filter(
           (model) => `${model.providerId}/${model.modelId}` === exact.model,
@@ -278,28 +256,31 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
                 model.modelId === exact.model ||
                 (model.providerId === reference.providerId && model.modelId === reference.modelId),
             );
-        // A bare canonical ID is portable only when this catalog identifies one lab for it.
-        const model = matches.length === 1 ? matches[0] : undefined;
-        selection = {
-          providerId: model?.providerId ?? (reference.providerId as ModelSelection["providerId"]),
-          modelId: model?.modelId ?? (reference.modelId as ModelSelection["modelId"]),
-          options: {},
-        };
         if (matches.length > 1) {
-          skipped.push({
-            want,
-            harnessInstanceId: account.harnessInstanceId,
-            reason: "model-unavailable",
-            detail: "Ambiguous canonical model ID",
-          });
+          skip(account, want, "model-unavailable", "Ambiguous canonical model ID");
           continue;
         }
+        // A bare canonical ID is portable only when this catalog identifies one lab for it.
+        const matched = matches[0];
+        selection = {
+          providerId: matched?.providerId ?? (reference.providerId as ModelSelection["providerId"]),
+          modelId: matched?.modelId ?? (reference.modelId as ModelSelection["modelId"]),
+          options: {},
+        };
       }
-      const model = account.catalog?.models.find(
+      const model = account.catalog.models.find(
         (entry) => entry.providerId === selection.providerId && entry.modelId === selection.modelId,
       );
+      if (!model) {
+        skip(account, want, "model-unavailable");
+        continue;
+      }
+      if (model.unavailableReason) {
+        skip(account, want, "model-unavailable", model.unavailableReason);
+        continue;
+      }
       const effort = "effort" in want ? want.effort : undefined;
-      if (model && effort !== undefined) {
+      if (effort !== undefined) {
         const tuned = withModelEffort(selection, model, effort);
         if (!tuned) {
           const offered = modelEffortOption(model)?.values.map(({ value }) => value) ?? [];
@@ -313,15 +294,39 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
         }
         selection = tuned;
       }
-      const candidate = inspect(account, selection, want, false);
+      const candidate = buildCandidate(account, selection, want, false);
       if (!candidate) continue;
       const key = modelCandidateKey(candidate);
       if (seen.has(key)) continue;
-      seen.add(key);
+      seen.set(key, candidates.length);
       candidates.push(candidate);
     }
+  }
+  if (input.original) {
+    const own = input.original;
+    const account = input.accounts.find(
+      (a) => a.environmentId === own.environmentId && a.harnessInstanceId === own.harnessInstanceId,
+    );
+    let fallback: ResolvedModelCandidate | null = null;
+    if (!account)
+      skipped.push({
+        want: null,
+        harnessInstanceId: own.harnessInstanceId,
+        environmentId: own.environmentId,
+        reason: "unauthorized",
+      });
+    else if (own.fromPastRun && account.sourceId === "openai-compatible")
+      skip(account, null, "endpoint-binding-required");
+    else if (usable(account, null))
+      fallback = buildCandidate(account, own.modelSelection, null, true);
+    if (fallback) {
+      const existing = seen.get(modelCandidateKey(fallback));
+      if (existing !== undefined)
+        candidates[existing] = { ...candidates[existing]!, original: true };
+      else candidates.push(fallback);
+    }
+  }
   candidates.sort((a, b) => Number(a.usageLimited) - Number(b.usageLimited));
-  if (original) candidates.push(original);
   return { candidates, skipped };
 }
 export function catalogDefaultModel<T extends SelectionModelDescriptor>(

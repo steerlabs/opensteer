@@ -1,5 +1,4 @@
 import {
-  backgroundModelWants,
   ExecutionPreferencesSchema,
   ModelSelectionSchema,
   OpensteerError,
@@ -19,7 +18,7 @@ import {
 } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import { MANAGED_MEMORY_WAKE_SKIPPED, type TriggerSystemRole } from "@opensteer/triggers";
-import { resolveAutomaticModels, personalExecution } from "./automatic-models.js";
+import { memoryPassModelRequest, resolveAutomaticModels } from "./automatic-models.js";
 import { isDeepStrictEqual } from "node:util";
 import type { Clock } from "@opensteer/shared/clock";
 import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
@@ -226,19 +225,17 @@ export class MemoryPassService {
         code: "forbidden",
         message: "Memory jobs belong to the personal owner.",
       });
+    const role = trigger.systemRole === "memory-light" ? "light" : "deep";
     const { candidates } = await resolveAutomaticModels(
       { store, runners },
       {
         userId: settings.ownerId,
-        wants: (settings) =>
-          backgroundModelWants(settings, trigger.systemRole === "memory-light" ? "light" : "deep"),
-        original:
-          trigger.systemRole === "memory-nightly"
-            ? await this.remembered(settings.ownerId)
-            : undefined,
-        canRun: personalExecution(runners, {
+        ...memoryPassModelRequest({
+          role,
           environmentId: worker.environmentId,
           accessMode: worker.accessMode,
+          original: role === "deep" ? await this.remembered(settings.ownerId) : undefined,
+          runners,
         }),
       },
     );
