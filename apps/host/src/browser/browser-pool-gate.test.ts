@@ -232,3 +232,24 @@ it("marks waited on a reservation only when the caller actually suspended", asyn
   expect(resumed.waited).toBe(true);
   resumed.release();
 });
+
+it("signals idle-state changes whenever admission, reservations, or viewers change", async () => {
+  const subject = new BrowserPoolGate();
+  let changes = 0;
+  subject.onIdleStateChanged = () => {
+    changes++;
+  };
+  subject.set({ recovered: true, away: null, hold: null });
+  expect(changes).toBe(1);
+  const res = await subject.reserve(new AbortController().signal);
+  expect(changes).toBe(2);
+  const stopViewing = subject.viewing();
+  expect(changes).toBe(3);
+  res.release();
+  expect(changes).toBe(4);
+  expect(subject.held).toBe(0);
+  expect(subject.viewers).toBe(1);
+  stopViewing();
+  expect(changes).toBe(5);
+  expect(subject.viewers).toBe(0);
+});

@@ -819,6 +819,9 @@ importers:
       '@opensteer/runner-auth':
         specifier: workspace:*
         version: link:../../packages/runner-auth
+      '@opensteer/runner-client':
+        specifier: workspace:*
+        version: link:../../packages/runner-client
       '@opensteer/shared':
         specifier: workspace:*
         version: link:../../packages/shared

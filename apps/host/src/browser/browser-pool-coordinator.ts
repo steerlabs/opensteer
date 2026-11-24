@@ -197,6 +197,17 @@ export interface BrowserPoolCoordinatorOptions {
   readonly unansweredRetryMaxMs?: number;
   /** How often a running guest's status is read when nothing else reads it (one minute). */
   readonly statusEveryMs?: number;
+  /**
+   * How long the browser may sit open with nobody holding it (no reservation, no viewer, no
+   * connected agent's work) before `tryPark()` is called; a vetoed park is asked again at the
+   * next idle period. Null or omitted disables automatic idle parking.
+   */
+  readonly idleParkMs?: number | null;
+  /**
+   * Called once the guest is running (before reattaching retained sessions or opening admission)
+   * so the Home's in-process browser relay attaches to this target's transport.
+   */
+  readonly onRunning?: (signal?: AbortSignal) => Promise<void>;
   /** Tests lose a commit's reply, a read, or a journal acknowledgement. */
   readonly testHooks?: {
     readonly beginPark?: typeof beginBrowserPoolPark;
@@ -218,11 +229,10 @@ interface Retained {
  * including one found after a Home restart, to an open or parked gate; a step that keeps failing
  * may give live state up for a fresh guest, chosen like any other step, and never ends closed.
  *
- * Not wired yet (the next piece, with the provisioner): the Home selects a coordinator for a
- * managed pooled target and passes it to `BrowserService` by Runner id. Its idle rule calls
- * `tryPark()` when the browser is open and nobody holds it (no reservation, no viewer, no
- * connected agent's work) for the idle period; a park any send vetoes is simply asked again at
- * the next idle period. Until then only tests construct one and call `tryPark()`.
+ * Wired on pooled Cloud Computers by `startManagedBrowserPool`: when `idleParkMs` is set, the
+ * idle rule calls `tryPark()` after the browser stays open with nobody holding it (no
+ * reservation, no viewer, no connected agent's work) for `idleParkMs`, and asks again at the
+ * next idle period if vetoed.
  */
 export class BrowserPoolCoordinator {
   readonly gate = new BrowserPoolGate();
@@ -306,6 +316,7 @@ export class BrowserPoolCoordinator {
     { done: boolean; settle: boolean; readonly ended: PromiseWithResolvers<void> } | undefined;
   /** The controller's reason for the last start or wake it refused; cleared once one applies. */
   #refused: { readonly reason: string; readonly since: Date } | undefined;
+  #idleTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(options: BrowserPoolCoordinatorOptions) {
     this.#options = options;
@@ -324,6 +335,42 @@ export class BrowserPoolCoordinator {
     this.#pruning.unref();
     // A waiter with demand, or anything else the gate learns, asks the loop to look again.
     this.gate.onChange = () => this.#kick();
+    this.gate.onIdleStateChanged = () => this.#syncIdleTimer();
+  }
+
+  #clearIdleTimer(): void {
+    if (!this.#idleTimer) return;
+    clearTimeout(this.#idleTimer);
+    this.#idleTimer = undefined;
+  }
+
+  #syncIdleTimer(): void {
+    const idleMs = this.#options.idleParkMs;
+    if (
+      idleMs == null ||
+      this.#closed ||
+      this.#ended ||
+      this.#options.drain ||
+      !this.gate.admits ||
+      this.gate.held > 0 ||
+      this.gate.viewers > 0 ||
+      this.#parkWanted
+    ) {
+      this.#clearIdleTimer();
+      return;
+    }
+    if (this.#idleTimer) return;
+    this.#idleTimer = setTimeout(() => {
+      this.#idleTimer = undefined;
+      if (this.#closed || this.#ended) return;
+      void this.tryPark()
+        .then((outcome) => {
+          // A vetoed park is asked again at the next idle period.
+          if (outcome === "vetoed") this.#syncIdleTimer();
+        })
+        .catch((error: unknown) => this.#options.onError?.(error));
+    }, idleMs);
+    this.#idleTimer.unref();
   }
 
   setAdopter(adopter: BrowserPoolAdopter): void {
@@ -342,6 +389,7 @@ export class BrowserPoolCoordinator {
   close(): void {
     this.#closed = true;
     clearInterval(this.#pruning);
+    this.#clearIdleTimer();
     // A closed coordinator's step under way writes nothing more: its signal ends it, as a
     // removal's does (the search's fixed seed 1: a Home restarted, its old step's Start was
     // recorded after the next Home had released the device).
@@ -973,6 +1021,7 @@ export class BrowserPoolCoordinator {
     this.#parkWanted = undefined;
     this.#parkSettling = false;
     wanted?.resolve(outcome);
+    this.#syncIdleTimer();
   }
 
   get #channelDeadlineMs(): number {
@@ -1314,6 +1363,7 @@ export class BrowserPoolCoordinator {
         restartWanted: [],
       });
     this.#restartWanted = undefined;
+    if (this.#slot?.phase === "running") await this.#options.onRunning?.(this.#signal);
     this.#publish(this.#slot);
     wanted.done.resolve();
   }
@@ -1351,7 +1401,10 @@ export class BrowserPoolCoordinator {
     }
     await this.#recover();
     // Sessions a Home restart left without a channel are counted before admission opens.
-    if (this.#slot?.phase === "running") await this.#withoutChannel();
+    if (this.#slot?.phase === "running") {
+      await this.#options.onRunning?.(this.#signal);
+      await this.#withoutChannel();
+    }
     this.#recovered = true;
     this.#publish(this.#slot);
     this.#recovering.resolve();
@@ -1359,12 +1412,14 @@ export class BrowserPoolCoordinator {
 
   async #wakeStep(): Promise<void> {
     await this.#wake();
+    if (this.#slot?.phase === "running") await this.#options.onRunning?.(this.#signal);
   }
 
   async #discardRead(reason: string): Promise<void> {
     const slot = await this.#read();
     if (!slot) throw new BrowserPoolAdmissionClosed("The pooled browser has no slot yet.");
     await this.#discard(slot, reason);
+    if (this.#slot?.phase === "running") await this.#options.onRunning?.(this.#signal);
     this.#discardWanted = undefined;
     this.#recovered = true;
     this.#publish(this.#slot);
@@ -1851,6 +1906,7 @@ export class BrowserPoolCoordinator {
       });
       const attempt = slot.attachmentGeneration;
       this.#signal?.throwIfAborted();
+      await this.#options.onRunning?.(this.#signal);
       if (this.#adopter)
         tabLosses = await this.#adopter.reattach({
           sessions: state.adoption.sessions,

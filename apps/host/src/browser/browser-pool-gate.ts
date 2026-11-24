@@ -50,6 +50,8 @@ export class BrowserPoolGate {
   readonly #settlers = new Set<() => Promise<void>>();
   /** The loop is asked to act: someone waits with demand, or a hold needs holders gone. */
   onChange: () => void = () => {};
+  /** Admission, reservations, or viewers changed: the idle-park rule updates its timer. */
+  onIdleStateChanged: () => void = () => {};
 
   /** The loop's facts. `released` is for good: nothing moves it again. */
   set(facts: {
@@ -121,11 +123,13 @@ export class BrowserPoolGate {
   /** A viewer attached: held until the returned release. */
   viewing(): () => void {
     this.#viewers++;
+    this.onIdleStateChanged();
     let released = false;
     return () => {
       if (released) return;
       released = true;
       this.#viewers--;
+      this.onIdleStateChanged();
     };
   }
 
@@ -270,6 +274,7 @@ export class BrowserPoolGate {
   #take(command: boolean, waited = false): BrowserPoolReservation {
     this.#active++;
     if (command) this.#commands++;
+    this.onIdleStateChanged();
     let released = false;
     let settler: (() => Promise<void>) | undefined;
     return {
@@ -288,6 +293,7 @@ export class BrowserPoolGate {
         if (command && --this.#commands === 0)
           for (const idle of this.#commandsIdle.splice(0)) idle();
         if (--this.#active === 0) for (const idle of this.#idle.splice(0)) idle();
+        this.onIdleStateChanged();
       },
     };
   }
@@ -296,6 +302,7 @@ export class BrowserPoolGate {
     const previous = this.#changed;
     this.#changed = new AbortController();
     previous.abort();
+    this.onIdleStateChanged();
   }
 }
 

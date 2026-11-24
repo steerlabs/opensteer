@@ -490,6 +490,10 @@ export interface HostServerDependencies {
     import("./identity/managed-home-claim.js").ManagedHomeClaimService,
     "claim"
   >;
+  /** Present only on a Cloud Computer with a managed pooled browser; reported on /healthz. */
+  readonly browserPoolStatus?: () => import("./browser/managed-pool-home.js").ManagedBrowserPoolStatus;
+  /** Refuse any local Runner browser auxiliary stream for the main computer on a pooled Home. */
+  readonly refuseLocalMainBrowserRelay?: boolean;
   /** The Opensteer Account link, on every Personal Host whether or not it has Remote access. */
   readonly personalAccountLink?: { readonly service: PersonalRemoteAccessService } | undefined;
   /** The personal owner's name; absent before the Home has an owner. */
@@ -797,7 +801,11 @@ export async function createHostServer(
   registerTriggerCdpBridge(app, dependencies.browser, dependencies.triggers.controlTokens);
   registerWatchCdpBridge(app, dependencies.browser, dependencies.triggers.watchBrowserTokens);
 
-  app.get("/healthz", async () => ({ ok: true }));
+  app.get("/healthz", async () =>
+    dependencies.browserPoolStatus
+      ? { ok: true, browserPool: dependencies.browserPoolStatus() }
+      : { ok: true },
+  );
   app.get("/.well-known/opensteer", async (request, reply) => {
     setBrowserSourceExtensionCors(reply, request.headers.origin);
     void reply.header("cache-control", "no-store");
@@ -2979,6 +2987,7 @@ export async function createHostServer(
         log: app.log,
         browserAttachPublicKeys: dependencies.browserAttachPublicKeys,
         browserRelay: dependencies.browserRelay,
+        ...(dependencies.refuseLocalMainBrowserRelay ? { refuseLocalMainBrowserRelay: true } : {}),
         channels: dependencies.channels.service,
         computerApps: dependencies.computerApps,
         module: module.data,
@@ -3615,6 +3624,7 @@ function attachRunnerAuxiliarySocket(options: {
     readonly publicKeyPem: string;
   }[];
   readonly browserRelay: RunnerBrowserHub;
+  readonly refuseLocalMainBrowserRelay?: boolean;
   readonly channels: ChannelService;
   readonly computerApps: ComputerAppHub;
   readonly messagingRelay: MessagingRelayHub;
@@ -3725,6 +3735,27 @@ function attachRunnerAuxiliarySocket(options: {
           });
         if (!claims) return;
         stream = options.runners.admitAuxiliary({ claims, module, peer });
+        if (
+          module === "browser" &&
+          options.refuseLocalMainBrowserRelay &&
+          stream.identity.runnerKind === "main"
+        ) {
+          options.runners.detachAuxiliary(peer, "revoked");
+          stream = undefined;
+          outcome(false, "managed-browser-pool-refuses-local-browser");
+          await dispatch.send({
+            error: {
+              code: "forbidden",
+              message: "This Cloud Computer uses a managed pooled browser.",
+              retryable: false,
+            },
+            type: "host.auxiliary.rejected",
+          });
+          if (socket.readyState === socket.OPEN) {
+            socket.close(4003, "Managed browser pool refuses local browser relay");
+          }
+          return;
+        }
         dispatch.onAttach(stream);
         release();
         clearTimeout(challengeTimeout);
@@ -3830,6 +3861,7 @@ function runnerAuxiliaryModuleDispatch(options: {
     readonly publicKeyPem: string;
   }[];
   readonly browserRelay: RunnerBrowserHub;
+  readonly refuseLocalMainBrowserRelay?: boolean;
   readonly channels: ChannelService;
   readonly computerApps: ComputerAppHub;
   readonly messagingRelay: MessagingRelayHub;

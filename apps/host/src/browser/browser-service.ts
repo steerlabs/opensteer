@@ -838,6 +838,8 @@ interface BrowserServiceOptions {
   readonly eraseLocalProfiles?: (runnerId: RunnerId) => Promise<void>;
   readonly repository: BrowserSessionRepository;
   readonly signer: BrowserAttachTicketSigner;
+  /** Signs attach/end tickets for the managed pooled browser (`keys/browser-pool-keys.json`). */
+  readonly poolSigner?: BrowserAttachTicketSigner;
   readonly targetResolver?: BrowserRuntimeTargetResolver;
   /** Each pooled Cloud Computer's coordinator, by its Runner; empty for an ordinary Home. */
   readonly pools?: ReadonlyMap<RunnerId, BrowserPoolCoordinator>;
@@ -846,6 +848,11 @@ interface BrowserServiceOptions {
    * that Runner's sessions for the coordinator to reattach or end with their notes.
    */
   readonly pooledRunner?: RunnerId;
+  /**
+   * This Home runs a managed pooled browser on its Cloud Computer: never fall back to a local
+   * browser runtime for the main computer, even before its Runner enrolls or its target is ready.
+   */
+  readonly pooledOnly?: boolean;
   /** New sessions' ids (a random one each by default); a search derives them from its seed. */
   readonly newSessionId?: () => BrowserSessionId;
 }
@@ -1070,10 +1077,12 @@ export class BrowserService {
   readonly #lastHeldBindingBySession = new Map<BrowserSessionId, string>();
   readonly #lastHeldSessionByBinding = new Map<string, BrowserSessionId>();
   readonly #signer: BrowserAttachTicketSigner;
+  #poolSigner: BrowserAttachTicketSigner | undefined;
   readonly #targetResolver: BrowserRuntimeTargetResolver | undefined;
   /** Held here by Runner, so a Runner that is away or removed still has its coordinator. */
   readonly #pools: Map<RunnerId, BrowserPoolCoordinator>;
-  readonly #pooledRunner: RunnerId | undefined;
+  #pooledRunner: RunnerId | undefined;
+  readonly #pooledOnly: boolean;
   readonly #newSessionId: () => BrowserSessionId;
   readonly #poolWaiters = new Map<BrowserSessionId, Set<AbortController>>();
   readonly #poolAgentWaiters = new Map<
@@ -1090,6 +1099,8 @@ export class BrowserService {
     this.#newSessionId = options.newSessionId ?? createBrowserSessionId;
     // A Home given a pool is a pooled computer, its coordinator here or not later (W11).
     this.#pooledRunner = options.pooledRunner ?? [...(options.pools?.keys() ?? [])][0];
+    this.#pooledOnly = options.pooledOnly === true;
+    this.#poolSigner = options.poolSigner;
     // A personal Home has one pooled Cloud Computer at most: the startup sweep keeps its rows.
     if (this.#pools.size > 1) throw new Error("A Home serves at most one pooled browser.");
     this.#requireAgentAccess = options.requireAgentAccess ?? (async () => {});
@@ -1162,6 +1173,18 @@ export class BrowserService {
     this.#repository = options.repository;
     this.#signer = options.signer;
     this.#targetResolver = options.targetResolver;
+  }
+
+  setPooledRunner(runnerId: RunnerId): void {
+    this.#pooledRunner = runnerId;
+  }
+
+  setPoolSigner(signer: BrowserAttachTicketSigner): void {
+    this.#poolSigner = signer;
+  }
+
+  #signerFor(pooled: boolean): BrowserAttachTicketSigner {
+    return pooled && this.#poolSigner ? this.#poolSigner : this.#signer;
   }
 
   get available(): boolean {
@@ -1334,7 +1357,7 @@ export class BrowserService {
         const origin = record.origin === "person" ? "person" : "agent";
         // Only an end: the runtime refuses this ticket on every attach, and finds the session by
         // its id (the identity is not what it ends).
-        return this.#signer.issue({
+        return this.#signerFor(true).issue({
           creationOrigin:
             origin === "person" && record.opener?.kind === "person" ? "person" : "agent",
           actor: origin,
@@ -1480,7 +1503,7 @@ export class BrowserService {
       const groupId = (await readBrowserPoolSessionLineage(database, sessionId)) ?? sessionId;
       if (signal?.aborted) return undefined;
       const socket = target.connect(
-        this.#signer.issue({
+        this.#signerFor(true).issue({
           creationOrigin:
             origin === "person" && record.opener?.kind === "person" ? "person" : "agent",
           actor: origin,
@@ -2199,6 +2222,17 @@ export class BrowserService {
             : null);
     if (await this.#waitForBrowser(homes, intended?.runnerId, signal))
       return this.#resolveIdentityOpen(ownerId, command, signal);
+    // A pooled target that is still recovering or parked after a Home restart attaches its
+    // in-process browser relay once its guest is running; waking it here makes the placement ready.
+    const intendedPool = intended ? this.#pool(intended.runnerId) : undefined;
+    if (intended && intendedPool && !this.#resolveTarget(intended)) {
+      const wakeSignal = AbortSignal.any([
+        this.#closing.signal,
+        signal ?? AbortSignal.timeout(browserOpenWorkMs),
+      ]);
+      const reservation = await this.#reservePool(intendedPool.gate, wakeSignal);
+      reservation.release();
+    }
     if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
     const eligible = this.#eligiblePlacements(homes).filter((candidate) => candidate.available);
     if (
@@ -2828,7 +2862,7 @@ export class BrowserService {
               command: {
                 method: browserHostMethods.openTab,
                 parameters: {
-                  operationAuthority: this.#signer.issue({
+                  operationAuthority: this.#signerFor(Boolean(budget.pool)).issue({
                     creationOrigin: agent ? "agent" : "person",
                     access: "read-write",
                     ...(budget.pool ? { pool: budget.pool.target.fence() } : {}),
@@ -5629,7 +5663,7 @@ export class BrowserService {
           if (document !== pool.documentId)
             throw new BrowserCdpConnectionEnded("This browser page changed before attachment.");
         }
-        const ticket = this.#signer.issue({
+        const ticket = this.#signerFor(Boolean(pool)).issue({
           access: "read-write",
           creationOrigin: "agent",
           ...(target.actorClaim || pool ? { actor: "agent" } : {}),
@@ -7298,6 +7332,8 @@ export class BrowserService {
     // A drain is the next Home's to go on with, from the retired target's record (W8).
     for (const coordinator of this.#draining) coordinator.close();
     this.#draining.clear();
+    for (const coordinator of this.#pools.values()) coordinator.close();
+    this.#pools.clear();
     this.#closePromise = (async () => {
       await this.#runPlaces.close();
       await Promise.allSettled(this.#sessionOperations.values());
@@ -7434,26 +7470,27 @@ export class BrowserService {
       (placementHolder
         ? placementOf(placementHolder)
         : this.#defaultPlacement(input, placements, homes));
-    // Only the computer this open will use is worth waiting for.
-    if (await this.#waitForBrowser(homes, placement.runnerId, input.operationBudget?.signal))
-      return this.#admitStart(input, onInitialPage, personNavigation, poolStart);
-    if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
-    if (origin !== "person") await this.#requireAgentAccess(placement.runnerId);
-    if (!placements.some((candidate) => candidate.runnerId === placement.runnerId))
-      throw unavailable("The selected browser computer is unavailable for this open.");
-    let target = this.#resolveTarget(placement);
-    if (!target)
-      throw unavailable(
-        boundRunnerId
-          ? "Waiting for this computer to open its browser profile. Reconnect the owning computer."
-          : "The selected Browser Runtime is not connected.",
-      );
     const pooled = this.#pool(placement.runnerId);
+    const isPooledComputer =
+      pooled !== undefined ||
+      this.#isPooledRunner(placement.runnerId) ||
+      (this.#pooledOnly &&
+        homes.some((home) => home.id === placement.runnerId && home.kind === "main"));
+    // Only the computer this open will use is worth waiting for. A pooled computer waits on its
+    // pool gate below rather than on a Runner browser websocket, and refuses immediately when no
+    // target is adopted.
+    if (
+      !isPooledComputer &&
+      (await this.#waitForBrowser(homes, placement.runnerId, input.operationBudget?.signal))
+    )
+      return this.#admitStart(input, onInitialPage, personNavigation, poolStart);
+    if (origin !== "person") await this.#requireAgentAccess(placement.runnerId);
     // On a pooled computer a session is created bound to its target, or not at all (W11): with
     // no coordinator here (before its target is adopted, between two targets) it is refused
-    // before any row is written.
-    if (!pooled && this.#isPooledRunner(placement.runnerId))
+    // before any row is written and without falling back to a local runtime.
+    if (!pooled && isPooledComputer)
       throw new BrowserPoolAdmissionClosed("The pooled browser is between states. Try again.");
+    let target: BrowserRuntimeTarget | undefined;
     let poolBudget = input.operationBudget as BrowserTabOpenBudget | undefined;
     if (pooled && poolStart) {
       if (input.agentBindingId) {
@@ -7488,12 +7525,28 @@ export class BrowserService {
         : await this.#reservePool(pooled.gate, poolStart.signal);
       poolStart.pool = { target: pooled, reservation };
       poolStart.signal.throwIfAborted();
+      if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
       const current = this.#resolveTarget(placement);
-      if (!current || current.runtimeId !== target.runtimeId)
-        throw unavailable("The browser runtime changed while waiting.");
+      if (!current || current.runtimeId !== pooled.runtimeId)
+        throw unavailable(
+          boundRunnerId
+            ? "Waiting for this computer to open its browser profile. Reconnect the owning computer."
+            : "The selected Browser Runtime is not connected.",
+        );
       target = current;
       poolBudget = poolStart;
       input = { ...input, operationBudget: poolStart };
+    } else {
+      if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
+      if (!placements.some((candidate) => candidate.runnerId === placement.runnerId))
+        throw unavailable("The selected browser computer is unavailable for this open.");
+      target = this.#resolveTarget(placement);
+      if (!target)
+        throw unavailable(
+          boundRunnerId
+            ? "Waiting for this computer to open its browser profile. Reconnect the owning computer."
+            : "The selected Browser Runtime is not connected.",
+        );
     }
     if (pooled && poolBudget?.pool?.target !== pooled)
       throw unavailable("The pooled browser has no start reservation.");
@@ -7620,7 +7673,7 @@ export class BrowserService {
         // it. An older browser computer refuses a ticket field it does not know.
         ...(input.viewport && target.sharedControl === true ? { viewport: input.viewport } : {}),
       };
-      const ticket = this.#signer.issue({
+      const ticket = this.#signerFor(Boolean(pooled)).issue({
         ...attachAuthority,
         ...(input.operationBudget
           ? {
@@ -8683,6 +8736,14 @@ export class BrowserService {
     if (this.#closed) throw unavailable("The Host browser service is shutting down.");
     const resolver = this.#targetResolver;
     if (!runnerId || !resolver?.waitForTarget || !homes.some((home) => home.id === runnerId))
+      return false;
+    // A pooled Cloud Computer drives its browser through its pool coordinator rather than a local
+    // Runner browser stream: never wait on a Runner stream that will not arrive.
+    if (
+      this.#pool(runnerId) !== undefined ||
+      this.#isPooledRunner(runnerId) ||
+      (this.#pooledOnly && homes.some((home) => home.id === runnerId && home.kind === "main"))
+    )
       return false;
     if (
       resolver

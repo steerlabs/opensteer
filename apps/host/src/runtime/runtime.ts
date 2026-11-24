@@ -215,6 +215,12 @@ import { AppService } from "../apps/app-service.js";
 import { BrowserLocalProfiles } from "../browser/browser-local-profiles.js";
 import { announceBrowserUsage } from "../browser/browser-presence.js";
 import { BrowserService } from "../browser/browser-service.js";
+import {
+  startManagedBrowserPool,
+  type ManagedBrowserPoolHome,
+  type ManagedBrowserPoolStatus,
+} from "../browser/managed-pool-home.js";
+import { ManagedBrowserPoolUnclaimed } from "../browser/managed-pool-target.js";
 import { BrowserSourceService } from "../browser/browser-source-service.js";
 import { BrowserAttachTicketSigner } from "../browser/browser-ticket.js";
 import { PasswordSignInService } from "../browser/password-sign-in-service.js";
@@ -493,6 +499,13 @@ export interface HostRuntimeOptions {
   readonly runCapabilityLifetimeSeconds?: number;
   /** Issue and verify Run capabilities in domain time; transport/session tokens stay real. */
   readonly runCapabilityNow?: () => number;
+  /** Target polling and idle-park timings for a pooled Cloud Computer; tests shorten them. */
+  readonly managedBrowserPoolTiming?: {
+    readonly firstDelayMs?: number;
+    readonly maxDelayMs?: number;
+    readonly idleParkMs?: number | null;
+    readonly statusEveryMs?: number;
+  };
 }
 export async function createHostRuntime(
   config: HostConfig,
@@ -551,6 +564,7 @@ export async function createHostRuntime(
   let pluginExecutions: PluginExecutions | undefined;
   let localProviders: LocalProviders | undefined;
   let pluginChangeNotices: PluginChangeNotices | undefined;
+  let managedBrowserPool: ManagedBrowserPoolHome | undefined;
   try {
     // One Host process owns a Home's database.
     authorityLease = await acquireDeploymentAuthorityLease(database);
@@ -908,6 +922,7 @@ export async function createHostRuntime(
               generation: config.managedHome.generation,
             },
             verifier: accountGrantVerifier,
+            onClaimed: () => managedBrowserPool?.targets.suspect(),
           })
         : undefined;
     let reportOwnerProfileError: (error: unknown) => void = () => {};
@@ -1230,6 +1245,19 @@ export async function createHostRuntime(
     };
     let logMissingBrowserActor: (sessionId: string, bindingId: string) => void = () => undefined;
     await store.recoverConnectionCdpAttempts();
+    const readManagedPoolMainRunner = async (): Promise<RunnerId | undefined> =>
+      (
+        await database
+          .selectFrom("runners")
+          .select("id")
+          .where("kind", "=", "main")
+          .where("ownerKind", "=", "deployment")
+          .where("revokedAt", "is", null)
+          .executeTakeFirst()
+      )?.id;
+    const initialPooledRunnerId = config.managedHome?.browserPool
+      ? await readManagedPoolMainRunner()
+      : undefined;
     const browser = new BrowserService({
       requireAgentAccess: async (runnerId) =>
         requireRunnerDeviceAccess(
@@ -1310,6 +1338,12 @@ export async function createHostRuntime(
         keyId: browserAttachKeyId,
         privateKey: keys.privateKey,
       }),
+      ...(config.managedHome?.browserPool
+        ? {
+            pooledOnly: true,
+            ...(initialPooledRunnerId ? { pooledRunner: initialPooledRunnerId } : {}),
+          }
+        : {}),
       targetResolver: runnerBrowsers,
     });
     closeBrowserSession = (sessionId) => browser.closeAuthSession(sessionId);
@@ -2169,6 +2203,49 @@ export async function createHostRuntime(
       onSettingsChanged,
     });
     await browser.initialize();
+    let reportManagedBrowserPoolError: (error: unknown) => void = (error) => {
+      if (!(error instanceof ManagedBrowserPoolUnclaimed))
+        console.warn("Managed browser pool failed", error);
+    };
+    let logManagedBrowserPoolStatus: (_status: ManagedBrowserPoolStatus) => void = () => undefined;
+    if (config.managedHome?.browserPool) {
+      const managedHome = config.managedHome;
+      managedBrowserPool = await startManagedBrowserPool({
+        database,
+        dataDirectory,
+        cloudComputerId: managedHome.cloudComputerId,
+        runnerId: initialPooledRunnerId,
+        resolveRunnerId: readManagedPoolMainRunner,
+        onRunnerBound: (runnerId) => browser.setPooledRunner(runnerId),
+        environmentIds: [personalConfig.environmentId],
+        hostKey: keys.privateKey,
+        browser,
+        browserRelay,
+        passkeys: config.passkeys === true,
+        account: {
+          controlApiOrigin: managedHome.accountOrigin,
+          hostCredential: async () =>
+            (
+              await database
+                .selectFrom("personalRemoteAccountLink")
+                .select("hostCredential")
+                .where("singletonKey", "=", "opensteer-account")
+                .where("state", "=", "active")
+                .executeTakeFirst()
+            )?.hostCredential ?? null,
+          ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
+        },
+        ...options.managedBrowserPoolTiming,
+        onStatusChanged: (status) => logManagedBrowserPoolStatus(status),
+        onError: (error) => reportManagedBrowserPoolError(error),
+      });
+      browser.setPoolSigner(
+        new BrowserAttachTicketSigner({
+          keyId: managedBrowserPool.keys.ticketKey.keyId,
+          privateKey: managedBrowserPool.keys.ticketKey.key,
+        }),
+      );
+    }
     await passwordSignIns.sweepAfterRestart();
     await toolActivity.finalize();
     // Before accepting installs: their data folder can precede the plugin transaction.
@@ -2661,6 +2738,8 @@ export async function createHostRuntime(
             // remote-access fence. A computer sent away here was never online,
             // so there is nothing to announce and nothing to reconcile.
             if (!(await confirmRunnerRegistration(store, runners, identity))) return;
+            if (identity.runnerKind === "main" && managedBrowserPool)
+              managedBrowserPool.bindRunner(identity.runnerId);
             pluginWorkMode(identity);
             await initializePersonal();
             // A computer is online the moment it registers, whatever its
@@ -3712,6 +3791,12 @@ export async function createHostRuntime(
           : {}),
         ...(personalAccount ? { personalAccountLink: { service: personalAccount } } : {}),
         ...(managedHomeClaim ? { managedHomeClaim } : {}),
+        ...(managedBrowserPool
+          ? {
+              browserPoolStatus: () => managedBrowserPool!.status(),
+              refuseLocalMainBrowserRelay: true,
+            }
+          : {}),
         ownerProfile,
         realtime,
         runnerAuthenticator,
@@ -3828,6 +3913,16 @@ export async function createHostRuntime(
       app.log.warn({ err: error }, "Owner name refresh from the Opensteer Account failed");
     reportBrowserUsageError = (error) =>
       app.log.warn({ err: error }, "Browser usage recording failed");
+    if (managedBrowserPool && config.managedHome) {
+      const cloudComputerId = config.managedHome.cloudComputerId;
+      reportManagedBrowserPoolError = (error) => {
+        if (error instanceof ManagedBrowserPoolUnclaimed) return;
+        app.log.warn({ err: error, cloudComputerId }, "Managed browser pool failed");
+      };
+      logManagedBrowserPoolStatus = (status) =>
+        app.log.info({ browserPool: status, cloudComputerId }, "Managed browser pool status");
+      logManagedBrowserPoolStatus(managedBrowserPool.status());
+    }
     // The Account's copy of this Host's signed discovery envelope is what every
     // client verifies before it will route here, and only the Host can refresh
     // it. Re-assert it on every start, whichever way this Host reaches its
@@ -3995,6 +4090,7 @@ export async function createHostRuntime(
           await devices.close();
           await localServers.close();
         });
+        await step("managed browser pool", () => managedBrowserPool?.close());
         await step("browser", () => browser.close());
         await step("password sign-ins", () => passwordSignIns.close());
         browserSources.close();
@@ -4035,6 +4131,7 @@ export async function createHostRuntime(
       listen: () => app.listen({ host: config.bindAddress, port: config.port }),
     };
   } catch (error) {
+    await managedBrowserPool?.close();
     await pluginService?.close();
     await pluginExecutions?.close();
     await taskQuestions?.close();
