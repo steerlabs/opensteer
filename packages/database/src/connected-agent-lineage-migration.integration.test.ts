@@ -1,6 +1,6 @@
 import { createId, type ThreadId, type UserId } from "@opensteer/core";
 import { sql } from "kysely";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { createDatabase } from "./connection.js";
 import {
@@ -24,19 +24,35 @@ import { cloneTestDatabase, type TestDatabase } from "./test-database.test-suppo
  * every input a connected agent wrote must carry it there, whatever became of the input or of the
  * connection, and never as the person's own.
  */
+let atMain: TestDatabase;
 let clone: TestDatabase;
 let database: ReturnType<typeof createDatabase>;
 const model = '{"providerId":"openai","modelId":"fixture","options":{}}';
 
+// One database at main's last migration, built once with the real migrator and a provider cut at
+// that name; each case starts from its own copy of it.
+beforeAll(async () => {
+  atMain = await cloneTestDatabase("host");
+  const setup = createDatabase({ connectionString: atMain.url });
+  try {
+    await sql`drop schema public cascade; create schema public`.execute(setup);
+    const all = await migrationProvider().getMigrations();
+    const main = Object.fromEntries(
+      Object.entries(all).filter(([name]) => name <= "0046_run_provider_retry"),
+    );
+    await migrateToLatest(setup, { getMigrations: async () => main });
+  } finally {
+    await setup.destroy();
+  }
+});
+
+afterAll(async () => {
+  await atMain?.drop();
+});
+
 beforeEach(async () => {
-  clone = await cloneTestDatabase("host");
+  clone = await cloneTestDatabase("host", { fromSnapshotOf: atMain });
   database = createDatabase({ connectionString: clone.url });
-  await sql`drop schema public cascade; create schema public`.execute(database);
-  const all = await migrationProvider().getMigrations();
-  const main = Object.fromEntries(
-    Object.entries(all).filter(([name]) => name <= "0046_run_provider_retry"),
-  );
-  await migrateToLatest(database, { getMigrations: async () => main });
 });
 
 afterEach(async () => {
@@ -172,7 +188,9 @@ async function mainRun(
       ${seed}, ${seed}, ${chain}, ${status === "queued" ? null : 1},
       ${status === "queued" ? null : new Date()}, ${status === "completed" ? new Date() : null})
   `.execute(database);
-  await sql`update threads set next_run_ordinal = ${ordinal} where id = ${thread}`.execute(database);
+  await sql`update threads set next_run_ordinal = ${ordinal} where id = ${thread}`.execute(
+    database,
+  );
   return run;
 }
 
