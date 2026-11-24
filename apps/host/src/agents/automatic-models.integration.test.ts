@@ -551,6 +551,61 @@ describe("automatic model resolution on the Host", () => {
       },
     });
   });
+  it("shows an explicit nightly model matching Chat's model, and previews memory in full-access regardless of chat accessMode", async () => {
+    const { dependencies, harnesses } = world(
+      [
+        {
+          driverKind: "claude",
+          sourceId: "anthropic",
+          models: [
+            ["anthropic", "claude-haiku-5-5"],
+            ["anthropic", "claude-opus-5-5"],
+          ],
+        },
+        {
+          driverKind: "codex",
+          sourceId: "openai",
+          models: [["openai", "gpt-6.1-sol"]],
+        },
+      ],
+      {
+        accessModes: ["full-access"],
+        settings: {
+          backgroundModels: {
+            deep: [
+              {
+                engine: HarnessIdSchema.parse("codex"),
+                model: ModelIdSchema.parse("gpt-6.1-sol"),
+                effort: "high",
+              },
+            ],
+          },
+        },
+      },
+    );
+    await owner.store.rememberExecutionChoice(userId, {
+      accessMode: "approval-required",
+      selection: {
+        environmentId: main,
+        harnessInstanceId: harnesses[1]!.id,
+        modelSelection: ModelSelectionSchema.parse({
+          providerId: "openai",
+          modelId: "gpt-6.1-sol",
+          options: { effort: "high" },
+        }),
+      },
+    });
+    const view = await readAutomaticModelPreview(dependencies, userId);
+    expect(view.light).toMatchObject({
+      harnessInstanceId: harnesses[0]!.id,
+      modelDisplayName: "Display claude-haiku-5-5",
+    });
+    expect(view.deep).toMatchObject({
+      harnessInstanceId: harnesses[1]!.id,
+      modelDisplayName: "Display gpt-6.1-sol",
+      effortDisplayName: "High",
+    });
+  });
 });
 describe("Settings preview under concurrent account changes", () => {
   it("resolves both roles over one snapshot, so a removal between reads can't crash it", async () => {

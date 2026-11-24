@@ -82,13 +82,25 @@ const sentModels = (runners: ReturnType<typeof fixture>["runners"]) =>
   );
 
 describe("Host naming jobs", () => {
-  it("caps automatic attempts at three and keeps the task's own model last", () => {
+  it("caps other ranked attempts at three while preserving order and keeping the task's own model in place", () => {
     const f = fixture();
     expect(namingCandidates([...f.ranked, f.fallback])).toEqual([
       ...f.ranked.slice(0, 3),
       f.fallback,
     ]);
     expect(namingCandidates(f.ranked)).toEqual(f.ranked.slice(0, 3));
+    // If the task's own model already ranked high, it stays in place without displacing a third fallback.
+    expect(namingCandidates([f.fallback, ...f.ranked])).toEqual([
+      f.fallback,
+      ...f.ranked.slice(0, 3),
+    ]);
+    expect(
+      namingCandidates([f.ranked[0]!, f.ranked[1]!, f.fallback, f.ranked[2]!, f.ranked[3]!]),
+    ).toEqual([f.ranked[0]!, f.ranked[1]!, f.fallback, f.ranked[2]!]);
+    expect(namingCandidates([...f.ranked.slice(0, 3), f.fallback, f.ranked[3]!])).toEqual([
+      ...f.ranked.slice(0, 3),
+      f.fallback,
+    ]);
   });
   it("shares one pending job and refreshes the catalog on typed failure before advancing", async () => {
     const f = fixture();

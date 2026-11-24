@@ -5557,18 +5557,37 @@ function mockAutomaticModelsView(state: MockHostState): AutomaticModelsView {
       computerDisplayName: env?.name ?? "Computer",
     };
   });
+  const homeEnvironmentId = snapshot.environments.find(
+    (e) => e.runnerId === snapshot.personalSettings?.agentHome.computerId,
+  )?.id;
   const inUse = (role: BackgroundModelRole) => {
+    const original = role === "deep" ? snapshot.executionPreferences.history[0] : undefined;
     const chosen = resolveModelCandidates({
       wants: backgroundModelWants(state.agentHomeSettings, role),
+      ...(original ? { original } : {}),
       accounts,
       excludedAccounts,
-      canRun: () => ({ ok: true }),
+      canRun: (account) => {
+        if (role === "naming") return { ok: true };
+        if (homeEnvironmentId && account.environmentId !== homeEnvironmentId)
+          return { ok: false, reason: "wrong-computer" };
+        const driver = snapshot.environments
+          .find((e) => e.id === account.environmentId)
+          ?.harnessDrivers.find((d) => d.driverKind === account.driverKind);
+        if (driver?.readiness === "unavailable")
+          return { ok: false, reason: "unsupported-capability" };
+        if (driver && !driver.accessModes.includes(DEFAULT_THREAD_ACCESS_MODE))
+          return { ok: false, reason: "unsupported-access-mode" };
+        return { ok: true };
+      },
       now: Date.now(),
     }).candidates[0];
     if (!chosen) return null;
     const account = accounts.find((a) => a.harnessInstanceId === chosen.harnessInstanceId)!;
-    const { modelId } = chosen.storedModelSelection;
-    const model = account.catalog?.models.find((m) => m.modelId === modelId);
+    const { modelId, providerId } = chosen.storedModelSelection;
+    const model = account.catalog?.models.find(
+      (m) => m.modelId === modelId && m.providerId === providerId,
+    );
     return {
       harnessInstanceId: chosen.harnessInstanceId,
       accountDisplayName: account.accountDisplayName,
