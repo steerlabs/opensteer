@@ -104,6 +104,16 @@ export function registerConnectionRoutes(
         ...connection,
         kind: "connection",
         key: `connection:${connection.connectionId}`,
+        // Its row as every authenticated connection carries it: the consent it gave decides what
+        // it is listed and what it may call, by one predicate (B5).
+        agentConnection: {
+          agentConnectionId: connection.connectionId,
+          grant: connection.grant,
+          grantRevision: connection.grantRevision,
+          consentVersion: connection.consentVersion,
+          accessMode: connection.accessMode,
+          bridgeSenders: null,
+        },
       };
       (request.raw as typeof request.raw & { auth?: AuthInfo }).auth = {
         token: header.slice(7),

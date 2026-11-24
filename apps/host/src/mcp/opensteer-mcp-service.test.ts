@@ -82,6 +82,15 @@ function fixture() {
         connectionId: "mcn_test",
         userId,
         accessMode: thread.accessMode,
+        // As the authenticator gives every connection: its row, with the consent it gave.
+        agentConnection: {
+          agentConnectionId: "mcn_test",
+          grant: { scope: "everything" },
+          grantRevision: 1,
+          consentVersion: 2,
+          accessMode: thread.accessMode,
+          bridgeSenders: null,
+        },
       },
     ],
   ]);

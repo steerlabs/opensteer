@@ -34,6 +34,10 @@ const state = vi.hoisted(() => ({
   retentionSupported: true,
   geometry: "side:display@0",
   epoch: "",
+  /** Whether the native view exists yet: a call by its tag before then reaches nothing. */
+  mounted: true,
+  /** Whether Expo's component has the view's tag yet: before, the adapter refuses the call. */
+  tagged: true,
   pixels: false,
   resets: [] as { epoch: string; keepPicture: boolean }[],
   ready: null as
@@ -108,6 +112,8 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("expo", async () => {
   const React = await import("react");
+  // Not view-functions.js, which imports this module.
+  const { ViewNotMountedError } = await import("../platform/view-not-mounted.js");
   return {
     requireOptionalNativeModule: (name: string) =>
       name === "PhoneDisplay"
@@ -121,31 +127,42 @@ vi.mock("expo", async () => {
         ) => {
           state.ready = props.onReady;
           state.needsKeyframe = props.onNeedsKeyframe;
-          React.useImperativeHandle(ref, () => ({
-            reset: async (epoch: string) => {
-              state.epoch = epoch;
-              state.pixels = false;
-              state.resets.push({ epoch, keepPicture: false });
-            },
-            ...(state.retentionSupported
-              ? {
-                  resetKeepingPicture: async (epoch: string) => {
-                    state.epoch = epoch;
-                    state.resets.push({ epoch, keepPicture: true });
-                  },
-                }
-              : {}),
-            decode: async (frame: { epoch: string; data: string }) => {
-              if (state.epoch !== frame.epoch) return false;
-              state.decoded.push({ epoch: frame.epoch, data: frame.data });
-              return state.decodeResult ? state.decodeResult() : true;
-            },
-            decodeBytes: async (bytes: Uint8Array, metadata: { epoch: string }) => {
-              if (state.epoch !== metadata.epoch) return false;
-              state.decoded.push({ epoch: metadata.epoch, bytes: [...bytes] });
-              return state.decodeResult ? state.decodeResult() : true;
-            },
-          }));
+          React.useImperativeHandle(
+            ref,
+            () => ({
+              // As resetForView answers: no view yet, nothing reset, and no refusal.
+              reset: async (epoch: string) => {
+                // As viewFunctionsOf answers on iOS before Expo's component has the view's tag.
+                if (!state.tagged) throw new ViewNotMountedError();
+                if (!state.mounted) return;
+                state.epoch = epoch;
+                state.pixels = false;
+                state.resets.push({ epoch, keepPicture: false });
+              },
+              ...(state.retentionSupported
+                ? {
+                    resetKeepingPicture: async (epoch: string) => {
+                      if (!state.tagged) throw new ViewNotMountedError();
+                      if (!state.mounted) return;
+                      state.epoch = epoch;
+                      state.resets.push({ epoch, keepPicture: true });
+                    },
+                  }
+                : {}),
+              decode: async (frame: { epoch: string; data: string }) => {
+                if (state.epoch !== frame.epoch) return false;
+                state.decoded.push({ epoch: frame.epoch, data: frame.data });
+                return state.decodeResult ? state.decodeResult() : true;
+              },
+              decodeBytes: async (bytes: Uint8Array, metadata: { epoch: string }) => {
+                if (state.epoch !== metadata.epoch) return false;
+                state.decoded.push({ epoch: metadata.epoch, bytes: [...bytes] });
+                return state.decodeResult ? state.decodeResult() : true;
+              },
+            }),
+            // Expo's component instance, the same object for the view's life.
+            [],
+          );
           return <div data-native-display />;
         },
       ),
@@ -271,6 +288,8 @@ afterEach(async () => {
   state.proxy = null;
   state.decoded = [];
   state.epoch = "";
+  state.mounted = true;
+  state.tagged = true;
   state.pixels = false;
   state.resets = [];
   state.decodeResult = null;
@@ -1080,6 +1099,49 @@ it.each([0, 1])(
     ).toEqual([1, 2, 3, 4, 5]);
   },
 );
+
+// The review's note 9: a reset refused because the view has no tag yet waits for the view, which
+// reports its epoch when it joins its window; it never says video sharing is unavailable.
+it("waits for a display view that has no tag yet instead of calling video unavailable", async () => {
+  state.tagged = false;
+  await setup();
+  await act(async () => undefined);
+  expect(container!.textContent).not.toContain("Video sharing is unavailable");
+  state.tagged = true;
+  await act(async () => state.needsKeyframe?.({ nativeEvent: { epoch: "" } }));
+  expect(state.epoch).not.toBe("");
+  expect(container!.textContent).not.toContain("Video sharing is unavailable");
+});
+
+// The screen video's version of the page that never painted: its reset was made before the
+// native view existed, so the view stayed at its empty epoch and refused every frame while the
+// app kept asking for keys. The view says its epoch when it joins its window.
+it("resets a display view that missed its reset once it joins its window, so its picture appears", async () => {
+  state.mounted = false;
+  await setup();
+  expect(state.epoch).toBe("");
+  expect(state.decoded).toEqual([]);
+  state.mounted = true;
+  await act(async () => state.needsKeyframe?.({ nativeEvent: { epoch: "" } }));
+  expect(state.epoch).not.toBe("");
+  await act(async () => {
+    socket.emit("message", {
+      data: encodeDisplayViewerFrame(
+        {
+          generation: 1,
+          sequence: 2,
+          ptsUs: 2000,
+          width: 200,
+          height: 400,
+          key: true,
+          codec: "avc1.42C01F",
+        },
+        Uint8Array.of(0, 0, 1, 0x65),
+      ).slice().buffer,
+    });
+  });
+  expect(state.decoded).toEqual([{ epoch: state.epoch, bytes: [0, 0, 1, 0x65] }]);
+});
 
 it("holds every delta after a frame it had no room for until a key arrives", async () => {
   await setup();

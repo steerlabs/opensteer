@@ -43,6 +43,8 @@ export function agentToolHandlers(options: {
     return options.sessionPerson;
   };
   const commands = options.commands;
+  // The older task tools write through the same door (rule 2, A3).
+  if (commands) p?.useDoor(commands);
   const handlers: Partial<AgentToolHandlers> = {
     ...administrationToolHandlers(options.administration),
     ...(commands

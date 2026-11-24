@@ -20,6 +20,11 @@ import Foundation
 final class MenuShortcutIndex {
   struct Built<Node> {
     var shortcuts: [String: Node] = [:]
+    /// Shortcuts belonging to menu items that were disabled when the menu bar
+    /// was read. They are not pressed from this cache, and looking one up
+    /// invalidates the index so an item enabled since (such as Edit › Redo
+    /// after Undo) is re-read without rebuilding for ordinary shifted keys.
+    var disabled: [String: Node] = [:]
     var reserved: Set<String> = []
     /// Every menu was read. An index that ran out of time, or met a menu
     /// that did not answer, cannot say a shortcut is absent — only that it
@@ -70,13 +75,20 @@ final class MenuShortcutIndex {
 
   var isBuilt: Bool { built != nil }
 
+  var diagnosticSnapshot: (shortcuts: [String], disabled: [String], complete: Bool)? {
+    guard let built else { return nil }
+    return (built.shortcuts.keys.sorted(), built.disabled.keys.sorted(), built.complete)
+  }
+
   typealias Lookup = Found<AXUIElement>
 
   func lookup(_ combo: KeyCombo, applicationElement: AXUIElement) -> Lookup {
     let key = Self.key(for: combo)
     // Checked here, once, before an index is built for a key no app owns.
     if Self.systemReserved.contains(key) { return .reserved }
-    if let cached = built?.shortcuts[key], !Self.exists(cached) {
+    if built?.disabled[key] != nil {
+      invalidate()
+    } else if let cached = built?.shortcuts[key], !Self.exists(cached) {
       invalidate()
     }
     let index = built ?? buildIndex(applicationElement)
@@ -89,11 +101,14 @@ final class MenuShortcutIndex {
   nonisolated static func lookup<Node>(_ key: String, in index: Built<Node>) -> Found<Node> {
     if index.reserved.contains(key) { return .reserved }
     if let item = index.shortcuts[key] { return .item(item) }
+    if let item = index.disabled[key] { return .disabled(item) }
     return index.complete ? .none : .unverified
   }
 
   enum Found<Node> {
     case item(Node)
+    /// A menu item owns this shortcut, and read disabled when checked.
+    case disabled(Node)
     case reserved
     /// Every menu was read and none has this shortcut.
     case none
@@ -109,6 +124,24 @@ final class MenuShortcutIndex {
     var value: CFTypeRef?
     return AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value)
       != .invalidUIElement
+  }
+
+  /// Re-reads `kAXEnabledAttribute` on an existing menu item. In AppKit this
+  /// triggers `-[NSMenu update]` once its 1.0 s AX validation throttle clears,
+  /// without opening any menu or flashing the menu bar. Returns `nil` when the
+  /// element vanished or could not be read (e.g. Electron replaced its menu bar).
+  nonisolated static func isEnabled(_ element: AXUIElement) -> Bool? {
+    AXUIElementSetMessagingTimeout(element, 0.1)
+    var value: CFTypeRef?
+    let status = AXUIElementCopyAttributeValue(element, kAXEnabledAttribute as CFString, &value)
+    switch status {
+    case .success:
+      return (value as? NSNumber)?.boolValue ?? true
+    case .noValue, .attributeUnsupported:
+      return true
+    default:
+      return nil
+    }
   }
 
   nonisolated static func key(for combo: KeyCombo) -> String {
@@ -237,10 +270,17 @@ final class MenuShortcutIndex {
           for submenu in submenus { reserve(submenu, depth: depth + 1) }
           continue
         }
-        if let info, info.enabled, let combo = info.combo {
+        if let info, let combo = info.combo {
           let key = key(for: combo)
-          if built.shortcuts[key] == nil, !built.reserved.contains(key) {
-            built.shortcuts[key] = item
+          if !built.reserved.contains(key) {
+            if info.enabled {
+              if built.shortcuts[key] == nil {
+                built.shortcuts[key] = item
+                built.disabled[key] = nil
+              }
+            } else if built.shortcuts[key] == nil, built.disabled[key] == nil {
+              built.disabled[key] = item
+            }
           }
         }
         for submenu in submenus {
@@ -268,7 +308,10 @@ final class MenuShortcutIndex {
       guard inTime() else { break }
       for container in children(menu) { index(container, depth: 0, inApplicationMenu: false) }
     }
-    for key in built.reserved { built.shortcuts[key] = nil }
+    for key in built.reserved {
+      built.shortcuts[key] = nil
+      built.disabled[key] = nil
+    }
     if expired { built.complete = false }
     return built
   }

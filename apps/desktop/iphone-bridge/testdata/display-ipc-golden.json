@@ -63,9 +63,13 @@
           "modifiers": [],
           "text": "a"
         },
-        { "kind": "paste", "text": "fixture" },
+        { "kind": "paste", "text": "fixture", "contextId": "00000000-0000-4000-8000-000000000001" },
         { "kind": "paste", "items": [{ "type": "text/plain", "size": 7 }] },
-        { "kind": "command", "command": "selectAll" }
+        {
+          "kind": "command",
+          "command": "selectAll",
+          "contextId": "00000000-0000-4000-8000-000000000001"
+        }
       ]
     }
   },

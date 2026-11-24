@@ -447,6 +447,12 @@ export function ComputerDisplayScreen({
           ? display.editing.send(operation)
           : Promise.reject(new Error("Input unavailable."));
       },
+      sendBatch: (operations: readonly Parameters<DisplayEditingSession["send"]>[0][]) => {
+        input?.flush();
+        return display.editing
+          ? display.editing.sendBatch(operations)
+          : Promise.reject(new Error("Input unavailable."));
+      },
     }),
     [display.editing, input],
   );
@@ -758,10 +764,15 @@ export function ComputerDisplayScreen({
           canCut={display.snapshot.display?.displayCut === 1}
           onDismiss={dismissMenu}
           onAction={(action) => {
-            if (action === "copy" || action === "cut") proxy.current?.perform({ kind: action });
-            else if (action === "paste") proxy.current?.pasteFromMenu();
+            if (action === "copy" || action === "cut")
+              proxy.current?.perform({ kind: action, contextId: menu.contextId });
+            else if (action === "paste") proxy.current?.pasteFromMenu(menu.contextId);
             else if (action === "select-all")
-              proxy.current?.perform({ kind: "command", command: "selectAll" });
+              proxy.current?.perform({
+                kind: "command",
+                command: "selectAll",
+                contextId: menu.contextId,
+              });
             dismissMenu();
           }}
         />

@@ -149,6 +149,16 @@ final class PhoneBrowserTransportTests: XCTestCase {
     XCTAssertThrowsError(try PhoneBrowserTickets.verify(String(repeating: "a", count: 16_385), keys: fixtureKeys, runtimeId: "phone", now: 1794225600000))
   }
 
+  func testEditingVersionTwoAsDoubleStillRequiresAndAdmitsClipboard() throws {
+    let fixture = try vector("attach-tickets")
+    var claims = fixture["claims"] as! [String: Any]
+    claims["editingVersion"] = Double(2.0)
+    claims["clipboard"] = true
+    XCTAssertNoThrow(try PhoneBrowserTickets.validateClaims(claims))
+    claims.removeValue(forKey: "clipboard")
+    XCTAssertThrowsError(try PhoneBrowserTickets.validateClaims(claims))
+  }
+
   func testFenceVectorsAndQueuedEpochRefusal() throws {
     let fixture = try vector("fences")
     let fields = fixture["fence"] as! [String: Any]

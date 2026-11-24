@@ -70,7 +70,7 @@ describe("Expo shared reducer acceptance", () => {
     core.step({ type: "context", context });
     expect(
       core.step({ type: "beforeinput", inputType: "deleteContentBackward", data: null }).operations,
-    ).toEqual([{ kind: "command", command: "deleteBackward" }]);
+    ).toEqual([{ kind: "command", command: "deleteBackward", contextId: context.contextId }]);
   });
 });
 
@@ -90,7 +90,11 @@ it("uses the shared Cocoa command table and releases held hardware keys on blur"
     composing: false,
   };
   expect(core.step({ type: "keydown", ...key }).operations).toEqual([
-    { kind: "command", command: "moveToLeftEndOfLineAndModifySelection" },
+    {
+      kind: "command",
+      command: "moveToLeftEndOfLineAndModifySelection",
+      contextId: context.contextId,
+    },
   ]);
   core.step({ type: "keydown", ...key, key: "a", code: "KeyA", meta: false, shift: false });
   expect(core.step({ type: "blur" }).operations).toContainEqual({

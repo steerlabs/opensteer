@@ -560,6 +560,38 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
       .set({ originConnectionId: selected.id } as never)
       .where("id", "=", lineageTask)
       .execute();
+    // The older task tools are the same commands through the same door (rule 2, A3): one of the
+    // person's own agents, at Full access, resuming or reconfiguring this connection's task gives
+    // that lineage more than it holds; the door puts it to the person and nothing changes.
+    const ownAgent = full;
+    await host.store.database
+      .updateTable("threads")
+      .set({ inputQueuePaused: true, inputQueuePausedBy: owner } as never)
+      .where("id", "=", lineageTask)
+      .execute();
+    const lineageState = async () =>
+      host.store.database
+        .selectFrom("threads")
+        .select(["inputQueuePaused", "modelSelection"])
+        .where("id", "=", lineageTask)
+        .executeTakeFirstOrThrow();
+    const before = await lineageState();
+    const resumed = await call(ownAgent, "opensteer_task_resume", { taskId: lineageTask });
+    expect(resumed.isError, JSON.stringify(resumed.content)).toBe(true);
+    expect(JSON.stringify(resumed.content)).toContain("This waits for the person in Opensteer.");
+    const configured = await call(ownAgent, "opensteer_task_configure", {
+      taskId: lineageTask,
+      modelSelection: { modelId: "gpt-5.6-sol", options: { effort: "high" }, providerId: "openai" },
+    });
+    expect(configured.isError, JSON.stringify(configured.content)).toBe(true);
+    expect(JSON.stringify(configured.content)).toContain("This waits for the person in Opensteer.");
+    expect(await lineageState()).toEqual(before);
+    await host.store.database
+      .updateTable("threads")
+      .set({ inputQueuePaused: false, inputQueuePausedBy: null } as never)
+      .where("id", "=", lineageTask)
+      .execute();
+
     const renameTask = (threadId: ThreadId, title: string) => ({
       command: { type: "thread.rename", threadId, title },
     });

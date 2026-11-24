@@ -1,0 +1,591 @@
+{
+  "version": 1,
+  "kept": 64,
+  "namedTextWaitSeconds": 0.5,
+  "caretRelativeCommands": ["deleteBackward", "moveBackward", "moveForward"],
+  "cases": [
+    {
+      "name": "same-field identity distinguishes element, kind, sensitivity, editability, and blur",
+      "steps": [
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "f1",
+          "expectChanged": true
+        },
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "expectChanged": false
+        },
+        { "admits": { "context": "f1", "kind": "relative" }, "is": true },
+        { "admits": { "context": "f1", "kind": "exact" }, "is": true },
+        {
+          "observe": {
+            "field": { "id": "el-2", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "f2",
+          "expectChanged": true
+        },
+        { "admits": { "context": "f1", "kind": "relative" }, "is": false },
+        { "admits": { "context": "f2", "kind": "relative" }, "is": true },
+        {
+          "observe": {
+            "field": { "id": "el-2", "kind": "text", "sensitive": true, "editable": true },
+            "changed": false
+          },
+          "save": "f2_pw",
+          "expectChanged": true
+        },
+        { "admits": { "context": "f2", "kind": "relative" }, "is": false },
+        { "admits": { "context": "f2_pw", "kind": "relative" }, "is": true },
+        {
+          "observe": {
+            "field": { "id": "el-2", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "f2_vis",
+          "expectChanged": true
+        },
+        { "admits": { "context": "f2_pw", "kind": "relative" }, "is": false },
+        {
+          "observe": {
+            "field": { "id": "el-2", "kind": "rich", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "f2_rich",
+          "expectChanged": true
+        },
+        { "admits": { "context": "f2_vis", "kind": "relative" }, "is": false },
+        {
+          "observe": {
+            "field": { "id": "el-2", "kind": "rich", "sensitive": false, "editable": false },
+            "changed": false
+          },
+          "save": "f2_ro",
+          "expectChanged": true
+        },
+        { "admits": { "context": "f2_rich", "kind": "relative" }, "is": false },
+        { "observe": { "field": null, "changed": false }, "save": "none", "expectChanged": true },
+        { "admits": { "context": "f2_ro", "kind": "relative" }, "is": false },
+        { "admits": { "context": "none", "kind": "relative" }, "is": true },
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "f1_again",
+          "expectChanged": true
+        },
+        { "admits": { "context": "f1", "kind": "relative" }, "is": false },
+        { "admits": { "context": "none", "kind": "relative" }, "is": false },
+        { "admits": { "context": "f1_again", "kind": "relative" }, "is": true }
+      ]
+    },
+    {
+      "name": "relative edits stay valid under earlier contexts of the same field",
+      "steps": [
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": true
+          },
+          "save": "c2",
+          "expectChanged": true
+        },
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": true
+          },
+          "save": "c3",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "relative" }, "is": true },
+        { "admits": { "context": "c2", "kind": "relative" }, "is": true },
+        { "admits": { "context": "c3", "kind": "relative" }, "is": true },
+        {
+          "observe": {
+            "field": { "id": "el-2", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "other",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "relative" }, "is": false },
+        { "admits": { "context": "c2", "kind": "relative" }, "is": false },
+        { "admits": { "context": "c3", "kind": "relative" }, "is": false },
+        { "admits": { "context": "other", "kind": "relative" }, "is": true }
+      ]
+    },
+    {
+      "name": "text-naming edits require same field and matching live text (and exact context when exactNamed)",
+      "steps": [
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "named", "namedMatches": true }, "is": true },
+        { "admits": { "context": "c1", "kind": "named", "namedMatches": false }, "is": false },
+        {
+          "admits": { "context": "c1", "kind": "named", "namedMatches": true, "exactNamed": true },
+          "is": true
+        },
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": true
+          },
+          "save": "c2",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "named", "namedMatches": true }, "is": true },
+        { "admits": { "context": "c1", "kind": "named", "namedMatches": false }, "is": false },
+        {
+          "admits": { "context": "c1", "kind": "named", "namedMatches": true, "exactNamed": true },
+          "is": false
+        },
+        {
+          "admits": { "context": "c2", "kind": "named", "namedMatches": true, "exactNamed": true },
+          "is": true
+        },
+        {
+          "observe": {
+            "field": { "id": "el-2", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "other",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "named", "namedMatches": true }, "is": false },
+        { "admits": { "context": "c2", "kind": "named", "namedMatches": true }, "is": false }
+      ]
+    },
+    {
+      "name": "exact commands require the current context alone",
+      "steps": [
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": true },
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": true
+          },
+          "save": "c2",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": false },
+        { "admits": { "context": "c2", "kind": "exact" }, "is": true }
+      ]
+    },
+    {
+      "name": "unchanged observations and refusals change no context and forget nothing; mismatch rotates same field",
+      "steps": [
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": true
+          },
+          "save": "c2",
+          "expectChanged": true
+        },
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "expectChanged": false
+        },
+        { "admits": { "context": "c1", "kind": "relative" }, "is": true },
+        { "admits": { "context": "c2", "kind": "exact" }, "is": true },
+        { "mismatch": true, "save": "c3", "expectChanged": true },
+        { "admits": { "context": "c1", "kind": "relative" }, "is": true },
+        { "admits": { "context": "c2", "kind": "relative" }, "is": true },
+        { "admits": { "context": "c2", "kind": "exact" }, "is": false },
+        { "admits": { "context": "c3", "kind": "exact" }, "is": true },
+        { "reset": true, "save": "after_reset", "expectChanged": true },
+        { "admits": { "context": "c1", "kind": "relative" }, "is": false },
+        { "admits": { "context": "c3", "kind": "relative" }, "is": false },
+        { "admits": { "context": "after_reset", "kind": "exact" }, "is": true }
+      ]
+    },
+    {
+      "name": "history keeps 64 earlier contexts of the same field",
+      "steps": [
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "oldest",
+          "expectChanged": true
+        },
+        { "rotateSame": 64 },
+        { "admits": { "context": "oldest", "kind": "relative" }, "is": true },
+        { "rotateSame": 1 },
+        { "admits": { "context": "oldest", "kind": "relative" }, "is": false }
+      ]
+    },
+    {
+      "name": "mac helper waits up to 0.5 s for named text on the same field and aborts immediately on field change",
+      "steps": [
+        { "wait": { "sameField": true, "matches": true, "waited": 0.0 }, "is": "apply" },
+        { "wait": { "sameField": true, "matches": false, "waited": 0.0 }, "is": "wait" },
+        { "wait": { "sameField": true, "matches": false, "waited": 0.49 }, "is": "wait" },
+        { "wait": { "sameField": true, "matches": true, "waited": 0.49 }, "is": "apply" },
+        { "wait": { "sameField": true, "matches": false, "waited": 0.5 }, "is": "refuse-mismatch" },
+        { "wait": { "sameField": true, "matches": true, "waited": 0.5 }, "is": "apply" },
+        { "wait": { "sameField": false, "matches": false, "waited": 0.0 }, "is": "refuse-field" },
+        { "wait": { "sameField": false, "matches": true, "waited": 0.0 }, "is": "refuse-field" }
+      ]
+    },
+    {
+      "name": "relative edits under an earlier context require a collapsed live selection",
+      "steps": [
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "relative", "collapsed": false }, "is": true },
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": true
+          },
+          "save": "c2",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "relative", "collapsed": false }, "is": false },
+        { "admits": { "context": "c1", "kind": "relative", "collapsed": true }, "is": true },
+        { "admits": { "context": "c2", "kind": "relative", "collapsed": false }, "is": true }
+      ]
+    },
+    {
+      "name": "dependent operations are refused when the edit they follow is refused, and an independent edit still applies",
+      "steps": [
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        {
+          "dependentGroup": {
+            "initial": "hello world",
+            "context": "c1",
+            "operations": [
+              { "kind": "named", "before": "world", "text": "", "namedMatches": false },
+              { "kind": "relative", "move": -1, "follows": true },
+              { "kind": "relative", "text": "there", "follows": true }
+            ],
+            "independent": { "kind": "relative", "text": "!" }
+          },
+          "expectAfterGroup": "hello world",
+          "expectAfterIndependent": "hello world!"
+        }
+      ]
+    },
+    {
+      "name": "refusal with no focused field rotates nothing",
+      "steps": [
+        { "observe": { "field": null, "changed": false }, "save": "none", "expectChanged": false },
+        { "mismatch": true, "expectChanged": false },
+        { "admits": { "context": "none", "kind": "relative" }, "is": true },
+        { "admits": { "context": "none", "kind": "exact" }, "is": true }
+      ]
+    },
+    {
+      "name": "own edit effect rotates nothing",
+      "steps": [
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 0, "length": 0, "text": "" }
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "expectOwnEffect": { "location": 1, "length": 0, "text": "t" } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 1, "length": 0, "text": "t" }
+          },
+          "expectChanged": false
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": true }
+      ]
+    },
+    {
+      "name": "own edit effect seen late rotates nothing",
+      "steps": [
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 0, "length": 0, "text": "" }
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "expectOwnEffect": { "location": 1, "length": 0, "text": "t" } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 0, "length": 0, "text": "" }
+          },
+          "expectChanged": false
+        },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 1, "length": 0, "text": "t" }
+          },
+          "expectChanged": false
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": true }
+      ]
+    },
+    {
+      "name": "two of the phone's edits answered by one observation rotate nothing",
+      "steps": [
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 0, "length": 0, "text": "" }
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "expectOwnEffect": { "location": 1, "length": 0, "text": "t" } },
+        { "expectOwnEffect": { "location": 2, "length": 0, "text": "te" } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 2, "length": 0, "text": "te" }
+          },
+          "expectChanged": false
+        },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 2, "length": 0, "text": "te" }
+          },
+          "expectChanged": false
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": true }
+      ]
+    },
+    {
+      "name": "an app that changes what was typed rotates and forgets expected states",
+      "steps": [
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 0, "length": 0, "text": "" }
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "expectOwnEffect": { "location": 1, "length": 0, "text": "t" } },
+        { "expectOwnEffect": { "location": 2, "length": 0, "text": "te" } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 2, "length": 0, "text": "TE" }
+          },
+          "save": "c2",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": false },
+        { "admits": { "context": "c1", "kind": "relative" }, "is": true },
+        { "admits": { "context": "c2", "kind": "exact" }, "is": true },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 2, "length": 0, "text": "te" }
+          },
+          "save": "c3",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c2", "kind": "exact" }, "is": false },
+        { "admits": { "context": "c3", "kind": "exact" }, "is": true }
+      ]
+    },
+    {
+      "name": "earlier keeps only published contexts across 200 unpublished rotations",
+      "steps": [
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "published",
+          "expectChanged": true
+        },
+        { "rotateUnpublished": 200 },
+        { "admits": { "context": "published", "kind": "relative" }, "is": true },
+        { "publish": true },
+        {
+          "observe": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "changed": false
+          },
+          "save": "published2",
+          "expectChanged": false
+        },
+        { "rotateUnpublished": 200 },
+        { "admits": { "context": "published", "kind": "relative" }, "is": true },
+        { "admits": { "context": "published2", "kind": "relative" }, "is": true }
+      ]
+    },
+    {
+      "name": "expected state with unknown text does not match and rotates",
+      "steps": [
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 1, "length": 0, "text": "a" }
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "expectOwnEffect": { "location": 2, "length": 0, "text": null } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 2, "length": 0, "text": "XY" }
+          },
+          "save": "c2",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": false },
+        { "admits": { "context": "c1", "kind": "relative" }, "is": true },
+        { "admits": { "context": "c2", "kind": "exact" }, "is": true },
+        { "expectOwnEffect": { "location": 3, "length": 0, "text": "XYz" } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 3, "length": 0, "text": null }
+          },
+          "save": "c3",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c2", "kind": "exact" }, "is": false },
+        { "admits": { "context": "c3", "kind": "exact" }, "is": true }
+      ]
+    },
+    {
+      "name": "move forward with the next character known keeps the context",
+      "steps": [
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 2, "length": 0, "text": "qé" }
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "expectMoveForward": { "nextText": "!abcde" } },
+        { "expectMoveForward": { "nextText": "abcde" } },
+        { "expectMoveForward": { "nextText": "bcde" } },
+        { "expectMoveForward": { "nextText": "cde" } },
+        { "expectMoveForward": { "nextText": "de" } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 4, "length": 0, "text": "qé!a" }
+          },
+          "expectChanged": false
+        },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 7, "length": 0, "text": "qé!abcd" }
+          },
+          "expectChanged": false
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": true },
+        {
+          "observeState": {
+            "field": { "id": "el-2", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 16, "length": 0, "text": "0123456789abcdef" }
+          },
+          "save": "c2",
+          "expectChanged": true
+        },
+        { "expectMoveForward": { "nextText": "gh" } },
+        {
+          "observeState": {
+            "field": { "id": "el-2", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 17, "length": 0, "text": "123456789abcdefg" }
+          },
+          "expectChanged": false
+        },
+        { "admits": { "context": "c2", "kind": "exact" }, "is": true }
+      ]
+    },
+    {
+      "name": "move forward with the next character unknown rotates",
+      "steps": [
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 2, "length": 0, "text": "qé" }
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "expectMoveForward": { "nextText": null } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 3, "length": 0, "text": "qé!" }
+          },
+          "save": "c2",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": false },
+        { "admits": { "context": "c1", "kind": "relative" }, "is": true },
+        { "admits": { "context": "c2", "kind": "exact" }, "is": true }
+      ]
+    }
+  ]
+}

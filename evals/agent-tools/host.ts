@@ -197,7 +197,8 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
               agentConnectionId: connectionId,
               grant,
               grantRevision,
-              consentVersion: 1,
+              // A connection as it consents today: direct work included (B5).
+              consentVersion: 2,
               accessMode: common.accessMode,
               bridgeSenders: null,
             },

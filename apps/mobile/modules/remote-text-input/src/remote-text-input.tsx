@@ -3,10 +3,21 @@ import type { EditingContext } from "@opensteer/protocol/editing";
 import { requireNativeView } from "expo";
 import { useCallback, useEffect, useRef, useState, type Ref, type ReactNode } from "react";
 import type { ViewProps } from "react-native";
+import { viewFunctionsOf, viewTagModule } from "../../../src/platform/view-functions.js";
 import { decodeNativeEvent, nativeInstruction } from "./events.js";
 interface NativeProxy {
   finishComposition(): Promise<void>;
   respond(instruction: EditingProxyInstruction & { id: number }): Promise<void>;
+}
+/**
+ * The input's functions, called so the JavaScript thread never waits for the main thread: by its
+ * tag on an iOS binary that offers it, as its own functions elsewhere (`viewFunctionsOf`).
+ */
+function proxyFunctions(instance: NativeProxy | null): NativeProxy | null {
+  return viewFunctionsOf(viewTagModule("RemoteTextInput"), instance as never, [
+    "finishComposition",
+    "respond",
+  ]) as NativeProxy | null;
 }
 const NativeInput = requireNativeView<
   ViewProps & {
@@ -25,6 +36,14 @@ export function RemoteTextInput(
     readonly softKeyboard?: boolean;
     readonly keyboardMayReplaceText?: boolean;
     readonly onEvent: (event: EditingProxyEvent) => EditingProxyInstruction;
+    /**
+     * An event of the context just left, still arriving in the native field's order (CV1):
+     * reduced as of that context, or nothing when it is not the one just left.
+     */
+    readonly onLateEvent?: (
+      contextId: string,
+      event: EditingProxyEvent,
+    ) => EditingProxyInstruction | null;
     readonly onError: () => void;
     readonly instruction?: EditingProxyInstruction;
     readonly finishCompositionRequest?: number;
@@ -35,6 +54,7 @@ export function RemoteTextInput(
     focused,
     softKeyboard = true,
     onEvent,
+    onLateEvent,
     onError,
     instruction,
     finishCompositionRequest,
@@ -58,12 +78,16 @@ export function RemoteTextInput(
   useEffect(() => {
     const view = ref.current;
     if (ready && view && instruction?.set)
-      void view.respond(nativeInstruction(0, instruction)).catch(() => failed(view));
+      void proxyFunctions(view)
+        ?.respond(nativeInstruction(0, instruction))
+        .catch(() => failed(view));
   }, [ready, instruction, failed]);
   useEffect(() => {
     const view = ref.current;
     if (ready && view && finishCompositionRequest)
-      void view.finishComposition().catch(() => failed(view));
+      void proxyFunctions(view)
+        ?.finishComposition()
+        .catch(() => failed(view));
   }, [ready, finishCompositionRequest, failed]);
   return (
     <NativeInput
@@ -84,13 +108,27 @@ export function RemoteTextInput(
           if (packet.id !== last.current + 1)
             throw new Error("Native editing events arrived out of order.");
           last.current = packet.id;
-          const instruction =
-            packet.contextId !== undefined &&
-            packet.contextId !== (context?.contextId ?? null) &&
-            !["compositionend", "keyup", "blur"].includes(packet.event.type)
-              ? { preventDefault: true }
+          const old =
+            packet.contextId !== undefined && packet.contextId !== (context?.contextId ?? null);
+          // A composition of the context just left ends in both: there, so what comes after it in
+          // that context is taken; here, where the change left it ended. A key's release and a
+          // blur are the field's whatever its context; a blur also clears the mirror the native
+          // field still holds for the context left, which that context must know (CY9).
+          const ended =
+            old && (packet.event.type === "compositionend" || packet.event.type === "blur")
+              ? onLateEvent?.(packet.contextId!, packet.event)
+              : null;
+          const current =
+            old && !["compositionend", "keyup", "blur"].includes(packet.event.type)
+              ? (onLateEvent?.(packet.contextId!, packet.event) ?? { preventDefault: true })
               : onEvent(packet.event);
-          void view.respond(nativeInstruction(packet.id, instruction)).catch(() => failed(view));
+          // The native field still holds the mirror of the context left: what that context's
+          // reducer answers is what it applies (a commit there clears it), or the next letter
+          // there carries what was committed again (found by regime C's commit promise).
+          const instruction = ended ?? current;
+          void proxyFunctions(view)
+            ?.respond(nativeInstruction(packet.id, instruction))
+            .catch(() => failed(view));
         } catch {
           failed(view);
         }

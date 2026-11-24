@@ -790,6 +790,10 @@ it.skipIf(!reportPath)(
       await measure("Run MCP task read", iterations, () =>
         tool("opensteer_task_read", { taskId: run.threadId }),
       );
+      // A task write of your own agent on its own lineage, through the one door (A3, rule 7).
+      await measure("Run MCP task resume (own task)", iterations, () =>
+        tool("opensteer_task_resume", { taskId: run.threadId }),
+      );
       const opened = (await rpc(
         host.api["commands.dispatch"]({
           type: "tab.open",

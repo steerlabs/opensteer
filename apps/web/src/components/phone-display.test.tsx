@@ -646,9 +646,9 @@ describe("negotiated phone viewer wire", () => {
         kind: "edit",
         edit: { contextId: editingContext.contextId, before: "e", after: "", text: "é" },
       },
-      { kind: "command", command: "moveBackward" },
-      { kind: "command", command: "deleteBackward" },
-      { kind: "command", command: "deleteBackward" },
+      { kind: "command", command: "moveBackward", contextId: editingContext.contextId },
+      { kind: "command", command: "deleteBackward", contextId: editingContext.contextId },
+      { kind: "command", command: "deleteBackward", contextId: editingContext.contextId },
     ]);
   });
   it("cancels composition and resets input when the keyboard blurs", async () => {
@@ -856,7 +856,7 @@ describe("negotiated phone viewer wire", () => {
       field.dispatchEvent(new Event("copy", { bubbles: true, cancelable: true }));
     });
     const batch = inputs().at(-1)!;
-    expect(batch.events).toEqual([{ kind: "copy" }]);
+    expect(batch.events).toEqual([{ kind: "copy", contextId: editingContext.contextId }]);
     act(() =>
       sockets[0]!.deliver({
         type: "display.clipboard",
@@ -896,8 +896,8 @@ describe("negotiated phone viewer wire", () => {
     trustedPaste(field, { "text/plain": "one\ntwo 🦊" });
     trustedPaste(field, { "text/plain": "rich", "text/html": "<b>rich</b>" });
     expect(remoteEvents()).toEqual([
-      { kind: "paste", text: "one\ntwo 🦊" },
-      { kind: "paste", text: "rich" },
+      { kind: "paste", text: "one\ntwo 🦊", contextId: editingContext.contextId },
+      { kind: "paste", text: "rich", contextId: editingContext.contextId },
     ]);
     const batch = inputs().at(-1)!;
     act(() =>
