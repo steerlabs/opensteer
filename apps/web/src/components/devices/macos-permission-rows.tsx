@@ -22,11 +22,13 @@ const appsOffSentences: readonly string[] = [
   desktopComputerUseUnsupported,
 ];
 
-/** The desktop's own sentence, when an IPC refusal carries one of them. */
+/**
+ * Which of the desktop's own sentences an IPC refusal ends with: the words
+ * shown are that constant, never the refusal's text.
+ */
 function appsOffReason(error: unknown): string | undefined {
-  const message = error instanceof Error ? error.message : "";
-  const own = message.replace(/^Error invoking remote method '[^']+': (?:\w+: )?/u, "").trim();
-  return appsOffSentences.includes(own) ? own : undefined;
+  if (!(error instanceof Error)) return undefined;
+  return appsOffSentences.find((sentence) => error.message.endsWith(`: ${sentence}`));
 }
 
 /** Matches the desktop docs: computer use needs a build signed with a Developer ID. */
