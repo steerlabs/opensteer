@@ -1,6 +1,5 @@
 import {
   OpensteerError,
-  everythingAgentGrant,
   type AgentGrant,
   type ThreadAccessMode,
   type UserId,
@@ -34,13 +33,18 @@ export class ConnectionAuthenticator {
     const connection = await this.store.authenticate(credentialHash(bearer), resource);
     // Only an MCP connection signs in, and every one of them expires.
     if (!connection?.expiresAt) throw invalidConnection();
+    // The store always reads these from the row; a connection without them is refused, never
+    // read as everything.
+    const { grant, grantRevision, consentVersion } = connection;
+    if (!grant || grantRevision === undefined || consentVersion === undefined)
+      throw invalidConnection();
     return {
       connectionId: connection.id,
       userId: connection.userId,
       accessMode: connection.accessMode,
-      grant: connection.grant ?? everythingAgentGrant,
-      grantRevision: connection.grantRevision ?? 1,
-      consentVersion: connection.consentVersion ?? 1,
+      grant,
+      grantRevision,
+      consentVersion,
       expiresAt: Date.parse(connection.expiresAt),
     };
   }

@@ -278,10 +278,10 @@ describe("connected agents list", () => {
     ]);
   });
 
-  it("treats a connection an older Home lists without a grant as everything", () => {
+  it("reads a connection listed without a grant as holding nothing, never as everything", () => {
     const { grant: _grant, grantRevision: _revision, state: _state, ...old } = connection();
     const [row] = connectedAgentsView([old], names, new Set(), now).connected;
-    expect(row!.line).toBe("Everything · Supervised");
+    expect(row!.line).toBe("Nothing chosen · Supervised");
     const detail = connectedAgentDetail(old, names, { grantsAvailable: false, now });
     expect(detail.legacy).toBe(true);
     expect(detail.editable).toBe(false);
