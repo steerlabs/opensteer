@@ -59,7 +59,7 @@ type Instance = {
   disks?: AttachedDisk[];
   networkInterfaces: NetworkInterface[];
 };
-type Address = { name: string; labels: Labels; address: string };
+type Address = { name: string; labels: Labels; address: string; labelFingerprint?: string };
 type Operation = {
   name: string;
   status: "PENDING" | "RUNNING" | "DONE";
@@ -128,6 +128,7 @@ export class ComputeFake {
   #nextId = BigInt(computeInstanceId);
   #nextDiskId = 9000n;
   #nextAddress = 21;
+  #nextFingerprint = 1;
   #nextInternalIp = 10;
   #nextOperation = 0;
   #clock = 0;
@@ -319,6 +320,23 @@ export class ComputeFake {
 
   #addressRequest(req: RecordedRequest) {
     const name = req.path.split("/").at(-1)!;
+    if (req.method === "POST" && name === "setLabels") {
+      const target = req.path.split("/").at(-2)!;
+      const entry = this.addresses.get(target);
+      if (!entry) return json({}, 404);
+      const body = req.body as { labels: Labels; labelFingerprint?: string };
+      if (body.labelFingerprint !== entry.labelFingerprint)
+        return json({ error: { code: 412, errors: [{ reason: "conditionNotMet" }] } }, 412);
+      return json(
+        this.#start(req, regionPath, () =>
+          this.addresses.set(target, {
+            ...entry,
+            labels: body.labels,
+            labelFingerprint: `fp-${this.#nextFingerprint++}`,
+          }),
+        ),
+      );
+    }
     const usersOf = (address: Address) =>
       [...this.instances.values()]
         .filter(({ networkInterfaces }) =>
@@ -374,9 +392,16 @@ export class ComputeFake {
         403,
       );
     }
+    // Compute keeps no labels from addresses.insert; only setLabels sets them (seen 2026-11-24).
+    const { labels: _ignored, ...stored } = body;
     return json(
       this.#start(req, regionPath, () =>
-        this.addresses.set(body.name, { ...body, address: `192.0.2.${this.#nextAddress++}` }),
+        this.addresses.set(body.name, {
+          ...stored,
+          labels: {},
+          labelFingerprint: `fp-${this.#nextFingerprint++}`,
+          address: `192.0.2.${this.#nextAddress++}`,
+        }),
       ),
     );
   }

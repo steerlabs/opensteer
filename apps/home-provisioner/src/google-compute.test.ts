@@ -40,7 +40,8 @@ it("creates a Shielded VM once, with the exact instance ID, one address, and gat
     ipv6: null,
   });
   expect(await provider.create(computeCreate, signal, check)).toEqual(vm);
-  expect(check).toHaveBeenCalledTimes(2);
+  // Address insert, its setLabels and the instance insert: each write is checked first.
+  expect(check).toHaveBeenCalledTimes(3);
   const [insert] = reqs(fake, "POST", `${zonePath}/instances`);
   expect(insert?.query.get("requestId")).toBe(computeCreate.requestId);
   expect(insert?.body).toEqual({
@@ -98,7 +99,8 @@ it("creates a Shielded VM once, with the exact instance ID, one address, and gat
       },
     ],
   });
-  expect(fake.waitCalls).toEqual([1000, 1000, 1000, 1000]);
+  // The address's setLabels is one more operation to wait for.
+  expect(fake.waitCalls).toEqual([1000, 1000, 1000, 1000, 1000]);
   expect(fake.addresses.size).toBe(1);
 });
 
@@ -485,4 +487,56 @@ it("selects a four-vCPU Google machine by default and another with one override"
       OPENSTEER_HOME_GCP_SUBNET: "home-subnet",
     }),
   ).toThrow("OPENSTEER_HOME_CLOUD_COMPUTER_DOMAIN");
+});
+
+it("labels its own unlabelled reservation, since Compute keeps no labels from addresses.insert", async () => {
+  const fake = new ComputeFake();
+  const provider = fake.adapter();
+  await provider.ensureFirewall(signal);
+  await provider.create(computeCreate, signal);
+  const [insert] = reqs(fake, "POST", `${regionPath}/addresses`);
+  expect(insert?.body).not.toHaveProperty("ipVersion");
+  expect(reqs(fake, "POST", `${regionPath}/addresses/${addressName}/setLabels`)).toHaveLength(1);
+  expect(fake.addresses.get(addressName)?.labels).toEqual({
+    "opensteer-cloud-computer": computeComputerId,
+    "opensteer-generation": "3",
+    "opensteer-managed-by": "home-provisioner",
+  });
+});
+
+it("adopts an unlabelled address only when it is this generation's, reserved, unused and bare", async () => {
+  const seeded = (entry: Record<string, unknown>) => {
+    const fake = new ComputeFake();
+    fake.addresses.set(addressName, {
+      name: addressName,
+      address: "192.0.2.99",
+      labels: {},
+      labelFingerprint: "fp-seeded",
+      ...entry,
+    } as never);
+    return fake;
+  };
+  // Left by a pass that reserved the address and stopped before labelling it.
+  const leftover = seeded({});
+  const adopter = leftover.adapter();
+  await adopter.ensureFirewall(signal);
+  expect(await adopter.create(computeCreate, signal)).toMatchObject({ ipv4: "192.0.2.99" });
+  expect(reqs(leftover, "POST", `${regionPath}/addresses`)).toHaveLength(0);
+  expect(leftover.addresses.get(addressName)?.labels["opensteer-cloud-computer"]).toBe(
+    computeComputerId,
+  );
+
+  for (const [why, fake] of [
+    ["foreign labels", seeded({ labels: { team: "someone-else" } })],
+    ["no label fingerprint", seeded({ labelFingerprint: undefined })],
+  ] as const) {
+    const provider = fake.adapter();
+    await provider.ensureFirewall(signal);
+    await expect(provider.create(computeCreate, signal), why).rejects.toThrow();
+    expect(
+      reqs(fake, "POST", `${regionPath}/addresses/${addressName}/setLabels`),
+      why,
+    ).toHaveLength(0);
+    expect(reqs(fake, "POST", `${zonePath}/instances`), why).toHaveLength(0);
+  }
 });
