@@ -68,6 +68,9 @@ class PictureQueue<Payload> {
 
   /** Takes a delivery and returns the job to decode now, if the decoder is free. */
   fun submit(request: PictureRequest, payload: Payload, receipt: PictureReceipt): Job<Payload>? {
+    // Generations only grow. A picture for a newer one means the clear that would have said so
+    // never arrived: take it as that clear would have. One from an older generation is dropped.
+    if (request.generation > generation) clear(request.generation)
     if (request.generation != generation) { receipt(PictureOutcome.DROPPED); return null }
     val job = Job(request, payload, receipt)
     if (running) {
@@ -100,8 +103,13 @@ class PictureQueue<Payload> {
     return shown to next
   }
 
-  /** Drops every delivery not yet shown; only [next] may draw afterwards. */
+  /**
+   * Drops every delivery not yet shown; only [next] may draw afterwards. A clear for an older
+   * generation than the queue holds is stale (it already took a newer one from a picture) and
+   * changes nothing: generations never go down.
+   */
   fun clear(next: Int) {
+    if (next < generation) return
     generation = next
     decoding?.receipt?.invoke(PictureOutcome.DROPPED)
     decoding = null

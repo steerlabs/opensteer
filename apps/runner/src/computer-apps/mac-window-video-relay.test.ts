@@ -352,7 +352,7 @@ it.each([
             source: otherSource,
             geometry: 1,
             sequence: 0,
-            events: [{ kind: "copy" }],
+            events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
           }),
         );
         relay.handle(
@@ -381,7 +381,7 @@ it.each([
             source,
             sequence: 0,
             geometry: 1,
-            events: [{ kind: "copy" }],
+            events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
           }),
         );
         await expect

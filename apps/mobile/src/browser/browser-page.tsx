@@ -285,6 +285,18 @@ export function BrowserPage(props: {
   );
   const [mayType, setMayType] = useState(false);
   const [typing, setTyping] = useState(false);
+  const tapContextId = useRef<string | null>(null);
+  const tapReopenUntil = useRef(0);
+  const tapReopenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearTapReopen = useCallback(() => {
+    tapContextId.current = null;
+    tapReopenUntil.current = 0;
+    if (tapReopenTimer.current !== null) {
+      clearTimeout(tapReopenTimer.current);
+      tapReopenTimer.current = null;
+    }
+  }, []);
+  useEffect(() => clearTapReopen, [clearTapReopen]);
   const [pageFocused, setPageFocused] = useState(true);
   const [dragSelect, setDragSelect] = useState(false);
   const [inputEpoch, setInputEpoch] = useState(0);
@@ -339,7 +351,18 @@ export function BrowserPage(props: {
   useEffect(() => {
     if (!editable) {
       setTyping(false);
-      setMayType(false);
+      const remaining = tapReopenUntil.current - Date.now();
+      if (remaining > 0) {
+        setMayType(true);
+        if (tapReopenTimer.current !== null) clearTimeout(tapReopenTimer.current);
+        tapReopenTimer.current = setTimeout(() => {
+          tapReopenTimer.current = null;
+          tapReopenUntil.current = 0;
+          setMayType(false);
+        }, remaining);
+      } else {
+        setMayType(false);
+      }
     }
   }, [editable]);
   useEffect(() => {
@@ -433,12 +456,19 @@ export function BrowserPage(props: {
   // tap on a field does in Safari. Only a page that reports its fields can say
   // so; on an older one the tap offers the keyboard instead.
   const fieldFocused = editingState.negotiated && editingState.context?.field != null;
+  const fieldContextId = editingState.context?.contextId ?? null;
   useEffect(() => {
     if (mayType && fieldFocused && ready) {
-      setMayType(false);
-      setTyping(true);
+      if (!typing) {
+        clearTapReopen();
+        setMayType(false);
+        setTyping(true);
+      } else if (fieldContextId !== tapContextId.current) {
+        clearTapReopen();
+        setMayType(false);
+      }
     }
-  }, [fieldFocused, mayType, ready]);
+  }, [clearTapReopen, fieldContextId, fieldFocused, mayType, ready, typing]);
 
   const viewed = tab === undefined ? null : viewedPage(session, { ...tab, navigationFailed });
   const viewedKey =
@@ -645,11 +675,17 @@ export function BrowserPage(props: {
         (action === "cut" && !pageMenu.editable)
       )
         return;
-      editing.send({ kind: action });
-    } else if (action === "select-all") editing.send({ kind: "command", command: "selectAll" });
-    else if (action === "paste") {
+      const contextId = editingState.menuContext;
+      if (contextId) editing.send({ kind: action, contextId });
+    } else if (action === "select-all") {
+      // CZ3: made for the field the menu was opened in, and refused in any other.
+      const contextId = editingState.menuContext;
+      if (contextId) editing.send({ kind: "command", command: "selectAll", contextId });
+    } else if (action === "paste") {
       if (!pageMenu.editable) return;
-      const context = editingState.context?.contextId;
+      // CZ5: made for the field the menu was opened in, and refused in any other.
+      const context = editingState.menuContext;
+      if (!context) return;
       void Clipboard.getStringAsync()
         .then((text) => {
           if (
@@ -664,7 +700,12 @@ export function BrowserPage(props: {
             setProblem("Clipboard too large.");
             return;
           }
-          if (bytes.length) editing.send({ kind: "paste", items: [{ type: "text/plain", bytes }] });
+          if (bytes.length)
+            editing.send({
+              kind: "paste",
+              items: [{ type: "text/plain", bytes }],
+              contextId: context,
+            });
         })
         .catch(() => setProblem("Clipboard unavailable."));
     } else if (action === "copy-link" && pageMenu.linkUrl) {
@@ -1059,7 +1100,10 @@ export function BrowserPage(props: {
                     proxy.current?.interrupt();
                   }}
                   zoom={zoom.scale}
-                  onScroll={() => setMayType(false)}
+                  onScroll={() => {
+                    clearTapReopen();
+                    setMayType(false);
+                  }}
                   onTap={() => {
                     setAddressOpen(false);
                     setAddressDraft(null);
@@ -1067,6 +1111,8 @@ export function BrowserPage(props: {
                     // A page that reports its fields keeps the keyboard up from one
                     // field to the next and puts it away when nothing has focus.
                     if (!editing.get().negotiated) setTyping(false);
+                    tapContextId.current = editing.get().context?.contextId ?? null;
+                    if (typing) tapReopenUntil.current = Date.now() + 500;
                     setMayType(true);
                   }}
                   session={session}
@@ -1223,11 +1269,13 @@ export function BrowserPage(props: {
           focused={pageFocused}
           softKeyboard={keyboardOpen}
           onBlur={() => {
+            clearTapReopen();
             setPageFocused(false);
             setTyping(false);
             setMayType(false);
           }}
           onDone={() => {
+            clearTapReopen();
             setTyping(false);
             setMayType(false);
           }}

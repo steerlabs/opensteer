@@ -276,7 +276,6 @@
     "apps/host/src/browser-use/browser-script-service.ts",
     "apps/host/src/browser-use/browser-use-port.ts",
     "apps/host/src/browser/agent-request-results.ts",
-    "apps/host/src/browser/browser-legacy-clipboard.ts",
     "apps/host/src/browser/browser-local-profiles.ts",
     "apps/host/src/browser/browser-pool-relay.ts",
     "apps/host/src/browser/browser-presence.ts",

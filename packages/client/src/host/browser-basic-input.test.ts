@@ -40,7 +40,7 @@ describe("basic browser input", () => {
           repeat: true,
         },
       },
-      { kind: "command", command: "deleteWordBackward" },
+      { kind: "command", command: "deleteWordBackward", contextId: context.contextId },
       {
         kind: "edit",
         edit: { contextId: context.contextId, before: "teh", after: "", text: "the" },
@@ -58,6 +58,7 @@ describe("basic browser input", () => {
     ] satisfies import("../editing/index.js").EditingOperation[];
     for (const basicInput of [undefined, 1] as const) {
       store.negotiate("session", 2, surfaceId, true, basicInput);
+      store.receive("session", { type: "browser.editing", surfaceId, context });
       expect(target.get().input).toBe("editing");
       for (const operation of operations) await target.send(operation);
     }
@@ -98,7 +99,7 @@ describe("basic browser input", () => {
         surfaceId,
         edit: { contextId: context.contextId, text: " ", before: "", after: "" },
       },
-      { type: "input.command", surfaceId, command: "deleteBackward" },
+      { type: "input.command", surfaceId, command: "deleteBackward", contextId: context.contextId },
     ]);
     store.dispose();
   });
@@ -164,12 +165,15 @@ describe("basic browser input", () => {
     "settles clipboard quietly on %s",
     async (reason) => {
       const { store, target, commands } = setup();
-      const copy = target.send({ kind: "copy" });
-      expect(commands.at(-1)?.type).toBe("clipboard.copy");
+      const copy = target.send({ kind: "copy", contextId: context.contextId });
+      const cmd = commands.at(-1);
+      expect(cmd?.type).toBe("clipboard.copy");
+      const operationId = cmd?.type === "clipboard.copy" ? cmd.operationId : undefined;
       store.receive(
         "session",
         {
           type: "browser.error",
+          ...(reason === "unsupported-operation" && operationId ? { operationId } : {}),
           error: {
             code: "conflict",
             reason,
@@ -244,15 +248,22 @@ describe("basic browser input", () => {
       kind: "edit",
       edit: { contextId: context.contextId, before: "a", after: "", text: "b" },
     });
-    await target.send({ kind: "command", command: "deleteWordBackward" });
-    await target.send({ kind: "cut" });
+    await target.send({
+      kind: "command",
+      command: "deleteWordBackward",
+      contextId: context.contextId,
+    });
+    await target.send({ kind: "cut", contextId: context.contextId });
     await target.send({
       kind: "paste",
       items: [{ type: "text/html", bytes: new TextEncoder().encode("<b>x</b>") }],
+      contextId: context.contextId,
     });
     expect(commands).toEqual([]);
-    await target.send({ kind: "command", command: "selectAll" });
-    expect(commands).toEqual([{ type: "input.command", surfaceId, command: "selectAll" }]);
+    await target.send({ kind: "command", command: "selectAll", contextId: context.contextId });
+    expect(commands).toEqual([
+      { type: "input.command", surfaceId, command: "selectAll", contextId: context.contextId },
+    ]);
     store.dispose();
   });
 });

@@ -774,9 +774,10 @@ describe("shared input", () => {
   });
 
   it("requires both viewer opt-in and producer editing support and delivers private results", () => {
+    const contextId = "00000000-0000-4000-8000-000000000001";
     const lease = streams.retain({ ...target, editing: 1 });
     const socket = opened();
-    expect(lease.input(1, [{ kind: "copy" }])).toBe(false);
+    expect(lease.input(1, [{ kind: "copy", contextId }])).toBe(false);
     socket.json({
       type: "display.state",
       state: "live",
@@ -789,7 +790,14 @@ describe("shared input", () => {
     const results: unknown[] = [];
     lease.onEditingMessage((message) => results.push(message));
     expect(
-      lease.input(1, [{ kind: "paste", text: "\u0001".repeat(30000) }, { kind: "copy" }]),
+      lease.input(1, [
+        {
+          kind: "paste",
+          text: "\u0001".repeat(30000),
+          contextId,
+        },
+        { kind: "copy", contextId },
+      ]),
     ).toBe(true);
     socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
     socket.json({ type: "display.clipboard", sequence: 0, outcome: "copied", text: "selected" });
@@ -829,7 +837,9 @@ describe("shared input", () => {
     const first = streams.retain(target);
     const second = streams.retain(target);
     const socket = opened();
-    expect(first.input(1, [{ kind: "copy" }])).toBe(false);
+    expect(
+      first.input(1, [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }]),
+    ).toBe(false);
     hold(socket);
     expect(first.input(1, [{ kind: "text", insert: "one" }])).toBe(true);
     expect(second.input(1, [{ kind: "text", insert: "two" }])).toBe(true);
@@ -1063,13 +1073,14 @@ describe("display editing receipt adapter", () => {
     const press = { kind: "pointer", phase: "down", x: 0.7, y: 0.5, t: 2 } as const;
     calls.push(editing.input(1, [press]));
     calls.push(editing.input(1, [pointer(0.8)]));
-    calls.push(editing.send({ kind: "copy" }));
+    const contextId = "00000000-0000-4000-8000-000000000001";
+    calls.push(editing.send({ kind: "copy", contextId }));
     expect(socket.messages("display.input").map((batch) => batch.events)).toEqual([
       [pointer(0.1)],
       [pointer(0.7)],
       [press],
       [pointer(0.8)],
-      [{ kind: "copy" }],
+      [{ kind: "copy", contextId }],
     ]);
     for (let sequence = 0; sequence < 5; sequence++)
       socket.json({ type: "display.input.result", sequence, outcome: "dispatched" });
@@ -1177,7 +1188,10 @@ describe("display editing receipt adapter", () => {
   });
   it("correlates copy by actual batch sequence and never accepts unsolicited clipboard", async () => {
     const { socket, editing } = await editingFixture();
-    const pending = editing.send({ kind: "copy" });
+    const pending = editing.send({
+      kind: "copy",
+      contextId: "00000000-0000-4000-8000-000000000001",
+    });
     socket.json({ type: "display.clipboard", sequence: 900, outcome: "copied", text: "wrong" });
     socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
     socket.json({ type: "display.clipboard", sequence: 0, outcome: "copied", text: "right" });
@@ -1196,7 +1210,10 @@ describe("display editing receipt adapter", () => {
       context: { contextId: "00000000-0000-4000-8000-000000000001", field: null, caret: null },
     });
     expect(editing.getSnapshot().context?.contextId).toBe("00000000-0000-4000-8000-000000000001");
-    const pending = editing.send({ kind: "copy" });
+    const pending = editing.send({
+      kind: "copy",
+      contextId: "00000000-0000-4000-8000-000000000001",
+    });
     const rejected = expect(pending).rejects.toThrow("changed");
     socket.json({
       type: "display.state",
@@ -1219,14 +1236,19 @@ describe("display editing receipt adapter", () => {
   });
   it("chunks long plain paste without splitting a surrogate and waits for every receipt", async () => {
     const { socket, editing } = await editingFixture();
+    const contextId = "00000000-0000-4000-8000-000000000001";
     const text = "x".repeat(29999) + "🦊" + "\u0001".repeat(30001);
     const pending = editing.send({
       kind: "paste",
       items: [{ type: "text/plain", bytes: new TextEncoder().encode(text) }],
+      contextId,
     });
     const batches = socket.messages("display.input");
     const pieces = batches.flatMap((message) =>
-      (message.events as { text: string }[]).map((event) => event.text),
+      (message.events as { text: string; contextId: string }[]).map((event) => {
+        expect(event.contextId).toBe(contextId);
+        return event.text;
+      }),
     );
     expect(pieces.join("")).toBe(text);
     expect(pieces.every((piece) => piece.length <= 30000 && !/[\uD800-\uDBFF]$/u.test(piece))).toBe(
@@ -1243,6 +1265,21 @@ describe("display editing receipt adapter", () => {
       });
     }
     expect(await pending).toBeUndefined();
+    editing.dispose();
+  });
+  it("refuses command, copy and paste without a context", async () => {
+    const { socket, editing } = await editingFixture();
+    await expect(editing.send({ kind: "command", command: "selectAll" })).rejects.toThrow(
+      "changed",
+    );
+    await expect(editing.send({ kind: "copy" })).rejects.toThrow("changed");
+    await expect(
+      editing.send({
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: new TextEncoder().encode("hi") }],
+      }),
+    ).rejects.toThrow("changed");
+    expect(socket.messages("display.input")).toEqual([]);
     editing.dispose();
   });
   it("refuses rich paste, cut and compose without inventing a native edit", async () => {
@@ -1267,10 +1304,310 @@ describe("display editing receipt adapter", () => {
   });
   it("times out unanswered copy and clears its timer when disposed", async () => {
     const { editing } = await editingFixture();
-    const pending = editing.send({ kind: "copy" });
+    const pending = editing.send({
+      kind: "copy",
+      contextId: "00000000-0000-4000-8000-000000000001",
+    });
     const rejected = expect(pending).rejects.toThrow("respond");
     vi.advanceTimersByTime(10000);
     await rejected;
+    editing.dispose();
+  });
+  it("sends dependent operations (removal, compensating moves, replacement paste/edit) in one atomic display.input batch and never splits them", async () => {
+    const { socket, editing } = await editingFixture();
+    const contextId = "00000000-0000-4000-8000-000000000001";
+    const batch = editing.sendBatch([
+      { kind: "edit", edit: { contextId, before: "world", after: "", text: "" } },
+      { kind: "command", command: "moveBackward", contextId, follows: true },
+      {
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: new TextEncoder().encode("there") }],
+        contextId,
+        follows: true,
+      },
+    ]);
+    const sent = socket.messages("display.input");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      events: [
+        { kind: "edit", edit: { contextId, before: "world", after: "", text: "" } },
+        { kind: "command", command: "moveBackward", contextId },
+        { kind: "paste", text: "there", contextId },
+      ],
+    });
+    socket.json({ type: "display.input.result", sequence: 0, outcome: "stale", reason: "stale" });
+    await expect(batch).rejects.toThrow("changed");
+    // O1: a dependent group whose trailing paste exceeds one frame sends the deletion atomically
+    // first, never sends the paste if the deletion is refused, and chunks the paste once dispatched.
+    const huge = "a".repeat(65 * 4096);
+    const hugeOp = [
+      { kind: "edit" as const, edit: { contextId, before: "world", after: "", text: "" } },
+      {
+        kind: "paste" as const,
+        items: [{ type: "text/plain" as const, bytes: new TextEncoder().encode(huge) }],
+        contextId,
+        follows: true as const,
+      },
+    ];
+    const staleHuge = editing.sendBatch(hugeOp);
+    expect(socket.messages("display.input")).toHaveLength(2);
+    expect(socket.messages("display.input")[1]).toMatchObject({
+      events: [{ kind: "edit", edit: { contextId, before: "world", after: "", text: "" } }],
+    });
+    socket.json({ type: "display.input.result", sequence: 1, outcome: "stale", reason: "stale" });
+    await expect(staleHuge).rejects.toThrow("changed");
+    expect(socket.messages("display.input")).toHaveLength(2);
+
+    const okHuge = editing.sendBatch(hugeOp);
+    expect(socket.messages("display.input")).toHaveLength(3);
+    socket.json({ type: "display.input.result", sequence: 2, outcome: "dispatched" });
+    await Promise.resolve();
+    const afterDispatch = socket.messages("display.input");
+    expect(afterDispatch.length).toBeGreaterThan(3);
+    for (let seq = 3; seq < afterDispatch.length; seq++) {
+      socket.json({ type: "display.input.result", sequence: seq, outcome: "dispatched" });
+    }
+    await expect(okHuge).resolves.toBeUndefined();
+
+    // Any over-large non-paste dependent group (>64 events) is still refused whole, never split.
+    const countBefore = socket.messages("display.input").length;
+    await expect(
+      editing.sendBatch([
+        { kind: "edit", edit: { contextId, before: "world", after: "", text: "" } },
+        ...Array.from({ length: 64 }, () => ({
+          kind: "command" as const,
+          command: "moveBackward" as const,
+          contextId,
+          follows: true as const,
+        })),
+      ]),
+    ).rejects.toThrow("large");
+    expect(socket.messages("display.input")).toHaveLength(countBefore);
+    editing.dispose();
+  });
+  it("reports sent paste and cut as unknown (never Try again) on 10 s timeout and resize, while unsent ones and copies may still say Try again", async () => {
+    const contextId = "00000000-0000-4000-8000-000000000001";
+    const fieldContext = {
+      type: "display.editing" as const,
+      generation: 1,
+      context: {
+        contextId,
+        field: { kind: "text" as const, multiline: false, sensitive: false },
+        caret: null,
+      },
+    };
+    let scopeIndex = 0;
+    async function cutCapableFixture() {
+      const { DisplayEditingSession } = await import("./display-editing.js");
+      const lease = streams.retain({ ...target, scope: `q1-${++scopeIndex}`, editing: 1 });
+      const socket = opened();
+      socket.json({
+        type: "display.state",
+        state: "live",
+        generation: 1,
+        width: 720,
+        height: 1280,
+        editingVersion: 1,
+        displayCut: 1,
+        sharedInput: 1,
+      });
+      const editing = new DisplayEditingSession(lease);
+      editing.setGeometry(1);
+      socket.json(fieldContext);
+      return { lease, socket, editing };
+    }
+
+    // Q1(b): 10 s timeout — sent paste resolves unknown with non-retry wording; sent cut too;
+    // copy still rejects with Try again; unsent paste rejects immediately.
+    {
+      const { socket, editing } = await cutCapableFixture();
+      const sentPaste = editing.send({
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: new TextEncoder().encode("slow") }],
+        contextId,
+      });
+      const sentBatchPaste = editing.sendBatch([
+        { kind: "edit", edit: { contextId, before: "x", after: "", text: "" } },
+        {
+          kind: "paste",
+          items: [{ type: "text/plain", bytes: new TextEncoder().encode("y") }],
+          contextId,
+          follows: true,
+        },
+      ]);
+      const sentCut = editing.send({ kind: "cut", contextId });
+      const sentCopy = editing.send({ kind: "copy", contextId });
+      expect(socket.messages("display.input")).toHaveLength(4);
+      const copyFailed = expect(sentCopy).rejects.toThrow("Try again.");
+
+      vi.advanceTimersByTime(10_000);
+      expect(await sentPaste).toEqual({ outcome: "unknown", items: [] });
+      expect(await sentBatchPaste).toEqual({ outcome: "unknown", items: [] });
+      expect(await sentCut).toEqual({ outcome: "unknown", items: [] });
+      await copyFailed;
+      // Separate check on receipt for a sent paste timing out alone:
+      const soloPaste = editing.send({
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: new TextEncoder().encode("solo") }],
+        contextId,
+      });
+      vi.advanceTimersByTime(10_000);
+      expect(await soloPaste).toEqual({ outcome: "unknown", items: [] });
+      expect(editing.getSnapshot().receipt).toBe(
+        "May have been pasted: check before pasting again.",
+      );
+
+      // Paste NOT yet sent when input is refused before leaving client: rejects, not unknown.
+      const beforeUnsent = socket.messages("display.input").length;
+      socket.json({
+        type: "display.state",
+        state: "paused",
+        generation: 1,
+        width: 720,
+        height: 1280,
+        editingVersion: 1,
+        displayCut: 1,
+        sharedInput: 1,
+      });
+      await expect(
+        editing.send({
+          kind: "paste",
+          items: [{ type: "text/plain", bytes: new TextEncoder().encode("unsent") }],
+          contextId,
+        }),
+      ).rejects.toThrow("Try again.");
+      expect(socket.messages("display.input")).toHaveLength(beforeUnsent);
+      editing.dispose();
+    }
+
+    // Q1(c): resize / geometry change / dispose — sent paste & cut resolve unknown (never Try again);
+    // paste & cut attempted after resize (NOT yet sent) reject with "The display changed. Try again.".
+    for (const trigger of ["geometry", "generation", "dispose"] as const) {
+      const { socket, editing } = await cutCapableFixture();
+      const sentPaste = editing.send({
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: new TextEncoder().encode("in-flight") }],
+        contextId,
+      });
+      const sentCut = editing.send({ kind: "cut", contextId });
+      const sentCopy = editing.send({ kind: "copy", contextId });
+      const copyRejected = expect(sentCopy).rejects.toThrow("The display changed. Try again.");
+      expect(socket.messages("display.input")).toHaveLength(3);
+
+      if (trigger === "geometry") editing.setGeometry(null);
+      else if (trigger === "dispose") editing.dispose();
+      else
+        socket.json({
+          type: "display.state",
+          state: "live",
+          generation: 2,
+          width: 800,
+          height: 1280,
+          editingVersion: 1,
+          displayCut: 1,
+          sharedInput: 1,
+        });
+
+      expect(await sentPaste).toEqual({ outcome: "unknown", items: [] });
+      expect(await sentCut).toEqual({ outcome: "unknown", items: [] });
+      await copyRejected;
+      if (trigger !== "dispose") {
+        expect(editing.getSnapshot().receipt).not.toContain("Try again");
+        // Now attempt a paste NOT yet sent after the resize: must reject with "Try again." and send nothing.
+        await expect(
+          editing.send({
+            kind: "paste",
+            items: [{ type: "text/plain", bytes: new TextEncoder().encode("after-resize") }],
+            contextId,
+          }),
+        ).rejects.toThrow("The display changed. Try again.");
+        expect(socket.messages("display.input")).toHaveLength(3);
+      }
+      editing.dispose();
+    }
+  });
+  it("reports a socket error in a non-clipboard atomic group honestly instead of saying too large", async () => {
+    const contextId = "00000000-0000-4000-8000-000000000001";
+    const { DisplayEditingSession } = await import("./display-editing.js");
+    const lease = streams.retain({ ...target, scope: "a4-socket-error", editing: 1 });
+    const socket = opened();
+    socket.json({
+      type: "display.state",
+      state: "live",
+      generation: 1,
+      width: 720,
+      height: 1280,
+      editingVersion: 1,
+      sharedInput: 1,
+    });
+    const editing = new DisplayEditingSession(lease);
+    editing.setGeometry(1);
+    const originalSend = socket.send.bind(socket);
+    socket.send = () => {
+      throw new Error("WebSocket is still connecting");
+    };
+    await expect(
+      editing.sendBatch([
+        { kind: "edit", edit: { contextId, before: "x", after: "", text: "" } },
+        { kind: "command", command: "moveBackward", contextId, follows: true },
+      ]),
+    ).rejects.toThrow("This edit couldn’t be sent. Try again.");
+    expect(editing.getSnapshot().receipt).toBe("This edit couldn’t be sent. Try again.");
+    expect(editing.diagnostics.refusals["too-large"]).toBeUndefined();
+
+    // A genuinely over-limit atomic group still reports "This edit is too large.".
+    socket.send = originalSend;
+    await expect(
+      editing.sendBatch([
+        { kind: "edit", edit: { contextId, before: "x", after: "", text: "a".repeat(10_000) } },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+      ]),
+    ).rejects.toThrow("This edit is too large.");
+    expect(editing.diagnostics.refusals["too-large"]).toBe(1);
     editing.dispose();
   });
 });

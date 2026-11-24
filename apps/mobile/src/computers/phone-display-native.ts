@@ -1,6 +1,7 @@
 import { requireNativeView, requireOptionalNativeModule } from "expo";
 import type { ComponentType, Ref } from "react";
 import { Platform, type ViewProps } from "react-native";
+import { viewFunctionsOf, viewTagModule } from "../platform/view-functions.js";
 
 /** One encoded video frame, labelled with the decoder epoch it was queued under. */
 export interface DisplayFrameMetadata {
@@ -90,4 +91,25 @@ export function macWindowVideoSupported(): boolean {
       (requireOptionalNativeModule<{ decoderRecoveryVersion?: number }>("PhoneDisplay")
         ?.decoderRecoveryVersion ?? 0) >= 1)
   );
+}
+
+/**
+ * The display view's functions, called so the JavaScript thread never waits for the main thread
+ * (`viewFunctionsOf`): by the view's tag on an iOS binary that offers it.
+ */
+export function decoderFunctions(instance: NativeDecoder | null): NativeDecoder | null {
+  return viewFunctionsOf(viewTagModule("PhoneDisplay"), instance as never, [
+    "reset",
+    "resetKeepingPicture",
+    "decode",
+    "decodeBytes",
+  ]) as NativeDecoder | null;
+}
+
+/** The picture view's functions, called the same way. */
+export function pictureFunctions(instance: NativePicture | null): NativePicture | null {
+  return viewFunctionsOf(viewTagModule("PhoneDisplay"), instance as never, [
+    "clear",
+    "present",
+  ]) as NativePicture | null;
 }

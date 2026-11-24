@@ -28,7 +28,7 @@ import type { BrowserCommand } from "./client.js";
 import { browserInputMode, type BrowserInputMode } from "./browser-input.js";
 
 export interface ViewerClipboardResult {
-  readonly outcome: EditingClipboardOutcome;
+  readonly outcome: EditingClipboardOutcome | "unknown";
   readonly items: readonly EditingClipboardPayloadItem[];
 }
 export type BrowserContextMenu = Extract<BrowserServerMessage, { type: "browser.contextmenu" }>;
@@ -71,6 +71,8 @@ export interface BrowserEditingState {
   readonly context: EditingContext | null;
   readonly geometryRevision?: number;
   readonly menu: BrowserContextMenu | null;
+  /** CZ3: the context the menu was opened in: what its commands were made for. */
+  readonly menuContext?: string;
   readonly autofill: BrowserAutofillState | null;
   readonly passwordSave: BrowserPasswordSaveState | null;
 }
@@ -78,6 +80,15 @@ export interface BrowserEditingTarget {
   get(): BrowserEditingState;
   subscribe(listener: () => void): () => void;
   send(operation: EditingOperation): Promise<ViewerClipboardResult | undefined>;
+  /**
+   * CZ6: the same send, with the transport's own answer now: whether it took what was sent at
+   * once (an edit, a composition, a command or a key goes out before anything is awaited), so a
+   * caller that must answer at once (the phone's native field) answers with it.
+   */
+  submit(operation: EditingOperation): {
+    readonly accepted: boolean;
+    readonly done: Promise<ViewerClipboardResult | undefined>;
+  };
   /** A shown controller is the only recipient of page writes on this client. */
   activate(
     onWritten: (items: readonly EditingClipboardPayloadItem[]) => void,
@@ -109,6 +120,8 @@ const baseline: EditingTargetAbilities = {
   commands: true,
   clipboard: "text",
 };
+/** The browser targets' abilities, as negotiation picks them (for tests that draw real targets). */
+export const browserEditingAbilities = { full, textClipboard, basic, baseline } as const;
 const empty: BrowserEditingState = {
   input: "none",
   negotiated: false,
@@ -127,13 +140,19 @@ interface Target {
     onWritten: (items: readonly EditingClipboardPayloadItem[]) => void;
     onError?: ((message: string) => void) | undefined;
   } | null;
+  /** The transport refused a command of the send now under way. */
+  refused?: boolean;
 }
 interface Pending {
   readonly target: Target;
   readonly resolve: (result: ViewerClipboardResult) => void;
   readonly reject: (reason: Error) => void;
-  readonly timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout>;
   readonly kind: "copy" | "cut" | "paste" | "written";
+  /** True once the command left this client onto the carrier (paste/cut outcome becomes unknown if carrier ends). */
+  dispatched: boolean;
+  /** A3: true after a sent cut resolved `unknown` while staying open to write a late result to the clipboard. */
+  late?: boolean;
   items: readonly EditingClipboardItem[] | null;
   outcome: EditingClipboardOutcome;
   chunks: Uint8Array[];
@@ -193,6 +212,16 @@ export class BrowserEditingStore {
           this.#count(this.diagnostics.refusals, "operation-refused");
           throw reason;
         }),
+      submit: (operation) => {
+        target.refused = false;
+        const done = this.#send(target, operation).catch((reason) => {
+          this.#count(this.diagnostics.refusals, "operation-refused");
+          throw reason;
+        });
+        const accepted = !target.refused;
+        target.refused = false;
+        return { accepted, done };
+      },
       activate: (onWritten, onError) => {
         const active = { onWritten, onError };
         target.active = active;
@@ -315,7 +344,12 @@ export class BrowserEditingStore {
     const basicInput = target.state.input === "basic";
     const send = (command: BrowserCommand) => {
       if (!basicInput || browserBasicInputAllows(command))
-        this.sendCommand(target.sessionId, target.surfaceId, command);
+        try {
+          this.sendCommand(target.sessionId, target.surfaceId, command);
+        } catch (error) {
+          target.refused = true;
+          throw error;
+        }
     };
     this.#count(this.diagnostics.operations, operation.kind);
     if (
@@ -343,13 +377,20 @@ export class BrowserEditingStore {
           ...EditingKeystrokeSchema.parse(operation.keystroke),
         });
         return;
-      case "command":
+      case "command": {
+        // CZ3: a command carries the context it was computed for; nothing is filled in here (the
+        // field's context now may already be another field's). Without one it is not sent.
+        const contextId = operation.contextId;
+        if (!contextId) return;
         send({
           type: "input.command",
           surfaceId,
           command: EditingCommandSchema.parse(operation.command),
+          contextId,
+          ...(operation.follows ? { follows: true } : {}),
         });
         return;
+      }
       case "compose":
         send({
           type: "input.compose",
@@ -358,7 +399,12 @@ export class BrowserEditingStore {
         });
         return;
       case "edit":
-        send({ type: "input.text", surfaceId, edit: EditingTextEditSchema.parse(operation.edit) });
+        send({
+          type: "input.text",
+          surfaceId,
+          edit: EditingTextEditSchema.parse(operation.edit),
+          ...(operation.follows ? { follows: true } : {}),
+        });
         return;
       case "copy":
       case "cut":
@@ -374,18 +420,35 @@ export class BrowserEditingStore {
               )
             : null;
         const operationId = crypto.randomUUID();
+        // CZ5, PH5: clipboard ops name the field they were made for; without one there is none.
+        if (!operation.contextId)
+          throw new Error(
+            operation.kind === "paste"
+              ? "There is no field to paste into."
+              : `There is no field to ${operation.kind} from.`,
+          );
         const command: BrowserCommand =
           operation.kind === "paste"
-            ? { type: "clipboard.paste-data", surfaceId, operationId, items: [...items!] }
+            ? {
+                type: "clipboard.paste-data",
+                surfaceId,
+                operationId,
+                items: [...items!],
+                contextId: operation.contextId,
+                ...(operation.follows ? { follows: true } : {}),
+              }
             : {
                 type: operation.kind === "copy" ? "clipboard.copy" : "clipboard.cut",
                 surfaceId,
                 operationId,
+                contextId: operation.contextId,
               };
         if (basicInput && !browserBasicInputAllows(command)) return;
         const result = this.#await(operationId, target, operation.kind);
         try {
           send(command);
+          const pending = this.#pending.get(operationId);
+          if (pending) pending.dispatched = true;
           if (operation.kind === "paste") {
             const data = new Uint8Array(
               operation.items.reduce((total, item) => total + item.bytes.byteLength, 0),
@@ -410,9 +473,9 @@ export class BrowserEditingStore {
             }
           }
         } catch (error) {
-          this.#fail(
+          this.#carrierEnded(
             operationId,
-            error instanceof Error ? error : new Error("Clipboard transport failed."),
+            error instanceof Error ? error : "Clipboard transport failed.",
           );
         }
         return result;
@@ -420,15 +483,20 @@ export class BrowserEditingStore {
     }
   }
   #await(id: string, target: Target, kind: Pending["kind"]): Promise<ViewerClipboardResult> {
-    if (this.#pending.size >= 16) throw new Error("Too many pending clipboard operations.");
+    if (this.#pending.size >= 16) {
+      const oldestLate = [...this.#pending.entries()].find(([, pending]) => pending.late)?.[0];
+      if (oldestLate) this.#take(oldestLate);
+      else throw new Error("Too many pending clipboard operations.");
+    }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(
-        () => this.#fail(id, new Error("The remote clipboard operation timed out.")),
+        () => this.#carrierEnded(id, "The remote clipboard operation timed out.", true),
         10_000,
       );
       this.#pending.set(id, {
         target,
         kind,
+        dispatched: false,
         timer,
         resolve,
         reject,
@@ -474,20 +542,59 @@ export class BrowserEditingStore {
       return payload;
     });
     this.#count(this.diagnostics.clipboard, pending.outcome);
+    if (pending.late) {
+      if (
+        (pending.outcome === "cut" || pending.outcome === "copied") &&
+        items.some((item) => item.bytes.byteLength > 0)
+      )
+        pending.target.active?.onWritten(items);
+      return;
+    }
     pending.resolve({ outcome: pending.outcome, items });
   }
   receive(sessionId: string, message: BrowserServerMessage, surfaceId?: string): void {
-    if (
-      message.type === "browser.error" &&
-      (message.error.reason === "unsupported-operation" ||
-        message.error.reason === "target-suspended")
-    ) {
+    if (message.type === "browser.error") {
+      // P1 / A2: settle only the operation a per-message refusal names; an unnamed
+      // `unsupported-operation` belongs to some other message, and a sent paste or cut that a
+      // refusal does not name stays pending (or becomes `unknown` on `target-suspended`), never `empty`.
+      if (
+        message.error.reason !== "unsupported-operation" &&
+        message.error.reason !== "target-suspended"
+      )
+        return;
+      if (message.operationId) {
+        const pending = this.#pending.get(message.operationId);
+        if (
+          !pending ||
+          pending.kind === "written" ||
+          pending.target.sessionId !== sessionId ||
+          (surfaceId && pending.target.surfaceId !== surfaceId)
+        )
+          return;
+        if (
+          message.error.reason === "target-suspended" &&
+          (pending.kind === "paste" || pending.kind === "cut") &&
+          pending.dispatched
+        ) {
+          this.#carrierEnded(message.operationId, "The remote page was suspended.", true);
+          return;
+        }
+        const outcome = pending.kind === "paste" || pending.kind === "cut" ? "refused" : "empty";
+        this.#take(message.operationId)?.resolve({ outcome, items: [] });
+        return;
+      }
+      if (message.error.reason === "unsupported-operation") return;
       for (const [id, pending] of this.#pending) {
         if (
+          pending.kind === "written" ||
           pending.target.sessionId !== sessionId ||
           (surfaceId && pending.target.surfaceId !== surfaceId)
         )
           continue;
+        if ((pending.kind === "paste" || pending.kind === "cut") && pending.dispatched) {
+          this.#carrierEnded(id, "The remote page was suspended.", true);
+          continue;
+        }
         this.#take(id)?.resolve({ outcome: "empty", items: [] });
       }
       return;
@@ -556,7 +663,15 @@ export class BrowserEditingStore {
             ? {}
             : { geometryRevision: message.geometryRevision }),
         });
-      } else if (target.active) this.#set(target, { ...target.state, menu: message });
+      } else if (target.active) {
+        const { menuContext: _previous, ...rest } = target.state;
+        const contextId = target.state.context?.contextId;
+        this.#set(target, {
+          ...rest,
+          menu: message,
+          ...(contextId === undefined ? {} : { menuContext: contextId }),
+        });
+      }
       return;
     }
     if (message.type === "clipboard.data") {
@@ -617,6 +732,17 @@ export class BrowserEditingStore {
       )
         return;
       if (pending.items) {
+        if (pending.kind === "cut" && pending.dispatched) {
+          if (pending.late) {
+            this.#take(message.operationId);
+            pending.target.active?.onError?.(
+              "Cut finished late, but the clipboard data couldn’t be read.",
+            );
+          } else {
+            this.#carrierEnded(message.operationId, "Duplicate clipboard result.", false);
+          }
+          return;
+        }
         this.#fail(message.operationId, new Error("Duplicate clipboard result."));
         return;
       }
@@ -648,6 +774,17 @@ export class BrowserEditingStore {
         this.#buffered += bytes.length;
         if (pending.received === expected) this.#finish(part.operationId);
       } catch (error) {
+        if (pending.kind === "cut" && pending.dispatched) {
+          if (pending.late) {
+            this.#take(message.part.operationId);
+            pending.target.active?.onError?.(
+              "Cut finished late, but the clipboard data couldn’t be read.",
+            );
+          } else {
+            this.#carrierEnded(message.part.operationId, "Invalid clipboard part.", false);
+          }
+          return;
+        }
         this.#fail(
           message.part.operationId,
           error instanceof Error ? error : new Error("Invalid clipboard part."),
@@ -655,9 +792,41 @@ export class BrowserEditingStore {
       }
     }
   }
+  #carrierEnded(id: string, reason: string | Error, keepLateCut = false): void {
+    const pending = this.#pending.get(id);
+    if (!pending) return;
+    if (pending.late) {
+      if (!keepLateCut) this.#take(id);
+      return;
+    }
+    // P1 / Q1 / A3 (AGENTS.md rule 4): a paste or cut already sent onto the carrier may have
+    // changed the far field; never report it as failed or invite a blind retry. For a sent cut
+    // whose carrier is still open, keep the pending entry open so a late cut result still writes
+    // the removed text to the active viewer's clipboard.
+    if (pending.kind === "cut" && pending.dispatched) {
+      this.#count(this.diagnostics.clipboard, "unknown");
+      if (keepLateCut) {
+        clearTimeout(pending.timer);
+        pending.late = true;
+        pending.timer = setTimeout(() => {
+          this.#take(id);
+        }, 60_000);
+        pending.resolve({ outcome: "unknown", items: [] });
+        return;
+      }
+      this.#take(id)?.resolve({ outcome: "unknown", items: [] });
+      return;
+    }
+    if (pending.kind === "paste" && pending.dispatched) {
+      this.#count(this.diagnostics.clipboard, "unknown");
+      this.#take(id)?.resolve({ outcome: "unknown", items: [] });
+      return;
+    }
+    this.#fail(id, reason instanceof Error ? reason : new Error(reason));
+  }
   #cancel(target: Target, message: string): void {
     for (const [id, pending] of this.#pending)
-      if (pending.target === target) this.#fail(id, new Error(message));
+      if (pending.target === target) this.#carrierEnded(id, message);
   }
   disconnect(sessionId: string, surfaceId?: string): void {
     if (!surfaceId) this.#versions.delete(sessionId);
@@ -669,7 +838,7 @@ export class BrowserEditingStore {
   }
   dispose(): void {
     for (const id of this.#pending.keys())
-      this.#fail(id, new Error("The browser viewer disconnected."));
+      this.#carrierEnded(id, "The browser viewer disconnected.");
     this.#targets.clear();
     this.#versions.clear();
   }
@@ -710,17 +879,26 @@ export class BrowserEditingStore {
       case "edit":
         if (operation.edit.before || operation.edit.after)
           throw new Error("This browser cannot verify range edits.");
-        send({ type: "clipboard.paste", surfaceId, text: operation.edit.text });
+        send({
+          type: "clipboard.paste",
+          surfaceId,
+          text: operation.edit.text,
+          contextId: operation.edit.contextId,
+          ...(operation.follows ? { follows: true } : {}),
+        });
         return;
       case "compose":
         throw new Error("This browser cannot show live composition.");
       case "paste": {
         if (operation.items.some((item) => item.type !== "text/plain"))
           throw new Error("This browser cannot paste rich clipboard data.");
+        if (!operation.contextId) throw new Error("There is no field to paste into.");
         send({
           type: "clipboard.paste",
           surfaceId,
           text: operation.items.map((item) => new TextDecoder().decode(item.bytes)).join(""),
+          contextId: operation.contextId,
+          ...(operation.follows ? { follows: true } : {}),
         });
         return { outcome: "pasted", items: [] };
       }
@@ -731,6 +909,7 @@ export class BrowserEditingStore {
         if (
           [...this.#pending.values()].some(
             (pending) =>
+              !pending.late &&
               pending.target.sessionId === target.sessionId &&
               (pending.kind === "copy" || pending.kind === "cut"),
           )
@@ -744,8 +923,10 @@ export class BrowserEditingStore {
             operation.kind === "copy" ? "KeyC" : "KeyX",
             [target.state.negotiated ? "primary" : platform === "mac" ? "meta" : "control"],
           );
+          const pending = this.#pending.get(id);
+          if (pending) pending.dispatched = true;
         } catch (error) {
-          this.#fail(id, error instanceof Error ? error : new Error("Clipboard transport failed."));
+          this.#carrierEnded(id, error instanceof Error ? error : "Clipboard transport failed.");
         }
         return result;
       }

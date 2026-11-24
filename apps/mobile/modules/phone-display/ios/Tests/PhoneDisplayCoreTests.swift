@@ -65,6 +65,51 @@ final class PictureQueueTests: XCTestCase {
     XCTAssertEqual(outcomes["1"], [.dropped])
   }
 
+  // The walk's page that never painted: JavaScript at generation 3, the queue never told
+  // (its clear never reached the view), every picture dropped for good.
+  func testAPictureForANewerGenerationTakesItAsItsClearWouldHave() {
+    let queue = PictureQueue<String>()
+    XCTAssertEqual(queue.submit(request(3), "new", receipt("new"))?.payload, "new")
+    XCTAssertEqual(queue.generation, 3)
+    XCTAssertEqual(queue.complete(decoded: true).shown?.payload, "new")
+    XCTAssertNil(outcomes["new"])
+  }
+
+  func testAPictureFromAnOlderGenerationIsStillDropped() {
+    let queue = PictureQueue<String>()
+    queue.clear(3)
+    XCTAssertNil(queue.submit(request(2), "old", receipt("old")))
+    XCTAssertEqual(outcomes["old"], [.dropped])
+    XCTAssertEqual(queue.generation, 3)
+  }
+
+  // A clear for an older generation than one the queue took from a picture is stale: the
+  // generation stays, and the picture it is decoding still draws.
+  func testAStaleClearNeverLowersTheGenerationNorDropsItsPictures() {
+    let queue = PictureQueue<String>()
+    XCTAssertEqual(queue.submit(request(3), "new", receipt("new"))?.payload, "new")
+    queue.clear(2)
+    XCTAssertEqual(queue.generation, 3)
+    XCTAssertNil(outcomes["new"])
+    XCTAssertEqual(queue.complete(decoded: true).shown?.payload, "new")
+    XCTAssertNil(queue.submit(request(2), "old", receipt("old")))
+    XCTAssertEqual(outcomes["old"], [.dropped])
+  }
+
+  func testTakingANewerGenerationDropsWhatTheOlderOneLeftWaiting() {
+    let queue = PictureQueue<String>()
+    _ = queue.submit(request(0), "1", receipt("1"))
+    _ = queue.submit(request(0), "2", receipt("2"))
+    // The decode of "1" is still running: "3" waits for it, under the newer generation.
+    XCTAssertNil(queue.submit(request(1), "3", receipt("3")))
+    XCTAssertEqual(outcomes["1"], [.dropped])
+    XCTAssertEqual(outcomes["2"], [.dropped])
+    let abandoned = queue.complete(decoded: true)
+    XCTAssertNil(abandoned.shown)
+    XCTAssertEqual(abandoned.next?.payload, "3")
+    XCTAssertEqual(queue.complete(decoded: true).shown?.payload, "3")
+  }
+
   func testClearDropsEverythingAndNeverRunsTwoDecodesOrDrawsTheOldGeneration() {
     let queue = PictureQueue<String>()
     _ = queue.submit(request(), "1", receipt("1"))

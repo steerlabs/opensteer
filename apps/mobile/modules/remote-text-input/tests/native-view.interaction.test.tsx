@@ -29,6 +29,8 @@ vi.mock("../../../src/ui/primitives.js", () => ({
 vi.mock("expo", async () => {
   const React = await import("react");
   return {
+    // An Android or older binary: its view's own functions, which this view stands in for.
+    requireOptionalNativeModule: () => null,
     requireNativeView: () =>
       React.forwardRef((props: NonNullable<typeof native.props>, ref) => {
         native.props = props;

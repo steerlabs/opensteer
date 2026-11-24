@@ -1,4 +1,5 @@
 import { requireNativeView } from "expo";
+import { viewFunctionsOf, viewTagModule } from "../../src/platform/view-functions.js";
 import type { ComponentType, Ref } from "react";
 import type { NativeSyntheticEvent, StyleProp, ViewStyle } from "react-native";
 
@@ -68,3 +69,19 @@ export interface NativeComposerEditorProps {
  */
 export const NativeComposerEditor: ComponentType<NativeComposerEditorProps> =
   requireNativeView<NativeComposerEditorProps>("OpensteerComposerEditor");
+
+/**
+ * The editor's functions, called so the JavaScript thread never waits for the main thread: by
+ * the view's tag on an iOS binary that offers it (`viewTagFunctions`), and as the view's own
+ * functions elsewhere. See `viewFunctionsOf`.
+ */
+export function editorFunctions(
+  instance: NativeComposerEditorRef | null,
+): NativeComposerEditorRef | null {
+  return viewFunctionsOf(viewTagModule("OpensteerComposerEditor"), instance as never, [
+    "focus",
+    "blur",
+    "setSelection",
+    "readState",
+  ]) as NativeComposerEditorRef | null;
+}

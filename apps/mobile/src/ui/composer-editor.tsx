@@ -22,6 +22,7 @@ import { Keyboard, useWindowDimensions, type StyleProp, type ViewStyle } from "r
 import { KeyboardController } from "react-native-keyboard-controller";
 import { discardPastedImage } from "../../modules/composer-editor/files.js";
 import {
+  editorFunctions,
   NativeComposerEditor,
   type NativeComposerEditorRef,
   type NativeComposerState,
@@ -173,8 +174,14 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
   };
 
   useImperativeHandle(props.ref, (): ComposerEditorHandle => ({
-    focus: () => void native.current?.focus().catch(() => undefined),
-    blur: () => void native.current?.blur().catch(() => undefined),
+    focus: () =>
+      void editorFunctions(native.current)
+        ?.focus()
+        .catch(() => undefined),
+    blur: () =>
+      void editorFunctions(native.current)
+        ?.blur()
+        .catch(() => undefined),
     containsFocus: () => focused.current,
     readSnapshot: snapshot,
     replace: (range, insert) => {
@@ -188,7 +195,9 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
     },
     setSelection: (range) => {
       const snapped = snapComposerSelection(latest.current.text, range, tokensNow());
-      void native.current?.setSelection(snapped.start, snapped.end).catch(() => undefined);
+      void editorFunctions(native.current)
+        ?.setSelection(snapped.start, snapped.end)
+        .catch(() => undefined);
     },
     preview: (next) => show(next.text, next.selection),
     // `value` is the draft, and the parent has already set it; a newer generation makes
@@ -199,7 +208,9 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
     },
     flushPendingInput: async (generation) => {
       if (generation !== revision.generation) throw new Error("The composer was reset.");
-      const state = await native.current?.readState().catch(() => undefined);
+      const state = await editorFunctions(native.current)
+        ?.readState()
+        .catch(() => undefined);
       if (generation !== revision.generation) throw new Error("The composer was reset.");
       // Native has not applied the latest reset yet: what JS holds is the answer.
       if (state === undefined || state.generation < generation) return snapshot();

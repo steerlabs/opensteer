@@ -163,6 +163,28 @@ it("accepts additive display methods, media states and action variants", () => {
       params: { ...ref, geometry: 1, events: [] },
     }).success,
   ).toBe(false);
+  // A6: text paste, command, and copy require a UUID editing contextId on both TS and Go sides.
+  const contextId = "00000000-0000-4000-8000-000000000001";
+  for (const event of [
+    { kind: "paste", text: "hi" },
+    { kind: "command", command: "selectAll" },
+    { kind: "copy" },
+  ]) {
+    expect(
+      iphoneNativeRequestSchema.safeParse({
+        ...request,
+        method: "display.input",
+        params: { ...ref, geometry: 1, events: [event] },
+      }).success,
+    ).toBe(false);
+    expect(
+      iphoneNativeRequestSchema.safeParse({
+        ...request,
+        method: "display.input",
+        params: { ...ref, geometry: 1, events: [{ ...event, contextId }] },
+      }).success,
+    ).toBe(true);
+  }
   const target = { nodeId: "test-node" };
   const actions = [
     { kind: "tap", target, count: 2 },

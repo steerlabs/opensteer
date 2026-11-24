@@ -335,11 +335,21 @@ export function BrowserViewport({
     textInputRef.current?.focus();
   }, [editingTarget]);
   function menuAction(action: StreamedMenuAction) {
-    if (action === "copy" || action === "cut") textInputRef.current?.perform({ kind: action });
-    else if (action === "paste") textInputRef.current?.pasteFromMenu();
-    else if (action === "select-all")
-      textInputRef.current?.perform({ kind: "command", command: "selectAll" });
-    else if (action === "copy-link" && menu?.linkUrl) textInputRef.current?.copyText(menu.linkUrl);
+    if (action === "copy" || action === "cut") {
+      // PH5: made for the field the menu was opened in, and refused in any other.
+      const contextId = editingTarget?.get().menuContext;
+      if (contextId) textInputRef.current?.perform({ kind: action, contextId });
+    } else if (action === "paste") {
+      // PH3: made for the field the menu was opened in, and refused in any other.
+      const contextId = editingTarget?.get().menuContext;
+      if (contextId) textInputRef.current?.pasteFromMenu(contextId);
+    } else if (action === "select-all") {
+      // CZ3: made for the field the menu was opened in, and refused in any other.
+      const contextId = editingTarget?.get().menuContext;
+      if (contextId)
+        textInputRef.current?.perform({ kind: "command", command: "selectAll", contextId });
+    } else if (action === "copy-link" && menu?.linkUrl)
+      textInputRef.current?.copyText(menu.linkUrl);
     else if (action === "open-link" && menu?.linkUrl) onOpenLink(menu.linkUrl);
     dismissMenu();
   }
