@@ -259,10 +259,10 @@ describe("Cloud Computer reconciliation", () => {
           throw new Error("Lost response with boot_token");
         });
         await h.pass();
-        expect(h.last()).toMatchObject({
-          phase: "failed",
-          lastError: "The Cloud Computer provider operation failed.",
-        });
+        // A lost answer says nothing of the computer: no failed report, the error is the
+        // operator's, and the next pass finds the VM (P2).
+        expect(h.reports.some(({ phase }) => phase === "failed")).toBe(false);
+        expect(h.onError).toHaveBeenCalledWith(new Error("Lost response with boot_token"));
         await h.restart();
         expect(h.provider.create).toHaveBeenCalledTimes(1);
         expect(h.last()?.phase).toBe("booting");
@@ -453,16 +453,12 @@ describe("Cloud Computer reconciliation", () => {
         h.status.desired = [home, second];
         h.provider.find.mockRejectedValueOnce(new Error("provider secret"));
         await h.pass();
-        expect(h.reports).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              id: home.id,
-              phase: "failed",
-              lastError: "The Cloud Computer provider operation failed.",
-            }),
-            expect.objectContaining({ id: second.id, phase: "booting" }),
-          ]),
+        // The failed read is unknown, not a failed computer: nothing is reported for it (P2).
+        expect(h.reports.filter(({ id }) => id === home.id)).toEqual([]);
+        expect(h.reports).toContainEqual(
+          expect.objectContaining({ id: second.id, phase: "booting" }),
         );
+        expect(h.onError).toHaveBeenCalledWith(new Error("provider secret"));
       },
     },
     {

@@ -65,6 +65,8 @@ export interface CloudComputerTable {
   downAt: Generated<Date | null>;
   /** When the current run of outages began, kept across short ready spells. See `watch`. */
   unstableSince: Generated<Date | null>;
+  /** When it last left active (a Suspend, billing that stopped); null while active. */
+  inactiveSince: Generated<Date | null>;
   dnsQuarantined: Generated<boolean>;
   createAttempted: Generated<boolean>;
   bootCompletedAt: NullableTimestamp;

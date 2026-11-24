@@ -17,7 +17,7 @@ export const accountEvents = {
   "account.cloud_computer.setup_failed": "error",
   /** Claiming a ready Home for its buyer failed. */
   "account.cloud_computer.claim_failed": "error",
-  /** A Cloud Computer keeps going down, each outage too short to page, for the limit. */
+  /** A Cloud Computer's run of outages has lasted the limit, and none of them is paged now. */
   "account.cloud_computer.unstable": "warn",
   /** A ready Cloud Computer has not reported a backup for 36 hours. */
   "account.cloud_computer.backup_overdue": "warn",

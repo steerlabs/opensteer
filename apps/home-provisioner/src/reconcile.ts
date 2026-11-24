@@ -2,16 +2,19 @@ import { randomUUID } from "node:crypto";
 import {
   BootstrapScrubFailure,
   ProviderOutcomeUnknown,
+  ProviderPlacementError,
   ProviderRateLimited,
   ProviderWriteRejected,
+  RemoteRequestError,
 } from "./http.js";
 import { refused } from "@opensteer/core";
-import type {
-  CloudComputerCheck,
-  CloudComputerDesired,
-  CloudComputerId,
-  CloudComputerReport,
-  CloudComputerProviderWrite,
+import {
+  cloudComputerReadinessDeadline,
+  type CloudComputerCheck,
+  type CloudComputerDesired,
+  type CloudComputerId,
+  type CloudComputerReport,
+  type CloudComputerProviderWrite,
 } from "@opensteer/control-plane-protocol";
 import { accountRefused, type AccountApi } from "./account.js";
 import { renderUserData } from "./boot.js";
@@ -75,6 +78,9 @@ export class Reconciler {
                 (firewall ??= provider.ensureFirewall(operationSignal, check)),
               signal,
             );
+            // Nothing new to say of it this pass: a read failed and the last report stands.
+            if (!report) continue;
+            // The judged attempt is in the key: the next deadline is sent though it reads alike.
             const key = JSON.stringify(report);
             if (this.#reports.get(computer.id) === key) continue;
             this.#reports.delete(computer.id);
@@ -162,7 +168,7 @@ export class Reconciler {
     computer: CloudComputerDesired,
     ensureFirewall: (signal: AbortSignal, check: () => Promise<void>) => Promise<number>,
     signal: AbortSignal,
-  ): Promise<CloudComputerReport> {
+  ): Promise<CloudComputerReport | undefined> {
     const { account, provider, dns, discover } = this.#options;
     const { id, generation, revision, state, hostname } = computer;
     let current: VmServer | undefined;
@@ -183,10 +189,15 @@ export class Reconciler {
       ipv6: phase === "deleted" || !computer.ipv6Enabled ? null : (current?.ipv6 ?? null),
       observedIdentity: phase === "deleted" ? null : (computer.observedIdentity ?? null),
     });
-    const unready = (phase: "provisioning" | "booting") =>
+    // The deadline is judged against the attempt this desired state names, and says so: the
+    // account accepts it only for its current attempt.
+    const unready = (phase: "provisioning" | "booting"): CloudComputerReport =>
       computer.readinessStartedAt &&
       this.#now() - Date.parse(computer.readinessStartedAt) >= this.#options.readinessTimeoutMs
-        ? report("failed", "The Cloud Computer did not become ready before its deadline.")
+        ? {
+            ...report("failed", cloudComputerReadinessDeadline),
+            judgedReadinessStartedAt: computer.readinessStartedAt,
+          }
         : report(phase);
     const pending = new Map(
       (computer.pendingProviderWrites ?? []).map((write) => [write.token, write]),
@@ -569,9 +580,30 @@ export class Reconciler {
         // confirmed this pass, never as a Home that missed its deadline.
         return report("booting");
       }
+      // A refusal is evidence of the computer's state; any other failure (a 5xx, a timeout, a
+      // network error, an answer that could not be read) says nothing of it. Unknown stays
+      // unknown: nothing new is reported, the error is the operator's, the next pass looks again.
+      if (!evidenceOfFailure(error)) return undefined;
       return report("failed", failure);
     }
   }
+}
+
+/**
+ * Whether an error is evidence of the computer's state, so a failed computer rather than an
+ * unknown one: a provider or DNS service said no (an HTTP 4xx other than a rate limit, on a read
+ * or a write), or the provider holds a machine of it where an operator must act (in another zone).
+ */
+function evidenceOfFailure(error: unknown): boolean {
+  const original = error instanceof ProviderWriteRejected ? error.original : error;
+  if (original instanceof ProviderPlacementError) return true;
+  return (
+    original instanceof RemoteRequestError &&
+    (original.service === "Google Compute Engine" || original.service === "Cloudflare") &&
+    original.status >= 400 &&
+    original.status < 500 &&
+    original.status !== 429
+  );
 }
 
 /** A provider rate limit, whether a read met it or it refused a write before carrying it out. */

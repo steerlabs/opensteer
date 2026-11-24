@@ -549,6 +549,17 @@ export async function migrateControlPlaneToLatest(
   return result;
 }
 
+/** Migrates to exactly `target`, the name of one migration, as a stack at that release is. */
+export async function migrateControlPlaneTo(
+  database: Kysely<ControlPlaneDatabaseSchema>,
+  target: string,
+): Promise<MigrationResultSet> {
+  const migrator = new Migrator({ db: database, provider: migrationProvider });
+  const result = await migrator.migrateTo(target);
+  assertMigrationSucceeded(result);
+  return result;
+}
+
 function assertMigrationSucceeded(result: MigrationResultSet): void {
   const failure = result.results?.find((entry) => entry.status === "Error");
   if (result.error || failure) {

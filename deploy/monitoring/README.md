@@ -29,7 +29,7 @@ Three alerts page, because a person is hurt by them now:
 Everything else goes to the digest channel at most once a day per alert (`policies/digest-*.yaml`):
 a failed setup with its cause, a failed claim, a failed billing step, a deleted Cloud Computer that
 needs a look in Stripe, an overdue backup, pending backup erasure, a nearly empty pool, a Cloud
-Computer that reports a problem or stopped reporting, one that keeps going down for short outages,
+Computer that reports a problem or stopped reporting, one whose run of outages has lasted 30 minutes with none paged now,
 and a failing provisioner pass.
 
 ## Heartbeats

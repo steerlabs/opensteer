@@ -22,6 +22,7 @@ import {
   cloudWords,
   type ManagedHomeClaimReceipt,
   CloudComputerBootReleaseSchema,
+  cloudComputerReadinessDeadline,
   CloudComputerBootResponseSchema,
   CloudComputerDesiredSchema,
   CloudComputerManagedHomeSchema,
@@ -202,6 +203,11 @@ export class CloudComputerStore {
       assignEgress: (tx, computerId) => this.#assignEgress(tx, computerId),
       egressCredentials: (endpoint) => this.#egressCredentials(endpoint),
     });
+  }
+
+  /** The not-ready limit: also the ready stretch that closes a run of outages. */
+  get #stableMs() {
+    return this.#options.config.notReadyAfterMinutes * 60_000;
   }
 
   get plan() {
@@ -714,7 +720,7 @@ export class CloudComputerStore {
             billingCurrency: attempt.currency,
             billingStatus: billing,
             renewsAt: subscriptionRenewal(subscription, billing),
-            ...transition(existing, desiredState(existing, billing), this.#now()),
+            ...transition(existing, desiredState(existing, billing), this.#now(), this.#stableMs),
             updatedAt: this.#now(),
           })
           .executeTakeFirst();
@@ -890,7 +896,7 @@ export class CloudComputerStore {
         .updateTable("cloudComputers")
         .where("id", "=", row.id)
         .set({
-          ...transition(row, "deleted", now),
+          ...transition(row, "deleted", now, this.#stableMs),
           ...clearBootToken,
           billingStatus: "canceled",
           renewsAt: null,
@@ -917,7 +923,7 @@ export class CloudComputerStore {
       .set({
         billingStatus: status,
         renewsAt,
-        ...transition(row, desiredState(row, status), this.#now()),
+        ...transition(row, desiredState(row, status), this.#now(), this.#stableMs),
         updatedAt: this.#now(),
       })
       .executeTakeFirst();
@@ -1036,9 +1042,10 @@ export class CloudComputerStore {
         });
         continue;
       }
-      // Not paged, for the digest: a run of outages that has lasted the limit while each was
-      // too short to page, and it is still going (down now, or ready again for less than the
-      // limit). A person who keeps losing their computer for a minute is not woken for at night.
+      // Not paged, for the digest: a run of outages that has lasted the limit (from its first
+      // outage to now while down, to the end of its last once ready), none of which is paged now,
+      // and still going: down now, or ready again for less than the limit. Many short outages,
+      // or one long one that was paged and has ended; nobody is woken for either at night.
       if (row.readyAt !== null && row.unstableSince !== null) {
         const run = (down ? now : row.readyAt.getTime()) - row.unstableSince.getTime();
         if (run >= notReadyAfterMs && (down || now - row.readyAt.getTime() < notReadyAfterMs))
@@ -1574,15 +1581,23 @@ export class CloudComputerStore {
         throw new ControlPlaneError("conflict", "Cloud Computer Home identity changed");
       }
       const now = this.#now();
-      // The provisioner judges its readiness deadline by the clock it read in the desired state.
-      // For the first report of an outage that clock was the attempt's before it, read while the
-      // computer was still ready, so a deadline failure then is not ten minutes of this outage:
-      // it is recorded as booting, this outage's clocks start now, and the next report is judged
-      // against them. The account owns the clock, so the correction is here, under the row lock.
+      // A deadline failure counts only for the attempt it judged (`judgedReadinessStartedAt`, the
+      // clock the provisioner read in the desired state), and only while that attempt is the row's
+      // current one and still under way: an attempt that became ready is over, and the outage
+      // after it is a new one. Any other is stale and never makes the row failed. For a row still
+      // ready it is the first report of an outage: recorded as booting, the outage begins. For a
+      // row already in an outage (a retried copy of that report, one judged before a Resume or a
+      // replacement) nothing changes. The account owns the clock, so this is decided here, under
+      // the row lock; the provisioner reads the restarted clock on its next pass.
+      const deadline = report.lastError === cloudComputerReadinessDeadline;
+      const judged = report.judgedReadinessStartedAt;
       const stale =
-        report.phase === "failed" &&
-        row.phase === "ready" &&
-        cloudComputerSetupFailure(report.lastError, null) === "readiness-timeout";
+        deadline &&
+        (row.phase === "ready" ||
+          judged === undefined ||
+          Date.parse(judged) !== row.readinessStartedAt.getTime());
+      if (stale && row.phase !== "ready")
+        return { recorded: true, kick: false, newlyFailed: false };
       const phase = stale ? "booting" : report.phase;
       const lastError = stale ? null : report.lastError;
       const ready = phase === "ready";
@@ -1627,7 +1642,7 @@ export class CloudComputerStore {
           ...(outageBegins
             ? {
                 readinessStartedAt: now,
-                ...outageBegin(row, now, this.#options.config.notReadyAfterMinutes * 60_000),
+                ...outageBegin(row, now, this.#stableMs),
               }
             : {}),
           ...(deleted
@@ -2630,7 +2645,7 @@ export class CloudComputerStore {
           phase: "provisioning",
           lastError: null,
           readinessStartedAt: now,
-          ...outageBegin(row, now, this.#options.config.notReadyAfterMinutes * 60_000),
+          ...outageBegin(row, now, this.#stableMs),
         };
       } else if (action === "reissue" || action === "replace") {
         if (row.state !== "active")
@@ -2683,7 +2698,7 @@ export class CloudComputerStore {
           ownerAccessAt: null,
           phase: "provisioning",
           readinessStartedAt: now,
-          ...outageBegin(row, now, this.#options.config.notReadyAfterMinutes * 60_000),
+          ...outageBegin(row, now, this.#stableMs),
           reportedAt: null,
           setupCodeDigest: digestSecret(setupCode),
           sealedSetupCode: this.#options.cipher.seal(id, generation, setupCode),
@@ -2767,6 +2782,7 @@ export class CloudComputerStore {
             row,
             desiredState({ ...row, operatorSuspension, ownerSuspended }, row.billingStatus),
             now,
+            this.#stableMs,
           ),
         };
       }
@@ -3458,22 +3474,38 @@ function transition(
   row: Computer,
   next: Computer["state"],
   now: Date,
+  stableMs: number,
 ): Updateable<CloudComputerTable> {
   if (row.state === next) return {};
+  // Time not active never counts toward a run of outages, and never erases one. Leaving active,
+  // it records when; a run a ready stretch of the limit has closed ends there, one still open is
+  // kept. Back to active (a Resume, an operator's unsuspend, billing that recovered): a new
+  // attempt and a new outage, and the open run moved forward by the time it was not active, so
+  // it counts active time only; with none open, a run begins now.
+  const leaving = row.state === "active";
+  const closed =
+    row.phase === "ready" &&
+    row.downAt === null &&
+    row.readyAt !== null &&
+    now.getTime() - row.readyAt.getTime() >= stableMs;
   return {
     state: next,
     phase: next === "deleted" ? "deleting" : "provisioning",
     lastError: null,
-    // Back to active (a Resume, an operator's unsuspend, billing that recovered): a new attempt
-    // and a new outage, in a new run, since the time it was not active is no outage of a
-    // computer the person was using.
+    ...(leaving ? { inactiveSince: now, ...(closed ? { unstableSince: null } : {}) } : {}),
     ...(next === "active"
       ? {
           readinessStartedAt: new Date(
             Math.max(now.getTime(), row.readinessStartedAt.getTime() + 1),
           ),
           downAt: now,
-          unstableSince: now,
+          unstableSince:
+            row.unstableSince && row.inactiveSince
+              ? new Date(
+                  row.unstableSince.getTime() + (now.getTime() - row.inactiveSince.getTime()),
+                )
+              : now,
+          inactiveSince: null,
         }
       : {}),
   };

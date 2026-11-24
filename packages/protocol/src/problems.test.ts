@@ -28,15 +28,17 @@ const maximumOf = (def: Def) =>
   checksOf(def).find((check) => check.check === "max_length")?.maximum as number | undefined;
 
 /**
- * The only patterns a report's strings may have, each with its own schema's maximum length: a
- * release version and a minute's time.
+ * The only patterns a report's strings may have, each with its maximum length: a release version
+ * and a minute's time. Written here, not read from the two schemas, so a change to either one
+ * is a change to this file too, and a pattern that admits words is refused wherever it is.
  */
-const namedPatterns = new Map(
-  [ReleaseVersionSchema, ReportTimeSchema].map((schema) => {
-    const def = defOf(schema);
-    return [patternsOf(def)[0]!, maximumOf(def)!] as const;
-  }),
-);
+const namedPatterns = new Map<string, number>([
+  [String(/^\d{1,4}\.\d{1,4}\.\d{1,4}(?:-(?:alpha|beta|rc)\.\d{1,4})?$/u), 24],
+  [
+    String(/^20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:00Z$/u),
+    20,
+  ],
+]);
 /**
  * The checks a report's schemas may carry, an allow-list by schema type: the named patterns and
  * their maximum, a whole number's format and bounds, an array's maximum, and the two refinements
@@ -134,7 +136,10 @@ function freeTextLeaves(
         );
       }
       case "record": {
+        // A loose record passes keys it was never given; a key that rewrites itself is free text.
+        if (def.mode !== undefined) out.push(`${path} (a ${String(def.mode)} record)`);
         const key = defOf(def.keyType as z.ZodType);
+        for (const check of checksNotAllowed(key)) out.push(`${path}{key} (a check: ${check})`);
         if (key.type !== "enum") {
           out.push(`${path} (free keys)`);
           return Infinity;
@@ -380,6 +385,14 @@ describe("problems", () => {
           .refine(() => true),
       }),
       checked: z.strictObject({}).check(() => undefined),
+      // A record whose fixed key rewrites itself, and a loose record that keeps an undeclared one.
+      recordKey: z.strictObject({
+        flags: z.record(
+          z.enum(["fixed"]).overwrite(() => note as never),
+          z.boolean(),
+        ),
+      }),
+      looseRecord: z.strictObject({ flags: z.looseRecord(z.enum(["fixed"]), z.boolean()) }),
     };
     const said = (schema: z.ZodType, name: string) => {
       const leaves: string[] = [];
@@ -390,9 +403,17 @@ describe("problems", () => {
     expect(said(shapes.object, "object")).toEqual(["object (a check: overwrite)"]);
     expect(said(shapes.refined, "refined")).toEqual(["refined.count (a check: custom)"]);
     expect(said(shapes.checked, "checked")).toEqual(["checked (a check: custom)"]);
+    expect(said(shapes.recordKey, "recordKey")).toEqual([
+      "recordKey.flags{key} (a check: overwrite)",
+    ]);
+    expect(said(shapes.looseRecord, "looseRecord")).toEqual(["looseRecord.flags (a loose record)"]);
     // What they would have sent.
     expect(shapes.version.parse({ release: "1.2.3" })).toEqual({ release: note });
     expect(shapes.object.parse({})).toEqual({ note });
+    expect(shapes.recordKey.parse({ flags: { fixed: true } })).toEqual({ flags: { [note]: true } });
+    expect(shapes.looseRecord.parse({ flags: { fixed: true, [note]: true } })).toEqual({
+      flags: { fixed: true, [note]: true },
+    });
   });
 
   it("sends exactly these bytes for a report: what its schema gives back, nothing added (V3)", () => {

@@ -824,13 +824,26 @@ integration("Cloud Computer Account service", () => {
       | undefined;
     let records = false;
     let discovers = true;
+    // The provider's next read fails with this; a newer generation appears beside this one.
+    let findFails: Error | undefined;
+    let newerGeneration = false;
+    // The next report is delivered twice: a retried request whose first copy landed.
+    let duplicate = false;
     let bootCount = 0;
     let booted: CloudComputerBootResponse | undefined;
     const provider = {
       ensureFirewall: async () => 1,
       ensureFirewallAttached: async () => true,
       listManaged: async () => [],
-      find: async () => (server ? [server] : []),
+      find: async () => {
+        const failure = findFails;
+        findFails = undefined;
+        if (failure) throw failure;
+        if (!server) return [];
+        return newerGeneration
+          ? [server, { ...server, id: 8, generation: server.generation + 1 }]
+          : [server];
+      },
       create: async ({ generation, userData }: { generation: number; userData: string }) => {
         expect(first?.bootstrapToken).toBeTruthy();
         expect(userData).toContain(first!.bootstrapToken!);
@@ -884,8 +897,27 @@ integration("Cloud Computer Account service", () => {
         report: (report: CloudComputerReport, signal: AbortSignal) => Promise<boolean>;
       };
     }>("../../../home-provisioner/src/account.js");
+    const { RemoteRequestError } = await vi.importActual<{
+      RemoteRequestError: new (service: string, status: number) => Error;
+    }>("../../../home-provisioner/src/http.js");
+    const client = accountClient(
+      listener,
+      async () => provisionerToken,
+      { timeoutMs: 5000 },
+      lease,
+    );
     const options = {
-      account: accountClient(listener, async () => provisionerToken, { timeoutMs: 5000 }, lease),
+      account: {
+        ...client,
+        report: async (report: CloudComputerReport, signal: AbortSignal) => {
+          const recorded = await client.report(report, signal);
+          if (duplicate) {
+            duplicate = false;
+            await client.report(report, signal);
+          }
+          return recorded;
+        },
+      },
       provider,
       dns,
       discover: async () => (discovers ? identity : undefined),
@@ -966,7 +998,11 @@ integration("Cloud Computer Account service", () => {
         .executeTakeFirstOrThrow();
     now = new Date(now.getTime() + 23 * 60_000);
     discovers = false;
+    // And that first report is delivered twice: the second copy, judged against the attempt
+    // before this outage, changes nothing (P1).
+    duplicate = true;
     await pass();
+    expect(duplicate).toBe(false);
     expect(await clocks()).toEqual({
       phase: "booting",
       lastError: null,
@@ -986,6 +1022,46 @@ integration("Cloud Computer Account service", () => {
         (line) => line.includes("account.cloud_computer.setup_failed") && line.includes(id),
       ),
     ).toEqual([]);
+    expect((await read()).json()).toMatchObject({ status: "ready" });
+    // A second outage, and no pass between its first report and ten real minutes in: the deadline
+    // then names this outage's attempt, so it is sent though it reads like the stale one before,
+    // and it fails the computer and pages at ten minutes, not thirty (P1).
+    now = new Date(now.getTime() + 23 * 60_000);
+    discovers = false;
+    await pass();
+    expect(await clocks()).toMatchObject({ phase: "booting", readinessStartedAt: now });
+    now = new Date(now.getTime() + 10 * 60_000);
+    await pass();
+    expect(await clocks()).toMatchObject({
+      phase: "failed",
+      lastError: "The Cloud Computer did not become ready before its deadline.",
+    });
+    expect(await notReady()).toEqual([
+      expect.objectContaining({ computerId: id, phase: "failed", code: "readiness-timeout" }),
+    ]);
+    discovers = true;
+    await pass();
+    expect(await clocks()).toMatchObject({ phase: "ready", lastError: null });
+    // A provider read that failed (a 503) says nothing of the computer: nothing is reported, it
+    // stays ready, nothing pages, and its owner's page never says its set-up failed (P2).
+    findFails = new RemoteRequestError("Google Compute Engine", 503);
+    await pass();
+    expect(findFails).toBeUndefined();
+    expect(await clocks()).toMatchObject({ phase: "ready", lastError: null });
+    expect(await notReady()).toEqual([]);
+    expect((await read()).json()).toMatchObject({ status: "ready" });
+    // Evidence of a terminal state still fails it, and pages at once.
+    newerGeneration = true;
+    await pass();
+    expect(await clocks()).toMatchObject({
+      phase: "failed",
+      lastError: "The provider has a newer Cloud Computer generation.",
+    });
+    expect(await notReady()).toEqual([
+      expect.objectContaining({ computerId: id, phase: "failed", code: "newer-generation" }),
+    ]);
+    newerGeneration = false;
+    await pass();
     expect((await read()).json()).toMatchObject({ status: "ready" });
     expect((await mutation("suspend")).statusCode).toBe(200);
     expect((await mutation("resume")).statusCode).toBe(200);
@@ -1945,7 +2021,7 @@ integration("Cloud Computer Account service", () => {
     };
     const deadline = "The Cloud Computer did not become ready before its deadline.";
     // One backup target for each computer below, beside the two every test has.
-    for (let n = 0; n < 7; n += 1)
+    for (let n = 0; n < 9; n += 1)
       await cloud.addBackupTarget({
         endpoint: "https://s3.example.test",
         bucket: "test-backups",
@@ -1982,7 +2058,13 @@ integration("Cloud Computer Account service", () => {
           ? {}
           : phase === "booting"
             ? { phase, observedIdentity: null, providerServerId: 7, ipv4: "192.0.2.7" }
-            : { phase, observedIdentity: null, lastError: deadline },
+            : {
+                phase,
+                observedIdentity: null,
+                lastError: deadline,
+                // As the provisioner sends it: the attempt it read in the desired state.
+                judgedReadinessStartedAt: current.readinessStartedAt,
+              },
       );
       expect(response.json()).toEqual({ recorded: true });
     };
@@ -2127,6 +2209,47 @@ integration("Cloud Computer Account service", () => {
     later(minutes(2));
     for (const id of [suspended, deleting, unpaid]) expect(await says(id)).toEqual([]);
     expect(await says(unclaimed)).toEqual(["not_ready"]);
+
+    // Time not active never counts, and never erases (P3). A computer that never comes up again,
+    // suspended and resumed every eight minutes, pages after thirty active minutes.
+    const ownerOf = async (id: CloudComputerId) =>
+      (
+        await database
+          .selectFrom("cloudComputers")
+          .select("accountId")
+          .where("id", "=", id)
+          .executeTakeFirstOrThrow()
+      ).accountId!;
+    const cycled = await working();
+    await to(cycled, "ready");
+    later(minutes(60));
+    const pagedAtActive: number[] = [];
+    let active = 0;
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      await cloud.mutate(cycled, "suspend", await ownerOf(cycled));
+      later(minutes(5));
+      await cloud.mutate(cycled, "resume", await ownerOf(cycled));
+      for (let minute = 0; minute < 8; minute += 1) {
+        later(minutes(1));
+        active += 1;
+        if ((await says(cycled)).includes("not_ready")) pagedAtActive.push(active);
+      }
+    }
+    expect(pagedAtActive[0]).toBe(30);
+    // And one suspended for days soon after it came back from an outage keeps that short run,
+    // not the days: not paged two minutes after its Resume.
+    const rested = await working();
+    await to(rested, "ready");
+    later(minutes(60));
+    await to(rested, "booting");
+    later(minutes(5));
+    await to(rested, "ready");
+    later(minutes(1));
+    await cloud.mutate(rested, "suspend", await ownerOf(rested));
+    later(minutes(3 * 24 * 60));
+    await cloud.mutate(rested, "resume", await ownerOf(rested));
+    later(minutes(2));
+    expect(await says(rested)).toEqual([]);
 
     // h. Passes do not overlap: while another replica holds the billing pass's lock, a pass
     // reports nothing, so each finding is said once a pass.
