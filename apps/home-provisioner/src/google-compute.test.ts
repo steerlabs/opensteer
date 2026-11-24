@@ -446,6 +446,7 @@ it("selects a four-vCPU Google machine by default and another with one override"
     OPENSTEER_ACCOUNT_URL: "https://account.test",
     OPENSTEER_HOME_CLOUDFLARE_TOKEN: "cloudflare_token_for_tests",
     OPENSTEER_HOME_CLOUDFLARE_ZONE_ID: "0".repeat(32),
+    OPENSTEER_HOME_CLOUD_COMPUTER_DOMAIN: "computers.example.test",
   };
   expect(
     loadConfig({
@@ -474,4 +475,14 @@ it("selects a four-vCPU Google machine by default and another with one override"
   expect(
     GoogleComputeServerRefSchema.safeParse(`${computeInstanceName}/18446744073709551616`).success,
   ).toBe(false);
+  const { OPENSTEER_HOME_CLOUD_COMPUTER_DOMAIN: _required, ...withoutDomain } = shared;
+  expect(() =>
+    loadConfig({
+      ...withoutDomain,
+      OPENSTEER_HOME_GCP_PROJECT: "test-project",
+      OPENSTEER_HOME_GCP_ZONE: "us-central1-a",
+      OPENSTEER_HOME_GCP_NETWORK: "home-net",
+      OPENSTEER_HOME_GCP_SUBNET: "home-subnet",
+    }),
+  ).toThrow("OPENSTEER_HOME_CLOUD_COMPUTER_DOMAIN");
 });
