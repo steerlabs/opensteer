@@ -494,8 +494,8 @@ function AutomationView({
           archived={archived}
           disabled={pending}
           names={detail.secretNames ?? []}
-          onClearAll={() =>
-            act(async () => {
+          onClearAll={() => {
+            void act(async () => {
               await client.dispatch({
                 clearAll: true,
                 idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${trigger.id}`),
@@ -505,10 +505,10 @@ function AutomationView({
               setSecretsUnreadableDetected(false);
               await refresh();
               return "Cleared all secrets";
-            })
-          }
-          onRemove={(name) =>
-            act(async () => {
+            });
+          }}
+          onRemove={(name) => {
+            void act(async () => {
               try {
                 await client.dispatch({
                   idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${trigger.id}`),
@@ -530,8 +530,8 @@ function AutomationView({
               }
               await refresh();
               return `Removed ${name}`;
-            })
-          }
+            });
+          }}
           onSave={(name, value, mode) =>
             act(async () => {
               try {
