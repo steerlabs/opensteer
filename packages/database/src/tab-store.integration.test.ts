@@ -445,6 +445,72 @@ integration("workspace tabs", () => {
     ).rejects.toMatchObject({ code: "conflict" });
     expect((await tabs.snapshot(ownerId)).rows).toEqual([]);
   });
+  it("keeps a tab's title while a new document at its address loads untitled, and lets the loaded document decide", async () => {
+    const { tabs, legacy, database, ownerId, computerId } = await fixture();
+    const store = new OpensteerStore(legacy),
+      sessionId = createBrowserSessionId();
+    await store.createBrowserSession({
+      id: sessionId,
+      runnerId: computerId,
+      ownerId,
+      origin: "agent",
+      opener: { kind: "person", userId: ownerId },
+      placementKey: "test",
+      profileId: null,
+      runtimeId: "test",
+    });
+    await database
+      .updateTable("browserSessions")
+      .set({ createdAt: new Date("2100-01-01T00:00:00.000Z") })
+      .where("id", "=", sessionId)
+      .execute();
+    const tabId = id(),
+      binding = { lineageId: sessionId, sessionId, surfaceId: tabId },
+      address = "https://example.com/f1b";
+    await tabs.open(
+      {
+        id: tabId,
+        ownerId,
+        computerId: DeviceIdSchema.parse(computerId),
+        kind: "page",
+        title: "Restore /f1b",
+        url: address,
+        pageBinding: binding,
+        openedBy: "person",
+      },
+      "open",
+    );
+    const title = async () => (await tabs.get(ownerId, tabId))?.title;
+    // The restored page commits at the same address before its document names itself.
+    await tabs.updatePage(ownerId, tabId, 1, binding, { title: "", url: address, loading: true });
+    expect(await title(), "a loading document's empty title replaced the tab's").toBe(
+      "Restore /f1b",
+    );
+    // Its own title, once it has one, stands at once.
+    await tabs.updatePage(ownerId, tabId, 1, binding, {
+      title: "Recovered",
+      url: address,
+      loading: true,
+    });
+    expect(await title()).toBe("Recovered");
+    // A page that has loaded with no title has none: the last one does not stay for good.
+    await tabs.updatePage(ownerId, tabId, 1, binding, { title: "", url: address, loading: true });
+    expect(await title()).toBe("Recovered");
+    await tabs.updatePage(ownerId, tabId, 1, binding, { title: "", url: address, loading: false });
+    expect(await title()).toBe("");
+    // Another address never shows the last page's title beside it.
+    await tabs.updatePage(ownerId, tabId, 1, binding, {
+      title: "Page A",
+      url: address,
+      loading: false,
+    });
+    await tabs.updatePage(ownerId, tabId, 1, binding, {
+      title: "",
+      url: "https://example.com/b",
+      loading: true,
+    });
+    expect(await title()).toBe("");
+  });
   it("removes open and closed app records inside the app deletion transaction without disturbing other kinds", async () => {
     const { tabs, database, ownerId, write } = await fixture();
     const app = write("app", {

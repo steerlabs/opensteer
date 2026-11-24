@@ -1467,6 +1467,10 @@ export class BrowserController {
       const lifecycle =
         message.type === "surface.close" ||
         (message.type === "cdp.command" && message.command.method === "Target.closeTarget");
+      // V7: a viewer subscribing while a tab wakes waits for its wake before claiming the lease
+      // (both before page creation and mid-wake while it navigates from about:blank).
+      if (target && message.type === "stream.subscribe")
+        await this.ledger.waking(target)?.catch(() => {});
       // Z2: a cancel that came while the command waited for its tab ends it before it is sent.
       if (target && !lifecycle)
         await this.ledger.use(target, () => {
@@ -1858,8 +1862,6 @@ export class BrowserController {
           await target?.cast.close();
           return;
         }
-        // V7: a viewer of a tab that is waking is bound to the tab it wakes into, not refused.
-        if (!this.ledger.binding(surfaceId)) await this.ledger.waking(surfaceId)?.catch(() => {});
         if (!this.ledger.binding(surfaceId))
           throw new BrowserRuntimeError("not_found", "The browser surface does not exist.");
         const subscription = message.frames === false ? "control" : "frames";
