@@ -54,23 +54,25 @@ In the Kubernetes manifest, put non-secret settings in the `account-env` ConfigM
 
 Account also requires its core variables to be valid for Cloud Computer: `OPENSTEER_CONTROL_PLANE_DATABASE_URL`, `OPENSTEER_CONTROL_PLANE_PUBLIC_URL` (must be `https://`), `OPENSTEER_PORTAL_ORIGIN` (must be `https://` and differ from the Account origin), and `OPENSTEER_ADOPTION_OPERATION_KEY` (seals pool credentials, bootstrap tokens, setup codes, at rest).
 
-| Env var                                                   | Meaning                                                                                         | Required | Default | Secret source          |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------- | ------- | ---------------------- |
-| `OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL`              | Google service account email (`*.iam.gserviceaccount.com`) allowed to call reconciler routes    | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_DOMAIN`                         | DNS suffix for Home hostnames (lowercase DNS name, max 214 chars)                               | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_REGION`                         | Compute Engine zone (or region) assigned to new Cloud Computers                                 | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE`                    | Machine type for new Cloud Computers, or `default` to let the provisioner choose                | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_RELEASE_JSON`                   | JSON release manifest (`version`, `installerUrl`, `installerSha256`, `images`)                  | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL`           | Public HTTPS feed for digest-pinned in-place updates                                            | No       | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY`              | Stripe secret or restricted key (`sk_live_...`, `rk_live_...`, `sk_test_...`, or `rk_test_...`) | Yes      | None    | Secret (`_FILE` mount) |
-| `OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET`          | Stripe webhook signing secret (`whsec_...`)                                                     | Yes      | None    | Secret (`_FILE` mount) |
-| `OPENSTEER_CLOUD_COMPUTER_STRIPE_PRICE_ID`                | Recurring Stripe Price ID (`price_...`) used in Checkout                                        | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_STRIPE_PORTAL_CONFIGURATION_ID` | Dedicated Stripe Customer Portal configuration (`bpc_...`)                                      | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_PLAN_NAME`                      | Customer-visible plan name (1–120 chars)                                                        | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_CURRENCY`                       | Three-letter lowercase ISO currency code (for example `usd`)                                    | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR`                    | Positive integer price in minor currency units (for example `2000` for `$20.00`)                | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_PRICE_INTERVAL`                 | Billing interval (`day`, `week`, `month`, or `year`)                                            | No       | `month` | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_IPV6`                           | Publish IPv6 `AAAA` records and enable IPv6 Compose ports (`off` or `on`)                       | No       | `off`   | ConfigMap / non-secret |
+| Env var                                                   | Meaning                                                                                                                            | Required | Default | Secret source          |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------- | ------- | ---------------------- |
+| `OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL`              | Google service account email (`*.iam.gserviceaccount.com`) allowed to call reconciler routes                                       | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_DOMAIN`                         | DNS suffix for Home hostnames (lowercase DNS name, max 214 chars)                                                                  | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_REGION`                         | Compute Engine zone (or region) assigned to new Cloud Computers                                                                    | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE`                    | Machine type for new Cloud Computers, or `default` to let the provisioner choose                                                   | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_RELEASE_JSON`                   | JSON release manifest (`version`, `installerUrl`, `installerSha256`, `images`)                                                     | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL`           | Public HTTPS feed for digest-pinned in-place updates                                                                               | No       | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY`              | Stripe secret or restricted key (`sk_live_...`, `rk_live_...`, `sk_test_...`, or `rk_test_...`)                                    | Yes      | None    | Secret (`_FILE` mount) |
+| `OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET`          | Stripe webhook signing secret (`whsec_...`)                                                                                        | Yes      | None    | Secret (`_FILE` mount) |
+| `OPENSTEER_CLOUD_COMPUTER_STRIPE_PRICE_ID`                | Recurring Stripe Price ID (`price_...`) used in Checkout                                                                           | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_STRIPE_PORTAL_CONFIGURATION_ID` | Dedicated Stripe Customer Portal configuration (`bpc_...`)                                                                         | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_PLAN_NAME`                      | Customer-visible plan name (1–120 chars)                                                                                           | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_CURRENCY`                       | Three-letter lowercase ISO currency code (for example `usd`)                                                                       | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR`                    | Positive integer price in minor currency units (for example `2000` for `$20.00`)                                                   | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_PRICE_INTERVAL`                 | Billing interval (`day`, `week`, `month`, or `year`)                                                                               | No       | `month` | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_IPV6`                           | Publish IPv6 `AAAA` records and enable IPv6 Compose ports (`off` or `on`)                                                          | No       | `off`   | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_NOT_READY_MINUTES`              | Minutes after readiness began that a paid, unclaimed Cloud Computer is reported as `account.cloud_computer.not_ready` (`5`–`1440`) | No       | `30`    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_HEARTBEAT_URL`                  | `https://` address sent a GET after each billing pass with no failure ([deploy/monitoring](../deploy/monitoring/README.md))        | No       | None    | Secret (`_FILE` mount) |
 
 Set `OPENSTEER_CLOUD_COMPUTER_BACKUP_KEY_PROJECT` to a dedicated Google Cloud project before enabling sales. Enable Secret Manager and grant the Account workload identity permission to create secrets, add/access versions, and delete secrets there. PostgreSQL records the key version. The repository passwords live in Secret Manager and on the owning VM. Per-Home secrets use the `opensteer-backup-cc_…` prefix and are destroyed with all versions on final deletion. Keep historical repository passwords out of operational exports and database backups.
 
@@ -78,26 +80,27 @@ Set `OPENSTEER_CLOUD_COMPUTER_BACKUP_KEY_PROJECT` to a dedicated Google Cloud pr
 
 Run `apps/home-provisioner` with `deploy/home-provisioner/deployment.yaml` (`replicas: 1`, `strategy.type: Recreate`). The pod authenticates to Account with a Google workload identity token fetched from `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity` for the Account origin audience. The same identity's access token authorizes its Compute Engine calls. `OPENSTEER_HOME_CLOUDFLARE_TOKEN` accepts a `_FILE` variant. [deploy/home-provisioner/google-compute.md](../deploy/home-provisioner/google-compute.md) sets up the project, the network and the provisioner's permissions.
 
-| Env var                               | Meaning                                                                       | Required | Default                       | Secret source                 |
-| ------------------------------------- | ----------------------------------------------------------------------------- | -------- | ----------------------------- | ----------------------------- |
-| `OPENSTEER_ACCOUNT_URL`               | Bare `https://` origin of the Account service                                 | Yes      | None                          | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_PROJECT`          | Compute Engine project for Cloud Computer VMs                                 | Yes      | None                          | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_ZONE`             | Compute Engine zone (for example `us-central1-a`); also selects the region    | Yes      | None                          | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_NETWORK`          | VPC network name                                                              | Yes      | None                          | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_SUBNET`           | Subnet name                                                                   | Yes      | None                          | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_MACHINE_TYPE`     | Machine type when a desired record has `serverType: null`                     | No       | `e2-standard-4`               | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_IMAGE`            | Ubuntu 24.04 LTS image or image family resource path                          | No       | Ubuntu 24.04 LTS amd64 family | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_DISK_TYPE`        | Boot disk type (`pd-balanced`, `pd-standard`, `pd-ssd`)                       | No       | `pd-balanced`                 | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_DISK_SIZE_GB`     | Boot disk size in GB                                                          | No       | `30`                          | Deployment secret/env         |
-| `OPENSTEER_HOME_CLOUDFLARE_TOKEN`     | Cloudflare API token                                                          | Yes      | None                          | Secret (`_FILE` or SecretRef) |
-| `OPENSTEER_HOME_CLOUDFLARE_ZONE_ID`   | Cloudflare 32-character hex zone ID for `OPENSTEER_CLOUD_COMPUTER_DOMAIN`     | Yes      | None                          | Deployment secret/env         |
-| `OPENSTEER_HOME_PROVISIONER_REPLICAS` | Safety guard; must equal `"1"` or the process refuses to start                | No       | `1`                           | Deployment manifest           |
-| `OPENSTEER_HOME_INTERVAL_MS`          | Poll interval in milliseconds (`1000`–`300000`)                               | No       | `10000`                       | Deployment secret/env         |
-| `OPENSTEER_HOME_REQUEST_TIMEOUT_MS`   | Per-HTTP-request timeout in milliseconds (`100`–`60000`)                      | No       | `15000`                       | Deployment secret/env         |
-| `OPENSTEER_HOME_ACTION_TIMEOUT_MS`    | Compute Engine operation timeout in milliseconds (`1000`–`600000`)            | No       | `90000`                       | Deployment secret/env         |
-| `OPENSTEER_HOME_READINESS_TIMEOUT_MS` | Max wait for a Home to become ready in milliseconds (`1000`–`3600000`)        | No       | `600000`                      | Deployment secret/env         |
-| `OPENSTEER_HOME_ORPHAN_GRACE_MS`      | Grace period before deleting orphaned VMs or DNS records (`60000`–`86400000`) | No       | `300000`                      | Deployment secret/env         |
-| `OPENSTEER_HOME_CONCURRENCY`          | Max Cloud Computers reconciled in parallel (`1`–`16`)                         | No       | `4`                           | Deployment secret/env         |
+| Env var                                    | Meaning                                                                        | Required | Default                       | Secret source                 |
+| ------------------------------------------ | ------------------------------------------------------------------------------ | -------- | ----------------------------- | ----------------------------- |
+| `OPENSTEER_ACCOUNT_URL`                    | Bare `https://` origin of the Account service                                  | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_PROJECT`               | Compute Engine project for Cloud Computer VMs                                  | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_ZONE`                  | Compute Engine zone (for example `us-central1-a`); also selects the region     | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_NETWORK`               | VPC network name                                                               | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_SUBNET`                | Subnet name                                                                    | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_MACHINE_TYPE`          | Machine type when a desired record has `serverType: null`                      | No       | `e2-standard-4`               | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_IMAGE`                 | Ubuntu 24.04 LTS image or image family resource path                           | No       | Ubuntu 24.04 LTS amd64 family | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_DISK_TYPE`             | Boot disk type (`pd-balanced`, `pd-standard`, `pd-ssd`)                        | No       | `pd-balanced`                 | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_DISK_SIZE_GB`          | Boot disk size in GB                                                           | No       | `30`                          | Deployment secret/env         |
+| `OPENSTEER_HOME_CLOUDFLARE_TOKEN`          | Cloudflare API token                                                           | Yes      | None                          | Secret (`_FILE` or SecretRef) |
+| `OPENSTEER_HOME_CLOUDFLARE_ZONE_ID`        | Cloudflare 32-character hex zone ID for `OPENSTEER_CLOUD_COMPUTER_DOMAIN`      | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_PROVISIONER_REPLICAS`      | Safety guard; must equal `"1"` or the process refuses to start                 | No       | `1`                           | Deployment manifest           |
+| `OPENSTEER_HOME_INTERVAL_MS`               | Poll interval in milliseconds (`1000`–`300000`)                                | No       | `10000`                       | Deployment secret/env         |
+| `OPENSTEER_HOME_REQUEST_TIMEOUT_MS`        | Per-HTTP-request timeout in milliseconds (`100`–`60000`)                       | No       | `15000`                       | Deployment secret/env         |
+| `OPENSTEER_HOME_ACTION_TIMEOUT_MS`         | Compute Engine operation timeout in milliseconds (`1000`–`600000`)             | No       | `90000`                       | Deployment secret/env         |
+| `OPENSTEER_HOME_READINESS_TIMEOUT_MS`      | Max wait for a Home to become ready in milliseconds (`1000`–`3600000`)         | No       | `600000`                      | Deployment secret/env         |
+| `OPENSTEER_HOME_ORPHAN_GRACE_MS`           | Grace period before deleting orphaned VMs or DNS records (`60000`–`86400000`)  | No       | `300000`                      | Deployment secret/env         |
+| `OPENSTEER_HOME_CONCURRENCY`               | Max Cloud Computers reconciled in parallel (`1`–`16`)                          | No       | `4`                           | Deployment secret/env         |
+| `OPENSTEER_HOME_PROVISIONER_HEARTBEAT_URL` | `https://` address sent a GET after each tick with no failure; accepts `_FILE` | No       | None                          | Secret (`_FILE` or SecretRef) |
 
 ### Home VM environment (on each VM)
 
@@ -386,8 +389,8 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
     - `cancel`: if the row isn't deleted yet, the pass cancels its subscription (`invoice_now=false`, `prorate=false`). It won't renew, and the rest of the period already paid isn't refunded. A failed attempt sets `cancelFailedAt`. Then Stripe must show the subscription cancelled.
     - `customer`: the Stripe customer that subscription belongs to is deleted, with the payment details saved on it, unless Stripe lists another subscription on it that is not cancelled. Stripe keeps its own records of past payments.
     - `record`: `billingSettledAt` is set. Rows deleted before this release were marked settled by the migration and are never revisited.
-    - Nothing is refunded automatically. If the first cancel failed, settling logs `Cloud Computer billing reconciliation failed` with error `CloudComputerCancelledLate`, the `computerId` and `waitedMs` (request to cancellation). Look in Stripe for a renewal charged in that time and refund it by hand.
-    - A row still unsettled an hour after its request is logged the same way with `CloudComputerDeletionUnsettled`, the `computerId` and the `step` that is failing.
+    - Nothing is refunded automatically. If the first cancel failed, settling logs `account.billing.cancelled_late` (error type `CloudComputerCancelledLate`) with the `computerId` and `waitedMs` (request to cancellation). Look in Stripe for a renewal charged in that time and refund it by hand.
+    - A row still unsettled an hour after its request is logged as `account.billing.deletion_unsettled` (`CloudComputerDeletionUnsettled`) with the `computerId` and the `step` that is failing. Removing its stored backups, when that is what remains, is logged as `account.backup.erasure_pending`.
 - **Account deletion**:
   - The account deletion page says the person's Cloud Computer goes with the Account, with the same billing words as the Cloud Computer's own Delete.
   - `AccountDeletionService.delete` contacts no Cloud Computer before the Account's own transaction. When the Account's row goes, the database records each of its Cloud Computers' deletion requests in that same transaction (the `zz_cloud_computer_revision` trigger). A deletion refused because another attempt is already deleting the Account leaves the Cloud Computer as it was.
@@ -396,12 +399,14 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
 ## When something goes wrong
 
+Each failure below is logged as one stable event, `jsonPayload.event` in Cloud Logging, with the same field names everywhere (`computerId`, `code`, `phase`, `minutes`, `step`, `pool`, `free`, `codes`, `status`, and a redacted `error`). The alerts in [deploy/monitoring](../deploy/monitoring/README.md) are written against these names: three page (a person paid and has no working Cloud Computer, the account service is down, the synthetic purchase failed twice) and the rest arrive in a daily digest. The account service's names are in `apps/control-plane/src/server/events.ts`; the provisioner's are `home-provisioner.*`.
+
 ### Setup that never becomes ready
 
-- **How to recognise it**: `show <id>` reports `phase: "failed"` with a `lastError` or a claim error under `claim.error` after the VM reaches `ready`. Account logs `Cloud Computer claim failed` on claim failures.
+- **How to recognise it**: the page `account.cloud_computer.not_ready` (with `computerId`, `phase`, `minutes` since readiness began and, when known, the failure `code`) names a person who paid and has no working Cloud Computer: its setup failed, its claim failed, or it is not claimed `OPENSTEER_CLOUD_COMPUTER_NOT_READY_MINUTES` (default 30) after readiness began. It repeats every minute while that stays true. `account.cloud_computer.setup_failed` is logged once as the provisioner records a failure, with its `code` (`provider-failed` when Google refused the request, `readiness-timeout`, `dns-failed`, `identity-mismatch` and the rest), and `account.cloud_computer.claim_failed` ("Cloud Computer claim failed") on each failed claim attempt. `show <id>` reports `phase: "failed"` with a `lastError` or a claim error under `claim.error` after the VM reaches `ready`.
 - **What the system does**: The reconciler retries transient provider/DNS/discovery errors on every pass until `OPENSTEER_HOME_READINESS_TIMEOUT_MS` elapses, then reports `phase: "failed"` with `lastError`. The claimer retries transient errors with exponential backoff (up to 60 seconds) for 60 minutes from `readinessStartedAt`, then records `claimError` and stops retrying.
 - **What the operator does**:
-  1. Check `show <id>`, Account logs (`Cloud Computer claim failed`), and reconciler logs (`home-provisioner.pass.failed`) to see whether provisioning, boot, discovery, or claiming failed.
+  1. Check `show <id>`, Account logs (`account.cloud_computer.setup_failed`, `account.cloud_computer.claim_failed`), and reconciler logs (`home-provisioner.pass.failed`) to see whether provisioning, boot, discovery, or claiming failed.
   2. If the VM is reachable by console/SSH, inspect `systemctl status opensteer-home-managed.service`, `journalctl -u opensteer-home-managed.service`, and `sudo opensteer-home status` / `sudo opensteer-home logs <service>`.
   3. If the Home has never been ready, run `node dist/cloud-computer-operator-main.js reissue-bootstrap <id>` to rebuild it with a fresh bootstrap token.
   4. For a `ready` Home with a claim error, fix the underlying issue and run `claim-retry <computer-id>`. If a ready replacement cannot be repaired and Account has not issued its owner a sign-in, use the staged-snapshot reissue procedure below. For other previously ready personal Homes, use snapshot replacement if they cannot be recovered in place.
@@ -490,16 +495,17 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
 ### Missed webhook
 
-- **How to recognise it**: A customer completed Checkout, paid a past-due invoice, or canceled in Stripe, but `show <id>` (or `list`) has not updated after a minute, or Account logs `Cloud Computer billing reconciliation failed`.
+- **How to recognise it**: A customer completed Checkout, paid a past-due invoice, or canceled in Stripe, but `show <id>` (or `list`) has not updated after a minute, or Account logs `account.billing.failed` ("Cloud Computer billing reconciliation failed").
 - **What the system does**: Account's background billing reconciler runs at startup and every 60 seconds. It reconciles open checkouts against Stripe, processes deferred checkouts, and refreshes every active or suspended subscription directly from Stripe. Missed webhooks self-heal within 60 seconds as long as Account can reach Stripe.
 - **What the operator does**:
   1. Check Stripe Dashboard -> Developers -> Webhooks for delivery errors to `/v1/cloud-computers/stripe-webhook` (HTTP `401` indicates a mismatched `OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET`; HTTP `404` indicates Cloud Computer is disabled on Account).
-  2. Check Account logs for `Cloud Computer billing reconciliation failed` and its redacted `error` field. Use `checkout-list` to find deferred or unresolved payments and `billing-reconcile` to run a pass now.
+  2. Check Account logs for `account.billing.failed` and its redacted `error` field. Use `checkout-list` to find deferred or unresolved payments and `billing-reconcile` to run a pass now.
   3. Fix the webhook secret or Stripe connectivity; the 60-second reconciler catches up automatically (and you can also resend failed events in Stripe, which are deduplicated by event ID).
 
 ### No free backup target or egress endpoint
 
 - **How to recognise it**:
+  - **Before it is empty**: the billing pass logs `account.pool.low` with `pool` (`backup` or `egress`) and `free` while fewer than two entries are free.
   - **Backup pool empty**: Customer checkout fails with HTTP `503` (`"Cloud Computer checkout is not available right now"`). `node dist/cloud-computer-operator-main.js backup-list` shows every row is assigned or reserved (`computerId` or `reserved`), awaiting purge (`purgeComputerId`), or marked `needsRotation`.
   - **Egress pool empty**: `show <id>` shows `egressUnavailable: true` (customer sees Browser IP: "Browsing paused"). `node dist/cloud-computer-operator-main.js egress-list` shows every row has a non-null `computerId` or `needsRotation: true`.
 - **What the system does**:
@@ -509,6 +515,32 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
   1. Add new entries with `backup-add` / `egress-add`, or rotate released entries (`needsRotation: true`) with `backup-rotate` / `egress-rotate`.
   2. New checkouts succeed immediately once a backup target is free.
   3. Run `egress-assign <computer-id>`. The Home can then fetch its exclusive credentials without rebuilding. Installed versions without the VM refresh support still require the VM-side change below.
+
+### The account service is down
+
+- **How to recognise it**: the page "The account service is down": the uptime check on `https://<account-origin>/healthz` has failed from more than one region for two minutes (`deploy/monitoring/policies/page-account-down.yaml`).
+- **What the system does**: Nothing reaches it: sign-in, checkout, the Stripe webhook (Stripe retries for three days), the provisioner (its pass fails with `home-provisioner.pass.failed` and retries) and the Homes' reports all wait. Running Cloud Computers keep working for people already signed in to them.
+- **What the operator does**:
+  1. `kubectl -n opensteer-system get pods -l app.kubernetes.io/name=account` and `kubectl -n opensteer-system logs deploy/account`: a pod failing its `/healthz` probe, a crash at startup (a migration refused, as in the section on `0037_remove_organizations` below), or the database unreachable.
+  2. Check the load balancer and the certificate for the account origin.
+  3. Once it answers, the billing pass catches up within a minute; check `account.billing.failed` stops.
+
+### The synthetic purchase failed
+
+- **How to recognise it**: the page "The synthetic purchase failed twice": two runs in a row of `scripts/synthetic-cloud-computer.mjs` (the CronJob in `deploy/monitoring/synthetic-cronjob.yaml`, every six hours against the staging account service in Stripe test mode) logged `synthetic.run.failed`. Its `step` says where: `sign-in`, `account-not-empty`, `checkout`, `payment`, `ready`, `home`, `delete`, `gone` or `configuration`; the exit code matches (10 to 17, or 2).
+- **What the system does**: The run touches only the Cloud Computer it created, by its id, and deletes it even when a later step failed (`synthetic.run.cleanup-failed` if that delete did not finish). With `account-not-empty` it touched nothing: the review account already has a live Cloud Computer, left by an earlier run whose cleanup failed or made by hand.
+- **What the operator does**:
+  1. Read the last two `synthetic.run.failed` lines: the `step`, the `detail` and the `computerId`.
+  2. `payment`: the Stripe calls the hosted checkout page makes changed, or the test publishable key is wrong. `ready`: follow "Setup that never becomes ready" with that `computerId`; production may be broken the same way. `home`: the Home answered at its address but not as the Home the account claimed. `delete` or `gone`: follow "Stripe outage during delete".
+  3. For `account-not-empty`, delete the review account's Cloud Computer once you know where it came from; the next run then starts clean.
+
+### A Cloud Computer reports a problem
+
+- **How to recognise it**: from the daily digest. `account.cloud_computer.unhealthy` (with `computerId` and the problem `codes`) when a Cloud Computer's health report names a problem that needs someone; `account.cloud_computer.report_missing` (with `minutes`) when a ready Cloud Computer has sent no health report for an hour; `account.cloud_computer.backup_overdue` (with `minutes` since the last backup) when it has reported no backup for 36 hours.
+- **What the system does**: Every 15 minutes each Cloud Computer sends its health report (version, each service healthy or not, a disk bucket, its last backup and update and its problem codes with counts, nothing else; [architecture](architecture.md#problems-and-reports)). The account keeps only the latest report per computer, and its owner sees that same report on their Cloud Computer page.
+- **What the operator does**:
+  1. `node dist/cloud-computer-operator-main.js show <id>` shows the latest report under `health`, with when it arrived.
+  2. A service unhealthy or a failed update: on the VM, `sudo opensteer-home status` and `sudo opensteer-home logs <service>`; see "Failed update and its rollback". A failed or overdue backup: `journalctl -u opensteer-home-backup.service`. No report at all: the VM may be off or the Host down; check the instance in Compute Engine.
 
 ### Managed Home installer contract
 
