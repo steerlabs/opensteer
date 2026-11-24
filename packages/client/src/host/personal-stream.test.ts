@@ -1837,14 +1837,16 @@ test("refuses raw tool text in a feed preview while keeping the stable tool iden
   expect(f.detail.transcript.getSnapshot().items.get(safe.id)).toEqual(safe);
 });
 
-test("evicts inactive scope previews before they exceed the structural budget", () => {
+test("keeps the eight most recently shown inactive tasks whole, however large their windows", () => {
   const f = fixture();
   f.syncShell();
   f.syncDetail();
-  const scopes = Array.from({ length: 22 }, () => ({
+  const scopes = Array.from({ length: 12 }, () => ({
     kind: "thread" as const,
     threadId: createId("thread"),
   }));
+  // Each window is far past the old 2 MiB budget for every inactive task together.
+  const text = "x".repeat(16 * 1024);
   const details = scopes.map((scope) => {
     const release = f.stream.observe(scope);
     const address = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
@@ -1853,27 +1855,118 @@ test("evicts inactive scope previews before they exceed the structural budget", 
         ...item,
         id: String(index),
         position: String(index + 1),
+        text,
       })),
     ).snapshot;
-    f.stream.receive({
-      subscriptionId: address.subscriptionId,
-      generation: address.generation,
-      scope,
-      type: "host.snapshot",
-      throughSequence: "1",
-      snapshot: {
-        ...snapshot,
-        thread: detailThread({ ...task, id: scope.threadId }),
-        nextBefore: null,
-      },
-    });
+    const at = { subscriptionId: address.subscriptionId, generation: address.generation, scope };
+    expect(
+      f.stream.receive({
+        ...at,
+        type: "host.snapshot",
+        throughSequence: "1",
+        snapshot: {
+          ...snapshot,
+          thread: detailThread({ ...task, id: scope.threadId }),
+          nextBefore: null,
+        },
+      }),
+    ).toBe(true);
+    f.stream.receive({ ...at, type: "host.synchronized", throughSequence: "1" });
     const store = f.stream.detail(scope);
     expect(store.transcript.getSnapshot().items.size).toBe(50);
     release();
     return store;
   });
-  expect(f.stream.detail(scopes[0]!) === details[0]).toBe(false);
-  expect(f.stream.detail(scopes.at(-1)!) === details.at(-1)).toBe(true);
+  const kept = details.map((detail, index) => f.stream.peekDetail(scopes[index]!) === detail);
+  expect(kept).toEqual([...Array<boolean>(4).fill(false), ...Array<boolean>(8).fill(true)]);
+  for (const detail of details.slice(4))
+    expect(detail.transcript.getSnapshot().items.size).toBe(50);
+  expect(f.detail.transcript.getSnapshot().items.get(item.id)?.id).toBe(item.id);
+});
+
+test("publishes a resubscription's catch-up once, whole, when it is synchronized", () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  // Leave the task and come back: it resumes from its cursor with its rows still drawn.
+  f.stream.select(undefined);
+  f.stream.select(threadScope);
+  const next = f.sent.findLast((frame) => frame.type === "client.subscribe") as Extract<
+    ScopedClientMessage,
+    { type: "client.subscribe" }
+  >;
+  expect(next.cursor?.afterSequence).toBe("1");
+  const at = {
+    subscriptionId: next.subscriptionId,
+    generation: next.generation,
+    scope: next.scope,
+  };
+  expect(f.detail.transcript.getSnapshot()).toMatchObject({ synchronized: false });
+  expect(f.detail.transcript.getSnapshot().items.has(item.id)).toBe(true);
+  const notices = vi.fn();
+  f.detail.transcript.subscribe(notices);
+  const commits = 100;
+  for (let index = 1; index <= commits; index++) {
+    const id = `replayed-${index}`;
+    expect(
+      f.stream.receive({
+        ...at,
+        type: "host.changes",
+        fromSequence: String(index),
+        throughSequence: String(index + 1),
+        changes: [
+          {
+            entityKind: "item",
+            entityId: id,
+            ordinal: 0,
+            sequence: String(index + 1),
+            operation: "upsert",
+            value: { ...item, id, revision: String(index + 1), position: String(index + 1) },
+          },
+        ],
+      }),
+    ).toBe(true);
+  }
+  // Each commit is applied and acknowledged, but nothing renders a half-caught-up task.
+  expect(notices).not.toHaveBeenCalled();
+  expect(f.detail.transcript.getSnapshot().items.size).toBe(commits + 1);
+  expect(f.sent.filter((frame) => frame.type === "client.ack").at(-1)).toMatchObject({
+    throughSequence: String(commits + 1),
+  });
+  f.stream.receive({ ...at, type: "host.synchronized", throughSequence: String(commits + 1) });
+  expect(notices).toHaveBeenCalledTimes(1);
+  expect(f.detail.transcript.getSnapshot()).toMatchObject({
+    synchronized: true,
+    through: String(commits + 1),
+  });
+  // Once synchronized, each change is published as it lands.
+  f.stream.receive({
+    ...at,
+    type: "host.changes",
+    fromSequence: String(commits + 1),
+    throughSequence: String(commits + 2),
+    changes: [
+      {
+        entityKind: "item",
+        entityId: item.id,
+        ordinal: 0,
+        sequence: String(commits + 2),
+        operation: "remove",
+      },
+    ],
+  });
+  expect(notices).toHaveBeenCalledTimes(2);
+});
+
+test("publishes a subscription's first snapshot with its synchronization, not before", () => {
+  const f = fixture();
+  f.syncShell();
+  const notices = vi.fn();
+  f.detail.transcript.subscribe(notices);
+  f.stream.receive(f.detailSnapshot());
+  expect(notices).not.toHaveBeenCalled();
+  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
+  expect(notices).toHaveBeenCalledTimes(1);
   expect(f.detail.transcript.getSnapshot().items.get(item.id)?.id).toBe(item.id);
 });
 
@@ -2341,6 +2434,38 @@ test("a shell repair on an open socket keeps the connection, its reconnect work 
     expect(client.getThreadItemText(threadId)?.get("live-reply")?.text).toBe("Hello");
     expect(connections.every((connection) => connection === "connected")).toBe(true);
     expect(fetch.mock.calls.length).toBe(reads);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("a task shown again draws its kept rows at once from the same reader, until the stream lets it go", async () => {
+  const others = Array.from({ length: 9 }, () => ({ ...task, id: createId("thread") }));
+  const host = scriptedHost({ tasks: [task, ...others] });
+  const client = scriptedClient(host);
+  const synchronized = (id: string) =>
+    vi.waitFor(() => expect(client.getThreadTranscript(id)?.getSnapshot().synchronized).toBe(true));
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    await synchronized(threadId);
+    const reader = client.getThreadTranscript(threadId)!;
+    client.activateThread(others[0]!.id);
+    await synchronized(others[0]!.id);
+    // Before the task is shown again, its first frame already has its rows.
+    const parked = client.getThreadTranscript(threadId);
+    expect(parked).toBe(reader);
+    expect(parked?.getSnapshot().entries.map(({ id }) => id)).toContain(item.id);
+    expect(parked?.getSnapshot().synchronized).toBe(false);
+    client.activateThread(threadId);
+    expect(client.getThreadTranscript(threadId)).toBe(reader);
+    await synchronized(threadId);
+    // Past the tasks the stream keeps, the reader goes with its scope.
+    for (const other of others) {
+      client.activateThread(other.id);
+      await synchronized(other.id);
+    }
+    expect(client.getThreadTranscript(threadId)).toBeUndefined();
   } finally {
     client.dispose();
   }

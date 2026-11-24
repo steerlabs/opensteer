@@ -201,12 +201,20 @@ export class ThreadTranscriptStore {
     });
   }
 
+  /**
+   * Applies one frame. With `catchUp`, a subscription's cut before `host.synchronized` (its
+   * snapshot, or every replayed commit) is applied without telling listeners: the catch-up is
+   * published once, whole, when `host.synchronized` arrives, so a reader never renders each
+   * replayed commit.
+   */
   apply(
     frame: Frame,
     authority?: Pick<PersonalResumeCursor, "deploymentId" | "viewerId" | "epoch">,
+    catchUp = false,
   ): boolean {
     const state = this.#state;
     if (frame.generation !== state.generation || frame.scope.kind === "shell") return false;
+    const quiet = catchUp && !state.synchronized;
     switch (frame.type) {
       case "host.removed":
         this.#set({ ...emptyState, generation: state.generation, removed: true });
@@ -217,7 +225,7 @@ export class ThreadTranscriptStore {
         return true;
       case "host.snapshot": {
         if ("tasks" in frame.snapshot) return false;
-        this.#snapshot(frame.snapshot, frame.throughSequence, frame.scope, authority);
+        this.#snapshot(frame.snapshot, frame.throughSequence, frame.scope, authority, quiet);
         return true;
       }
       case "host.changes": {
@@ -380,24 +388,27 @@ export class ThreadTranscriptStore {
             if (!listed.has(id)) (queueEntries ??= new Map(state.queueEntries)).delete(id);
         }
         const entries = queueEntries ?? state.queueEntries;
-        this.#set({
-          ...state,
-          through: frame.throughSequence,
-          snapshot,
-          liveItems: liveItems ?? state.liveItems,
-          items: items ?? state.items,
-          ids: ids ?? state.ids,
-          historyIds: historyIds ?? state.historyIds,
-          activeIds: activeIds ?? state.activeIds,
-          queueEntries: entries,
-          inputQueue: inputQueueOf(
-            frame.scope.threadId,
-            snapshot?.queue,
-            entries,
-            state.inputQueue,
-          ),
-          assignments: assignments ?? state.assignments,
-        });
+        this.#set(
+          {
+            ...state,
+            through: frame.throughSequence,
+            snapshot,
+            liveItems: liveItems ?? state.liveItems,
+            items: items ?? state.items,
+            ids: ids ?? state.ids,
+            historyIds: historyIds ?? state.historyIds,
+            activeIds: activeIds ?? state.activeIds,
+            queueEntries: entries,
+            inputQueue: inputQueueOf(
+              frame.scope.threadId,
+              snapshot?.queue,
+              entries,
+              state.inputQueue,
+            ),
+            assignments: assignments ?? state.assignments,
+          },
+          quiet,
+        );
         return true;
       }
     }
@@ -409,7 +420,8 @@ export class ThreadTranscriptStore {
     next: DetailSnapshot,
     through: string,
     scope: Extract<Frame["scope"], { threadId: string }>,
-    authority?: Pick<PersonalResumeCursor, "deploymentId" | "viewerId" | "epoch">,
+    authority: Pick<PersonalResumeCursor, "deploymentId" | "viewerId" | "epoch"> | undefined,
+    quiet: boolean,
   ) {
     const state = this.#state;
     const items = new Map<string, TranscriptItem>();
@@ -432,37 +444,40 @@ export class ThreadTranscriptStore {
       (next.inputQueue ?? []).map((entry) => [entry.message.id as string, entry]),
     );
     const snapshot = next;
-    this.#set({
-      ...state,
-      through,
-      snapshot,
-      synchronized: state.synchronized,
-      removed: false,
-      // Live text stays through a repair; a provisional card the cut finalized gives way to it.
-      liveItems: repair
-        ? new Map([...state.liveItems].filter(([id]) => !items.has(id)))
-        : emptyState.liveItems,
-      items,
-      historyIds,
-      activeIds: new Set(next.activeItems.map(({ id }) => id)),
-      ids: stableIds(state.ids, sortedIds(items)),
-      readRevision: "0",
-      cursorScope: authority
-        ? {
-            ...authority,
-            threadId: scope.threadId,
-            nodeId: scope.kind === "node" ? scope.nodeId : null,
-          }
-        : (next.nextBefore ?? next.nextAfter ?? state.cursorScope ?? undefined),
-      queueEntries,
-      inputQueue: inputQueueOf(scope.threadId, next.queue, queueEntries, state.inputQueue),
-      assignments: emptyState.assignments,
-      // An anchor in the newest window still reaches the tail: only a later page makes it history.
-      newest: next.nextAfter == null,
-      repairs: repair ? state.repairs + 1 : 0,
-      cuts: state.cuts + 1,
-      snapshotThrough: through,
-    });
+    this.#set(
+      {
+        ...state,
+        through,
+        snapshot,
+        synchronized: state.synchronized,
+        removed: false,
+        // Live text stays through a repair; a provisional card the cut finalized gives way to it.
+        liveItems: repair
+          ? new Map([...state.liveItems].filter(([id]) => !items.has(id)))
+          : emptyState.liveItems,
+        items,
+        historyIds,
+        activeIds: new Set(next.activeItems.map(({ id }) => id)),
+        ids: stableIds(state.ids, sortedIds(items)),
+        readRevision: "0",
+        cursorScope: authority
+          ? {
+              ...authority,
+              threadId: scope.threadId,
+              nodeId: scope.kind === "node" ? scope.nodeId : null,
+            }
+          : (next.nextBefore ?? next.nextAfter ?? state.cursorScope ?? undefined),
+        queueEntries,
+        inputQueue: inputQueueOf(scope.threadId, next.queue, queueEntries, state.inputQueue),
+        assignments: emptyState.assignments,
+        // An anchor in the newest window still reaches the tail: only a later page makes it history.
+        newest: next.nextAfter == null,
+        repairs: repair ? state.repairs + 1 : 0,
+        cuts: state.cuts + 1,
+        snapshotThrough: through,
+      },
+      quiet,
+    );
   }
 
   liveItem(item: TranscriptItem | undefined, itemId: string, close: boolean) {
@@ -733,8 +748,9 @@ export class ThreadTranscriptStore {
     return checkpointSnapshot;
   }
 
-  #set(state: TranscriptState) {
+  #set(state: TranscriptState, quiet = false) {
     this.#state = state;
+    if (quiet) return;
     for (const listener of this.#listeners) listener();
   }
 }

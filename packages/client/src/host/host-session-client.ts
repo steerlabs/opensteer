@@ -305,6 +305,10 @@ export class HttpHostClient {
   #resolveLoad: (() => void) | undefined;
   readonly #resources: PersonalResourceReads;
   readonly #environmentCatalogs = new Map<string, EnvironmentSummary["harnessCatalogs"]>();
+  /**
+   * Each task's reader, parked while the task is not shown and reused for as long as the stream
+   * keeps the task's scope, so showing it again draws its rows in the first frame.
+   */
   readonly #scopeReaders = new Map<string, ScopedThreadReader>();
   readonly #bodies = new TranscriptBodies();
   readonly #threadReaders = new Map<string, () => void>();
@@ -1310,6 +1314,7 @@ export class HttpHostClient {
     if (previous && previous !== threadId) this.#releaseDetail(previous);
     this.#watchDetail(threadId);
     this.#stream.select({ kind: "thread", threadId: id.data });
+    this.#sweepReaders();
   }
 
   deactivateThread(threadId: string) {
@@ -1317,6 +1322,7 @@ export class HttpHostClient {
     this.#activeThreadId = null;
     this.#stream.select(undefined);
     this.#releaseDetail(threadId);
+    this.#sweepReaders();
   }
 
   deploymentPosition(): Sequence | null {
@@ -1336,11 +1342,12 @@ export class HttpHostClient {
       if (count <= 1) this.#observedThreads.delete(threadId);
       else this.#observedThreads.set(threadId, count - 1);
       this.#releaseDetail(threadId);
+      this.#sweepReaders();
     };
   }
 
   getThreadTranscript(threadId: string) {
-    return this.#scopeReaders.get(threadId);
+    return this.#reader(threadId);
   }
 
   getThreadItemText(threadId: string, nodeId?: string) {
@@ -1430,19 +1437,34 @@ export class HttpHostClient {
       : undefined;
   }
 
+  /** The task's reader, while it still projects the scope the stream holds for the task. */
   #reader(threadId: string) {
     const scope = this.#detailScope(threadId);
-    if (!scope) return;
-    return this.#scopeReaders.get(threadId);
+    const reader = this.#scopeReaders.get(threadId);
+    if (!scope || !reader || this.#stream.peekDetail(scope) !== reader.detail) return;
+    return reader;
+  }
+
+  /** Disposes the parked readers whose scope the stream no longer keeps. */
+  #sweepReaders() {
+    for (const [threadId, reader] of this.#scopeReaders) {
+      if (this.#threadReaders.has(threadId) || this.#reader(threadId) === reader) continue;
+      reader.dispose();
+      this.#scopeReaders.delete(threadId);
+    }
   }
 
   #watchDetail(threadId: string) {
     const scope = this.#detailScope(threadId);
     if (!scope || this.#threadReaders.has(threadId)) return;
     const detail = this.#stream.detail(scope);
-    const reader = new ScopedThreadReader(detail, this.rpc, this.#bodies);
+    let reader = this.#reader(threadId);
+    if (!reader) {
+      this.#scopeReaders.get(threadId)?.dispose();
+      reader = new ScopedThreadReader(detail, this.rpc, this.#bodies);
+      this.#scopeReaders.set(threadId, reader);
+    }
     reader.setMeasure(this.#positionMeasures.get(threadId));
-    this.#scopeReaders.set(threadId, reader);
     let placeItems: ReturnType<typeof detail.transcript.getSnapshot>["items"] | undefined;
     let placeQueue: NonNullable<
       ReturnType<typeof detail.transcript.getSnapshot>["snapshot"]
@@ -1584,8 +1606,7 @@ export class HttpHostClient {
     if (this.#showsThread(threadId)) return;
     this.#threadReaders.get(threadId)?.();
     this.#threadReaders.delete(threadId);
-    this.#scopeReaders.get(threadId)?.dispose();
-    this.#scopeReaders.delete(threadId);
+    this.#scopeReaders.get(threadId)?.park();
     this.#clearDetailReads(threadId);
   }
 

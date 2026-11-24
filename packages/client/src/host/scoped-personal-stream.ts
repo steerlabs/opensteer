@@ -24,7 +24,11 @@ import {
   type PersonalStreamCache,
   type PersonalStreamCheckpoint,
 } from "./personal-stream-cache.js";
-import { finalizedItemText, ThreadTranscriptStore } from "./thread-transcript-store.js";
+import {
+  finalizedItemText,
+  ThreadTranscriptStore,
+  type TranscriptState,
+} from "./thread-transcript-store.js";
 
 type DetailScope = Exclude<PersonalScope, { kind: "shell" }>;
 type DetailId = Extract<ScopedClientMessage, { type: "client.live.resync" }>["subscriptionId"];
@@ -107,6 +111,9 @@ export interface PersonalResourcePort {
 }
 
 type Identity = ScopedPersonalIdentity;
+type Dirty =
+  | { readonly detail: ObservedDetail; readonly state: TranscriptState; readonly fence: number }
+  | undefined;
 type DetailCheckpoint = {
   readonly cursor: PersonalResumeCursor;
   readonly state: import("zod").infer<typeof PersonalDetailSnapshotSchema>;
@@ -127,6 +134,9 @@ export const savedStartWaitMs = 150;
 /** Saved checkpoints are written together, at most this often, in idle time. */
 const checkpointIntervalMs = 2_000;
 
+/** Inactive scopes kept in memory, most recently shown first, beyond the subscribed ones. */
+const retainedDetails = 8;
+
 /** The Host pauses a scope after 256 KiB of unacknowledged live text; ack well before that. */
 const liveAckBytes = 32 * 1024;
 
@@ -141,8 +151,12 @@ export class ScopedPersonalStream {
   readonly #slots = new Map<DetailId, ObservedDetail>();
   readonly #writes = new Map<string, () => Promise<void>>();
   #writing: Promise<void> | undefined;
-  /** Scopes whose checkpoint changed since the last flush; written together, at most every 2 s. */
-  readonly #dirty = new Map<string, ObservedDetail | undefined>();
+  /**
+   * Scopes whose checkpoint changed since the last flush, written together at most every 2 s. A
+   * detail's entry holds its state as of the change, so leaving the task before the flush still
+   * writes what it last showed.
+   */
+  readonly #dirty = new Map<string, Dirty>();
   #flushTimer: ReturnType<typeof setTimeout> | undefined;
   #candidate: ShellCandidate | undefined;
   #identity: ScopedPersonalIdentity | undefined;
@@ -714,7 +728,7 @@ export class ScopedPersonalStream {
       detail.transcript.getSnapshot().synchronized
     )
       this.#position(detail);
-    if (!detail.transcript.apply(frame, this.#identity)) {
+    if (!detail.transcript.apply(frame, this.#identity, true)) {
       this.#subscribe(detail, false, true);
       return;
     }
@@ -1043,23 +1057,16 @@ export class ScopedPersonalStream {
     detail.transcript.begin(++this.#generation, true);
   }
 
-  readonly #retainedBytes = new WeakMap<ReadonlyMap<string, unknown>, number>();
-
+  /**
+   * Keeps the most recently shown inactive scopes whole, so returning to one paints it at once and
+   * resumes from its cursor. Each holds at most its trimmed window (see the transcript store).
+   */
   #evict() {
-    let count = 0;
-    let size = 0;
+    let kept = 0;
     const inactive = [...this.#details.entries()].reverse();
     for (const [key, detail] of inactive) {
       if (detail.slot || key === this.#selected) continue;
-      const state = detail.transcript.getSnapshot();
-      count += state.items.size;
-      let weight = this.#retainedBytes.get(state.items);
-      if (weight === undefined) {
-        weight = bytes([...state.items.values()]);
-        this.#retainedBytes.set(state.items, weight);
-      }
-      size += weight;
-      if (count <= 1000 && size <= 2 * 1024 * 1024 && state.items.size > 0) continue;
+      if (detail.transcript.getSnapshot().items.size > 0 && ++kept <= retainedDetails) continue;
       if (detail.observers > 0) detail.transcript.begin(++this.#generation, false);
       else this.#details.delete(key);
     }
@@ -1077,7 +1084,14 @@ export class ScopedPersonalStream {
 
   #checkpoint(scope: PersonalScope, detail?: ObservedDetail) {
     if (!this.cache || !this.#identity) return;
-    this.#dirty.set(scopeKey(scope), detail);
+    this.#dirty.set(
+      scopeKey(scope),
+      detail && {
+        detail,
+        state: detail.transcript.getSnapshot(),
+        fence: detail.subscriptions,
+      },
+    );
     this.#flushTimer ??= setTimeout(() => {
       const idle = globalThis.requestIdleCallback;
       if (idle) idle(() => this.flushCheckpoints(), { timeout: 1_000 });
@@ -1091,12 +1105,13 @@ export class ScopedPersonalStream {
     this.#flushTimer = undefined;
     const dirty = [...this.#dirty];
     this.#dirty.clear();
-    for (const [key, detail] of dirty) {
-      const checkpoint = this.#checkpointOf(detail);
+    for (const [key, entry] of dirty) {
+      const checkpoint = this.#checkpointOf(entry);
       if (!checkpoint) continue;
       const authority = this.#authority;
-      const fence = () => (detail ? detail.subscriptions : this.shell.getSnapshot().generation);
-      const taken = fence();
+      const fence = () =>
+        entry ? entry.detail.subscriptions : this.shell.getSnapshot().generation;
+      const taken = entry ? entry.fence : fence();
       const current = () => authority === this.#authority && fence() === taken;
       const written = this.#fence;
       if (!written) continue;
@@ -1107,15 +1122,16 @@ export class ScopedPersonalStream {
     }
   }
 
-  #checkpointOf(detail: ObservedDetail | undefined): PersonalStreamCheckpoint | undefined {
-    const scope = detail?.scope ?? shellScope;
-    const state = detail ? detail.transcript.getSnapshot() : this.shell.getSnapshot();
+  #checkpointOf(entry: Dirty): PersonalStreamCheckpoint | undefined {
+    const scope = entry?.detail.scope ?? shellScope;
+    const state = entry ? entry.state : this.shell.getSnapshot();
     const cursor = this.#cursor(scope, state.through);
     const key = this.#key(scope);
     if (!cursor || !key || !state.synchronized) return;
-    if (detail) {
+    if (entry) {
+      const { detail } = entry;
       if (this.#details.get(key.scopeKey) !== detail) return;
-      const snapshot = detail.transcript.checkpoint();
+      const snapshot = detail.transcript.checkpoint(entry.state);
       if (!snapshot) return;
       const strip = (item: import("@opensteer/protocol/transcript").TranscriptItem) => {
         if (item.kind !== "message" || item.clientSendKey === undefined) return item;

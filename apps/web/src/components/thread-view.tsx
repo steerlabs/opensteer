@@ -1,4 +1,4 @@
-import { useThreadTranscript } from "@opensteer/client/react";
+import { useSyncingPlaceholder, useThreadTranscript } from "@opensteer/client/react";
 import { useOutboxTranscript } from "@opensteer/client/react";
 import { hostMessageOutbox, splitLocalMessages } from "@opensteer/client/host";
 import { useTaskSourceView } from "../team/team-attachments.js";
@@ -1137,8 +1137,12 @@ function ThreadView({
       </span>
     ) : null;
   const historyState = snapshot.threadLookups[thread.id];
+  // Before its first cut a task's transcript is unknown, not empty: nothing is drawn, and only a
+  // slow first read says so, so a quick one never flashes a notice or the empty task's welcome.
+  const transcriptUnknown = !detailCurrent && cuts === 0;
+  const loadingTranscript = useSyncingPlaceholder(transcriptUnknown, withOutbox.length);
   const historyStatus =
-    historyState === "loading" && live ? (
+    (historyState === "loading" && live) || loadingTranscript ? (
       <span className="thread__connection" role="status">
         Loading messages…
       </span>
@@ -1455,7 +1459,10 @@ function ThreadView({
                       ) : null}
                       {/* Gone with the first message, this device's waiting ones too, so
                           their bubbles never jump when the Host takes them. */}
-                      {withOutbox.length === 0 && historyState === undefined && !waiting?.length ? (
+                      {withOutbox.length === 0 &&
+                      historyState === undefined &&
+                      !transcriptUnknown &&
+                      !waiting?.length ? (
                         <EmptyThread voice={voiceThread} />
                       ) : null}
                       <AgentTranscript

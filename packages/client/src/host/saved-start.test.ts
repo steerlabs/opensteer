@@ -224,6 +224,45 @@ test("fences a pending write at generation replacement and checkpoints installed
   expect(commits.at(-1)).toMatchObject({ cursor: { afterSequence: "2" }, state: { items: [] } });
 });
 
+test("leaving a task before the checkpoint flush still saves what it last showed", async () => {
+  const commits: PersonalStreamCheckpoint[] = [];
+  const f = fixture({
+    ...createPersonalStreamCache(memoryCheckpointStorage()),
+    commit: async (checkpoint, current) => {
+      if (current()) commits.push(checkpoint);
+    },
+  });
+  f.syncShell();
+  f.syncDetail();
+  f.stream.receive({
+    ...f.address,
+    type: "host.changes",
+    fromSequence: "1",
+    throughSequence: "2",
+    changes: [
+      {
+        entityKind: "item",
+        entityId: "added",
+        operation: "upsert",
+        sequence: "2",
+        ordinal: 0,
+        value: { ...item, id: "added", revision: "2", position: "2" },
+      },
+    ],
+  });
+  // Left at once: the scope is no longer synchronized when the flush comes.
+  f.stream.select(undefined);
+  expect(f.detail.transcript.getSnapshot().synchronized).toBe(false);
+  f.stream.flushCheckpoints();
+  await vi.waitFor(() => expect(commits.filter(({ kind }) => kind === "detail")).toHaveLength(1));
+  const saved = commits.find(({ kind }) => kind === "detail");
+  expect(saved).toMatchObject({ cursor: { afterSequence: "2" } });
+  expect(saved?.kind === "detail" && saved.state.items.map(({ id }) => id)).toEqual([
+    item.id,
+    "added",
+  ]);
+});
+
 async function savedCache() {
   const storage = memoryCheckpointStorage();
   const cache = createPersonalStreamCache(storage);
