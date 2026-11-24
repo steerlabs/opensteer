@@ -956,7 +956,6 @@ describe("LocalRunnerService", () => {
         "Sign in again",
       );
       // No further confirmation Runner was started, and the identity was kept.
-      await new Promise((resolve) => setTimeout(resolve, 50));
       expect(running.children).toHaveLength(2);
       expect(hasStopMessage(childAt(running.children, 1))).toBe(false);
 
@@ -999,9 +998,15 @@ describe("LocalRunnerService", () => {
       );
       // A working session is proved, then the same worker reconnects.
       await running.service.bindDeviceSession(target.deploymentId);
+      confirming.emit("message", { type: "runner.worker.reconnecting" });
+      await eventually(
+        async () => (await running.service.status(target.deploymentId)).runner.state === "starting",
+      );
       connect(confirming);
-      // Let the reconnect's connected handler finish its membership writes.
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      // Running again only once the reconnect's connected handler has finished.
+      await eventually(
+        async () => (await running.service.status(target.deploymentId)).runner.state === "running",
+      );
       const later = running.service.sessionLost(target.deploymentId);
       await eventually(() => hasStopMessage(confirming));
       confirming.emit("exit", 0);

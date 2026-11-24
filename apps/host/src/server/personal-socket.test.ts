@@ -97,3 +97,14 @@ it("ends a realtime socket at its deadline when the session cannot be checked ag
   expect(failing).toHaveBeenCalledOnce();
   expect(closeSession).toHaveBeenCalledWith(session.id);
 });
+
+it("ends a realtime socket at its deadline while a session check is still pending", async () => {
+  vi.useFakeTimers();
+  const stalled = vi.fn(() => new Promise<AuthenticatedHostSession["session"] | null>(() => {}));
+  const { session, closeSession } = attach(5 * minute, stalled);
+
+  await vi.advanceTimersByTimeAsync(5 * minute + 1_000);
+
+  expect(stalled).toHaveBeenCalledOnce();
+  expect(closeSession).toHaveBeenCalledWith(session.id);
+});
