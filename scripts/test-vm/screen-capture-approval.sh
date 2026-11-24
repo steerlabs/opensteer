@@ -11,11 +11,14 @@
 # window picker" at the first capture a journey makes over SSH, and the prompt takes the active app
 # from whatever journey is running. Nobody answers it in a guest.
 #
-# What: for every program the image already approved, the last ask becomes now and the next one
-# now plus that program's own policy, as an Allow at this moment would record; replayd is then
-# restarted so it reads them. Nothing is approved that the image had not approved, and the guest
-# is thrown away after the job. Prints what it found and what it wrote; exits non-zero when it
-# could not write, so a job never runs believing it settled the prompt when it did not.
+# What: for every program the image already approved, replayd's record says it was last asked on
+# 2100-01-01 and its next reminder is then, and that it was last used now; replayd is restarted so
+# it reads them. An ask stamped as now was not enough: replayd put the prompt up again five
+# minutes later (probe 20261124T100819Z-d5e3ff6e), while a last ask past the job left it alone and
+# untouched (20261124T101524Z-05894646). The same on every run, whatever the guest's clock says.
+# Nothing is approved that the image had not approved, and the guest is thrown away after the
+# job. Prints what it found and wrote; exits non-zero when it could not write, so a job never
+# runs believing it settled the prompt when it did not.
 set -euo pipefail
 
 plist="$HOME/Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals.plist"
