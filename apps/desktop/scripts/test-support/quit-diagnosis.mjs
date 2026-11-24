@@ -30,6 +30,19 @@ for (const [index, run] of fs
     run: index,
     failed: failed ? short(JSON.parse(failed).error, 150) : null,
   });
+  // [ms, the tab's title, its page's own title, page loading] after a lost recovered title,
+  // shown only where something changed.
+  for (const name of files.filter((name) => name.endsWith(".title-timeline.json"))) {
+    const timeline = JSON.parse(fs.readFileSync(path.join(data, name), "utf8"));
+    rows.push({
+      name: "title",
+      run: index,
+      timeline: timeline.filter(
+        (entry, at) =>
+          at === 0 || JSON.stringify(entry.slice(1)) !== JSON.stringify(timeline[at - 1].slice(1)),
+      ),
+    });
+  }
   for (const name of files.filter((name) => name.endsWith(".drag-failed.json"))) {
     const record = JSON.parse(fs.readFileSync(path.join(data, name), "utf8"));
     rows.push({

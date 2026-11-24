@@ -1005,6 +1005,21 @@ export async function runTabRestoreTrial(input: {
       );
       const value = await record("recovered");
       assert.equal(new Set(rows(value).map((row) => row.id)).size, rows(value).length);
+      if (!rows(value).some((row) => row.id === state!.f1 && row.title === "Restore /f1b")) {
+        // Seen twice: the wait above saw this title and this read did not. What the tab's
+        // title and its page's own title do next tells a passing state from a lost title.
+        const timeline: unknown[] = [];
+        for (const started = Date.now(); Date.now() - started < 4_000; await delay(100)) {
+          const live = page("/f1b");
+          timeline.push([
+            Date.now() - started,
+            rows(await bootstrap()).find((row) => row.id === state!.f1)?.title ?? null,
+            live?.getTitle() ?? null,
+            live?.isLoading() ?? null,
+          ]);
+        }
+        writeFileSync(path.join(root, `${trial}.title-timeline.json`), JSON.stringify(timeline));
+      }
       assert(rows(value).some((row) => row.id === state!.f1 && row.title === "Restore /f1b"));
       await groupPhase("groups-survive-crash", async () => {
         await checkGroup("tab-groups-crash-restored-collapsed", true);
