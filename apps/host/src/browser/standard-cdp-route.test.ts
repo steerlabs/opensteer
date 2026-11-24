@@ -576,21 +576,32 @@ it("treats a connection's auto-attach on an alias of the browser root as the roo
   });
 });
 
-it("refuses chrome-extension: navigation for a connection before it reaches the browser (2a)", async () => {
+it("refuses chrome-extension: and URL-obfuscated extension navigations for a connection before reaching the browser (2a, M4)", async () => {
   const f = await fixture();
   const socket = await f.connect(
     f.tickets.issue({ ...claims, facts: { ...claims.facts, agentConnectionId: "external" } }),
   );
   const replies: Record<string, unknown>[] = [];
   socket.on("message", (data) => replies.push(JSON.parse(String(data)) as Record<string, unknown>));
-  const extUrl = "chrome-extension://abcdefghijklmnopabcdefghijklmnop/popup.html";
-  socket.send(
-    JSON.stringify({ id: 1, method: "Page.navigate", params: { url: extUrl }, sessionId: "page" }),
-  );
-  socket.send(JSON.stringify({ id: 2, method: "Target.createTarget", params: { url: extUrl } }));
+  const extId = "abcdefghijklmnopabcdefghijklmnop";
+  const extUrl = `chrome-extension://${extId}/popup.html`;
+  const candidates = [
+    extUrl,
+    `chrome-ex\ttension://${extId}/options.html`,
+    `\u0001chrome-extension://${extId}/options.html`,
+    `  ChRoMe-ExTeNsIoN://${extId}/options.html`,
+    `view-source:chrome-extension://${extId}/options.html`,
+  ];
+  let nextId = 1;
+  for (const url of candidates) {
+    socket.send(
+      JSON.stringify({ id: nextId++, method: "Page.navigate", params: { url }, sessionId: "page" }),
+    );
+    socket.send(JSON.stringify({ id: nextId++, method: "Target.createTarget", params: { url } }));
+  }
   socket.send(
     JSON.stringify({
-      id: 3,
+      id: nextId++,
       method: "Target.sendMessageToTarget",
       params: {
         sessionId: "child",
@@ -599,31 +610,14 @@ it("refuses chrome-extension: navigation for a connection before it reaches the 
       sessionId: "page",
     }),
   );
-  await vi.waitFor(() => expect(replies).toHaveLength(3));
-  expect(replies).toEqual([
-    {
-      id: 1,
-      sessionId: "page",
+  await vi.waitFor(() => expect(replies).toHaveLength(candidates.length * 2 + 1));
+  for (const reply of replies) {
+    expect(reply).toMatchObject({
       error: {
         code: -32000,
         message: "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
       },
-    },
-    {
-      id: 2,
-      error: {
-        code: -32000,
-        message: "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
-      },
-    },
-    {
-      id: 3,
-      sessionId: "page",
-      error: {
-        code: -32000,
-        message: "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
-      },
-    },
-  ]);
+    });
+  }
   expect(f.send).not.toHaveBeenCalled();
 });

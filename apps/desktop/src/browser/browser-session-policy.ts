@@ -1,6 +1,6 @@
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import type { Session } from "electron";
-import { browserIdentity } from "@opensteer/browser-core";
+import { browserIdentity, isExtensionUrl } from "@opensteer/browser-core";
 import { isLoopbackHostname } from "@opensteer/core";
 import { browserPagePermissionsPolicy } from "@opensteer/browser-runtime-core/page-policy";
 
@@ -13,6 +13,8 @@ export interface BrowserSessionPolicyOptions {
   readonly onUploadRequest?: (webContentsId: number, requestId: number) => void;
   readonly onRequestFinished?: (requestId: number) => void;
   readonly onMainFrameRequest?: (webContentsId: number, method: string) => void;
+  /** Whether a WebContents is currently controlled by a connected agent (cancels `chrome-extension:` requests). */
+  readonly isConnectionWebContents?: (webContentsId: number) => boolean;
   readonly acceptLanguages?: string;
   readonly downloads: Pick<DesktopDownloads, "accept">;
   /** Absolute path of the bundled `browser-page-preload.cjs`. */
@@ -76,8 +78,13 @@ export function applyBrowserSessionPolicy(
     if (!isAllowedBrowserRequest(details.url)) callback({ cancel: true });
     // An extension's own files are part of the browser, not the web: they
     // never wait for the profile's cookies, and its worker starts from them.
-    else if (details.url.startsWith("chrome-extension://")) callback({ cancel: false });
-    else if (requestGates.has(session))
+    // Pages controlled by a connected agent cannot load or probe extension URLs (M1a, S1).
+    else if (isExtensionUrl(details.url)) {
+      const cancel =
+        details.webContentsId !== undefined &&
+        options.isConnectionWebContents?.(details.webContentsId) === true;
+      callback({ cancel });
+    } else if (requestGates.has(session))
       requestGates.get(session)!.beforeRequest(details.webContentsId, callback);
     else callback({ cancel: false });
   });

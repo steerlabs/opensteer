@@ -112,6 +112,7 @@ import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
+  normalizePageOpenUrl,
   OpensteerError,
   agentGrantAllows,
   threadAccessModeAtMost,
@@ -4289,7 +4290,7 @@ export class BrowserService {
                 },
               }
             : {}),
-        ...(target.url === "about:blank" ? {} : { url: target.url }),
+        ...(target.url === "about:blank" ? {} : { url: normalizePageOpenUrl(target.url) }),
         ...(typed && actor.kind === "person" ? { typed: true } : {}),
         ...(target.viewport ? { viewport: target.viewport } : {}),
       },

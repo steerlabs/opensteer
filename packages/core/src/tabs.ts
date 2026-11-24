@@ -47,6 +47,44 @@ export const TabOpenedBySchema = z.union([
   z.strictObject({ taskId: ThreadIdSchema }),
 ]);
 export type TabOpenedBy = z.infer<typeof TabOpenedBySchema>;
+/**
+ * Whether a URL parses (via the WHATWG URL parser, which strips ASCII tabs/newlines and leading C0
+ * control characters) to a Chrome extension scheme, including `view-source:` wrapping one.
+ */
+export function isChromeExtensionUrl(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    if (url.protocol === "chrome-extension:") return true;
+    if (url.protocol === "view-source:") return isChromeExtensionUrl(url.pathname);
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a page-open URL is allowed for a connected agent (`about:blank` or credential-free
+ * HTTP(S)), judged strictly by the parsed WHATWG URL protocol.
+ */
+export function isAllowedConnectionPageUrl(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  if (value === "about:blank") return true;
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Canonical WHATWG serialization of a page-open URL, preserving `about:blank`. */
+export function normalizePageOpenUrl(value: string): string {
+  return value === "about:blank" ? value : new URL(value).href;
+}
+
 export const PageOpenUrlSchema = z
   .string()
   .min(1)

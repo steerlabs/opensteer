@@ -336,8 +336,11 @@ can call `Extensions.getExtensions` and `Extensions.triggerAction`, sent from an
 profile; only a backend that keeps extensions answers that domain). Tasks below Full access or under
 a connected agent's lineage are refused `Extensions.loadUnpacked` and `Extensions.uninstall`;
 connected agents are refused the entire `Extensions.*` domain, cannot open or navigate to
-`chrome-extension:` pages, and are isolated from extension targets and content-script execution
-worlds. The person's own actions in their own app (installing from the Web Store window or removing
+`chrome-extension:` pages (whether over CDP, `tab.open`, or page-initiated navigations, subframes,
+redirects, or popups), have `chrome-extension:` subresource requests cancelled on pages they
+control, and are isolated from extension targets and content-script execution worlds (with
+agent-chosen world names namespaced so they never match or probe extension worlds; main-world DOM
+mutations written directly into a page by an extension's content script remain a residual channel). The person's own actions in their own app (installing from the Web Store window or removing
 an extension from the toolbar's Extensions menu, each with a native confirmation dialog) stay on the
 desktop bridge as the person's hand in their own browser, just like installing or removing an
 extension in Chrome. The person sees every extension in the toolbar's Extensions menu (with a quiet

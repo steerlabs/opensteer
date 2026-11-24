@@ -2846,7 +2846,7 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
     await router.close();
   });
 
-  it("refuses the entire Extensions domain and chrome-extension: navigations for a connected agent (2a)", async () => {
+  it("refuses the entire Extensions domain and CDP chrome-extension: navigations for a connected agent (2a)", async () => {
     const backend = new FakeBackend();
     backend.extensions = true;
     backend.dedicatedContext = true;
@@ -3053,7 +3053,7 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
     await router.close();
   });
 
-  it("isolates extension content-script worlds, scripts, console/exceptions, stacks, and resource trees per connection while keeping Runs intact (2a-i)", async () => {
+  it("filters extension content-script worlds, scripts, console/exceptions, stacks, frame trees, and history on a connection channel while keeping Runs intact (2a-i)", async () => {
     const backend = new FakeBackend();
     backend.dedicatedContext = true;
     backend.targetInfos = [{ targetId: "seed", type: "page", url: "https://example.test/" }];
@@ -3092,6 +3092,10 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
       auxData: { frameId: "main", isDefault: false, type: "isolated" },
     };
     const pageContext = frameWorld(1);
+    connChannel.contexts = [];
+    runChannel.contexts = [];
+    await connClient.send({ method: "Runtime.enable", sessionId: connSession });
+    await runClient.send({ method: "Runtime.enable", sessionId: runSession });
 
     for (const ch of [connChannel, runChannel]) {
       ch.emit("Runtime.executionContextCreated", { context: pageContext });
@@ -3187,14 +3191,13 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
         .exception.description,
     ).not.toContain("chrome-extension:");
 
-    // Connected agent cannot evaluate in the extension context by id, uniqueContextId, or name,
+    // Connected agent cannot evaluate in the extension context by id, uniqueContextId, or objectId,
     // nor read its script source, nor add an unscoped binding that enters it.
     for (const [method, parameters] of [
       ["Runtime.evaluate", { contextId: 77, expression: "chrome.storage" }],
       ["Runtime.evaluate", { uniqueContextId: "ext-unique-77", expression: "chrome.storage" }],
       ["Runtime.callFunctionOn", { executionContextId: 77, functionDeclaration: "() => 1" }],
       ["Runtime.callFunctionOn", { objectId: "-12345.77.1", functionDeclaration: "() => 1" }],
-      ["Runtime.addBinding", { name: "poke", executionContextName: "Secret Password Manager" }],
       ["Debugger.getScriptSource", { scriptId: "script-ext-1" }],
       ["Debugger.setBreakpointByUrl", { url: extScriptUrl, lineNumber: 1 }],
     ] as const) {
@@ -3272,6 +3275,334 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
         sessionId: runSession,
       }),
     ).resolves.toBeDefined();
+
+    await router.close();
+  });
+
+  it("refuses unseen guessed context, object, and script IDs when Runtime/Debugger was never enabled, while admitting learned page worlds silently (M2, S5)", async () => {
+    const backend = new FakeBackend();
+    backend.extensions = true;
+    backend.dedicatedContext = true;
+    backend.targetInfos = [{ targetId: "seed", type: "page", url: "https://example.test/" }];
+    backend.prepareChannel = (channel) => {
+      channel.contexts = [
+        frameWorld(1),
+        {
+          id: 77,
+          origin: extOrigin,
+          name: "Secret Password Manager",
+          uniqueId: "ext-unique-77",
+          auxData: { frameId: "main", isDefault: false, type: "isolated" },
+        },
+        // Even if an extension content-script world reported the page origin (isolated non-agent world):
+        {
+          id: 78,
+          origin: "https://example.test",
+          name: "Another Extension",
+          uniqueId: "ext-unique-78",
+          auxData: { frameId: "main", isDefault: false, type: "isolated" },
+        },
+      ];
+    };
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    const client = router.openStandardClient("a", {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId: "conn-m2", seedTargetId: "seed" },
+    });
+    const events: CdpEvent[] = [];
+    client.onEvent((event) => events.push(event));
+    const { sessionId } = (await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const channel = backend.channels.get("seed")!;
+
+    // Agent NEVER calls Runtime.enable or Debugger.enable; guessed extension / unseen IDs must fail.
+    for (const [method, parameters] of [
+      ["Runtime.evaluate", { contextId: 77, expression: "chrome.runtime.id", returnByValue: true }],
+      ["Runtime.evaluate", { contextId: 78, expression: "chrome.runtime.id", returnByValue: true }],
+      ["Runtime.evaluate", { contextId: 99, expression: "1", returnByValue: true }],
+      ["Runtime.evaluate", { uniqueContextId: "ext-unique-77", expression: "1" }],
+      ["DOM.resolveNode", { nodeId: 1, executionContextId: 77 }],
+      ["Runtime.callFunctionOn", { executionContextId: 77, functionDeclaration: "() => 1" }],
+      ["Runtime.callFunctionOn", { objectId: "-12345.77.1", functionDeclaration: "() => 1" }],
+      ["Runtime.globalLexicalScopeNames", { executionContextId: 77 }],
+      ["Runtime.addBinding", { name: "leak", executionContextId: 77 }],
+      ["Debugger.getScriptSource", { scriptId: "99" }],
+    ] as const) {
+      await expect(
+        client.send({ method, parameters, sessionId }),
+        `${method} ${JSON.stringify(parameters)}`,
+      ).rejects.toMatchObject({ code: "not_found" });
+    }
+    expect(
+      channel.commands.some(
+        (c) =>
+          (c.method === "Runtime.evaluate" && c.parameters?.contextId !== 1) ||
+          c.method === "DOM.resolveNode" ||
+          c.method === "Debugger.getScriptSource",
+      ),
+    ).toBe(false);
+    // Internal Runtime.enable must NOT leak Runtime.executionContextCreated to an agent that did not enable Runtime.
+    expect(events.some((e) => e.method === "Runtime.executionContextCreated")).toBe(false);
+
+    // Real learned page main world (id 1) succeeds even though the agent never called Runtime.enable.
+    await expect(
+      client.send({
+        method: "Runtime.evaluate",
+        sessionId,
+        parameters: { contextId: 1, expression: "document.title", returnByValue: true },
+      }),
+    ).resolves.toBeDefined();
+    await expect(
+      client.send({
+        method: "DOM.resolveNode",
+        sessionId,
+        parameters: { nodeId: 1, executionContextId: 1 },
+      }),
+    ).resolves.toBeDefined();
+
+    // If the agent later calls Runtime.enable, it receives only the page world, never 77 or 78.
+    await client.send({ method: "Runtime.enable", sessionId });
+    const createdIds = events
+      .filter((e) => e.method === "Runtime.executionContextCreated")
+      .map((e) => (e.parameters.context as { id: number }).id);
+    expect(createdIds).toEqual([1]);
+
+    await router.close();
+  });
+
+  it("ends a connection channel immediately if its main frame or child frame navigates to chrome-extension: (M1b)", async () => {
+    const backend = new FakeBackend();
+    backend.extensions = true;
+    backend.dedicatedContext = true;
+    backend.targetInfos = [{ targetId: "seed", type: "page", url: "https://example.test/" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    const client = router.openStandardClient("a", {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId: "conn-m1b", seedTargetId: "seed" },
+    });
+    const events: CdpEvent[] = [];
+    client.onEvent((event) => events.push(event));
+    const { sessionId } = (await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const channel = backend.channels.get("seed")!;
+
+    // Main frame commits an extension page (e.g., via page JS or redirect): channel must end at once.
+    channel.emit("Page.frameNavigated", {
+      frame: { id: "main", url: `${extOrigin}/popup.html`, securityOrigin: extOrigin },
+    });
+    channel.emit("Runtime.executionContextCreated", {
+      context: {
+        id: 9,
+        origin: extOrigin,
+        name: "",
+        auxData: { frameId: "main", isDefault: true, type: "default" },
+      },
+    });
+    expect(events.some((e) => e.method === "Page.frameNavigated")).toBe(false);
+    expect(
+      events.some(
+        (e) => e.method === "Target.detachedFromTarget" && e.parameters.sessionId === sessionId,
+      ),
+    ).toBe(true);
+    await expect(
+      client.send({
+        method: "Runtime.evaluate",
+        sessionId,
+        parameters: {
+          expression: "chrome.tabs.query({})",
+          returnByValue: true,
+          awaitPromise: true,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "not_found", message: "CDP session is not attached here." });
+    expect(channel.commands.some((c) => c.method === "Runtime.evaluate")).toBe(false);
+
+    await router.close();
+  });
+
+  it("namespaces connection-chosen world names so extension names are never an oracle or reachable (M5)", async () => {
+    const backend = new FakeBackend();
+    backend.extensions = true;
+    backend.dedicatedContext = true;
+    backend.targetInfos = [{ targetId: "seed", type: "page", url: "https://example.test/" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    const client = router.openStandardClient("a", {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId: "conn-m5", seedTargetId: "seed" },
+    });
+    const events: CdpEvent[] = [];
+    client.onEvent((event) => events.push(event));
+    const { sessionId } = (await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const channel = backend.channels.get("seed")!;
+    await client.send({ method: "Runtime.enable", sessionId });
+    channel.emit("Runtime.executionContextCreated", {
+      context: {
+        id: 77,
+        origin: extOrigin,
+        name: "Secret Password Manager",
+        uniqueId: "u77",
+        auxData: { frameId: "main", isDefault: false, type: "isolated" },
+      },
+    });
+    channel.results.set("Page.createIsolatedWorld", { executionContextId: 88 });
+
+    // Choosing the exact installed extension name succeeds identically to any random name.
+    const randomRes = await client.send({
+      method: "Page.createIsolatedWorld",
+      sessionId,
+      parameters: { frameId: "main", worldName: "Some Random Name" },
+    });
+    const extNameRes = await client.send({
+      method: "Page.createIsolatedWorld",
+      sessionId,
+      parameters: { frameId: "main", worldName: "Secret Password Manager" },
+    });
+    expect(extNameRes).toEqual(randomRes);
+    const createdCmd = channel.commands.find(
+      (c) =>
+        c.method === "Page.createIsolatedWorld" &&
+        String(c.parameters?.worldName).endsWith("Secret Password Manager"),
+    )!;
+    const rewrittenWorld = String(createdCmd.parameters?.worldName);
+    expect(rewrittenWorld).not.toBe("Secret Password Manager");
+    expect(rewrittenWorld.startsWith("opensteer-")).toBe(false);
+
+    // Event for the agent's own namespaced world is delivered with the prefix stripped, and id 88 is usable.
+    channel.emit("Runtime.executionContextCreated", {
+      context: {
+        id: 88,
+        origin: "https://example.test",
+        name: rewrittenWorld,
+        uniqueId: "u88",
+        auxData: { frameId: "main", isDefault: false, type: "isolated" },
+      },
+    });
+    expect(
+      events.some(
+        (e) =>
+          e.method === "Runtime.executionContextCreated" &&
+          (e.parameters.context as { id: number; name: string }).id === 88 &&
+          (e.parameters.context as { id: number; name: string }).name === "Secret Password Manager",
+      ),
+    ).toBe(true);
+    await expect(
+      client.send({
+        method: "Runtime.evaluate",
+        sessionId,
+        parameters: { contextId: 88, expression: "1" },
+      }),
+    ).resolves.toBeDefined();
+
+    // Runtime.addBinding and Page.addScriptToEvaluateOnNewDocument also namespace non-empty world names.
+    await client.send({
+      method: "Runtime.addBinding",
+      sessionId,
+      parameters: { name: "poke", executionContextName: "Secret Password Manager" },
+    });
+    const bindingCmd = channel.commands.find((c) => c.method === "Runtime.addBinding")!;
+    expect(bindingCmd.parameters?.executionContextName).toBe(rewrittenWorld);
+
+    await client.send({
+      method: "Page.addScriptToEvaluateOnNewDocument",
+      sessionId,
+      parameters: { source: "1", worldName: "Secret Password Manager" },
+    });
+    const scriptCmd = channel.commands.find(
+      (c) => c.method === "Page.addScriptToEvaluateOnNewDocument",
+    )!;
+    expect(scriptCmd.parameters?.worldName).toBe(rewrittenWorld);
+
+    await router.close();
+  });
+
+  it("isolates connection-flagged commands sent on a Run's root session without a script attachment (M3)", async () => {
+    const backend = new FakeBackend();
+    backend.extensions = true;
+    backend.targetInfos = [
+      { targetId: "seed", type: "page", url: "https://example.test/" },
+      { targetId: "ext-bg", type: "service_worker", url: `${extOrigin}/worker.js` },
+    ];
+    backend.prepareChannel = (channel) => {
+      channel.contexts = [
+        frameWorld(1),
+        {
+          id: 77,
+          origin: extOrigin,
+          name: "Secret Password Manager",
+          uniqueId: "u77",
+          auxData: { frameId: "main", isDefault: false, type: "isolated" },
+        },
+      ];
+    };
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    router.claimTarget("a", "ext-bg", "seed");
+    const events: CdpEvent[] = [];
+    router.onEvent("a", (event) => events.push(event));
+
+    // Target discovery with connection: true hides extension targets.
+    const targets = (await router.send("a", {
+      method: "Target.getTargets",
+      connection: true,
+    })) as { targetInfos: { targetId: string }[] };
+    expect(targets.targetInfos.map((t) => t.targetId)).toEqual(["seed"]);
+
+    // Attaching with connection: true on the root session creates an isolated connection channel.
+    const { sessionId } = (await router.send("a", {
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+      connection: true,
+    })) as { sessionId: string };
+    const channel = backend.channels.get("seed")!;
+    channel.emit("Runtime.executionContextCreated", {
+      context: {
+        id: 77,
+        origin: extOrigin,
+        name: "Secret Password Manager",
+        auxData: { frameId: "main", isDefault: false, type: "isolated" },
+      },
+    });
+    expect(events.some((e) => e.method === "Runtime.executionContextCreated")).toBe(false);
+    await expect(
+      router.send("a", {
+        method: "Runtime.evaluate",
+        sessionId,
+        connection: true,
+        parameters: { contextId: 77, expression: "1" },
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(
+      channel.commands.some(
+        (c) => c.method === "Runtime.evaluate" && c.parameters?.contextId === 77,
+      ),
+    ).toBe(false);
+
+    // Extension child iframe announced on that connection-attached channel is detached and dropped.
+    channel.emit("Target.attachedToTarget", {
+      sessionId: "phys-ext-child",
+      targetInfo: { targetId: "ext-frame", type: "iframe", url: extPopupUrl },
+      waitingForDebugger: false,
+    });
+    expect(
+      channel.commands.some(
+        (c) =>
+          c.method === "Target.detachFromTarget" && c.parameters?.sessionId === "phys-ext-child",
+      ),
+    ).toBe(true);
+    expect(events.some((e) => e.method === "Target.attachedToTarget")).toBe(false);
 
     await router.close();
   });

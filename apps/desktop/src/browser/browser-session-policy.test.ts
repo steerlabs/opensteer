@@ -341,3 +341,39 @@ it("loads extension files ahead of the profile gate and keeps extension preloads
   before({ url: "https://site.test/" }, web);
   expect(web).toHaveBeenCalledWith({ cancel: true });
 });
+
+it("cancels chrome-extension: requests for connection-controlled webContents while keeping them for the person and extension workers (M1a, S1)", async () => {
+  const { applyBrowserSessionPolicy } = await import("./browser-session-policy.js");
+  const { vi } = await import("vitest");
+  const session = {
+    setPermissionCheckHandler: vi.fn(),
+    setPermissionRequestHandler: vi.fn(),
+    getPreloadScripts: () => [],
+    registerPreloadScript: vi.fn(),
+    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn() },
+    setUserAgent: vi.fn(),
+    getUserAgent: () => "Chrome/150",
+  };
+  applyBrowserSessionPolicy(session as unknown as import("electron").Session, {
+    downloads: { accept: vi.fn() },
+    pagePolicyPreloadPath: "/policy.cjs",
+    isConnectionWebContents: (id: number) => id === 42,
+  });
+  const before = session.webRequest.onBeforeRequest.mock.calls[0]![0];
+  const extId = "abcdefghijklmnopabcdefghijklmnop";
+  for (const url of [
+    `chrome-extension://${extId}/war.txt`,
+    `chrome-ex\ttension://${extId}/war.html`,
+    `\u0001chrome-extension://${extId}/war.html`,
+  ]) {
+    const connAnswer = vi.fn();
+    before({ url, webContentsId: 42 }, connAnswer);
+    expect(connAnswer, url).toHaveBeenCalledWith({ cancel: true });
+  }
+  const personAnswer = vi.fn();
+  before({ url: `chrome-extension://${extId}/options.html`, webContentsId: 7 }, personAnswer);
+  expect(personAnswer).toHaveBeenCalledWith({ cancel: false });
+  const workerAnswer = vi.fn();
+  before({ url: `chrome-extension://${extId}/worker.js` }, workerAnswer);
+  expect(workerAnswer).toHaveBeenCalledWith({ cancel: false });
+});

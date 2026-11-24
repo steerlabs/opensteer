@@ -60,6 +60,7 @@ const manifest = {
   content_scripts: [{ matches: ["<all_urls>"], js: ["content.js"], run_at: "document_start" }],
   action: { default_title: "Smoke", default_popup: "popup.html" },
   options_page: "options.html",
+  web_accessible_resources: [{ resources: ["war.html", "war.txt"], matches: ["<all_urls>"] }],
 };
 const files: Record<string, string> = {
   "manifest.json": JSON.stringify(manifest),
@@ -90,6 +91,9 @@ if (location.pathname === "/window")
   "popup.html": `<!doctype html><body style="width:180px;height:60px">Popup<script src="popup.js"></script></body>`,
   "popup.js": `chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => { document.title = "tab:" + tabs.map((tab) => tab.id).join(","); });`,
   "options.html": `<!doctype html><title>Smoke options</title>`,
+  "war.html": `<!doctype html><title>Smoke WAR</title><p>war</p>`,
+  "war.txt": "extension-war-secret",
+  "nonwar.html": `<!doctype html><title>Smoke non-WAR</title><p>nonwar</p>`,
 };
 
 async function main(): Promise<void> {
@@ -278,6 +282,10 @@ async function main(): Promise<void> {
     assert.equal(runtime.result.value, id, "the agent could not reach the extension's context");
     checks.push("options page, and agent CDP in the extension's own pages");
 
+    if (phase === "install") {
+      await checkConnectedAgentBesideExtension(browser, router, sessionId, id, origin, checks);
+    }
+
     // Opt-in, over the network: the real Chrome Web Store page can install into
     // the profile, and the install is a normal, removable extension after a restart.
     if (process.env.OPENSTEER_EXTENSIONS_SMOKE_WEB_STORE === "1")
@@ -298,6 +306,261 @@ async function main(): Promise<void> {
 }
 
 const darkReader = "eimadpbcbfnmbkopoojfekhnkhdbieeh";
+
+/**
+ * Section: "a connected agent beside an extension".
+ * Settles the three Electron-only facts (exact CDP shape of a content-script world, whether
+ * Electron blocks non-WAR extension navigations from web pages, and OOPIF/channel behavior)
+ * and asserts M1, M2, M5, and S1 on live Electron.
+ */
+async function checkConnectedAgentBesideExtension(
+  browser: LaunchedBrowser,
+  router: SessionCdpRouter,
+  sessionId: string,
+  extensionId: string,
+  origin: string,
+  checks: string[],
+): Promise<void> {
+  const warUrl = `chrome-extension://${extensionId}/war.html`;
+  const warTxtUrl = `chrome-extension://${extensionId}/war.txt`;
+  const nonWarUrl = `chrome-extension://${extensionId}/nonwar.html`;
+
+  const connPage = await browser.context.createPage();
+  const connTargetId = await connPage.targetId();
+  router.claimTarget(sessionId, connTargetId);
+  await load(connPage, `${origin}/connected-check`);
+  await waitForDataset(connPage, "extensionReply");
+
+  // 1. Inspect via a Run (non-connection) channel what Electron's CDP actually reports for the
+  //    content-script execution context, and print it so the VM record settles that fact.
+  const runContexts: Record<string, unknown>[] = [];
+  const runClient = router.openStandardClient(sessionId, { wholeContext: false });
+  runClient.onEvent((event) => {
+    if (event.method === "Runtime.executionContextCreated") {
+      runContexts.push(event.parameters.context as Record<string, unknown>);
+    }
+  });
+  const { sessionId: runSession } = (await runClient.send({
+    method: "Target.attachToTarget",
+    parameters: { targetId: connTargetId, flatten: true },
+  })) as { sessionId: string };
+  await runClient.send({ method: "Runtime.enable", sessionId: runSession });
+  const extWorld = await waitForValue(() =>
+    runContexts.find((ctx) => {
+      const aux = (ctx.auxData ?? {}) as Record<string, unknown>;
+      return (
+        aux.isDefault === false &&
+        (String(ctx.origin ?? "").startsWith("chrome-extension://") ||
+          ctx.name === "Smoke Extension")
+      );
+    }),
+  );
+  console.log(
+    `[extensions-smoke] connected-agent: Electron CDP content-script world=${JSON.stringify(extWorld)}`,
+  );
+  const extContextId = extWorld.id as number;
+  runClient.close();
+
+  // 2. Attach as a connected agent (without Runtime.enable first to prove M2 live).
+  const blindClient = router.openStandardClient(sessionId, {
+    wholeContext: false,
+    connection: true,
+    lineage: { attachmentId: "smoke-conn-blind", seedTargetId: connTargetId },
+  });
+  const blindEvents: { method: string; parameters: CdpParameters }[] = [];
+  blindClient.onEvent((event) => blindEvents.push(event));
+  const { sessionId: blindSession } = (await blindClient.send({
+    method: "Target.attachToTarget",
+    parameters: { targetId: connTargetId, flatten: true },
+  })) as { sessionId: string };
+
+  let guessedOutcome = "resolved";
+  try {
+    await blindClient.send({
+      method: "Runtime.evaluate",
+      sessionId: blindSession,
+      parameters: { contextId: extContextId, expression: "chrome.runtime.id", returnByValue: true },
+    });
+  } catch (error) {
+    guessedOutcome = error instanceof Error ? error.message : String(error);
+  }
+  assert.notEqual(
+    guessedOutcome,
+    "resolved",
+    `M2 failed: connected agent without Runtime.enable entered extension contextId=${extContextId}`,
+  );
+  assert.equal(
+    blindEvents.some((e) => e.method === "Runtime.executionContextCreated"),
+    false,
+    `M2 failed: internal Runtime.enable leaked executionContextCreated events: ${JSON.stringify(blindEvents)}`,
+  );
+
+  // Now enable Runtime on the connected agent channel and verify the content-script world never appears.
+  await blindClient.send({ method: "Runtime.enable", sessionId: blindSession });
+  const connContextIds = blindEvents
+    .filter((e) => e.method === "Runtime.executionContextCreated")
+    .map((e) => e.parameters.context as { id: number; name?: string; origin?: string });
+  assert.equal(
+    connContextIds.some((c) => c.id === extContextId || c.name === "Smoke Extension"),
+    false,
+    `2a(i) failed: extension world appeared to connected agent: ${JSON.stringify(connContextIds)}`,
+  );
+
+  // M5: creating an isolated world with the extension's exact name succeeds identically to a random name.
+  const frameTree = (await blindClient.send({
+    method: "Page.getFrameTree",
+    sessionId: blindSession,
+  })) as { frameTree: { frame: { id: string } } };
+  const mainFrameId = frameTree.frameTree.frame.id;
+  const namedLikeExt = (await blindClient.send({
+    method: "Page.createIsolatedWorld",
+    sessionId: blindSession,
+    parameters: { frameId: mainFrameId, worldName: "Smoke Extension" },
+  })) as { executionContextId: number };
+  assert.equal(
+    typeof namedLikeExt.executionContextId,
+    "number",
+    `M5 failed: createIsolatedWorld("Smoke Extension") returned ${JSON.stringify(namedLikeExt)}`,
+  );
+
+  // S1: fetch probe for a web-accessible resource from the connection-controlled page is cancelled.
+  const fetchProbe = (await blindClient.send({
+    method: "Runtime.evaluate",
+    sessionId: blindSession,
+    parameters: {
+      expression: `fetch(${JSON.stringify(warTxtUrl)}).then(r => r.text()).then(t => "LOADED:" + t, e => "BLOCKED:" + String(e))`,
+      awaitPromise: true,
+      returnByValue: true,
+    },
+  })) as { result?: { value?: unknown } };
+  assert.ok(
+    String(fetchProbe.result?.value ?? "").startsWith("BLOCKED:"),
+    `S1 failed: WAR fetch probe was not cancelled on connection page; saw ${JSON.stringify(fetchProbe.result?.value)}`,
+  );
+
+  // M1a: page-started location.href, iframe, and window.open to war.html are refused by Electron.
+  const pagesBeforePopup = browser.context.pages().length;
+  await blindClient.send({
+    method: "Runtime.evaluate",
+    sessionId: blindSession,
+    parameters: {
+      expression: `(() => {
+        window.open(${JSON.stringify(warUrl)});
+        const f = document.createElement("iframe");
+        f.src = ${JSON.stringify(warUrl)};
+        document.body.appendChild(f);
+        location.href = ${JSON.stringify(warUrl)};
+        return "attempted";
+      })()`,
+      returnByValue: true,
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(
+    connPage.url(),
+    `${origin}/connected-check`,
+    `M1a failed: connection page navigated to ${connPage.url()}`,
+  );
+  assert.equal(
+    browser.context.pages().length,
+    pagesBeforePopup,
+    `M1a failed: window.open to ${warUrl} opened a popup (${browser.context.pages().length} vs ${pagesBeforePopup})`,
+  );
+
+  // M1b defense in depth: even if Electron's M1a gate were bypassed and the main frame reached
+  // chrome-extension: anyway, the router detaches the connection's channel and refuses Runtime.evaluate.
+  await blindClient.send({ method: "Page.enable", sessionId: blindSession });
+  const forcedDetached = new Promise<boolean>((resolve) => {
+    const check = (event: { method: string; parameters: CdpParameters }) => {
+      if (
+        event.method === "Target.detachedFromTarget" &&
+        event.parameters.sessionId === blindSession
+      )
+        resolve(true);
+    };
+    blindClient.onEvent(check);
+    setTimeout(() => resolve(false), 5_000);
+  });
+  browser.cdp.setConnectionControlled?.(connTargetId, false);
+  await contents(connPage).loadURL(warUrl);
+  assert.equal(
+    await forcedDetached,
+    true,
+    `M1b failed: connection channel did not emit Target.detachedFromTarget after loading ${warUrl}`,
+  );
+  let afterCompromise = "resolved";
+  try {
+    await blindClient.send({
+      method: "Runtime.evaluate",
+      sessionId: blindSession,
+      parameters: { expression: "chrome.runtime.id", returnByValue: true },
+    });
+  } catch (error) {
+    afterCompromise = error instanceof Error ? error.message : String(error);
+  }
+  assert.notEqual(
+    afterCompromise,
+    "resolved",
+    "M1b failed: Runtime.evaluate succeeded after channel entered chrome-extension: page",
+  );
+  blindClient.close();
+  await connPage.close();
+
+  // Record Electron-only facts #2 (non-WAR navigation from a non-connection web page) and
+  // #3 (whether an attached child iframe session survives navigating to a WAR extension page).
+  const probePage = await browser.context.createPage();
+  const probeTargetId = await probePage.targetId();
+  router.claimTarget(sessionId, probeTargetId);
+  await load(probePage, `${origin}/nonwar-probe`);
+  await contents(probePage).executeJavaScript(`location.href = ${JSON.stringify(nonWarUrl)}`);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  console.log(
+    `[extensions-smoke] connected-agent: non-connection web page location.href=${nonWarUrl} -> finalUrl=${probePage.url()}`,
+  );
+
+  await load(probePage, `${origin}/iframe-probe`);
+  const probeClient = router.openStandardClient(sessionId, { wholeContext: false });
+  const iframeEvents: { method: string; parameters: CdpParameters }[] = [];
+  probeClient.onEvent((event) => iframeEvents.push(event));
+  const { sessionId: probeSession } = (await probeClient.send({
+    method: "Target.attachToTarget",
+    parameters: { targetId: probeTargetId, flatten: true },
+  })) as { sessionId: string };
+  await probeClient.send({
+    method: "Target.setAutoAttach",
+    sessionId: probeSession,
+    parameters: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
+  });
+  await probeClient.send({
+    method: "Runtime.evaluate",
+    sessionId: probeSession,
+    parameters: {
+      expression: `(() => {
+        const f = document.createElement("iframe");
+        f.id = "probe-frame";
+        f.src = ${JSON.stringify(warUrl)};
+        document.body.appendChild(f);
+      })()`,
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const iframeSummary = iframeEvents
+    .filter(
+      (e) => e.method === "Target.attachedToTarget" || e.method === "Target.detachedFromTarget",
+    )
+    .map((e) => ({
+      method: e.method,
+      info: e.parameters.targetInfo,
+      sessionId: e.parameters.sessionId,
+    }));
+  console.log(
+    `[extensions-smoke] connected-agent: non-connection iframe->${warUrl} target events=${JSON.stringify(iframeSummary)}`,
+  );
+  probeClient.close();
+  await probePage.close();
+
+  checks.push("a connected agent beside an extension (M1, M2, M5, S1)");
+}
 
 async function webStore(
   page: BrowserPage,

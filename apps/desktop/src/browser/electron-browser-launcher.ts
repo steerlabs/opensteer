@@ -161,6 +161,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly #wakeSeeds: WakeSeeds;
   readonly #methods = new Map<number, string>();
   readonly #uploads = new Map<number, number>();
+  readonly #connectionWebContents = new Set<number>();
   readonly #authenticator: PasskeyAuthenticator | undefined;
   readonly #clipboard: EngineClipboard | undefined;
   readonly #downloads: ElectronBrowserLauncherOptions["downloads"];
@@ -357,6 +358,10 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       protection: (contents) => this.#protection(contents),
       createView: (options, opener) => this.#views.create(options, opener, request.initialViewport),
       createHelper: (options) => this.#views.createHelper(options),
+      onConnectionWebContents: (id, controlled) => {
+        if (controlled) this.#connectionWebContents.add(id);
+        else this.#connectionWebContents.delete(id);
+      },
       profileSession,
       ...(authenticator ? { authenticator } : {}),
     });
@@ -387,6 +392,10 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       createView: (options, opener, timing, startRenderer) =>
         this.#views.create(options, opener, viewport, timing, startRenderer),
       createHelper: (options) => this.#views.createHelper(options),
+      onConnectionWebContents: (id, controlled) => {
+        if (controlled) this.#connectionWebContents.add(id);
+        else this.#connectionWebContents.delete(id);
+      },
       profileSession,
       ...(authenticator ? { authenticator } : {}),
       ...(localProfile ? { localProfile } : {}),
@@ -406,6 +415,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     }
     applyBrowserSessionPolicy(profileSession, {
       acceptLanguages: browserAcceptLanguages(app.getPreferredSystemLanguages()),
+      isConnectionWebContents: (id) => this.#connectionWebContents.has(id),
       onMainFrameRequest: (id, method) => {
         if (this.#methods.has(id)) this.#methods.set(id, method);
       },
@@ -790,6 +800,7 @@ interface ElectronBrowserContextOptions {
     startRenderer?: boolean,
   ) => ElectronBrowserView;
   readonly createHelper: (options: ElectronBrowserViewOptions) => WebContentsView;
+  readonly onConnectionWebContents?: (webContentsId: number, controlled: boolean) => void;
   readonly profileSession: Session;
   readonly localProfile?: ElectronLocalProfile;
   readonly onPageTiming?: PageOpenTiming;
@@ -1017,6 +1028,7 @@ class ElectronBrowserContext implements BrowserContext {
           /* A session closing concurrently owns its own teardown. */
         }
       },
+      this.#options.onConnectionWebContents,
     );
     this.#pages.add(page);
     for (const listener of this.#handOffs) listener(page, handOffOpener);
@@ -1331,6 +1343,9 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   #activeSurfaceCopies = 0;
   #stalledSurfaceCopies = 0;
   #controlDown = false;
+  #connectionControlled = false;
+  readonly #onConnectionWebContents:
+    ((webContentsId: number, controlled: boolean) => void) | undefined;
   #contextMenuTrigger: "person" | "agent" | null = null;
   #contextMenuCandidate: "person" | "agent" | null = null;
   #fullscreen = false;
@@ -1375,6 +1390,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       readonly background: boolean;
       readonly referrer?: string;
     }) => void,
+    onConnectionWebContents?: (webContentsId: number, controlled: boolean) => void,
   ) {
     this.view = view;
     this.initialLoad = initialLoad;
@@ -1382,7 +1398,12 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     this.#webContents = view.webContents;
     this.#onPageCleanupFailure = onPageCleanupFailure;
     this.#openChild = openChild;
+    this.#onConnectionWebContents = onConnectionWebContents;
     this.#protection = protection(view.webContents);
+    if (opener?.isConnectionControlled()) this.setConnectionControlled(true);
+    view.webContents.once("destroyed", () => {
+      this.#onConnectionWebContents?.(view.webContents.id, false);
+    });
     // Electron installs a native message-box listener even with Page enabled.
     // The debugger and ledger own these dialogs for the page's entire lifetime.
     view.webContents.removeAllListeners("-run-dialog");
@@ -1489,7 +1510,16 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     void pagePolicy?.catch(() => this.close()).catch(() => undefined);
     void this.#cdpPromise.catch(() => this.close()).catch(() => undefined);
     view.webContents.on("will-navigate", (event, url) => {
-      if (!isAllowedBrowserNavigation(url)) event.preventDefault();
+      if (!isAllowedBrowserNavigation(url, false, !this.#connectionControlled))
+        event.preventDefault();
+    });
+    view.webContents.on("will-frame-navigate", (details) => {
+      if (!isAllowedBrowserNavigation(details.url, false, !this.#connectionControlled))
+        details.preventDefault();
+    });
+    view.webContents.on("will-redirect", (event, url) => {
+      if (!isAllowedBrowserNavigation(url, false, !this.#connectionControlled))
+        event.preventDefault();
     });
     view.webContents.on("cursor-changed", (_event, type) => {
       this.#cursor = normalizeElectronCursor(type);
@@ -2676,12 +2706,23 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     return this.#webContents.getURL() || "about:blank";
   }
 
+  isConnectionControlled(): boolean {
+    return this.#connectionControlled;
+  }
+
+  setConnectionControlled(controlled: boolean): void {
+    this.#connectionControlled = controlled;
+    if (!this.#webContents.isDestroyed())
+      this.#onConnectionWebContents?.(this.#webContents.id, controlled);
+  }
+
   installPopupHandler(
     securePreferences: WebPreferences,
     create: (options: ElectronPopupWindowOptions, details: ElectronPopupDetails) => WebContents,
   ): void {
     this.#webContents.setWindowOpenHandler((details) => {
-      if (!isAllowedBrowserNavigation(details.url, true)) return { action: "deny" };
+      if (!isAllowedBrowserNavigation(details.url, true, !this.#connectionControlled))
+        return { action: "deny" };
       return {
         action: "allow",
         createWindow: (options) => create(options as ElectronPopupWindowOptions, details),
@@ -4492,11 +4533,25 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
     });
   }
 
-  async attach(targetId: string): Promise<CdpChannel> {
+  async attach(
+    targetId: string,
+    _waitForPage?: boolean,
+    _signal?: AbortSignal,
+    connection?: boolean,
+  ): Promise<CdpChannel> {
     this.#assertOpen();
     const page = await this.#context.pageByTargetId(targetId);
     if (!page) throw new Error("CDP target is not an attachable page in this Profile Host.");
+    if (connection) page.setConnectionControlled(true);
     return page.agentCdp();
+  }
+
+  setConnectionControlled(targetId: string, controlled: boolean): void {
+    if (this.#closed) return;
+    void this.#context
+      .pageByTargetId(targetId)
+      .then((page) => page?.setConnectionControlled(controlled))
+      .catch(() => undefined);
   }
 
   assertScope(method: string, parameters: CdpParameters): void {
@@ -4662,15 +4717,16 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
   }
 }
 
-function isAllowedBrowserNavigation(value: string, popup = false): boolean {
+function isAllowedBrowserNavigation(value: string, popup = false, allowExtensions = true): boolean {
   if (value === "about:blank") return true;
   try {
     const protocol = new URL(value).protocol;
-    // Chromium itself keeps web pages from extension pages they may not reach.
+    // Chromium itself keeps web pages from extension pages they may not reach;
+    // connection-controlled pages never navigate to extension pages at all (M1a).
     return (
       protocol === "http:" ||
       protocol === "https:" ||
-      protocol === "chrome-extension:" ||
+      (allowExtensions && protocol === "chrome-extension:") ||
       (popup && protocol === "blob:")
     );
   } catch {

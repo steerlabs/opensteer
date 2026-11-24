@@ -1,5 +1,6 @@
 import {
   OpensteerError,
+  isAllowedConnectionPageUrl,
   isPhoneDisplayDefinitionId,
   type ResourceAccessLevel,
   type DeviceId,
@@ -303,8 +304,7 @@ export async function authorizeTabTarget(
     "kind" in target &&
     target.kind === "page" &&
     "url" in target &&
-    typeof target.url === "string" &&
-    target.url.trim().toLowerCase().startsWith("chrome-extension:")
+    !isAllowedConnectionPageUrl(target.url)
   )
     throw new OpensteerError({
       code: "forbidden",

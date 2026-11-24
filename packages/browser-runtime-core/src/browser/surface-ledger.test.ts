@@ -1684,7 +1684,7 @@ it("names the viewer whose input a page edit followed, judged by when the edit h
   }
 });
 
-it("claims a parentless extension-opened tab with no opener so it never joins a connected agent's lineage (2a(ii))", async () => {
+it("claims a page with a null opener without a parent targetId so it does not inherit another page's lineage (2a(ii))", async () => {
   const agentPage = new FakePage({ url: "https://agent.test/" });
   const context = new FakeContext([agentPage]);
   const claimTarget = vi.fn();

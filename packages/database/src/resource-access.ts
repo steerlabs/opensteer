@@ -14,6 +14,7 @@ import {
   chatEndedMessage,
   requestOptionDeclines,
   intersectResourceAccess,
+  isAllowedConnectionPageUrl,
   minThreadAccessMode,
   OpensteerError,
   type AgentGrant,
@@ -1110,12 +1111,12 @@ export async function admitCommand(
       ? await admit(database)
       : await withDatabaseTransaction(database, admit);
   const connection = execution.agentConnection;
-  // Connected agents (and Runs in a connected agent's lineage) never open extension pages as tabs.
+  // Connected agents (and Runs in a connected agent's lineage) never open non-HTTP(S) pages as tabs.
   if (
     connection &&
     input.command.type === "tab.open" &&
     input.command.target.kind === "page" &&
-    input.command.target.url.trim().toLowerCase().startsWith("chrome-extension:")
+    !isAllowedConnectionPageUrl(input.command.target.url)
   )
     throw forbidden("Use about:blank or an HTTP(S) URL without credentials.");
   // The same holding rule the listing reads, where it is admitted (and readmitted at the effect).

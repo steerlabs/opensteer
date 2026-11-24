@@ -1,14 +1,25 @@
 import { remoteObjectContextId } from "./execution-contexts.js";
 import { SessionCdpRouterError, type CdpParameters } from "./portable-session-cdp-router.js";
 
-/** Whether a URL or origin belongs to a Chrome extension (`chrome-extension:`). */
+/**
+ * Whether a URL or origin parses (per WHATWG URL rules, stripping ASCII tabs/newlines and leading
+ * C0 controls) to a Chrome extension scheme, including `view-source:` wrapping one.
+ */
 export function isExtensionUrl(value: unknown): boolean {
-  return typeof value === "string" && /^\s*chrome-extension:/iu.test(value);
+  if (typeof value !== "string") return false;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === "chrome-extension:") return true;
+    if (parsed.protocol === "view-source:") return isExtensionUrl(parsed.pathname);
+    return false;
+  } catch {
+    return false;
+  }
 }
 
-/** Whether a string contains a `chrome-extension:` URL (e.g. a formatted stack trace or regex). */
+/** Whether a free-form string (e.g. a formatted stack trace or breakpoint regex) mentions an extension URL. */
 function containsExtensionUrl(value: unknown): boolean {
-  return typeof value === "string" && /chrome-extension:/iu.test(value);
+  return typeof value === "string" && (isExtensionUrl(value) || /chrome-extension:/iu.test(value));
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -25,150 +36,271 @@ const remoteObjectKeys = new Set([
   "errorObjectId",
 ]);
 
+const contextIdKeys = new Set(["contextId", "executionContextId", "uniqueContextId"]);
+
+export type ExtensionEventOutcome =
+  | { readonly action: "compromised" }
+  | { readonly action: "drop" }
+  | { readonly action: "forward"; readonly params: CdpParameters };
+
+export interface ConnectionExtensionIsolationOptions {
+  readonly targetId?: string;
+  readonly isWorker?: boolean;
+}
+
 /**
  * Per-connection isolation of Chrome extension content-script worlds, scripts, frames, stack
- * frames, and resources. Instantiated ONLY for connected-agent channels (`state.connection`), so
- * the person's own Runs keep full access to extensions they build and test while a connected agent
- * never learns which extensions are installed and never evaluates in an extension context.
+ * frames, and resources. Instantiated ONLY for connection-controlled channels, so the person's own
+ * Runs keep full access to extensions they build and test while a connected agent:
+ * - can only address execution contexts and scripts positively seen as the page's own main world
+ *   or worlds created by this connection through the router (M2, S5);
+ * - has every agent-chosen world name namespaced with a per-channel non-`opensteer-` prefix so no
+ *   world name acts as an installed-extension oracle or reaches an extension world (M5);
+ * - ends its channel at once if its main frame commits a `chrome-extension:` document (M1b).
  */
 export class ConnectionExtensionIsolation {
-  readonly #contextIds = new Set<number>();
-  readonly #uniqueIds = new Set<string>();
-  readonly #contextNames = new Set<string>();
-  readonly #scriptIds = new Set<string>();
-  readonly #frameIds = new Set<string>();
+  readonly #worldPrefix: string;
+  readonly #isWorker: boolean;
+  readonly #allowedContextIds = new Set<number>();
+  readonly #allowedUniqueIds = new Set<string>();
+  readonly #allowedContexts = new Map<number, CdpParameters>();
+  readonly #allowedScriptIds = new Set<string>();
+  readonly #extensionFrameIds = new Set<string>();
+  readonly #knownSubframes = new Set<string>();
+  #mainFrameId: string | undefined;
+  #compromised = false;
 
-  /** Filters and scrubs a page/child CDP event; returns `null` to drop it completely. */
-  observeEvent(method: string, params: CdpParameters): CdpParameters | null {
+  constructor(worldPrefix: string, options: ConnectionExtensionIsolationOptions = {}) {
+    this.#worldPrefix = worldPrefix;
+    this.#isWorker = options.isWorker === true;
+    if (!this.#isWorker && options.targetId) this.#mainFrameId = options.targetId;
+  }
+
+  get compromised(): boolean {
+    return this.#compromised;
+  }
+
+  /** Live allowed execution contexts, already prefix-stripped, for replaying on `Runtime.enable`. */
+  allowedContextEvents(): CdpParameters[] {
+    return [...this.#allowedContexts.values()].map((context) => ({ context }));
+  }
+
+  /** Whether a command specifies a context or remote-object ID that requires Runtime inventory first. */
+  needsRuntimeInventory(params: CdpParameters | undefined, depth = 0): boolean {
+    if (depth > 32 || !params || typeof params !== "object") return false;
+    if (Array.isArray(params))
+      return params.some((item) => this.needsRuntimeInventory(item as CdpParameters, depth + 1));
+    for (const [key, field] of Object.entries(params)) {
+      if (field === undefined) continue;
+      if (contextIdKeys.has(key) || remoteObjectKeys.has(key)) return true;
+      if (
+        field &&
+        typeof field === "object" &&
+        this.needsRuntimeInventory(field as CdpParameters, depth + 1)
+      )
+        return true;
+    }
+    return false;
+  }
+
+  /** Filters and scrubs a page/child CDP event; signals `"compromised"` if this channel entered an extension page. */
+  observeEvent(method: string, params: CdpParameters): ExtensionEventOutcome {
+    if (this.#compromised) return { action: "compromised" };
     if (method === "Runtime.executionContextsCleared") {
-      this.#contextIds.clear();
-      this.#uniqueIds.clear();
-      this.#contextNames.clear();
-      return params;
+      this.#allowedContextIds.clear();
+      this.#allowedUniqueIds.clear();
+      this.#allowedContexts.clear();
+      return { action: "forward", params };
+    }
+    if (method === "Page.frameNavigated") {
+      const frame = asRecord(params.frame);
+      const frameId = typeof frame.id === "string" ? frame.id : undefined;
+      const isMain =
+        frame.parentId === undefined || frame.parentId === null || frame.parentId === "";
+      const isExt = isExtensionUrl(frame.url) || isExtensionUrl(frame.securityOrigin);
+      if (isMain) {
+        if (frameId) this.#mainFrameId = frameId;
+        if (isExt) {
+          this.#compromised = true;
+          return { action: "compromised" };
+        }
+        return { action: "forward", params };
+      }
+      if (frameId) this.#knownSubframes.add(frameId);
+      if (isExt) {
+        if (frameId) this.#extensionFrameIds.add(frameId);
+        return { action: "drop" };
+      }
+      return { action: "forward", params };
+    }
+    if (method === "Page.navigatedWithinDocument") {
+      if (isExtensionUrl(params.url)) {
+        const frameId = typeof params.frameId === "string" ? params.frameId : undefined;
+        if (
+          frameId === undefined ||
+          frameId === this.#mainFrameId ||
+          !this.#knownSubframes.has(frameId)
+        ) {
+          this.#compromised = true;
+          return { action: "compromised" };
+        }
+        this.#extensionFrameIds.add(frameId);
+        return { action: "drop" };
+      }
+      return { action: "forward", params };
+    }
+    if (
+      method === "Page.frameAttached" ||
+      method === "Page.frameStartedLoading" ||
+      method === "Page.frameRequestedNavigation" ||
+      method === "Page.frameStoppedLoading" ||
+      method === "Page.frameDetached"
+    ) {
+      const frameId = typeof params.frameId === "string" ? params.frameId : undefined;
+      if (typeof params.parentFrameId === "string" && frameId) this.#knownSubframes.add(frameId);
+      if (
+        isExtensionUrl(params.url) ||
+        (frameId !== undefined && this.#extensionFrameIds.has(frameId))
+      ) {
+        if (frameId) this.#extensionFrameIds.add(frameId);
+        return { action: "drop" };
+      }
+      return { action: "forward", params };
     }
     if (method === "Runtime.executionContextCreated") {
       const context = asRecord(params.context);
       const aux = asRecord(context.auxData);
       const frameId = typeof aux.frameId === "string" ? aux.frameId : undefined;
-      if (
+      const rawName = typeof context.name === "string" ? context.name : "";
+      const isExtOrigin =
         isExtensionUrl(context.origin) ||
         isExtensionUrl(aux.origin) ||
         isExtensionUrl(aux.url) ||
-        (frameId !== undefined && this.#frameIds.has(frameId))
-      ) {
-        if (typeof context.id === "number") this.#contextIds.add(context.id);
-        if (typeof context.uniqueId === "string" && context.uniqueId)
-          this.#uniqueIds.add(context.uniqueId);
-        if (typeof context.name === "string" && context.name) this.#contextNames.add(context.name);
-        return null;
+        (frameId !== undefined && this.#extensionFrameIds.has(frameId));
+      if (isExtOrigin) {
+        if (
+          aux.isDefault === true &&
+          (frameId === undefined ||
+            frameId === this.#mainFrameId ||
+            !this.#knownSubframes.has(frameId))
+        ) {
+          this.#compromised = true;
+          return { action: "compromised" };
+        }
+        return { action: "drop" };
       }
-      return params;
+      const isOwnNamedWorld = rawName.startsWith(this.#worldPrefix);
+      const isMainWorld =
+        aux.isDefault === true && (aux.type === undefined || aux.type === "default");
+      const isWorkerMain = this.#isWorker && aux.isDefault !== false && rawName === "";
+      if (!isOwnNamedWorld && !isMainWorld && !isWorkerMain) {
+        return { action: "drop" };
+      }
+      const sanitizedContext: CdpParameters = isOwnNamedWorld
+        ? { ...context, name: rawName.slice(this.#worldPrefix.length) }
+        : context;
+      if (typeof context.id === "number") {
+        this.#allowedContextIds.add(context.id);
+        this.#allowedContexts.set(context.id, sanitizedContext);
+      }
+      if (typeof context.uniqueId === "string" && context.uniqueId) {
+        this.#allowedUniqueIds.add(context.uniqueId);
+      }
+      return { action: "forward", params: { ...params, context: sanitizedContext } };
     }
     if (method === "Runtime.executionContextDestroyed") {
-      const id = params.executionContextId;
-      const uniqueId = params.executionContextUniqueId;
-      const tracked =
-        (typeof id === "number" && this.#contextIds.has(id)) ||
-        (typeof uniqueId === "string" && this.#uniqueIds.has(uniqueId));
-      if (typeof id === "number") this.#contextIds.delete(id);
-      if (typeof uniqueId === "string") this.#uniqueIds.delete(uniqueId);
-      return tracked ? null : params;
+      const id = typeof params.executionContextId === "number" ? params.executionContextId : null;
+      const uniqueId =
+        typeof params.executionContextUniqueId === "string"
+          ? params.executionContextUniqueId
+          : null;
+      const known =
+        (id !== null && this.#allowedContextIds.has(id)) ||
+        (uniqueId !== null && this.#allowedUniqueIds.has(uniqueId));
+      if (id !== null) {
+        this.#allowedContextIds.delete(id);
+        this.#allowedContexts.delete(id);
+      }
+      if (uniqueId !== null) this.#allowedUniqueIds.delete(uniqueId);
+      return known ? { action: "forward", params } : { action: "drop" };
     }
     if (method === "Debugger.scriptParsed" || method === "Debugger.scriptFailedToParse") {
+      const ctxId =
+        typeof params.executionContextId === "number" ? params.executionContextId : null;
       if (
         isExtensionUrl(params.url) ||
         isExtensionUrl(params.sourceMapURL) ||
-        this.#isExtensionContextId(params.executionContextId)
+        ctxId === null ||
+        !this.#allowedContextIds.has(ctxId)
       ) {
-        if (typeof params.scriptId === "string" && params.scriptId)
-          this.#scriptIds.add(params.scriptId);
-        return null;
+        return { action: "drop" };
       }
-      return params;
+      if (typeof params.scriptId === "string") this.#allowedScriptIds.add(params.scriptId);
+      return { action: "forward", params };
     }
     if (method === "Debugger.paused") {
-      for (const frame of Array.isArray(params.callFrames) ? params.callFrames : []) {
+      const frames = Array.isArray(params.callFrames) ? params.callFrames : [];
+      for (const frame of frames) {
         const record = asRecord(frame);
         const location = asRecord(record.location);
-        if (isExtensionUrl(record.url) || this.#isExtensionScriptId(location.scriptId)) return null;
+        if (
+          isExtensionUrl(record.url) ||
+          typeof location.scriptId !== "string" ||
+          !this.#allowedScriptIds.has(location.scriptId)
+        )
+          return { action: "drop" };
       }
-      if (this.#referencesExtension(params)) return null;
-      return params;
-    }
-    if (
-      method === "Page.frameAttached" ||
-      method === "Page.frameNavigated" ||
-      method === "Page.frameStartedNavigation" ||
-      method === "Page.frameRequestedNavigation" ||
-      method === "Page.navigatedWithinDocument" ||
-      method === "Page.frameDetached"
-    ) {
-      const frame = asRecord(params.frame);
-      const frameId =
-        typeof frame.id === "string"
-          ? frame.id
-          : typeof params.frameId === "string"
-            ? params.frameId
-            : undefined;
-      const parentId =
-        typeof frame.parentId === "string"
-          ? frame.parentId
-          : typeof params.parentFrameId === "string"
-            ? params.parentFrameId
-            : undefined;
-      if (
-        isExtensionUrl(frame.url) ||
-        isExtensionUrl(frame.securityOrigin) ||
-        isExtensionUrl(params.url) ||
-        (parentId !== undefined && this.#frameIds.has(parentId))
-      ) {
-        if (frameId) this.#frameIds.add(frameId);
-        return null;
-      }
-      if (frameId && this.#frameIds.has(frameId)) {
-        if (method === "Page.frameDetached") this.#frameIds.delete(frameId);
-        return null;
-      }
-      return params;
+      return { action: "forward", params };
     }
     if (method === "Runtime.consoleAPICalled") {
-      if (this.#isExtensionContextId(params.executionContextId)) return null;
-      if (this.#referencesExtension(params.args)) return null;
-      if (this.#stackOriginatedInExtension(params.stackTrace)) return null;
-      return this.#scrubEventStacks(params);
+      if (
+        params.executionContextId !== undefined &&
+        !this.#isAllowedContextId(params.executionContextId)
+      )
+        return { action: "drop" };
+      if (
+        this.#stackOriginatedOutsideAllowed(params.stackTrace) ||
+        this.#hasDisallowedReference(params.args, true)
+      )
+        return { action: "drop" };
+      return { action: "forward", params: this.#scrubEventStacks(params) };
     }
     if (method === "Runtime.exceptionThrown") {
       const details = asRecord(params.exceptionDetails);
       if (
-        this.#isExtensionContextId(details.executionContextId) ||
+        (details.executionContextId !== undefined &&
+          !this.#isAllowedContextId(details.executionContextId)) ||
         isExtensionUrl(details.url) ||
-        this.#isExtensionScriptId(details.scriptId) ||
-        this.#stackOriginatedInExtension(details.stackTrace) ||
-        this.#referencesExtension(details.exception)
+        (details.scriptId !== undefined && !this.#isAllowedScriptId(details.scriptId)) ||
+        this.#stackOriginatedOutsideAllowed(details.stackTrace) ||
+        this.#hasDisallowedReference(details.exception, true)
       )
-        return null;
-      return { ...params, exceptionDetails: this.#scrubExceptionDetails(details) };
+        return { action: "drop" };
+      return {
+        action: "forward",
+        params: { ...params, exceptionDetails: this.#scrubExceptionDetails(details) },
+      };
     }
     if (method === "Console.messageAdded") {
       const message = asRecord(params.message);
       if (
         isExtensionUrl(message.url) ||
         containsExtensionUrl(message.text) ||
-        this.#stackOriginatedInExtension(message.stackTrace)
+        this.#stackOriginatedOutsideAllowed(message.stackTrace)
       )
-        return null;
-      return { ...params, message: this.#scrubEventStacks(message) };
+        return { action: "drop" };
+      return { action: "forward", params: { ...params, message: this.#scrubEventStacks(message) } };
     }
     if (method === "Log.entryAdded") {
       const entry = asRecord(params.entry);
       if (
         isExtensionUrl(entry.url) ||
         containsExtensionUrl(entry.text) ||
-        this.#stackOriginatedInExtension(entry.stackTrace) ||
-        this.#referencesExtension(entry.args)
+        this.#stackOriginatedOutsideAllowed(entry.stackTrace) ||
+        this.#hasDisallowedReference(entry.args, true)
       )
-        return null;
-      return { ...params, entry: this.#scrubEventStacks(entry) };
+        return { action: "drop" };
+      return { action: "forward", params: { ...params, entry: this.#scrubEventStacks(entry) } };
     }
     if (method.startsWith("Network.") || method.startsWith("Fetch.")) {
       const request = asRecord(params.request);
@@ -179,28 +311,44 @@ export class ConnectionExtensionIsolation {
         isExtensionUrl(params.documentURL) ||
         this.#isExtensionFrameId(params.frameId)
       )
-        return null;
+        return { action: "drop" };
       if (params.initiator && typeof params.initiator === "object") {
         const initiator = asRecord(params.initiator);
-        if (isExtensionUrl(initiator.url)) return null;
+        if (isExtensionUrl(initiator.url)) return { action: "drop" };
         if (initiator.stack) {
           return {
-            ...params,
-            initiator: { ...initiator, stack: this.#scrubStackTrace(initiator.stack) },
+            action: "forward",
+            params: {
+              ...params,
+              initiator: { ...initiator, stack: this.#scrubStackTrace(initiator.stack) },
+            },
           };
         }
       }
-      return params;
+      return { action: "forward", params };
     }
-    if (this.#isExtensionFrameId(params.frameId) || this.#referencesExtension(params)) return null;
-    return params;
+    // Catch-all (S2): drop any event referencing an extension URL, extension frame, or unallowed context/script.
+    if (
+      isExtensionUrl(params.url) ||
+      isExtensionUrl(params.sourceURL) ||
+      isExtensionUrl(params.documentURL) ||
+      this.#isExtensionFrameId(params.frameId) ||
+      this.#hasDisallowedReference(params, true)
+    )
+      return { action: "drop" };
+    return { action: "forward", params };
   }
 
   /**
-   * Refuses commands addressing a tracked extension context, script, frame, or URL, and narrows
-   * unscoped `Runtime.addBinding` to the default world so bindings never enter extension worlds.
+   * Refuses commands targeting any context, script, or remote object NOT positively learned as the
+   * page's own (M2, S5), refuses extension URLs/frames, and namespaces agent-chosen world names so
+   * extension names never act as an oracle or binding target (M5).
    */
-  assertCommand(method: string, params: CdpParameters = {}): CdpParameters {
+  assertAndRewriteCommand(method: string, params: CdpParameters = {}): CdpParameters {
+    if (this.#compromised)
+      throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+        unsent: true,
+      });
     if (
       method === "Debugger.setBreakpointByUrl" &&
       (isExtensionUrl(params.url) || containsExtensionUrl(params.urlRegex))
@@ -210,21 +358,46 @@ export class ConnectionExtensionIsolation {
       throw new SessionCdpRouterError("not_found", "Resource is not available.");
     if (this.#isExtensionFrameId(params.frameId))
       throw new SessionCdpRouterError("not_found", "Frame is not available.");
-    if (this.#referencesExtension(params))
+    if (this.#hasDisallowedReference(params, false))
       throw new SessionCdpRouterError("not_found", "The requested target is not available.");
+
+    // M5: namespace connection-chosen world names (never `opensteer-`) so they cannot match or probe extensions.
+    if (method === "Page.createIsolatedWorld") {
+      const raw = typeof params.worldName === "string" ? params.worldName : "";
+      return { ...params, worldName: `${this.#worldPrefix}${raw}` };
+    }
     if (
-      method === "Runtime.addBinding" &&
-      params.executionContextId === undefined &&
-      params.executionContextName === undefined
-    )
+      method === "Page.addScriptToEvaluateOnNewDocument" &&
+      typeof params.worldName === "string" &&
+      params.worldName.length > 0
+    ) {
+      return { ...params, worldName: `${this.#worldPrefix}${params.worldName}` };
+    }
+    if (method === "Runtime.addBinding") {
+      if (params.executionContextId !== undefined) return params;
+      if (typeof params.executionContextName === "string") {
+        return params.executionContextName.length === 0
+          ? params
+          : {
+              ...params,
+              executionContextName: `${this.#worldPrefix}${params.executionContextName}`,
+            };
+      }
       return { ...params, executionContextName: "" };
+    }
     return params;
   }
 
-  /** Prunes extension frames/resources/stacks from answers and rejects extension object handles. */
+  /** Learns agent-created world IDs, prunes extension frames/history, and rejects disallowed handles. */
   sanitizeResult(method: string, result: unknown): unknown {
+    if (this.#compromised)
+      throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
     if (!result || typeof result !== "object") return result;
     const record = result as Record<string, unknown>;
+    if (method === "Page.createIsolatedWorld" && typeof record.executionContextId === "number") {
+      this.#allowedContextIds.add(record.executionContextId);
+      return result;
+    }
     if (
       method === "Page.getResourceTree" &&
       record.frameTree &&
@@ -241,41 +414,52 @@ export class ConnectionExtensionIsolation {
     if (record.exceptionDetails && typeof record.exceptionDetails === "object") {
       const details = asRecord(record.exceptionDetails);
       if (
-        this.#isExtensionContextId(details.executionContextId) ||
+        (details.executionContextId !== undefined &&
+          this.#allowedContextIds.size > 0 &&
+          !this.#isAllowedContextId(details.executionContextId)) ||
         isExtensionUrl(details.url) ||
-        this.#isExtensionScriptId(details.scriptId) ||
-        this.#referencesExtension(details.exception)
+        (details.scriptId !== undefined &&
+          this.#allowedScriptIds.size > 0 &&
+          !this.#isAllowedScriptId(details.scriptId)) ||
+        (this.#allowedContextIds.size > 0 && this.#hasDisallowedReference(details.exception, true))
       )
         throw new SessionCdpRouterError("forbidden", "Result is outside this browser attachment.");
       const scrubbed = { ...record, exceptionDetails: this.#scrubExceptionDetails(details) };
-      if (this.#referencesExtension(scrubbed))
+      if (this.#allowedContextIds.size > 0 && this.#hasDisallowedReference(scrubbed, true))
         throw new SessionCdpRouterError("forbidden", "Result is outside this browser attachment.");
       return scrubbed;
     }
-    if (this.#referencesExtension(result))
+    if (this.#allowedContextIds.size > 0 && this.#hasDisallowedReference(result, true))
       throw new SessionCdpRouterError("forbidden", "Result is outside this browser attachment.");
     return result;
   }
 
-  #isExtensionContextId(value: unknown): boolean {
-    return typeof value === "number" && this.#contextIds.has(value);
+  #isAllowedContextId(value: unknown): boolean {
+    return typeof value === "number" && this.#allowedContextIds.has(value);
   }
 
-  #isExtensionScriptId(value: unknown): boolean {
-    return typeof value === "string" && this.#scriptIds.has(value);
+  #isAllowedScriptId(value: unknown): boolean {
+    return typeof value === "string" && this.#allowedScriptIds.has(value);
   }
 
   #isExtensionFrameId(value: unknown): boolean {
-    return typeof value === "string" && this.#frameIds.has(value);
+    return typeof value === "string" && this.#extensionFrameIds.has(value);
   }
 
-  #stackOriginatedInExtension(stack: unknown): boolean {
+  #stackOriginatedOutsideAllowed(stack: unknown): boolean {
     if (!stack || typeof stack !== "object") return false;
     const frames = asRecord(stack).callFrames;
     if (!Array.isArray(frames) || frames.length === 0) return false;
     return frames.every((frame) => {
       const record = asRecord(frame);
-      return isExtensionUrl(record.url) || this.#isExtensionScriptId(record.scriptId);
+      if (isExtensionUrl(record.url)) return true;
+      if (
+        this.#allowedScriptIds.size > 0 &&
+        typeof record.scriptId === "string" &&
+        !this.#allowedScriptIds.has(record.scriptId)
+      )
+        return true;
+      return false;
     });
   }
 
@@ -286,7 +470,14 @@ export class ConnectionExtensionIsolation {
     if (Array.isArray(record.callFrames)) {
       next.callFrames = record.callFrames.filter((frame) => {
         const entry = asRecord(frame);
-        return !isExtensionUrl(entry.url) && !this.#isExtensionScriptId(entry.scriptId);
+        if (isExtensionUrl(entry.url)) return false;
+        if (
+          this.#allowedScriptIds.size > 0 &&
+          typeof entry.scriptId === "string" &&
+          !this.#allowedScriptIds.has(entry.scriptId)
+        )
+          return false;
+        return true;
       });
     }
     if (record.parent && typeof record.parent === "object") {
@@ -330,7 +521,7 @@ export class ConnectionExtensionIsolation {
       const entry = asRecord(child);
       const frame = asRecord(entry.frame);
       if (isExtensionUrl(frame.url) || isExtensionUrl(frame.securityOrigin)) {
-        if (typeof frame.id === "string") this.#frameIds.add(frame.id);
+        if (typeof frame.id === "string") this.#extensionFrameIds.add(frame.id);
         continue;
       }
       kept.push(this.#pruneFrameTree(entry, depth + 1));
@@ -350,7 +541,7 @@ export class ConnectionExtensionIsolation {
         const entry = asRecord(child);
         const frame = asRecord(entry.frame);
         if (isExtensionUrl(frame.url) || isExtensionUrl(frame.securityOrigin)) {
-          if (typeof frame.id === "string") this.#frameIds.add(frame.id);
+          if (typeof frame.id === "string") this.#extensionFrameIds.add(frame.id);
           continue;
         }
         kept.push(this.#pruneResourceTree(entry, depth + 1));
@@ -360,31 +551,41 @@ export class ConnectionExtensionIsolation {
     return next;
   }
 
-  #referencesExtension(value: unknown, depth = 0): boolean {
+  /**
+   * Inverted allow-list check (M2, S5): every contextId, executionContextId, uniqueContextId,
+   * scriptId, or remote-object ID must name a positively learned page/agent context or script.
+   * When inspecting outbound events/results (`fromBrowser = true`), skips serialized page JS values.
+   */
+  #hasDisallowedReference(value: unknown, fromBrowser: boolean, depth = 0): boolean {
     if (depth > 32 || !value || typeof value !== "object") return false;
     if (Array.isArray(value))
-      return value.some((item) => this.#referencesExtension(item, depth + 1));
+      return value.some((item) => this.#hasDisallowedReference(item, fromBrowser, depth + 1));
     const record = value as Record<string, unknown>;
     for (const [key, field] of Object.entries(record)) {
-      if (
-        (key === "contextId" || key === "executionContextId") &&
-        this.#isExtensionContextId(field)
-      )
-        return true;
-      if (key === "uniqueContextId" && typeof field === "string" && this.#uniqueIds.has(field))
-        return true;
-      if (
-        (key === "worldName" || key === "executionContextName") &&
-        typeof field === "string" &&
-        this.#contextNames.has(field)
-      )
-        return true;
-      if (key === "scriptId" && this.#isExtensionScriptId(field)) return true;
+      if (field === undefined) continue;
+      if (key === "contextId" || key === "executionContextId") {
+        if (!this.#isAllowedContextId(field)) return true;
+      }
+      if (key === "uniqueContextId") {
+        if (typeof field !== "string" || !this.#allowedUniqueIds.has(field)) return true;
+      }
+      if (key === "scriptId") {
+        if (fromBrowser && this.#allowedScriptIds.size === 0) {
+          // A console/exception event can carry a scriptId even when Debugger was never enabled.
+        } else if (!this.#isAllowedScriptId(field)) {
+          return true;
+        }
+      }
       if (remoteObjectKeys.has(key)) {
         const id = remoteObjectContextId(field);
-        if (id !== null && this.#contextIds.has(id)) return true;
+        if (id === null || !this.#allowedContextIds.has(id)) return true;
       }
-      if (this.#referencesExtension(field, depth + 1)) return true;
+      if (
+        fromBrowser &&
+        (key === "deepSerializedValue" || (key === "value" && typeof record.type === "string"))
+      )
+        continue;
+      if (this.#hasDisallowedReference(field, fromBrowser, depth + 1)) return true;
     }
     return false;
   }

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { ThreadAccessModeSchema, type ThreadAccessMode } from "@opensteer/core";
+import {
+  isAllowedConnectionPageUrl,
+  isChromeExtensionUrl,
+  normalizePageOpenUrl,
+  ThreadAccessModeSchema,
+  type ThreadAccessMode,
+} from "@opensteer/core";
 import {
   commandFace,
   commandFaceStep,
@@ -434,5 +440,39 @@ describe("executionMayManageExtensions (Rule 1 / 2b)", () => {
         }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("connection page-open URL protocol checks (M4)", () => {
+  const id = "abcdefghijklmnopabcdefghijklmnop";
+
+  it("uses WHATWG URL parsing so tabs, newlines, control chars, mixed case, and view-source cannot bypass scheme guards", () => {
+    for (const blocked of [
+      `chrome-extension://${id}/options.html`,
+      `chrome-ex\ttension://${id}/options.html`,
+      `chrome-ex\ntension://${id}/options.html`,
+      `\u0001chrome-extension://${id}/options.html`,
+      `  ChRoMe-ExTeNsIoN://${id}/options.html`,
+      `view-source:chrome-extension://${id}/options.html`,
+      `view-source:chrome-ex\ttension://${id}/options.html`,
+    ]) {
+      expect(isChromeExtensionUrl(blocked), blocked).toBe(true);
+      expect(isAllowedConnectionPageUrl(blocked), blocked).toBe(false);
+    }
+    for (const otherBlocked of [
+      "view-source:https://example.test/",
+      "file:///etc/passwd",
+      "javascript:alert(1)",
+      "https://user:pass@example.test/",
+    ]) {
+      expect(isAllowedConnectionPageUrl(otherBlocked), otherBlocked).toBe(false);
+    }
+    expect(isAllowedConnectionPageUrl("about:blank")).toBe(true);
+    expect(isAllowedConnectionPageUrl("https://example.test/path")).toBe(true);
+    expect(isAllowedConnectionPageUrl("http://127.0.0.1:8080/")).toBe(true);
+    expect(normalizePageOpenUrl("about:blank")).toBe("about:blank");
+    expect(normalizePageOpenUrl("  ht\ttps://example.test/path ")).toBe(
+      "https://example.test/path",
+    );
   });
 });

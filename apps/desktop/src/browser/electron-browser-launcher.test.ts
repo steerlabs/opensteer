@@ -5272,6 +5272,78 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       await browser.close();
     }
   });
+  it("refuses page-started chrome-extension: navigations, subframes, redirects, and popups on connection-controlled pages while keeping them for the person (M1a)", async () => {
+    const launcher = new ElectronBrowserLauncher({
+      downloads: { accept: () => undefined },
+      pagePolicyPreloadPath: "/policy.cjs",
+    });
+    const browser = await launcher.launch({
+      initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+      partitionKey: "session:connection-extension-nav",
+      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000099"),
+      storage: { kind: "guest" },
+    });
+    try {
+      const page = browser.context.pages()[0]!;
+      const targetId = await page.targetId();
+      const view = electron.views.at(-1)!;
+      const willNavigate = view.webContents.on.mock.calls.find(
+        ([name]) => name === "will-navigate",
+      )![1];
+      const willFrameNavigate = view.webContents.on.mock.calls.find(
+        ([name]) => name === "will-frame-navigate",
+      )![1];
+      const willRedirect = view.webContents.on.mock.calls.find(
+        ([name]) => name === "will-redirect",
+      )![1];
+      const popupHandler = view.webContents.setWindowOpenHandler.mock.calls[0]![0];
+      const extId = "abcdefghijklmnopabcdefghijklmnop";
+      const extUrls = [
+        `chrome-extension://${extId}/war.html`,
+        `chrome-ex\ttension://${extId}/war.html`,
+        `\u0001chrome-extension://${extId}/war.html`,
+      ];
+
+      // Before connection control: person's own page keeps #745's behavior.
+      const personNav = vi.fn();
+      willNavigate({ preventDefault: personNav }, extUrls[0]);
+      expect(personNav).not.toHaveBeenCalled();
+      expect(popupHandler({ url: extUrls[0] })).toMatchObject({ action: "allow" });
+
+      // Mark page as connection-controlled (as SessionCdpRouter does on connection attach).
+      const channel = await browser.cdp.attach(targetId, false, undefined, true);
+      for (const url of extUrls) {
+        const preventNav = vi.fn();
+        willNavigate({ preventDefault: preventNav }, url);
+        expect(preventNav, `will-navigate ${url}`).toHaveBeenCalledOnce();
+
+        const preventFrame = vi.fn();
+        willFrameNavigate({ url, preventDefault: preventFrame });
+        expect(preventFrame, `will-frame-navigate ${url}`).toHaveBeenCalledOnce();
+
+        const preventRedirect = vi.fn();
+        willRedirect({ preventDefault: preventRedirect }, url);
+        expect(preventRedirect, `will-redirect ${url}`).toHaveBeenCalledOnce();
+
+        expect(popupHandler({ url }), `windowOpen ${url}`).toMatchObject({ action: "deny" });
+      }
+
+      // A popup opened by a connection-controlled page inherits connection control immediately.
+      const beforeViews = electron.views.length;
+      popupHandler({ url: "about:blank", disposition: "new-window" }).createWindow({});
+      const popupView = electron.views[beforeViews]!;
+      const popupWillNavigate = popupView.webContents.on.mock.calls.find(
+        ([name]) => name === "will-navigate",
+      )![1];
+      const preventPopupExt = vi.fn();
+      popupWillNavigate({ preventDefault: preventPopupExt }, extUrls[0]);
+      expect(preventPopupExt).toHaveBeenCalledOnce();
+
+      await channel.close();
+    } finally {
+      await browser.close();
+    }
+  });
   it("keeps a tab opened behind its page apart from a popup a person will look at", async () => {
     const launcher = new ElectronBrowserLauncher({
       downloads: { accept: () => undefined },
