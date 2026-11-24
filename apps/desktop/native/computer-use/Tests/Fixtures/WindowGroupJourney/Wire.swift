@@ -750,16 +750,16 @@ extension WireJourney {
       }
       // Opposite case: Redo when there is truly nothing to redo.
       // Wait past AppKit's 1.0 s AX menu throttle so Edit › Redo reads disabled before sending redo.
-      let beforeNothingMark = editingMark
       try await Contracts.command(out, "owner-clear")
       _ = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
       let freshKU = try keyUpCount()
+      let beforeFMark = editingMark
       _ = try await input([
         ["kind": "key", "action": "down", "code": "KeyF", "key": "f", "modifiers": [], "text": "f"],
         ["kind": "key", "action": "up", "code": "KeyF", "key": "f", "modifiers": []],
       ])
       try await waitKeyUp(after: freshKU)
-      let nothingCtx = try await activeContext(after: beforeNothingMark)
+      let nothingCtx = try await settledEditingContext(streamA, after: beforeFMark)
       try await Task.sleep(nanoseconds: 1_150_000_000)
       let nothingDiagOff = diagOffset()
       let nothingRawBefore = try rawRedoCount()
