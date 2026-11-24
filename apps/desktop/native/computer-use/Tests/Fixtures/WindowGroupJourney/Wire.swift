@@ -652,6 +652,16 @@ extension WireJourney {
     func note() async throws -> String {
       return try (try await noteState()["text"] as? String).unwrap("note text")
     }
+    func keyUps() throws -> Int {
+      try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
+        let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+        return row?["type"] as? Int == Int(NSEvent.EventType.keyUp.rawValue)
+      }.count
+    }
+    func waitForKeyUp(after before: Int) async throws {
+      let by = Date().addingTimeInterval(2)
+      while try keyUps() <= before, Date() < by { try await Task.sleep(nanoseconds: 10_000_000) }
+    }
     // Reset releases the input lease. Focus the editor after the contact
     // test, then admit a new action before expecting its editing context.
     try await Contracts.command(out, "owner-resume")
@@ -659,9 +669,11 @@ extension WireJourney {
     try require(resumedInput["outcome"] as? String == "dispatched", "New input did not reacquire the reset viewer")
     _ = try await context()
     start("native-text-key")
+    let beforeNativeKey = try keyUps()
     let key = try await input([["kind": "key", "action": "down", "code": "KeyQ", "key": "q", "modifiers": [], "text": "q"],
       ["kind": "key", "action": "up", "code": "KeyQ", "key": "q", "modifiers": []]])
     try require(key["outcome"] as? String == "dispatched", "Unicode-carrying key was refused")
+    try await waitForKeyUp(after: beforeNativeKey)
     try require(try await note() == "q", "AppKit key did not insert exactly once")
     let afterKey = editingMark
     passed()
@@ -901,13 +913,19 @@ extension WireJourney {
     let redone = try await input([["kind": "command", "command": "redo", "contextId": redoContext]])
     let afterRedo = try await note()
     try require(redone["outcome"] as? String == "dispatched" && afterRedo == "undo fixture", "Redo did not reapply the undone insertion once")
+    let beforeDelete = try keyUps()
     let deleted = try await input([["kind": "command", "command": "deleteBackward", "contextId": try await context()]])
+    try await waitForKeyUp(after: beforeDelete)
     let afterDelete = try await note()
     try require(deleted["outcome"] as? String == "dispatched" && afterDelete == "undo fixtur", "Backspace did not delete exactly one character")
+    let beforeMoveBack = try keyUps()
     let movedBack = try await input([["kind": "command", "command": "moveBackward", "contextId": try await context()]])
     try require(movedBack["outcome"] as? String == "dispatched", "Caret move was refused")
+    try await waitForKeyUp(after: beforeMoveBack)
+    let beforeTypedAfterMove = try keyUps()
     let typedAfterMove = try await input([["kind": "key", "action": "down", "code": "KeyX", "key": "X", "modifiers": [], "text": "X"],
       ["kind": "key", "action": "up", "code": "KeyX", "key": "X", "modifiers": []]])
+    try await waitForKeyUp(after: beforeTypedAfterMove)
     let afterMove = try await note()
     try require(typedAfterMove["outcome"] as? String == "dispatched" && afterMove == "undo fixtuXr", "A key after a caret move did not go where the caret went")
     // The sections after this one expect the literal text back.
