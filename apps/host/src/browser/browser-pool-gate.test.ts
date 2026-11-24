@@ -253,3 +253,23 @@ it("signals idle-state changes whenever admission, reservations, or viewers chan
   expect(changes).toBe(5);
   expect(subject.viewers).toBe(0);
 });
+
+it("holdIdle vetoes an ordinary park without blocking a proxy repair, and signals idle changes", () => {
+  const subject = new BrowserPoolGate();
+  let changes = 0;
+  subject.onIdleStateChanged = () => {
+    changes++;
+  };
+  subject.set({ recovered: true, away: null, hold: null });
+  const release = subject.holdIdle();
+  expect(subject.idleHolds).toBe(1);
+  expect(changes).toBe(2);
+  expect(subject.beginPark(false)).toBe(false);
+  expect(subject.beginPark(true)).toBe(true);
+  subject.endPark();
+  release();
+  release(); // idempotent
+  expect(subject.idleHolds).toBe(0);
+  expect(subject.beginPark(false)).toBe(true);
+  subject.endPark();
+});

@@ -220,6 +220,7 @@ import {
   type ManagedBrowserPoolHome,
   type ManagedBrowserPoolStatus,
 } from "../browser/managed-pool-home.js";
+import { loadOrCreateManagedBrowserPoolKeys } from "../browser/managed-pool-keys.js";
 import { ManagedBrowserPoolUnclaimed } from "../browser/managed-pool-target.js";
 import { BrowserSourceService } from "../browser/browser-source-service.js";
 import { BrowserAttachTicketSigner } from "../browser/browser-ticket.js";
@@ -1253,6 +1254,8 @@ export async function createHostRuntime(
           .where("kind", "=", "main")
           .where("ownerKind", "=", "deployment")
           .where("revokedAt", "is", null)
+          .orderBy("createdAt", "desc")
+          .orderBy("id", "desc")
           .executeTakeFirst()
       )?.id;
     const initialPooledRunnerId = config.managedHome?.browserPool
@@ -2210,10 +2213,18 @@ export async function createHostRuntime(
     let logManagedBrowserPoolStatus: (_status: ManagedBrowserPoolStatus) => void = () => undefined;
     if (config.managedHome?.browserPool) {
       const managedHome = config.managedHome;
+      const poolKeys = await loadOrCreateManagedBrowserPoolKeys(dataDirectory);
+      browser.setPoolSigner(
+        new BrowserAttachTicketSigner({
+          keyId: poolKeys.ticketKey.keyId,
+          privateKey: poolKeys.ticketKey.key,
+        }),
+      );
       managedBrowserPool = await startManagedBrowserPool({
         database,
         dataDirectory,
         cloudComputerId: managedHome.cloudComputerId,
+        keys: poolKeys,
         runnerId: initialPooledRunnerId,
         resolveRunnerId: readManagedPoolMainRunner,
         onRunnerBound: (runnerId) => browser.setPooledRunner(runnerId),
@@ -2222,6 +2233,7 @@ export async function createHostRuntime(
         browser,
         browserRelay,
         passkeys: config.passkeys === true,
+        isAgentsStopped: (runnerId) => runners.agentsStoppedSince(runnerId) !== null,
         account: {
           controlApiOrigin: managedHome.accountOrigin,
           hostCredential: async () =>
@@ -2239,12 +2251,7 @@ export async function createHostRuntime(
         onStatusChanged: (status) => logManagedBrowserPoolStatus(status),
         onError: (error) => reportManagedBrowserPoolError(error),
       });
-      browser.setPoolSigner(
-        new BrowserAttachTicketSigner({
-          keyId: managedBrowserPool.keys.ticketKey.keyId,
-          privateKey: managedBrowserPool.keys.ticketKey.key,
-        }),
-      );
+      browser.setPooledUnavailableReason(() => managedBrowserPool!.unavailableReason());
     }
     await passwordSignIns.sweepAfterRestart();
     await toolActivity.finalize();
@@ -2333,14 +2340,15 @@ export async function createHostRuntime(
     /** Who owns a module stream once the registry has stopped tracking it. */
     const auxiliaryModuleOwners: {
       readonly [Module in RunnerAuxiliaryModule]: (
-        runnerId: RunnerId,
+        stream: import("@opensteer/orchestration").RunnerAuxiliaryStream,
         reason: RunnerStreamLossReason,
       ) => void;
     } = {
-      browser: (runnerId, reason) => browserRelay.detachRunner(runnerId, reason),
-      integrations: (runnerId, reason) => computerApps.detachRunner(runnerId, reason),
-      messaging: (runnerId, reason) => messagingRelay.detachRunner(runnerId, reason),
-      shell: (runnerId, reason) => shellHub?.detachRunner(runnerId, reason),
+      browser: (stream, reason) =>
+        browserRelay.detachStream(stream.identity.runnerId, stream.auxiliaryStreamId, reason),
+      integrations: (stream, reason) => computerApps.detachRunner(stream.identity.runnerId, reason),
+      messaging: (stream, reason) => messagingRelay.detachRunner(stream.identity.runnerId, reason),
+      shell: (stream, reason) => shellHub?.detachRunner(stream.identity.runnerId, reason),
     };
     let naming: ThreadNaming | undefined;
     // What a Runner's connection, modules and readiness change, read live from the registry.
@@ -2407,7 +2415,7 @@ export async function createHostRuntime(
           // The registry dropped the stream — a lease expired, the machine was
           // revoked, or its primary connection went. The module owner has to
           // hear about it from here, because no socket event will arrive.
-          auxiliaryModuleOwners[stream.fence.module](stream.identity.runnerId, reason);
+          auxiliaryModuleOwners[stream.fence.module](stream, reason);
         },
         onModuleReadiness: async () => runnerChanged(true),
         onSleepAnnounced: ({ runnerId }) => devices.runnerSleeping(runnerId),

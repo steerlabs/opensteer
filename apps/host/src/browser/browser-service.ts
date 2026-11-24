@@ -1083,6 +1083,8 @@ export class BrowserService {
   readonly #pools: Map<RunnerId, BrowserPoolCoordinator>;
   #pooledRunner: RunnerId | undefined;
   readonly #pooledOnly: boolean;
+  #pooledUnavailableReason: (() => string | undefined) | undefined;
+  readonly #poolRequestHolds = new Map<string, Map<RunnerId, () => void>>();
   readonly #newSessionId: () => BrowserSessionId;
   readonly #poolWaiters = new Map<BrowserSessionId, Set<AbortController>>();
   readonly #poolAgentWaiters = new Map<
@@ -1183,8 +1185,34 @@ export class BrowserService {
     this.#poolSigner = signer;
   }
 
+  setPooledUnavailableReason(reason: () => string | undefined): void {
+    this.#pooledUnavailableReason = reason;
+  }
+
   #signerFor(pooled: boolean): BrowserAttachTicketSigner {
-    return pooled && this.#poolSigner ? this.#poolSigner : this.#signer;
+    if (pooled) {
+      if (this.#poolSigner) return this.#poolSigner;
+      if (this.#pooledOnly)
+        throw new OpensteerError({
+          code: "conflict",
+          message: "The pooled browser attach key is not configured.",
+        });
+    }
+    return this.#signer;
+  }
+
+  #pooledRefusalMessage(
+    homes: readonly { readonly id: RunnerId; readonly kind: string }[],
+    runnerId: RunnerId | undefined,
+    fallback: string,
+  ): string {
+    if (!this.#pooledUnavailableReason) return fallback;
+    const isPooled = runnerId
+      ? this.#isPooledRunner(runnerId) ||
+        (this.#pooledOnly && homes.some((home) => home.id === runnerId && home.kind === "main"))
+      : this.#pooledOnly;
+    if (!isPooled) return fallback;
+    return this.#pooledUnavailableReason() ?? fallback;
   }
 
   get available(): boolean {
@@ -1279,6 +1307,7 @@ export class BrowserService {
   async retirePool(runnerId: RunnerId, reason: string): Promise<void> {
     const coordinator = this.#pools.get(runnerId);
     if (!coordinator) return;
+    this.#releasePoolRequestHoldsForRunner(runnerId);
     try {
       await coordinator.retire(reason);
     } finally {
@@ -2170,6 +2199,7 @@ export class BrowserService {
       placement?: BrowserTabOpenCommand["placement"];
     },
     signal: AbortSignal,
+    agent?: BrowserTabOpenAgent,
   ): Promise<{
     profileId: BrowserProfileId | null;
     placement: BrowserPlacementSelector;
@@ -2221,17 +2251,28 @@ export class BrowserService {
             ? { kind: "runner" as const, runnerId: remembered }
             : null);
     if (await this.#waitForBrowser(homes, intended?.runnerId, signal))
-      return this.#resolveIdentityOpen(ownerId, command, signal);
+      return this.#resolveIdentityOpen(ownerId, command, signal, agent);
     // A pooled target that is still recovering or parked after a Home restart attaches its
     // in-process browser relay once its guest is running; waking it here makes the placement ready.
     const intendedPool = intended ? this.#pool(intended.runnerId) : undefined;
     if (intended && intendedPool && !this.#resolveTarget(intended)) {
+      if (agent) {
+        await this.admitAgentBrowser(agent, "read-write", [], this.#repository, false, {
+          profileId,
+        });
+        await this.#requireAgentAccess(intended.runnerId);
+      }
       const wakeSignal = AbortSignal.any([
         this.#closing.signal,
         signal ?? AbortSignal.timeout(browserOpenWorkMs),
       ]);
       const reservation = await this.#reservePool(intendedPool.gate, wakeSignal);
-      reservation.release();
+      try {
+        if (!this.#resolveTarget(intended))
+          await intendedPool.ensureRelayAttached(wakeSignal).catch(() => undefined);
+      } finally {
+        reservation.release();
+      }
     }
     if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
     const eligible = this.#eligiblePlacements(homes).filter((candidate) => candidate.available);
@@ -2241,13 +2282,17 @@ export class BrowserService {
     )
       throw this.#tabOpenRefusal(
         "browser-placement-unavailable",
-        "The selected browser computer is unavailable.",
+        this.#pooledRefusalMessage(
+          homes,
+          command.placement.runnerId,
+          "The selected browser computer is unavailable.",
+        ),
         this.#eligiblePlacements(homes),
       );
     if (this.#personal && !profile && !command.placement && !main)
       throw this.#tabOpenRefusal(
         "browser-placement-unavailable",
-        "The main computer's browser is unavailable.",
+        this.#pooledRefusalMessage(homes, undefined, "The main computer's browser is unavailable."),
       );
     let placement = intended;
     if (!placement) {
@@ -2266,9 +2311,13 @@ export class BrowserService {
     )
       throw this.#tabOpenRefusal(
         "browser-placement-unavailable",
-        boundRunnerId
-          ? "Waiting for this computer to open its browser profile. Reconnect the owning computer."
-          : "The selected browser computer is unavailable.",
+        this.#pooledRefusalMessage(
+          homes,
+          placement?.runnerId,
+          boundRunnerId
+            ? "Waiting for this computer to open its browser profile. Reconnect the owning computer."
+            : "The selected browser computer is unavailable.",
+        ),
         this.#eligiblePlacements(homes),
       );
     return {
@@ -2503,6 +2552,7 @@ export class BrowserService {
                 ...(command.placement ? { placement: command.placement } : {}),
               },
               budget.signal,
+              agent,
             );
             const { profileId, placement } = resolved;
             identityKey = resolved.identityKey;
@@ -6832,10 +6882,60 @@ export class BrowserService {
     else this.#requestPins.delete(key);
     for (const id of new Set([...previous, ...pins].map((pin) => pin.sessionId)))
       this.#brokers.get(id)?.refreshSessionState();
+    const pooledRunners = new Set<RunnerId>();
+    for (const pin of pins) {
+      const broker = this.#brokers.get(pin.sessionId);
+      const runnerId =
+        broker?.computer?.runnerId ?? (broker?.pooled ? this.#pooledRunner : undefined);
+      if (runnerId && this.#pools.has(runnerId)) pooledRunners.add(runnerId);
+    }
+    this.#syncPoolRequestHold(key, pooledRunners);
+  }
+
+  #syncPoolRequestHold(key: string, nextRunners: ReadonlySet<RunnerId>): void {
+    const existing = this.#poolRequestHolds.get(key);
+    if (existing) {
+      for (const [runnerId, release] of existing) {
+        if (!nextRunners.has(runnerId)) {
+          release();
+          existing.delete(runnerId);
+        }
+      }
+      if (existing.size === 0) this.#poolRequestHolds.delete(key);
+    }
+    if (nextRunners.size === 0) return;
+    let holds = this.#poolRequestHolds.get(key);
+    for (const runnerId of nextRunners) {
+      if (holds?.has(runnerId)) continue;
+      const pool = this.#pools.get(runnerId);
+      if (!pool) continue;
+      if (!holds) {
+        holds = new Map();
+        this.#poolRequestHolds.set(key, holds);
+      }
+      holds.set(runnerId, pool.gate.holdIdle());
+    }
+  }
+
+  #releasePoolRequestHoldsForRunner(runnerId: RunnerId): void {
+    for (const [key, holds] of this.#poolRequestHolds) {
+      const release = holds.get(runnerId);
+      if (!release) continue;
+      release();
+      holds.delete(runnerId);
+      if (holds.size === 0) this.#poolRequestHolds.delete(key);
+    }
   }
 
   observeRequest(request: Request): void {
     const payload = request.payload;
+    if (payload.kind === "browser.access") {
+      this.#syncPoolRequestHold(
+        request.id,
+        request.status === "pending" ? new Set(this.#pools.keys()) : new Set(),
+      );
+      return;
+    }
     if (payload.kind !== "browser.sign-in" && payload.kind !== "browser.password-sign-in") return;
     const sessionId =
       "sessionId" in payload ? BrowserSessionIdSchema.parse(payload.sessionId) : null;
@@ -7334,6 +7434,10 @@ export class BrowserService {
     this.#draining.clear();
     for (const coordinator of this.#pools.values()) coordinator.close();
     this.#pools.clear();
+    for (const holds of this.#poolRequestHolds.values()) {
+      for (const release of holds.values()) release();
+    }
+    this.#poolRequestHolds.clear();
     this.#closePromise = (async () => {
       await this.#runPlaces.close();
       await Promise.allSettled(this.#sessionOperations.values());
@@ -7489,7 +7593,13 @@ export class BrowserService {
     // no coordinator here (before its target is adopted, between two targets) it is refused
     // before any row is written and without falling back to a local runtime.
     if (!pooled && isPooledComputer)
-      throw new BrowserPoolAdmissionClosed("The pooled browser is between states. Try again.");
+      throw new BrowserPoolAdmissionClosed(
+        this.#pooledRefusalMessage(
+          homes,
+          placement.runnerId,
+          "The pooled browser is between states. Try again.",
+        ),
+      );
     let target: BrowserRuntimeTarget | undefined;
     let poolBudget = input.operationBudget as BrowserTabOpenBudget | undefined;
     if (pooled && poolStart) {
@@ -7526,6 +7636,8 @@ export class BrowserService {
       poolStart.pool = { target: pooled, reservation };
       poolStart.signal.throwIfAborted();
       if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
+      if (!this.#resolveTarget(placement))
+        await pooled.ensureRelayAttached(poolStart.signal).catch(() => undefined);
       const current = this.#resolveTarget(placement);
       if (!current || current.runtimeId !== pooled.runtimeId)
         throw unavailable(

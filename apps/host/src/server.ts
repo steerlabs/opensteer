@@ -801,11 +801,20 @@ export async function createHostServer(
   registerTriggerCdpBridge(app, dependencies.browser, dependencies.triggers.controlTokens);
   registerWatchCdpBridge(app, dependencies.browser, dependencies.triggers.watchBrowserTokens);
 
-  app.get("/healthz", async () =>
-    dependencies.browserPoolStatus
+  app.get("/healthz", async () => ({ ok: true }));
+  app.get("/ready", async (request, reply) => {
+    const remote = request.socket.remoteAddress ?? "";
+    const isDirectLoopback =
+      (remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1") &&
+      request.headers["x-forwarded-for"] === undefined &&
+      request.headers["x-forwarded-host"] === undefined &&
+      request.headers["x-forwarded-proto"] === undefined &&
+      request.headers.forwarded === undefined;
+    if (!isDirectLoopback) return reply.code(404).send({ error: "Not found" });
+    return dependencies.browserPoolStatus
       ? { ok: true, browserPool: dependencies.browserPoolStatus() }
-      : { ok: true },
-  );
+      : { ok: true };
+  });
   app.get("/.well-known/opensteer", async (request, reply) => {
     setBrowserSourceExtensionCors(reply, request.headers.origin);
     void reply.header("cache-control", "no-store");
@@ -3734,14 +3743,11 @@ function attachRunnerAuxiliarySocket(options: {
             return null;
           });
         if (!claims) return;
-        stream = options.runners.admitAuxiliary({ claims, module, peer });
         if (
           module === "browser" &&
           options.refuseLocalMainBrowserRelay &&
-          stream.identity.runnerKind === "main"
+          options.runners.identityForRunner(claims.runnerId)?.runnerKind === "main"
         ) {
-          options.runners.detachAuxiliary(peer, "revoked");
-          stream = undefined;
           outcome(false, "managed-browser-pool-refuses-local-browser");
           await dispatch.send({
             error: {
@@ -3756,6 +3762,7 @@ function attachRunnerAuxiliarySocket(options: {
           }
           return;
         }
+        stream = options.runners.admitAuxiliary({ claims, module, peer });
         dispatch.onAttach(stream);
         release();
         clearTimeout(challengeTimeout);

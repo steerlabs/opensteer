@@ -50,7 +50,7 @@ interface ActiveChannel {
  */
 export class BrowserModuleRelay {
   readonly #bridge: LocalBrowserRuntimeBridge;
-  readonly #stopped: boolean;
+  readonly #stopped: () => boolean;
   readonly #channels = new Map<BrowserChannelId, ActiveChannel>();
   #inventoryComplete = false;
   #capability: BrowserCapabilityLease | undefined;
@@ -58,9 +58,9 @@ export class BrowserModuleRelay {
   #stream: RunnerModuleStream | undefined;
   #streamLifetime = new AbortController();
 
-  constructor(bridge: LocalBrowserRuntimeBridge, stopped = false) {
+  constructor(bridge: LocalBrowserRuntimeBridge, stopped: boolean | (() => boolean) = false) {
     this.#bridge = bridge;
-    this.#stopped = stopped;
+    this.#stopped = typeof stopped === "function" ? stopped : () => stopped;
   }
 
   get busy(): boolean {
@@ -230,7 +230,7 @@ export class BrowserModuleRelay {
         });
         return;
       case "browser.attach": {
-        if (this.#stopped && (message.standardCdp || !isPersonTicket(message.attachTicket)))
+        if (this.#stopped() && (message.standardCdp || !isPersonTicket(message.attachTicket)))
           throw new BrowserRelayError(stoppedError.message, { runtimeError: stoppedError });
         if (!this.#inventoryComplete)
           throw new BrowserRelayError("Local browser profile inventory has not completed.");
@@ -310,7 +310,7 @@ export class BrowserModuleRelay {
         if (!this.#channels.has(message.channelId)) return;
         const channel = this.#assertChannel(message.channelId, message.capability);
         if (
-          this.#stopped &&
+          this.#stopped() &&
           (message.message.type === "cdp.raw" || !isPersonFrame(message.message))
         ) {
           if (message.message.type === "cdp.command")

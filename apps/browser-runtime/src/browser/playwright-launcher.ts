@@ -48,6 +48,7 @@ import path from "node:path";
 import {
   chromium,
   type Dialog,
+  type Download,
   type Frame,
   type Page,
   type Request,
@@ -2708,6 +2709,7 @@ class PlaywrightPageHandle implements BrowserPage {
   private requestMethod = "GET";
   private documentMethod = "GET";
   private readonly uploads = new Set<Request>();
+  private readonly downloads = new Set<Download>();
   private captureSession: Promise<PlaywrightCdpSession> | undefined;
   private captureWorld: number | undefined;
   private cdpPromise: Promise<CdpSession> | null = null;
@@ -2785,7 +2787,15 @@ class PlaywrightPageHandle implements BrowserPage {
     });
     page.on("requestfinished", (request) => this.uploads.delete(request));
     page.on("requestfailed", (request) => this.uploads.delete(request));
-    page.once("close", () => this.uploads.clear());
+    page.on("download", (download) => {
+      this.downloads.add(download);
+      const done = () => this.downloads.delete(download);
+      void download.path().then(done, done);
+    });
+    page.once("close", () => {
+      this.uploads.clear();
+      this.downloads.clear();
+    });
     page.once("close", () => void this.endedBy().then((cause) => this.confirmGone(cause)));
     page.on("popup", (popup) => {
       contextHandle.wrap(popup).openerHandle = this;
@@ -2795,7 +2805,16 @@ class PlaywrightPageHandle implements BrowserPage {
     });
   }
 
-  async keepAwake(): Promise<"tab-helper" | PageKeepAwake | "upload" | "post" | "media" | null> {
+  activeTransfers(): readonly ("download" | "upload")[] {
+    const active: ("download" | "upload")[] = [];
+    if (this.downloads.size) active.push("download");
+    if (this.uploads.size) active.push("upload");
+    return active;
+  }
+
+  async keepAwake(): Promise<
+    "tab-helper" | PageKeepAwake | "upload" | "download" | "post" | "media" | null
+  > {
     // Not before the look for the tab helper has ended (R1): asked again later, never closed early.
     if (this.contextHandle.lifecyclePending) return "tab-helper";
     // TS1, TS16: what desktop Chrome would not discard, and a page that asks before it goes.
@@ -2803,6 +2822,7 @@ class PlaywrightPageHandle implements BrowserPage {
       const held = await documentKeepAwake(frame);
       if (held) return held;
     }
+    if (this.downloads.size) return "download";
     if (this.uploads.size) return "upload";
     if (!["GET", "HEAD"].includes(this.documentMethod)) return "post";
     for (const frame of this.page.frames()) {

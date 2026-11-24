@@ -1228,20 +1228,6 @@ export async function dismissBrowserPoolUnconfirmedSession(
   });
 }
 
-export function listBrowserPoolDocumentLosses(
-  database: Kysely<DatabaseSchema>,
-  ownerId: UserId,
-  surfaceId: BrowserSurfaceId,
-) {
-  return database
-    .selectFrom("browserPoolDocumentLosses")
-    .selectAll()
-    .where("ownerId", "=", ownerId)
-    .where("surfaceId", "=", surfaceId)
-    .orderBy("lostAt", "desc")
-    .execute(databaseOperationOptions());
-}
-
 /**
  * The person sees a loss once. A notice stays until the client says it showed it (by its id);
  * a reply lost on the way is answered with the same notice again.

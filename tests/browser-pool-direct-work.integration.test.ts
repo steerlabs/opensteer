@@ -17,7 +17,8 @@ import {
   serveMcp,
 } from "../apps/host/src/mcp/connection-caller.test-support.js";
 import type { RequestId, ThreadId } from "../packages/core/src/index.js";
-import { listBrowserPoolDocumentLosses, type TabRecord } from "../packages/database/src/index.js";
+import { type TabRecord } from "../packages/database/src/index.js";
+import { listBrowserPoolDocumentLosses } from "./browser-pool-journey.test-support.js";
 import { TabSleeper } from "../packages/browser-runtime-core/src/browser/tab-sleeper.js";
 import { before, holdResume, journey } from "./browser-pool-journey.test-support.js";
 

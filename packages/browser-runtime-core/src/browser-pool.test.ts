@@ -456,6 +456,30 @@ it("thaws without detaching when the frozen probe finds blockers", async () => {
   }
 });
 
+it("poolPageRetireBlockers vetoes retire during an active download or upload and clears once done", async () => {
+  const { poolPageRetireBlockers } = await import("./browser-pool.js");
+  let active: readonly ("download" | "upload")[] = ["download"];
+  const f = await fixture({
+    probePage: (page, phase) => poolPageRetireBlockers(page, phase),
+  });
+  try {
+    await f.install();
+    await f.open();
+    f.page.activeTransfers = () => active;
+    expect(await f.controls("retire")).toMatchObject({
+      phase: "running",
+      blockers: ["download"],
+    });
+    active = [];
+    expect(await f.controls("retire", 2)).toMatchObject({
+      phase: "retired",
+      blockers: [],
+    });
+  } finally {
+    await f.runtime.shutdown();
+  }
+});
+
 it("keeps a pooled session without a channel for its whole window, and ends it with its pages after", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const f = await fixture();

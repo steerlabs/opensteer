@@ -33,11 +33,11 @@ import {
   beginBrowserPoolPark,
   settleBrowserPoolControllerCall,
   browserPoolSlotIdentity,
-  listBrowserPoolDocumentLosses,
   readBrowserPoolSlot,
   listBrowserPoolReadySessions,
   requireBrowserPoolAdmission,
 } from "../packages/database/src/browser-pool-store.js";
+import { listBrowserPoolDocumentLosses } from "./browser-pool-journey.test-support.js";
 import {
   createBrowserSession,
   getBrowserSessionForOwner,

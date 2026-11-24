@@ -41,6 +41,8 @@ export class BrowserPoolGate {
   /** Of the active reservations, the ones taken with demand: a command in flight. */
   #commands = 0;
   #viewers = 0;
+  /** Non-command idle holds (e.g., pending browser Requests) that veto idle parking. */
+  #idleHolds = 0;
   /** The park preparing is a repair: a send with no demand waits instead of vetoing it. */
   #repairing = false;
   readonly #commandsIdle: (() => void)[] = [];
@@ -133,6 +135,24 @@ export class BrowserPoolGate {
     };
   }
 
+  /** Pending non-command holds (such as a pending browser Request) that keep idle park off. */
+  get idleHolds(): number {
+    return this.#idleHolds;
+  }
+
+  /** Holds the browser awake against idle parking (never against a proxy repair) until released. */
+  holdIdle(): () => void {
+    this.#idleHolds++;
+    this.onIdleStateChanged();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#idleHolds--;
+      this.onIdleStateChanged();
+    };
+  }
+
   /** Resolves once no command is in flight. */
   commandsIdle(): Promise<void> {
     if (this.#commands === 0) return Promise.resolve();
@@ -165,7 +185,11 @@ export class BrowserPoolGate {
    * for the wake, as it does after D. Sends already admitted finish at the retire's quiesce.
    */
   beginPark(repair = false): boolean {
-    if (!this.admits || (repair ? this.#commands : this.#active || this.#viewers)) return false;
+    if (
+      !this.admits ||
+      (repair ? this.#commands : this.#active || this.#viewers || this.#idleHolds)
+    )
+      return false;
     this.#demanded = false;
     this.#preparing = true;
     this.#repairing = repair;

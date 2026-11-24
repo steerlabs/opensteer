@@ -4,6 +4,7 @@ import {
   BrowserRuntimeError,
   Ed25519AttachTicketVerifier,
   defaultAttachTicketReplayLedgerPath,
+  poolPageRetireBlockers,
   sessionFilesRoot,
   type BrowserRuntimeOptions,
 } from "@opensteer/browser-runtime-core";
@@ -84,7 +85,7 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
       ? {
           pool: {
             controllerKey: config.pool.controllerKey,
-            probePage: async () => [],
+            probePage: (page, phase) => poolPageRetireBlockers(page, phase),
             boot: { slot: config.pool.slot, floor: config.pool.floor },
           },
         }

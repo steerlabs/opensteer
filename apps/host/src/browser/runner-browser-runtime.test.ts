@@ -2169,3 +2169,57 @@ it("waits for stream admission and complete inventory, independently cancels wai
   await closing;
   hub.close();
 });
+
+it("S8: refuses oversized text and binary frames at RunnerBrowserHub", async () => {
+  const hub = new RunnerBrowserHub();
+  const runnerId = createId("runner");
+  const auxiliaryStreamId =
+    `rax_${crypto.randomUUID()}` as RunnerAuxiliaryStream["auxiliaryStreamId"];
+  const stream = {
+    auxiliaryStreamId,
+    fence: RunnerAuxiliaryFrameFenceSchema.parse({
+      runnerId,
+      bootId: `rbt_${crypto.randomUUID()}`,
+      connectionId: `rcn_${crypto.randomUUID()}`,
+      connectionLeaseId: `rls_${crypto.randomUUID()}`,
+      connectionGeneration: 1,
+      auxiliaryStreamId,
+      module: "browser",
+    }),
+    identity: {
+      runnerId,
+      bootId: RunnerBootIdSchema.parse(`rbt_${crypto.randomUUID()}`),
+      modules: { browser: { runtimeId: "browser-main", wireVersion: 2 } },
+    },
+    streamLeaseExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+  } as unknown as RunnerAuxiliaryStream;
+  const peer: RunnerBrowserPeer = { id: "size-peer", close: () => {}, send: async () => {} };
+  const observed: unknown[] = [];
+  hub.subscribe({
+    onMessage: async (_s, message) => {
+      observed.push(message);
+    },
+    onFrame: async (_s, frame) => {
+      observed.push(frame);
+    },
+  });
+  hub.attach(peer, stream);
+  await expect(hub.handleBinary(peer, Buffer.alloc(10 * 1024 * 1024 + 1))).rejects.toMatchObject({
+    code: "bad_request",
+  });
+  await expect(
+    hub.handleMessage(peer, {
+      ...stream.fence,
+      type: "browser.server-message",
+      channelId: "bch_size",
+      capability: {
+        runtimeId: "browser-main",
+        capabilityLeaseId: "cap_1",
+        capabilityGeneration: 1,
+      },
+      message: { type: "cdp.event", payload: "x".repeat(2 * 1024 * 1024 + 1024) },
+    } as unknown as BrowserRelayEvent),
+  ).rejects.toMatchObject({ code: "bad_request" });
+  expect(observed).toEqual([]);
+  hub.close();
+});

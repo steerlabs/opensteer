@@ -72,17 +72,13 @@ export interface BrowserPoolRuntimeChannel {
   endSession(ticket: string, signal?: AbortSignal): Promise<BrowserPoolEndAnswer>;
 }
 
-/** A runtime in this process (loopback): its state is always there to read. */
-export function loopbackPoolChannel(runtime: {
-  poolState(): BrowserPoolRuntimeState | undefined;
-  controlPool(control: BrowserPoolControl, signature: Uint8Array): Promise<BrowserPoolRuntimeState>;
-  endPoolSession(ticket: string): Promise<BrowserPoolEndAnswer>;
-}): BrowserPoolRuntimeChannel {
-  return {
-    poolState: async () => runtime.poolState() ?? null,
-    controlPool: (control, signature) => runtime.controlPool(control, signature),
-    endSession: (ticket) => runtime.endPoolSession(ticket),
-  };
+/**
+ * The Home's own in-process browser relay could not attach to a running pool guest (e.g., wire
+ * contract, runtime id, health parse, or inventory conflict). Never counted toward discarding
+ * the person's live guest; retried with bounded backoff instead.
+ */
+export class BrowserPoolRelayAttachError extends Error {
+  override readonly name = "BrowserPoolRelayAttachError";
 }
 
 /** What the Home does per session; one session's failure is that session's alone. */
@@ -203,6 +199,16 @@ export interface BrowserPoolCoordinatorOptions {
    * next idle period. Null or omitted disables automatic idle parking.
    */
   readonly idleParkMs?: number | null;
+  /**
+   * The Home's in-process browser relay for this target: checked on every running turn and
+   * attached whenever detached, without counting relay-side failures toward discarding the guest.
+   */
+  readonly relay?: {
+    readonly attached: () => boolean;
+    readonly attach: (signal?: AbortSignal) => Promise<void>;
+  };
+  /** Called when the coordinator's reported status, gate phase, or relay state changes. */
+  readonly onStateChanged?: () => void;
   /**
    * Called once the guest is running (before reattaching retained sessions or opening admission)
    * so the Home's in-process browser relay attaches to this target's transport.
@@ -354,6 +360,7 @@ export class BrowserPoolCoordinator {
       !this.gate.admits ||
       this.gate.held > 0 ||
       this.gate.viewers > 0 ||
+      this.gate.idleHolds > 0 ||
       this.#parkWanted
     ) {
       this.#clearIdleTimer();
@@ -585,18 +592,46 @@ export class BrowserPoolCoordinator {
   /** Asks the loop to park; resolves with where the browser ended. Vetoed at once if it cannot. */
   tryPark(): Promise<"parked" | "vetoed"> {
     if (this.#parkWanted) return this.#parkWanted.promise;
-    if (!this.gate.admits || this.gate.held || this.gate.viewers) return Promise.resolve("vetoed");
+    if (!this.gate.admits || this.gate.held || this.gate.viewers || this.gate.idleHolds)
+      return Promise.resolve("vetoed");
     this.#parkWanted = Promise.withResolvers();
     this.#kick();
     return this.#parkWanted.promise;
   }
 
-  /**
-   * Whether a Stop of a session with no channel waits for the runtime's answer: an awake guest
-   * may still hold it. A parked guest is not woken for a Stop; its next adoption omits the row.
-   */
-  stopWaitsForRuntime(): boolean {
-    return this.#slot?.phase !== "parked";
+  /** The in-process browser relay detached while the guest may still be running: re-attach it. */
+  relayDetached(): void {
+    if (this.#closed || this.#ended) return;
+    this.#options.onStateChanged?.();
+    this.#kick();
+  }
+
+  /** Ensures the in-process browser relay is attached while the guest is open for traffic. */
+  async ensureRelayAttached(signal?: AbortSignal): Promise<void> {
+    if (!this.#options.relay || this.#options.relay.attached()) return;
+    try {
+      await this.#attachRelay(signal);
+    } catch (error) {
+      this.#options.onError?.(error);
+      this.#options.onStateChanged?.();
+      this.#kick();
+      throw error;
+    }
+  }
+
+  async #attachRelay(signal?: AbortSignal): Promise<void> {
+    const attach = this.#options.relay?.attach ?? this.#options.onRunning;
+    if (!attach) return;
+    try {
+      await attach(signal);
+      this.#options.onStateChanged?.();
+    } catch (error) {
+      if (signal?.aborted || this.#closed || this.#released) throw error;
+      if (error instanceof BrowserPoolRelayAttachError) throw error;
+      throw new BrowserPoolRelayAttachError("The pooled browser relay could not attach.", {
+        cause: error,
+      });
+    }
   }
 
   /** A Stop left a session closing with no channel: the loop ends it with the runtime's answer. */
@@ -777,7 +812,10 @@ export class BrowserPoolCoordinator {
         this.#options.onError?.(error);
         // Unanswered, or refused unsigned, for long: the account may have a new target (a term
         // superseded is answered by the old host only with an unsigned refusal).
-        if (!(error instanceof BrowserPoolNotStarted)) {
+        if (
+          !(error instanceof BrowserPoolNotStarted) &&
+          !(error instanceof BrowserPoolRelayAttachError)
+        ) {
           const at = Date.now();
           failingSince ??= at;
           const bound = this.#options.unansweredMs ?? unansweredMs;
@@ -805,6 +843,7 @@ export class BrowserPoolCoordinator {
           // give live state up, and spaced so the host is not asked in a loop.
           const announce = this.#refused?.reason !== error.reason;
           this.#refused = { reason: error.reason, since: this.#refused?.since ?? new Date() };
+          this.#options.onStateChanged?.();
           // Subscribed clients learn of a refusal when it begins or its reason changes; the
           // announcement has its own bound, and a removal ends it.
           if (announce) await this.#announce(changed);
@@ -832,6 +871,21 @@ export class BrowserPoolCoordinator {
           );
           continue;
         }
+        if (error instanceof BrowserPoolRelayAttachError) {
+          // Home-side relay attach failure: the guest itself answered and is running. Never
+          // count this toward discarding the person's live guest; retry with bounded backoff.
+          await this.#answered();
+          this.#options.onStateChanged?.();
+          await this.#sleep(
+            Math.min(
+              (this.#options.retryMs ?? 100) * 2 ** Math.min(unanswered++, 16),
+              this.#options.unansweredRetryMaxMs ?? unansweredRetryMaxMs,
+            ),
+            changed,
+            "pending",
+          );
+          continue;
+        }
         if (unknownAnswer(error)) {
           // Not knowing (P18): asked again, later each time; it never counts toward a discard,
           // and nothing of the guest is given up for it. Past its bound the report says the
@@ -847,6 +901,7 @@ export class BrowserPoolCoordinator {
               this.#unknownSince + (this.#options.unreachableAfterMs ?? unreachableAfterMs) - at;
             if (left <= 0) {
               this.#unreachable = true;
+              this.#options.onStateChanged?.();
               await this.#announce(changed);
             } else wait = Math.min(wait, left);
           }
@@ -912,6 +967,8 @@ export class BrowserPoolCoordinator {
         run: () => this.#recoverStep(),
         ...(slot ? { discards: true } : {}),
       };
+    if (slot.phase === "running" && this.#options.relay && !this.#options.relay.attached())
+      return { name: "attach-relay", run: (signal) => this.#attachRelay(signal) };
     const withoutChannel = slot.phase === "running" ? await this.#withoutChannel() : [];
     // A removal or a restart asked during that read is chosen first: selection runs again.
     if (this.#released || this.#restartWanted) return this.#next();
@@ -1005,6 +1062,7 @@ export class BrowserPoolCoordinator {
     // A park that failed after D ends where the browser settled.
     if (this.#parkSettling && slot?.phase === "parked") this.#settlePark("parked");
     if (this.#parkSettling && slot?.phase === "running") this.#settlePark("vetoed");
+    this.#options.onStateChanged?.();
   }
 
   #settlePark(outcome: "parked" | "vetoed"): void {
@@ -1363,7 +1421,7 @@ export class BrowserPoolCoordinator {
         restartWanted: [],
       });
     this.#restartWanted = undefined;
-    if (this.#slot?.phase === "running") await this.#options.onRunning?.(this.#signal);
+    if (this.#slot?.phase === "running") await this.#attachRelay(this.#signal);
     this.#publish(this.#slot);
     wanted.done.resolve();
   }
@@ -1402,7 +1460,7 @@ export class BrowserPoolCoordinator {
     await this.#recover();
     // Sessions a Home restart left without a channel are counted before admission opens.
     if (this.#slot?.phase === "running") {
-      await this.#options.onRunning?.(this.#signal);
+      await this.#attachRelay(this.#signal);
       await this.#withoutChannel();
     }
     this.#recovered = true;
@@ -1412,14 +1470,14 @@ export class BrowserPoolCoordinator {
 
   async #wakeStep(): Promise<void> {
     await this.#wake();
-    if (this.#slot?.phase === "running") await this.#options.onRunning?.(this.#signal);
+    if (this.#slot?.phase === "running") await this.#attachRelay(this.#signal);
   }
 
   async #discardRead(reason: string): Promise<void> {
     const slot = await this.#read();
     if (!slot) throw new BrowserPoolAdmissionClosed("The pooled browser has no slot yet.");
     await this.#discard(slot, reason);
-    if (this.#slot?.phase === "running") await this.#options.onRunning?.(this.#signal);
+    if (this.#slot?.phase === "running") await this.#attachRelay(this.#signal);
     this.#discardWanted = undefined;
     this.#recovered = true;
     this.#publish(this.#slot);
@@ -1906,7 +1964,7 @@ export class BrowserPoolCoordinator {
       });
       const attempt = slot.attachmentGeneration;
       this.#signal?.throwIfAborted();
-      await this.#options.onRunning?.(this.#signal);
+      await this.#attachRelay(this.#signal);
       if (this.#adopter)
         tabLosses = await this.#adopter.reattach({
           sessions: state.adoption.sessions,
@@ -2039,6 +2097,7 @@ export class BrowserPoolCoordinator {
     this.#unknownSince = undefined;
     if (!this.#unreachable) return;
     this.#unreachable = false;
+    this.#options.onStateChanged?.();
     await this.#announce(this.#changed.signal);
   }
 
@@ -2405,11 +2464,6 @@ export function browserPoolEndFailure(pending: number, unknown: unknown): Error 
       : new BrowserPoolUnanswered("A stopped session's end was refused.", { cause: unknown });
   if (pending) return new BrowserPoolPending("A stopped session's end is not answered yet.");
   return undefined;
-}
-
-/** Whether the loop takes an error as not knowing (P18) or as an answer not yet the end. */
-export function browserPoolEndFailureIsHandled(error: unknown): boolean {
-  return unknownAnswer(error) || error instanceof BrowserPoolPending;
 }
 
 function unknownAnswer(error: unknown): boolean {

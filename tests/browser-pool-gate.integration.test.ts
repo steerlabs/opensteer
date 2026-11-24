@@ -11,7 +11,6 @@ import {
   handOffAgentOperation,
   installBrowserPoolSlot,
   lineageEndedMessage,
-  listBrowserPoolDocumentLosses,
   listBrowserPoolRetiredTargets,
   listBrowserPoolUnconfirmedClosings,
   listOpenBrowserPoolControllerCalls,
@@ -61,10 +60,11 @@ import {
   FakeIsolatingLauncher,
   FakePage,
 } from "../packages/browser-runtime-core/src/test-support/fakes.js";
+import { BrowserPoolCoordinator } from "../apps/host/src/browser/browser-pool-coordinator.js";
 import {
-  BrowserPoolCoordinator,
+  listBrowserPoolDocumentLosses,
   loopbackPoolChannel,
-} from "../apps/host/src/browser/browser-pool-coordinator.js";
+} from "./browser-pool-journey.test-support.js";
 import { BrowserPoolUnanswered } from "../apps/host/src/browser/browser-pool-controller.js";
 import { BrowserPoolAgentSlotDeleted } from "../packages/browser-runtime-core/src/browser-pool-agent-wire.js";
 import type { BrowserSessionId } from "../packages/core/src/index.js";

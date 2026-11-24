@@ -15,6 +15,9 @@ import type {
  * admitted the socket; this hub only remembers which socket belongs to which
  * Runner and carries frames between it and the relay.
  */
+export const maxRunnerBrowserMessageBytes = 2 * 1024 * 1024;
+export const maxRunnerBrowserBinaryBytes = 10 * 1024 * 1024;
+
 export interface RunnerBrowserPeer {
   readonly id: string;
   close(code: number, reason: string): void;
@@ -107,6 +110,22 @@ export class RunnerBrowserHub implements RunnerBrowserRegistry {
     entry.peer.close(reason === "revoked" ? 4003 : 4001, `browser stream ${reason}`);
   }
 
+  /**
+   * Lets go of a Runner's stream only when its `auxiliaryStreamId` matches, so
+   * a rejected or expired Runner auxiliary stream can never tear down an
+   * in-process managed pool peer for the same Runner.
+   */
+  detachStream(
+    runnerId: RunnerId,
+    auxiliaryStreamId: RunnerAuxiliaryStream["auxiliaryStreamId"],
+    reason: RunnerStreamLossReason,
+  ): void {
+    const entry = this.#byRunner.get(runnerId);
+    if (!entry || entry.stream.auxiliaryStreamId !== auxiliaryStreamId) return;
+    this.detach(entry.peer, reason);
+    entry.peer.close(reason === "revoked" ? 4003 : 4001, `browser stream ${reason}`);
+  }
+
   browserStreams(): readonly RunnerAuxiliaryStream[] {
     return [...this.#byRunner.values()].map((entry) => entry.stream);
   }
@@ -129,6 +148,12 @@ export class RunnerBrowserHub implements RunnerBrowserRegistry {
 
   async handleMessage(peer: RunnerBrowserPeer, message: BrowserRelayEvent): Promise<void> {
     const entry = this.#requireEntry(peer);
+    if (Buffer.byteLength(JSON.stringify(message), "utf8") > maxRunnerBrowserMessageBytes) {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "The browser relay message exceeds the size limit.",
+      });
+    }
     for (const hooks of this.#hooks) {
       if (hooks.onMessage) await hooks.onMessage(entry.stream, message);
     }
@@ -136,6 +161,12 @@ export class RunnerBrowserHub implements RunnerBrowserRegistry {
 
   async handleBinary(peer: RunnerBrowserPeer, value: Buffer): Promise<void> {
     const entry = this.#requireEntry(peer);
+    if (value.byteLength > maxRunnerBrowserBinaryBytes) {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "The browser relay binary frame exceeds the size limit.",
+      });
+    }
     const decoded = decodeBrowserRelayFrame(value);
     for (const hooks of this.#hooks) {
       if (hooks.onFrame) await hooks.onFrame(entry.stream, decoded);
