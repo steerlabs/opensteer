@@ -198,8 +198,10 @@ cluster.
 | `OPENSTEER_HOME_GCP_DISK_TYPE`    | Defaults to `pd-balanced`. Also accepts `pd-standard` and `pd-ssd`.                                                                                                               |
 | `OPENSTEER_HOME_GCP_DISK_SIZE_GB` | Defaults to `30`.                                                                                                                                                                 |
 
-Keep `OPENSTEER_ACCOUNT_URL`, `OPENSTEER_HOME_CLOUDFLARE_ZONE_ID` and
-`OPENSTEER_HOME_CLOUDFLARE_TOKEN` (or its `_FILE` variant). The Google
+Keep `OPENSTEER_ACCOUNT_URL`, `OPENSTEER_HOME_CLOUDFLARE_ZONE_ID`,
+`OPENSTEER_HOME_CLOUD_COMPUTER_DOMAIN` (Account's `OPENSTEER_CLOUD_COMPUTER_DOMAIN`, the only
+names the provisioner touches in the zone) and `OPENSTEER_HOME_CLOUDFLARE_TOKEN` (or its
+`_FILE` variant). The Google
 deployment gets its access token from attached Workload Identity. It requires
 no Google key.
 

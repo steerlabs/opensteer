@@ -82,6 +82,7 @@ function cloudflare(origin: URL) {
   return new CloudflareDns({
     token,
     zoneId,
+    domain: "example.com",
     timeoutMs: 2000,
     baseUrl: new URL("/client/v4/", origin),
   });
@@ -206,4 +207,20 @@ it("reports separate Account denial, lease contention, and provider rate-limit e
     status: 429,
     retryAt: 4000,
   });
+});
+
+it("refuses every read and write for a name outside its Cloud Computer domain", async () => {
+  await withServer([], async (origin) => {
+    const c = cloudflare(origin);
+    for (const outside of ["computer.example.org", "example.com", "computer.notexample.com"]) {
+      await expect(c.ensureRecords(outside, addresses, signal)).rejects.toThrow(
+        "outside its domain",
+      );
+      await expect(c.removeRecords(outside, signal)).rejects.toThrow("outside its domain");
+      await expect(c.observeWrites(outside, signal)).rejects.toThrow("outside its domain");
+    }
+  });
+  expect(
+    () => new CloudflareDns({ token, zoneId, domain: "not a domain", timeoutMs: 2000 }),
+  ).toThrow("Invalid Cloud Computer DNS domain");
 });
