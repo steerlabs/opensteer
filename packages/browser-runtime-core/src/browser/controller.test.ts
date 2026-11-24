@@ -192,6 +192,167 @@ describe("BrowserController", () => {
     }
   });
 
+  /*
+   * A7: a browser command's error says, as data, whether the command was refused before it was
+   * sent to the page (`unsent`: nothing happened) or came after it may have run (no `unsent`: its
+   * outcome is unknown). Here: a command that ran and whose reply is over its budget; a command
+   * refused by its attachment's router before it was sent; and one the queue refused.
+   */
+  it("says whether a command's error came before it was sent or after it may have run (A7)", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    const replyBudget = { maxBytes: 4096, maxDepth: 8, maxEntries: 64 };
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    const send = (
+      requestId: string,
+      method: string,
+      parameters: Record<string, unknown>,
+      sessionId?: string,
+    ) =>
+      controller.handle({
+        type: "cdp.command",
+        requestId,
+        scriptAttachmentId,
+        replyBudget,
+        command: { method, parameters, ...(sessionId ? { sessionId } : {}) },
+      });
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      const attachId = randomUUID();
+      await send(attachId, "Target.attachToTarget", { targetId });
+      const attached = reply(attachId);
+      if (attached?.type !== "cdp.result" || typeof attached.result.sessionId !== "string")
+        throw new Error("Script attachment did not return a session ID.");
+      const sessionId = attached.result.sessionId;
+      // It ran: the page changed, and its answer is larger than the reply may be.
+      let ran = false;
+      page.cdpSession.responses.set("Runtime.evaluate", () => {
+        ran = true;
+        return { result: { type: "string", value: "x".repeat(8_192) } };
+      });
+      const tooLarge = randomUUID();
+      await send(tooLarge, "Runtime.evaluate", { expression: "clicked()" }, sessionId);
+      expect(ran).toBe(true);
+      const after = reply(tooLarge);
+      expect(after).toMatchObject({ type: "cdp.error", error: { reason: "browser-reply-limit" } });
+      expect(after?.type === "cdp.error" && after.error.unsent).toBeUndefined();
+      // Refused before it was sent on: a CDP session that is not the attachment's.
+      const refused = randomUUID();
+      await send(refused, "Runtime.evaluate", { expression: "1" }, "not-this-session");
+      expect(reply(refused)).toMatchObject({ type: "cdp.error", error: { unsent: true } });
+      // Refused before dispatch: the same request ID already active.
+      const held = Promise.withResolvers<object>();
+      page.cdpSession.responses.set("Runtime.evaluate", () => held.promise);
+      const busy = randomUUID();
+      const running = send(busy, "Runtime.evaluate", { expression: "slow()" }, sessionId);
+      await vi.waitFor(() =>
+        expect(commandsNamed("Runtime.evaluate", page).length).toBeGreaterThan(1),
+      );
+      await send(busy, "Runtime.evaluate", { expression: "again()" }, sessionId);
+      expect(reply(busy)).toMatchObject({ type: "cdp.error", error: { unsent: true } });
+      held.resolve({ result: { type: "number", value: 1 } });
+      await running;
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  /*
+   * N4: a newer input overtakes one already in flight. The page has APPLIED the first Input
+   * command and not yet answered; a second waits behind it; the agent's newer input (its cancel
+   * of earlier work) arrives. The one still pending is refused before dispatch (`unsent`); the
+   * one already dispatched is not cancelled, and when its page fails it, its outcome is unknown.
+   */
+  it("refuses an overtaken input still pending as unsent, and leaves the one already dispatched unknown (N4)", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    const replyBudget = { maxBytes: 4096, maxDepth: 8, maxEntries: 64 };
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    const send = (
+      requestId: string,
+      method: string,
+      parameters: Record<string, unknown>,
+      sessionId?: string,
+    ) =>
+      controller.handle({
+        type: "cdp.command",
+        requestId,
+        scriptAttachmentId,
+        replyBudget,
+        command: { method, parameters, ...(sessionId ? { sessionId } : {}) },
+      });
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      const attachId = randomUUID();
+      await send(attachId, "Target.attachToTarget", { targetId });
+      const attached = reply(attachId);
+      if (attached?.type !== "cdp.result" || typeof attached.result.sessionId !== "string")
+        throw new Error("Script attachment did not return a session ID.");
+      const sessionId = attached.result.sessionId;
+      const applied = Promise.withResolvers<void>();
+      const answer = Promise.withResolvers<object>();
+      let inputs = 0;
+      page.cdpSession.responses.set("Input.insertText", () => {
+        if (++inputs > 1) return {};
+        applied.resolve();
+        return answer.promise;
+      });
+      const dispatched = randomUUID();
+      const pending = randomUUID();
+      const first = send(dispatched, "Input.insertText", { text: "first" }, sessionId);
+      await applied.promise;
+      const second = send(pending, "Input.insertText", { text: "second" }, sessionId);
+      await flushMicrotasks();
+      // The newer input: the agent's producer cancels its earlier work. It runs once the input in
+      // flight has ended; the one still pending is refused at once.
+      const overtaking = controller.handle({
+        type: "input.cancel",
+        producerId: scriptAttachmentId,
+      });
+      await second;
+      expect(reply(pending)).toMatchObject({
+        type: "cdp.error",
+        error: { reason: "browser-input-canceled", unsent: true },
+      });
+      expect(inputs).toBe(1);
+      // The page applied the first and then failed it: an error after the effect.
+      answer.reject(new Error("Target closed."));
+      await first;
+      await overtaking;
+      const outcome = reply(dispatched);
+      expect(outcome?.type).toBe("cdp.error");
+      expect(outcome?.type === "cdp.error" && outcome.error.unsent).toBeUndefined();
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
   it("acknowledges cancellation only for the matching queued script command", async () => {
     const controller = createController();
     const scriptAttachmentId = randomUUID();
@@ -1770,6 +1931,7 @@ describe("BrowserController", () => {
                   surfaceId: activeSurfaceId(),
                   text: "x",
                   producerId: token,
+                  contextId: edit.contextId,
                 }
               : kind === "text"
                 ? { type: "input.text", surfaceId: activeSurfaceId(), edit, producerId: token }
@@ -1827,7 +1989,16 @@ describe("BrowserController", () => {
           clipboard: false,
         });
         const surfaceId = activeSurfaceId();
-        await controller.handle({ type: "input.command", surfaceId, command: "selectAll" });
+        const context = sink.messages
+          .filter((message) => message.type === "browser.editing")
+          .at(-1);
+        if (context?.type !== "browser.editing") throw new Error("Missing editing context");
+        await controller.handle({
+          type: "input.command",
+          surfaceId,
+          command: "selectAll",
+          contextId: context.context.contextId,
+        });
         expect(page.cdpSession.sent).toContainEqual(
           expect.objectContaining({
             method: "Input.dispatchKeyEvent",
@@ -1865,6 +2036,7 @@ describe("BrowserController", () => {
           type: "clipboard.copy",
           surfaceId,
           operationId: crypto.randomUUID(),
+          contextId: crypto.randomUUID(),
         });
         expect(
           page.cdpSession.sent
@@ -1913,10 +2085,13 @@ describe("BrowserController", () => {
           consumerToken,
           producerId: "00000000-0000-4000-8000-000000000002",
         };
+        const published = sink.messages.filter((m) => m.type === "browser.editing").at(-1);
+        const contextId =
+          published?.type === "browser.editing" ? published.context.contextId : crypto.randomUUID();
         await controller.handle(
           type === "clipboard.paste-data"
-            ? { ...identity, type, items: [{ type: "text/plain", size: 1 }] }
-            : { ...identity, type },
+            ? { ...identity, type, items: [{ type: "text/plain", size: 1 }], contextId }
+            : { ...identity, type, contextId },
         );
         expect(
           sink.messages.filter(
@@ -4339,6 +4514,7 @@ describe("BrowserController", () => {
       surfaceId: originalSurfaceId,
       text: "pasted",
       type: "clipboard.paste",
+      contextId: crypto.randomUUID(),
     });
 
     const opened = context.pages().at(-1);
@@ -4800,15 +4976,412 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
-  it("reports only the latest human action on its exact target without typed content", async () => {
-    const controller = createController();
+  // CZ5: a paste goes into the field it was made for, or nowhere: one made for a context the page
+  // has left is refused whole, and nothing is typed.
+  it("refuses a paste made for a context the page has left", async () => {
+    const controller = createController(
+      undefined,
+      {},
+      validClaims({ editingVersion: 2, clipboard: false }),
+    );
     await controller.start();
     const active = ledger.active();
     if (!active) throw new Error("Missing active surface");
+    await vi.waitFor(() =>
+      expect(sink.messages.some((message) => message.type === "browser.editing")).toBe(true),
+    );
+    const published = sink.messages.filter((message) => message.type === "browser.editing").at(-1);
+    if (published?.type !== "browser.editing") throw new Error("Missing editing context");
+    await controller.handle({
+      type: "clipboard.paste",
+      surfaceId: active.surface.id,
+      text: "secret",
+      contextId: crypto.randomUUID(),
+    });
+    expect(commandsNamed("Input.insertText", page)).toHaveLength(0);
+    // The person is told.
+    expect(sink.messages.filter((message) => message.type === "browser.error")).toMatchObject([
+      { error: { message: "The field changed. Paste again." } },
+    ]);
+    await controller.handle({
+      type: "clipboard.paste",
+      surfaceId: active.surface.id,
+      text: "secret",
+      contextId: published.context.contextId,
+    });
+    expect(commandsNamed("Input.insertText", page)).toHaveLength(1);
+    await controller.close();
+    await ledger.close();
+  });
+
+  // PH2: live in-page focus check for clipboard.paste-data and clipboard.paste after all awaits,
+  // and paste over selection refused as one unit when its preceding deletion edit was refused.
+  it("verifies focus live in page right before pasting and refuses paste-over-selection after a refused deletion", async () => {
+    const cdp = page.cdpSession;
+    let clipboardOpenHook: (() => void) | null = null;
+    const controller = new BrowserController({
+      cdpRouter,
+      claims: validClaims({ editingVersion: 2, clipboard: true }),
+      files,
+      ledger,
+      replaceSiteCookies,
+      signIns: noSignIns(),
+      sink,
+      clipboard: {
+        open: async () => {
+          clipboardOpenHook?.();
+          return { close: async () => null };
+        },
+      },
+    });
+    await controller.start();
+    try {
+      await flushMicrotasks();
+      const active = ledger.active();
+      if (!active) throw new Error("Missing active surface");
+      const world = cdp.sent.find(
+        (entry) =>
+          entry.method === "Runtime.addBinding" &&
+          String(entry.parameters?.executionContextName).startsWith("opensteer-editing-"),
+      )!.parameters!;
+      cdp.emit("Runtime.executionContextCreated", {
+        context: {
+          id: 7,
+          uniqueId: globalThis.crypto.randomUUID(),
+          name: world.executionContextName,
+          origin: "https://example.test",
+          auxData: { frameId: "main", isDefault: false },
+        },
+      });
+      cdp.emit("Runtime.bindingCalled", {
+        name: world.name,
+        executionContextId: 7,
+        payload: JSON.stringify({
+          fieldId: "1:control:text:false:false",
+          selectionRevision: 0,
+          field: { kind: "text", multiline: false, sensitive: false },
+          caret: null,
+        }),
+      });
+      await flushMicrotasks();
+      const firstContext = sink.messages
+        .filter((message) => message.type === "browser.editing")
+        .at(-1);
+      if (firstContext?.type !== "browser.editing") throw new Error("Missing editing context");
+      const ctx = firstContext.context.contextId;
+      const producer = crypto.randomUUID();
+
+      // 1) Focus flips in page DURING clipboard.open (after admitsInsertion passed): must refuse!
+      let liveOk = true;
+      cdp.responses.set("Runtime.evaluate", (params?: Record<string, unknown>) => {
+        const expr = String(params?.expression ?? "");
+        if (expr.includes("prepareClipboard"))
+          return {
+            result: { value: liveOk ? { ok: true } : { ok: false, reason: "focus-changed" } },
+          };
+        if (expr.includes("prepare("))
+          return { result: { value: { ok: false, reason: "range-mismatch" } } };
+        return { result: { value: false } };
+      });
+      clipboardOpenHook = () => {
+        liveOk = false;
+      };
+      const op1 = crypto.randomUUID();
+      const data = Buffer.from("secret");
+      const pasteDone = controller.handle({
+        type: "clipboard.paste-data",
+        surfaceId: active.surface.id,
+        operationId: op1,
+        items: [{ type: "text/plain", size: data.length }],
+        contextId: ctx,
+        producerId: producer,
+      });
+      await controller.handle({
+        type: "clipboard.part",
+        part: { operationId: op1, index: 0, data: data.toString("base64") },
+        producerId: producer,
+      });
+      await pasteDone;
+      expect(
+        sink.messages.find((m) => m.type === "clipboard.result" && m.operationId === op1),
+      ).toMatchObject({ outcome: "refused" });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(0);
+
+      // 2) Paste over selection (follows: true) after its preceding deletion edit was refused:
+      // even though ctx is in earlier of the same field after mismatch rotation, paste must refuse.
+      clipboardOpenHook = null;
+      liveOk = true;
+      await controller.handle({
+        type: "input.text",
+        surfaceId: active.surface.id,
+        edit: { contextId: ctx, before: "sel", after: "", text: "" },
+        producerId: producer,
+      });
+      const op2 = crypto.randomUUID();
+      const followPaste = controller.handle({
+        type: "clipboard.paste-data",
+        surfaceId: active.surface.id,
+        operationId: op2,
+        items: [{ type: "text/plain", size: data.length }],
+        contextId: ctx,
+        follows: true,
+        producerId: producer,
+      } as never);
+      await controller.handle({
+        type: "clipboard.part",
+        part: { operationId: op2, index: 0, data: data.toString("base64") },
+        producerId: producer,
+      });
+      await followPaste;
+      expect(
+        sink.messages.find((m) => m.type === "clipboard.result" && m.operationId === op2),
+      ).toMatchObject({ outcome: "refused" });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(0);
+
+      // 3) Legacy clipboard.paste also verifies focus live in page.
+      liveOk = false;
+      const latestContext = sink.messages
+        .filter((message) => message.type === "browser.editing")
+        .at(-1);
+      if (latestContext?.type !== "browser.editing") throw new Error("Missing latest context");
+      await controller.handle({
+        type: "clipboard.paste",
+        surfaceId: active.surface.id,
+        text: "secret",
+        contextId: latestContext.context.contextId,
+        producerId: producer,
+      });
+      expect(commandsNamed("Input.insertText", page)).toHaveLength(0);
+
+      // 4) PH5: clipboard.copy and clipboard.cut verify contextId and live non-sensitive focus in page.
+      liveOk = true;
+      const staleOp = crypto.randomUUID();
+      await controller.handle({
+        type: "clipboard.cut",
+        surfaceId: active.surface.id,
+        operationId: staleOp,
+        contextId: crypto.randomUUID(),
+        producerId: producer,
+      });
+      expect(
+        sink.messages.find((m) => m.type === "clipboard.result" && m.operationId === staleOp),
+      ).toMatchObject({ outcome: "refused" });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(0);
+
+      clipboardOpenHook = () => {
+        liveOk = false;
+      };
+      const liveCutOp = crypto.randomUUID();
+      await controller.handle({
+        type: "clipboard.cut",
+        surfaceId: active.surface.id,
+        operationId: liveCutOp,
+        contextId: latestContext.context.contextId,
+        producerId: producer,
+      });
+      expect(
+        sink.messages.find((m) => m.type === "clipboard.result" && m.operationId === liveCutOp),
+      ).toMatchObject({ outcome: "refused" });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(0);
+
+      // 5) P2 (S2): typing over a selection (input.text with follows: true) is refused when its
+      // preceding selection removal was refused under the same context.
+      clipboardOpenHook = null;
+      liveOk = true;
+      const beforeS2 = sink.messages.filter((message) => message.type === "browser.editing").at(-1);
+      if (beforeS2?.type !== "browser.editing") throw new Error("Missing context for S2");
+      const s2Ctx = beforeS2.context.contextId;
+      await controller.handle({
+        type: "input.text",
+        surfaceId: active.surface.id,
+        edit: { contextId: s2Ctx, before: "world", after: "", text: "" },
+        producerId: producer,
+      });
+      await controller.handle({
+        type: "input.text",
+        surfaceId: active.surface.id,
+        edit: { contextId: s2Ctx, before: "", after: "", text: "X" },
+        follows: true,
+        producerId: producer,
+      });
+      expect(commandsNamed("Input.insertText", page)).toHaveLength(0);
+
+      // 6) P3 (S1): under an earlier context of the same field when the live selection is NOT
+      // collapsed, relative insertion, deleteBackward, paste, and cut are all refused.
+      const earlierCtx = sink.messages
+        .filter((message) => message.type === "browser.editing")
+        .at(-1);
+      if (earlierCtx?.type !== "browser.editing") throw new Error("Missing earlierCtx");
+      cdp.emit("Runtime.bindingCalled", {
+        executionContextId: 7,
+        name: world.name,
+        payload: JSON.stringify({
+          fieldId: "1:control:text:false:false",
+          selectionRevision: 2,
+          field: { kind: "text", multiline: false, sensitive: false },
+          caret: null,
+        }),
+      });
+      await flushMicrotasks();
+      cdp.responses.set("Runtime.evaluate", (params?: Record<string, unknown>) => {
+        const expr = String(params?.expression ?? "");
+        if (
+          expr.includes("prepare(") ||
+          expr.includes("prepareClipboard(") ||
+          expr.includes("beginInput(")
+        ) {
+          if (expr.includes('"requireCollapsed":true') || expr.includes('"earlier":true')) {
+            return { result: { value: { ok: false, reason: "selection-not-collapsed" } } };
+          }
+          return { result: { value: { ok: true } } };
+        }
+        return { result: { value: false } };
+      });
+      const insertsBefore = commandsNamed("Input.insertText", page).length;
+      const keysBefore = commandsNamed("Input.dispatchKeyEvent", page).length;
+      await controller.handle({
+        type: "input.text",
+        surfaceId: active.surface.id,
+        edit: { contextId: earlierCtx.context.contextId, before: "", after: "", text: "a" },
+        producerId: producer,
+      });
+      await controller.handle({
+        type: "input.command",
+        surfaceId: active.surface.id,
+        command: "deleteBackward",
+        contextId: earlierCtx.context.contextId,
+        producerId: producer,
+      });
+      const nonCollapsedPasteOp = crypto.randomUUID();
+      const pasteRefused = controller.handle({
+        type: "clipboard.paste-data",
+        surfaceId: active.surface.id,
+        operationId: nonCollapsedPasteOp,
+        items: [{ type: "text/plain", size: data.length }],
+        contextId: earlierCtx.context.contextId,
+        producerId: producer,
+      });
+      await controller.handle({
+        type: "clipboard.part",
+        part: { operationId: nonCollapsedPasteOp, index: 0, data: data.toString("base64") },
+        producerId: producer,
+      });
+      await pasteRefused;
+      const nonCollapsedCutOp = crypto.randomUUID();
+      await controller.handle({
+        type: "clipboard.cut",
+        surfaceId: active.surface.id,
+        operationId: nonCollapsedCutOp,
+        contextId: earlierCtx.context.contextId,
+        producerId: producer,
+      });
+      expect(commandsNamed("Input.insertText", page)).toHaveLength(insertsBefore);
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(keysBefore);
+      expect(
+        sink.messages.find(
+          (m) => m.type === "clipboard.result" && m.operationId === nonCollapsedPasteOp,
+        ),
+      ).toMatchObject({ outcome: "refused" });
+      expect(
+        sink.messages.find(
+          (m) => m.type === "clipboard.result" && m.operationId === nonCollapsedCutOp,
+        ),
+      ).toMatchObject({ outcome: "refused" });
+
+      // 7) S7: command() verifies live field in-page (refusing when live field changed/readOnly
+      // even before the binding report arrives).
+      cdp.responses.set("Runtime.evaluate", (params?: Record<string, unknown>) => {
+        const expr = String(params?.expression ?? "");
+        if (expr.includes("beginInput(")) {
+          return { result: { value: { ok: false, reason: "focus-changed" } } };
+        }
+        return { result: { value: { ok: true } } };
+      });
+      const currentAfterEarlier = sink.messages
+        .filter((message) => message.type === "browser.editing")
+        .at(-1);
+      if (currentAfterEarlier?.type !== "browser.editing")
+        throw new Error("Missing current context for S7");
+      const keysBeforeS7 = commandsNamed("Input.dispatchKeyEvent", page).length;
+      await controller.handle({
+        type: "input.command",
+        surfaceId: active.surface.id,
+        command: "selectAll",
+        contextId: currentAfterEarlier.context.contextId,
+        producerId: producer,
+      });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(keysBeforeS7);
+
+      // 8) S6: a refused edit when no field is focused changes NO context and emits NO rotation.
+      cdp.emit("Runtime.bindingCalled", {
+        executionContextId: 7,
+        name: world.name,
+        payload: JSON.stringify({
+          fieldId: null,
+          selectionRevision: 0,
+          field: null,
+          caret: null,
+        }),
+      });
+      await flushMicrotasks();
+      const editingBeforeS6 = sink.messages.filter((m) => m.type === "browser.editing");
+      const noFieldCtx = editingBeforeS6.at(-1);
+      if (noFieldCtx?.type !== "browser.editing" || noFieldCtx.context.field !== null)
+        throw new Error("Expected no-field editing context before S6");
+      await controller.handle({
+        type: "input.text",
+        surfaceId: active.surface.id,
+        edit: { contextId: noFieldCtx.context.contextId, before: "", after: "", text: "x" },
+        producerId: producer,
+      });
+      const editingAfterS6 = sink.messages.filter((m) => m.type === "browser.editing");
+      expect(editingAfterS6).toHaveLength(editingBeforeS6.length);
+      expect(editingAfterS6.at(-1)).toEqual(noFieldCtx);
+
+      // 9) S7 (no-field branch): a page-level command while observer believes no field is focused
+      // must still verify live in-page that no editable field actually took focus.
+      cdp.responses.set("Runtime.evaluate", (params?: Record<string, unknown>) => {
+        const expr = String(params?.expression ?? "");
+        if (expr.includes("beginInput(") && expr.includes('"fieldId":null')) {
+          return { result: { value: { ok: false, reason: "focus-changed" } } };
+        }
+        return { result: { value: { ok: true } } };
+      });
+      const keysBeforeNoFieldCmd = commandsNamed("Input.dispatchKeyEvent", page).length;
+      await controller.handle({
+        type: "input.command",
+        surfaceId: active.surface.id,
+        command: "selectAll",
+        contextId: noFieldCtx.context.contextId,
+        producerId: producer,
+      });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(keysBeforeNoFieldCmd);
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("reports only the latest human action on its exact target without typed content", async () => {
+    // CZ5: a paste names the field it was made for: the page's context, published with editing.
+    const controller = createController(
+      undefined,
+      {},
+      validClaims({ editingVersion: 2, clipboard: false }),
+    );
+    await controller.start();
+    const active = ledger.active();
+    if (!active) throw new Error("Missing active surface");
+    await vi.waitFor(() =>
+      expect(sink.messages.some((message) => message.type === "browser.editing")).toBe(true),
+    );
+    const published = sink.messages.filter((message) => message.type === "browser.editing").at(-1);
+    if (published?.type !== "browser.editing") throw new Error("Missing editing context");
     await controller.handle({
       type: "clipboard.paste",
       surfaceId: active.surface.id,
       text: "never-include-this-secret-in-activity",
+      contextId: published.context.contextId,
     });
     await controller.handle({
       command: {

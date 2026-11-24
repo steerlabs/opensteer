@@ -17,7 +17,10 @@ The display journey mocks the native decoder and input and writes `display-journ
 
 `tests/native/journey.tsx` is a Metro entry for a built custom client, with the real native module,
 reducer, display session and clipboard but a local protocol fixture as producer: it qualifies no
-real Host, phone producer or decoder. `tests/native/serve-journey.ts` proxies Metro on 18767 through
+real Host, phone producer or decoder. Its far page is the port's `FarField`
+(`tests/remote-input-port.ts`, held to the real applier by `tests/editing-far-model.test.ts`): each
+field takes an edit only where its text matches, rotates its context on a refusal, and posts
+`target` events with its text and caret. `tests/native/serve-journey.ts` proxies Metro on 18767 through
 18766 and records events under `OPENSTEER_NATIVE_JOURNEY_EVIDENCE_DIR`. Run both servers only in a
 granted device job, open `com.opensteer.mobile://expo-development-client/?url=` with the coordinator
 URL encoded, and stop both after.

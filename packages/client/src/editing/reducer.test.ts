@@ -61,7 +61,362 @@ const input = (value: string, inputType = "insertText", composing = false): Edit
   composing,
   proxy: proxy(value),
 });
+// CZ3: a command carries the context it was computed for, as an edit does: the reducer's own.
+it.each([["00000000-0000-4000-8000-000000000001"], ["00000000-0000-4000-8000-000000000002"]])(
+  "stamps every command with the context it was computed for (%s)",
+  (contextId) => {
+    let state = createEditingState("ios", abilities);
+    for (const event of [
+      { type: "context", context: { ...context, contextId } },
+      { type: "beforeinput", inputType: "insertText", data: "x" },
+      input("x"),
+      { type: "selection", proxy: proxy("x", 0) },
+    ] satisfies EditingProxyEvent[])
+      state = reduceEditing(state, event).state;
+    const result = reduceEditing(state, {
+      type: "beforeinput",
+      inputType: "deleteContentBackward",
+      data: null,
+    });
+    expect(result.operations).toEqual([{ kind: "command", command: "deleteBackward", contextId }]);
+  },
+);
 describe("editing reducer: scripted ordering regressions (native fixtures are separate)", () => {
+  // Found by the mobile typing test's random sequences (seed 32): a Backspace on an empty field
+  // is prevented and sent as a command, and a native adapter that honours preventDefault sends
+  // no input for it. The suppression waiting for that input must not swallow a later deletion's.
+  it("does not swallow a later deletion after a prevented Backspace on an empty field", () => {
+    const result = replay(
+      [
+        { type: "beforeinput", inputType: "deleteContentBackward", data: null },
+        { type: "beforeinput", inputType: "insertText", data: "a" },
+        input("a"),
+        { type: "beforeinput", inputType: "deleteContentBackward", data: null },
+        input("", "deleteContentBackward"),
+      ],
+      "ios",
+    );
+    expect(result.operations).toEqual([
+      { kind: "command", command: "deleteBackward", contextId: context.contextId },
+      { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
+      // CV1: the later deletion is the page's Backspace.
+      { kind: "command", command: "deleteBackward", contextId: context.contextId },
+    ]);
+  });
+  // Found by the same random sequences (seed 4363): a selection typed over through the delegate
+  // ends next to the same character, so the plain diff places the change one character later
+  // than the replacement. The replacement that matches the text around it exactly is verified.
+  // CV1: the typed text is its own insertion at the caret, after the selection's deletion.
+  it("verifies a replacement whose neighbour repeats its last character", () => {
+    const result = replay(
+      [
+        { type: "beforeinput", inputType: "insertText", data: "x" },
+        input("xabb"),
+        { type: "selection", proxy: proxy("xabb", 1, 3) },
+        { type: "beforeinput", inputType: "insertReplacementText", data: "a" },
+        {
+          type: "input",
+          inputType: "insertReplacementText",
+          composing: false,
+          proxy: proxy("xab", 2),
+        },
+      ],
+      "ios",
+    );
+    // The selection's deletion, restated back to the far caret after "xabb"; the caret to where
+    // it was; then what was typed, inserted there.
+    expect(result.operations.slice(-3)).toEqual([
+      {
+        kind: "edit",
+        edit: { contextId: context.contextId, text: "b", before: "abb", after: "" },
+      },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
+      {
+        kind: "edit",
+        edit: { contextId: context.contextId, text: "a", before: "", after: "" },
+        follows: true,
+      },
+    ]);
+  });
+  // Found by the mobile random sequences (second generator, seed 9944): a composition started
+  // over a selection carries the text between the selection and the far caret, restated; when it
+  // is cancelled that text stays, as it does in the native field.
+  it("keeps the restated text when a composition over a selection is cancelled", () => {
+    const marked = (value: string, start: number, end: number) => ({
+      ...proxy(value, end),
+      markedRange: { start, end },
+    });
+    const result = replay(
+      [
+        { type: "beforeinput", inputType: "insertText", data: "abx" },
+        input("abx"),
+        { type: "selection", proxy: proxy("abx", 0, 2) },
+        { type: "beforeinput", inputType: "insertCompositionText", data: "に" },
+        { type: "compositionstart", proxy: proxy("abx", 0, 2) },
+        { type: "compositionupdate", data: "に", proxy: marked("にx", 0, 1) },
+        {
+          type: "input",
+          inputType: "insertCompositionText",
+          composing: true,
+          proxy: marked("にx", 0, 1),
+        },
+        { type: "beforeinput", inputType: "insertCompositionText", data: "" },
+        { type: "compositionend", data: "", proxy: proxy("x", 0) },
+        {
+          type: "input",
+          inputType: "insertCompositionText",
+          composing: false,
+          proxy: proxy("x", 0),
+        },
+      ],
+      "ios",
+    );
+    // The restated "x" back in the composition's place, then the far caret to the native one.
+    expect(result.operations.slice(-2)).toEqual([
+      { kind: "edit", edit: { contextId: context.contextId, text: "x", before: "", after: "" } },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
+    ]);
+  });
+  // CR2: after a cancelled composition's restated text, the far caret is after it. A target
+  // without commands cannot move it to the native caret, so the mirror is reset; a native
+  // selection that is not a caret leaves the far caret recorded where the restated text ended.
+  const cancelOverSelection = (value: string, rest: string, after = proxy(rest, 0)) => {
+    const marked = (text: string, start: number, end: number) => ({
+      ...proxy(text, end),
+      markedRange: { start, end },
+    });
+    return [
+      { type: "beforeinput", inputType: "insertText", data: value },
+      input(value),
+      { type: "selection", proxy: proxy(value, 0, 2) },
+      { type: "beforeinput", inputType: "insertCompositionText", data: "に" },
+      { type: "compositionstart", proxy: proxy(value, 0, 2) },
+      { type: "compositionupdate", data: "に", proxy: marked("に" + rest, 0, 1) },
+      {
+        type: "input",
+        inputType: "insertCompositionText",
+        composing: true,
+        proxy: marked("に" + rest, 0, 1),
+      },
+      { type: "beforeinput", inputType: "insertCompositionText", data: "" },
+      { type: "compositionend", data: "", proxy: after },
+    ] satisfies EditingProxyEvent[];
+  };
+  it("resets the mirror when a cancel's restated text leaves the far caret where no command can move it", () => {
+    const result = replay(cancelOverSelection("abx", "x"), "ios", {
+      ...abilities,
+      commands: false,
+    });
+    expect(result.operations.at(-1)).toEqual({
+      kind: "edit",
+      edit: { contextId: context.contextId, text: "x", before: "", after: "" },
+    });
+    expect(result.state.proxy).toEqual(proxy(""));
+    expect(result.state.caret).toBe(0);
+  });
+  it("records the far caret after a cancel's restated text when the native selection is a range", () => {
+    const result = replay(cancelOverSelection("abxy", "xy", proxy("xy", 0, 1)), "ios");
+    expect(result.operations.at(-1)).toEqual({
+      kind: "edit",
+      edit: { contextId: context.contextId, text: "xy", before: "", after: "" },
+    });
+    expect(result.state.caret).toBe(2);
+  });
+  // CR1: a real browser has no marked range, and its cancel sends compositionupdate("") and an
+  // input while composing before compositionend(""). Over "ab" selected in "aba", the text after
+  // the selection begins with the selection's own first character: the cancel's input must keep
+  // the composition's range, so the restated "a" stays.
+  it("keeps the restated text when a browser cancels a composition over a selection", () => {
+    const at = (value: string, start: number, end = start) => proxy(value, start, end);
+    const result = replay([
+      { type: "beforeinput", inputType: "insertText", data: "aba" },
+      input("aba"),
+      { type: "selection", proxy: at("aba", 0, 2) },
+      { type: "compositionstart", proxy: at("aba", 0, 2) },
+      { type: "compositionupdate", data: "に", proxy: at("aba", 0, 2) },
+      { type: "beforeinput", inputType: "insertCompositionText", data: "に" },
+      { type: "input", inputType: "insertCompositionText", composing: true, proxy: at("にa", 1) },
+      { type: "compositionupdate", data: "", proxy: at("にa", 0, 1) },
+      { type: "beforeinput", inputType: "insertCompositionText", data: "" },
+      { type: "input", inputType: "insertCompositionText", composing: true, proxy: at("a", 0) },
+      { type: "compositionend", data: "", proxy: at("a", 0) },
+    ]);
+    expect(result.operations.slice(-2)).toEqual([
+      { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
+    ]);
+  });
+  // The suppression's purpose: on a target without range edits a Backspace is sent as a command
+  // and the mirror reset, and a deletion the adapter could not prevent still arrives as input.
+  // That input is the deletion already sent, never a second edit.
+  it("swallows the input of a deletion it could not prevent", () => {
+    const result = replay(
+      [
+        { type: "beforeinput", inputType: "insertText", data: "ab" },
+        input("ab"),
+        { type: "beforeinput", inputType: "deleteContentBackward", data: null },
+        input("a", "deleteContentBackward"),
+      ],
+      "android",
+      { ...abilities, rangeEdits: false },
+    );
+    expect(result.operations).toEqual([
+      { kind: "edit", edit: { contextId: context.contextId, text: "ab", before: "", after: "" } },
+      { kind: "command", command: "deleteBackward", contextId: context.contextId },
+    ]);
+  });
+  // An input that is not the suppressed one means the suppressed input is not coming (Android's
+  // text watcher reports an edit with no beforeinput): a later deletion's input is its own.
+  it("ends the suppression at an input that is not the suppressed one", () => {
+    const result = replay(
+      [
+        { type: "beforeinput", inputType: "deleteContentBackward", data: null },
+        input("a", "insertReplacementText"),
+        input("", "deleteContentBackward"),
+      ],
+      "android",
+    );
+    expect(result.operations).toEqual([
+      { kind: "command", command: "deleteBackward", contextId: context.contextId },
+      { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
+      // CV1: the deletion is the page's Backspace.
+      { kind: "command", command: "deleteBackward", contextId: context.contextId },
+    ]);
+  });
+  // Found by the person oracle (third generator, seed 697): a paste over a selection replaces it,
+  // as typing over it does; the far field has no selection, so the selection is deleted first.
+  it("pastes over a selection by deleting it first", () => {
+    const bytes = new TextEncoder().encode("pasted");
+    const result = replay([
+      { type: "beforeinput", inputType: "insertText", data: "abc" },
+      input("abc"),
+      { type: "selection", proxy: proxy("abc", 0, 2) },
+      { type: "paste", items: [{ type: "text/plain", bytes }] },
+    ]);
+    expect(result.operations.slice(1)).toEqual([
+      { kind: "edit", edit: { contextId: context.contextId, text: "c", before: "abc", after: "" } },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
+      {
+        kind: "paste",
+        items: [{ type: "text/plain", bytes }],
+        contextId: context.contextId,
+        follows: true,
+      },
+    ]);
+  });
+  // CS4: the hidden field's undo and redo arrive as the far page's own chords (iOS's undo manager,
+  // Android's menu or input method): each is the page's command, the mirror reset from the far
+  // side, nothing applied in the hidden field.
+  it.each([
+    ["ios", { meta: true }],
+    ["android", { control: true }],
+  ] as const)(
+    "sends the hidden field's undo and redo on %s as the page's own",
+    (platform, modifier) => {
+      let state = createEditingState(platform, abilities);
+      state = reduceEditing(state, { type: "context", context }).state;
+      state = reduceEditing(state, {
+        type: "beforeinput",
+        inputType: "insertText",
+        data: "ab",
+      }).state;
+      state = reduceEditing(state, input("ab")).state;
+      const results = [
+        key("z", modifier),
+        { ...key("z", modifier), type: "keyup" } as const,
+        key("Z", { ...modifier, shift: true }),
+        { ...key("Z", { ...modifier, shift: true }), type: "keyup" } as const,
+      ].map((event) => {
+        const step = reduceEditing(state, event);
+        state = step.state;
+        return step;
+      });
+      expect(results.flatMap((step) => step.operations)).toEqual([
+        { kind: "command", command: "undo", contextId: context.contextId },
+        { kind: "command", command: "redo", contextId: context.contextId },
+      ]);
+      expect(results[0]!.instruction).toEqual({
+        preventDefault: true,
+        set: { value: "", selectionStart: 0, selectionEnd: 0 },
+      });
+    },
+  );
+  // CT8: a paste over a selection is one operation: on a target that takes no paste nothing is
+  // deleted first; the paste is refused whole.
+  it("refuses a paste over a selection whole on a target without a clipboard", () => {
+    const bytes = new TextEncoder().encode("x");
+    let state = createEditingState("ios", { ...abilities, clipboard: "none" });
+    const run = (event: EditingProxyEvent) => {
+      const step = reduceEditing(state, event);
+      state = step.state;
+      return step;
+    };
+    run({ type: "context", context });
+    run({ type: "beforeinput", inputType: "insertText", data: "hello world" });
+    run(input("hello world"));
+    run({ type: "selection", proxy: proxy("hello world", 6, 11) });
+    const pasted = run({ type: "paste", items: [{ type: "text/plain", bytes }] });
+    expect(pasted.operations).toEqual([]);
+    expect(pasted.refusal).toBe("clipboard");
+  });
+  // CS2: a paste does not reset the mirror. The phone knows the text it pastes: the mirror takes it
+  // where it went, and what is typed next is verified around it like typed text.
+  it("keeps the mirror through a paste, with the pasted text in it", () => {
+    const bytes = new TextEncoder().encode("cd");
+    let state = createEditingState("ios", abilities);
+    const run = (event: EditingProxyEvent) => {
+      const step = reduceEditing(state, event);
+      state = step.state;
+      return step;
+    };
+    run({ type: "context", context });
+    run({ type: "beforeinput", inputType: "insertText", data: "ab" });
+    run(input("ab"));
+    const pasted = run({ type: "paste", items: [{ type: "text/plain", bytes }] });
+    expect(pasted.operations).toEqual([
+      { kind: "paste", items: [{ type: "text/plain", bytes }], contextId: context.contextId },
+    ]);
+    expect(pasted.instruction).toEqual({
+      preventDefault: true,
+      set: proxy("abcd"),
+      edit: { start: 2, end: 2, text: "cd" },
+    });
+    run({ type: "beforeinput", inputType: "insertText", data: "x" });
+    expect(run(input("abcdx")).operations).toEqual([
+      { kind: "edit", edit: { contextId: context.contextId, text: "x", before: "", after: "" } },
+    ]);
+  });
+  // CR6: an input that arrives alone ends Enter's suppression too. No recorded trace puts an
+  // input that is not a composition's between an Enter key and its own line break (the inputs
+  // there are IME commits, which never reach the suppression), so a later line break that
+  // arrives alone is its own Enter.
+  it("sends a later line break after an unrelated input ended Enter's suppression", () => {
+    const enter = (action: "down" | "up") => ({
+      kind: "key",
+      keystroke: { action, key: "Enter", code: "Enter", modifiers: [] },
+    });
+    const result = replay(
+      [
+        key("Enter"),
+        { ...key("Enter"), type: "keyup" },
+        input("a", "insertReplacementText"),
+        input("a\n", "insertLineBreak"),
+      ],
+      "android",
+    );
+    // The hardware Enter, then the edit, then the line break's own Enter.
+    const hardware = (action: "down" | "up") => {
+      const sent = enter(action);
+      return { ...sent, keystroke: { ...sent.keystroke, location: 0, repeat: false } };
+    };
+    expect(result.operations).toEqual([
+      hardware("down"),
+      hardware("up"),
+      { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
+      enter("down"),
+      enter("up"),
+    ]);
+  });
   it.each(["insertLineBreak", "insertParagraph"])(
     "sends soft %s as one Enter and keeps pasted newlines literal",
     (inputType) => {
@@ -298,10 +653,14 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       input("ab"),
       { type: "selection", proxy: proxy("ab", 0) },
     ]);
-    expect(operations[0]).toEqual({ kind: "command", command: "deleteWordBackward" });
+    expect(operations[0]).toEqual({
+      kind: "command",
+      command: "deleteWordBackward",
+      contextId: context.contextId,
+    });
     expect(operations.slice(-2)).toEqual([
-      { kind: "command", command: "moveBackward" },
-      { kind: "command", command: "moveBackward" },
+      { kind: "command", command: "moveBackward", contextId: context.contextId },
+      { kind: "command", command: "moveBackward", contextId: context.contextId },
     ]);
   });
   it.each([
@@ -321,12 +680,12 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     ["chromeos", "Backspace", { control: true }, "deleteWordBackward"],
   ] as const)("resolves %s %s by viewer meaning", (platform, letter, modifiers, command) => {
     expect(replay([key(letter, modifiers)], platform).operations).toEqual([
-      { kind: "command", command },
+      { kind: "command", command, contextId: context.contextId },
     ]);
   });
   it("uses logical keys for layout chords, keeps AltGraph text and distinguishes Mac Control", () => {
     expect(replay([key("a", { code: "KeyQ", control: true })], "windows").operations).toEqual([
-      { kind: "command", command: "selectAll" },
+      { kind: "command", command: "selectAll", contextId: context.contextId },
     ]);
     expect(
       replay([key("@", { control: true, alt: true, altGraph: true })], "windows").operations[0],
@@ -337,7 +696,7 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
   });
   it("routes clipboard chords as operations and lets the paste event supply bytes", () => {
     const copied = replay([key("c", { meta: true }), { type: "copy" }]);
-    expect(copied.operations).toEqual([{ kind: "copy" }]);
+    expect(copied.operations).toEqual([{ kind: "copy", contextId: context.contextId }]);
     expect(
       replay([
         key("v", { meta: true }),
@@ -359,12 +718,12 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     const text = { ...abilities, clipboard: "text" } as const;
     const basic = { ...text, basicInput: true, rangeEdits: false };
     expect(paste(abilities, [plain, html, image])).toEqual({
-      operations: [{ kind: "paste", items: [plain, html, image] }],
+      operations: [{ kind: "paste", items: [plain, html, image], contextId: context.contextId }],
       refusal: undefined,
     });
     for (const target of [text, basic])
       expect(paste(target, [html, file, plain, image])).toEqual({
-        operations: [{ kind: "paste", items: [plain] }],
+        operations: [{ kind: "paste", items: [plain], contextId: context.contextId }],
         refusal: undefined,
       });
     expect(paste(text, [image, file])).toEqual({ operations: [], refusal: "clipboard" });
@@ -452,8 +811,8 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       edit: { contextId: context.contextId, text: "aXbc", before: "", after: "" },
     });
     expect(operations.slice(-2)).toEqual([
-      { kind: "command", command: "moveBackward" },
-      { kind: "command", command: "moveBackward" },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
     ]);
     expect(operations.filter((operation) => operation.kind === "compose")).toHaveLength(1);
   });
@@ -573,3 +932,317 @@ it.each(["ios", "android"] as const)(
     );
   },
 );
+
+// CU5: a composition the transport refused (the editing proxy's sendOperation said no) is sent
+// again as a fresh start only within the same field; tests/editing-far-model.test.ts holds the
+// resend to the real applier.
+describe("a composition the transport refused", () => {
+  const marked = (value: string, start: number, end: number) => ({
+    ...proxy(value),
+    markedRange: { start, end },
+  });
+  const recomposition: EditingProxyEvent[] = [
+    { type: "beforeinput", inputType: "insertText", data: "ab" },
+    input("ab"),
+    { type: "beforeinput", inputType: "insertCompositionText", data: "abc" },
+    { type: "compositionstart", proxy: marked("abc", 0, 3) },
+    { type: "compositionupdate", data: "abc", proxy: marked("abc", 0, 3) },
+  ];
+  const run = (between: EditingProxyEvent[]) => {
+    let { state, operations } = replay(recomposition, "ios");
+    const refused = operations.at(-1)!;
+    expect(refused).toMatchObject({ kind: "compose", composition: { before: "ab" } });
+    const sent: EditingOperation[] = [];
+    for (const event of [
+      { type: "refused", operation: refused } as const,
+      ...between,
+      { type: "beforeinput", inputType: "insertCompositionText", data: "abcd" } as const,
+      { type: "compositionupdate", data: "abcd", proxy: marked("abcd", 0, 4) } as const,
+    ]) {
+      const step = reduceEditing(state, event);
+      state = step.state;
+      sent.push(...step.operations);
+    }
+    return sent;
+  };
+  it("is sent again as a fresh start in the same field", () => {
+    expect(run([])).toEqual([
+      {
+        kind: "compose",
+        composition: {
+          contextId: context.contextId,
+          text: "abcd",
+          selectionStart: 4,
+          selectionEnd: 4,
+          before: "ab",
+          after: "",
+        },
+      },
+    ]);
+  });
+  it("is not sent again across a change of context", () => {
+    const next = { ...context, contextId: "00000000-0000-4000-8000-000000000002" };
+    const sent = run([{ type: "context", context: next }]);
+    expect(sent.filter((operation) => operation.kind === "compose")).toEqual([]);
+  });
+  it("leaves the composition as it was when the refused operation was not the composition", () => {
+    let { state } = replay(recomposition, "ios");
+    state = reduceEditing(state, {
+      type: "refused",
+      operation: { kind: "command", command: "moveBackward", contextId: context.contextId },
+    }).state;
+    const step = reduceEditing(state, {
+      type: "compositionupdate",
+      data: "abcd",
+      proxy: marked("abcd", 0, 4),
+    });
+    expect(step.operations).toMatchObject([{ kind: "compose", composition: { text: "abcd" } }]);
+    expect(step.operations[0]).not.toHaveProperty("composition.before");
+  });
+  it("resets the mirror when a non-compose paste or edit in the current context is refused", () => {
+    let { state } = replay(
+      [
+        { type: "context", context },
+        { type: "beforeinput", inputType: "insertText", data: "hello" },
+        input("hello"),
+      ],
+      "ios",
+    );
+    expect(state.proxy.value).toBe("hello");
+    const stale = reduceEditing(state, {
+      type: "refused",
+      operation: {
+        kind: "paste",
+        contextId: "00000000-0000-4000-8000-000000000099",
+        items: [{ type: "text/plain", bytes: new TextEncoder().encode("old") }],
+      },
+    });
+    expect(stale.state.proxy.value).toBe("hello");
+    expect(stale.instruction.set).toBeUndefined();
+
+    const step = reduceEditing(stale.state, {
+      type: "refused",
+      operation: {
+        kind: "paste",
+        contextId: context.contextId,
+        items: [{ type: "text/plain", bytes: new TextEncoder().encode("huge") }],
+      },
+    });
+    expect(step.state.proxy).toEqual({ value: "", selectionStart: 0, selectionEnd: 0 });
+    expect(step.instruction.set).toEqual({ value: "", selectionStart: 0, selectionEnd: 0 });
+  });
+});
+
+// CW9 (CT8): a paste over a selection is pasted whole or refused whole. Where the selection's
+// deletion cannot go first (a target without range edits), nothing is sent.
+describe("a paste over a selection the target cannot delete", () => {
+  it("is refused whole, nothing sent", () => {
+    const bytes = new TextEncoder().encode("x");
+    let state = createEditingState("ios", { ...abilities, rangeEdits: false });
+    for (const event of [
+      { type: "context", context },
+      { type: "beforeinput", inputType: "insertText", data: "hello" },
+      input("hello"),
+    ] satisfies EditingProxyEvent[])
+      state = reduceEditing(state, event).state;
+    state = { ...state, proxy: proxy("hello", 0, 5) };
+    const result = reduceEditing(state, {
+      type: "paste",
+      items: [{ type: "text/plain", bytes }],
+    });
+    expect(result.operations).toEqual([]);
+    expect(result.refusal).toBe("range-edits");
+  });
+  // CY12: in every way the selection cannot go first, or the caret cannot be placed.
+  const typed = (target: typeof abilities) => {
+    let state = createEditingState("ios", target);
+    for (const event of [
+      { type: "context", context },
+      { type: "beforeinput", inputType: "insertText", data: "hello" },
+      input("hello"),
+    ] satisfies EditingProxyEvent[])
+      state = reduceEditing(state, event).state;
+    return state;
+  };
+  const paste = {
+    type: "paste",
+    items: [{ type: "text/plain", bytes: new TextEncoder().encode("x") }],
+  } as const;
+  it("is refused whole with no field context", () => {
+    const state = { ...typed(abilities), context: null, proxy: proxy("hello", 0, 2) };
+    const result = reduceEditing(state, paste);
+    expect(result.operations).toEqual([]);
+    expect(result.refusal).toBeDefined();
+  });
+  it.each([
+    ["a selection", 0, 2],
+    ["a caret", 2, 2],
+  ] as const)(
+    "is refused whole over %s away from the far caret on a target without commands",
+    (_name, start, end) => {
+      const state = {
+        ...typed({ ...abilities, commands: false }),
+        proxy: proxy("hello", start, end),
+      };
+      const result = reduceEditing(state, paste);
+      expect(result.operations).toEqual([]);
+      expect(result.refusal).toBe("commands");
+    },
+  );
+  it("marks paste over a selection with follows: true so it fails as one unit if the deletion is refused", () => {
+    const state = { ...typed(abilities), proxy: proxy("hello", 1, 4) };
+    const result = reduceEditing(state, paste);
+    expect(result.operations).toMatchObject([
+      {
+        kind: "edit",
+        edit: { contextId: context.contextId, before: "ello", after: "", text: "o" },
+      },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
+      { kind: "paste", contextId: context.contextId, follows: true },
+    ]);
+  });
+  it("preserves an explicit pre-captured contextId on paste after focus moved to another context", () => {
+    const other: EditingContext = {
+      ...context,
+      contextId: "00000000-0000-4000-8000-000000000002",
+    };
+    const items = [{ type: "text/plain", bytes: new TextEncoder().encode("secret") }];
+    const { state, operations } = replay([
+      { type: "context", context: other },
+      input("typed"),
+      { type: "paste", items, contextId: context.contextId },
+    ]);
+    expect(operations.at(-1)).toEqual({
+      kind: "paste",
+      items,
+      contextId: context.contextId,
+    });
+    expect(state.proxy.value).toBe("typed");
+  });
+  it("stamps copy and cut with contextId and preserves an explicit menu contextId", () => {
+    const other: EditingContext = {
+      ...context,
+      contextId: "00000000-0000-4000-8000-000000000002",
+    };
+    const { operations } = replay([
+      { type: "copy" },
+      { type: "cut" },
+      { type: "context", context: other },
+      { type: "copy", contextId: context.contextId },
+      { type: "cut", contextId: context.contextId },
+    ]);
+    expect(operations).toEqual([
+      { kind: "copy", contextId: context.contextId },
+      { kind: "cut", contextId: context.contextId },
+      { kind: "copy", contextId: context.contextId },
+      { kind: "cut", contextId: context.contextId },
+    ]);
+  });
+});
+
+// CV1 (found by regime C, seed 735): a Backspace at the mirror's start is the page's, at its
+// caret. The mirror begins where the page's caret was, so the page may hold text before it.
+it("sends a Backspace at the mirror's start to the page", () => {
+  let state = createEditingState("ios", abilities);
+  for (const event of [
+    { type: "context", context },
+    { type: "beforeinput", inputType: "insertText", data: "x" },
+    input("x"),
+    { type: "selection", proxy: proxy("x", 0) },
+  ] satisfies EditingProxyEvent[])
+    state = reduceEditing(state, event).state;
+  const result = reduceEditing(state, {
+    type: "beforeinput",
+    inputType: "deleteContentBackward",
+    data: null,
+  });
+  expect(result.operations).toEqual([
+    { kind: "command", command: "deleteBackward", contextId: context.contextId },
+  ]);
+  expect(result.instruction.preventDefault).toBe(true);
+});
+
+it("never swallows a Backspace input after a composition commit when no beforeinput precedes it", () => {
+  const { operations, state } = replay([
+    { type: "compositionstart", proxy: proxy("") },
+    { type: "compositionupdate", data: "日本", proxy: proxy("日本", 2, 2) },
+    input("日本", "insertCompositionText", true),
+    { type: "compositionend", data: "日本", proxy: proxy("日本") },
+    // An adapter or browser that emits input(deleteContentBackward) without a preceding
+    // beforeinput after a committed composition must still send deleteBackward.
+    input("日", "deleteContentBackward", false),
+  ]);
+  expect(operations).toEqual([
+    {
+      kind: "compose",
+      composition: {
+        contextId: context.contextId,
+        text: "日本",
+        selectionStart: 2,
+        selectionEnd: 2,
+        before: "",
+        after: "",
+      },
+    },
+    { kind: "edit", edit: { contextId: context.contextId, text: "日本", before: "", after: "" } },
+    { kind: "command", command: "deleteBackward", contextId: context.contextId },
+  ]);
+  expect(state.proxy.value).toBe("日");
+});
+
+it("still swallows a cancelled composition's trailing deleteContentBackward input", () => {
+  const { operations } = replay([
+    { type: "compositionstart", proxy: proxy("") },
+    { type: "compositionupdate", data: "に", proxy: proxy("に", 1, 1) },
+    input("に", "insertCompositionText", true),
+    { type: "compositionend", data: "", proxy: proxy("") },
+    input("", "deleteContentBackward", false),
+  ]);
+  expect(operations).toEqual([
+    {
+      kind: "compose",
+      composition: {
+        contextId: context.contextId,
+        text: "に",
+        selectionStart: 1,
+        selectionEnd: 1,
+        before: "",
+        after: "",
+      },
+    },
+    {
+      kind: "compose",
+      composition: {
+        contextId: context.contextId,
+        text: "",
+        selectionStart: 0,
+        selectionEnd: 0,
+      },
+    },
+  ]);
+});
+
+it("couples typed insertion over a selection with follows: true so a refused removal stops it", () => {
+  const { operations } = replay([
+    input("hello world"),
+    { type: "selection", proxy: proxy("hello world", 6, 11) },
+    {
+      type: "input",
+      inputType: "insertText",
+      composing: false,
+      proxy: proxy("hello X", 7, 7),
+    },
+  ]);
+  const overSelection = operations.slice(1);
+  expect(overSelection).toEqual([
+    {
+      kind: "edit",
+      edit: { contextId: context.contextId, before: "world", after: "", text: "" },
+    },
+    {
+      kind: "edit",
+      edit: { contextId: context.contextId, before: "", after: "", text: "X" },
+      follows: true,
+    },
+  ]);
+});

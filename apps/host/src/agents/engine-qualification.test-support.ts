@@ -165,6 +165,23 @@ export async function qualifiedVersion(engine: QualifiedEngine): Promise<string>
   return (await promisify(execFile)(executable, ["--version"])).stdout.trim();
 }
 
+/**
+ * The model a qualification Run uses: the engine's own default, or the model
+ * `OPENSTEER_ENGINE_E2E_MODEL` names, which must be one the engine listed.
+ */
+export function qualificationModel<
+  Model extends { readonly isDefault: boolean; readonly modelId: string },
+>(models: readonly Model[]): Model | undefined {
+  const chosen = process.env.OPENSTEER_ENGINE_E2E_MODEL?.trim();
+  if (!chosen) return models.find((model) => model.isDefault);
+  const model = models.find((candidate) => candidate.modelId === chosen);
+  if (!model)
+    throw new Error(
+      `OPENSTEER_ENGINE_E2E_MODEL is ${chosen}, which the engine did not list. Listed: ${models.map((listed) => listed.modelId).join(", ")}.`,
+    );
+  return model;
+}
+
 export function qualificationAccount(engine: QualifiedEngine) {
   const key = engine.apiKey ? process.env[engine.apiKey.variable] : undefined;
   // The person's own CLI only ever runs on the person's own sign-in.

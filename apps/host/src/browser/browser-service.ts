@@ -200,7 +200,6 @@ import { isDeepStrictEqual } from "node:util";
 import type { RawData } from "ws";
 import WebSocket from "ws";
 import { z } from "zod";
-import { LegacyBrowserClipboard } from "./browser-legacy-clipboard.js";
 import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
 import type { BrowserPoolGate, BrowserPoolReservation } from "./browser-pool-gate.js";
@@ -225,7 +224,10 @@ import {
   type BrowserPoolSessionLoss,
   type BrowserPoolTargetIdentity,
 } from "@opensteer/database";
-import type { PooledBrowserSend } from "../agent-sessions/agent-session-service.js";
+import {
+  OperationOutcomeUnknown,
+  type PooledBrowserSend,
+} from "../agent-sessions/agent-session-service.js";
 import { browserViewerEditingVersion, browserViewerMessage } from "./browser-viewer-protocol.js";
 import type { ShadowCatalog, ShadowInventory } from "./shadow-comparison.js";
 import { ShadowHostSession, ShadowReader } from "./shadow-host.js";
@@ -7889,13 +7891,14 @@ export class BrowserService {
   }
 
   async #reservePool(gate: BrowserPoolGate, signal: AbortSignal, sessionId?: BrowserSessionId) {
-    if (!sessionId) return gate.reserve(signal);
+    const reserveSignal = AbortSignal.any([signal, this.#closing.signal]);
+    if (!sessionId) return gate.reserve(reserveSignal);
     const waiters = this.#poolWaiters.get(sessionId) ?? new Set<AbortController>();
     const waiter = new AbortController();
     waiters.add(waiter);
     this.#poolWaiters.set(sessionId, waiters);
     try {
-      return await gate.reserve(AbortSignal.any([signal, waiter.signal]));
+      return await gate.reserve(AbortSignal.any([reserveSignal, waiter.signal]));
     } finally {
       waiters.delete(waiter);
       if (!waiters.size) this.#poolWaiters.delete(sessionId);
@@ -10601,17 +10604,6 @@ export class HostedBrowserBroker {
       if (
         !consumer.clipboard &&
         !consumer.basicInput &&
-        consumer.mode === "control" &&
-        "consumerToken" in message &&
-        message.consumerToken === consumer.clipboardToken
-      ) {
-        const projected = consumer.legacyClipboard.read(message);
-        if (projected && consumer.surfaceId === projected.surfaceId)
-          void consumer.sendText(JSON.stringify(projected)).catch(() => undefined);
-      }
-      if (
-        !consumer.clipboard &&
-        !consumer.basicInput &&
         (message.type === "clipboard.result" ||
           message.type === "clipboard.written" ||
           message.type === "clipboard.part")
@@ -10735,6 +10727,13 @@ export class HostedBrowserBroker {
       if (pending.submitted) pending.acknowledge?.();
       const cause = agentProtocolError(message.error);
       if (pending.bounded) {
+        // A7: an agent's command. Only an error the runtime says came before the command reached
+        // the page is a refusal; any other (or one that does not say) may have come after its
+        // effect, and its outcome is unknown: never failed, never retried here.
+        if (message.error.unsent !== true) {
+          pending.reject(new OperationOutcomeUnknown(browserOutcomeUnknownWords));
+          return;
+        }
         const words = {
           bad_message: "The browser rejected the CDP command or its parameters.",
           conflict:
@@ -10961,10 +10960,17 @@ export class HostedBrowserBroker {
       (!browserBasicInputAllows(message) ||
         (message.type === "clipboard.part" &&
           !outlet.clipboardOperations.has(message.part.operationId)))
-    )
+    ) {
+      const operationId =
+        "operationId" in message
+          ? message.operationId
+          : message.type === "clipboard.part"
+            ? message.part.operationId
+            : undefined;
       return outlet.sendText(
         JSON.stringify({
           type: "browser.error",
+          ...(operationId ? { operationId } : {}),
           error: {
             code: "conflict",
             reason: "unsupported-operation",
@@ -10974,6 +10980,7 @@ export class HostedBrowserBroker {
           },
         }),
       );
+    }
     if (message.type === "stream.subscribe" || message.type === "stream.unsubscribe") {
       const subscription =
         message.type === "stream.subscribe"
@@ -11176,46 +11183,6 @@ export class HostedBrowserBroker {
           },
         }),
       );
-    if (
-      !outlet.clipboard &&
-      this.clipboard &&
-      this.#snapshot?.editingVersion !== undefined &&
-      message.type === "input.key"
-    ) {
-      if (message.action === "up" && outlet.legacyClipboardKeys.delete(message.code))
-        return Promise.resolve();
-      const key = message.key.toLowerCase();
-      if (
-        message.action === "down" &&
-        (key === "c" || key === "x") &&
-        (message.modifiers.includes("meta") || message.modifiers.includes("control")) &&
-        !message.modifiers.includes("alt") &&
-        !message.modifiers.includes("shift")
-      ) {
-        if (outlet.legacyClipboardKeys.size >= 128 && !outlet.legacyClipboardKeys.has(message.code))
-          return outlet.sendText(
-            JSON.stringify({
-              type: "browser.error",
-              error: {
-                code: "conflict",
-                reason: "browser-input-overload",
-                retryable: false,
-                message: "Browser input was not applied. Try the action again.",
-              },
-            }),
-          );
-        outlet.legacyClipboardKeys.add(message.code);
-        message = {
-          type: key === "c" ? "clipboard.copy" : "clipboard.cut",
-          surfaceId: message.surfaceId,
-          operationId: outlet.legacyClipboard.begin(
-            message.surfaceId,
-            key === "c" ? "copied" : "cut",
-          ),
-          inputGeneration: message.inputGeneration,
-        };
-      }
-    }
     if (
       message.type === "input.key" ||
       message.type === "clipboard.paste" ||
@@ -11680,8 +11647,6 @@ export class BrowserConsumerOutlet {
   autofill: 0 | PersonFillVersion = 0;
   authorized: () => Promise<boolean> = async () => false;
   readonly clipboardToken = randomUUID();
-  readonly legacyClipboard = new LegacyBrowserClipboard(this.clipboardToken, maxBrowserTextBytes);
-  readonly legacyClipboardKeys = new Set<string>();
   readonly clipboardOperations = new Map<string, BrowserSurfaceId>();
   readonly failedClipboardOperations = new Set<string>();
   readonly editingCounters: Record<string, number> = {};
@@ -12019,8 +11984,6 @@ export class BrowserConsumerOutlet {
     if (this.#closed) return;
     this.#closed = true;
     this.#surfacePending = null;
-    this.legacyClipboard.close();
-    this.legacyClipboardKeys.clear();
     this.#pending = null;
     for (const receipt of this.#outstanding.values()) clearTimeout(receipt.timer);
     this.#outstanding.clear();
@@ -12297,6 +12260,10 @@ interface BrowserTabOpenBudget {
     reservation: BrowserPoolReservation;
   };
 }
+
+/** A7: what an agent reads when a browser command may have run and its reply cannot tell. */
+const browserOutcomeUnknownWords =
+  "A browser action did not confirm its outcome. Observe the page before trying again.";
 
 class BrowserCdpRefusal extends OpensteerError {
   constructor(cause: OpensteerError) {

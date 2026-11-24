@@ -1299,6 +1299,7 @@ describe("phone browser manager", () => {
       surfaceId: fixture.surfaceId,
       operationId,
       items: [{ type: "text/plain", size: 5 }],
+      contextId,
     });
     await fixture.client({
       type: "clipboard.part",
@@ -1310,6 +1311,7 @@ describe("phone browser manager", () => {
       surfaceId: fixture.surfaceId,
       operationId: uuid(),
       items: [{ type: "text/html", size: 5 }],
+      contextId,
     });
     expect(fixture.server().at(-1)).toMatchObject({
       type: "browser.error",
@@ -1340,6 +1342,86 @@ describe("phone browser manager", () => {
       type: "browser.error",
       error: { reason: "stale-document" },
     });
+  });
+
+  test("refused or abandoned clipboard pastes do not leak #clipboard past the 32-operation cap", async () => {
+    const fixture = await setup();
+    await fixture.present();
+    const contextId = uuid();
+    await fixture.native.emit({
+      ...fixture.reference(),
+      type: "editing",
+      channelId: fixture.currentEnvelope().channelId,
+      context: { contextId, field: null, caret: null },
+    });
+    const originalApply = fixture.native.applyViewerInput.bind(fixture.native);
+    let failPaste = true;
+    fixture.native.applyViewerInput = async (input) => {
+      if (failPaste && input.message.type === "clipboard.paste-data")
+        throw new PhoneBrowserError("stale-document", "The field changed.");
+      return originalApply(input);
+    };
+    for (let i = 0; i < 33; i++) {
+      const pasteOp = uuid();
+      await fixture.client({
+        type: "clipboard.paste-data",
+        surfaceId: fixture.surfaceId,
+        operationId: pasteOp,
+        items: [{ type: "text/plain", size: 5 }],
+        contextId,
+      });
+      expect(fixture.server().at(-1)).toMatchObject({
+        type: "clipboard.result",
+        operationId: pasteOp,
+        outcome: "refused",
+      });
+    }
+    // After 33 native refusals, a valid 34th paste must still be admitted (not "too-large").
+    failPaste = false;
+    const beforeValid = fixture.server().length;
+    const operationId = uuid();
+    await fixture.client({
+      type: "clipboard.paste-data",
+      surfaceId: fixture.surfaceId,
+      operationId,
+      items: [{ type: "text/plain", size: 5 }],
+      contextId,
+    });
+    expect(fixture.server().slice(beforeValid)).toEqual([]);
+    // Document change purges any pending clipboard pastes for that tab.
+    for (let i = 0; i < 31; i++) {
+      await fixture.client({
+        type: "clipboard.paste-data",
+        surfaceId: fixture.surfaceId,
+        operationId: uuid(),
+        items: [{ type: "text/plain", size: 5 }],
+        contextId,
+      });
+    }
+    const metadata = fixture.native.tabs.get(fixture.surfaceId)!.metadata;
+    const next = {
+      ...metadata,
+      documentId: "purged-document",
+      revision: metadata.revision + 1,
+    };
+    fixture.native.tabs.get(fixture.surfaceId)!.metadata = next;
+    await fixture.native.emit({ ...fixture.reference(), type: "documentChanged", metadata: next });
+    const nextContextId = uuid();
+    await fixture.native.emit({
+      ...fixture.reference(),
+      type: "editing",
+      channelId: fixture.currentEnvelope().channelId,
+      context: { contextId: nextContextId, field: null, caret: null },
+    });
+    const beforeAfterDoc = fixture.server().length;
+    await fixture.client({
+      type: "clipboard.paste-data",
+      surfaceId: fixture.surfaceId,
+      operationId: uuid(),
+      items: [{ type: "text/plain", size: 5 }],
+      contextId: nextContextId,
+    });
+    expect(fixture.server().slice(beforeAfterDoc)).toEqual([]);
   });
 
   test("revocation fences before acknowledgement; old grants and old auxiliary streams cannot return", async () => {
@@ -1390,8 +1472,13 @@ describe("phone browser manager", () => {
     const fixture = await setup();
     await fixture.present();
     for (const message of [
-      { type: "input.command", surfaceId: fixture.surfaceId, command: "undo" },
-      { type: "clipboard.cut", surfaceId: fixture.surfaceId, operationId: uuid() },
+      { type: "input.command", surfaceId: fixture.surfaceId, command: "undo", contextId: uuid() },
+      {
+        type: "clipboard.cut",
+        surfaceId: fixture.surfaceId,
+        operationId: uuid(),
+        contextId: uuid(),
+      },
       { type: "state.import", operationId: uuid(), site: "https://example.com", cookies: [] },
       { type: "signin.probe", probeId: uuid(), site: "https://example.com" },
       { type: "navigation.go", surfaceId: fixture.surfaceId, url: "file:///private/file" },
@@ -1936,4 +2023,36 @@ test("Android CDP lists sleeping surfaces and resumes only this attachment's ses
   expect(await command("Opensteer.resumeTab", { surfaceId: "another-session-tab" })).toMatchObject({
     type: "cdp.error",
   });
+});
+
+test("P5 (S3): phone browser refuses text-naming input.text edits with non-empty before or after", async () => {
+  const fixture = await setup();
+  await fixture.present();
+  const contextId = uuid();
+  await fixture.native.emit({
+    ...fixture.reference(),
+    type: "editing",
+    channelId: fixture.currentEnvelope().channelId,
+    context: {
+      contextId,
+      field: { kind: "text", multiline: false, sensitive: false },
+      caret: null,
+    },
+  });
+  let applied = 0;
+  const originalApply = fixture.native.applyViewerInput.bind(fixture.native);
+  fixture.native.applyViewerInput = async (input) => {
+    applied += 1;
+    return originalApply(input);
+  };
+  await fixture.client({
+    type: "input.text",
+    surfaceId: fixture.surfaceId,
+    edit: { contextId, before: "teh", after: "", text: "the" },
+  });
+  expect(fixture.server().at(-1)).toMatchObject({
+    type: "browser.error",
+    error: { reason: "unsupported-operation" },
+  });
+  expect(applied).toBe(0);
 });

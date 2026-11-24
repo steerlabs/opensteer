@@ -63,28 +63,86 @@ export type EditingProxyEvent =
       readonly proxy: EditingProxyState;
     }
   /** A selection change with no text change, such as a keyboard's cursor gesture. */
-  | { readonly type: "selection"; readonly proxy: EditingProxyState }
-  | { readonly type: "paste"; readonly items: readonly EditingClipboardPayloadItem[] }
-  | { readonly type: "copy" | "cut" }
+  | {
+      readonly type: "selection";
+      readonly proxy: EditingProxyState;
+      /**
+       * Caret moves named in a mirror cleared before their turn: the distance the person moved it
+       * each time, in graphemes, negative backward. The far caret moves by each in turn.
+       */
+      readonly moves?: readonly number[] | undefined;
+    }
+  | {
+      readonly type: "paste";
+      readonly items: readonly EditingClipboardPayloadItem[];
+      /** PH3: the context captured before an async menu or native-paste IPC round-trip. */
+      readonly contextId?: string | undefined;
+    }
+  | { readonly type: "copy" | "cut"; readonly contextId?: string | undefined }
   | { readonly type: "pointerdown" }
   | { readonly type: "blur" }
   /** The target's focused field changed, or it refused an edit as stale. */
-  | { readonly type: "context"; readonly context: EditingContext | null };
+  | { readonly type: "context"; readonly context: EditingContext | null }
+  /**
+   * The transport refused an operation before it left (the editing proxy's sendOperation said
+   * no): the target never saw it, and the context did not change. A composition it carried is
+   * sent again as a fresh start.
+   */
+  | { readonly type: "refused"; readonly operation: EditingOperation };
 
 /** What the person did, ready for the target's wire. */
 export type EditingOperation =
   | { readonly kind: "key"; readonly keystroke: EditingKeystroke }
-  | { readonly kind: "command"; readonly command: EditingCommand }
+  | {
+      readonly kind: "command";
+      readonly command: EditingCommand;
+      /**
+       * The context it was computed for (CV1, CZ3), stamped where it is computed: the reducer's
+       * (a late one's on the late path), or the context a menu was opened in. A page applies a
+       * move or the backward deletion at its caret under an earlier context of the same field
+       * and refuses any command of another field's; nothing fills one in later. A Mac app or a
+       * phone screen (display.input) takes commands without it.
+       */
+      readonly contextId?: string | undefined;
+      /**
+       * CZ7: a move the client computed from the edit it sent just before (it puts the caret back
+       * where the person had it): it goes with that edit, refused when that edit was. A person's
+       * own move (a swipe, an arrow) carries nothing and is never taken with a refusal.
+       */
+      readonly follows?: true;
+    }
   | { readonly kind: "compose"; readonly composition: EditingComposition }
-  | { readonly kind: "edit"; readonly edit: EditingTextEdit }
-  | { readonly kind: "copy" | "cut" }
-  | { readonly kind: "paste"; readonly items: readonly EditingClipboardPayloadItem[] };
+  | {
+      readonly kind: "edit";
+      readonly edit: EditingTextEdit;
+      /** P2 (S2): an insertion over a selection follows its selection-removal edit as one unit. */
+      readonly follows?: true;
+    }
+  | {
+      readonly kind: "copy" | "cut";
+      /** PH5: the context it was made for, stamped where it is made (reducer or menu). */
+      readonly contextId?: string | undefined;
+    }
+  | {
+      readonly kind: "paste";
+      readonly items: readonly EditingClipboardPayloadItem[];
+      /** CZ5: the context it was made for, stamped where it is made (the reducer's). */
+      readonly contextId?: string | undefined;
+      /** PH2: a paste over a selection follows its selection-deletion edit as one unit. */
+      readonly follows?: true;
+    };
 
 export interface EditingProxyInstruction {
   /** Stop the platform's own handling of the event just delivered. */
   readonly preventDefault?: boolean;
   /** Replace the proxy's text and selection (never while the platform IME composes). */
   readonly set?: EditingProxyState;
+  /**
+   * The edit `set` is, when it is one: `[start, end)` of the text the proxy holds became `text`
+   * (a paste where it went). A proxy that carries places over its edits applies exactly this
+   * edit rather than guessing it from the two texts.
+   */
+  readonly edit?: { readonly start: number; readonly end: number; readonly text: string };
 }
 
 export interface EditingStep {

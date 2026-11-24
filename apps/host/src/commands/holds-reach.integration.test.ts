@@ -16,7 +16,8 @@ import {
 } from "@opensteer/protocol/command-table";
 import { sampleCommand } from "@opensteer/protocol/test-support/command-samples";
 import type { HostApiCommand } from "@opensteer/protocol";
-import { expect } from "vitest";
+import pg from "pg";
+import { expect, vi } from "vitest";
 import {
   credentialHash,
   connectionCredentialPrefix,
@@ -521,6 +522,82 @@ describeStore("what a caller is shown is what it can send (G2)", (test) => {
         anyoneWrong.push(`${type}: admitted, ${admitted.answer}`);
     }
     expect(anyoneWrong).toEqual([]);
+
+    // A tab group is reached only when every tab in it is (B1), and a hidden group does the same
+    // work as a missing one (A6, rule 5): the same statements, the same answer.
+    const guestTab = `tab-${randomUUID()}`;
+    const original = await database
+      .selectFrom("personalTabs")
+      .selectAll()
+      .where("id", "=", tab as never)
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto("personalTabs")
+      .values({ ...original, id: guestTab as never, profileId: null, profileName: null })
+      .execute();
+    const mixedGroup = `tgp_${randomUUID()}`;
+    await database
+      .updateTable("tabLayouts")
+      .set({
+        items: JSON.stringify([
+          { kind: "group", group: { groupId: tabGroup, name: "A group", tabIds: [tab] } },
+          // One tab it holds, one it does not (a Guest tab): every member must be reached.
+          { kind: "group", group: { groupId: mixedGroup, name: "Mixed", tabIds: [tab, guestTab] } },
+        ]) as never,
+      })
+      .where("ownerId", "=", owner)
+      .execute();
+    const groupCommand = (type: CommandType, groupId: string) =>
+      ({
+        idempotencyKey: randomUUID(),
+        type,
+        groupId,
+        ...(type === "tab.group.update" ? { name: "Renamed" } : {}),
+      }) as HostApiCommand;
+    const groupTypes = ["tab.group.update", "tab.group.delete", "tab.group.close"] as const;
+    for (const type of groupTypes) {
+      // The group it holds every tab of: admitted.
+      expect((await outcome(each.caller, groupCommand(type, tabGroup))).code, type).not.toBe(
+        "not_found",
+      );
+      // The mixed one: like a group that does not exist, at the door and where it commits.
+      expect((await outcome(each.caller, groupCommand(type, mixedGroup))).code, type).toBe(
+        "not_found",
+      );
+      expect(
+        (
+          await database
+            .transaction()
+            .execute((transaction) =>
+              agentCommandAdmission(transaction)(each.caller, groupCommand(type, mixedGroup)),
+            )
+        ).answer,
+        type,
+      ).toBe("not_found");
+    }
+    const query = pg.Client.prototype.query;
+    let statements: string[] = [];
+    const trace = vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (
+      this: pg.Client,
+      ...args: unknown[]
+    ) {
+      const first = args[0] as string | { readonly text?: string } | undefined;
+      statements.push((typeof first === "string" ? first : first?.text) ?? "");
+      return Reflect.apply(query, this, args) as never;
+    });
+    const groupResponse = async (groupId: string) => {
+      statements = [];
+      const reply = await outcome(each.caller, groupCommand("tab.group.delete", groupId));
+      return { reply, statements: [...statements] };
+    };
+    try {
+      const missing = await groupResponse(`tgp_${randomUUID()}`);
+      const hidden = await groupResponse(mixedGroup);
+      expect(hidden.reply).toEqual(missing.reply);
+      expect(hidden.statements).toEqual(missing.statements);
+    } finally {
+      trace.mockRestore();
+    }
 
     // A selected grant without Tasks reaches Requests and a session only through its own active
     // direct session: with none yet, it is shown none of their commands.

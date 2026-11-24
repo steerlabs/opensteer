@@ -62,7 +62,12 @@ const event = z.union([
     composing: z.boolean(),
     proxy,
   }),
-  z.object({ type: z.literal("selection"), proxy }),
+  z.object({
+    type: z.literal("selection"),
+    proxy,
+    // Caret moves named in a mirror cleared before their turn: each distance moved, in graphemes.
+    moves: z.array(z.number().int()).max(256).optional(),
+  }),
   z.object({
     type: z.literal("paste"),
     items: z

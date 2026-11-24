@@ -25,6 +25,7 @@ import {
   type ThreadAccessMode,
   type ThreadId,
   type UserId,
+  consentAllowsDirectWork,
 } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
@@ -86,7 +87,7 @@ async function lockLiveConnection(
     grantTarget,
   });
   if (!row) throw refused(lineageEndedMessage);
-  if (row.consentVersion < 2) throw refused(directWorkUnavailableMessage);
+  if (!consentAllowsDirectWork(row.consentVersion)) throw refused(directWorkUnavailableMessage);
   return row;
 }
 

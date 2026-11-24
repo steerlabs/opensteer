@@ -5896,6 +5896,15 @@ integration.sequential("Computer use for a connected agent, through its session"
       connectionId: record.id,
       grant,
       grantRevision,
+      // As the authenticator gives every connection: its row, with the consent it gave.
+      agentConnection: {
+        agentConnectionId: record.id,
+        grant,
+        grantRevision,
+        consentVersion: record.consentVersion ?? 1,
+        accessMode,
+        bridgeSenders: null,
+      },
     };
     const computerId = DeviceIdSchema.parse(row.deviceId);
     /** The tool's answer as the agent reads it: the content, and the receipt beside it. */

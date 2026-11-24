@@ -237,9 +237,9 @@ export function connectedAgentConnected(phase: ConnectedAgentPhase): boolean {
   return phase === "active" || phase === "paused" || phase === "unknown";
 }
 
-/** A connection with no stored grant is one an older Home lets do everything. */
+/** A connection listed without a grant reads as holding nothing (this Home always sends one). */
 export function connectionGrant(connection: Pick<AgentConnection, "grant">): AgentGrant {
-  return connection.grant ?? { scope: "everything" };
+  return connection.grant ?? { scope: "selected", tasks: false, resources: [] };
 }
 
 /** What a grant reaches, in a few words: names where this client knows them, counts elsewhere. */
@@ -525,6 +525,23 @@ export function connectedAgentStatus(
   }
 }
 
+/**
+ * What the Home recorded about the last action it could not confirm, after the general
+ * sentence: its reason, in the Home's own words, and the device it was on, a name the person
+ * gave it and so drawn as a name.
+ */
+function recordedUncertainty(
+  detail: AgentConnection["lastActionUncertainDetail"],
+): readonly SentencePart[] {
+  if (!detail) return [];
+  return [
+    ...(detail.reason ? [" ", detail.reason] : []),
+    ...(detail.device
+      ? [" ", ...agentSentence("disconnect.uncertain.device", { device: { name: detail.device } })]
+      : []),
+  ];
+}
+
 export function connectedAgentDetail(
   connection: AgentConnection,
   names: GrantNames,
@@ -544,9 +561,12 @@ export function connectedAgentDetail(
   const identity = row.identity;
   const live = row.phase === "active" ? (options.live ?? null) : null;
   const uncertainDetailParts = row.uncertain
-    ? agentSentence("disconnect.uncertain.detailGeneric", {
-        agent: { name: identity.label },
-      })
+    ? [
+        ...agentSentence("disconnect.uncertain.detailGeneric", {
+          agent: { name: identity.label },
+        }),
+        ...recordedUncertainty(connection.lastActionUncertainDetail),
+      ]
     : null;
   return {
     row,

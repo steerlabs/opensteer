@@ -1,4 +1,11 @@
-import { DeviceIdSchema, createId, type RunId, type RunnerId, type UserId } from "@opensteer/core";
+import {
+  DeviceIdSchema,
+  OpensteerError,
+  createId,
+  type RunId,
+  type RunnerId,
+  type UserId,
+} from "@opensteer/core";
 import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
 import {
   machineAccessPolicyDefault,
@@ -125,6 +132,31 @@ export interface FakeShellStore {
     readonly bytesOut: number;
     readonly reason: ShellCloseReason;
     readonly sessionId: ShellSessionId;
+    readonly neverSent?: true;
+  }[];
+  /** What each target-evidence write said (A4), in the order it landed. */
+  readonly evidence: {
+    readonly fence: RunnerAuxiliaryFrameFence;
+    readonly sessionIds: readonly ShellSessionId[];
+    readonly contactLost: boolean;
+  }[];
+  /** How many more evidence writes fail before one lands. */
+  failEvidenceWrites: number;
+  /**
+   * The connection a Run works for, as admission reads it: null for your own agents. A
+   * lineaged Run's reservation is refused while `connectionLive` is false (a committed revoke).
+   */
+  connection: {
+    readonly agentConnectionId: string;
+    readonly grantRevision: number;
+    readonly scope: "everything" | "selected";
+  } | null;
+  connectionLive: boolean;
+  /** What each reservation was asked to record. */
+  readonly reservations: {
+    readonly sessionId: ShellSessionId;
+    readonly connection?: unknown;
+    readonly targetFence?: RunnerAuxiliaryFrameFence;
   }[];
   readonly events: Map<ShellSessionId, ShellAuditEvent[]>;
   /** How many more `endShellSession` calls fail before one is allowed to land. */
@@ -161,7 +193,12 @@ export function fakeShellStore(
 ): { readonly state: FakeShellStore } & ShellHubOptions["store"] {
   const state: FakeShellStore = {
     activated: [],
+    connection: null,
+    connectionLive: true,
     ended: [],
+    evidence: [],
+    failEvidenceWrites: 0,
+    reservations: [],
     events: new Map(),
     failEndWrites: 0,
     failEventWrites: 0,
@@ -213,6 +250,7 @@ export function fakeShellStore(
     endShellSession: async (input: {
       readonly bytesIn?: number;
       readonly bytesOut?: number;
+      readonly neverSent?: boolean;
       readonly reason: ShellCloseReason;
       readonly sessionId: ShellSessionId;
     }) => {
@@ -230,14 +268,32 @@ export function fakeShellStore(
         bytesOut: input.bytesOut ?? 0,
         reason: input.reason,
         sessionId: input.sessionId,
+        ...(input.neverSent ? { neverSent: true as const } : {}),
       });
       return { ended: true };
     },
+    recordShellTargetEvidence: async (input: (typeof state.evidence)[number]) => {
+      if (state.failEvidenceWrites > 0) {
+        state.failEvidenceWrites -= 1;
+        throw new Error("the evidence could not be written");
+      }
+      state.evidence.push(input);
+      return input.sessionIds.length;
+    },
     requireSelfDeviceId: async (id: RunnerId) => DeviceIdSchema.parse(id),
     admitExecution: async () =>
-      ({ mode: "full-access", agentConnection: null }) as unknown as Awaited<
-        ReturnType<ShellHubStore["admitExecution"]>
-      >,
+      ({
+        mode: "full-access",
+        agentConnection: state.connection && {
+          agentConnectionId: state.connection.agentConnectionId,
+          grant:
+            state.connection.scope === "everything"
+              ? { scope: "everything" }
+              : { scope: "selected", resources: [] },
+          grantRevision: state.connection.grantRevision,
+          accessMode: "full-access",
+        },
+      }) as unknown as Awaited<ReturnType<ShellHubStore["admitExecution"]>>,
     getMachineAccessTarget: async () => {
       await state.gateTarget?.();
       return state.present
@@ -252,8 +308,20 @@ export function fakeShellStore(
     },
     getThreadForOwner: async () =>
       state.threadTitle === null ? null : ({ title: state.threadTitle } as never),
-    reserveShellSession: async (input: { readonly sessionId: ShellSessionId }) => {
+    reserveShellSession: async (input: {
+      readonly sessionId: ShellSessionId;
+      readonly connection?: unknown;
+      readonly targetFence?: RunnerAuxiliaryFrameFence;
+    }) => {
       await state.gateReserve?.(input.sessionId);
+      state.reservations.push(input);
+      // The revoke committed first: the connection row it locks says so, and nothing is written.
+      if (input.connection && !state.connectionLive)
+        throw new OpensteerError({
+          code: "forbidden",
+          message:
+            "This connected agent's access ended. The person can reconnect it from Connected agents.",
+        });
       state.reserved.push(input.sessionId);
       state.rows.set(input.sessionId, { endedAt: null, state: "pending" });
     },

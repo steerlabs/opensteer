@@ -19,6 +19,7 @@ function nearCapPaste(sizes: readonly number[]) {
     surfaceId: BrowserSurfaceIdSchema.parse("page-1"),
     operationId: randomUUID(),
     items: sizes.map((size, index) => ({ type: index ? "text/plain" : "image/png", size })),
+    contextId: randomUUID(),
   };
   const bytes = Buffer.alloc(sizes.reduce((total, size) => total + size, 0));
   let n = 123456789;
@@ -60,6 +61,7 @@ it("contains a refused paste's failed outcome write and releases its bounded sta
       surfaceId: BrowserSurfaceIdSchema.parse("page-1"),
       operationId: randomUUID(),
       items: [{ type: "text/plain", size: 1 }],
+      contextId: randomUUID(),
     }),
   );
   try {

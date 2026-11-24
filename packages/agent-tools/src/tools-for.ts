@@ -104,9 +104,13 @@ export const agentToolFamilies: Readonly<Record<AgentToolName, ToolFamily>> = {
 export function grantOffersTool(
   grant: AgentGrant | undefined,
   name: AgentToolName,
-  accessMode: ThreadAccessMode = "full-access",
+  accessMode: ThreadAccessMode,
 ): boolean {
   if (!grant) return true;
+  // A local server is a folder package on the person's computer, running outside any
+  // connection's Disconnect set: your own agents' only, as the table's plugins.install folder
+  // source is (B8). Work under a connection's grant is offered neither tool.
+  if (name === "local_server_add" || name === "local_server_remove") return false;
   const family = agentToolFamilies[name];
   if (grant.scope === "everything")
     return accessMode === "full-access" || family === "widen" || family === "owner-context"
@@ -185,7 +189,9 @@ function offersConnectionTool(
   name: AgentToolName,
   mode: ThreadAccessMode,
 ): boolean {
-  if (grant?.scope === "selected") {
+  // A connection always signs in with its grant; one without reads as holding nothing.
+  if (!grant) return false;
+  if (grant.scope === "selected") {
     if (name === "plugin_execute")
       return grant.resources.some(
         (resource) => resource.kind === "plugin" && resource.access === "read-write",

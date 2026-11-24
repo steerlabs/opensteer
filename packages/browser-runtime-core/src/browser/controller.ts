@@ -452,6 +452,11 @@ export class BrowserController {
     }
   >();
   private readonly cancelledScriptCommands = new WeakSet<BrowserClientMessage>();
+  /**
+   * A7: commands sent toward the page (or whose own effect began: a tab opening, a wake, a
+   * close). An error after this may come after the effect, and is not "unsent".
+   */
+  private readonly forwarded = new WeakSet<BrowserClientMessage>();
   private readonly canceledGenerations = new Map<string, number>();
   private readonly hoverOwners = new Map<BrowserSurfaceId, { owner: string; cdp: CdpChannel }>();
   private readonly cleanupReservations = new Set<string>();
@@ -966,6 +971,7 @@ export class BrowserController {
         error: new BrowserRuntimeError(
           "conflict",
           "The browser command queue is full or the request ID is already active.",
+          { unsent: true },
         ).toProtocolError(),
       });
     this.scriptCommands.set(message.requestId, { message, started: false });
@@ -1009,6 +1015,7 @@ export class BrowserController {
         "The browser command was cancelled before dispatch.",
         {
           reason: "browser-command-cancelled",
+          unsent: true,
         },
       ).toProtocolError(),
     });
@@ -1058,10 +1065,13 @@ export class BrowserController {
         message.type === "clipboard.cut" ||
         message.type === "clipboard.paste-data" ||
         message.type === "clipboard.part")
-    )
-      return this.enqueueFailure(
-        new BrowserRuntimeError("forbidden", "The engine clipboard was not negotiated."),
+    ) {
+      return this.refuseClipboard(message).then(() =>
+        this.enqueueFailure(
+          new BrowserRuntimeError("forbidden", "The engine clipboard was not negotiated."),
+        ),
       );
+    }
     if (this.editing && message.type === "clipboard.part") {
       this.clipboardParts.part(message);
       return Promise.resolve();
@@ -1181,10 +1191,9 @@ export class BrowserController {
       return this.send({
         type: "cdp.error",
         requestId: message.requestId,
-        error: new BrowserRuntimeError(
-          "conflict",
-          "The browser command queue is full.",
-        ).toProtocolError(),
+        error: new BrowserRuntimeError("conflict", "The browser command queue is full.", {
+          unsent: true,
+        }).toProtocolError(),
       });
     return this.enqueueOperation(queue, () => ({ done: this.run(message, surfaceId), surfaceId }));
   }
@@ -1226,9 +1235,11 @@ export class BrowserController {
       await this.send({
         type: "cdp.error",
         requestId: message.requestId,
+        // The detach itself was not done: the session stays attached.
         error: new BrowserRuntimeError(
           "conflict",
           "Browser input cleanup failed; the CDP session remains attached.",
+          { unsent: true },
         ).toProtocolError(),
       });
       return;
@@ -1369,10 +1380,11 @@ export class BrowserController {
     }
     await this.refuseClipboard(message);
     if (this.cancelledScriptCommands.has(message)) return;
+    // The lane refused it before it ran (overload, or cancelled while pending).
     const error = new BrowserRuntimeError(
       "conflict",
       "Browser input was not applied. Try the action again.",
-      { reason },
+      { reason, unsent: true },
     );
     if (isCdpRequest(message)) {
       await this.send({
@@ -1508,8 +1520,14 @@ export class BrowserController {
           }),
         );
       if (isCdpRequest(message)) {
+        // A7: before the command was sent toward the page nothing happened, and a refusal Chromium
+        // itself answered is one too; anything else may have come after its effect.
+        const unsent =
+          normalized.unsent ||
+          !this.forwarded.has(message) ||
+          normalized.reason === "browser-cdp-protocol-error";
         await this.send({
-          error: normalized.toProtocolError(),
+          error: { ...normalized.toProtocolError(), ...(unsent ? { unsent: true as const } : {}) },
           requestId: message.requestId,
           type: "cdp.error",
         });
@@ -2035,6 +2053,8 @@ export class BrowserController {
             message.type === "input.compose" ? message.composition : message.edit,
             message.type === "input.compose",
             () => this.recordPasskeyInput(message, active.surface.id),
+            message.producerId,
+            message.type === "input.text" && message.follows === true,
           ))
         )
           this.editingCounters.stale = (this.editingCounters.stale ?? 0) + 1;
@@ -2049,13 +2069,20 @@ export class BrowserController {
               (m) => this.send(m),
             ),
           );
-        await observer.input(() => {
-          this.recordPasskeyInput(message, active.surface.id);
-          return cdp.send(
-            "Input.dispatchKeyEvent",
-            editingCommandParameters(message.command, this.platform),
-          );
-        });
+        const applied = await observer.command(
+          message.contextId,
+          message.command,
+          () => {
+            this.recordPasskeyInput(message, active.surface.id);
+            return cdp.send(
+              "Input.dispatchKeyEvent",
+              editingCommandParameters(message.command, this.platform),
+            );
+          },
+          message.producerId,
+          message.follows === true,
+        );
+        if (!applied) this.editingCounters.stale = (this.editingCounters.stale ?? 0) + 1;
         return;
       }
       const outcome = (result: "refused" | "pasted" | "empty" | "too-large") =>
@@ -2070,9 +2097,21 @@ export class BrowserController {
         await outcome("refused");
         return;
       }
+      // CZ5, PH2, PH5: clipboard ops target the field they were made for, or nowhere: refused whole.
+      const follows = message.type === "clipboard.paste-data" && message.follows === true;
+      if (!observer.admitsInsertion(message.contextId, message.producerId, follows)) {
+        if (message.type === "clipboard.paste-data") this.clipboardParts.discard(message);
+        await outcome("refused");
+        return;
+      }
       const input =
         message.type === "clipboard.paste-data" ? await this.clipboardParts.take(message) : null;
       if (message.type === "clipboard.paste-data" && input === null) return;
+      // Focus may have moved while bytes arrived: checked again, and again live in page inside run().
+      if (!observer.admitsInsertion(message.contextId, message.producerId, follows)) {
+        await outcome("refused");
+        return;
+      }
       const command =
         message.type === "clipboard.paste-data"
           ? "paste"
@@ -2080,16 +2119,30 @@ export class BrowserController {
             ? "copy"
             : "cut";
       try {
-        const result = await this.clipboard!.run(active.page, input, () =>
-          observer.input(() => {
+        const result = await this.clipboard!.run(active.page, input, () => {
+          const dispatch = () => {
             this.recordPasskeyInput(message, active.surface.id);
             return cdp.send(
               "Input.dispatchKeyEvent",
               editingCommandParameters(command, this.platform),
             );
-          }),
-        );
-        if (command === "paste") await outcome("pasted");
+          };
+          if (message.type === "clipboard.paste-data")
+            return observer.paste(
+              message.contextId,
+              dispatch,
+              message.producerId,
+              message.follows === true,
+            );
+          return observer.copyOrCut(
+            message.contextId,
+            dispatch,
+            message.producerId,
+            command === "cut",
+          );
+        });
+        if (!result.result) await outcome("refused");
+        else if (command === "paste") await outcome("pasted");
         else
           await publishClipboardItems(
             {
@@ -2285,7 +2338,8 @@ export class BrowserController {
           ...resolved,
         });
       };
-      if (this.editing) await (await this.editingObserver(active.surface.id)).input(dispatch);
+      if (this.editing)
+        await (await this.editingObserver(active.surface.id)).input(dispatch, message.producerId);
       else await dispatch();
       if (message.action === "up") {
         keys.delete(message.code);
@@ -2306,10 +2360,20 @@ export class BrowserController {
     }
     if (message.type === "clipboard.paste") {
       if (message.surfaceId !== active.surface.id) return;
-      this.ledger.recordHumanActivity(message.surfaceId, { kind: "typing" });
-      this.ledger.recordViewerInput(message.surfaceId, message.producerId);
-      this.recordPasskeyInput(message, active.surface.id);
-      await cdp.send("Input.insertText", { text: message.text });
+      // CZ5, PH2: into the field it was made for, verified live in page, or nowhere.
+      const observer = await this.editingObserver(active.surface.id);
+      const applied = await observer.paste(
+        message.contextId,
+        () => {
+          this.ledger.recordHumanActivity(message.surfaceId, { kind: "typing" });
+          this.ledger.recordViewerInput(message.surfaceId, message.producerId);
+          this.recordPasskeyInput(message, active.surface.id);
+          return cdp.send("Input.insertText", { text: message.text });
+        },
+        message.producerId,
+        message.follows === true,
+      );
+      if (!applied) throw new BrowserRuntimeError("conflict", "The field changed. Paste again.");
       return;
     }
     if (message.type === "dialog.respond") {
@@ -3580,6 +3644,7 @@ export class BrowserController {
         agentActivity,
       );
     let result: unknown;
+    this.forwarded.add(message);
     try {
       result =
         pageTargetId &&
@@ -3945,7 +4010,11 @@ export class BrowserController {
       };
       try {
         stopIfCancelled();
-        const reloaded = this.ledger.stateOf(surfaceId) === "suspended";
+        const state = this.ledger.stateOf(surfaceId);
+        if (state === undefined)
+          throw new BrowserRuntimeError("not_found", "The browser tab closed.", { unsent: true });
+        const reloaded = state === "suspended";
+        this.forwarded.add(message);
         let binding = await untilAborted(this.ledger.wake(surfaceId), cancelled.signal);
         stopIfCancelled();
         // Z1, Z4: a wake's unfinished load is the ledger's fact, set when the wake began and
@@ -3965,7 +4034,8 @@ export class BrowserController {
             throw new BrowserRuntimeError(
               "conflict",
               "This tab is awake, but its page is still loading. Try again shortly.",
-              { retryable: true },
+              // A7: no page was handed over; the wake is the tab's own state, shown and kept.
+              { retryable: true, unsent: true },
             );
           // Only a binding read now, after its load was confirmed, is handed over.
           const confirmed = loaded === "loaded" ? this.ledger.binding(surfaceId) : null;
@@ -3973,7 +4043,7 @@ export class BrowserController {
             throw new BrowserRuntimeError(
               "conflict",
               "This tab went back to sleep before its page loaded. Wake it again.",
-              { reason: "target-suspended", retryable: true },
+              { reason: "target-suspended", retryable: true, unsent: true },
             );
           binding = confirmed;
         }
@@ -4107,6 +4177,8 @@ export class BrowserController {
             ? BrowserSurfaceIdSchema.safeParse(parameters?.surfaceId).data
             : undefined;
         this.openOperations.add(opening);
+        // A7: from here a page may exist.
+        this.forwarded.add(message);
         const opened = await withTimeout(
           this.ledger.openSurface({
             signal: operationSignal,
@@ -4162,6 +4234,7 @@ export class BrowserController {
       throw new BrowserRuntimeError("bad_message", "A surface is required.");
     const durableClose = parameters?.durable === true;
     if (durableClose && message.command.method === browserHostMethods.closeTab) {
+      this.forwarded.add(message);
       await this.ledger.closeDurableSurface(BrowserSurfaceIdSchema.parse(surfaceId));
       const last = this.ledger.sealLastSurface();
       await this.drainTabs();
@@ -4192,6 +4265,7 @@ export class BrowserController {
         last = this.ledger.sealLastSurface(surface.id);
         if (!last) throw new BrowserRuntimeError("conflict", "The browser inventory changed.");
       }
+      this.forwarded.add(message);
       if (!last && this.ledger.stateOf(surface.id))
         await this.ledger.closeSurface(surface.id, "host-closed");
       if (last) {
@@ -4466,9 +4540,12 @@ function normalizeControllerError(error: unknown, cdpRequest = false): BrowserRu
         : error.code === "forbidden"
           ? "forbidden"
           : "conflict";
+  // A7: the router refused it before handing it on (its checks, or a lookup it said was one).
+  const unsent = error.unsent || error.code === "bad_command" || error.code === "forbidden";
   return new BrowserRuntimeError(code, error.message, {
     cause: error,
-    ...(error.code === "too_large" ? { reason: "browser-reply-limit" } : {}),
+    ...(error.code === "too_large" && !unsent ? { reason: "browser-reply-limit" } : {}),
+    ...(unsent ? { unsent: true } : {}),
   });
 }
 

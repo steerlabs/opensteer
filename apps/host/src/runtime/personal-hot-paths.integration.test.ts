@@ -2,6 +2,7 @@ import {
   AgentConnectionStore,
   OpensteerStore,
   TabStore,
+  TriggerStore,
   admitAgentOperation,
   beginAgentSession,
   decideAgentOperation,
@@ -37,6 +38,7 @@ import {
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
 import {
   acceptCallerRun,
+  acknowledgeCommands,
   connectCallerMachine,
   configurePersonalRemoteAccess,
   dispatchCallerRun,
@@ -121,8 +123,10 @@ const parityFixture = new URL("./personal-hot-paths.parity.json", import.meta.ur
  * less the statements the team server's removal took off Home startup, less the embedder
  * statements' replay sweep (gone with verification through a platform), and plus the one read
  * that refuses a team server's database before migrating it: a statement added,
- * removed or changed on any of these paths fails it. To record the fixture again, run with
- * OPENSTEER_POOL_PARITY_REPORT set to a file path on the base.
+ * removed or changed on any of these paths fails it. Two paths pin your own agents' tool calls
+ * as rule 7 asks (B9): "Run MCP task read", a native Run's, and "automation program task read",
+ * a Trigger program's, each one MCP call over its own open session. To record the fixture again,
+ * run with OPENSTEER_POOL_PARITY_REPORT set to a file path on the base.
  */
 it.skipIf(Boolean(reportPath))(
   "keeps an ordinary Home's browser and direct-work statements as they were before the pool",
@@ -282,6 +286,7 @@ it.skipIf(Boolean(reportPath))(
       const runner = await connectCallerMachine(host, {
         name: "Parity fixture",
         token: host.hostingRunnerEnrollmentToken,
+        automations: true,
         browser: {
           runtimeId: "browser-runtime-integration",
           wireVersion: 2,
@@ -492,6 +497,92 @@ it.skipIf(Boolean(reportPath))(
       recorded["execution dispatch pass"] = [...dispatchSql].sort();
       const memory = memoryPass;
       await record("memory provisioning pass", () => Reflect.apply(reconcile, memory, []));
+      // Your own agents' tool calls over MCP with their own bearer, in process (rule 7, B9): a
+      // native Run's, and an automation program's from the token its Trigger was dispatched with.
+      // Each opens its session first, as a real client does; only the call is the path.
+      const mcpPost = (token: string, body: unknown, sessionId?: string) =>
+        host.runtime.app.inject({
+          method: "POST",
+          url: hostInternalRoutePaths.mcp,
+          headers: {
+            host: new URL(host.origin).host,
+            authorization: `Bearer ${token}`,
+            accept: "application/json, text/event-stream",
+            "content-type": "application/json",
+            "mcp-protocol-version": "2025-11-25",
+            ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+          },
+          payload: JSON.stringify(body),
+        });
+      const mcpSession = async (token: string) => {
+        const reply = await mcpPost(token, {
+          jsonrpc: "2.0",
+          id: 0,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-11-25",
+            capabilities: {},
+            clientInfo: { name: "parity", version: "1" },
+          },
+        });
+        expect(reply.statusCode, reply.body).toBe(200);
+        const sessionId = reply.headers["mcp-session-id"];
+        if (typeof sessionId !== "string") throw new Error("No MCP session");
+        const initialized = { jsonrpc: "2.0", method: "notifications/initialized" };
+        expect((await mcpPost(token, initialized, sessionId)).statusCode).toBe(202);
+        return async (name: string, args: Record<string, unknown>) => {
+          const call = {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name, arguments: args },
+          };
+          const answer = await mcpPost(token, call, sessionId);
+          expect(answer.statusCode, answer.body).toBe(200);
+          expect(answer.body).toContain(run.threadId);
+          expect(answer.body).not.toContain('"isError":true');
+        };
+      };
+      const runTool = await mcpSession(run.toolsToken);
+      await record("Run MCP task read", () =>
+        runTool("opensteer_task_read", { taskId: run.threadId }),
+      );
+      const triggers = new TriggerStore(host.store.database);
+      const automation = await triggers.create({
+        actorThreadId: null,
+        anchorThreadId: run.threadId,
+        createdBy: host.ownerId,
+        idempotencyKey: "parity-trigger",
+        name: "Parity automation",
+        source: {
+          kind: "schedule",
+          schedule: { kind: "cron", expression: "0 0 * * *", timezone: "UTC" },
+        },
+        script: { interpreter: null, text: "console.log('ok');" },
+      });
+      acknowledgeCommands(runner.primary, ({ type }) => type === "trigger.execute");
+      const dispatched = waitForMessage(runner.primary.socket, (message) => {
+        const { command } = message as {
+          command?: { type: string; context?: { triggerId: string } };
+        };
+        return (
+          message.type === "host.command" &&
+          command?.type === "trigger.execute" &&
+          command.context?.triggerId === automation.trigger.id
+        );
+      }) as unknown as Promise<{ command: { context: { mcp: { token: string } } } }>;
+      await triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId: host.ownerId,
+        triggerId: automation.trigger.id,
+        idempotencyKey: "parity-occurrence",
+      });
+      // A store-level enqueue notifies no coordinator: it is woken here, outside every path.
+      dispatcher.wake();
+      const programTool = await mcpSession((await dispatched).command.context.mcp.token);
+      await record("automation program task read", () =>
+        programTool("opensteer_task_read", { taskId: run.threadId }),
+      );
       // An ordinary Home's Stop, last: a pooled Stop's wait for the runtime's answer adds nothing.
       await record("person stop", () => host.runtime.browser.stop(host.ownerId, sessionId));
       if (parityReport)
@@ -789,6 +880,10 @@ it.skipIf(!reportPath)(
 
       await measure("Run MCP task read", iterations, () =>
         tool("opensteer_task_read", { taskId: run.threadId }),
+      );
+      // A task write of your own agent on its own lineage, through the one door (A3, rule 7).
+      await measure("Run MCP task resume (own task)", iterations, () =>
+        tool("opensteer_task_resume", { taskId: run.threadId }),
       );
       const opened = (await rpc(
         host.api["commands.dispatch"]({

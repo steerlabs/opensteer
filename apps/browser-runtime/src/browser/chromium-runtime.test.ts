@@ -642,7 +642,7 @@ describe("real Chromium runtime", () => {
     const address = site.address();
     if (!address || typeof address === "string") throw new Error("Missing fixture address");
     const origin = `http://127.0.0.1:${address.port}`;
-    const claims = validClaims();
+    const claims = validClaims({ editingVersion: 2, clipboard: false });
     const browser = await new PlaywrightChromiumLauncher({
       chromiumSandbox: false,
       executablePath,
@@ -756,6 +756,7 @@ describe("real Chromium runtime", () => {
       targeted: true,
       surfaceId: x,
       text: "person editing X",
+      contextId: await publishedContext(sink, x),
     });
     await request(
       "Input.dispatchMouseEvent",
@@ -1310,7 +1311,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     const address = site.address();
     if (!address || typeof address === "string") throw new Error("Missing fixture address");
     const origin = `http://127.0.0.1:${address.port}`;
-    const claims = validClaims();
+    const claims = validClaims({ editingVersion: 2, clipboard: false });
     // A session's pages start at the documented default until the person's
     // view gives it a size.
     const agentSize = {
@@ -1595,6 +1596,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       type: "clipboard.paste",
       surfaceId: person.surface.id,
       text: secret,
+      contextId: await publishedContext(sink, person.surface.id),
     });
     const pasteResult = await pasteWait;
     const pasteLatencyMs = Date.now() - pasteStarted;
@@ -2443,7 +2445,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       executablePath,
       headless: true,
     });
-    const claims = validClaims();
+    const claims = validClaims({ editingVersion: 2, clipboard: false });
     const browser = await launcher.launch({
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: `session:${claims.sessionId}`,
@@ -2549,6 +2551,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       surfaceId,
       text: "clipboard text",
       type: "clipboard.paste",
+      contextId: await publishedContext(sink, surfaceId),
     });
     const input = await active.cdp.send<{
       result?: { value?: unknown };
@@ -3192,3 +3195,22 @@ it.each([1, 2, 3, 4, 5])(
   },
   90_000,
 );
+
+/**
+ * CZ5: the context of the field a page surface has focused, as it last published it: what a
+ * paste into that field names (waited for, as the page reports a focus a moment after it).
+ */
+async function publishedContext(sink: FakeSink, surfaceId: string): Promise<string> {
+  let contextId: string | undefined;
+  await vi.waitFor(() => {
+    const published = sink.messages
+      .filter((message) => message.type === "browser.editing" && message.surfaceId === surfaceId)
+      .at(-1);
+    contextId =
+      published?.type === "browser.editing" && published.context.field !== null
+        ? published.context.contextId
+        : undefined;
+    expect(contextId).toBeDefined();
+  });
+  return contextId!;
+}

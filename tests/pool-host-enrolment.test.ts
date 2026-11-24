@@ -466,6 +466,9 @@ ${pknameCases}
   local _expected _path _actual _p _h _
   if [[ " $* " == *" -c "* ]]; then
     if [[ ${opts.realInstallHostEnv ? "1" : "0"} == "1" ]]; then
+      # Drain stdin before returning so upstream echo/printf in pipefail pipelines
+      # never dies with SIGPIPE (exit 141) under CPU contention.
+      while IFS= read -r _; do :; done
       return 0
     fi
     while read -r _expected _path; do
@@ -2013,28 +2016,119 @@ esac
       );
     });
 
-    it("J3(c): real setup-host.sh ignores OSP_KVM_DEV/OSP_SMT_ACTIVE/OSP_CPU_VULNS_DIR env vars and reads real host paths", () => {
+    it("J3(c): real setup-host.sh ignores OSP_KVM_DEV/OSP_CGROUP_CONTROLLERS/OSP_SMT_ACTIVE/OSP_CPU_VULNS_DIR env vars and reads real host paths", () => {
+      // 1. Static proof on the real script: the four host-check paths are plain readonly constants
+      // and none of the spoofable OSP_* names appear anywhere in setup-host.sh (cannot pass by
+      // accident even on a bare-metal host where every real require_host check succeeds).
+      const realSetupText = readFileSync(setupScript, "utf8");
+      expect(realSetupText).toMatch(/^readonly KVM_DEV=\/dev\/kvm$/mu);
+      expect(realSetupText).toMatch(
+        /^readonly CGROUP_CONTROLLERS=\/sys\/fs\/cgroup\/cgroup\.controllers$/mu,
+      );
+      expect(realSetupText).toMatch(
+        /^readonly SMT_ACTIVE=\/sys\/devices\/system\/cpu\/smt\/active$/mu,
+      );
+      expect(realSetupText).toMatch(
+        /^readonly CPU_VULNS_DIR=\/sys\/devices\/system\/cpu\/vulnerabilities$/mu,
+      );
+      for (const forbidden of [
+        "OSP_KVM_DEV",
+        "OSP_CGROUP_CONTROLLERS",
+        "OSP_SMT_ACTIVE",
+        "OSP_CPU_VULNS_DIR",
+      ]) {
+        expect(realSetupText, `real setup-host.sh must never reference ${forbidden}`).not.toContain(
+          forbidden,
+        );
+      }
+
+      // 2. Behavioral invariance on the unmodified real script: passing-fake vs failing-fake OSP_*
+      // env vars must produce the exact same outcome (status, stderr, and whether apt-get is
+      // reached) regardless of what the real host has (/dev/kvm, SMT, cgroups, CPU mitigations).
       const hostA = "ph_11111111-1111-4111-8111-111111111111";
       const labelA = hostProfileDiskLabel(hostA);
-      const hEnvBypass = createFakeHostEnv({
+      const runRealInstall = (spoofEnv: Record<string, string>) => {
+        const h = createFakeHostEnv({
+          blkidRc: 0,
+          blkidOut: `DEVNAME=/dev/sdb\nLABEL=${labelA}\nTYPE=ext4\nUSAGE=filesystem`,
+          realInstallHostEnv: true,
+          setupInstallStub: false,
+        });
+        // Sentinel exit 99 if install_packages is ever reached so a passing bare-metal host never
+        // mutates anything and is distinguishable from a require_host refusal (exit 1).
+        h.override("apt-get", '  _osp_log_call apt-get "$@"\n  exit 99');
+        const res = runScript(setupScript, ["install"], {
+          ...h.env,
+          ...spoofEnv,
+          OSP_PROFILE_DISK: poolProfileDiskDevicePath,
+          OSP_PROFILE_DISK_LABEL: labelA,
+          OSP_REQUIRE_PROFILE_DISK: "1",
+          OSP_PROFILES_ROOT: join(h.stateDir, "profiles"),
+          OSP_SKIP_DEFAULT_KERNEL: "1",
+        });
+        return {
+          status: res.status,
+          stderr: res.stderr,
+          calledAptGet: h.readCalls().some((c) => c.cmd === "apt-get"),
+        };
+      };
+      const passSpoof = runRealInstall({});
+      const failSpoofDir = makeTempDir();
+      const failSmt = join(failSpoofDir, "smt-active");
+      const failVulns = join(failSpoofDir, "vulns");
+      mkdirSync(failVulns, { recursive: true });
+      writeFileSync(failSmt, "1\n");
+      writeFileSync(join(failVulns, "spectre_v2"), "Vulnerable\n");
+      const failSpoof = runRealInstall({
+        OSP_KVM_DEV: join(failSpoofDir, "missing-kvm"),
+        OSP_CGROUP_CONTROLLERS: join(failSpoofDir, "missing-cgroup"),
+        OSP_SMT_ACTIVE: failSmt,
+        OSP_CPU_VULNS_DIR: failVulns,
+      });
+      expect(passSpoof).toEqual(failSpoof);
+      if (passSpoof.status !== 99) {
+        expect(passSpoof.status).toBe(1);
+        expect(passSpoof.stderr).toMatch(
+          /\/dev\/kvm is missing|unified cgroup v2 hierarchy is required|SMT is active|SMT status is unreadable|CPU vulnerability .* is not mitigated/u,
+        );
+        expect(
+          passSpoof.calledAptGet,
+          "real setup-host.sh must refuse in require_host before install_packages (apt-get)",
+        ).toBe(false);
+      }
+
+      // 3. Host-independent refusal proof: when a real host path fails (missing KVM_DEV),
+      // require_host always refuses before reaching apt-get even on a bare-metal host where all
+      // real kernel checks pass.
+      const hRefuse = createFakeHostEnv({
         blkidRc: 0,
         blkidOut: `DEVNAME=/dev/sdb\nLABEL=${labelA}\nTYPE=ext4\nUSAGE=filesystem`,
         realInstallHostEnv: true,
         setupInstallStub: false,
       });
-      const envBypassRes = runScript(setupScript, ["install"], {
-        ...hEnvBypass.env,
+      hRefuse.override("apt-get", '  _osp_log_call apt-get "$@"\n  exit 99');
+      const missingKvmCopy = join(hRefuse.root, "setup-host-missing-kvm.sh");
+      writeFileSync(
+        missingKvmCopy,
+        realSetupText.replace(
+          /^readonly KVM_DEV=.*$/mu,
+          `readonly KVM_DEV=${JSON.stringify(join(hRefuse.root, "no-such-kvm"))}`,
+        ),
+        { mode: 0o755 },
+      );
+      const refuseRes = runScript(missingKvmCopy, ["install"], {
+        ...hRefuse.env,
         OSP_PROFILE_DISK: poolProfileDiskDevicePath,
         OSP_PROFILE_DISK_LABEL: labelA,
         OSP_REQUIRE_PROFILE_DISK: "1",
-        OSP_PROFILES_ROOT: join(hEnvBypass.stateDir, "profiles"),
+        OSP_PROFILES_ROOT: join(hRefuse.stateDir, "profiles"),
         OSP_SKIP_DEFAULT_KERNEL: "1",
       });
-      expect(envBypassRes.status).not.toBe(0);
-      expect(envBypassRes.stderr).toMatch(/\/dev\/kvm is missing/u);
+      expect(refuseRes.status).toBe(1);
+      expect(refuseRes.stderr).toMatch(/\/dev\/kvm is missing/u);
       expect(
-        hEnvBypass.readCalls().some((c) => c.cmd === "apt-get"),
-        "real setup-host.sh must fail in require_host before install_packages when env vars try to spoof host paths",
+        hRefuse.readCalls().some((c) => c.cmd === "apt-get"),
+        "setup-host.sh must refuse in require_host before calling apt-get",
       ).toBe(false);
     });
 
@@ -2082,7 +2176,7 @@ esac
   if (( \${#_clean[@]} > 0 )); then /bin/rm "\${_clean[@]}"; fi`,
       );
       hRm.override("nproc", "  echo 8");
-      runScript(copyPath, ["install"], {
+      const rmRes = runScript(copyPath, ["install"], {
         ...hRm.env,
         OSP_TEST_CALLS: join(hRm.root, "calls.jsonl"),
         OSP_PROFILE_DISK: poolProfileDiskDevicePath,
@@ -2091,6 +2185,14 @@ esac
         OSP_PROFILES_ROOT: join(hRm.stateDir, "profiles"),
         OSP_SKIP_DEFAULT_KERNEL: "1",
       });
+      expect(
+        existsSync(join(hRm.optDir, "bin/firecracker")),
+        `setup-host.sh install did not reach firecracker install in install_binaries (status=${rmRes.status}, stderr=${rmRes.stderr})`,
+      ).toBe(true);
+      expect(
+        existsSync(join(hRm.optDir, "node/bin/node")),
+        `setup-host.sh install did not finish node install in install_binaries (status=${rmRes.status}, stderr=${rmRes.stderr})`,
+      ).toBe(true);
       const rmCalls = hRm.readCalls().filter((c) => c.cmd === "rm");
       const oneFsCalls = rmCalls.filter((c) => c.args.includes("--one-file-system"));
       expect(

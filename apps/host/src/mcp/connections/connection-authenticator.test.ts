@@ -39,6 +39,28 @@ describe("MCP connection audience", () => {
     }
     expect(authenticate).not.toHaveBeenCalled();
   });
+  it("refuses a connection read without its grant, revision or consent, never reading it as everything (B3)", async () => {
+    const row = {
+      id: "mcn_1",
+      userId: createId("user"),
+      accessMode: "full-access",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      grant: { scope: "everything" },
+      grantRevision: 1,
+      consentVersion: 2,
+    };
+    for (const missing of ["grant", "grantRevision", "consentVersion"] as const) {
+      const { [missing]: _gone, ...read } = row;
+      const connections = new ConnectionAuthenticator({
+        authenticate: vi.fn(async () => read),
+      } as never);
+      await expect(connections.authenticate(credential)).rejects.toMatchObject({
+        code: "unauthorized",
+      });
+    }
+    const whole = new ConnectionAuthenticator({ authenticate: vi.fn(async () => row) } as never);
+    await expect(whole.authenticate(credential)).resolves.toMatchObject({ consentVersion: 2 });
+  });
   it("never converts an MCP credential to a native Host session or falls through to cookies", async () => {
     const native = vi.fn(),
       cookie = vi.fn();
@@ -98,7 +120,9 @@ describe("MCP connection audience", () => {
       label: "Agent",
       clientName: "Client",
       accessMode: "auto" as const,
-
+      grant: { scope: "everything" as const },
+      grantRevision: 1,
+      consentVersion: 2,
       createdAt: new Date().toISOString(),
       lastUsedAt: null,
       expiresAt: new Date(Date.now() + 60_000).toISOString(),

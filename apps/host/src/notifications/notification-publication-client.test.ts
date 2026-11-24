@@ -30,6 +30,7 @@ function entry(overrides: Partial<NotificationPublication> = {}): NotificationPu
     sequence: "42",
     threadId: createId("thread"),
     userId: createId("user"),
+    connectionId: null,
     ...overrides,
   };
 }
@@ -297,6 +298,8 @@ describe("NotificationPublicationClient", () => {
     ).resolves.toEqual({
       status: "failed",
       reason: `Notification publication API returned HTTP ${status}`,
+      // Refused before the account took it: known never sent.
+      sent: "never",
     });
   });
   it.each([429, 500, 503])("retries HTTP %i", async (status) => {
@@ -326,6 +329,8 @@ describe("NotificationPublicationClient", () => {
     ).resolves.toEqual({
       status: "failed",
       reason: "Notification publication API returned an invalid acknowledgement",
+      // A success the Home could not read: the account may well have published it.
+      sent: "maybe",
     });
   });
   it("warns when the Account has no push configured", async () => {
@@ -370,5 +375,52 @@ describe("NotificationPublicationClient", () => {
     ).resolves.toEqual({
       status: "no-target",
     });
+  });
+  it("asks the hand-off immediately before each request leaves, and sends nothing on a refusal", async () => {
+    const order: string[] = [];
+    let admit = true;
+    const fetch: typeof globalThis.fetch = async (_url, init) => {
+      order.push(JSON.parse(String(init?.body)).previews ? "post-sealed" : "post-generic");
+      return new Response("", { status: 400 });
+    };
+    const client = new NotificationPublicationClient({
+      deploymentId,
+      fetch,
+      hostInstanceId,
+      previews: {
+        keys: async () => {
+          order.push("keys");
+          return [];
+        },
+      },
+      target: async () => {
+        order.push("target");
+        return target;
+      },
+    });
+    const handOff = async () => {
+      order.push("hand-off");
+      return admit;
+    };
+    await expect(
+      client.publish({
+        entry: entry(),
+        recipientAccountIds: [accountId],
+        signal: new AbortController().signal,
+        handOff,
+      }),
+    ).resolves.toMatchObject({ status: "failed", sent: "never" });
+    expect(order).toEqual(["target", "keys", "hand-off", "post-generic"]);
+    order.length = 0;
+    admit = false;
+    await expect(
+      client.publish({
+        entry: entry(),
+        recipientAccountIds: [accountId],
+        signal: new AbortController().signal,
+        handOff,
+      }),
+    ).resolves.toEqual({ status: "withdrawn" });
+    expect(order).toEqual(["target", "keys", "hand-off"]);
   });
 });

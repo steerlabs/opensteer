@@ -585,7 +585,7 @@ interface RunnerConnection {
    */
   readonly preparingHarnesses: Set<HarnessInstanceId>;
   catalogRequestRevision: number;
-  catalogGeneration: number;
+  readonly catalogGenerations: Map<HarnessInstanceId, number>;
   lastSeenAt: number;
   /** Timestamp when this connection last reported `runner.power.sleeping`. */
   sleepAnnouncedAtMs: number | undefined;
@@ -788,7 +788,7 @@ export class RunnerRegistry {
       abandonedCatalogs: new Set(),
       catalogCache: new Map(),
       preparingHarnesses: new Set(),
-      catalogGeneration: 0,
+      catalogGenerations: new Map(),
       catalogRequestRevision: 0,
       lastHeartbeatSentAt: undefined,
       lastSeenAt: now,
@@ -1557,7 +1557,9 @@ export class RunnerRegistry {
     const definitionFingerprints = new Map(
       harnesses.map((harness) => [harness.id, catalogFingerprint([harness])]),
     );
-    const generation = connection.catalogGeneration;
+    const generations = inspected.map(
+      (harness) => [harness.id, connection.catalogGenerations.get(harness.id) ?? 0] as const,
+    );
     const joined = connection.inFlightCatalogs.get(fingerprint);
     // A reconciliation always issues its own request; only a read may join one.
     if (joined && type === "host.inspect-harnesses") return await awaitCatalog(joined, signal);
@@ -1596,7 +1598,11 @@ export class RunnerRegistry {
       }
     })();
     const attempt = capture.then((catalogs) => {
-      if (connection.catalogGeneration !== generation) {
+      if (
+        generations.some(
+          ([id, generation]) => (connection.catalogGenerations.get(id) ?? 0) !== generation,
+        )
+      ) {
         throw new OpensteerError({
           code: "conflict",
           message: "Harness catalog changed while it was being read",
@@ -1630,6 +1636,7 @@ export class RunnerRegistry {
     attempt.catch(() => undefined);
     const entry: InFlightCatalog = {
       attempt,
+      harnesses: new Set(inspected.map((harness) => harness.id)),
       waiters: 0,
       // Every caller's own deadline passed with no reply: the request is
       // abandoned, so the next attempt sends a new one instead of joining it.
@@ -3188,7 +3195,10 @@ export class RunnerRegistry {
         connection.pendingStopRechecks.get(message.requestId)?.resolve(message);
         break;
       case "runner.harness-catalog-invalidated":
-        connection.catalogGeneration += 1;
+        connection.catalogGenerations.set(
+          message.harnessInstanceId,
+          (connection.catalogGenerations.get(message.harnessInstanceId) ?? 0) + 1,
+        );
         connection.catalogCache.delete(message.harnessInstanceId);
         // Preparation settled, so work waiting on it may be dispatched; the
         // inspection that follows says what the account is now.
@@ -3196,7 +3206,11 @@ export class RunnerRegistry {
           this.#hooks.onRunDispatchAvailable?.();
         // Existing callers still own their request, but a recapture prompted by
         // this signal must observe the state after preparation completed.
-        connection.inFlightCatalogs.clear();
+        for (const [fingerprint, entry] of connection.inFlightCatalogs) {
+          if (entry.harnesses.has(message.harnessInstanceId)) {
+            connection.inFlightCatalogs.delete(fingerprint);
+          }
+        }
         if (this.#hooks.onHarnessCatalogInvalidated) {
           void this.#runHook(() =>
             this.#hooks.onHarnessCatalogInvalidated?.(connection.identity, message),
@@ -3750,6 +3764,7 @@ async function withDeadline<T>(
 }
 interface InFlightCatalog {
   readonly attempt: Promise<readonly HarnessInstanceCatalog[]>;
+  readonly harnesses: ReadonlySet<HarnessInstanceId>;
   waiters: number;
   abandon(): void;
 }
