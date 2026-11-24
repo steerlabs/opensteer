@@ -225,7 +225,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const clients: Client[] = [];
   const activeCalls = new Map<string, number>();
   const mockOffsets = new Map<string, number>();
-  const automationWrites = new Map<string, unknown>();
+  const automationWrites = new Map<string, Record<string, unknown>>();
   const endpoints = new Map<
     string,
     {
