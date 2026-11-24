@@ -413,7 +413,6 @@ export interface BrowserSessionRepository {
     readonly profileId: BrowserProfileId;
   }): Promise<{
     readonly sessionIds: readonly BrowserSessionId[];
-    readonly usageThreadIds?: readonly ThreadId[];
     readonly deletion?: PendingBrowserProfileDeletion;
   }>;
   listActiveBrowserSessionsForAgent(input: {
@@ -646,6 +645,8 @@ interface BrowserServiceOptions {
    * agent is acting in it. These change often, so they never reread a list.
    */
   readonly onUsageChanged?: (credits: readonly BrowserUsageCredit[]) => void;
+  /** A committed profile archive dropped that profile's sessions from every task's browser usage. */
+  readonly onProfileArchived?: () => void;
   /** A best-effort write that failed after the agent was already answered. */
   readonly onError?: (error: unknown) => void;
   /** Drives activity expiry and place coalescing; browser commands and connection deadlines use real time. */
@@ -773,6 +774,7 @@ export class BrowserService {
   readonly #connectTimeoutMs: number;
   readonly #onSessionsChanged: (sessionIds: readonly BrowserSessionId[]) => void;
   readonly #onUsageChanged: NonNullable<BrowserServiceOptions["onUsageChanged"]>;
+  readonly #onProfileArchived: NonNullable<BrowserServiceOptions["onProfileArchived"]>;
   readonly #onError: NonNullable<BrowserServiceOptions["onError"]>;
   readonly #activityClock: Clock;
   readonly #actingWindowMs: number;
@@ -889,6 +891,7 @@ export class BrowserService {
       options.onProfilesChanged?.(ownerId);
     };
     this.#onUsageChanged = options.onUsageChanged ?? (() => undefined);
+    this.#onProfileArchived = options.onProfileArchived ?? (() => undefined);
     this.#onError = options.onError ?? (() => undefined);
     this.#activityClock = options.activityClock ?? systemClock;
     this.#actingWindowMs = options.actingWindowMs ?? browserActingWindowMs;
@@ -1029,15 +1032,11 @@ export class BrowserService {
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
   }): Promise<PendingBrowserProfileDeletion | undefined> {
-    const {
-      sessionIds,
-      usageThreadIds = [],
-      deletion,
-    } = await this.#serializeKey(`profile-admission:${input.profileId}`, () =>
-      this.#repository.deleteBrowserProfile(input),
+    const { sessionIds, deletion } = await this.#serializeKey(
+      `profile-admission:${input.profileId}`,
+      () => this.#repository.deleteBrowserProfile(input),
     );
-    if (usageThreadIds.length)
-      this.announceUsage(usageThreadIds.map((threadId) => ({ threadId, joined: false })));
+    this.#onProfileArchived();
     for (const [id, group] of this.#personUseGroups)
       if (group.profileId === input.profileId) this.#endPersonUse(id);
     this.invalidatePlaceAuthority();
@@ -1068,10 +1067,7 @@ export class BrowserService {
 
   async profilesRemoved(
     profiles: readonly { id: BrowserProfileId; ownerId: UserId }[],
-    usageThreadIds: readonly ThreadId[] = [],
   ): Promise<void> {
-    if (usageThreadIds.length)
-      this.announceUsage(usageThreadIds.map((threadId) => ({ threadId, joined: false })));
     this.invalidatePlaceAuthority();
     for (const [id, group] of this.#personUseGroups)
       if (profiles.some((profile) => profile.id === group.profileId)) this.#endPersonUse(id);

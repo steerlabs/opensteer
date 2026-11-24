@@ -1103,11 +1103,10 @@ export async function createHostRuntime(
       baseUrl: config.canonicalOrigin,
       beforeProfileOpen: (runnerId: RunnerId) =>
         runnerBrowsers.requirePersonalProfileInventory(runnerId),
-      onReconciled: async (profileId, usageThreadIds) => {
-        if (usageThreadIds.length)
-          browser.announceUsage(usageThreadIds.map((threadId) => ({ threadId, joined: false })));
+      onReconciled: async (profileId) => {
         await browser.fenceLocalProfile(profileId);
       },
+      onProfileArchived: () => realtime.refreshObservedBrowserUsage(),
     });
     const runnerBrowsers = new RunnerBrowserRuntimeRouter({
       registry: browserRelay,
@@ -1185,6 +1184,7 @@ export async function createHostRuntime(
       onSessionsChanged: () =>
         announceResources("browser-placement", "browser-availability", "tab"),
       onUsageChanged: (credits) => announceBrowserUsage(realtime, credits),
+      onProfileArchived: () => realtime.refreshObservedBrowserUsage(),
       onError: (error) => reportBrowserUsageError(error),
 
       repository: store,

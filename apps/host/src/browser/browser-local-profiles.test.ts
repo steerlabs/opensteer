@@ -65,40 +65,41 @@ it("binds an empty profile once, acknowledges readiness durably, and refuses cha
   expect(bind).toHaveBeenCalledTimes(1);
 });
 
-it("forwards affected usage thread IDs to onReconciled when inventory reconciliation archives a deleted profile", async () => {
+it("refreshes open tasks' browser usage after each deleted tombstone's reconciliation commits", async () => {
   const deploymentId = createId("deployment");
-  const profileId = createId("browserProfile");
   const runnerId = createId("runner");
-  const threadId = createId("thread");
   const storageInstanceId = randomUUID();
-  const binding: LocalProfileBinding = {
+  const binding = (): LocalProfileBinding => ({
     version: 1,
     deploymentId,
-    profileId,
+    profileId: createId("browserProfile"),
     runnerId,
     storageInstanceId,
     bindingId: randomUUID(),
     engine: "chromium",
-  };
-  const onReconciled = vi.fn(async () => undefined);
+  });
+  const kept = binding(),
+    deleted = binding();
+  const order: string[] = [];
   const repository = {
-    reconcileBrowserProfileInventory: vi.fn(async () => ({ usageThreadIds: [threadId] })),
+    reconcileBrowserProfileInventory: vi.fn(async (claim: { binding: LocalProfileBinding }) => {
+      order.push(`committed ${claim.binding.profileId}`);
+    }),
   } as unknown as BrowserLocalProfileRepository;
   const profiles = new BrowserLocalProfiles({
     deploymentId,
     repository,
     baseUrl: new URL("https://host.test"),
-    onReconciled,
+    onProfileArchived: () => order.push("refreshed"),
+    onReconciled: async (profileId) => {
+      order.push(`reconciled ${profileId}`);
+    },
   });
   await profiles.reconcileInventory(
     {
       identity: {
         runnerId,
-        modules: {
-          browser: {
-            localProfileStorage: { engine: "chromium", storageInstanceId },
-          },
-        },
+        modules: { browser: { localProfileStorage: { engine: "chromium", storageInstanceId } } },
       },
     } as never,
     {
@@ -108,14 +109,16 @@ it("forwards affected usage thread IDs to onReconciled when inventory reconcilia
       storageInstanceId,
       complete: true,
       profiles: [
-        {
-          phase: "deleted",
-          binding,
-          deletionId: randomUUID(),
-          erasure: "deleted",
-        },
+        { phase: "ready", binding: kept },
+        { phase: "deleted", binding: deleted, deletionId: randomUUID(), erasure: "deleted" },
       ],
     } as never,
   );
-  expect(onReconciled).toHaveBeenCalledExactlyOnceWith(profileId, [threadId]);
+  expect(order).toEqual([
+    `committed ${kept.profileId}`,
+    `reconciled ${kept.profileId}`,
+    `committed ${deleted.profileId}`,
+    "refreshed",
+    `reconciled ${deleted.profileId}`,
+  ]);
 });

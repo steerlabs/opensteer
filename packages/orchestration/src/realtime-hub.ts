@@ -188,18 +188,32 @@ export class RealtimeHub {
   }
 
   publishBrowserUsageChanged(threadIds: readonly ThreadId[]): void {
-    const unique = [...new Set(threadIds)];
-    if (unique.length === 0) return;
-    for (const { sink, sync } of this.#connections) {
-      const interested = unique.filter((id) => sync.observesThread(id));
-      for (let start = 0; start < interested.length; start += 100) {
-        void sink
-          .send({
-            type: "host.browser-usage-changed",
-            threadIds: interested.slice(start, start + 100),
-          })
-          .catch(() => sink.close(1011, "Browser usage notice failed"));
-      }
-    }
+    const changed = new Set(threadIds);
+    if (changed.size === 0) return;
+    for (const connection of this.#connections)
+      this.#sendBrowserUsageChanged(
+        connection,
+        connection.sync.observedThreadIds().filter((id) => changed.has(id)),
+      );
+  }
+
+  /**
+   * Every socket rereads the browser usage of each task it has open. Archiving a browser profile
+   * drops its sessions from every task's usage; archives are rare, so no query looks for the tasks
+   * one touched, and a hidden task rereads its usage when it is shown again.
+   */
+  refreshObservedBrowserUsage(): void {
+    for (const connection of this.#connections)
+      this.#sendBrowserUsageChanged(connection, connection.sync.observedThreadIds());
+  }
+
+  #sendBrowserUsageChanged({ sink }: Connection, threadIds: readonly ThreadId[]) {
+    for (let start = 0; start < threadIds.length; start += 100)
+      void sink
+        .send({
+          type: "host.browser-usage-changed",
+          threadIds: threadIds.slice(start, start + 100),
+        })
+        .catch(() => sink.close(1011, "Browser usage notice failed"));
   }
 }

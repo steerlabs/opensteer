@@ -199,7 +199,7 @@ it("requires confirmed negotiation and an owner person session, then removes onl
       publishDeploymentEvent: () => {},
       integrations: { continuations: { notify: () => {} } },
       authenticator: { identity: { announceSessionsEnded: () => {} } },
-      realtime: { broadcast: () => {} },
+      realtime: { broadcast: () => {}, refreshObservedBrowserUsage: () => {} },
     } as unknown as AdministrationDependencies,
     () => {},
   );

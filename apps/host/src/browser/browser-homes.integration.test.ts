@@ -12,7 +12,6 @@ import { createBrowserSessionId, type HostToClientMessage } from "@opensteer/pro
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
-import { announceBrowserUsage } from "./browser-presence.js";
 import { BrowserService, type BrowserRuntimePlacement } from "./browser-service.js";
 import { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import { browserAccessResponse } from "@opensteer/client/host";
@@ -498,7 +497,7 @@ describeStore("Host browser homes", (it) => {
     }
   });
 
-  it("publishes host.browser-usage-changed through RealtimeHub for exactly the observed threads referencing an archived profile", async ({
+  it("deleting a profile has every socket reread the browser usage of its open tasks, which no longer list the profile's sessions", async ({
     storeFixture: fixture,
   }) => {
     const run = await setup(fixture);
@@ -515,7 +514,7 @@ describeStore("Host browser homes", (it) => {
         repository: fixture.store,
       }),
       onSessionsChanged: () => undefined,
-      onUsageChanged: (credits) => announceBrowserUsage(realtime, credits),
+      onProfileArchived: () => realtime.refreshObservedBrowserUsage(),
       targetResolver: { placements: () => [], resolve: () => undefined },
     });
     const makeThread = async (title: string) =>
@@ -529,20 +528,15 @@ describeStore("Host browser homes", (it) => {
           title,
         })
       ).thread.id;
-    const affectedThreadA = await makeThread("Affected A");
-    const affectedThreadB = await makeThread("Affected B");
-    const unaffectedThread = await makeThread("Unaffected");
+    const archivedOnly = await makeThread("Archived only");
+    const mixed = await makeThread("Archived and kept");
+    const keptOnly = await makeThread("Kept only");
     const observe = (threadIds: readonly ThreadId[]) => {
-      const observed = new Set(threadIds);
       const messages: HostToClientMessage[] = [];
       const unregister = realtime.registerConnection({
         userId: run.userId,
         sessionId: createId("authSession"),
-        sync: {
-          attached: true,
-          wake: () => undefined,
-          observesThread: (id: string) => observed.has(id as ThreadId),
-        } as never,
+        sync: { wake: () => undefined, observedThreadIds: () => threadIds } as never,
         sink: {
           id: randomUUID(),
           send: async (message) => {
@@ -553,8 +547,13 @@ describeStore("Host browser homes", (it) => {
       });
       return { messages, unregister };
     };
-    const viewerAffected = observe([affectedThreadA, affectedThreadB]);
-    const viewerUnaffected = observe([unaffectedThread]);
+    const affectedViewer = observe([archivedOnly, mixed]);
+    const keptViewer = observe([keptOnly]);
+    const idle = observe([]);
+    const usage = async (threadId: ThreadId) =>
+      (await fixture.store.getThreadBrowserUsage({ ownerId: run.userId, threadId, runIds: [] }))
+        .map((use) => use.sessionId)
+        .sort();
     try {
       const archivedProfile = await fixture.store.createBrowserProfile({
         ownerId: run.userId,
@@ -579,85 +578,40 @@ describeStore("Host browser homes", (it) => {
         );
         return sessionId;
       };
-      const sessionClosed = await insertSession(archivedProfile.id, "closed");
-      const sessionReady = await insertSession(archivedProfile.id, "ready");
-      const sessionKept = await insertSession(keptProfile.id, "ready");
-      await fixture.store.recordBrowserSessionUse({
-        ownerId: run.userId,
-        sessionId: sessionClosed,
-        threadId: affectedThreadA,
-        page: { site: "https://a.example", title: "A" },
-      });
-      await fixture.store.recordBrowserSessionUse({
-        ownerId: run.userId,
-        sessionId: sessionReady,
-        threadId: affectedThreadB,
-        page: { site: "https://b.example", title: "B" },
-      });
-      await fixture.store.recordBrowserSessionUse({
-        ownerId: run.userId,
-        sessionId: sessionKept,
-        threadId: unaffectedThread,
-        page: { site: "https://kept.example", title: "Kept" },
-      });
-
-      expect(
-        await fixture.store.getThreadBrowserUsage({
+      const archivedClosed = await insertSession(archivedProfile.id, "closed");
+      const archivedReady = await insertSession(archivedProfile.id, "ready");
+      const kept = await insertSession(keptProfile.id, "ready");
+      for (const [sessionId, threadId] of [
+        [archivedClosed, archivedOnly],
+        [archivedReady, mixed],
+        [kept, mixed],
+        [kept, keptOnly],
+      ] as const)
+        await fixture.store.recordBrowserSessionUse({
           ownerId: run.userId,
-          threadId: affectedThreadA,
-          runIds: [],
-        }),
-      ).not.toEqual([]);
-      expect(
-        await fixture.store.getThreadBrowserUsage({
-          ownerId: run.userId,
-          threadId: affectedThreadB,
-          runIds: [],
-        }),
-      ).not.toEqual([]);
+          sessionId,
+          threadId,
+          page: { site: "https://example.com", title: "Example" },
+        });
+      expect(await usage(archivedOnly)).toEqual([archivedClosed]);
+      expect(await usage(mixed)).toEqual([archivedReady, kept].sort());
 
       await browser.deleteProfile({ ownerId: run.userId, profileId: archivedProfile.id });
 
-      expect(viewerAffected.messages).toHaveLength(1);
-      expect(viewerAffected.messages[0]).toMatchObject({
-        type: "host.browser-usage-changed",
-      });
-      expect(
-        [
-          ...(
-            viewerAffected.messages[0] as Extract<
-              HostToClientMessage,
-              { type: "host.browser-usage-changed" }
-            >
-          ).threadIds,
-        ].sort(),
-      ).toEqual([affectedThreadA, affectedThreadB].sort());
-      expect(viewerUnaffected.messages).toEqual([]);
-
-      expect(
-        await fixture.store.getThreadBrowserUsage({
-          ownerId: run.userId,
-          threadId: affectedThreadA,
-          runIds: [],
-        }),
-      ).toEqual([]);
-      expect(
-        await fixture.store.getThreadBrowserUsage({
-          ownerId: run.userId,
-          threadId: affectedThreadB,
-          runIds: [],
-        }),
-      ).toEqual([]);
-      expect(
-        await fixture.store.getThreadBrowserUsage({
-          ownerId: run.userId,
-          threadId: unaffectedThread,
-          runIds: [],
-        }),
-      ).not.toEqual([]);
+      expect(affectedViewer.messages).toEqual([
+        { type: "host.browser-usage-changed", threadIds: [archivedOnly, mixed] },
+      ]);
+      expect(keptViewer.messages).toEqual([
+        { type: "host.browser-usage-changed", threadIds: [keptOnly] },
+      ]);
+      expect(idle.messages).toEqual([]);
+      expect(await usage(archivedOnly)).toEqual([]);
+      expect(await usage(mixed)).toEqual([kept]);
+      expect(await usage(keptOnly)).toEqual([kept]);
     } finally {
-      viewerAffected.unregister();
-      viewerUnaffected.unregister();
+      affectedViewer.unregister();
+      keptViewer.unregister();
+      idle.unregister();
       await browser.close();
     }
   });

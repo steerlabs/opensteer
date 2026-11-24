@@ -12,7 +12,6 @@ import {
   testSessionFilesRoot,
 } from "@opensteer/browser-runtime-core/test-support";
 import { browserRows } from "./browser-rows.test-support.js";
-import { announceBrowserUsage } from "./browser-presence.js";
 import { KeyedStreamPublisher } from "@opensteer/protocol/keyed-stream";
 import {
   BrowserTabRecordSchema,
@@ -5450,66 +5449,38 @@ describe("BrowserService", () => {
     });
   });
 
-  it("publishes browser-usage-changed for exactly the threads affected by archiving or removing a profile", async () => {
+  it("refreshes open tasks' browser usage as soon as a profile delete commits", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
-      targetedStreaming: true,
-    });
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
     const ownerId = createId("user");
-    const affectedA = createId("thread");
-    const affectedB = createId("thread");
-    const unaffected = createId("thread");
-
     const repository = new MemoryBrowserRepository(ownerId);
-    const archivedProfile = repository.addHostedProfile("Work");
-    const otherProfile = repository.addHostedProfile("Personal");
-    const published: { readonly threadIds: readonly ThreadId[] }[] = [];
-    const realtime = {
-      publishBrowserUsageChanged: (threadIds: readonly ThreadId[]) => {
-        published.push({ threadIds });
-      },
-    };
+    const profile = repository.addHostedProfile("Work");
+    const order: string[] = [];
+    const deleteBrowserProfile = repository.deleteBrowserProfile.bind(repository);
+    vi.spyOn(repository, "deleteBrowserProfile").mockImplementation(async (input) => {
+      const result = await deleteBrowserProfile(input);
+      order.push("committed");
+      return result;
+    });
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
-      onUsageChanged: (credits) => announceBrowserUsage(realtime, credits),
+      onProfileArchived: () => order.push("refreshed"),
+      onProfilesChanged: () => order.push("profiles changed"),
       repository,
       signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
       targetResolver: runnerTarget({ url: runtime.url }),
     });
     cleanups.push(async () => service.close());
 
-    const { session: archivedSession } = await service.start({
-      ownerId,
-      profileId: archivedProfile.id,
-    });
-    const { session: otherSession } = await service.start({
-      ownerId,
-      profileId: otherProfile.id,
-    });
-    await repository.recordBrowserSessionUse({
-      sessionId: archivedSession.id,
-      threadId: affectedA,
-    });
-    await repository.recordBrowserSessionUse({
-      sessionId: archivedSession.id,
-      threadId: affectedB,
-    });
-    await repository.recordBrowserSessionUse({ sessionId: otherSession.id, threadId: unaffected });
-    published.length = 0;
+    await service.deleteProfile({ ownerId, profileId: profile.id });
+    expect(order).toEqual(["committed", "refreshed", "profiles changed"]);
 
-    await service.deleteProfile({ ownerId, profileId: archivedProfile.id });
-    expect(published).toHaveLength(1);
-    expect([...published[0]!.threadIds].sort()).toEqual([affectedA, affectedB].sort());
-
-    // Archiving an already-archived profile emits no second notice.
-    await service.deleteProfile({ ownerId, profileId: archivedProfile.id });
-    expect(published).toHaveLength(1);
-
-    // Runner removal passes its affected threads through profilesRemoved.
-    await service.profilesRemoved([{ id: otherProfile.id, ownerId }], [unaffected]);
-    expect(published).toHaveLength(2);
-    expect(published[1]!.threadIds).toEqual([unaffected]);
+    // A refused delete commits nothing, so nothing rereads.
+    await expect(
+      service.deleteProfile({ ownerId: createId("user"), profileId: profile.id }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(order).toEqual(["committed", "refreshed", "profiles changed"]);
   });
 
   it("opens a fresh agent session with no profile, no grant, and no lease", async () => {
@@ -6414,20 +6385,12 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     if (this.#profiles.get(input.profileId)?.ownerId !== input.ownerId) {
       throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
     }
-    const alreadyArchived = this.#deletedProfiles.has(input.profileId);
     this.#deletedProfiles.add(input.profileId);
-    const profileSessions = [...this.#sessions.values()].filter(
-      (session) => session.profileId === input.profileId,
-    );
-    const usageThreadIds = alreadyArchived
-      ? []
-      : [...new Set(profileSessions.flatMap((session) => this.#members.get(session.id) ?? []))];
 
     return {
-      sessionIds: profileSessions
-        .filter((session) => !terminal(session.state))
+      sessionIds: [...this.#sessions.values()]
+        .filter((session) => session.profileId === input.profileId && !terminal(session.state))
         .map((session) => session.id),
-      usageThreadIds,
     };
   }
 

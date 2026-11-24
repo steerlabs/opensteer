@@ -118,6 +118,7 @@ export function hostServerTestDependencies(
               broadcast: () => undefined,
               sendToUsers: () => undefined,
               publishConnectionsChanged: () => undefined,
+              refreshObservedBrowserUsage: () => undefined,
             },
             overrides.realtime,
           ) as HostServerDependencies["realtime"]),

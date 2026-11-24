@@ -1,3 +1,4 @@
+import type { ThreadId } from "@opensteer/core";
 import {
   personalAuthorityChangedReason,
   personalHostFrameMaxBytes,
@@ -386,15 +387,13 @@ export class PersonalSyncSocket {
     );
   }
 
-  observesThread(threadId: string) {
-    return [...this.#subscriptions.values()].some(
-      ({ request, synchronized, removed, pauseCount }) =>
-        synchronized &&
-        !removed &&
-        pauseCount === 0 &&
-        request.scope.kind !== "shell" &&
-        request.scope.threadId === threadId,
-    );
+  /** Threads this socket has open now: a synchronized, unpaused detail subscription reads each. */
+  observedThreadIds(): ThreadId[] {
+    const threadIds = new Set<ThreadId>();
+    for (const { request, synchronized, removed, pauseCount } of this.#subscriptions.values())
+      if (synchronized && !removed && pauseCount === 0 && request.scope.kind !== "shell")
+        threadIds.add(request.scope.threadId);
+    return [...threadIds];
   }
 
   offerLive(scope: DetailScope, update: PersonalLiveUpdate, options?: LiveDeliveryOptions) {
