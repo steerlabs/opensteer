@@ -841,7 +841,6 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
       // the first attempt, the same in every path (U1). If the wanted cast moved to a new key
       // while the old start was preparing, the new cast starts its own retries afresh (U8).
       const want = wanted(facts);
-      const loadingNow = facts.tab?.loading === true || facts.tab?.navigation?.pending === true;
       const prior =
         want.kind === "cast" && state.lastKey !== null && !sameCast(state.lastKey, want.key)
           ? 0
@@ -853,7 +852,6 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
           ? {
               key: want.key,
               why: `its start could not be made (${event.why})`,
-              ...(loadingNow ? { whileLoading: true } : {}),
             }
           : state.failed,
         lastKey: want.kind === "cast" ? want.key : state.lastKey,
@@ -901,7 +899,9 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
                         ? want.key
                         : null,
                 why: event.givenUp,
-                ...(loadingNow ? { whileLoading: true } : {}),
+                ...(loadingNow && event.givenUp === givenUpFor["no-picture"]
+                  ? { whileLoading: true }
+                  : {}),
               }
             : state.failed,
         // A stop for a change (resize, pause, leaving) starts the next cast's key afresh so a

@@ -105,6 +105,7 @@ describe("Codex app-server harness", () => {
       }
       await execution;
       await session.stop();
+      await observer.done;
       const completed = observer.events.filter((event) => event.type === "tool.completed");
       expect(completed).toHaveLength(kind === "duplicate-path" ? 2 : 1);
       const failure = ["failed", "usage", "stop", "cancelled"].includes(kind);
@@ -132,6 +133,30 @@ describe("Codex app-server harness", () => {
       expect(JSON.stringify(observer.events)).not.toMatch(
         /SECRET_BASE64_IMAGE_BYTES|opaque-file-id/,
       );
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("emits run.interrupted when Stop cancels native image generation before a crossing turn/completed arrives", async () => {
+    const fixture = await setup("image-stop-before-completed");
+    try {
+      const session = await fixture.adapter.startSession(fixture.context);
+      const observer = observe(session.events);
+      const execution = session.execute(fixture.turn("Draw a tree"));
+      await observer.waitFor("assistant.message");
+      await session.interrupt();
+      await execution;
+      await session.stop();
+      await observer.done;
+      const completed = observer.events.filter((event) => event.type === "tool.completed");
+      expect(completed).toHaveLength(1);
+      expect(completed[0]?.data.isError).toBe(true);
+      const terminal = observer.events.findIndex((event) => event.type === "run.interrupted");
+      expect(terminal).toBeGreaterThan(
+        observer.events.findIndex((event) => event.type === "tool.completed"),
+      );
+      expect(observer.events.some((event) => event.type === "run.completed")).toBe(false);
     } finally {
       await fixture.adapter.close();
     }
