@@ -13,7 +13,8 @@ A pass already running finishes its turn. The tasks the light pass opened for op
 they are ordinary tasks the person can finish or mark Done.
 
 Opensteer picks each pass's model from the person's background models below; an active pass
-with a `waitingReason` has no model it can use yet and resumes by itself, so tell the person the reason rather than pausing or resuming it.
+with a `waitingReason` has no model it can use yet and resumes by itself: tell the person the reason,
+and never pause or resume it to fix that. When the person asks to pause or resume, do it as above.
 
 ## Background models
 
