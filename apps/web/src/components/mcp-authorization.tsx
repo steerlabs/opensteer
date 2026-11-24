@@ -230,7 +230,7 @@ export function McpAuthorization({
   }
 
   return (
-    <main className="page settings settings-layout">
+    <main className="page settings settings-layout settings--alone">
       <div className="settings-content">
         <div className="settings-content__inner agent-consent">
           {load.kind === "loading" ? <p role="status">{agentWords("consent.loading")}</p> : null}
@@ -519,7 +519,7 @@ export function McpAuthorizationLaunch({
   const target = AgentConnectionAuthorizationTargetSchema.safeParse({ requestId, deploymentId });
   const { client, device } = installedClient();
   return (
-    <main className="page settings settings-layout">
+    <main className="page settings settings-layout settings--alone">
       <div className="settings-content">
         <div className="settings-content__inner">
           <SectionHeader
