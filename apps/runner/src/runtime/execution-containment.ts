@@ -2,7 +2,6 @@ import { z } from "zod";
 import { createHash } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
-import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { runningSupervisedProcesses, type HarnessProcessLaunchWrapper } from "@opensteer/harness";
 
@@ -118,13 +117,14 @@ function ownRootPids(): ReadonlySet<number> {
  * unreadable process whose parent chain reaches PID 1 through non-members says
  * nothing about this execution.
  */
-function hasRelevantUnreadable(
+function findRelevantUnreadable(
   processes: readonly ListedProcess[],
   members: readonly ListedProcess[],
   matches: (scope: string) => boolean,
   found: ReadonlySet<string>,
   roots: ReadonlySet<number>,
-): boolean {
+  suspectUnreadable?: ReadonlySet<string>,
+): readonly ListedProcess[] {
   let hasAnyUnreadable = false;
   for (const proc of processes) {
     if (proc.unreadable === true) {
@@ -132,7 +132,7 @@ function hasRelevantUnreadable(
       break;
     }
   }
-  if (!hasAnyUnreadable) return false;
+  if (!hasAnyUnreadable) return [];
   const byPid = new Map(processes.map((proc) => [proc.pid, proc]));
   const memberPids = new Set(members.map((member) => member.pid));
   const notedPids = new Set<number>();
@@ -140,17 +140,25 @@ function hasRelevantUnreadable(
     const pid = pidFromIdentity(identity);
     if (pid > 0) notedPids.add(pid);
   }
+  const relevant: ListedProcess[] = [];
   for (const proc of processes) {
     if (proc.unreadable !== true) continue;
-    if (memberPids.has(proc.pid) || notedPids.has(proc.pid) || roots.has(proc.pid)) {
-      return true;
+    if (
+      suspectUnreadable?.has(proc.identity) ||
+      memberPids.has(proc.pid) ||
+      notedPids.has(proc.pid) ||
+      roots.has(proc.pid)
+    ) {
+      relevant.push(proc);
+      continue;
     }
     const visited = new Set<number>([proc.pid]);
     let currentPpid = proc.ppid;
     while (currentPpid > 1 && !visited.has(currentPpid)) {
       visited.add(currentPpid);
       if (memberPids.has(currentPpid) || notedPids.has(currentPpid) || roots.has(currentPpid)) {
-        return true;
+        relevant.push(proc);
+        break;
       }
       const parent = byPid.get(currentPpid);
       if (!parent) break;
@@ -158,7 +166,17 @@ function hasRelevantUnreadable(
       currentPpid = parent.ppid;
     }
   }
-  return false;
+  return relevant;
+}
+
+function hasRelevantUnreadable(
+  processes: readonly ListedProcess[],
+  members: readonly ListedProcess[],
+  matches: (scope: string) => boolean,
+  found: ReadonlySet<string>,
+  roots: ReadonlySet<number>,
+): boolean {
+  return findRelevantUnreadable(processes, members, matches, found, roots).length > 0;
 }
 
 function hasVanishedMemberCandidate(
@@ -399,8 +417,8 @@ export class ExecutionContainment {
       const pid = pidFromIdentity(identity);
       if (pid > 0) foundPids.set(identity, pid);
     }
-    let lastScanUnverifiable = false;
-    const remaining = async (): Promise<readonly ListedProcess[]> => {
+    const suspectUnreadable = new Set<string>();
+    const remaining = async (): Promise<ScanResult> => {
       const scan = normalizeInventory(await list(executionScopeVariable));
       const members = membersOf(scan.processes, matches, found);
       observe?.(members);
@@ -432,55 +450,113 @@ export class ExecutionContainment {
         }
       }
       const roots = ownRootPids();
-      const unreadableRelevant = hasRelevantUnreadable(
+      const relevantUnreadable = findRelevantUnreadable(
         scan.processes,
         members,
         matches,
         found,
         roots,
+        suspectUnreadable,
       );
+      const nextSuspectUnreadable = new Set<string>();
+      for (const proc of relevantUnreadable) nextSuspectUnreadable.add(proc.identity);
+      for (const previous of suspectUnreadable) {
+        if (nextSuspectUnreadable.has(previous)) continue;
+        if (scan.incomplete) {
+          nextSuspectUnreadable.add(previous);
+          unobservedFate = true;
+          continue;
+        }
+        const pid = pidFromIdentity(previous);
+        if (pid > 0) {
+          const currentAtPid = listedByPid.get(pid);
+          if (currentAtPid && !currentAtPid.unreadable && currentAtPid.identity !== previous)
+            continue;
+          if (this.#probeAlive && this.#probeAlive(pid) !== "gone") {
+            nextSuspectUnreadable.add(previous);
+            unobservedFate = true;
+          }
+        }
+      }
+      const unreadableRelevant = relevantUnreadable.length > 0;
       const vanishedRelevant = hasVanishedMemberCandidate(scan.vanishedPids, members, found, roots);
       found.clear();
       for (const identity of nextFound) found.add(identity);
-      lastScanUnverifiable =
-        scan.incomplete || unobservedFate || unreadableRelevant || vanishedRelevant;
-      return members;
+      suspectUnreadable.clear();
+      for (const identity of nextSuspectUnreadable) suspectUnreadable.add(identity);
+      return {
+        processes: members,
+        inconclusive: scan.incomplete || unobservedFate || unreadableRelevant || vanishedRelevant,
+      };
     };
-    let processes: readonly ListedProcess[];
     if (stopEngine) {
       // The engine is stopped whatever this first look finds or fails to.
       await remaining().catch(() => undefined);
       await stopEngine();
     }
-    processes = await remaining();
-    if (processes.length === 0) return lastScanUnverifiable ? "unverifiable" : "proven";
-    signal(processes, "SIGTERM");
-    processes = await waitUntilGone(remaining, this.#terminationGraceMs);
-    if (processes.length === 0) return lastScanUnverifiable ? "unverifiable" : "proven";
-    processes = await waitUntilGone(remaining, killSettleMs, "SIGKILL");
-    if (processes.length > 0) return "unknown";
-    return lastScanUnverifiable ? "unverifiable" : "proven";
+    // Keep Stop's total bound unchanged (terminationGraceMs + killSettleMs).
+    // An inconclusive pass (vanished member candidate, transient scan error,
+    // relevant unreadable entry, or briefly alive unobserved PID) retries within
+    // that bound until one pass completes cleanly with no members left (proven),
+    // a member appears (handled by SIGTERM -> SIGKILL), or the bound expires.
+    const overallDeadline = Date.now() + this.#terminationGraceMs + killSettleMs;
+    const remainingBudget = () => Math.max(0, overallDeadline - Date.now());
+    let current = await remaining();
+    if (current.processes.length === 0 && !current.inconclusive) return "proven";
+    if (current.processes.length === 0) {
+      current = await waitUntilSettled(remaining, Math.min(killSettleMs, remainingBudget()), {
+        initial: current,
+        stopOnMembers: true,
+      });
+      if (current.processes.length === 0) {
+        return current.inconclusive ? "unverifiable" : "proven";
+      }
+    }
+    signal(current.processes, "SIGTERM");
+    current = await waitUntilSettled(
+      remaining,
+      Math.min(this.#terminationGraceMs, remainingBudget()),
+    );
+    if (current.processes.length === 0 && !current.inconclusive) return "proven";
+    current = await waitUntilSettled(remaining, remainingBudget(), { resignal: "SIGKILL" });
+    if (current.processes.length > 0) return "unknown";
+    return current.inconclusive ? "unverifiable" : "proven";
   }
 }
 
+interface ScanResult {
+  readonly processes: readonly ListedProcess[];
+  readonly inconclusive: boolean;
+}
+
 /**
- * Polls until nothing remains, sending `resignal` to whatever each poll finds.
- * Its timers keep the process alive: a boot that reaps an earlier one's
- * processes has nothing else holding it open yet.
+ * Polls until one pass completes cleanly with nothing remaining (or until a live
+ * member appears when `stopOnMembers` is set), sending `resignal` to whatever
+ * each poll finds. Its timers keep the process alive: a boot that reaps an
+ * earlier one's processes has nothing else holding it open yet.
  */
-async function waitUntilGone(
-  remaining: () => Promise<readonly ListedProcess[]>,
+async function waitUntilSettled(
+  remaining: () => Promise<ScanResult>,
   withinMs: number,
-  resignal?: NodeJS.Signals,
-): Promise<readonly ListedProcess[]> {
+  options: {
+    readonly initial?: ScanResult;
+    readonly resignal?: NodeJS.Signals;
+    readonly stopOnMembers?: boolean;
+  } = {},
+): Promise<ScanResult> {
   const deadline = Date.now() + withinMs;
-  let processes = await remaining();
-  while (processes.length > 0 && Date.now() < deadline) {
-    if (resignal) signal(processes, resignal);
-    await delay(pollMs);
-    processes = await remaining();
+  let current = options.initial ?? (await remaining());
+  while (Date.now() < deadline) {
+    if (current.processes.length > 0) {
+      if (options.stopOnMembers) break;
+      if (options.resignal) signal(current.processes, options.resignal);
+    } else if (!current.inconclusive) {
+      break;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, pollMs));
+    current = await remaining();
   }
-  return processes;
+  return current;
 }
 
 /**

@@ -62,6 +62,7 @@ it("keeps an orphan's identity until reaping when Linux has already removed its 
 });
 
 it("A1(a) case 1: returns unverifiable when a candidate child process environ is unreadable (EACCES)", async () => {
+  vi.useFakeTimers();
   const containment = new ExecutionContainment({
     bootId: "boot",
     dataDirectory: "/data",
@@ -82,11 +83,14 @@ it("A1(a) case 1: returns unverifiable when a candidate child process environ is
     }
     throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
   });
-  await expect(containment.terminate("run")).resolves.toBe("unverifiable");
+  const proof = containment.terminate("run");
+  await vi.advanceTimersByTimeAsync(3_500);
+  await expect(proof).resolves.toBe("unverifiable");
   await expect(containment.liveRoots("run")).resolves.toBe("unverifiable");
 });
 
 it("A1(a) case 2: returns unverifiable when a listed process vanishes between listing and reading", async () => {
+  vi.useFakeTimers();
   const containment = new ExecutionContainment({
     bootId: "boot",
     dataDirectory: "/data",
@@ -96,11 +100,14 @@ it("A1(a) case 2: returns unverifiable when a listed process vanishes between li
   vi.mocked(readFileSync).mockImplementation(() => {
     throw Object.assign(new Error("No such file or directory"), { code: "ENOENT" });
   });
-  await expect(containment.terminate("run")).resolves.toBe("unverifiable");
+  const proof = containment.terminate("run");
+  await vi.advanceTimersByTimeAsync(3_500);
+  await expect(proof).resolves.toBe("unverifiable");
   await expect(containment.liveRoots("run")).resolves.toBe("unverifiable");
 });
 
 it("A1(a) case 3: returns unverifiable when the process listing is truncated or malformed", async () => {
+  vi.useFakeTimers();
   const containment = new ExecutionContainment({
     bootId: "boot",
     dataDirectory: "/data",
@@ -112,11 +119,14 @@ it("A1(a) case 3: returns unverifiable when the process listing is truncated or 
     if (String(path) === "/proc/203/stat") return "203 (truncated" as never;
     throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
   });
-  await expect(containment.terminate("run")).resolves.toBe("unverifiable");
+  const proof = containment.terminate("run");
+  await vi.advanceTimersByTimeAsync(3_500);
+  await expect(proof).resolves.toBe("unverifiable");
   await expect(containment.liveRoots("run")).resolves.toBe("unverifiable");
 });
 
 it("A1(a) case 4: returns unverifiable when a child seen earlier disappears while still alive under another privilege (EPERM)", async () => {
+  vi.useFakeTimers();
   const containment = new ExecutionContainment({
     bootId: "boot",
     dataDirectory: "/data",
@@ -142,7 +152,9 @@ it("A1(a) case 4: returns unverifiable when a child seen earlier disappears whil
   try {
     await containment.note("run");
     phase = "vanished-from-listing";
-    await expect(containment.terminate("run")).resolves.toBe("unverifiable");
+    const proof = containment.terminate("run");
+    await vi.advanceTimersByTimeAsync(3_500);
+    await expect(proof).resolves.toBe("unverifiable");
   } finally {
     killSpy.mockRestore();
   }
@@ -255,4 +267,51 @@ it("V2: ignores unrelated hidepid / other-scope unreadable processes, but fails 
     throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
   });
   await expect(containment.liveRoots("run")).resolves.toBe("unverifiable");
+});
+
+it("X1: retries when a member vanishes in each of the first three passes and proves gone on the quiet fourth pass", async () => {
+  const containment = new ExecutionContainment({
+    bootId: "boot",
+    dataDirectory: "/data",
+    platform: "linux",
+    terminationGraceMs: 100,
+  });
+  let phase: "note" | "terminate" = "note";
+  let terminatePass = 0;
+  vi.mocked(readdirSync).mockImplementation(() => {
+    if (phase === "note") return ["301", "302", "303"] as never;
+    terminatePass += 1;
+    if (terminatePass === 1) return ["301"] as never;
+    if (terminatePass === 2) return ["302"] as never;
+    if (terminatePass === 3) return ["303"] as never;
+    return [] as never;
+  });
+  vi.mocked(readFileSync).mockImplementation((path) => {
+    const target = String(path);
+    if (phase === "note") {
+      const match = /^\/proc\/(30[123])\/(stat|environ)$/u.exec(target);
+      if (match) {
+        const [, pid, file] = match;
+        if (file === "stat") {
+          return `${pid} (worker) S ${process.pid} ${Array(17).fill(0).join(" ")} ${pid}` as never;
+        }
+        return `${executionScopeVariable}=${containment.scope("run")}\0` as never;
+      }
+    }
+    throw Object.assign(new Error("No such file or directory"), { code: "ENOENT" });
+  });
+  const killSpy = vi.spyOn(process, "kill").mockImplementation((pid, sig) => {
+    if (sig === 0 && (pid === 301 || pid === 302 || pid === 303)) {
+      throw Object.assign(new Error("No such process"), { code: "ESRCH" });
+    }
+    return true;
+  });
+  try {
+    await containment.note("run");
+    phase = "terminate";
+    await expect(containment.terminate("run")).resolves.toBe("proven");
+    expect(terminatePass).toBe(4);
+  } finally {
+    killSpy.mockRestore();
+  }
 });
