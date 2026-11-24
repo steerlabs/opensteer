@@ -7886,9 +7886,10 @@ class MockHostState {
         threadIds: [...new Set(tabs.flatMap(({ occupants }) => occupants.map((o) => o.threadId)))],
       };
     });
+    const seededIds = new Set(seed.threads.map(({ id }) => id));
     this.update({
       ...this.snapshot,
-      threads: [...this.snapshot.threads, ...seed.threads],
+      threads: [...this.snapshot.threads.filter(({ id }) => !seededIds.has(id)), ...seed.threads],
       requests: { ...this.snapshot.requests, ...seed.requests } as typeof this.snapshot.requests,
       browserSessions,
     });

@@ -58,83 +58,116 @@ async function save(page: Page, name: string) {
 }
 
 try {
-  for (const colorScheme of ["light", "dark"] as const) {
-    const context = await web.browser.newContext({
-      colorScheme,
-      viewport: { width: 1360, height: 820 },
-    });
-    await context.route(
-      (url) => url.origin !== web.origin,
-      (route) => route.fulfill({ status: 204, body: "" }),
+  const context = await web.browser.newContext({
+    colorScheme: "dark",
+    viewport: { width: 1360, height: 820 },
+  });
+  await context.route(
+    (url) => url.origin !== web.origin,
+    (route) => route.fulfill({ status: 204, body: "" }),
+  );
+  const page = await context.newPage();
+  const open = async (scene: string) => {
+    await page.goto(`${web.origin}/?mock-agents${scene ? `&mock-agent-work=${scene}` : ""}`);
+    await page.locator("#app-sidebar").waitFor({ state: "attached" });
+  };
+  await open("one");
+  await page.getByRole("button", { name: "ChatGPT is working in Shopping" }).waitFor();
+  await page.evaluate(() => document.fonts.ready);
+  await checkSoloLine(page, { clipped: false });
+  await save(page, "one-dark");
+
+  await open("three");
+  await page.getByRole("button", { name: "3 agents working" }).waitFor();
+  await save(page, "three-dark");
+  await showPanel(page);
+  await panel(page).getByText("Opened a tab in Work").waitFor();
+  await save(page, "panel-dark");
+
+  await open("needs-you");
+  await page.getByRole("button", { name: "Claude needs you · 2 working" }).waitFor();
+  await showPanel(page);
+  await panel(page).getByText("Run a script in Travel?").waitFor();
+  await save(page, "needs-you-dark");
+
+  await open("three");
+  await page.getByRole("button", { name: "Collapse sidebar" }).click();
+  await page.locator("header .agents-now--compact").waitFor();
+  await showPanel(page);
+  await panel(page).getByText("Opened a tab in Work").waitFor();
+  await save(page, "closed-dark");
+
+  await page.keyboard.press("Escape");
+  await panel(page).waitFor({ state: "detached" });
+  await page.getByRole("button", { name: /Show sidebar/ }).click();
+  await showPanel(page);
+  await panel(page).getByRole("button", { name: "Stop all" }).click();
+  await trigger(page).waitFor({ state: "detached" });
+  await save(page, "idle-dark");
+
+  await open("long-one");
+  await page
+    .getByRole("button", {
+      name: /Grok research assistant.*Household shopping and weekly groceries shared with family/,
+    })
+    .waitFor();
+  await checkSoloLine(page, { clipped: true });
+  const resize = page.getByRole("separator", { name: "Resize navigation sidebar" });
+  await resize.press("Home");
+  if ((await resize.getAttribute("aria-valuenow")) !== (await resize.getAttribute("aria-valuemin")))
+    throw new Error("The sidebar did not reach its minimum width.");
+  await checkSoloLine(page, { clipped: true });
+  await save(page, "one-long-dark");
+
+  await page.setViewportSize({ width: 728, height: 820 });
+  await page.goto(`${web.origin}/?mock-agents&mock-agent-work=long-panel`);
+  await page.getByRole("button", { name: /Open sidebar/ }).click();
+  await showPanel(page);
+  await panel(page)
+    .getByText("Household shopping and weekly groceries shared with family", { exact: true })
+    .waitFor();
+  await save(page, "panel-728");
+
+  const settings = "/settings/external-agents";
+  const claude = "mcn_00000000-0000-4000-8000-000000000002";
+  const chatgpt = "mcn_00000000-0000-4000-8000-000000000008";
+  const now = page.getByRole("region", { name: "Now", exact: true });
+  const openSettings = (scene: string, id?: string) =>
+    page.goto(
+      `${web.origin}${settings}${id ? `/${id}` : ""}?mock-agents${scene ? `&mock-agent-work=${scene}` : ""}`,
     );
-    const page = await context.newPage();
-    const open = async (scene: string) => {
-      await page.goto(`${web.origin}/?mock-agents${scene ? `&mock-agent-work=${scene}` : ""}`);
-      await page.locator("#app-sidebar").waitFor({ state: "attached" });
-    };
-    await open("one");
-    await page.getByRole("button", { name: "ChatGPT is working in Shopping" }).waitFor();
-    await page.evaluate(() => document.fonts.ready);
-    await checkSoloLine(page, { clipped: false });
-    await save(page, `one-${colorScheme}`);
+  const ready = () => now.locator(".session-op").first().waitFor();
+  await openSettings("one", chatgpt);
+  await ready();
+  await save(page, "page-now-728");
 
-    await open("three");
-    await page.getByRole("button", { name: "3 agents working" }).waitFor();
-    await save(page, `three-${colorScheme}`);
-    await showPanel(page);
-    await panel(page).getByText("Opened a tab in Work").waitFor();
-    await save(page, `panel-${colorScheme}`);
+  await page.setViewportSize({ width: 1360, height: 820 });
+  await openSettings("one", chatgpt);
+  await ready();
+  await save(page, "page-now-dark");
+  await now.getByRole("button", { name: "Watch ChatGPT" }).click();
+  await page.waitForURL(
+    (url) => url.pathname === "/tasks/thr_00000000-0000-4000-8000-0000000000a5",
+  );
+  await page.locator(".session-activity").waitFor();
 
-    await open("needs-you");
-    await page.getByRole("button", { name: "Claude needs you · 2 working" }).waitFor();
-    await showPanel(page);
-    await panel(page).getByText("Run a script in Travel?").waitFor();
-    await save(page, `needs-you-${colorScheme}`);
+  await openSettings("needs-you", claude);
+  await now.getByText("Run a script in Travel?", { exact: true }).waitFor();
+  await ready();
+  await save(page, "page-needs-you-dark");
+  await now.getByRole("button", { name: "Allow once" }).click();
+  await now.locator(".request-card").waitFor({ state: "detached" });
 
-    await open("three");
-    await page.getByRole("button", { name: "Collapse sidebar" }).click();
-    await page.locator("header .agents-now--compact").waitFor();
-    await showPanel(page);
-    await panel(page).getByText("Opened a tab in Work").waitFor();
-    await save(page, `closed-${colorScheme}`);
+  await openSettings("", chatgpt);
+  await page.getByRole("heading", { name: "ChatGPT", exact: true }).waitFor();
+  if (await now.count()) throw new Error("Now is visible for an idle agent.");
+  await save(page, "page-idle-dark");
 
-    await page.keyboard.press("Escape");
-    await panel(page).waitFor({ state: "detached" });
-    await page.getByRole("button", { name: /Show sidebar/ }).click();
-    await showPanel(page);
-    await panel(page).getByRole("button", { name: "Stop all" }).click();
-    await trigger(page).waitFor({ state: "detached" });
-    await save(page, `idle-${colorScheme}`);
-
-    if (colorScheme === "dark") {
-      await open("long-one");
-      await page
-        .getByRole("button", {
-          name: /Grok research assistant.*Household shopping and weekly groceries shared with family/,
-        })
-        .waitFor();
-      await checkSoloLine(page, { clipped: true });
-      const resize = page.getByRole("separator", { name: "Resize navigation sidebar" });
-      await resize.press("Home");
-      if (
-        (await resize.getAttribute("aria-valuenow")) !==
-        (await resize.getAttribute("aria-valuemin"))
-      )
-        throw new Error("The sidebar did not reach its minimum width.");
-      await checkSoloLine(page, { clipped: true });
-      await save(page, "one-long-dark");
-
-      await page.setViewportSize({ width: 728, height: 820 });
-      await page.goto(`${web.origin}/?mock-agents&mock-agent-work=long-panel`);
-      await page.getByRole("button", { name: /Open sidebar/ }).click();
-      await showPanel(page);
-      await panel(page)
-        .getByText("Household shopping and weekly groceries shared with family", { exact: true })
-        .waitFor();
-      await save(page, "panel-728");
-    }
-    await context.close();
-  }
+  await openSettings("needs-you");
+  await page.locator(".connected-agents__work").getByText("Needs you", { exact: true }).waitFor();
+  await page.locator(".connected-agents__work").filter({ hasText: "Working" }).first().waitFor();
+  await save(page, "list-dark");
+  await context.close();
 } finally {
   await web.close();
 }

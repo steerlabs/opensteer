@@ -92,6 +92,7 @@ export interface ConnectedAgentStatus {
 export interface ConnectedAgentLive {
   readonly what: string;
   readonly threadId: string;
+  readonly state?: "working" | "needs-you";
 }
 
 type ConnectedAgentTask = {
@@ -435,13 +436,14 @@ export function connectedAgentStatus(
   // status never says "Not doing anything" above a task it lists as running.
   const chatWork = connection.bridge?.tasks?.find(({ running }) => running);
   const working = live ?? (chatWork ? { what: chatWork.title, threadId: chatWork.id } : null);
+  const needsYou = live?.state === "needs-you";
   switch (row.phase) {
     case "active":
       return working
         ? {
-            label: agentWords("agent.status.working"),
+            label: agentWords(needsYou ? "agent.status.needsYou" : "agent.status.working"),
             detail: working.what,
-            tone: "good",
+            tone: needsYou ? "attention" : "good",
             steps: [],
           }
         : {

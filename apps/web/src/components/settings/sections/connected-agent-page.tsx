@@ -24,7 +24,6 @@ import {
 import {
   useChromeTabGrantCatalog,
   useConnectedAgentActivity,
-  useConnectedAgentLive,
   useConnectedAgents,
   useLiveTasks,
 } from "@opensteer/client/react";
@@ -32,11 +31,13 @@ import { type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
 import { useShell } from "../../app-shell.js";
 import { Dialog } from "../../dialog.js";
 import { ReadGate } from "../../read-gate.js";
+import { useConnectedAgentWork } from "../../use-connected-agent-sessions.js";
 import { Icon } from "../../icon.js";
 import { AgentGrantEditor, ConnectionModeChoices } from "../agent-grant-editor.js";
 import { AgentMark } from "../agent-mark.js";
 import { AgentWhoLine, AgentWithdrawnNotice } from "../agent-who.js";
 import { ChatFactsSection } from "./chat-facts.js";
+import { ConnectedAgentNowSection } from "./connected-agent-now-section.js";
 import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
 import { SentenceText } from "../../../ui/address-text.js";
 
@@ -62,7 +63,10 @@ export function ConnectedAgentPage({
   const agents = useConnectedAgents(client);
   // What this page sends is what the chat parity script covers.
   const chatHost = chatScreenHost(client);
-  const live = useConnectedAgentLive(client, connectionId);
+  const work = useConnectedAgentWork(client, connectionId);
+  const first = work.view.agents[0];
+  const task = work.tasks.find(({ id }) => id === first?.threadId);
+  const live = first && task ? { what: task.title, threadId: task.id, state: first.state } : null;
   const activity = useConnectedAgentActivity(client, connectionId, live?.threadId ?? null);
   const liveTasks = useLiveTasks(client);
   const chromeTabs = useChromeTabGrantCatalog(client, true);
@@ -252,6 +256,7 @@ export function ConnectedAgentPage({
             onRunEnded={() => void agents.refresh?.()}
           />
         ) : null}
+        <ConnectedAgentNowSection client={client} work={work} />
         {detail.editable ? (
           <>
             <AgentGrantEditor

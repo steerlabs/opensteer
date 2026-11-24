@@ -295,6 +295,17 @@ export function mockAgentWork(input: {
           mockAgentWorkThreads.shopping,
           shopperSession,
           {
+            tool: "tab_open",
+            target: profile(longSolo ? longPlace : "Shopping"),
+            mode: "full-access",
+            decision: { by: "full-access" },
+          },
+          2,
+        ),
+        op(
+          mockAgentWorkThreads.shopping,
+          shopperSession,
+          {
             tool: "browser_use",
             target: profile(longSolo ? longPlace : "Shopping"),
             state: "handed-off",
@@ -326,7 +337,35 @@ export function mockAgentWork(input: {
       ...slots[otherThread]!,
       connection: otherAgent,
       operations: liveWaiting
-        ? []
+        ? [
+            op(
+              otherThread,
+              sessions.waiting,
+              {
+                tool: "tab_list",
+                target: otherPlace,
+                effect: "read",
+                decision: { by: "structural-read" },
+              },
+              2,
+            ),
+            op(
+              otherThread,
+              sessions.waiting,
+              {
+                id: AgentOperationIdSchema.parse("aop_00000000-0000-4000-8000-000000000107"),
+                tool: "browser_use",
+                target: otherPlace,
+                decision: null,
+                outcome: null,
+                state: "pending",
+                requestId: mockAgentOperationRequestId,
+                handedOffAt: null,
+                completedAt: null,
+              },
+              1,
+            ),
+          ]
         : [op(otherThread, sessions.waiting, { tool: "tab_open", target: otherPlace }, 2)],
     };
   }

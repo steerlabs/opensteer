@@ -157,6 +157,7 @@ export const connectedAgentsCopy = {
   "common.saving": "Saving…",
 
   "agent.status.working": "Working now",
+  "agent.status.needsYou": "Needs you",
   "agent.status.idle": "Not doing anything",
   "agent.status.idleDetail": "Last used {time}.",
   "agent.status.unused": "Not used yet.",

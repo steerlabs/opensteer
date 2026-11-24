@@ -1,4 +1,5 @@
 import {
+  accessModeOptions,
   isolatedPlainSentence,
   sessionSlotFromHome,
   agentSessionSlot,
@@ -16,12 +17,14 @@ import {
   type RequestView,
   type HostClient,
   type SessionTaskView,
+  type WaitingRequestView,
   workWords,
 } from "@opensteer/client/host";
 import { useHostSelector, useTaskActivity } from "@opensteer/client/react";
 import type { Request, RequestResponse, ThreadStatus } from "@opensteer/core";
 import type { NeedsYouEntry } from "@opensteer/protocol";
 import { useCallback, useMemo, useState } from "react";
+import { useNavigate } from "react-router";
 import { ActionLine } from "./action-line.js";
 import { useOptionalShell, useShell } from "./app-shell.js";
 import { Icon, type IconName } from "./icon.js";
@@ -67,13 +70,30 @@ export function stopSessionAction(hostClient: HostClient, threadId: string, sess
   };
 }
 
-function useStopSession(threadId: string, sessionId: string | null) {
+export function useStopSession(threadId: string, sessionId: string | null) {
   const { hostClient } = useShell();
   return useAction(
     hostClient,
     stopSessionAction(hostClient, threadId, sessionId!),
     `agent-session-stop:${sessionId ?? ""}`,
   );
+}
+
+/** Watch a session in its existing task view, or focus its Request when reviewing it there. */
+export function useOpenSessionTask() {
+  const workspace = useOptionalWorkspace();
+  const navigate = useNavigate();
+  return (threadId: string, waiting?: WaitingRequestView | null) => {
+    const id = waiting?.presentation?.threadId ?? waiting?.request.originatingThreadId ?? threadId;
+    if (workspace) {
+      workspace.nav.openConversation(
+        workspace.nav.threadPath(id),
+        waiting ? { focusRequest: waiting.request.id } : undefined,
+      );
+    } else {
+      void navigate(`/tasks/${encodeURIComponent(id)}`);
+    }
+  };
 }
 
 /**
@@ -127,35 +147,55 @@ const glyphIcons: Readonly<Record<OperationGlyph, IconName>> = {
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
 /** The agent's operations as they happen, oldest first, in place of a transcript. */
-export function SessionActivity({ view }: { readonly view: SessionTaskView }) {
+export function SessionActivity({
+  view,
+  showIdentity = true,
+  showMode = false,
+}: {
+  readonly view: SessionTaskView;
+  readonly showIdentity?: boolean;
+  readonly showMode?: boolean;
+}) {
   return (
     <section aria-label={view.header} className="session-activity">
-      <p className="session-activity__header">
-        <AgentMark identity={view.agent} />
-        <span>{view.header}</span>
-      </p>
+      {showIdentity ? (
+        <p className="session-activity__header">
+          <AgentMark identity={view.agent} />
+          <span>{view.header}</span>
+        </p>
+      ) : null}
       {view.activity.kind === "unavailable" ? (
         <p className="session-activity__empty">{workWordsUnavailable}</p>
       ) : view.activity.rows.length === 0 ? (
         <p className="session-activity__empty">{workWordsEmpty}</p>
       ) : (
         <ol className="session-activity__list">
-          {view.activity.rows.map((row) => (
-            <li className="session-op" key={row.id}>
-              <Icon className="session-op__glyph" name={glyphIcons[row.glyph]} />
-              <span className="session-op__body">
-                <span className="session-op__action">{row.action}</span>
-                {row.allowedBy ? <span className="session-op__by">{row.allowedBy}</span> : null}
-                {row.detail ? <span className="session-op__detail">{row.detail}</span> : null}
-              </span>
-              <span className={`chip session-op__outcome session-op__outcome--${row.outcome.tone}`}>
-                {row.outcome.label}
-              </span>
-              <time className="session-op__time" dateTime={row.at}>
-                {timeFormat.format(new Date(row.at))}
-              </time>
-            </li>
-          ))}
+          {view.activity.rows.map((row) => {
+            const mode = showMode
+              ? accessModeOptions.find((option) => option.mode === row.mode)?.label
+              : null;
+            return (
+              <li className="session-op" key={row.id}>
+                <Icon className="session-op__glyph" name={glyphIcons[row.glyph]} />
+                <span className="session-op__body">
+                  <span className="session-op__action">{row.action}</span>
+                  {mode ? <span className="session-op__by">{mode}</span> : null}
+                  {row.allowedBy && row.allowedBy !== mode ? (
+                    <span className="session-op__by">{row.allowedBy}</span>
+                  ) : null}
+                  {row.detail ? <span className="session-op__detail">{row.detail}</span> : null}
+                </span>
+                <span
+                  className={`chip session-op__outcome session-op__outcome--${row.outcome.tone}`}
+                >
+                  {row.outcome.label}
+                </span>
+                <time className="session-op__time" dateTime={row.at}>
+                  {timeFormat.format(new Date(row.at))}
+                </time>
+              </li>
+            );
+          })}
         </ol>
       )}
     </section>

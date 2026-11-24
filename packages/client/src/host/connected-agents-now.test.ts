@@ -27,7 +27,9 @@ const claudeWorking = { ...claude, status: "running" as const };
 const waiting = seed.requests[claude.id]![0]!;
 if (waiting.status !== "pending") throw new Error("The fixture must be waiting.");
 const request: WaitingRequestView = { request: waiting, assignments: [], subagent: null };
-const operations = seed.operations.map(({ operation }) => operation);
+const operations = seed.operations
+  .map(({ operation }) => operation)
+  .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
 const view = (
   tasks: readonly ThreadSummary[],
   waitingRequests: readonly WaitingRequestView[] = [],

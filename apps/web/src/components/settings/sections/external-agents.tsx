@@ -11,6 +11,7 @@ import {
   externalAgentsReach,
   guideAddress,
   type ConnectedAgentRow,
+  type ConnectedAgentNow,
   type ExternalAgentGuide,
   type ExternalAgentsReach,
   type HostClient,
@@ -34,6 +35,7 @@ import {
 import { SentenceText } from "../../../ui/address-text.js";
 import { AgentMark } from "../agent-mark.js";
 import { ConnectedAgentPage } from "./connected-agent-page.js";
+import { useActiveConnectedAgentSessions } from "../../use-connected-agent-sessions.js";
 
 const remoteAccessPath = "/settings/account";
 const notReading = { status: null, error: null } as const;
@@ -67,6 +69,11 @@ function ConnectedAgentsList({
 }) {
   const shell = useShell();
   const agents = useConnectedAgents(client);
+  const { view: active } = useActiveConnectedAgentSessions(client);
+  const work = new Map<string, ConnectedAgentNow["state"]>();
+  for (const entry of active.agents) {
+    if (!work.has(entry.connectionId)) work.set(entry.connectionId, entry.state);
+  }
   const identity = shell.snapshot.identityConfig;
   const personal = identity?.exposure === "loopback";
   const remote = usePersonalRemoteAccess(personal ? client : null);
@@ -106,6 +113,7 @@ function ConnectedAgentsList({
             heading={list.disconnected.length > 0 ? agentWords("agents.section.connected") : null}
             id="connected-agents-active"
             rows={list.connected}
+            work={work}
           />
         ) : null}
         {list.disconnected.length > 0 ? (
@@ -183,10 +191,12 @@ function AgentRows({
   heading,
   id,
   rows,
+  work,
 }: {
   readonly heading: string | null;
   readonly id: string;
   readonly rows: readonly ConnectedAgentRow[];
+  readonly work?: ReadonlyMap<string, ConnectedAgentNow["state"]>;
 }) {
   return (
     <section aria-labelledby={heading ? id : undefined} className="settings-group">
@@ -196,20 +206,30 @@ function AgentRows({
         </h2>
       ) : null}
       <ul className="card connected-agents__list">
-        {rows.map((row) => (
-          <li key={row.id}>
-            <Link className="card__row connected-agents__row" to={row.id}>
-              <AgentMark identity={row.identity} />
-              <span className="card__row-body">
-                <span className="card__row-title">{row.identity.label}</span>
-                <span className={`card__row-detail connected-agents__line--${row.tone}`}>
-                  <SentenceText parts={row.lineParts} />
+        {rows.map((row) => {
+          const state = work?.get(row.id);
+          return (
+            <li key={row.id}>
+              <Link className="card__row connected-agents__row" to={row.id}>
+                <AgentMark identity={row.identity} />
+                <span className="card__row-body">
+                  <span className="card__row-title">{row.identity.label}</span>
+                  <span className={`card__row-detail connected-agents__line--${row.tone}`}>
+                    <SentenceText parts={row.lineParts} />
+                  </span>
                 </span>
-              </span>
-              <Icon className="connected-agents__chevron" name="chevron-right" />
-            </Link>
-          </li>
-        ))}
+                {state ? (
+                  <span
+                    className={`chip chip--${state === "needs-you" ? "warn" : "ok"} connected-agents__work`}
+                  >
+                    {state === "needs-you" ? agentWords("agent.status.needsYou") : "Working"}
+                  </span>
+                ) : null}
+                <Icon className="connected-agents__chevron" name="chevron-right" />
+              </Link>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );

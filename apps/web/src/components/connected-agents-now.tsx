@@ -2,64 +2,23 @@ import { hostsDeployment } from "@opensteer/client/computers";
 import {
   connectedAgentsNow,
   isolatedPlainSentence,
-  readTaskActivity,
-  threadInDirectory,
   type ConnectedAgentNow,
   type HostClient,
   type HostSnapshot,
-  type ThreadSummary,
-  type WaitingRequestView,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import type { AgentOperationView } from "@opensteer/core";
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useId, useState } from "react";
 import { Link } from "react-router";
 import { OutsideName, SentenceText } from "../ui/address-text.js";
-import { stopSessionAction } from "./agent-work.js";
+import { stopSessionAction, useOpenSessionTask } from "./agent-work.js";
 import { Icon } from "./icon.js";
 import { Popover } from "./popover.js";
 import { AgentMark } from "./settings/agent-mark.js";
 import { runAction } from "./use-action.js";
-import { useWorkspace } from "./workspace/workspace-context.js";
+import { useConnectedAgentWork } from "./use-connected-agent-sessions.js";
 
 const selectHomeName = (snapshot: HostSnapshot) =>
   snapshot.machines.find(hostsDeployment)?.name ?? null;
-
-function selectTasks(snapshot: HostSnapshot) {
-  const ids = new Set<string>();
-  for (const { thread } of snapshot.activeTasks)
-    if (thread.externalWork?.status === "active") ids.add(thread.id);
-  for (const thread of snapshot.threads)
-    if (thread.externalWork?.status === "active" && thread.status !== "idle") ids.add(thread.id);
-  for (const { request } of snapshot.waitingRequests)
-    if (request.originatingAgentSessionId) ids.add(request.originatingThreadId);
-
-  const tasks: ThreadSummary[] = [];
-  for (const id of ids) {
-    const task = threadInDirectory(id, snapshot);
-    if (task?.externalWork?.status === "active") tasks.push(task);
-  }
-  return tasks;
-}
-
-function sameTasks(a: readonly ThreadSummary[], b: readonly ThreadSummary[]) {
-  return (
-    a.length === b.length &&
-    a.every((task, index) => {
-      const next = b[index]!;
-      return (
-        task.id === next.id &&
-        task.status === next.status &&
-        task.externalWork === next.externalWork &&
-        task.updatedAt === next.updatedAt
-      );
-    })
-  );
-}
-
-function sameWaiting(a: readonly WaitingRequestView[], b: readonly WaitingRequestView[]) {
-  return a.length === b.length && a.every((entry, index) => entry === b[index]);
-}
 
 export function ConnectedAgentsNow({
   compact = false,
@@ -70,49 +29,7 @@ export function ConnectedAgentsNow({
   readonly hostClient: HostClient;
   readonly onNavigate?: () => void;
 }) {
-  const tasks = useHostSelector(hostClient, selectTasks, sameTasks);
-  const selectWaiting = useCallback(
-    (snapshot: HostSnapshot) =>
-      snapshot.waitingRequests.filter(({ request }) =>
-        tasks.some(
-          ({ externalWork }) => externalWork?.sessionId === request.originatingAgentSessionId,
-        ),
-      ),
-    [tasks],
-  );
-  const waitingRequests = useHostSelector(hostClient, selectWaiting, sameWaiting);
-  const base = useMemo(
-    () => connectedAgentsNow({ tasks, waitingRequests }),
-    [tasks, waitingRequests],
-  );
-  const activeTasks = useMemo(() => {
-    const ids = new Set(base.agents.map(({ threadId }) => threadId));
-    return tasks.filter(({ id }) => ids.has(id));
-  }, [base, tasks]);
-  const [activityRead, setActivityRead] = useState(0);
-  const [activity, setActivity] = useState<{
-    client: HostClient;
-    operations: readonly AgentOperationView[];
-  }>();
-  useEffect(() => {
-    if (!activeTasks.length) return;
-    const controller = new AbortController();
-    void Promise.all(
-      activeTasks.map(({ id }) =>
-        readTaskActivity(hostClient, id, controller.signal).catch(() => []),
-      ),
-    ).then((pages) => {
-      if (!controller.signal.aborted) setActivity({ client: hostClient, operations: pages.flat() });
-    });
-    return () => controller.abort();
-  }, [hostClient, activeTasks, activityRead]);
-  const view = useMemo(
-    () =>
-      activity?.client === hostClient
-        ? connectedAgentsNow({ tasks, waitingRequests, operations: activity.operations })
-        : base,
-    [activity, base, hostClient, tasks, waitingRequests],
-  );
+  const { view, refresh } = useConnectedAgentWork(hostClient);
   if (!view.headline) return null;
   return (
     <ActiveAgents
@@ -121,7 +38,7 @@ export function ConnectedAgentsNow({
       headlineParts={view.headlineParts}
       hostClient={hostClient}
       onNavigate={onNavigate}
-      onOpen={() => setActivityRead((read) => read + 1)}
+      onOpen={refresh}
     />
   );
 }
@@ -141,7 +58,7 @@ function ActiveAgents({
   readonly onNavigate: (() => void) | undefined;
   readonly onOpen: () => void;
 }) {
-  const { nav } = useWorkspace();
+  const openSessionTask = useOpenSessionTask();
   const panelId = useId();
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -297,14 +214,7 @@ function ActiveAgents({
                       className={`btn btn--small${waiting ? " btn--primary" : ""}`}
                       onClick={() => {
                         leave();
-                        const id =
-                          waiting?.presentation?.threadId ??
-                          waiting?.request.originatingThreadId ??
-                          entry.threadId;
-                        nav.openConversation(
-                          nav.threadPath(id),
-                          waiting ? { focusRequest: waiting.request.id } : undefined,
-                        );
+                        openSessionTask(entry.threadId, waiting);
                       }}
                       type="button"
                     >

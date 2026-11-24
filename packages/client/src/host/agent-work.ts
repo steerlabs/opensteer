@@ -6,6 +6,7 @@ import type {
   AgentSessionEndReason,
   Request,
   ThreadStatus,
+  ThreadAccessMode,
 } from "@opensteer/core";
 import type { AgentConnection } from "@opensteer/protocol";
 import type { PersonalTaskExternalWork } from "@opensteer/protocol/personal-sync";
@@ -167,6 +168,7 @@ export type OperationGlyph = "globe" | "app" | "plugin" | "list";
 export interface OperationRow {
   readonly id: string;
   readonly glyph: OperationGlyph;
+  readonly mode?: ThreadAccessMode;
   /** What it did, in plain words: "Opened a tab in Personal on Studio Mac". */
   readonly action: string;
   /** Who allowed it: you, Auto, full access, or reading only; null before anyone did. */
@@ -220,6 +222,7 @@ export function operationRow(operation: AgentOperationView): OperationRow {
   return {
     id: operation.id,
     glyph: glyphs[operation.target.grant.kind],
+    mode: operation.mode,
     action,
     allowedBy,
     outcome,

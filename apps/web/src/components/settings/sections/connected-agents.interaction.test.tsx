@@ -5,7 +5,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
 import { HostTransportError } from "@opensteer/client/connections";
-import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
+import {
+  MockHostClient,
+  mockAgentOperationRequestId,
+  mockAgentWorkThreads,
+  mockConnectedAgents,
+} from "@opensteer/client/mock";
 import type { AgentConnection } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ShellContext } from "../../app-shell.js";
@@ -27,6 +32,7 @@ const view = {
   name: "Mac mini",
   facts: { desktop: true, onThisComputer: true, remote: false },
 } as unknown as SettingsView;
+const chatgpt = "mcn_00000000-0000-4000-8000-000000000008";
 const claude = "mcn_00000000-0000-4000-8000-000000000002";
 const grok = "mcn_00000000-0000-4000-8000-000000000001";
 const shopHelper = "mcn_00000000-0000-4000-8000-000000000004";
@@ -114,6 +120,22 @@ describe("Connected agents list", () => {
     expect(page.querySelector(`a[href="${base}/${grok}"]`)).not.toBeNull();
     // A logo only for a platform the Home verified: Claude and ChatGPT, never Grok's domain.
     expect(page.querySelectorAll(".agent-mark .provider-logo")).toHaveLength(2);
+  });
+
+  it("marks each active connection by its sessions and clears the mark when work ends", async () => {
+    host = seeded();
+    const page = await mount(host);
+    const mark = (id: string) =>
+      page.querySelector(`a[href="${base}/${id}"] .connected-agents__work`)?.textContent;
+    await act(async () => host!.mockAgentWork({ livePanel: "needs-you" }));
+    expect(mark(chatgpt)).toBe("Working");
+    expect(mark(claude)).toBe("Needs you");
+    expect(mark(shopHelper)).toBeUndefined();
+    const threadId = mockAgentWorkThreads.shopping;
+    const sessionId = host.getSnapshot().threads.find(({ id }) => id === threadId)!.agentSessionId!;
+    await act(async () => expect(host!.stopAgentSession(threadId, sessionId)).toBe(true));
+    expect(mark(chatgpt)).toBeUndefined();
+    expect(mark(claude)).toBe("Needs you");
   });
 
   it("after a refresh of the list fails, says so and starts no setup until it is read again", async () => {
@@ -204,6 +226,78 @@ describe("one connected agent", () => {
     expect(watch()?.textContent).toBe("Watch");
     await act(async () => watch()!.click());
     expect(path).toBe(`/tasks/${threadId}`);
+  });
+
+  it("shows Now only during this agent's session, with the task's operation rows and Stop", async () => {
+    host = seeded();
+    const page = await mount(host, `${base}/${chatgpt}`);
+    const now = () => page.querySelector<HTMLElement>('[aria-labelledby="connected-agent-now"]');
+    expect(now()).toBeNull();
+    await act(async () => host!.mockAgentWork({ livePanel: "three" }));
+    const section = now()!;
+    expect(section.querySelector("h2")?.textContent).toBe("Now");
+    expect(section.querySelectorAll(".connected-agent__session")).toHaveLength(1);
+    expect(section.querySelector(".connected-agent__session-place")?.textContent).toBe(
+      "Shopping · Studio Mac",
+    );
+    const row = [...section.querySelectorAll(".session-op")].find((item) =>
+      item.textContent?.includes("Run a script on Shopping"),
+    );
+    expect(row?.textContent).toContain("Supervised");
+    expect(row?.textContent).toContain("Running…");
+    expect(row?.querySelector("time")?.dateTime).toBeTruthy();
+    expect(buttonNamed(section, "Watch ChatGPT")).toBeTruthy();
+
+    const threadId = mockAgentWorkThreads.shopping;
+    const sessionId = host.getSnapshot().threads.find(({ id }) => id === threadId)!.agentSessionId!;
+    const dispatch = vi.spyOn(host, "dispatch");
+    await act(async () => buttonNamed(section, "Stop ChatGPT").click());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "agent.session.stop",
+        threadId,
+        agentSessionId: sessionId,
+        idempotencyKey: expect.stringMatching(`^agent-session-stop:${sessionId}:`),
+      }),
+    );
+    expect(now()).toBeNull();
+  });
+
+  it("opens the session's task from Watch inside Now", async () => {
+    host = seeded();
+    const page = await mount(host, `${base}/${chatgpt}`);
+    await act(async () => host!.mockAgentWork({ livePanel: "one" }));
+    const now = page.querySelector<HTMLElement>('[aria-labelledby="connected-agent-now"]')!;
+    await act(async () => buttonNamed(now, "Watch ChatGPT").click());
+    expect(path).toBe(`/tasks/${mockAgentWorkThreads.shopping}`);
+  });
+
+  it("answers the existing task Request card inline in Now", async () => {
+    host = seeded();
+    const page = await mount(host, `${base}/${claude}`);
+    await act(async () => host!.mockAgentWork({ livePanel: "needs-you" }));
+    expect(status(page)).toContain("Needs you");
+    const now = page.querySelector<HTMLElement>('[aria-labelledby="connected-agent-now"]')!;
+    expect(now.querySelector(".chip--warn")?.textContent).toBe("Needs you");
+    const card = now.querySelector<HTMLElement>(".request-card .operation-request")!;
+    expect(card.dataset.requestId).toBe(mockAgentOperationRequestId);
+    expect(card.textContent).toContain("Run a script in Travel?");
+    const waiting = host
+      .getSnapshot()
+      .waitingRequests.find(({ request }) => request.id === mockAgentOperationRequestId)!.request;
+    expect(waiting.reviewedRevision).toBeDefined();
+    const dispatch = vi.spyOn(host, "dispatch");
+    await act(async () => buttonNamed(card, "Allow once").click());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "request.respond",
+        requestId: mockAgentOperationRequestId,
+        expectedRevision: waiting.reviewedRevision,
+        response: { kind: "form", answers: { "operation-decision": ["allow"] } },
+        idempotencyKey: expect.stringMatching(`^request:${mockAgentOperationRequestId}:`),
+      }),
+    );
+    await vi.waitFor(() => expect(page.querySelector(".request-card")).toBeNull());
   });
 
   it.each([390, 1440])("reads and saves the paired Chrome grant at %d px", async (width) => {
