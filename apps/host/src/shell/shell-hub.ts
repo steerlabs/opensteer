@@ -315,7 +315,15 @@ export class ShellHub implements ShellControlStreamHandler {
     // have not reported their end there have lost contact (A4). After any receipt it already
     // delivered, which is ahead of this in the machine's evidence turn.
     this.#recordTargetEvidence(entry.stream.fence, undefined, true);
-    this.#endMachineSessionsInBackground(runnerId, shellLossReason(reason));
+    // Only that stream's sessions: a Runner that reconnected may already serve new sessions on
+    // its successor, and a late close of the old stream must not end them (F2).
+    const fence = entry.stream.fence;
+    this.#background(runnerId, () =>
+      this.#endMatching(
+        (session) => sameRunnerAuxiliaryFence(session.fence, fence),
+        shellLossReason(reason),
+      ),
+    );
   }
 
   detachRunner(runnerId: RunnerId, reason: RunnerStreamLossReason): void {
@@ -326,6 +334,8 @@ export class ShellHub implements ShellControlStreamHandler {
     }
     this.detach(entry.peer, reason);
     entry.peer.close(reason === "revoked" ? 4003 : 4001, `shell stream ${reason}`);
+    // The Runner itself is gone, not one stream of it: none of its sessions stays.
+    this.#endMachineSessionsInBackground(runnerId, shellLossReason(reason));
   }
 
   /**

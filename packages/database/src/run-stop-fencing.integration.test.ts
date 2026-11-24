@@ -1526,7 +1526,7 @@ integration.sequential("Run stop fencing", () => {
       lastActionUncertain: expect.objectContaining({
         attemptId: sessionId,
         reason:
-          "Contact with this computer was lost before it confirmed the agent's shell there closed.",
+          "Contact with this device was lost before it confirmed that the connected agent's shell there had closed.",
       }),
     });
   });
@@ -1648,7 +1648,7 @@ integration.sequential("Run stop fencing", () => {
       lastActionUncertain: expect.objectContaining({
         attemptId: begun.attemptId,
         reason:
-          "A phone alert for this agent's question may have been sent; the Opensteer account did not confirm it.",
+          "A phone alert about this connected agent's work may have been sent; your Opensteer account did not confirm it.",
       }),
     });
     // And the ended connection hands off nothing more.
