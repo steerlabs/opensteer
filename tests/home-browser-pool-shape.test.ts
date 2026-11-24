@@ -150,8 +150,9 @@ it("sizes a Cloud Computer's Home from its machine: no limit adds up past it, ro
       (sum, name) => sum + mebibytes(limits[`OPENSTEER_HOME_LIMIT_${name}_MEMORY`]!),
       0,
     );
-    // Every cap together stays under the machine, with at least 512 MiB and an eighth left over.
-    expect(total).toBeLessThanOrEqual(memory - Math.max(512, Math.floor(memory / 8)));
+    // Every cap together stays under the machine. What is left is at least 1 GiB and an eighth:
+    // a real Cloud Computer used about 800 MiB outside its containers (kernel, Docker, agents).
+    expect(total).toBeLessThanOrEqual(memory - Math.max(1024, Math.floor(memory / 8)));
     for (const name of Object.values(pooledServices)) {
       const share = Number(limits[`OPENSTEER_HOME_LIMIT_${name}_CPUS`]);
       expect(share).toBeGreaterThan(0);
@@ -171,7 +172,7 @@ it("sizes a Cloud Computer's Home from its machine: no limit adds up past it, ro
     OPENSTEER_HOME_LIMIT_GATEWAY_CPUS: "1",
     OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY: "256m",
     OPENSTEER_HOME_LIMIT_RUNNER_CPUS: "2",
-    OPENSTEER_HOME_LIMIT_RUNNER_MEMORY: "1792m",
+    OPENSTEER_HOME_LIMIT_RUNNER_MEMORY: "1280m",
     OPENSTEER_HOME_LIMIT_CHANNEL_CPUS: "1",
     OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY: "256m",
   });
@@ -196,7 +197,7 @@ it("applies the machine's limits on a pooled Cloud Computer only, never on a sel
   // The self-hosted recipe keeps its own limits and their OPENSTEER_HOME_* overrides.
   expect(read("compose.yaml")).not.toContain("OPENSTEER_HOME_LIMIT_");
   expect(composeEnvironment(["managed", "browser-pool"])).toContain(
-    "OPENSTEER_HOME_LIMIT_RUNNER_MEMORY=1792m",
+    "OPENSTEER_HOME_LIMIT_RUNNER_MEMORY=1280m",
   );
   expect(composeEnvironment(["managed"]).join("\n")).not.toContain("OPENSTEER_HOME_LIMIT_");
   expect(composeEnvironment([]).join("\n")).not.toContain("OPENSTEER_HOME_LIMIT_");

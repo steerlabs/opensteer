@@ -75,14 +75,14 @@ clamp() { if (($1 < $2)); then echo "$2"; elif (($1 > $3)); then echo "$3"; else
 # home_limits <memory MiB> <cpus>: the CPU and memory limit of each service that runs on a Cloud
 # Computer's Home, whose browser runs in the browser pool (no Browser Runtime or egress proxy
 # runs here). The memory limits add up to the machine less what the kernel, Docker and the system
-# keep (an eighth of it, at least 512 MiB), so the services together can never take more than the
-# machine has. CPU limits are each service's ceiling of CPU time, not a reservation: none is above
+# keep (an eighth of it, at least 1 GiB: a Cloud Computer measured idle used about 800 MiB outside
+# its containers), so the services together can never take more than the machine has. CPU limits are each service's ceiling of CPU time, not a reservation: none is above
 # the machine's CPU count, and the Runner may use them all.
 home_limits() {
   local memory=$1 cpus=$2 reserve budget postgres host agents two small=256
   [[ $memory =~ ^[0-9]+$ ]] || fail "Invalid machine memory: $memory"
   if [[ ! $cpus =~ ^[0-9]+$ ]] || ((cpus < 1)); then fail "Invalid machine CPU count: $cpus"; fi
-  reserve=$(clamp $((memory / 8)) 512 "$memory")
+  reserve=$(clamp $((memory / 8)) 1024 "$memory")
   budget=$((memory - reserve))
   postgres=$(clamp $((budget / 8)) 512 2048)
   host=$(clamp $((budget / 5)) 768 2048)

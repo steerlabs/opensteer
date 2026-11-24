@@ -139,8 +139,9 @@ An Opensteer Cloud Computer's Home is different in two ways, both set by
 - **Its limits come from its machine.** `home_limits` in `common.sh` reads the
   machine's memory and CPU count and sets each running service's limits so
   that together they never ask for more memory than the machine has. It keeps
-  an eighth of memory, at least 512 MiB, for the kernel, Docker and the
-  system. PostgreSQL gets an eighth of the rest (512 MiB to 2 GiB), the Host a
+  an eighth of memory, at least 1 GiB, for the kernel, Docker and the system
+  (an idle Cloud Computer was measured using about 800 MiB outside its
+  containers). PostgreSQL gets an eighth of the rest (512 MiB to 2 GiB), the Host a
   fifth (768 MiB to 2 GiB), Caddy and Channel Runtime 256 MiB each, and the
   Runner what remains. No CPU limit exceeds the machine's CPU count: the
   Runner may use every CPU, and the Host and PostgreSQL up to two each. A
@@ -149,10 +150,19 @@ An Opensteer Cloud Computer's Home is different in two ways, both set by
 
 On Compute Engine's default `e2-medium` (2 vCPUs, 4 GiB) that gives PostgreSQL
 512 MiB, the Host 768 MiB, Caddy and Channel Runtime 256 MiB each, and the
-Runner 1792 MiB and both CPUs. Linux reports somewhat less than 4 GiB as the
-machine's memory, and the Runner's share shrinks by that difference (1612 MiB
-if it reports 3916 MiB). Whether the person's own agents' Runs fit in that has
-not been measured on a real machine.
+Runner 1280 MiB and both CPUs. Linux reports somewhat less than 4 GiB as the
+machine's memory, and the Runner's share shrinks by that difference (1100 MiB
+if it reports 3916 MiB). Measured idle, with nobody signed in, the Host used
+189 MiB, the Runner 229 MiB, Channel Runtime 65 MiB, PostgreSQL 14 MiB and
+Caddy 13 MiB. Whether the person's own agents' Runs fit in what the Runner is
+given has not been measured on a real machine.
+
+CPU limits are ceilings, not shares: they add up to more than the machine's
+CPUs, and a service may use up to its ceiling only while the others leave the
+time free. An idle Home was measured using 0.61 of one core on average (1.22
+in its busiest minute), with a Browser Runtime that no longer runs on a Cloud
+Computer. An `e2-medium` sustains one core and bursts to two, so if that idle
+use holds, the person's own agents have well under one core sustained.
 
 Disk and networking are billed apart from the machine. [Google machine specifications](https://cloud.google.com/compute/docs/general-purpose-machines) · [Compute Engine prices](https://cloud.google.com/compute/vm-instance-pricing)
 
