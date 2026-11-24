@@ -58,7 +58,7 @@ export interface NotificationPublication {
 }
 
 /**
- * What the hand-off of a connection's Request alert found, in the statement that records it:
+ * What the hand-off of a connection's alert found, in the statement that records it:
  * the attempt begun; an earlier attempt for the same alert, which answers instead (running,
  * done, or unknown: it may have reached the phone, so it is never sent again); or refused,
  * nothing recorded and nothing sent.
@@ -68,7 +68,7 @@ export type NotificationPublicationHandoff =
   | { readonly kind: "prior"; readonly state: "running" | "done" | "unknown" }
   | { readonly kind: "refused"; readonly reason: string };
 
-/** The type of a Request alert's row in `command_attempts`, where its Disconnect finds it. */
+/** The type of a connection's alert's row in `command_attempts`, where its Disconnect finds it. */
 export const notificationPublicationAttemptType = "notification.publish";
 const notificationPublicationCallerKey = "opensteer.notification";
 
@@ -214,19 +214,20 @@ export class NotificationStore {
   }
 
   /**
-   * The hand-off of a connected agent's Request alert (A5, rule 3), after every await before
-   * the send: in one transaction that holds the connection row (the row Disconnect's revoke
-   * locks), the statement that records the attempt also checks the Request is still pending and
-   * still the connection's to ask (live, and not below a narrowed grant's floor). A revoke that
-   * committed first refuses it, and nothing is sent; one that commits after finds the attempt
+   * The hand-off of a connected agent's alert (A5, F1, rule 3), for its Request or for its
+   * Run's reply or failure, after every await before the send: in one transaction that holds
+   * the connection row (the row Disconnect's revoke locks), the statement that records the
+   * attempt also checks the alert is still the connection's to send (live; its Request still
+   * pending; not below a narrowed grant's floor). A revoke that committed first refuses it,
+   * and nothing is sent; one that commits after finds the attempt
    * in the connection's Disconnect set and waits for its outcome. One attempt per alert: the
    * same notification id is never begun twice unless the first is known never to have left.
    */
   async beginPublication(entry: NotificationPublication): Promise<NotificationPublicationHandoff> {
-    if (!entry.connectionId || !entry.requestId)
-      return { kind: "refused", reason: "Notification names no connection's Request" };
     const connectionId = entry.connectionId;
-    const requestId = entry.requestId;
+    const subject = publicationSubject(entry);
+    if (!connectionId || !subject)
+      return { kind: "refused", reason: "Notification names no connection's Request or Run" };
     return withDatabaseTransaction(this.#database, async (tx) => {
       const floor = await connectionFloor(tx, connectionId);
       if (!floor) return { kind: "refused", reason: "The connected agent's access ended" };
@@ -236,7 +237,7 @@ export class NotificationStore {
           (id, requested_by, caller_key, connection_id, type, idempotency_key, settled_at)
         select ${id}, ${entry.userId}, ${notificationPublicationCallerKey}, ${connectionId},
           ${notificationPublicationAttemptType}, ${entry.id}, null
-        where ${stillTheConnectionsToAsk(requestId, floor.minimumGrantRevision)}
+        where ${stillTheConnections(subject, floor.minimumGrantRevision)}
         on conflict (requested_by, caller_key, idempotency_key) where state <> 'failed' do nothing
         returning id`.execute(tx);
       if (rows[0]) return { kind: "begun", attemptId: rows[0].id };
@@ -249,7 +250,13 @@ export class NotificationStore {
         .where("state", "<>", "failed")
         .executeTakeFirst();
       if (prior) return { kind: "prior", state: prior.state as "running" | "done" | "unknown" };
-      return { kind: "refused", reason: "Request is no longer waiting for the person" };
+      return {
+        kind: "refused",
+        reason:
+          subject.kind === "request"
+            ? "Request is no longer waiting for the person"
+            : "Run is no longer the connected agent's to tell the person about",
+      };
     });
   }
 
@@ -264,16 +271,16 @@ export class NotificationStore {
    * repeat is the one that reaches the phone.
    */
   async continuePublication(attemptId: string, entry: NotificationPublication): Promise<boolean> {
-    if (!entry.connectionId || !entry.requestId) return false;
     const connectionId = entry.connectionId;
-    const requestId = entry.requestId;
+    const subject = publicationSubject(entry);
+    if (!connectionId || !subject) return false;
     return withDatabaseTransaction(this.#database, async (tx) => {
       const floor = await connectionFloor(tx, connectionId);
       if (!floor) return false;
       const { rows } = await sql<{ readonly id: string }>`
         update command_attempts set started_at = started_at
         where id = ${attemptId} and state = 'running' and connection_id = ${connectionId}
-          and ${stillTheConnectionsToAsk(requestId, floor.minimumGrantRevision)}
+          and ${stillTheConnections(subject, floor.minimumGrantRevision)}
         returning id`.execute(tx);
       return rows.length === 1;
     });
@@ -451,7 +458,7 @@ async function replyCandidates(
   return [
     {
       body,
-      connectionId: null,
+      connectionId: recipient.connectionId,
       kind: "reply-published",
       occurredAt: reply.createdAt.toISOString(),
       sequence: recipient.revision,
@@ -475,7 +482,7 @@ async function failureCandidates(
   return [
     {
       body,
-      connectionId: null,
+      connectionId: recipient.connectionId,
       kind: "run-failed",
       occurredAt,
       sequence,
@@ -501,6 +508,8 @@ async function personAnswered(
   readonly title: string;
   readonly userId: UserId;
   readonly revision: string;
+  /** The connection whose lineage the Run is in, the same way the Disconnect set reads it. */
+  readonly connectionId: string | null;
 } | null> {
   if (!change.runId) return null;
   const run = await transaction
@@ -515,6 +524,11 @@ async function personAnswered(
       "runs.requestedBy",
       "threads.parentThreadId",
       "threads.purpose",
+      // In the same statement: a connection's Run has its alert handed off through that
+      // connection's Disconnect set (F1); your own agents' Runs read nothing more.
+      sql<string | null>`coalesce(runs.connection_id, threads.origin_connection_id)`.as(
+        "lineageConnectionId",
+      ),
     ])
     .select(
       sql<boolean>`exists (select 1 from messages input where
@@ -543,6 +557,7 @@ async function personAnswered(
     title,
     userId: run.requestedBy,
     revision: run.revision,
+    connectionId: run.lineageConnectionId,
   };
 }
 
@@ -689,6 +704,28 @@ async function connectionFloor(
   return connection?.live
     ? { minimumGrantRevision: connection.cleanupMinimumGrantRevision ?? null }
     : null;
+}
+
+/** What a connection's alert speaks for: its Request, or (a reply, a failure) its Run. */
+type PublicationSubject =
+  | { readonly kind: "request"; readonly id: RequestId }
+  | { readonly kind: "run"; readonly id: RunId };
+
+function publicationSubject(entry: NotificationPublication): PublicationSubject | null {
+  if (entry.kind === "request-opened")
+    return entry.requestId ? { kind: "request", id: entry.requestId } : null;
+  return entry.runId ? { kind: "run", id: entry.runId } : null;
+}
+
+/**
+ * The alert is still the live connection's to send: its Request still pending (below), or its
+ * Run not admitted under a grant below a narrowed grant's floor.
+ */
+function stillTheConnections(subject: PublicationSubject, minimumGrantRevision: number | null) {
+  if (subject.kind === "request") return stillTheConnectionsToAsk(subject.id, minimumGrantRevision);
+  return sql<boolean>`exists (
+    select 1 from runs r where r.id = ${subject.id}
+      and not coalesce(r.admitted_grant_revision < ${minimumGrantRevision}::integer, false))`;
 }
 
 /**

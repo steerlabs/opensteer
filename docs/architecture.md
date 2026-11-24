@@ -344,7 +344,8 @@ admitted once it commits. Then one worker converges over one set
 of attempts (`packages/database/src/connection-disconnect.ts`, driven by
 `OpensteerStore.driveConnectionCleanups`). The set holds everything in the connection's lineage:
 Runs and their handed-off generations, automation occurrences and their attempts, Watch
-activations, queued inputs, Requests and the phone alerts sent for them, steering commands,
+activations, queued inputs, Requests, the phone alerts for its Requests and its Runs' replies
+and failures, steering commands,
 active automations (paused), agent sessions and operations, plugin executions, standard CDP
 connections, shared Chrome tabs, and the shells its Runs opened on other computers.
 Display streams are opened only by a person's own session (`computer-use-display-routes.ts` ->
@@ -353,8 +354,8 @@ Display streams are opened only by a person's own session (`computer-use-display
 **Nothing leaves the Home before it is in the set.** A Run is recorded before its frame is built;
 a CDP attempt before the attach ticket goes to the browser runtime; a plugin execution before the
 call reaches the plugin engine; a shell before its open frame goes to the target computer, bound
-to that computer's exact shell stream; a Request's phone alert in the statement that checks, after
-every other wait, that the Request is still pending and still the connection's to ask. Each is
+to that computer's exact shell stream; a phone alert in the statement that checks, after
+every other wait, that the connection is live and (for a Request) the Request still pending. Each is
 recorded while holding the connection row the revoke locks, so a revoke that committed first
 refuses it and nothing is sent. The one-use `browser_connect` address an agent receives is not a
 handoff: it does nothing until redeemed, and redemption checks authority again and writes the

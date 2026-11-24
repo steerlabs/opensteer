@@ -80,7 +80,7 @@ export type LineageAttempt =
   /** A command acting outside the database (G4): written before it acts, settled after. */
   | ConnectionAttempt<"command">
   /**
-   * A phone alert for the connection's Request, recorded at its hand-off to the Opensteer
+   * A phone alert for the connection's Request or its Run's reply or failure, recorded at its hand-off to the Opensteer
    * account (A5): acknowledged, definitely unsent, or unknown (it may have reached the phone).
    */
   | ConnectionAttempt<"notification">
@@ -304,7 +304,7 @@ export async function connectionAttempts(
       -- A command with an effect outside the database, acting now in this Home's process: its
       -- settled state is its evidence; one that may have acted is unknown, contact lost (G4). A
       -- narrowed grant waits on it as a Disconnect does, as it does on sessions (K4).
-      -- A Request's phone alert is the same kind of row, told apart by its type (A5).
+      -- A phone alert of the connection's (A5, F1) is the same kind of row, told apart by its type.
       select case when a.type = 'notification.publish' then 'notification' else 'command' end,
         a.id, null, null, null, null, null, a.state = 'running',
         case when a.state <> 'running' then a.settled_at end,
@@ -738,7 +738,7 @@ export async function latestConnectionUncertainty(
         latest.kind === "shell"
           ? "Contact with this computer was lost before it confirmed the agent's shell there closed."
           : latest.kind === "notification"
-            ? "A phone alert for this agent's question may have been sent; the Opensteer account did not confirm it."
+            ? "A phone alert about this agent's work may have been sent; the Opensteer account did not confirm it."
             : "Contact was lost before this attempt confirmed it ended.",
       ...(latest.runnerId
         ? {

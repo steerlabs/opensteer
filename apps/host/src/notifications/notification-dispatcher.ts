@@ -47,7 +47,7 @@ export interface NotificationDispatcherOptions {
   readonly onAttemptSettled?: () => void;
 }
 
-/** One connected agent's Request alert as an attempt in its Disconnect set (A5). */
+/** One alert of a connected agent's Request or Run as an attempt in its Disconnect set (A5, F1). */
 interface PublicationAttempt {
   /** The hand-off, immediately before a request leaves: `false` sends nothing. */
   handOff(signal: AbortSignal): Promise<boolean>;
@@ -116,7 +116,7 @@ export class NotificationDispatcher {
   }
 
   /**
-   * Publishes one alert. A connected agent's Request alert is also one attempt in its
+   * Publishes one alert. A connected agent's alert (its Request, its Run's reply or failure) is also one attempt in its
    * connection's Disconnect set (A5): handed off by `beginPublication` immediately before its
    * request leaves, after every await, and settled when this ends: `done` once acknowledged,
    * `failed` when nothing can have reached the account, otherwise `unknown` (a send whose

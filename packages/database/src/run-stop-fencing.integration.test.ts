@@ -1648,7 +1648,7 @@ integration.sequential("Run stop fencing", () => {
       lastActionUncertain: expect.objectContaining({
         attemptId: begun.attemptId,
         reason:
-          "A phone alert for this agent's question may have been sent; the Opensteer account did not confirm it.",
+          "A phone alert about this agent's work may have been sent; the Opensteer account did not confirm it.",
       }),
     });
     // And the ended connection hands off nothing more.
