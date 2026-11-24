@@ -11,8 +11,9 @@ const part: CommandRequestPart = {
   type: "connection.update",
   family: "connections",
   face: "widen-self",
-  summary: "Change a connected agent: “Research” · Asked by the agent “Research”",
-  sentence: "Change a connected agent: “Research”",
+  summary:
+    "Change a connected agent's access: “Research” · Asked by the connected agent “Research”",
+  sentence: "Change a connected agent's access: “Research”",
   gives: "It gives “Research” the browser profile “Work”.",
   command: {
     type: "connection.update",
@@ -48,7 +49,7 @@ const pending = {
 describe("a command Request as the person reviews it", () => {
   it("shows the Home's sentence, who asked, the agent's words apart, and every argument", () => {
     const view = commandRequestView(pending)!;
-    expect(view.sentence).toBe("Change a connected agent: “Research”");
+    expect(view.sentence).toBe("Change a connected agent's access: “Research”");
     expect(view.askedBy).toBe("Asked by the connected agent “Research”");
     expect(view.agentWords).toEqual({
       label: "The connected agent says (its own words, not checked by the Home)",

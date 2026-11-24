@@ -800,8 +800,9 @@ describe("a command an agent proposed", () => {
     type: "connection.update",
     family: "connections",
     face: "widen-self",
-    summary: "Change a connected agent: “Research” · Asked by the agent “Research”",
-    sentence: "Change a connected agent: “Research”",
+    summary:
+      "Change a connected agent's access: “Research” · Asked by the connected agent “Research”",
+    sentence: "Change a connected agent's access: “Research”",
     gives: null,
     command: {
       type: "connection.update",

@@ -52,24 +52,18 @@ export const commandRequestWords = {
 } as const;
 
 function askedBy(proposer: CommandRequestPart["proposer"]): string {
+  // As the Home names it on the card's own title.
   const who =
     proposer.kind === "connection"
       ? `the connected agent “${proposer.name}”`
-      : proposer.kind === "program"
-        ? `the automation “${proposer.name}”`
-        : `the agent “${proposer.name}”`;
+      : `the agent “${proposer.name}”`;
   return proposer.taskTitle
     ? `Asked by ${who}, in its task “${proposer.taskTitle}”`
     : `Asked by ${who}`;
 }
 
 function agentWordsLabel(proposer: CommandRequestPart["proposer"]): string {
-  const who =
-    proposer.kind === "connection"
-      ? "The connected agent"
-      : proposer.kind === "program"
-        ? "The automation"
-        : "The agent";
+  const who = proposer.kind === "connection" ? "The connected agent" : "The agent";
   return `${who} says (its own words, not checked by the Home)`;
 }
 

@@ -591,7 +591,9 @@ describeStore("command Requests at the Home", (it) => {
     expect(request.presentation.title.startsWith(sentence)).toBe(true);
     expect(request.command!.summary.startsWith(sentence)).toBe(true);
     expect(request.presentation.title.length).toBeLessThanOrEqual(240);
-    expect(request.presentation.title).toContain("Asked by the agent “Opensteer: routine");
+    expect(request.presentation.title).toContain(
+      "Asked by the connected agent “Opensteer: routine",
+    );
   });
 
   it("rewrites the card to say what happened once the approval settles (X8)", async ({

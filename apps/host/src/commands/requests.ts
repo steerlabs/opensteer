@@ -638,9 +638,10 @@ const idKinds: Readonly<Record<string, CommandResource["kind"]>> = {
 
 /** Who asked, marked as the agent's own: its name and its task's title are its words. */
 function askedBy(proposer: CommandProposer): string {
+  const who = proposer.kind === "connection" ? "the connected agent" : "the agent";
   return proposer.taskTitle
-    ? `Asked by the agent “${proposer.name}”, in its task “${proposer.taskTitle}”`
-    : `Asked by the agent “${proposer.name}”`;
+    ? `Asked by ${who} “${proposer.name}”, in its task “${proposer.taskTitle}”`
+    : `Asked by ${who} “${proposer.name}”`;
 }
 
 /** The Home's sentence first and whole; whatever follows is cut to fit the title. */
