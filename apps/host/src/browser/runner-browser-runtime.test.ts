@@ -140,6 +140,11 @@ interface Boot {
 interface BootOptions {
   /** Messages the Runner receives but does not answer yet. */
   readonly hold?: (message: BrowserRuntimeRelayRequest) => boolean;
+  /**
+   * The Runner restarts as this message is sent: its socket is already closing, so the send
+   * fails with the socket's own error, and its restart reaches the Host just after.
+   */
+  readonly restartOnSend?: (message: BrowserRuntimeRelayRequest) => boolean;
   /** The Runner refuses every browser attach with this error. */
   readonly refuseAttach?: { code: string; message: string; retryable: boolean };
   readonly runtimeId?: string;
@@ -279,6 +284,10 @@ function restartFixture(options: { readonly copyOnRead?: boolean } = {}) {
           close: () => {},
           send: async (message) => {
             sent.push({ generation: boot.generation, message });
+            if (bootOptions.restartOnSend?.(message)) {
+              setImmediate(() => hub.detach(boot.peer, "device-restarting"));
+              throw new Error("WebSocket is closed");
+            }
             if (bootOptions.hold?.(message)) boot.held.push(message);
             else answer(boot, bootOptions, message);
           },
@@ -682,6 +691,29 @@ it("reopens the person's tab after three restarts in a row inside one deadline",
       { attachTicket: "person:fresh-person-ticket-3", connectionGeneration: 4 },
       { attachTicket: "person:fresh-person-ticket-4", connectionGeneration: 5 },
     ]);
+  } finally {
+    f.close();
+  }
+});
+
+it("reopens the person's tab when its Runner restarts as the reattach is sent", async () => {
+  useDeadlineClock();
+  const f = restartFixture();
+  try {
+    const first = f.boot();
+    const person = f.person();
+    await elapse(0);
+    // Resume brings the Runner back; Stop restarts it again as the person's reattach goes out.
+    f.restart(first);
+    await elapse(500);
+    f.boot({ restartOnSend: (message) => message.type === "browser.attach" });
+    await elapse(0);
+    await elapse(500);
+    f.boot();
+    await elapse(0);
+    expect(person.errors, "a restart under the reattach ended the person's tab").toEqual([]);
+    expect(person.closes).toEqual([]);
+    expect(person.connection.readyState).toBe(1);
   } finally {
     f.close();
   }

@@ -1276,6 +1276,12 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       void this.#registry
         .send(runnerId, { ...options.message, requestId: id } as BrowserRuntimeRelayRequest)
         .catch((error: unknown) => {
+          // A send the stream could not take while it is still the Runner's: its socket is
+          // closing, and the loss that follows answers this request after it has said whether
+          // the Runner is restarting (a restart under a person's reattach is then retried,
+          // never taken for a refusal). Its own timer bounds it otherwise.
+          const stream = this.#registry.stream(runnerId);
+          if (timer && stream && sameRunnerAuxiliaryFence(stream.fence, fence)) return;
           const pending = this.#takePending(id);
           pending?.reject(error);
         });
