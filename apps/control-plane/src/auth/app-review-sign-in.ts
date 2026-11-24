@@ -11,37 +11,30 @@ export interface AppReviewSignInConfig {
   readonly password: string;
   /**
    * The synthetic purchase's own Account: it signs in only an Account it created itself, marked
-   * so (`users.synthetic_at`), never an Account a person already has under that email.
+   * so (`users.synthetic_at`) by the very insert that made it, never an Account a person already
+   * has under that email. Nothing else signs in a marked Account (`auth.ts`).
    */
   readonly synthetic?: true;
 }
 
-/** Reads and sets the synthetic mark on an Account, in the account service's own database. */
-export interface SyntheticAccountMarks {
-  isSynthetic(userId: string): Promise<boolean>;
-  markSynthetic(userId: string): Promise<void>;
-}
+/** The path of this sign-in, the only one that opens a session for a marked Account. */
+export const appReviewSignInPath = "/sign-in/app-review";
 
 /**
  * Password sign-in for a fixed few configured accounts only: App Review's, and the synthetic
  * purchase's own. Each signs in only as itself.
  */
-export function appReviewSignIn(
-  configs: AppReviewSignInConfig | readonly AppReviewSignInConfig[],
-  marks?: SyntheticAccountMarks,
-) {
+export function appReviewSignIn(configs: AppReviewSignInConfig | readonly AppReviewSignInConfig[]) {
   const accounts = (Array.isArray(configs) ? configs : [configs]).map((config) => ({
     email: normalizeIdentityEmail(config.email),
     passwordDigest: createHash("sha256").update(config.password).digest(),
     synthetic: config.synthetic === true,
   }));
-  if (accounts.some((account) => account.synthetic) && !marks)
-    throw new Error("The synthetic purchase's sign-in needs the Account marks");
   return {
     id: "app-review",
     endpoints: {
       signInAppReview: createAuthEndpoint(
-        "/sign-in/app-review",
+        appReviewSignInPath,
         {
           method: "POST",
           use: [formCsrfMiddleware],
@@ -69,14 +62,15 @@ export function appReviewSignIn(
           };
           if (!email) throw refuse();
           const synthetic = matched[0]!.synthetic;
-          let created: string | undefined;
-          const answer = await runWithTransaction(ctx.context.adapter, async () => {
+          return runWithTransaction(ctx.context.adapter, async () => {
             const adapter = ctx.context.internalAdapter;
             const existing = await adapter.findUserByEmail(email);
-            // The synthetic purchase signs in only the Account it made: one a person already had
-            // under this email reads as a wrong password, so its computers are never touched.
-            if (synthetic && existing && !(await marks!.isSynthetic(existing.user.id)))
-              throw refuse();
+            // The synthetic purchase signs in only the Account it made, and App Review's never
+            // one so marked: either other reads as a wrong password, so a person's computers are
+            // never the synthetic purchase's to delete, nor its Account anyone else's.
+            const marked = (existing?.user as { syntheticAt?: Date | null } | undefined)
+              ?.syntheticAt;
+            if (existing && synthetic !== (marked != null)) throw refuse();
             const user = existing
               ? existing.user.emailVerified
                 ? existing.user
@@ -86,11 +80,12 @@ export function appReviewSignIn(
                     email,
                     emailVerified: true,
                     name: synthetic ? "Synthetic purchase" : "App Review",
+                    // Marked by the insert itself: no sign-in ever sees it unmarked.
+                    ...(synthetic ? { syntheticAt: new Date() } : {}),
                   },
                   { method: "app-review" },
                 );
             if (!user) throw new APIError("INTERNAL_SERVER_ERROR");
-            if (synthetic && !existing) created = user.id;
             const session = await adapter.createSession(user.id);
             if (!session) throw new APIError("INTERNAL_SERVER_ERROR");
             await setSessionCookie(ctx, { session, user });
@@ -99,10 +94,6 @@ export function appReviewSignIn(
               url: ctx.body.callbackURL ?? new URL(ctx.context.baseURL).origin,
             });
           });
-          // Marked once its Account exists for everyone: should this fail, the next sign-in
-          // finds an unmarked Account and is refused, never the other way round.
-          if (created) await marks!.markSynthetic(created);
-          return answer;
         },
       ),
     },

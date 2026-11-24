@@ -9,8 +9,9 @@ import {
   opensteerAccountDeleteOAuthScopes,
   opensteerDesktopOAuthClientId,
 } from "@opensteer/core";
+import { handleOAuthUserInfo } from "better-auth/oauth2";
 import { sql } from "kysely";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ControlPlaneAuthenticator,
   createControlPlaneAuth,
@@ -166,6 +167,114 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
         .execute(),
     ).toEqual([]);
     await database.deleteFrom("users").where("email", "=", syntheticSignIn.email).execute();
+  });
+
+  it("opens a session for the synthetic purchase's Account only through its own sign-in (V4)", async () => {
+    const syntheticSignIn = {
+      email: "synthetic-race@example.test",
+      password: "synthetic-test-password-with-24-characters",
+    };
+    const appReview = {
+      email: "appreview-marked@example.test",
+      password: "review-test-password-with-at-least-24-characters",
+    };
+    const auth = createControlPlaneAuth(database, { ...config, appReview, syntheticSignIn });
+    const context = await auth.$context;
+    const signIn = (body: Record<string, string>) =>
+      auth.handler(
+        new Request(new URL("/api/auth/sign-in/app-review", publicOrigin), {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: publicOrigin.origin },
+          body: JSON.stringify(body),
+        }),
+      );
+    // A Google sign-in under that email, as Better Auth's own callback runs it.
+    const oauth = (accountId: string) =>
+      handleOAuthUserInfo({ context, headers: new Headers() } as never, {
+        userInfo: {
+          id: accountId,
+          email: syntheticSignIn.email,
+          emailVerified: true,
+          name: "Fixture",
+        },
+        account: { providerId: "google", accountId },
+        callbackURL: publicOrigin.origin,
+        disableSignUp: false,
+      });
+    // The fourth look's reproduction: a Google sign-in run at the moment the mark is written, once
+    // the Account and its session were committed. There is no such moment now: the insert that
+    // makes the Account marks it, and no later write of the mark is made.
+    interface Write {
+      set(values: Record<string, unknown>): Write;
+      where(...args: unknown[]): Write;
+      execute(): Promise<unknown>;
+    }
+    const update = database.updateTable.bind(database) as unknown as (table: string) => Write;
+    let during: unknown;
+    const pause = vi.spyOn(database, "updateTable").mockImplementation(((table: string) => {
+      const query = update(table);
+      if (table !== "users") return query;
+      const set = query.set.bind(query);
+      vi.spyOn(query, "set").mockImplementation((values) => {
+        const write = set(values);
+        if ("syntheticAt" in values) {
+          const where = write.where.bind(write);
+          vi.spyOn(write, "where").mockImplementation((...args) => {
+            const target = where(...args);
+            const execute = target.execute.bind(target);
+            vi.spyOn(target, "execute").mockImplementation(async () => {
+              during = await oauth("fixture-existing");
+              return execute();
+            });
+            return target;
+          });
+        }
+        return write;
+      });
+      return query;
+    }) as never);
+    try {
+      expect((await signIn(syntheticSignIn)).status).toBe(200);
+    } finally {
+      pause.mockRestore();
+    }
+    expect(during).toBeUndefined();
+    const user = await database
+      .selectFrom("users")
+      .select(["id", "syntheticAt"])
+      .where("email", "=", syntheticSignIn.email)
+      .executeTakeFirstOrThrow();
+    expect(user.syntheticAt).toBeInstanceOf(Date);
+    // A provider link to it, however it came to exist (made in that gap before this release, or by
+    // hand), opens no session; nor does a new one, which is never linked.
+    await sql`insert into public.auth_accounts
+      (id, account_id, provider_id, user_id, created_at, updated_at)
+      values (${`aca_${crypto.randomUUID()}`}, 'fixture-existing', 'google', ${user.id}, now(),
+        now())`.execute(database);
+    expect(await oauth("fixture-existing")).toMatchObject({ data: null });
+    expect(await oauth("fixture-new")).toMatchObject({
+      error: "unable to link account",
+      data: null,
+    });
+    // Its own sign-in still opens one.
+    expect((await signIn(syntheticSignIn)).status).toBe(200);
+    // App Review's password never signs in a marked Account, should its address ever be one.
+    await sql`insert into public.users (id, display_name, email, email_verified, synthetic_at)
+      values (${`acct_${crypto.randomUUID()}`}, 'Synthetic purchase', ${appReview.email}, true,
+        now())`.execute(database);
+    expect((await signIn(appReview)).status).toBe(401);
+    expect(
+      await database
+        .selectFrom("authSessions")
+        .innerJoin("users", "users.id", "authSessions.userId")
+        .select("users.email")
+        .where("users.email", "=", appReview.email)
+        .execute(),
+    ).toEqual([]);
+    await database
+      .deleteFrom("users")
+      .where("email", "in", [syntheticSignIn.email, appReview.email])
+      .execute();
   });
 
   it("admits only the configured App Review credentials into a normal Account session", async () => {

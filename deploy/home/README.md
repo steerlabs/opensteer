@@ -241,7 +241,8 @@ General → Problems.
 
 A self-hosted Home sends nothing unless you, its operator, set `OPENSTEER_HOME_PROBLEM_REPORTS_URL` in
 `config.env` to an `https://` origin of your own that accepts `POST /v1/problem-reports` (the Host
-refuses `http://`, except on loopback). Also set `OPENSTEER_HOME_PROBLEM_REPORTS_TOKEN` (16 to 512
+refuses `http://`, except to a numeric loopback address, `127.0.0.0/8` or `[::1]`, never the name
+`localhost`). Also set `OPENSTEER_HOME_PROBLEM_REPORTS_TOKEN` (16 to 512
 printable characters): it is sent as `Authorization: Bearer <token>`, and your collector should
 refuse a report without it, because otherwise anyone who can reach the collector can post a forged
 report to it. Setting

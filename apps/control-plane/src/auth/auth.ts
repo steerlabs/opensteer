@@ -21,7 +21,11 @@ import { ControlPlaneError } from "../server/errors.js";
 import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
 import { appleOrigin } from "./apple-sign-in.js";
 import { isOfficialNativeReference } from "../database/store.js";
-import { appReviewSignIn, type AppReviewSignInConfig } from "./app-review-sign-in.js";
+import {
+  appReviewSignIn,
+  appReviewSignInPath,
+  type AppReviewSignInConfig,
+} from "./app-review-sign-in.js";
 
 const accountJwks = {
   gracePeriod: 30 * 24 * 60 * 60,
@@ -131,6 +135,20 @@ export function createControlPlaneAuth(
         },
       },
       session: {
+        create: {
+          // A marked Account is the synthetic purchase's: only its own sign-in opens a session
+          // for it, never Google, Apple or a provider link however it came to exist.
+          before: async (session, context) => {
+            if (context?.path === appReviewSignInPath) return undefined;
+            const user = await database
+              .selectFrom("users")
+              .select("syntheticAt")
+              .where("id", "=", session.userId as never)
+              .executeTakeFirst();
+            if (user?.syntheticAt) return false;
+            return undefined;
+          },
+        },
         delete: {
           before: async (session) => {
             // The provider preserves offline_access tokens on logout; Account sign-out
@@ -185,23 +203,6 @@ export function createControlPlaneAuth(
                 config.appReview,
                 config.syntheticSignIn && { ...config.syntheticSignIn, synthetic: true as const },
               ].filter((account): account is AppReviewSignInConfig => account !== undefined),
-              {
-                isSynthetic: async (userId) =>
-                  (
-                    await database
-                      .selectFrom("users")
-                      .select("syntheticAt")
-                      .where("id", "=", userId as never)
-                      .executeTakeFirst()
-                  )?.syntheticAt != null,
-                markSynthetic: async (userId) => {
-                  await database
-                    .updateTable("users")
-                    .set({ syntheticAt: new Date() })
-                    .where("id", "=", userId as never)
-                    .execute();
-                },
-              },
             ),
           ]
         : []),
@@ -289,6 +290,11 @@ export function createControlPlaneAuth(
     // this host makes that post subject to the origin check.
     trustedOrigins: [config.publicOrigin.origin, ...(config.apple ? [appleOrigin] : [])],
     user: {
+      // The synthetic purchase's mark (`app-review-sign-in.ts`): set only by the insert of its
+      // own Account, never by a request, never in a response.
+      additionalFields: {
+        syntheticAt: { type: "date", required: false, input: false, returned: false },
+      },
       deleteUser: { enabled: false },
       fields: { name: "displayName" },
       modelName: "users",

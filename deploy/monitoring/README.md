@@ -29,7 +29,8 @@ Three alerts page, because a person is hurt by them now:
 Everything else goes to the digest channel at most once a day per alert (`policies/digest-*.yaml`):
 a failed setup with its cause, a failed claim, a failed billing step, a deleted Cloud Computer that
 needs a look in Stripe, an overdue backup, pending backup erasure, a nearly empty pool, a Cloud
-Computer that reports a problem or stopped reporting, and a failing provisioner pass.
+Computer that reports a problem or stopped reporting, one that keeps going down for short outages,
+and a failing provisioner pass.
 
 ## Heartbeats
 
@@ -44,7 +45,7 @@ below. It is configuration; nothing in the code names a vendor.
 | `OPENSTEER_SYNTHETIC_HEARTBEAT_URL`        | after each passing synthetic purchase (every 6 h)    | 6 h    | 7 h    |
 
 The billing pass also runs the watch that writes `account.cloud_computer.not_ready`,
-`backup_overdue` and `pool.low`, so its heartbeat says the watch runs too. A Cloud Computer's own
+`unstable`, `backup_overdue` and `pool.low`, so its heartbeat says the watch runs too. A Cloud Computer's own
 backups need no heartbeat each: the watch reports a ready computer with no backup for 36 hours.
 
 ## Notification channels

@@ -792,10 +792,19 @@ function readBoundedDescriptor(
 }
 
 /** A collector's address: `https:`, or `http:` only on this machine's own loopback. */
+/**
+ * A collector's origin: https, or plain http only to a numeric loopback address (127.0.0.0/8 or
+ * ::1). Never by the name `localhost` or `*.localhost`: a resolver or a hosts file can point a
+ * name anywhere, and the report and its token would go there in the clear.
+ */
 function collectorOrigin(value: string): URL {
   const url = originUrl(value, "OPENSTEER_PROBLEM_REPORTS_URL");
-  if (url.protocol !== "https:" && !isLoopbackHostname(url.hostname))
-    throw new Error("OPENSTEER_PROBLEM_REPORTS_URL must be https (http only on loopback).");
+  const numericLoopback =
+    url.hostname === "[::1]" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/u.test(url.hostname);
+  if (url.protocol !== "https:" && !numericLoopback)
+    throw new Error(
+      "OPENSTEER_PROBLEM_REPORTS_URL must be https (http only to 127.0.0.0/8 or [::1]).",
+    );
   return url;
 }
 

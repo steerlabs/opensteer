@@ -17,6 +17,7 @@ import {
   ownerDirectoryVisibilityMigration,
 } from "./migrations.js";
 import { browserPoolMigration } from "../cloud-computers/pool-migration.js";
+import { problemReportsMigration } from "../cloud-computers/health-migration.js";
 import { organizationsMigrationBeforeRemoval } from "./one-person-account-migration.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
@@ -252,6 +253,8 @@ integration("Better Auth 1.7 Account migration", () => {
         '["openid", "email", "offline_access", "deployments:read"]');
     `.execute(database);
     await betterAuth17Migration.up(database);
+    // The one column of a later migration this release's sign-in reads: the synthetic mark (0039).
+    await sql`alter table public.users add column synthetic_at timestamptz`.execute(database);
   });
   afterAll(async () => {
     await database?.destroy();
@@ -663,15 +666,91 @@ integration("organizations removed (0037_remove_organizations)", () => {
     // Then the migration runs, and keeps both computers.
     await migrateControlPlaneToLatest(database);
     expect(await left()).toEqual([]);
-    // Every column it had is kept, but the one the migration drops.
+    // Every column it had is kept, but the one the migration drops; 0039, run again after it, gives
+    // this computer that is ready the last time it was seen so (it never reported: its last change).
     const { workAssignmentId, ...kept } = { ...before };
     expect(workAssignmentId).toBeNull();
-    expect(await computer(personal)).toEqual(kept);
+    expect(kept.readyAt).toBeNull();
+    expect(await computer(personal)).toEqual({ ...kept, readyAt: kept.updatedAt });
     expect(await computer(work)).toMatchObject({ accountId: assignee, state: "active" });
     // The seat it reserved is a free backup target.
     const target = await sql<{ id: string }>`
       select id from public.cloud_computer_backup_targets where id = ${reservedTarget}
         and computer_id is null and checkout_key is null`.execute(database);
     expect(target.rows).toEqual([{ id: reservedTarget }]);
+  });
+});
+
+integration("problem reports (0039_problem_reports)", () => {
+  const databaseName = `opensteer_problem_reports_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  let maintenance: Pool;
+  let database: Kysely<ControlPlaneDatabaseSchema>;
+  const urlForDatabase = (name: string) => {
+    const url = new URL(databaseUrl ?? "postgres://unconfigured");
+    url.pathname = `/${name}`;
+    return url.toString();
+  };
+
+  beforeAll(async () => {
+    maintenance = new Pool({ connectionString: urlForDatabase("postgres") });
+    await maintenance.query(`drop database if exists ${databaseName}`);
+    await maintenance.query(`create database ${databaseName}`);
+    database = createControlPlaneDatabase({
+      connectionString: urlForDatabase(databaseName),
+      maxConnections: 2,
+    });
+    await migrateControlPlaneToLatest(database);
+  });
+
+  afterAll(async () => {
+    await database?.destroy();
+    await maintenance?.query(`drop database if exists ${databaseName}`);
+    await maintenance?.end();
+  });
+
+  it("gives a computer that is ready as it runs the last time it was seen ready, and no other (S3)", async () => {
+    const computer = (n: number, phase: string, reportedAt: string | null) => sql`
+      insert into public.cloud_computers (
+        id, account_id, generation, state, hostname, region, server_type, release,
+        readiness_started_at, phase, ever_ready, reported_at, stripe_checkout_id,
+        stripe_customer_id, stripe_subscription_id, stripe_price_id, billing_currency,
+        billing_status, created_at, updated_at
+      ) values (
+        ${`cc_00000000-0000-4000-8000-00000000003${n}`},
+        ${`acct_00000000-0000-4000-8000-00000000003${n}`},
+        1, 'active', ${`cc-3${n}.home.example.test`}, 'us-central1-a', 'default', '{}'::jsonb,
+        '2026-11-01T00:00:00Z', ${phase}, ${phase === "ready"}, ${reportedAt},
+        ${`cs_3${n}`}, ${`cus_3${n}`}, ${`sub_3${n}`}, 'price_1', 'usd', 'active',
+        '2026-11-01T00:00:00Z', '2026-11-20T00:00:00Z'
+      )`;
+    for (const n of [1, 2, 3]) {
+      await sql`insert into public.users (id, display_name, email, email_verified)
+        values (${`acct_00000000-0000-4000-8000-00000000003${n}`}, 'Ada',
+          ${`ada${n}@example.test`}, true)`.execute(database);
+    }
+    await computer(1, "ready", "2026-11-24T09:00:00Z").execute(database);
+    await computer(2, "booting", "2026-11-24T09:00:00Z").execute(database);
+    await computer(3, "ready", null).execute(database);
+    // As a stack that was ready before 0039 sees it: the migration runs over these rows.
+    await problemReportsMigration.up(database);
+    const rows = await sql<{ id: string; readyAt: Date | null; downAt: Date | null }>`
+      select id, ready_at, down_at from public.cloud_computers where id like 'cc_00000000-0000-4000-8000-00000000003%'
+      order by id`.execute(database);
+    expect(rows.rows).toEqual([
+      // Its last report, never earlier: no outage of it reads as a first set-up.
+      {
+        id: "cc_00000000-0000-4000-8000-000000000031",
+        readyAt: new Date("2026-11-24T09:00:00Z"),
+        downAt: null,
+      },
+      // Not ready now: nothing is claimed of it.
+      { id: "cc_00000000-0000-4000-8000-000000000032", readyAt: null, downAt: null },
+      // Ready and never reported: its last change.
+      {
+        id: "cc_00000000-0000-4000-8000-000000000033",
+        readyAt: new Date("2026-11-20T00:00:00Z"),
+        downAt: null,
+      },
+    ]);
   });
 });

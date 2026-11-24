@@ -11,6 +11,7 @@ import {
   diskBucket,
   problemCodes,
   problemTable,
+  reportRefinements,
   type HomeHealthReport,
 } from "./problems.js";
 
@@ -36,6 +37,29 @@ const namedPatterns = new Map(
     return [patternsOf(def)[0]!, maximumOf(def)!] as const;
   }),
 );
+/**
+ * The checks a report's schemas may carry, an allow-list by schema type: the named patterns and
+ * their maximum, a whole number's format and bounds, an array's maximum, and the two refinements
+ * that read a problem and change nothing. Any other check is a finding, above all one that
+ * rewrites a value (`overwrite`), which could put any text into a report its pattern admitted.
+ */
+const allowedChecks: Readonly<Record<string, ReadonlySet<string>>> = {
+  string: new Set(["max_length", "string_format:regex"]),
+  number: new Set(["number_format:safeint", "greater_than", "less_than"]),
+  array: new Set(["max_length"]),
+};
+const pinnedRefinements = new Set<unknown>(Object.values(reportRefinements));
+/** Each check on a schema that the allow-list does not admit, named. */
+const checksNotAllowed = (def: Def) =>
+  checksOf(def)
+    .filter((check) =>
+      check.check === "custom"
+        ? def.type !== "object" || !pinnedRefinements.has(check.fn)
+        : !allowedChecks[String(def.type)]?.has(
+            `${String(check.check)}${check.format ? `:${String(check.format)}` : ""}`,
+          ),
+    )
+    .map((check) => String(check.check));
 const maxEnumValues = 64;
 /** At most this many repeats along any path through arrays and records. */
 const maxArrayProduct = 64;
@@ -47,7 +71,8 @@ const maxLeaves = 512;
  * reports"). What it promises: no free text gets into a report, so no field can carry an
  * address, a name, a path, a token or an error's own words. It allows an enum or a literal of at
  * most 64 values, a boolean, a bounded whole number, or a string with exactly one of the two named
- * patterns (flags and maximum length included); records keyed by an enum; arrays and records whose
+ * patterns (flags and maximum length included); no check but those (allowedChecks), so nothing
+ * rewrites a value; records keyed by an enum; arrays and records whose
  * sizes multiply to at most 64 along any path, and at most 512 leaves in all; strict objects and
  * unions of those. What it does not promise: a bound on how many chosen bits a report carries
  * (about 340 bytes today, in counts, times and versions). It need not be one: the receiver is the
@@ -63,6 +88,7 @@ function freeTextLeaves(
 ): number {
   const def = defOf(schema);
   const maximum = maximumOf(def);
+  for (const check of checksNotAllowed(def)) out.push(`${path} (a check: ${check})`);
   const leaves = ((): number => {
     switch (def.type) {
       case "enum": {
@@ -335,6 +361,51 @@ describe("problems", () => {
         .safeParse("hunter2@gmail.com\n1.2.3").success,
     ).toBe(true);
     expect(ReleaseVersionSchema.safeParse("hunter2@gmail.com\n1.2.3").success).toBe(false);
+  });
+
+  it("the guard finds a check that rewrites a value, and any check it does not know (V3)", () => {
+    const note = "synthetic fixture: /private/demo.txt";
+    const shapes = {
+      // The version's pattern admits "1.2.3", and the overwrite sends a note in its place.
+      version: z.strictObject({ release: ReleaseVersionSchema.overwrite(() => note) }),
+      // A strict object of nothing, rewritten into one with a field it never declared.
+      object: z.strictObject({}).overwrite(() => ({ note }) as never),
+      // Any other check, even one that only reads: the guard cannot tell what it does.
+      refined: z.strictObject({
+        count: z
+          .number()
+          .int()
+          .min(0)
+          .max(9)
+          .refine(() => true),
+      }),
+      checked: z.strictObject({}).check(() => undefined),
+    };
+    const said = (schema: z.ZodType, name: string) => {
+      const leaves: string[] = [];
+      freeTextLeaves(schema, name, leaves);
+      return leaves;
+    };
+    expect(said(shapes.version, "version")).toEqual(["version.release (a check: overwrite)"]);
+    expect(said(shapes.object, "object")).toEqual(["object (a check: overwrite)"]);
+    expect(said(shapes.refined, "refined")).toEqual(["refined.count (a check: custom)"]);
+    expect(said(shapes.checked, "checked")).toEqual(["checked (a check: custom)"]);
+    // What they would have sent.
+    expect(shapes.version.parse({ release: "1.2.3" })).toEqual({ release: note });
+    expect(shapes.object.parse({})).toEqual({ note });
+  });
+
+  it("sends exactly these bytes for a report: what its schema gives back, nothing added (V3)", () => {
+    const bytes = JSON.stringify(HomeHealthReportSchema.parse(report));
+    expect(bytes).toBe(
+      '{"schema":1,"home":"cloud-computer","version":"1.4.0","disk":"70-85",' +
+        '"services":{"host":"healthy","runner":"unhealthy"},' +
+        '"lastBackup":{"result":"failed","failure":"repository-unreachable","at":"2026-11-24T10:00:00Z"},' +
+        '"lastUpdate":{"result":"rolled-back","at":"2026-11-24T09:00:00Z","fromVersion":"1.3.9","toVersion":"1.4.0"},' +
+        '"problems":[{"code":"engine.inspection_failed","count":1,"firstSeenAt":"2026-11-24T08:00:00Z",' +
+        '"lastSeenAt":"2026-11-24T10:00:00Z","fields":{"engine":"codex"}}]}',
+    );
+    expect(JSON.parse(bytes)).toEqual(report);
   });
 
   it("refuses the reviews' leaks as values too, an impossible time among them", () => {

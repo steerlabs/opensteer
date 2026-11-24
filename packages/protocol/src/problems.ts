@@ -224,6 +224,22 @@ export function problemDefinition(code: ProblemCode): ProblemDefinition {
   return problemTable[code];
 }
 
+/**
+ * The refinements a report's schemas use, and the only ones: each reads a problem and changes
+ * nothing. The no-words guard (`problems.test.ts`) admits these by name and no other check that is
+ * not a bound or one of the two named patterns, so a check that rewrites a value is never sent.
+ */
+export const reportRefinements = {
+  /** Only the fields its code's row in the table names. */
+  fieldsOfItsCode: (problem: { readonly code: ProblemCode; readonly fields: object }) => {
+    const allowed: readonly string[] = problemTable[problem.code].fields;
+    return Object.keys(problem.fields).every((name) => allowed.includes(name));
+  },
+  /** Only a problem the Home itself knows (`knownBy: "home"`). */
+  knownByHome: (problem: { readonly code: ProblemCode }) =>
+    problemTable[problem.code].knownBy === "home",
+} as const;
+
 /** A problem as it is now: how many there are, since when, and its fields. */
 export const ProblemSchema = z
   .strictObject({
@@ -233,12 +249,7 @@ export const ProblemSchema = z
     lastSeenAt: ReportTimeSchema,
     fields: ProblemFieldsSchema,
   })
-  .superRefine((problem, context) => {
-    const allowed = new Set<string>(problemTable[problem.code].fields);
-    for (const name of Object.keys(problem.fields))
-      if (!allowed.has(name))
-        context.addIssue({ code: "custom", path: ["fields", name], message: "Not a field of it" });
-  });
+  .refine(reportRefinements.fieldsOfItsCode, { path: ["fields"], message: "Not a field of it" });
 export type Problem = z.infer<typeof ProblemSchema>;
 
 export const problemsLimit = 32;
@@ -281,7 +292,7 @@ export const HomeHealthReportSchema = z.strictObject({
   ...MachineStatusSchema.shape,
   problems: z
     .array(
-      ProblemSchema.refine((problem) => problemTable[problem.code].knownBy === "home", {
+      ProblemSchema.refine(reportRefinements.knownByHome, {
         message: "Only a Home's own problems",
       }),
     )

@@ -55,6 +55,20 @@ publish_machine_status`);
     expect(readFileSync(out, "utf8")).not.toMatch(/Users|etc|laptop|restic/u);
   });
 
+  it("hands the Host exactly these bytes, which its schema gives back unchanged (V3)", () => {
+    const { out } = run(`record_backup_result ok
+record_update_result updated 1.3.9 1.4.0
+publish_machine_status`);
+    const bytes = readFileSync(out, "utf8");
+    const [backupAt, updateAt] = [...bytes.matchAll(/"at":"([^"]+)"/gu)].map((match) => match[1]);
+    expect(bytes).toBe(
+      '{"services":{"host":"healthy","runner":"unhealthy","postgres":"stopped"},' +
+        `"lastBackup":{"result":"ok","at":"${backupAt}"},` +
+        `"lastUpdate":{"result":"updated","at":"${updateAt}","fromVersion":"1.3.9","toVersion":"1.4.0"}}`,
+    );
+    expect(JSON.stringify(MachineStatusSchema.parse(JSON.parse(bytes)))).toBe(bytes);
+  });
+
   it("hands it over again only when it changed", () => {
     const { home } = run(`publish_machine_status
 publish_machine_status

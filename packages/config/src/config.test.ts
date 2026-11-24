@@ -939,6 +939,15 @@ describe("networked Personal Home", () => {
     expect(() =>
       parseHostConfig({ ...home, OPENSTEER_PROBLEM_REPORTS_URL: "http://collector.example.com" }),
     ).toThrow("must be https");
+    for (const loopback of ["http://127.10.0.1:9000", "http://[::1]:9000"])
+      expect(
+        parseHostConfig({ ...home, OPENSTEER_PROBLEM_REPORTS_URL: loopback }).problemReportsOrigin,
+      ).toEqual(new URL(loopback));
+    // A name is what a resolver says it is: plain http only to a numeric loopback address.
+    for (const name of ["http://localhost:9000", "http://collector.localhost:9000"])
+      expect(() => parseHostConfig({ ...home, OPENSTEER_PROBLEM_REPORTS_URL: name })).toThrow(
+        "must be https",
+      );
     const token = "t".repeat(32);
     expect(
       parseHostConfig({

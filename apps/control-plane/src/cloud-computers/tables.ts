@@ -59,10 +59,12 @@ export interface CloudComputerTable {
   revision: Generated<number>;
   everReady: Generated<boolean>;
   generationReady: Generated<boolean>;
-  /** When it last became ready; see `report`. */
+  /** When it last became ready; see `report`. A computer with none has never been ready. */
   readyAt: Generated<Date | null>;
   /** When the current outage began; null while it is ready. See `report` and `watch`. */
   downAt: Generated<Date | null>;
+  /** When the current run of outages began, kept across short ready spells. See `watch`. */
+  unstableSince: Generated<Date | null>;
   dnsQuarantined: Generated<boolean>;
   createAttempted: Generated<boolean>;
   bootCompletedAt: NullableTimestamp;

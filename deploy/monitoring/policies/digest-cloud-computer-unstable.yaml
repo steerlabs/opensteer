@@ -1,0 +1,26 @@
+# A Cloud Computer has kept going down for 30 minutes, each outage too short to page: its person keeps losing it.
+# Runbook: docs/cloud-computer-operations.md, "A Cloud Computer keeps going down".
+displayName: "Opensteer: A Cloud Computer keeps going down"
+severity: WARNING
+userLabels:
+  opensteer_alert: digest
+documentation:
+  mimeType: text/markdown
+  subject: "Opensteer: A Cloud Computer keeps going down"
+  content: |-
+    A Cloud Computer has kept going down for 30 minutes, each outage too short to page: its person keeps losing it.
+
+    Open the runbook, docs/cloud-computer-operations.md, section "A Cloud Computer keeps going down".
+combiner: OR
+conditions:
+  - displayName: "A Cloud Computer keeps going down"
+    conditionMatchedLog:
+      filter: >-
+        resource.type="k8s_container" AND resource.labels.namespace_name="opensteer-system" AND jsonPayload.event="account.cloud_computer.unstable"
+      labelExtractors:
+        computer_id: EXTRACT(jsonPayload.computerId)
+        event: EXTRACT(jsonPayload.event)
+alertStrategy:
+  notificationRateLimit:
+    period: 86400s
+  autoClose: 604800s
