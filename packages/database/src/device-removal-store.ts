@@ -205,6 +205,7 @@ export async function removeDevice(
         ...effects,
         endedSessionIds: ended.map((r) => r.id),
         deletedBrowserProfiles: [],
+        browserUsageThreadIds: [],
         cancelledRequestIds: [...revoked.cancelledRequestIds, ...cancelledRequestIds],
         closedBrowserSessions: [],
         revokedComputerConnectionIds: revoked.connectionIds,

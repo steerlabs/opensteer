@@ -1,6 +1,12 @@
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { lockBrowserHomeRunner } from "./browser-home-store.js";
-import { OpensteerError, type BrowserProfileId, type RunnerId, type UserId } from "@opensteer/core";
+import {
+  OpensteerError,
+  type BrowserProfileId,
+  type RunnerId,
+  type ThreadId,
+  type UserId,
+} from "@opensteer/core";
 import {
   BrowserProfileStorageSchema,
   type BrowserProfileStorage,
@@ -18,6 +24,7 @@ import type { BrowserProfileDeletionTable, BrowserProfileTable, DatabaseSchema }
 
 export interface NativeProfileDeletionResult {
   readonly sessionIds: readonly BrowserSessionId[];
+  readonly usageThreadIds: readonly ThreadId[];
   readonly deletion?: PendingBrowserProfileDeletion;
 }
 
@@ -247,7 +254,7 @@ export async function reconcileBrowserProfileInventory(
       );
     if (claim.phase === "deleted") {
       // Retain the tombstone identity when rolling forward a pre-conversion database.
-      await deleteBrowserProfileInTransaction(transaction, {
+      const removed = await deleteBrowserProfileInTransaction(transaction, {
         ownerId: row.ownerId,
         profileId: row.id,
         deletionId: claim.deletionId,
@@ -272,14 +279,14 @@ export async function reconcileBrowserProfileInventory(
           .execute(databaseOperationOptions());
         mutation.bumpResource("browser-profile");
       }
-      return;
+      return { usageThreadIds: removed.usageThreadIds };
     }
     if (row.archivedAt) {
       await recordBrowserProfileDeletion(transaction, claim.binding);
       mutation.bumpResource("browser-profile");
-      return;
+      return { usageThreadIds: [] as readonly ThreadId[] };
     }
-    if (row.initialized) return;
+    if (row.initialized) return { usageThreadIds: [] as readonly ThreadId[] };
     await transaction
       .updateTable("browserProfiles")
       .set({ initialized: true })
@@ -287,6 +294,7 @@ export async function reconcileBrowserProfileInventory(
       .execute(databaseOperationOptions());
     mutation.bumpResource("browser-profile");
     mutation.bumpResource("browser-availability");
+    return { usageThreadIds: [] as readonly ThreadId[] };
   });
 }
 

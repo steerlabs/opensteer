@@ -727,11 +727,6 @@ export class HttpHostClient {
       watchChanged: () => this.#stream.watchResources(),
       // Rows stay on screen; the inventory is only no longer known to be complete.
       behind: (kind) => kind === "tab" && this.#tabs.markInventoryStale(),
-      // Archiving a browser profile changes which sessions `thread.browserUsage.get` returns
-      // and only sends a `browser-profile` resource update; invalidate shown tasks on any advance.
-      revisionAdvanced: (kind) => {
-        if (kind === "browser-profile") this.#refreshShownBrowserUsage();
-      },
       unreadable: (kind, unreadable) => {
         const held = this.#snapshot.unreadableResources ?? [];
         if (held.includes(kind) === unreadable) return;
@@ -1173,10 +1168,8 @@ export class HttpHostClient {
         ...this.#snapshot,
         assignments: mergeAssignments(this.#snapshot.assignments, [result.assignment]),
       });
-    if (result.type === "browser.profile.delete" && command.type === result.type) {
+    if (result.type === "browser.profile.delete" && command.type === result.type)
       this.browserHistory.drop(command.profileId);
-      this.#refreshShownBrowserUsage();
-    }
     if (
       "threadId" in command &&
       (command.type.startsWith("thread.input") || command.type === "thread.sendMessage")
@@ -2739,7 +2732,6 @@ export class HttpHostClient {
       else pending.again ??= "missing";
       return;
     }
-    if (!this.#reader(threadId)?.detail.transcript.getSnapshot().synchronized) return;
     const known = this.#browserUsageRead.get(threadId);
     const runIds = [...this.#browserUsageRunIds(threadId)].sort();
     const scope = mode === "full" || !known ? null : runIds.filter((runId) => !known.has(runId));
@@ -2773,7 +2765,7 @@ export class HttpHostClient {
       });
   }
 
-  /** The Host says these conversations gained a browser use. */
+  /** The Host says these conversations' visible browser usage changed. */
   #browserUsageChanged(threadIds: readonly string[]): void {
     for (const threadId of threadIds) {
       if (!this.#showsThread(threadId)) continue;
@@ -2783,13 +2775,6 @@ export class HttpHostClient {
       this.#browserUsageRead.delete(threadId);
       this.#ensureBrowserUsage(threadId, "full");
     }
-  }
-
-  #refreshShownBrowserUsage(): void {
-    const shown = new Set<string>();
-    if (this.#activeThreadId) shown.add(this.#activeThreadId);
-    for (const threadId of this.#observedThreads.keys()) shown.add(threadId);
-    if (shown.size > 0) this.#browserUsageChanged([...shown]);
   }
 
   /** False when the read was given up on before it could answer anything. */

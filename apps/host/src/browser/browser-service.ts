@@ -413,6 +413,7 @@ export interface BrowserSessionRepository {
     readonly profileId: BrowserProfileId;
   }): Promise<{
     readonly sessionIds: readonly BrowserSessionId[];
+    readonly usageThreadIds?: readonly ThreadId[];
     readonly deletion?: PendingBrowserProfileDeletion;
   }>;
   listActiveBrowserSessionsForAgent(input: {
@@ -1028,10 +1029,15 @@ export class BrowserService {
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
   }): Promise<PendingBrowserProfileDeletion | undefined> {
-    const { sessionIds, deletion } = await this.#serializeKey(
-      `profile-admission:${input.profileId}`,
-      () => this.#repository.deleteBrowserProfile(input),
+    const {
+      sessionIds,
+      usageThreadIds = [],
+      deletion,
+    } = await this.#serializeKey(`profile-admission:${input.profileId}`, () =>
+      this.#repository.deleteBrowserProfile(input),
     );
+    if (usageThreadIds.length)
+      this.announceUsage(usageThreadIds.map((threadId) => ({ threadId, joined: false })));
     for (const [id, group] of this.#personUseGroups)
       if (group.profileId === input.profileId) this.#endPersonUse(id);
     this.invalidatePlaceAuthority();
@@ -1062,7 +1068,10 @@ export class BrowserService {
 
   async profilesRemoved(
     profiles: readonly { id: BrowserProfileId; ownerId: UserId }[],
+    usageThreadIds: readonly ThreadId[] = [],
   ): Promise<void> {
+    if (usageThreadIds.length)
+      this.announceUsage(usageThreadIds.map((threadId) => ({ threadId, joined: false })));
     this.invalidatePlaceAuthority();
     for (const [id, group] of this.#personUseGroups)
       if (profiles.some((profile) => profile.id === group.profileId)) this.#endPersonUse(id);

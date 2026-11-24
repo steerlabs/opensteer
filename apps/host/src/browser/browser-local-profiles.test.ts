@@ -64,3 +64,58 @@ it("binds an empty profile once, acknowledges readiness durably, and refuses cha
   ).rejects.toThrow("original browser engine");
   expect(bind).toHaveBeenCalledTimes(1);
 });
+
+it("forwards affected usage thread IDs to onReconciled when inventory reconciliation archives a deleted profile", async () => {
+  const deploymentId = createId("deployment");
+  const profileId = createId("browserProfile");
+  const runnerId = createId("runner");
+  const threadId = createId("thread");
+  const storageInstanceId = randomUUID();
+  const binding: LocalProfileBinding = {
+    version: 1,
+    deploymentId,
+    profileId,
+    runnerId,
+    storageInstanceId,
+    bindingId: randomUUID(),
+    engine: "chromium",
+  };
+  const onReconciled = vi.fn(async () => undefined);
+  const repository = {
+    reconcileBrowserProfileInventory: vi.fn(async () => ({ usageThreadIds: [threadId] })),
+  } as unknown as BrowserLocalProfileRepository;
+  const profiles = new BrowserLocalProfiles({
+    deploymentId,
+    repository,
+    baseUrl: new URL("https://host.test"),
+    onReconciled,
+  });
+  await profiles.reconcileInventory(
+    {
+      identity: {
+        runnerId,
+        modules: {
+          browser: {
+            localProfileStorage: { engine: "chromium", storageInstanceId },
+          },
+        },
+      },
+    } as never,
+    {
+      type: "browser.profile.inventory",
+      module: "browser",
+      engine: "chromium",
+      storageInstanceId,
+      complete: true,
+      profiles: [
+        {
+          phase: "deleted",
+          binding,
+          deletionId: randomUUID(),
+          erasure: "deleted",
+        },
+      ],
+    } as never,
+  );
+  expect(onReconciled).toHaveBeenCalledExactlyOnceWith(profileId, [threadId]);
+});

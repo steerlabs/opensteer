@@ -304,6 +304,32 @@ export async function renameBrowserProfile(
   );
 }
 
+/** Maximum distinct conversations returned per profile archive invalidation. */
+export const maxArchivedProfileUsageThreads = 1_000;
+
+/**
+ * Distinct conversations whose browser usage references sessions of `profileIds`,
+ * most recently active first and bounded so profile archival stays predictable.
+ */
+export async function listBrowserProfileUsageThreads(
+  database: Kysely<DatabaseSchema>,
+  profileIds: readonly BrowserProfileId[],
+  limit = maxArchivedProfileUsageThreads,
+): Promise<readonly ThreadId[]> {
+  if (profileIds.length === 0 || limit <= 0) return [];
+  const rows = await database
+    .selectFrom("browserSessions")
+    .innerJoin("browserSessionUses", "browserSessionUses.sessionId", "browserSessions.id")
+    .select("browserSessionUses.threadId")
+    .where("browserSessions.profileId", "in", profileIds)
+    .groupBy("browserSessionUses.threadId")
+    .orderBy((eb) => eb.fn.max("browserSessionUses.lastUsedAt"), "desc")
+    .orderBy("browserSessionUses.threadId", "asc")
+    .limit(limit)
+    .execute(databaseOperationOptions());
+  return rows.map((row) => row.threadId);
+}
+
 /** Archived identities remain named by session history until native erasure is confirmed. */
 export async function deleteBrowserProfile(
   database: Kysely<DatabaseSchema>,
@@ -316,9 +342,16 @@ export async function deleteBrowserProfile(
   return commitPersonalMutation(database, async (transaction) => {
     // The profile lock ranks before the administration ledger's.
     await lockBrowserProfile(transaction, input.profileId);
-    return administrationCommand(transaction, input.administration, () =>
-      deleteBrowserProfileInTransaction(transaction, input),
-    );
+    let usageThreadIds: readonly ThreadId[] = [];
+    const result = await administrationCommand(transaction, input.administration, async () => {
+      const removed = await deleteBrowserProfileInTransaction(transaction, input);
+      usageThreadIds = removed.usageThreadIds;
+      return {
+        sessionIds: removed.sessionIds,
+        ...(removed.deletion ? { deletion: removed.deletion } : {}),
+      };
+    });
+    return { ...result, usageThreadIds };
   });
 }
 
@@ -355,6 +388,9 @@ export async function deleteBrowserProfileInTransaction(
     .where("id", "=", input.profileId)
     .where("archivedAt", "is", null)
     .execute(databaseOperationOptions());
+  const usageThreadIds = !owned.archivedAt
+    ? await listBrowserProfileUsageThreads(transaction, [input.profileId])
+    : [];
   await lockBrowserHistory(transaction, input.profileId);
   await transaction
     .deleteFrom("browserHistoryEntries")
@@ -384,7 +420,11 @@ export async function deleteBrowserProfileInTransaction(
       mutation.bumpResource("browser-placement");
       mutation.bumpResource("browser-availability");
     }
-    return { sessionIds: live.map((session) => session.id), ...(deletion ? { deletion } : {}) };
+    return {
+      sessionIds: live.map((session) => session.id),
+      usageThreadIds,
+      ...(deletion ? { deletion } : {}),
+    };
   });
 }
 

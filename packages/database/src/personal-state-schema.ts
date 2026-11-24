@@ -767,11 +767,14 @@ export async function applyRunProviderRetry(database: Kysely<DatabaseSchema>) {
 
 export const taskOpenIndexesMigrationName = "0047_task_open_indexes";
 /**
- * Indexes the task-open reads on `browser_session_uses`, `delegations`, and `runs`:
+ * Indexes the task-open reads on `browser_session_uses`, `delegations`, and `runs`, plus
+ * profile-to-session lookup for browser profile archival invalidation:
  * - `browser_session_uses_thread_session_run` serves `getThreadBrowserUsage`'s per-(session, run)
  *   top-N page lookups in recency order without scanning or sorting partitions.
  * - `browser_session_uses_thread_session_page` serves `getThreadBrowserUsage`'s latest non-null
  *   page lookup per top session via an index-ordered LIMIT 1 probe.
+ * - `browser_sessions_profile` serves `listBrowserProfileUsageThreads` by mapping archived
+ *   profiles to all their historical sessions via an index-only scan.
  * - `delegations_parent_thread_created` and `delegations_child_thread_created` serve
  *   `listThreadAssignmentsForOwner` in newest-first order without scanning `delegations`.
  * - `runs_assignment_latest` serves `assignmentSummariesInTransaction`'s `DISTINCT ON
@@ -789,6 +792,9 @@ export async function applyTaskOpenIndexes(database: Kysely<DatabaseSchema>) {
     create index if not exists browser_session_uses_thread_session_page
       on browser_session_uses(thread_id, session_id, last_used_at desc, id desc)
       where page_site is not null;
+    create index if not exists browser_sessions_profile
+      on browser_sessions(profile_id, id)
+      where profile_id is not null;
     create index if not exists delegations_parent_thread_created
       on delegations(parent_thread_id, created_at desc, id desc);
     create index if not exists delegations_child_thread_created

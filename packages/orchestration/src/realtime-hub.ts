@@ -188,12 +188,18 @@ export class RealtimeHub {
   }
 
   publishBrowserUsageChanged(threadIds: readonly ThreadId[]): void {
+    const unique = [...new Set(threadIds)];
+    if (unique.length === 0) return;
     for (const { sink, sync } of this.#connections) {
-      const interested = [...new Set(threadIds)].filter((id) => sync.observesThread(id));
-      if (interested.length === 0) continue;
-      void sink
-        .send({ type: "host.browser-usage-changed", threadIds: interested.slice(0, 100) })
-        .catch(() => sink.close(1011, "Browser usage notice failed"));
+      const interested = unique.filter((id) => sync.observesThread(id));
+      for (let start = 0; start < interested.length; start += 100) {
+        void sink
+          .send({
+            type: "host.browser-usage-changed",
+            threadIds: interested.slice(start, start + 100),
+          })
+          .catch(() => sink.close(1011, "Browser usage notice failed"));
+      }
     }
   }
 }
