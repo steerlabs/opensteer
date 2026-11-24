@@ -552,4 +552,49 @@ describe("AutomationScriptExecutor", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+
+  it("keeps partial bytes and appends an explicit marker when a child stdout pipe errors", async () => {
+    const workspace = await temporaryWorkspace();
+    const automationId = createId("trigger");
+    const firingId = createId("triggerOccurrence");
+    async function* failingStdout(): AsyncGenerator<Buffer> {
+      yield Buffer.from("line 1\n", "utf8");
+      yield Buffer.from("line 2\n", "utf8");
+      throw new Error("EIO: pipe read failed");
+    }
+    async function* emptyStderr(): AsyncGenerator<Buffer> {
+      // No stderr output.
+    }
+    const output = await new AutomationScriptExecutor({
+      nativeFsHelperBinary,
+      nodeExecutable: process.execPath,
+      privateDirectory: join(workspace.path, ".opensteer", "private"),
+      spawn: () =>
+        ({
+          exited: Promise.resolve({ code: 0, signal: null }),
+          stdout: failingStdout(),
+          stderr: emptyStderr(),
+          terminate: async () => ({ code: 0, signal: null }),
+        }) as unknown as ReturnType<typeof import("@opensteer/harness").spawnSupervised>,
+    }).execute({
+      automationId,
+      endpoints: { mcp: { token: "tok", url: "http://127.0.0.1:1/mcp" } },
+      event: {
+        automationId,
+        firedAt: new Date().toISOString(),
+        firingId,
+        kind: "manual",
+      },
+      firingId,
+      planLaunch: async () => (launch: HarnessProcessLaunch) => launch,
+      script: { interpreter: null, text: "console.log('ignored');" },
+      signal: new AbortController().signal,
+      workspace,
+    });
+    expect(output.status).toBe("succeeded");
+    expect(output.exitCode).toBe(0);
+    expect(output.stdout).toContain("line 1\nline 2\n");
+    expect(output.stdout).toContain("[Opensteer could not read the rest of this output]");
+    expect(output.stderr).toBe("");
+  });
 });

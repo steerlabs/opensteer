@@ -18,6 +18,7 @@ import {
   describeRepeating,
   formatFullMoment,
   runOutcome,
+  runOutput,
   scheduleStatusWord,
 } from "./automation-presentation.js";
 
@@ -55,6 +56,7 @@ export interface ScheduleDetail {
     readonly occurrence: TriggerDetail["occurrences"][number];
     readonly error: string | null;
     readonly outcome: string;
+    readonly output: string | null;
     readonly replies: readonly TriggerDetail["downstreamRuns"][number][];
   }[];
 }
@@ -152,6 +154,7 @@ export function scheduleDetail(
           reply?.run.status ?? null,
           now,
         ),
+        output: runOutput(occurrence),
       };
     }),
   };

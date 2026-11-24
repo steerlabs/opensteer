@@ -39,6 +39,7 @@ export type ProgramLaunchPlanner = (input: {
 }) => Promise<HarnessProcessLaunchWrapper>;
 
 const truncationMarker = "\n[Opensteer truncated earlier process output]\n";
+const unreadableOutputMarker = "\n[Opensteer could not read the rest of this output]\n";
 
 /** Removes leftover per-firing script and webhook-body files left by an earlier crashed Runner boot (AA14.7). */
 export async function cleanupPriorAutomationScripts(privateStateDirectory: string): Promise<void> {
@@ -110,6 +111,7 @@ export interface AutomationScriptExecutorOptions {
   readonly nativeFsHelperBinary: string;
   readonly nodeExecutable: string;
   readonly privateDirectory?: string;
+  readonly spawn?: typeof spawnSupervised;
 }
 
 /**
@@ -127,6 +129,7 @@ export class AutomationScriptExecutor {
   readonly #nativeFs: NativeFsHelper;
   readonly #nodeExecutable: string;
   readonly #privateDirectory: string;
+  readonly #spawn: typeof spawnSupervised;
 
   constructor(options: AutomationScriptExecutorOptions) {
     this.#baseEnvironment = options.baseEnvironment;
@@ -141,6 +144,7 @@ export class AutomationScriptExecutor {
     this.#privateDirectory = resolve(
       options.privateDirectory ?? join(tmpdir(), "opensteer-automation-scripts"),
     );
+    this.#spawn = options.spawn ?? spawnSupervised;
   }
 
   async execute(input: {
@@ -236,13 +240,13 @@ export class AutomationScriptExecutor {
         environment,
         executable,
       });
-      const child = spawnSupervised({
+      const child = this.#spawn({
         ...launch,
         output: "raw",
         stdin: "closed",
       });
-      const stdout = collectBounded(child.stdout, MAX_OUTPUT_TAIL_BYTES).catch(() => "");
-      const stderr = collectBounded(child.stderr, MAX_OUTPUT_TAIL_BYTES).catch(() => "");
+      const stdout = collectBounded(child.stdout, MAX_OUTPUT_TAIL_BYTES);
+      const stderr = collectBounded(child.stderr, MAX_OUTPUT_TAIL_BYTES);
       const stop = () => void child.terminate().catch(() => undefined);
       if (input.signal.aborted) stop();
       else input.signal.addEventListener("abort", stop, { once: true });
@@ -417,29 +421,40 @@ async function collectBounded(
   stream: AsyncIterable<Buffer>,
   maximumBytes: number,
 ): Promise<string> {
-  const markerBytes = Buffer.byteLength(truncationMarker, "utf8");
-  const tailBudget = Math.max(0, maximumBytes - markerBytes);
+  const truncationBytes = Buffer.byteLength(truncationMarker, "utf8");
+  const tailBudget = Math.max(0, maximumBytes - truncationBytes);
   let tail: Buffer = Buffer.alloc(0);
   let truncated = false;
-  for await (const chunk of stream) {
-    if (chunk.byteLength === 0) continue;
-    const combined = tail.byteLength === 0 ? chunk : Buffer.concat([tail, chunk]);
-    if (combined.byteLength > maximumBytes) {
-      truncated = true;
-      tail = combined.subarray(combined.byteLength - tailBudget);
-    } else if (truncated && combined.byteLength > tailBudget) {
-      tail = combined.subarray(combined.byteLength - tailBudget);
-    } else {
-      tail = combined;
+  let readError = false;
+  try {
+    for await (const chunk of stream) {
+      if (chunk.byteLength === 0) continue;
+      const combined = tail.byteLength === 0 ? chunk : Buffer.concat([tail, chunk]);
+      if (combined.byteLength > maximumBytes) {
+        truncated = true;
+        tail = combined.subarray(combined.byteLength - tailBudget);
+      } else if (truncated && combined.byteLength > tailBudget) {
+        tail = combined.subarray(combined.byteLength - tailBudget);
+      } else {
+        tail = combined;
+      }
     }
+  } catch {
+    readError = true;
   }
-  if (truncated) {
-    let start = 0;
+  const prefix = truncated ? truncationMarker : "";
+  const suffix = readError ? unreadableOutputMarker : "";
+  const markerBytes = Buffer.byteLength(prefix, "utf8") + Buffer.byteLength(suffix, "utf8");
+  const budget = Math.max(0, maximumBytes - markerBytes);
+  if (tail.byteLength > budget) {
+    tail = tail.subarray(tail.byteLength - budget);
+  }
+  let start = 0;
+  if (truncated || readError) {
     while (start < tail.byteLength && (tail[start]! & 0xc0) === 0x80) start += 1;
-    const sliced = start > 0 ? tail.subarray(start) : tail;
-    return `${truncationMarker}${sliced.toString("utf8")}`;
   }
-  return tail.toString("utf8");
+  const sliced = start > 0 ? tail.subarray(start) : tail;
+  return `${prefix}${sliced.toString("utf8")}${suffix}`;
 }
 
 function assertChildPath(root: string, child: string): void {

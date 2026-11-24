@@ -4036,6 +4036,7 @@ function occurrenceFromRow(
     event: row.event,
     exitCode: row.exitCode,
     id: row.id,
+    outputPrunedAt: row.outputPrunedAt?.toISOString() ?? null,
     result: row.result,
     revisionId: row.revisionId,
     ...(row.frameSentAt !== undefined ? { sent: row.frameSentAt !== null } : {}),

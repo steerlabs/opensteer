@@ -429,6 +429,19 @@ export function runOutcome(
   }
 }
 
+export const prunedOutputNotice = "Opensteer no longer keeps this firing's output.";
+
+/** A firing's own output: what it printed or returned, or a notice when Opensteer no longer keeps it. */
+export function runOutput(occurrence: TriggerOccurrence): string | null {
+  if (occurrence.outputPrunedAt) return prunedOutputNotice;
+  const parts = [
+    occurrence.stdout.trim(),
+    occurrence.stderr.trim(),
+    occurrence.result === null ? "" : JSON.stringify(occurrence.result, null, 2),
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join("\n\n") : null;
+}
+
 export function scheduleStatusWord(
   status: TriggerSummary["status"],
   pauseReason: string | null,
