@@ -79,11 +79,14 @@ it("refreshes open tasks' browser usage after each deleted tombstone's reconcili
     engine: "chromium",
   });
   const kept = binding(),
-    deleted = binding();
+    deleted = binding(),
+    // A tombstone the Host already archived, re-sent as every attach does.
+    resent = binding();
   const order: string[] = [];
   const repository = {
     reconcileBrowserProfileInventory: vi.fn(async (claim: { binding: LocalProfileBinding }) => {
       order.push(`committed ${claim.binding.profileId}`);
+      return { archived: claim.binding.profileId === deleted.profileId };
     }),
   } as unknown as BrowserLocalProfileRepository;
   const profiles = new BrowserLocalProfiles({
@@ -111,6 +114,7 @@ it("refreshes open tasks' browser usage after each deleted tombstone's reconcili
       profiles: [
         { phase: "ready", binding: kept },
         { phase: "deleted", binding: deleted, deletionId: randomUUID(), erasure: "deleted" },
+        { phase: "deleted", binding: resent, deletionId: randomUUID(), erasure: "deleted" },
       ],
     } as never,
   );
@@ -120,5 +124,7 @@ it("refreshes open tasks' browser usage after each deleted tombstone's reconcili
     `committed ${deleted.profileId}`,
     "refreshed",
     `reconciled ${deleted.profileId}`,
+    `committed ${resent.profileId}`,
+    `reconciled ${resent.profileId}`,
   ]);
 });

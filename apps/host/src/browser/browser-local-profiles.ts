@@ -120,8 +120,9 @@ export class BrowserLocalProfiles {
       )
         refuse("The browser inventory contains a conflicting profile binding.");
       seen.add(binding.profileId);
-      await this.options.repository.reconcileBrowserProfileInventory(claim);
-      if (claim.phase === "deleted") this.options.onProfileArchived?.();
+      const { archived } = await this.options.repository.reconcileBrowserProfileInventory(claim);
+      // A runner re-sends the tombstones it keeps on every attach; only a new archive refreshes.
+      if (archived) this.options.onProfileArchived?.();
       await this.options.onReconciled?.(binding.profileId);
     }
   }
