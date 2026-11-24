@@ -108,6 +108,7 @@ export function createHostApiHandlers(
   plugins?: PluginOwnerApi,
   pluginOAuth?: PluginOAuthService,
   commandRequests?: CommandRequestService,
+  secretDigestKey?: Buffer,
 ): Omit<
   HostApiHandlers,
   | "personal.remoteAccess.get"
@@ -147,6 +148,7 @@ export function createHostApiHandlers(
       computerViews,
       plugins,
       pluginOAuth,
+      secretDigestKey,
     }),
   };
   return {

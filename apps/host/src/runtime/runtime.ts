@@ -256,6 +256,7 @@ import {
 import { createHostServer } from "../server.js";
 import { CommandRequestService } from "../commands/requests.js";
 import { agentCommandRegistry } from "../commands/agent-door.js";
+import { deriveCommandSecretDigestKey } from "../commands/secret-digest.js";
 import { CommandTools } from "../mcp/handlers/commands.js";
 import { CommandRequestStore } from "@opensteer/database";
 import { EgressService } from "../server/egress-service.js";
@@ -1445,6 +1446,7 @@ export async function createHostRuntime(
       dataDirectory,
       ...(config.credentialKeyPath ? { keyPath: config.credentialKeyPath } : {}),
     });
+    const commandSecretDigestKey = deriveCommandSecretDigestKey(credentialKey);
     const integrationVault = new AesGcmSecretVault(
       new StaticEncryptionKeyProvider(new Map([[1, credentialKey]]), 1),
     );
@@ -3435,6 +3437,7 @@ export async function createHostRuntime(
           requests: () => commandRequestsForTools,
           sessions: agentSessions,
           administration,
+          secretDigestKey: commandSecretDigestKey,
         }),
         plugins: pluginTools,
         localServers: localServerRegistry,
@@ -3665,6 +3668,7 @@ export async function createHostRuntime(
         runToolTokens,
         agentTools,
         toolActivity,
+        secretDigestKey: commandSecretDigestKey,
         authenticator,
         browser,
         tabs,

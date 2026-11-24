@@ -1,9 +1,8 @@
-import { createHmac } from "node:crypto";
 import { OpensteerError } from "@opensteer/core";
-import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { z } from "zod";
 import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import { runCommandEffect, type CommandAttempts } from "./command-effect.js";
+import { sanitizeCommandRequestWithSecretDigests } from "./secret-digest.js";
 import {
   admitCommand,
   assertCommandAdmitted,
@@ -74,6 +73,8 @@ export type CommandAsk = Extract<AgentCommandOutcome, { readonly status: "ask" }
 
 export interface CommandDoor {
   readonly registry: CommandRegistry;
+  /** Private Host HMAC key (derived from credentialKey) for secret-field idempotency digests. */
+  readonly secretDigestKey?: Buffer | undefined;
 }
 /** The door as an agent meets it: the same registry, and the one admission. */
 export interface AgentCommandDoor extends CommandDoor {
@@ -215,7 +216,7 @@ export async function dispatchCommand(
     agentRunsNow(row, admission.face, handler, holder?.scope ?? null);
   assertNoSecretPaths(row, command, runsNow);
   if (runsNow) {
-    const authority = commandAuthority(actor, command, row);
+    const authority = commandAuthority(actor, command, row, door.secretDigestKey);
     const readmit = door.readmit;
     const effect = await runCommandEffect({
       row,
@@ -286,32 +287,21 @@ function commandAuthority(
   caller: AgentCaller,
   command: HostApiCommand,
   row: CommandRow,
+  secretDigestKey?: Buffer,
 ): CommandAuthority {
   const { type, idempotencyKey, ...request } = command as HostApiCommand & {
     readonly idempotencyKey?: string;
   };
   if (!idempotencyKey)
     throw new OpensteerError({ code: "bad_request", message: "A command needs its key" });
-  const sanitized = JSON.parse(JSON.stringify(request)) as Record<string, unknown>;
-  const secretDigests: Record<string, string> = {};
-  for (const path of row.secretFields ?? []) {
-    const keys = path.split(".");
-    let at: unknown = sanitized;
-    for (const key of keys.slice(0, -1))
-      at = typeof at === "object" && at !== null ? (at as Record<string, unknown>)[key] : undefined;
-    if (typeof at === "object" && at !== null && keys.at(-1)! in at) {
-      const value = (at as Record<string, unknown>)[keys.at(-1)!];
-      if (value !== undefined) {
-        secretDigests[path] = createHmac("sha256", `${caller.userId}:${idempotencyKey}`)
-          .update(canonicalJson(value))
-          .digest("hex");
-      }
-      delete (at as Record<string, unknown>)[keys.at(-1)!];
-    }
-  }
-  if (Object.keys(secretDigests).length > 0) {
-    sanitized.__secretDigests = secretDigests;
-  }
+  const sanitized = sanitizeCommandRequestWithSecretDigests({
+    commandType: type,
+    idempotencyKey,
+    key: secretDigestKey,
+    request: request as Record<string, unknown>,
+    secretFields: row.secretFields ?? [],
+    userId: caller.userId,
+  });
   const authority = Object.freeze({
     caller,
     identity: {
@@ -394,8 +384,10 @@ function parseHeld(row: CommandRow, command: HostApiCommand, underConnection: bo
  * Only paths explicitly listed in `row.agentMaySet` are allowed when the call runs now (S1).
  */
 function assertNoSecretPaths(row: CommandRow, command: HostApiCommand, runsNow: boolean): void {
-  const allowed = runsNow ? new Set(row.agentMaySet ?? []) : null;
-  for (const path of row.secretFields ?? []) {
+  const secretFields = row.secretFields;
+  if (!secretFields || secretFields.length === 0) return;
+  const allowed = runsNow && row.agentMaySet?.length ? new Set(row.agentMaySet) : null;
+  for (const path of secretFields) {
     if (allowed?.has(path)) continue;
     let at: unknown = command;
     for (const key of path.split(".")) {

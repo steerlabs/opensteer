@@ -92,6 +92,7 @@ export interface CommandFamilies {
   readonly computerViews?: ComputerViewService | undefined;
   readonly plugins?: PluginOwnerApi | undefined;
   readonly pluginOAuth?: PluginOAuthService | undefined;
+  readonly secretDigestKey?: Buffer | undefined;
 }
 
 /** One entry per command type: the family handler the person's `commands.dispatch` used. */
@@ -155,7 +156,13 @@ function familyHandler(
       );
   if (type.startsWith("trigger."))
     return (actor, command, context) =>
-      handleTriggerCommand(families.triggers, command as TriggerCommand, context, actor);
+      handleTriggerCommand(
+        families.triggers,
+        command as TriggerCommand,
+        context,
+        actor,
+        families.secretDigestKey,
+      );
   if (isDeviceCommand(type))
     return (_actor, command, context) =>
       handleDeviceCommand(families.devices, command as DeviceCommand, context);

@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import {
   createId,
@@ -10,6 +10,7 @@ import {
 } from "@opensteer/core";
 import {
   AgentConnectionStore,
+  AgentToolActivityStore,
   CommandRequestStore,
   OpensteerStore,
   TriggerStore,
@@ -23,11 +24,13 @@ import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { describeStore, type StoreFixture } from "@opensteer/database/test-support/store";
 import type { HostApiCommand, HostApiServerContext } from "@opensteer/protocol";
+import { agentToolHostRoutePath } from "@opensteer/protocol/agent-tool-relay";
 import {
   MAX_AUTOMATION_SECRET_VALUE_BYTES,
   MAX_AUTOMATION_SECRETS,
   MAX_AUTOMATION_SECRETS_TOTAL_BYTES,
 } from "@opensteer/triggers";
+import Fastify from "fastify";
 import { sql } from "kysely";
 import { describe, expect, it as standaloneIt, vi } from "vitest";
 import type { AdministrationService } from "../administration/administration-service.js";
@@ -37,11 +40,14 @@ import { agentCommandRegistry } from "../commands/agent-door.js";
 import { dispatchCommand, type CommandDoor } from "../commands/dispatch.js";
 import { createCommandRegistry } from "../commands/registry.js";
 import { CommandRequestService } from "../commands/requests.js";
+import { deriveCommandSecretDigestKey } from "../commands/secret-digest.js";
 import { SignedTokenService } from "../identity/host-keys.js";
 import type { AgentCaller } from "../mcp/agent-caller.js";
+import { registerAgentToolRoute } from "../mcp/agent-tool-route.js";
 import type { AdministrationToolHandlers } from "../mcp/handlers/administration.js";
 import { CommandTools } from "../mcp/handlers/commands.js";
 import { TriggerToolHandlers } from "../mcp/handlers/triggers.js";
+import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import { AutomationSecrets } from "./automation-secrets.js";
 import { createTriggerRpcHandlers } from "./trigger-routes.js";
 import { TriggerService } from "./trigger-service.js";
@@ -1129,6 +1135,260 @@ describeStore("automation secrets through the one door", (it) => {
       expect(triggerRow.encryptedSecrets!.toString("utf8")).not.toContain(agentMarker);
     } finally {
       for (const spy of logSpies) spy.mockRestore();
+    }
+  });
+
+  it("redacts secret values in real PostgreSQL tool_calls (relay admitted, relay refused, and Runner tool.started) and uses private Host-keyed ledger HMACs (R1, R2)", async ({
+    storeFixture,
+  }) => {
+    const {
+      automationSecrets,
+      commandTools,
+      database,
+      f,
+      personDispatch,
+      store,
+      triggerStore,
+      triggers,
+    } = await setup(storeFixture, "full-access");
+    const created = await triggers.create(
+      {
+        anchorThreadId: f.threadId,
+        idempotencyKey: "r1-r2-create",
+        name: "R1 R2 test",
+        ownerId: f.userId,
+        script,
+        source: scheduleSource,
+      },
+      null,
+    );
+    const triggerId = created.trigger.id;
+    const digestKey = deriveCommandSecretDigestKey(Buffer.alloc(32, 0x57));
+    const admittedMarker = `pg-relay-admitted-${randomUUID()}`;
+    const refusedMarker = `pg-relay-refused-${randomUUID()}`;
+    const runnerMarker = `pg-runner-started-${randomUUID()}`;
+    const personPin = "0421";
+
+    // Build real relay route backed by PostgreSQL AgentToolActivityStore.
+    const initialRunRow = await database
+      .selectFrom("runs")
+      .select(["bindingGeneration", "status"])
+      .where("id", "=", f.run.id)
+      .executeTakeFirstOrThrow();
+    const activity = new AgentToolActivityStore(database);
+    const app = Fastify();
+    const makeRunCaller = (accessMode: ThreadAccessMode) =>
+      ({
+        kind: "run",
+        key: `run:${f.run.id}`,
+        userId: f.userId as UserId,
+        accessMode,
+        claims: {
+          runId: f.run.id,
+          threadId: f.threadId,
+          environmentId: f.environmentId,
+          bindingGeneration: initialRunRow.bindingGeneration ?? 1,
+        },
+        thread: {
+          id: f.threadId,
+          environmentId: f.environmentId,
+          accessMode,
+          purpose: "task",
+        },
+      }) as unknown as AgentCaller;
+    let currentCaller: AgentCaller = makeRunCaller("full-access");
+    const callers = {
+      authenticate: async (token: string) => {
+        if (token !== "run-token") throw new Error("Unauthorized");
+        return currentCaller;
+      },
+    };
+    const mcpService = new OpensteerMcpService({
+      callers,
+      handlers: {
+        opensteer_command: (call) => commandTools.opensteer_command(call),
+      },
+      store,
+      publicUrl: new URL("https://secrets.opensteer.test"),
+    });
+    registerAgentToolRoute(app, {
+      callers,
+      service: mcpService,
+      activity,
+      realtime: { observeScopes: () => () => true },
+      secretDigestKey: digestKey,
+    });
+
+    try {
+      const replayCallId = randomUUID();
+      // 1. Admitted Full-access Run call through the REAL relay route.
+      const okRes = await app.inject({
+        method: "POST",
+        url: agentToolHostRoutePath,
+        headers: { authorization: "Bearer run-token" },
+        payload: {
+          callId: replayCallId,
+          name: "opensteer_command",
+          input: {
+            command: {
+              type: "trigger.secrets.set",
+              triggerId,
+              set: { RELAY_OK: admittedMarker },
+            },
+          },
+        },
+      });
+      expect(okRes.statusCode).toBe(200);
+      expect(okRes.json()).toMatchObject({
+        structuredContent: {
+          status: "done",
+          result: { type: "trigger.secrets.set", secretNames: ["RELAY_OK"] },
+        },
+      });
+      expect(okRes.body).not.toContain(admittedMarker);
+
+      // Value actually reached the door and was sealed for execution.
+      const sealedAfterRelay = await triggerStore.getEncryptedSecrets(f.userId, triggerId);
+      expect(await automationSecrets.values(triggerId, sealedAfterRelay)).toEqual({
+        RELAY_OK: admittedMarker,
+      });
+
+      // Replaying the SAME callId with a DIFFERENT secret value is rejected via private argumentDigest.
+      const conflictRes = await app.inject({
+        method: "POST",
+        url: agentToolHostRoutePath,
+        headers: { authorization: "Bearer run-token" },
+        payload: {
+          callId: replayCallId,
+          name: "opensteer_command",
+          input: {
+            command: {
+              type: "trigger.secrets.set",
+              triggerId,
+              set: { RELAY_OK: `${admittedMarker}-different` },
+            },
+          },
+        },
+      });
+      expect(conflictRes.json()).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: "conflict" } },
+      });
+
+      // 2. Refused Supervised Run call through the REAL relay route.
+      await database
+        .updateTable("threads")
+        .set({ accessMode: "approval-required" })
+        .where("id", "=", f.threadId)
+        .execute();
+      await database
+        .updateTable("runs")
+        .set({ accessMode: "approval-required" })
+        .where("id", "=", f.run.id)
+        .execute();
+      currentCaller = makeRunCaller("approval-required");
+      const refusedRes = await app.inject({
+        method: "POST",
+        url: agentToolHostRoutePath,
+        headers: { authorization: "Bearer run-token" },
+        payload: {
+          callId: randomUUID(),
+          name: "opensteer_command",
+          input: {
+            command: {
+              type: "trigger.secrets.set",
+              triggerId,
+              set: { RELAY_BAD: refusedMarker },
+            },
+          },
+        },
+      });
+      expect(refusedRes.statusCode).toBe(200);
+      expect(refusedRes.json()).toMatchObject({ isError: true });
+      expect(refusedRes.body).not.toContain(refusedMarker);
+
+      // 3. Runner-reported `tool.started` event through runner-event-store.ts.
+      const runRow = await database
+        .selectFrom("runs")
+        .select(["bindingGeneration", "nextRunnerOrdinal"])
+        .where("id", "=", f.run.id)
+        .executeTakeFirstOrThrow();
+      const attemptRow = await database
+        .selectFrom("runAttempts")
+        .select(["runnerId", "runnerBootId"])
+        .where("runId", "=", f.run.id)
+        .where("status", "=", "current")
+        .executeTakeFirstOrThrow();
+      await store.commitRunnerEvent({
+        environmentId: f.environmentId,
+        runnerId: attemptRow.runnerId ?? f.runnerId,
+        runnerBootId: attemptRow.runnerBootId ?? "boot_r1",
+        event: {
+          type: "tool.started",
+          runId: f.run.id,
+          threadId: f.threadId,
+          environmentId: f.environmentId,
+          bindingGeneration: runRow.bindingGeneration ?? 1,
+          ordinal: runRow.nextRunnerOrdinal,
+          emittedAt: new Date().toISOString(),
+          data: {
+            callId: `runner-call-${randomUUID()}`,
+            tool: { namespace: "opensteer", name: "opensteer_command" },
+            arguments: {
+              command: {
+                type: "trigger.secrets.set",
+                triggerId,
+                set: { RUNNER_KEY: runnerMarker },
+              },
+            },
+          },
+        },
+      });
+
+      // Scan ALL tool_calls rows in PostgreSQL: zero plaintext markers, all redacted.
+      const toolCallRows = await database.selectFrom("toolCalls").selectAll().execute();
+      expect(toolCallRows.length).toBeGreaterThanOrEqual(3);
+      const serializedToolCalls = JSON.stringify(toolCallRows);
+      expect(serializedToolCalls).not.toContain(admittedMarker);
+      expect(serializedToolCalls).not.toContain(refusedMarker);
+      expect(serializedToolCalls).not.toContain(runnerMarker);
+      for (const row of toolCallRows) {
+        if (row.tool?.name === "opensteer_command") {
+          expect(row.arguments).toMatchObject({
+            command: { type: "trigger.secrets.set", set: "[redacted]" },
+          });
+        }
+      }
+
+      // 4. R2: Person command ledger digest cannot be matched offline with requestedBy:idempotencyKey.
+      await personDispatch({
+        type: "trigger.secrets.set",
+        triggerId,
+        idempotencyKey: "person-r2-pin",
+        set: { PIN: personPin },
+      });
+      const personCmd = await database
+        .selectFrom("commands")
+        .select(["requestedBy", "idempotencyKey", "payload"])
+        .where("idempotencyKey", "=", "person-r2-pin")
+        .executeTakeFirstOrThrow();
+      const storedPinDigest = (
+        (
+          personCmd.payload as {
+            readonly request?: { readonly __secretDigests?: Record<string, string> };
+          }
+        ).request?.__secretDigests ?? {}
+      ).set;
+      expect(storedPinDigest).toMatch(/^[0-9a-f]{64}$/u);
+      const offlineGuess = createHmac(
+        "sha256",
+        `${personCmd.requestedBy}:${personCmd.idempotencyKey}`,
+      )
+        .update(JSON.stringify({ PIN: personPin }))
+        .digest("hex");
+      expect(storedPinDigest).not.toBe(offlineGuess);
+    } finally {
+      await app.close();
     }
   });
 });

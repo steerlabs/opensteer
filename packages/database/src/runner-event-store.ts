@@ -1,4 +1,5 @@
 import { lockRunProjectionRows } from "./run-projection-locks.js";
+import { redactToolArgumentsForStorage } from "@opensteer/protocol/command-table";
 import { outsideName } from "@opensteer/shared/outsideName";
 import { executionDate } from "./personal-transaction.js";
 import {
@@ -724,7 +725,7 @@ async function applyEventProjection(
           {
             ...key,
             tool: event.data.tool,
-            arguments: event.data.arguments,
+            arguments: redactToolArgumentsForStorage(event.data.arguments),
             ...(integration ? { integration } : {}),
             ...(event.data.provisional ? { provisional: true } : {}),
           },

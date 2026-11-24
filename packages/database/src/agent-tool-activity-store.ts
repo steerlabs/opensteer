@@ -28,7 +28,13 @@ export class AgentToolActivityStore {
     this.#database = database;
   }
 
-  async start(context: AgentToolActivityContext, callId: string, name: string, args: unknown) {
+  async start(
+    context: AgentToolActivityContext,
+    callId: string,
+    name: string,
+    args: unknown,
+    argumentDigest?: Buffer,
+  ) {
     if (!callId.startsWith(`harness:${context.runId}:${context.bindingGeneration}:`))
       throw new TypeError("Harness activity must name its Run attempt");
     return commitPersonalMutation(this.#database, async (tx, mutation) => {
@@ -67,6 +73,7 @@ export class AgentToolActivityStore {
         origin,
         tool: { namespace: "opensteer", name },
         arguments: args,
+        ...(argumentDigest ? { argumentDigest } : {}),
       });
       return {
         handle: { toolCallId: result.call.id, origin } satisfies HostToolEffectHandle,

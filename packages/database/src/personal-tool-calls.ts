@@ -249,6 +249,8 @@ export async function startPersonalToolCall(
   input: ToolKey & {
     readonly tool: ToolIdentity;
     readonly arguments: unknown;
+    /** Optional precomputed private Host-keyed digest when `arguments` was redacted before storage. */
+    readonly argumentDigest?: Buffer;
     readonly integration?: IntegrationCallSubject;
     readonly provisional?: true;
   },
@@ -274,7 +276,7 @@ export async function startPersonalToolCall(
       code: "resource_exhausted",
       message: "Tool arguments exceed their retained limit",
     });
-  const digest = personalArgumentDigest(normalized);
+  const digest = input.argumentDigest ?? personalArgumentDigest(normalized);
   if (existing) {
     if (
       existing.origin !== input.origin ||

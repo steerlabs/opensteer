@@ -441,6 +441,7 @@ export interface HostServerDependencies {
   readonly browser: BrowserService;
   readonly tabs: TabService;
   readonly toolActivity: AgentToolActivityStore;
+  readonly secretDigestKey?: Buffer | undefined;
   readonly browserSources: BrowserSourceService;
   readonly passwordSignIns: Pick<PasswordSignInService, "get" | "respond">;
   readonly signBrowserSourceInvitation: (bytes: Uint8Array) => string;
@@ -738,6 +739,7 @@ export async function createHostServer(
     service: dependencies.agentTools,
     activity: dependencies.toolActivity,
     realtime: dependencies.realtime,
+    secretDigestKey: dependencies.secretDigestKey,
   });
   registerAgentPageBindingRoute(
     app,
@@ -2679,6 +2681,7 @@ export async function createHostServer(
       dependencies.plugins,
       dependencies.pluginOAuth,
       dependencies.commandRequests,
+      dependencies.secretDigestKey,
     ),
     ...(dependencies.connections
       ? createConnectionRpcHandlers(

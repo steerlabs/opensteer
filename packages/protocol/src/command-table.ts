@@ -1673,3 +1673,81 @@ export function commandAgentOutput(command: Command, output: unknown): unknown {
   );
   return sensitive ? { type: command.type } : output;
 }
+
+export const REDACTED_SECRET_MARKER = "[redacted]";
+
+/**
+ * Returns `command` with every path listed in its command-table `secretFields` replaced by
+ * `REDACTED_SECRET_MARKER`. Returns the input reference unchanged when no secret field is present,
+ * and never mutates the caller's object so live inputs reach the command door untouched.
+ */
+export function redactCommandSecrets(command: unknown): unknown {
+  if (typeof command !== "object" || command === null || Array.isArray(command)) return command;
+  const record = command as Record<string, unknown>;
+  const type = record.type;
+  if (typeof type !== "string" || !Object.hasOwn(commandTable, type)) return command;
+  const secretFields = commandTable[type as CommandType].secretFields;
+  if (!secretFields || secretFields.length === 0) return command;
+
+  let changed = false;
+  let cloned: Record<string, unknown> | null = null;
+  for (const path of secretFields) {
+    const keys = path.split(".");
+    let probe: unknown = record;
+    let found = true;
+    for (const key of keys) {
+      if (
+        typeof probe !== "object" ||
+        probe === null ||
+        Array.isArray(probe) ||
+        !Object.hasOwn(probe, key)
+      ) {
+        found = false;
+        break;
+      }
+      probe = (probe as Record<string, unknown>)[key];
+    }
+    if (!found || probe === undefined) continue;
+    if (!cloned) cloned = structuredClone(record);
+    let target: Record<string, unknown> = cloned;
+    for (const key of keys.slice(0, -1)) {
+      target = target[key] as Record<string, unknown>;
+    }
+    target[keys.at(-1)!] = REDACTED_SECRET_MARKER;
+    changed = true;
+  }
+  return changed && cloned ? cloned : command;
+}
+
+/**
+ * Redacts command secret fields inside tool arguments before they are written to durable records
+ * (Host relay `tool_calls.arguments` and Runner `tool.started` events) for `opensteer_command` and
+ * any tool carrying a command object whose `type` declares `secretFields` in the command table.
+ */
+export function redactToolArgumentsForStorage(args: unknown): unknown {
+  if (typeof args === "string") {
+    try {
+      const parsed = JSON.parse(args) as unknown;
+      const redacted = redactToolArgumentsForStorage(parsed);
+      return redacted === parsed ? args : JSON.stringify(redacted);
+    } catch {
+      return args;
+    }
+  }
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return args;
+  const record = args as Record<string, unknown>;
+  if (Object.hasOwn(record, "command")) {
+    const redactedCommand = redactCommandSecrets(record.command);
+    if (redactedCommand !== record.command) {
+      return { ...record, command: redactedCommand };
+    }
+  }
+  if (
+    Object.hasOwn(record, "type") &&
+    typeof record.type === "string" &&
+    Object.hasOwn(commandTable, record.type)
+  ) {
+    return redactCommandSecrets(record);
+  }
+  return args;
+}

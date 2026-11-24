@@ -1,10 +1,12 @@
+import { createHmac } from "node:crypto";
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
-import type {
-  AgentGrant,
-  AuthenticatedSession,
-  OpensteerError,
-  ThreadAccessMode,
-  UserId,
+import {
+  createId,
+  type AgentGrant,
+  type AuthenticatedSession,
+  type OpensteerError,
+  type ThreadAccessMode,
+  type UserId,
 } from "@opensteer/core";
 import { commandHolds, commandRule } from "@opensteer/database";
 import type { HostApiCommand, HostApiServerContext } from "@opensteer/protocol";
@@ -493,6 +495,54 @@ describe("dispatchCommand", () => {
     } finally {
       row.step = originalStep;
     }
+  });
+
+  it("keys stored secret digests with a private Host key so ledger fields alone cannot test guesses (R2)", async () => {
+    const { registry } = spyRegistry();
+    let capturedRequest: Record<string, unknown> | undefined;
+    const anyRegistry = {
+      ...registry,
+      "trigger.secrets.set": {
+        accepts: "any" as const,
+        run: async (
+          _actor: unknown,
+          command: HostApiCommand,
+          options?: {
+            readonly authority?: {
+              readonly identity?: { readonly request?: Record<string, unknown> };
+            };
+          },
+        ) => {
+          capturedRequest = options?.authority?.identity?.request;
+          return { type: command.type, secretNames: ["PIN"] } as never;
+        },
+      },
+    };
+    const caller = run("full-access");
+    await dispatchCommand(
+      caller,
+      {
+        type: "trigger.secrets.set",
+        triggerId: createId("trigger"),
+        idempotencyKey: "r2-pin-key",
+        set: { PIN: "0421" },
+      },
+      {
+        registry: anyRegistry as never,
+        admit: async () => ({ answer: "now", face: 1, execution: null }),
+        scope: signedIn,
+      },
+    );
+    expect(capturedRequest).toBeDefined();
+    expect(capturedRequest).not.toHaveProperty("set");
+    const storedDigest = (capturedRequest?.__secretDigests as Record<string, string> | undefined)
+      ?.set;
+    expect(storedDigest).toMatch(/^[0-9a-f]{64}$/u);
+    // An attacker who only sees requestedBy + idempotencyKey from the ledger cannot match "0421".
+    const offlineGuess = createHmac("sha256", `${caller.userId}:r2-pin-key`)
+      .update(JSON.stringify({ PIN: "0421" }))
+      .digest("hex");
+    expect(storedDigest).not.toBe(offlineGuess);
   });
 
   it("decides whether a caller holds a type from its grant as the Home has it now (X15)", async () => {
