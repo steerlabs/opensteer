@@ -225,7 +225,7 @@ it("runs a server-style app with relative JSON POST, assets, incremental SSE and
   }
 });
 
-it("opens a person's clicks out of an app as workspace tabs, asks when it cannot tell, keeps a browser's own gestures, and opens nothing an app asks for alone", async () => {
+it("opens a person's clicks out of an app as workspace tabs at once, never asks, keeps a browser's own gestures, and opens nothing an app asks for alone", async () => {
   const bundle = await build({
     stdin: {
       contents: `
@@ -328,24 +328,36 @@ it("opens a person's clicks out of an app as workspace tabs, asks when it cannot
 
     const questions = () => tab.evaluate(() => Reflect.get(window, "questions") as string[]);
 
-    // A click this page can tell was in the app opens at once, in the workspace.
+    // A click in the app opens at once, in the workspace.
     await frame.getByRole("link", { name: "LinkedIn" }).click({ timeout: 1_500 });
     await tab.waitForFunction(() => Reflect.get(window, "opened").length === 1);
     expect(await opened()).toEqual(["https://www.linkedin.com/in/someone"]);
     expect(context.pages()).toHaveLength(1);
     expect(new URL(frame.url()).pathname).toBe(appPrefix);
 
-    // One press opens one page at once; the app asking for more while it lasts is asked about,
-    // once per page. A press lends activation for five seconds, so each case waits that out.
-    await tab.waitForTimeout(5_100);
+    // That press is spent: the app asking for more while it keeps focus, long past any timer,
+    // opens nothing, though the browser still calls the press under way.
+    await frame.evaluate(() => {
+      Reflect.set(
+        window,
+        "again",
+        setInterval(() => window.open("https://again.test/"), 50),
+      );
+    });
+    await tab.waitForTimeout(1_500);
+    await frame.evaluate(() => clearInterval(Reflect.get(window, "again") as number));
+    expect(await opened()).toEqual(["https://www.linkedin.com/in/someone"]);
+
+    // One press opens one page; what else the app asks for at the same moment opens nothing,
+    // and nothing asks.
+    await tab.waitForTimeout(800);
     await frame.getByRole("button", { name: "Burst" }).click({ timeout: 1_500 });
     await tab.waitForFunction(() => Reflect.get(window, "opened").length === 2);
-    await tab.getByText("This app wants to open burst.test/2").waitFor({ timeout: 1_500 });
-    expect(await questions()).toHaveLength(1);
+    await tab.waitForTimeout(300);
     expect(await opened()).toEqual(["https://www.linkedin.com/in/someone", "https://burst.test/1"]);
 
     // A window the app's script opens for a press is a link too.
-    await tab.waitForTimeout(5_100);
+    await tab.waitForTimeout(800);
     await frame.getByRole("button", { name: "Reddit" }).click({ timeout: 1_500 });
     await tab.waitForFunction(() => Reflect.get(window, "opened").length === 3);
     expect((await opened())[2]).toBe("https://www.reddit.com/r/opensteer");
@@ -372,26 +384,17 @@ it("opens a person's clicks out of an app as workspace tabs, asks when it cannot
     expect(await frame.evaluate(() => Reflect.get(window, "signInHandle"))).toBe(true);
     expect(await opened()).toHaveLength(3);
 
-    // A key in the app, the pointer elsewhere: this page cannot tell where the press was, so it
-    // asks, and the person's answer opens it.
+    // A key in the app, the pointer elsewhere, opens at once too.
+    await tab.waitForTimeout(800);
     await tab.mouse.move(1, 1);
     await frame.getByRole("link", { name: "LinkedIn" }).focus({ timeout: 1_500 });
     await tab.keyboard.press("Enter");
-    const keyQuestion = tab.getByText("This app wants to open linkedin.com/in/someone");
-    await keyQuestion.waitFor({ timeout: 1_500 });
-    expect(await opened()).toHaveLength(3);
-    await tab
-      .locator(".toast", { has: keyQuestion })
-      .locator(".toast__action")
-      .click({ timeout: 1_500 });
     await tab.waitForFunction(() => Reflect.get(window, "opened").length === 4);
     expect((await opened())[3]).toBe("https://www.linkedin.com/in/someone");
 
-    // A press on the page around the app activates the page, never the app: an app trying
-    // all the while opens nothing and asks nothing. (The same page is asked about once per
-    // toast's life, so this waits out the question above.)
-    await tab.waitForTimeout(4_700);
-    const asked = (await questions()).length;
+    // A press on the page around the app takes focus out of it: an app trying all the while
+    // opens nothing.
+    await tab.waitForTimeout(800);
     await frame.evaluate(() => {
       Reflect.set(
         window,
@@ -403,18 +406,14 @@ it("opens a person's clicks out of an app as workspace tabs, asks when it cannot
     await tab.waitForTimeout(400);
     await frame.evaluate(() => clearInterval(Reflect.get(window, "sneaky") as number));
     expect(await opened()).toHaveLength(4);
-    expect(await questions()).toHaveLength(asked);
     expect(context.pages()).toHaveLength(1);
 
-    // Just after that press on the page, a click in the app is asked about rather than trusted.
+    // Just after that press on the page, a click in the app opens at once.
     await frame.getByRole("link", { name: "LinkedIn" }).click({ timeout: 1_500 });
-    await tab.waitForFunction(
-      (before) => (Reflect.get(window, "questions") as string[]).length > before,
-      asked,
-      { timeout: 1_500 },
-    );
-    expect((await questions()).at(-1)).toContain("linkedin.com/in/someone");
-    expect(await opened()).toHaveLength(4);
+    await tab.waitForFunction(() => Reflect.get(window, "opened").length === 5);
+    expect((await opened())[4]).toBe("https://www.linkedin.com/in/someone");
+    // Nothing along the way asked.
+    expect(await questions()).toEqual([]);
   } finally {
     await context.close();
     if (server.listening) await closeHttpServerNow(server);
