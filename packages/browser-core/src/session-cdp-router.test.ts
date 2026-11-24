@@ -56,6 +56,7 @@ class FakeChannel implements CdpChannel {
 
 class FakeBackend implements BrowserCdpBackend {
   protectProductWorlds = false;
+  extensions = false;
   /** The newest channel opened on each target. */
   readonly channels = new Map<string, FakeChannel>();
   readonly commands: { method: string; parameters?: CdpParameters }[] = [];
@@ -354,6 +355,97 @@ describe("SessionCdpRouter", () => {
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
     expect(backend.channels.get("root-a")?.commands).toEqual([]);
+  });
+
+  it("sends the Extensions domain to the profile's browser, from a page session too", async () => {
+    const backend = new FakeBackend();
+    backend.extensions = true;
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("session-a", "root-a", async () => true, "/opensteer-files/session-a");
+    const attached = (await router.send("session-a", {
+      method: "Target.attachToTarget",
+      parameters: { flatten: true, targetId: "root-a" },
+    })) as { sessionId: string };
+
+    await router.send("session-a", {
+      method: "Extensions.loadUnpacked",
+      parameters: { path: "/work/extension" },
+      sessionId: attached.sessionId,
+    });
+    await router.send("session-a", {
+      method: "Extensions.triggerAction",
+      parameters: { id: "abcdefghijklmnopabcdefghijklmnop" },
+      sessionId: attached.sessionId,
+    });
+    // Browser-scope Extensions.triggerAction defaults to this session's root target, never another session's active tab.
+    await router.send("session-a", {
+      method: "Extensions.triggerAction",
+      parameters: { id: "abcdefghijklmnopabcdefghijklmnop" },
+    });
+    await router.send("session-a", { method: "Extensions.getExtensions" });
+
+    expect(backend.commands).toEqual([
+      { method: "Extensions.loadUnpacked", parameters: { path: "/work/extension" } },
+      {
+        method: "Extensions.triggerAction",
+        parameters: { id: "abcdefghijklmnopabcdefghijklmnop", targetId: "root-a" },
+      },
+      {
+        method: "Extensions.triggerAction",
+        parameters: { id: "abcdefghijklmnopabcdefghijklmnop", targetId: "root-a" },
+      },
+      { method: "Extensions.getExtensions", parameters: undefined },
+    ]);
+    expect(backend.channels.get("root-a")?.commands).toEqual([]);
+  });
+
+  it("refuses the Extensions domain for a foreign attachment, foreign targetId, or a browser without extensions", async () => {
+    const backend = new FakeBackend();
+    backend.extensions = true;
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("session-a", "root-a", async () => true, "/opensteer-files/session-a");
+    await expect(
+      router.send("session-a", { method: "Extensions.getExtensions", sessionId: "foreign" }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(
+      router.send("session-a", {
+        method: "Extensions.triggerAction",
+        parameters: { id: "abcdefghijklmnopabcdefghijklmnop", targetId: "foreign-target" },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      router.send("session-a", {
+        method: "Extensions.triggerAction",
+        parameters: { id: "abcdefghijklmnopabcdefghijklmnop", targetId: 123 },
+      }),
+    ).rejects.toMatchObject({ code: "bad_command" });
+    backend.extensions = false;
+    await expect(
+      router.send("session-a", { method: "Extensions.getExtensions" }),
+    ).rejects.toMatchObject({
+      code: "bad_command",
+    });
+    expect(backend.commands).toEqual([]);
+  });
+
+  it("lets a page navigate to extension pages", async () => {
+    const backend = new FakeBackend();
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("session-a", "root-a", async () => true, "/opensteer-files/session-a");
+    const attached = (await router.send("session-a", {
+      method: "Target.attachToTarget",
+      parameters: { flatten: true, targetId: "root-a" },
+    })) as { sessionId: string };
+
+    await router.send("session-a", {
+      method: "Page.navigate",
+      parameters: { url: "chrome-extension://abcdefghijklmnopabcdefghijklmnop/popup.html" },
+      sessionId: attached.sessionId,
+    });
+
+    expect(backend.channels.get("root-a")?.commands).toContainEqual(
+      expect.objectContaining({ method: "Page.navigate" }),
+    );
   });
 
   it("applies the browser frame allocation limit to raw attached CDP", async () => {

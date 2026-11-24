@@ -11,6 +11,9 @@ import {
   DesktopBrowserFindInputSchema,
   DesktopBrowserGlassInputSchema,
   DesktopBrowserAutofillInputSchema,
+  DesktopBrowserExtensionActivationSchema,
+  DesktopBrowserExtensionRemovalSchema,
+  DesktopBrowserExtensionsSchema,
 } from "@opensteer/protocol/desktop";
 import { BrowserPresentationUnavailable } from "../browser-presentation-result.js";
 import { desktopBridgeChannels } from "../desktop-bridge-channels.js";
@@ -126,6 +129,30 @@ export function browserPresentationHandlers(
       desktopBridgeChannels.browserFocusPage,
       handler(DesktopBrowserPresentationTargetSchema, (manager, sender, input) =>
         manager.focusPage(sender, input),
+      ),
+    ],
+    [
+      desktopBridgeChannels.browserExtensions,
+      handler(DesktopBrowserPresentationTargetSchema, async (manager, sender, input) =>
+        DesktopBrowserExtensionsSchema.nullable().parse(await manager.extensions(sender, input)),
+      ),
+    ],
+    [
+      desktopBridgeChannels.browserActivateExtension,
+      handler(DesktopBrowserExtensionActivationSchema, (manager, sender, input) =>
+        manager.activateExtension(sender, input),
+      ),
+    ],
+    [
+      desktopBridgeChannels.browserRemoveExtension,
+      handler(DesktopBrowserExtensionRemovalSchema, (manager, sender, input) =>
+        manager.removeExtension(sender, input),
+      ),
+    ],
+    [
+      desktopBridgeChannels.browserOpenExtensionStore,
+      handler(DesktopBrowserPresentationTargetSchema, (manager, sender, input) =>
+        manager.openExtensionStore(sender, input),
       ),
     ],
   ];

@@ -303,3 +303,41 @@ it("cancels dormant page and worker requests without replaying them on admission
   gate.beforeRequest(2, retired);
   expect(retired).toHaveBeenCalledExactlyOnceWith({ cancel: true });
 });
+
+it("loads extension files ahead of the profile gate and keeps extension preloads", async () => {
+  const { applyBrowserSessionPolicy, BrowserSessionRequestGate } =
+    await import("./browser-session-policy.js");
+  const { vi } = await import("vitest");
+  const preloads = [{ id: "opensteer-page-policy" }, { id: "crx-mv3-preload" }];
+  const session = {
+    setPermissionCheckHandler: vi.fn(),
+    setPermissionRequestHandler: vi.fn(),
+    getPreloadScripts: () => preloads,
+    registerPreloadScript: vi.fn(),
+    unregisterPreloadScript: vi.fn(),
+    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn() },
+    setUserAgent: vi.fn(),
+    getUserAgent: () => "Chrome/150",
+  };
+  // A dormant profile refuses web requests until it is admitted.
+  const gate = new BrowserSessionRequestGate();
+  gate.dormant();
+  applyBrowserSessionPolicy(session as unknown as import("electron").Session, {
+    downloads: { accept: vi.fn() },
+    pagePolicyPreloadPath: "/policy.cjs",
+    requestGate: gate,
+  });
+  expect(session.unregisterPreloadScript.mock.calls).toEqual([["opensteer-page-policy"]]);
+  expect(session.registerPreloadScript).toHaveBeenCalledWith({
+    filePath: "/policy.cjs",
+    id: "opensteer-page-policy",
+    type: "frame",
+  });
+  const before = session.webRequest.onBeforeRequest.mock.calls[0]![0];
+  const extension = vi.fn();
+  before({ url: "chrome-extension://abcdefghijklmnopabcdefghijklmnop/worker.js" }, extension);
+  expect(extension).toHaveBeenCalledWith({ cancel: false });
+  const web = vi.fn();
+  before({ url: "https://site.test/" }, web);
+  expect(web).toHaveBeenCalledWith({ cancel: true });
+});

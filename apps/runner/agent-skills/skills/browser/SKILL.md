@@ -23,4 +23,4 @@ JS
 - Every handle has full CDP access through `cdp(method, params)`: network, cookies, storage, frames, workers and every execution world. Use what the task needs; keep credentials and cookies out of replies, files, memory and commits.
 - The person may be using the same page. Look before repeating input whose outcome is unknown.
 
-Read [page API](references/page-api.md) before writing Harness code, [identity](references/identity.md) before choosing or requesting a profile, [sign-in](references/sign-in.md) when a site needs authentication, and [cards](references/cards.md) before using a saved card.
+Read [page API](references/page-api.md) before writing Harness code, [identity](references/identity.md) before choosing or requesting a profile, [sign-in](references/sign-in.md) when a site needs authentication, [cards](references/cards.md) before using a saved card, and [extensions](references/extensions.md) before building or loading a Chrome extension.

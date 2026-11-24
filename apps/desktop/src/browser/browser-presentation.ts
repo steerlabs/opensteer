@@ -2,6 +2,7 @@ import { BrowserPresentationUnavailable } from "../bridge/browser-presentation-r
 import {
   clipboard,
   Menu,
+  MenuItem,
   type Input,
   type MenuItemConstructorOptions,
   type WebContents,
@@ -16,6 +17,9 @@ import type { BrowserSessionId, BrowserSurfaceId } from "@opensteer/protocol/bro
 import {
   DesktopBrowserPresentationIdSchema,
   type DesktopBrowserAutofillInput,
+  type DesktopBrowserExtensionActivation,
+  type DesktopBrowserExtensionRemoval,
+  type DesktopBrowserExtensions,
   type DesktopBrowserFindInput,
   type DesktopBrowserGlassInput,
   type DesktopBrowserOverlayInput,
@@ -47,6 +51,7 @@ import {
   type NativePlacement,
 } from "./electron-browser-launcher.js";
 import { PageGlass } from "./page-glass.js";
+import { ProfileExtensions } from "./profile-extensions.js";
 import { PageAutofill } from "./page-autofill.js";
 import { AutofillKeys, AutofillSceneState } from "./autofill-state.js";
 
@@ -425,6 +430,85 @@ export class DesktopBrowserPresentationManager {
       presentation.page?.native.view.webContents.focus();
   }
 
+  /** The extensions of the presented page's profile; null where the profile keeps none. */
+  async extensions(
+    sender: WebContents,
+    target: DesktopBrowserPresentationTarget,
+  ): Promise<DesktopBrowserExtensions | null> {
+    const contents = this.#target(sender, target)?.page?.native.view.webContents;
+    const extensions =
+      contents && !contents.isDestroyed() ? ProfileExtensions.of(contents.session) : null;
+    if (!contents || !extensions) return null;
+    await extensions.ready();
+    return { extensions: extensions.list(contents) };
+  }
+
+  async activateExtension(
+    sender: WebContents,
+    input: DesktopBrowserExtensionActivation,
+  ): Promise<void> {
+    const initial = this.#target(sender, input);
+    const initialContents = initial?.page?.native.view.webContents;
+    const extensions =
+      initialContents && !initialContents.isDestroyed()
+        ? ProfileExtensions.of(initialContents.session)
+        : null;
+    if (!initial || !initialContents || !extensions) {
+      throw new BrowserPresentationUnavailable("page-unavailable");
+    }
+    await extensions.ready();
+    // Revalidate presentation & revision after awaiting readiness so stale clicks cannot act on a new page.
+    const current = this.#target(sender, input);
+    const contents = current?.page?.native.view.webContents;
+    if (
+      !current ||
+      !contents ||
+      contents.isDestroyed() ||
+      ProfileExtensions.of(contents.session) !== extensions
+    ) {
+      throw new BrowserPresentationUnavailable("page-unavailable");
+    }
+    extensions.activateAction({
+      extensionId: input.extensionId,
+      tabContents: contents,
+      hostWindow: current.owner.window,
+      eventType: input.eventType,
+      anchorRect: input.anchorRect,
+    });
+  }
+
+  async removeExtension(sender: WebContents, input: DesktopBrowserExtensionRemoval): Promise<void> {
+    const presentation = this.#target(sender, input);
+    const contents = presentation?.page?.native.view.webContents;
+    const extensions =
+      contents && !contents.isDestroyed() ? ProfileExtensions.of(contents.session) : null;
+    if (!presentation || !extensions) throw new BrowserPresentationUnavailable("page-unavailable");
+    await extensions.confirmUninstall(input.extensionId, presentation.owner.window);
+  }
+
+  async openExtensionStore(
+    sender: WebContents,
+    input: DesktopBrowserPresentationTarget,
+  ): Promise<void> {
+    const presentation = this.#target(sender, input);
+    const contents = presentation?.page?.native.view.webContents;
+    const extensions =
+      contents && !contents.isDestroyed() ? ProfileExtensions.of(contents.session) : null;
+    if (!presentation || !extensions) throw new BrowserPresentationUnavailable("page-unavailable");
+    await extensions.ready();
+    const current = this.#target(sender, input);
+    const currentContents = current?.page?.native.view.webContents;
+    if (
+      !current ||
+      !currentContents ||
+      currentContents.isDestroyed() ||
+      ProfileExtensions.of(currentContents.session) !== extensions
+    ) {
+      throw new BrowserPresentationUnavailable("page-unavailable");
+    }
+    extensions.openWebStore(current.owner.window);
+  }
+
   setNavigationAvailable(sender: WebContents, input: { hardReload: boolean }): void {
     this.#owner(sender).hardReload = input.hardReload;
     this.#navigationMenu();
@@ -774,6 +858,8 @@ export class DesktopBrowserPresentationManager {
             },
           });
       }
+      const extensionItems =
+        ProfileExtensions.of(contents.session)?.contextMenuItems(contents, params) ?? [];
       if (!items.length)
         items.push(
           {
@@ -797,11 +883,20 @@ export class DesktopBrowserPresentationManager {
             },
           },
         );
-      Menu.buildFromTemplate(items).popup({
+      const menu = Menu.buildFromTemplate(items);
+      if (extensionItems.length) {
+        menu.append(new MenuItem({ type: "separator" }));
+        for (const item of extensionItems) menu.append(item);
+      }
+      menu.popup({
         window: presentation.owner.window,
         ...(params.frame ? { frame: params.frame } : {}),
       });
     };
+    const extensionsChanged = ProfileExtensions.of(contents.session)?.onChange(() => {
+      if (presentation.page === page)
+        this.#emit(presentation.owner, { type: "extensions", presentationId: presentation.id });
+    });
     const mouse = (_event: Electron.Event, input: Electron.MouseInputEvent) => {
       if (current() && input.type === "mouseDown") this.#dismissAutofill(presentation);
     };
@@ -819,6 +914,7 @@ export class DesktopBrowserPresentationManager {
     contents.on("context-menu", context);
     contents.on("render-process-gone", gone);
     return () => {
+      extensionsChanged?.();
       passkeyInput?.();
       viewerInput?.();
       surfaceEvents();

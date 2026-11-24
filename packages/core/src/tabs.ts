@@ -54,11 +54,16 @@ export const PageOpenUrlSchema = z
     if (value === "about:blank") return true;
     try {
       const url = new URL(value);
-      return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
+      // Extension pages (an options page, a popup) open as tabs, as in Chrome.
+      return (
+        ["http:", "https:", "chrome-extension:"].includes(url.protocol) &&
+        !url.username &&
+        !url.password
+      );
     } catch {
       return false;
     }
-  }, "Use about:blank or an HTTP(S) URL without credentials.");
+  }, "Use about:blank, an HTTP(S) URL without credentials, or an extension page.");
 export const DeviceTabTargetSchema = z.union([
   z.strictObject({
     kind: z.literal("page"),

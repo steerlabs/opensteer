@@ -35,6 +35,8 @@ export interface CdpChannel {
 
 export interface BrowserCdpBackend {
   readonly protectProductWorlds?: boolean;
+  /** The browser keeps the profile's Chrome extensions and answers CDP's `Extensions` domain. */
+  readonly extensions?: boolean;
   /**
    * Opens a page channel that behaves as a fresh CDP session: its
    * `Runtime.enable` reports every live execution context before it resolves,
@@ -372,15 +374,54 @@ export class SessionCdpRouter {
       "Target.activateTarget",
       "Target.setDiscoverTargets",
     ].includes(command.method);
-    const result = targetRouting
-      ? await this.#sendTargetCommand(state, command)
-      : command.sessionId
-        ? await this.#sendAttachedCommand(state, command, beforeActivity)
-        : command.method.startsWith("Target.")
-          ? await this.#sendTargetCommand(state, command)
-          : await this.#backend.send(command.method, command.parameters);
+    // Extensions belong to the profile's browser, so a page's session reaches
+    // them as the browser target does.
+    const result = command.method.startsWith("Extensions.")
+      ? await this.#sendExtensionsCommand(state, command)
+      : targetRouting
+        ? await this.#sendTargetCommand(state, command)
+        : command.sessionId
+          ? await this.#sendAttachedCommand(state, command, beforeActivity)
+          : command.method.startsWith("Target.")
+            ? await this.#sendTargetCommand(state, command)
+            : await this.#backend.send(command.method, command.parameters);
     this.admitPageResult(result);
     return result;
+  }
+
+  #sendExtensionsCommand(state: SessionState, command: CdpCommand): Promise<unknown> {
+    if (command.parameters) this.#assertScope(state, command.parameters);
+    let parameters = command.parameters;
+    let attachedTargetId: string | undefined;
+    if (command.sessionId !== undefined) {
+      const attached = this.#admitAttachedCommand(state, command);
+      attachedTargetId = attached.physicalTargetId;
+    }
+    if (command.method === "Extensions.triggerAction") {
+      if (parameters?.targetId !== undefined) {
+        if (typeof parameters.targetId !== "string" || !parameters.targetId) {
+          throw new SessionCdpRouterError(
+            "bad_command",
+            "Extensions.triggerAction targetId must be a non-empty string.",
+          );
+        }
+      } else {
+        const defaultTargetId = attachedTargetId ?? state.rootTargetId;
+        if (!defaultTargetId || this.#ownerByTargetId.get(defaultTargetId) !== state.sessionId) {
+          throw new SessionCdpRouterError(
+            "not_found",
+            "No Browser Session tab is available for Extensions.triggerAction.",
+          );
+        }
+        parameters = { ...parameters, targetId: defaultTargetId };
+      }
+    }
+    if (!this.#backend.extensions)
+      throw new SessionCdpRouterError(
+        "bad_command",
+        "This browser keeps no extensions: they live in the desktop app's saved profiles.",
+      );
+    return this.#backend.send(command.method, parameters);
   }
 
   async #sendTargetCommand(state: SessionState, command: CdpCommand): Promise<unknown> {
@@ -931,10 +972,15 @@ function assertSafeNavigationUrl(value: unknown, allowAboutBlank: boolean): void
       cause: error,
     });
   }
-  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) {
+  // Extension pages are the browser's own; Chromium keeps each to what may reach it.
+  if (
+    !["http:", "https:", "chrome-extension:"].includes(url.protocol) ||
+    url.username ||
+    url.password
+  ) {
     throw new SessionCdpRouterError(
       "forbidden",
-      "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
+      "CDP navigation is limited to HTTP(S) and extension pages, without embedded credentials.",
     );
   }
 }
