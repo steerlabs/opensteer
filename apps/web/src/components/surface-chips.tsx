@@ -30,6 +30,35 @@ export interface ChipSurface {
   readonly acting: boolean;
 }
 
+/** The same chip, drawn the same: what a chip read of the tab list redraws for. */
+export function sameChip(left: ChipSurface, right: ChipSurface): boolean {
+  return (
+    left === right ||
+    (left.key === right.key &&
+      left.title === right.title &&
+      left.site === right.site &&
+      (left.favicon ?? null) === (right.favicon ?? null) &&
+      left.phone === right.phone &&
+      left.ended === right.ended &&
+      left.failed === right.failed &&
+      left.acting === right.acting &&
+      (left.destination?.tabId ?? null) === (right.destination?.tabId ?? null) &&
+      (left.app === right.app ||
+        (left.app !== undefined &&
+          right.app !== undefined &&
+          left.app.bundleId === right.app.bundleId &&
+          left.app.displayName === right.app.displayName &&
+          left.app.teamId === right.app.teamId)))
+  );
+}
+
+export function sameChips(left: readonly ChipSurface[], right: readonly ChipSurface[]): boolean {
+  return (
+    left === right ||
+    (left.length === right.length && left.every((chip, index) => sameChip(chip, right[index]!)))
+  );
+}
+
 /** A Run's page as a chip, told apart by whether its browser closed or stopped working. */
 export function pageChip(page: RunPage): ChipSurface {
   return {

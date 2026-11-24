@@ -235,7 +235,6 @@
   gap: var(--space-6);
   width: 84%;
   margin: var(--space-8) 0;
-  animation: rise-in var(--duration-med) var(--ease-out);
 }
 
 .input-card {
@@ -879,7 +878,20 @@ a.input-card__sender:focus-visible {
   flex-direction: column;
   gap: var(--space-6);
   margin: var(--space-12) 0;
+}
+
+/* A row that arrives while the transcript is shown, and the typing indicator, rise in; rows there
+   when it was shown hold still (see AgentTranscript). */
+.transcript__virtual-slot--arrived,
+.transcript > .turn {
   animation: rise-in var(--duration-med) var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transcript__virtual-slot--arrived,
+  .transcript > .turn {
+    animation: none;
+  }
 }
 
 .msg--assistant__body {

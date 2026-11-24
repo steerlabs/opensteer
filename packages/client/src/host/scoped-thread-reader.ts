@@ -181,6 +181,19 @@ export class ScopedThreadReader implements ThreadViewSource {
     };
   };
 
+  /** The scope this reader projects; a reader is reused for as long as the stream keeps it. */
+  get detail() {
+    return this.#detail;
+  }
+
+  /**
+   * The task is no longer shown: what its reads were doing is given up, as on dispose, but the
+   * projection stays, so showing the task again draws its rows in the first frame.
+   */
+  park() {
+    this.#reads.stopAll();
+  }
+
   dispose() {
     this.#disposed = true;
     this.#reads.dispose();

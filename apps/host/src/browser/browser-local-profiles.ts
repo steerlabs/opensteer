@@ -35,6 +35,8 @@ export class BrowserLocalProfiles {
     baseUrl: URL;
     beforeProfileOpen?: (runnerId: RunnerId) => void;
     onReconciled?: (profileId: BrowserProfileId) => Promise<void>;
+    /** A deleted tombstone's reconciliation committed, archiving its profile if it was not yet. */
+    onProfileArchived?: () => void;
   };
   constructor(options: BrowserLocalProfiles["options"]) {
     this.options = options;
@@ -118,7 +120,9 @@ export class BrowserLocalProfiles {
       )
         refuse("The browser inventory contains a conflicting profile binding.");
       seen.add(binding.profileId);
-      await this.options.repository.reconcileBrowserProfileInventory(claim);
+      const { archived } = await this.options.repository.reconcileBrowserProfileInventory(claim);
+      // A runner re-sends the tombstones it keeps on every attach; only a new archive refreshes.
+      if (archived) this.options.onProfileArchived?.();
       await this.options.onReconciled?.(binding.profileId);
     }
   }

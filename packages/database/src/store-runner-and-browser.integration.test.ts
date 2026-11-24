@@ -3403,6 +3403,26 @@ describeStore("PostgreSQL store", (it) => {
     });
     expect(await store.listBrowserProfileErasureJobs(binding.runnerId)).toEqual([]);
   });
+  it("says a deleted inventory claim archived its profile only the first time it is reported", async ({
+    storeFixture,
+  }) => {
+    const { store } = storeFixture;
+    const { binding } = await nativeProfileFixture(storeFixture, "resent");
+    await store.bindBrowserProfile(binding);
+    await store.acknowledgeBrowserProfileReady(binding);
+    expect(await store.reconcileBrowserProfileInventory({ phase: "ready", binding })).toEqual({
+      archived: false,
+    });
+    const claim = {
+      phase: "deleted" as const,
+      binding,
+      deletionId: randomUUID(),
+      erasure: "deleted" as const,
+    };
+    expect(await store.reconcileBrowserProfileInventory(claim)).toEqual({ archived: true });
+    // A runner re-sends the tombstones it keeps on every attach: nothing new is archived.
+    expect(await store.reconcileBrowserProfileInventory(claim)).toEqual({ archived: false });
+  });
   it("counts unfinished erasures against profile creation capacity until disk deletion completes", async ({
     storeFixture,
   }) => {

@@ -630,17 +630,25 @@ export function createTeamWebAttachment(
   };
 }
 
-/** "A #support" for a task a team thread started, as far as this app knows the team. */
+/**
+ * "A #support" for a task a team thread started, as far as this app knows the team. It reads that
+ * one channel's name and kind, so the team's messages, typing and presence never redraw the task.
+ */
 export function useTaskSourceView(origin: TeamTaskOrigin | null): TaskSourceView | null {
   const team = useTeamAttachment(origin?.teamId);
-  const sidebar = useTeamSession(team?.client ?? null)?.sidebar ?? null;
+  const client = team?.client ?? null;
+  const channelId = origin?.channelId;
+  const channel = (snapshot: TeamSessionSnapshot | null) =>
+    snapshot?.sidebar?.channels.find((row) => row.channel.id === channelId)?.channel;
+  const name = useTeamSessionValue(client, (snapshot) => channel(snapshot)?.name ?? null);
+  const kind = useTeamSessionValue(client, (snapshot) => channel(snapshot)?.kind ?? null);
   if (!origin) return null;
-  const entry = sidebar?.channels.find((row) => row.channel.id === origin.channelId);
   return {
     team: teamTile(origin.teamId, team?.name ?? "Team"),
-    channel: entry
-      ? { kind: channelKind(entry.channel.kind), name: entry.channel.name }
-      : { kind: "public", name: "channel" },
+    channel:
+      name !== null && kind !== null
+        ? { kind: channelKind(kind), name }
+        : { kind: "public", name: "channel" },
     available: team !== null && team.link?.state !== "revoked",
   };
 }

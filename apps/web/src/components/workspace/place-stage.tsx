@@ -29,7 +29,7 @@ import {
 } from "./navigation.js";
 import { OccupantMarks } from "./occupant-marks.js";
 import { conversationAt, useTaskDirectory, type TaskDirectory } from "./task-directory.js";
-import { useWorkspace } from "./workspace-context.js";
+import { useWorkspace, useWorkspaceAttention } from "./workspace-context.js";
 
 /**
  * The middle: the one raised object, showing exactly the place the address
@@ -443,7 +443,8 @@ function leaveToComposer() {
 /** Below 1200px: the sidebar's way in, carrying how many tasks need the reader. */
 /** `countYield` is the rank at which a bar may give up the count for room; the sidebar shows it too. */
 export function DrawerButton({ countYield }: { readonly countYield?: number } = {}) {
-  const { attention: count, openDrawer } = useWorkspace();
+  const { openDrawer } = useWorkspace();
+  const count = useWorkspaceAttention();
   return (
     <button
       aria-controls="app-sidebar"

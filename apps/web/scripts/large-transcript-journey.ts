@@ -340,7 +340,7 @@ async function geometry(page: Page, newestMessageId = fixture.newestMessageId) {
     const jump = document.querySelector<HTMLElement>(".transcript__jump")?.getBoundingClientRect();
     const header = document.querySelector(".conv-header__name")?.textContent ?? null;
     const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-    const input = document.querySelector<HTMLTextAreaElement>(".composer-dock textarea");
+    const input = document.querySelector<HTMLElement>(".composer-dock [data-composer-input]");
     const composerIdentity = Reflect.get(window, "opensteerLargeTranscriptComposerIdentity") as (
       element: Element | null,
     ) => number | null;
@@ -353,8 +353,9 @@ async function geometry(page: Page, newestMessageId = fixture.newestMessageId) {
           client.getSnapshot().threads.find((thread) => thread.title === header)?.id ?? null,
         composer: {
           instance: composerIdentity(input),
-          placeholder: input?.placeholder ?? null,
-          value: input?.value ?? null,
+          placeholder:
+            input?.getAttribute("aria-placeholder") ?? input?.dataset.placeholder ?? null,
+          value: input?.textContent ?? null,
         },
       },
       documentHeight: document.documentElement.scrollHeight,
@@ -423,25 +424,56 @@ async function requestReachable(page: Page, name: string) {
   await page.locator(".thread__body").evaluate((element) => {
     element.scrollTop = element.scrollHeight;
   });
+  await page.locator(".request-card .action-panel__content").evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
   await settle(page);
+  const answer = page.locator(".thread").getByRole("button", { name: "Answer", exact: true });
+  await answer.waitFor({ state: "attached" });
+  const answerRect = await answer.boundingBox();
+  const lastOption = page
+    .locator(".request-card")
+    .getByRole("checkbox")
+    .or(page.locator(".request-card").getByRole("radio"))
+    .last();
+  await lastOption.waitFor({ state: "attached" });
+  const lastOptionRect = await lastOption.boundingBox();
   const observed = {
     ...(await geometry(page)),
-    request: await page.locator(".request-card").evaluate((card) => {
-      const body = card.closest(".thread__body")!;
-      const send = [...card.querySelectorAll("button")].find(
-        (button) => button.textContent?.trim() === "Send",
-      );
-      const button = send?.getBoundingClientRect();
-      const viewport = body.getBoundingClientRect();
-      const stack = card.closest<HTMLElement>(".request-stack")!;
-      return {
-        height: stack.scrollHeight,
-        sendVisible:
-          !!button &&
-          button.top >= viewport.top &&
-          button.bottom <= Math.min(viewport.bottom, innerHeight) + 1,
-      };
-    }),
+    request: await page.locator(".request-card").evaluate(
+      (card, { answerBox, optionBox }) => {
+        const body = card.closest(".thread__body")!;
+        const thread = card.closest(".thread")!;
+        const content = card.querySelector<HTMLElement>(".action-panel__content");
+        const viewport = body.getBoundingClientRect();
+        const threadRect = thread.getBoundingClientRect();
+        const contentRect = content?.getBoundingClientRect();
+        const stack = card.closest<HTMLElement>(".request-stack")!;
+        const answerInBody = !!card.querySelector(".composer__answer");
+        const answerClipTop = answerInBody ? viewport.top : Math.max(0, threadRect.top);
+        const answerClipBottom = answerInBody
+          ? Math.min(viewport.bottom, innerHeight)
+          : Math.min(threadRect.bottom, innerHeight);
+        const optionClipTop = Math.max(viewport.top, contentRect?.top ?? viewport.top);
+        const optionClipBottom = Math.min(
+          viewport.bottom,
+          contentRect?.bottom ?? viewport.bottom,
+          innerHeight,
+        );
+        return {
+          height: stack.scrollHeight,
+          answerVisible:
+            !!answerBox &&
+            answerBox.y >= answerClipTop - 1 &&
+            answerBox.y + answerBox.height <= answerClipBottom + 1,
+          lastOptionVisible:
+            !!optionBox &&
+            optionBox.y >= optionClipTop - 1 &&
+            optionBox.y + optionBox.height <= optionClipBottom + 1,
+        };
+      },
+      { answerBox: answerRect, optionBox: lastOptionRect },
+    ),
   };
   await capture(page, name);
   expectThat(
@@ -451,8 +483,10 @@ async function requestReachable(page: Page, name: string) {
   );
   expectThat(
     observed,
-    observed.request.sendVisible && observed.composerVisible,
-    "the request's Send or composer is unreachable",
+    observed.request.answerVisible &&
+      observed.request.lastOptionVisible &&
+      observed.composerVisible,
+    "the request's Answer, last option, or composer is unreachable",
   );
   if (observed.scrollOwner === ".transcript-scroll")
     expectThat(
@@ -504,7 +538,10 @@ try {
   });
   await check("large task opens on its visible latest reply", () => latest(page, "wide-latest"));
 
-  await page.locator(".side-tab__main").first().click();
+  await page
+    .locator(".side-section--tabs .side-tab[data-place-key] .side-tab__main")
+    .first()
+    .click();
   await page.locator(".workspace--work").waitFor();
   await check("narrow desktop Work panel has visible transcript and input", async () => {
     const observed = await latest(page, "narrow-work-latest");
@@ -539,25 +576,30 @@ try {
   });
 
   await check("typing in the large task paints its controlled value within 250ms", async () => {
+    const composer = page.locator(".composer-dock").getByRole("textbox", {
+      name: "Message",
+      exact: true,
+    });
     await page.evaluate(() => {
-      const textarea = document.querySelector<HTMLTextAreaElement>(".composer-dock textarea")!;
+      const input = document.querySelector<HTMLElement>(".composer-dock [data-composer-input]")!;
       const timing = new Promise<{ elapsedMs: number; value: string }>((resolve) => {
-        textarea.addEventListener(
-          "input",
-          () => {
-            const start = performance.now();
+        let started = false;
+        const measure = () => {
+          if (started) return;
+          started = true;
+          const start = performance.now();
+          requestAnimationFrame(() =>
             requestAnimationFrame(() =>
-              requestAnimationFrame(() =>
-                resolve({ elapsedMs: performance.now() - start, value: textarea.value }),
-              ),
-            );
-          },
-          { once: true, capture: true },
-        );
+              resolve({ elapsedMs: performance.now() - start, value: input.textContent ?? "" }),
+            ),
+          );
+        };
+        input.addEventListener("beforeinput", measure, { once: true, capture: true });
+        input.addEventListener("input", measure, { once: true, capture: true });
       });
       Object.assign(window, { opensteerComposerTiming: timing });
     });
-    await page.locator(".composer-dock textarea").fill("Continue the overnight task");
+    await composer.fill("Continue the overnight task");
     const observed = await page.evaluate(
       () =>
         Reflect.get(window, "opensteerComposerTiming") as Promise<{
@@ -566,7 +608,7 @@ try {
         }>,
     );
     responsiveness.composerPaintMs = observed.elapsedMs;
-    await page.locator(".composer-dock textarea").fill("");
+    await composer.fill("");
     expectThat(
       observed,
       observed.value === "Continue the overnight task" && observed.elapsedMs <= 250,
@@ -680,7 +722,7 @@ try {
     return observed;
   });
   await showRequests(page, true);
-  await check("a tall request still scrolls to Send above the desktop composer", () =>
+  await check("a tall request still scrolls to Answer above the desktop composer", () =>
     requestReachable(page, "desktop-request"),
   );
   await showRequests(page, false);
@@ -699,7 +741,7 @@ try {
     return observed;
   });
   await showRequests(page, true);
-  await check("the phone sheet scrolls its long request to Send with input pinned", () =>
+  await check("the phone sheet scrolls its long request to Answer with input pinned", () =>
     requestReachable(page, "phone-request"),
   );
   await check("the large transcript raises no browser errors", async () => {

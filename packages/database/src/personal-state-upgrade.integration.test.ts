@@ -16,6 +16,7 @@ import {
   inlineTranscriptMessagesMigrationName,
   runProviderRetryMigrationName,
   stoppedRunsNotNewsMigrationName,
+  taskOpenIndexesMigrationName,
   threadDoneByMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
@@ -93,6 +94,7 @@ test.each(["empty", "personal", "team", "personal-0035"] as const)(
         stoppedRunsNotNewsMigrationName,
         threadDoneByMigrationName,
         runProviderRetryMigrationName,
+        taskOpenIndexesMigrationName,
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`

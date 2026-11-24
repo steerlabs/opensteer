@@ -31,6 +31,7 @@ it("fits a resized composer row and repositions its menu after observer delivery
         deliveries.push(() => callback([], this as unknown as ResizeObserver));
       }
       observe() {}
+      unobserve() {}
       disconnect() {}
     },
   );

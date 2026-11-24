@@ -765,6 +765,40 @@ export async function applyRunProviderRetry(database: Kysely<DatabaseSchema>) {
   await sql`alter table runs add column if not exists provider_retry jsonb`.execute(database);
 }
 
+export const taskOpenIndexesMigrationName = "0047_task_open_indexes";
+/**
+ * Indexes the task-open reads on `browser_session_uses`, `delegations`, and `runs`:
+ * - `browser_session_uses_thread_session_run` serves `getThreadBrowserUsage`'s per-(session, run)
+ *   top-N page lookups in recency order without scanning or sorting partitions.
+ * - `browser_session_uses_thread_session_page` serves `getThreadBrowserUsage`'s latest non-null
+ *   page lookup per top session via an index-ordered LIMIT 1 probe.
+ * - `delegations_parent_thread_created` and `delegations_child_thread_created` serve
+ *   `listThreadAssignmentsForOwner` in newest-first order without scanning `delegations`.
+ * - `runs_assignment_latest` serves `assignmentSummariesInTransaction`'s `DISTINCT ON
+ *   (assignment_id) ... ORDER BY assignment_id, run_ordinal DESC` lookup without scanning
+ *   non-assigned runs.
+ * Runs in the stopped-Host startup migration window: a personal Host acquires
+ * `opensteer-deployment-authority` before `migrateToLatest` (so the previous Host is stopped and
+ * no HTTP/Runner writers are online), and a team Host has no rows in these personal tables.
+ * Additive: a Host from before it ignores the indexes.
+ */
+export async function applyTaskOpenIndexes(database: Kysely<DatabaseSchema>) {
+  await sql`
+    create index if not exists browser_session_uses_thread_session_run
+      on browser_session_uses(thread_id, session_id, coalesce(run_id, ''), (tab_id is not null) desc, last_used_at desc, id desc);
+    create index if not exists browser_session_uses_thread_session_page
+      on browser_session_uses(thread_id, session_id, last_used_at desc, id desc)
+      where page_site is not null;
+    create index if not exists delegations_parent_thread_created
+      on delegations(parent_thread_id, created_at desc, id desc);
+    create index if not exists delegations_child_thread_created
+      on delegations(child_thread_id, created_at desc, id desc);
+    create index if not exists runs_assignment_latest
+      on runs(assignment_id, run_ordinal desc)
+      where assignment_id is not null;
+  `.execute(database);
+}
+
 export async function applyPersonalStateSchema(transaction: Kysely<DatabaseSchema>) {
   await sql.raw(retainedStateDdl).execute(transaction);
   await sql.raw(currentStateIndexes).execute(transaction);
