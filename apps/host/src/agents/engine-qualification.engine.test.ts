@@ -37,6 +37,7 @@ import {
   qualificationAccounts,
   qualifiedEngines,
   qualifiedVersion,
+  qualificationModel,
   shippedEnginesFirstOnPath,
   type QualifiedEngine,
   qualificationHoldMs,
@@ -150,7 +151,7 @@ describe("engine qualification", () => {
           throw qualificationFailure(engine, error);
         });
         const active = stack;
-        const model = active.catalog.models.find((candidate) => candidate.isDefault);
+        const model = qualificationModel(active.catalog.models);
         if (!model) throw new Error("The engine has no default model");
         const threadId = await active.createThread({
           modelSelection: ModelSelectionSchema.parse({
@@ -386,7 +387,7 @@ describe("engine qualification", () => {
         throw qualificationFailure(engine, error);
       });
       const active = stack;
-      const model = active.catalog.models.find((candidate) => candidate.isDefault);
+      const model = qualificationModel(active.catalog.models);
       if (!model) throw new Error("The engine has no default model");
       const threadId = await active.createThread({
         modelSelection: ModelSelectionSchema.parse({
@@ -477,7 +478,7 @@ describe("engine qualification", () => {
       const active = stack;
       const native =
         harnesses.driverCapabilities(HarnessIdSchema.parse(engine.driverKind))?.steering === true;
-      const model = active.catalog.models.find((candidate) => candidate.isDefault)!;
+      const model = qualificationModel(active.catalog.models)!;
       const threadId = await active.createThread({
         modelSelection: ModelSelectionSchema.parse({
           modelId: model.modelId,
@@ -771,7 +772,7 @@ describe("engine qualification", () => {
       // The engine names its own default; nothing in Opensteer picks one.
       const defaults = stack.catalog.models.filter((model) => model.isDefault);
       expect(defaults).toHaveLength(1);
-      const model = defaults[0]!;
+      const model = qualificationModel(stack.catalog.models)!;
       if (newEngineKinds.has(engine.driverKind)) {
         expect(model.options).toEqual(
           expect.arrayContaining([
@@ -1222,7 +1223,7 @@ describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
       const model =
         active.catalog.models.find((candidate) =>
           /luna|haiku|flash|lightning|nano/iu.test(candidate.modelId),
-        ) ?? active.catalog.models.find((candidate) => candidate.isDefault)!;
+        ) ?? qualificationModel(active.catalog.models)!;
       evidence.runModel = model.modelId;
       const firstLine = "I need a clear plan for moving our support team to a new help desk.";
       const message = `${firstLine}\nWe have eight support specialists, about 400 weekly tickets, and three years of customer history. We need to preserve ticket ownership and customer context, train the team, and move in stages without dropping replies. Focus on the migration risks, rollback, and how to measure whether the transition worked. For this initial check, do not use tools or start the work: reply only READY.`;
@@ -1424,7 +1425,7 @@ describe("live Home handoff between native engines", () => {
       (candidate) => candidate.harnessInstanceId === claudeHarnessId,
     );
     if (claudeCatalog?.status !== "ready") throw new Error("Claude catalog is unavailable");
-    const codexModel = stack.catalog.models.find((model) => model.isDefault);
+    const codexModel = qualificationModel(stack.catalog.models);
     const claudeModel = claudeCatalog.models.find((model) => model.isDefault);
     if (!codexModel || !claudeModel) throw new Error("An engine has no default model");
     const codexSelection = ModelSelectionSchema.parse({

@@ -14,7 +14,7 @@ import type { TriggerService } from "./trigger-service.js";
 import type { HostAuthenticator } from "../identity/auth.js";
 import type { PersonActor } from "../commands/actor.js";
 import { WebhookRateLimiter } from "./webhook-rate-limiter.js";
-const webhookRouteKeyPattern = /^whk?_[A-Za-z0-9_-]{32,64}$/u;
+const webhookRouteKeyPattern = /^whk_[A-Za-z0-9_-]{32,64}$/u;
 const webhookRetryAfterSeconds = 300;
 const maxForwardedHeaders = 100;
 const maxForwardedHeaderValueLength = 8 * 1_024;

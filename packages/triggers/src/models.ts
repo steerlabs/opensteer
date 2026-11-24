@@ -18,6 +18,9 @@ import { AutomationScriptSchema, AutomationScriptViewSchema } from "./script.js"
 export const TriggerStatusSchema = z.enum(["active", "paused", "archived"]);
 
 export const TRIGGER_SCRIPT_UPDATE_REASON = "Needs an update: ask your agent";
+export const TRIGGER_WEBHOOK_ADDRESS_REPLACED_REASON =
+  "Its webhook address was replaced, so update anything that calls it with the new address.";
+export const TRIGGER_WEBHOOK_UPDATE_REASON = `${TRIGGER_SCRIPT_UPDATE_REASON}. ${TRIGGER_WEBHOOK_ADDRESS_REPLACED_REASON}`;
 
 export const TriggerScheduleSchema = z.discriminatedUnion("kind", [
   z.strictObject({
@@ -86,12 +89,16 @@ export const TriggerRevisionSchema = z.strictObject({
   createdBy: UserIdSchema,
   createdByThreadId: ThreadIdSchema.nullable().default(null),
   id: TriggerRevisionIdSchema,
+  /** Legacy program language preserved by 0113 so script repair knows what it was written for (S4). */
+  legacyLanguage: z.string().min(1).max(64).optional(),
   /** Legacy v5 source kept readable on paused pre-script revisions so an agent can rewrite them (T14). */
   legacySource: z
     .string()
     .min(1)
     .max(512 * 1_024)
     .optional(),
+  /** Legacy program tool-contract version preserved by 0113 for script repair (S4). */
+  legacyToolContractVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   ordinal: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   script: AutomationScriptSchema.nullable(),
   source: TriggerSourceSchema,

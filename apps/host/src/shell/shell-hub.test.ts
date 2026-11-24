@@ -1493,3 +1493,306 @@ describe("ShellHub terminal retries", () => {
     ]);
   });
 });
+
+/** A connected agent's Run, on Everything with Full access, opening a shell (A4). */
+function lineagedHarness(options: Parameters<typeof harness>[0] = {}) {
+  const context = harness(options);
+  context.store.state.connection = {
+    agentConnectionId: "agc_fixture",
+    grantRevision: 3,
+    scope: "everything",
+  };
+  return context;
+}
+
+describe("ShellHub connection attempts (A4)", () => {
+  it("records the connection and the target's exact stream before the open frame is sent", async () => {
+    const context = lineagedHarness();
+    let release!: () => void;
+    context.store.state.gateReserve = () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    const controller = new AbortController();
+    const connecting = context.hub.connect({
+      signal: controller.signal,
+      target: context.target,
+      token: "caller-token",
+    });
+    void connecting.catch(() => undefined);
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    // The row is being written: nothing has gone to the target yet.
+    expect(context.peer.sent.filter((sent) => sent.type === "host.shell.session.open")).toEqual([]);
+    release();
+    await vi.waitFor(() =>
+      expect(context.peer.sent.map((sent) => sent.type)).toContain("host.shell.session.open"),
+    );
+    expect(context.store.state.reservations).toMatchObject([
+      {
+        connection: { connectionId: "agc_fixture", grantRevision: 3, mode: "full-access" },
+        targetFence: context.stream.fence,
+      },
+    ]);
+    controller.abort();
+  });
+
+  it("sends nothing for an open whose revoke committed first", async () => {
+    const context = lineagedHarness();
+    context.store.state.connectionLive = false;
+    await expect(
+      context.hub.connect({
+        signal: new AbortController().signal,
+        target: context.target,
+        token: "caller-token",
+      }),
+    ).rejects.toMatchObject({
+      code: "reach_denied",
+      message:
+        "This connected agent's access ended. The person can reconnect it from Connected agents.",
+    });
+    // No open frame ever went (a close for an id the target never heard of is all it got).
+    expect(context.peer.sent.map((sent) => sent.type)).not.toContain("host.shell.session.open");
+    expect(context.store.state.reserved).toEqual([]);
+  });
+
+  it("ends a lineaged session never offered to its target with its own evidence", async () => {
+    const context = lineagedHarness();
+    let release!: () => void;
+    context.store.state.gateReserve = () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    const connecting = context.hub.connect({
+      signal: new AbortController().signal,
+      target: context.target,
+      token: "caller-token",
+    });
+    void connecting.catch(() => undefined);
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    // The Disconnect lands while the row is written: the Run's grant ends its sessions.
+    const ending = context.hub.endRunSessions(context.scope.runId, "run-ended");
+    release();
+    await ending;
+    await vi.waitFor(() =>
+      expect(context.store.state.ended).toMatchObject([{ reason: "run-ended", neverSent: true }]),
+    );
+    expect(context.peer.sent.filter((sent) => sent.type === "host.shell.session.open")).toEqual([]);
+    expect(context.store.state.evidence).toEqual([]);
+  });
+
+  it("ends a sent session only on its own stream's close receipt, never another generation's", async () => {
+    const context = lineagedHarness();
+    const session = await activate(context, await openSession(context));
+    // The same computer on a later stream (a reconnect): its word is not this stream's.
+    const later = auxiliaryStream({ runnerId: context.target });
+    const laterPeer = controlPeer();
+    context.hub.attach(laterPeer, later);
+    await context.hub.handleMessage(laterPeer, later, {
+      ...later.fence,
+      reason: "client-closed",
+      sessionId: session.sessionId,
+      type: "runner.shell.session.closed",
+    });
+    await vi.waitFor(() => expect(laterPeer.sent.length).toBeGreaterThan(0));
+    expect(context.store.state.evidence).toEqual([]);
+    await context.hub.handleMessage(context.peer, context.stream, {
+      ...context.stream.fence,
+      reason: "client-closed",
+      sessionId: session.sessionId,
+      type: "runner.shell.session.closed",
+    });
+    await vi.waitFor(() =>
+      expect(context.store.state.evidence).toEqual([
+        { fence: context.stream.fence, sessionIds: [session.sessionId], contactLost: false },
+      ]),
+    );
+  });
+
+  it("accepts a close receipt that arrives after the session's audit window", async () => {
+    const context = lineagedHarness();
+    const session = await activate(context, await openSession(context));
+    await context.hub.end(session.sessionId, "run-ended");
+    // A minute later the in-memory finalization is gone; the receipt still names the stream.
+    context.clock.value += 120_000;
+    await context.hub.handleMessage(context.peer, context.stream, {
+      ...context.stream.fence,
+      reason: "run-ended",
+      sessionId: session.sessionId,
+      type: "runner.shell.session.closed",
+    });
+    await vi.waitFor(() =>
+      expect(context.store.state.evidence).toEqual([
+        { fence: context.stream.fence, sessionIds: [session.sessionId], contactLost: false },
+      ]),
+    );
+  });
+
+  it("records contact lost when the stream it was opened on goes, after any receipt it gave", async () => {
+    const context = lineagedHarness();
+    const first = await activate(context, await openSession(context));
+    const second = await activate(context, await openSession(context));
+    await context.hub.handleMessage(context.peer, context.stream, {
+      ...context.stream.fence,
+      reason: "client-closed",
+      sessionId: first.sessionId,
+      type: "runner.shell.session.closed",
+    });
+    context.hub.detach(context.peer, "transport-disconnected");
+    await vi.waitFor(() =>
+      expect(context.store.state.evidence).toEqual([
+        { fence: context.stream.fence, sessionIds: [first.sessionId], contactLost: false },
+        { fence: context.stream.fence, sessionIds: [second.sessionId], contactLost: true },
+      ]),
+    );
+  });
+
+  it("writes nothing for your own agents' shells", async () => {
+    const context = harness();
+    const session = await activate(context, await openSession(context));
+    await context.hub.handleMessage(context.peer, context.stream, {
+      ...context.stream.fence,
+      reason: "client-closed",
+      sessionId: session.sessionId,
+      type: "runner.shell.session.closed",
+    });
+    context.hub.detach(context.peer, "transport-disconnected");
+    await vi.waitFor(() => expect(context.store.state.ended).toHaveLength(1));
+    expect(context.store.state.evidence).toEqual([]);
+    expect(context.store.state.reservations[0]).toMatchObject({ connection: null });
+  });
+
+  it("keeps a receipt it could not write until it lands", async () => {
+    vi.useFakeTimers();
+    try {
+      const context = lineagedHarness();
+      const session = await activate(context, await openSession(context));
+      context.store.state.failEvidenceWrites = 9;
+      await context.hub.handleMessage(context.peer, context.stream, {
+        ...context.stream.fence,
+        reason: "client-closed",
+        sessionId: session.sessionId,
+        type: "runner.shell.session.closed",
+      });
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(context.store.state.evidence).toEqual([
+        { fence: context.stream.fence, sessionIds: [session.sessionId], contactLost: false },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops a Disconnect's shell: waits on a live stream, contact lost once it is gone", async () => {
+    const context = lineagedHarness();
+    const session = await activate(context, await openSession(context));
+    const attempt = {
+      id: session.sessionId,
+      runnerId: context.target,
+      targetFence: context.stream.fence,
+    };
+    await expect(context.hub.stopConnectionAttempt(attempt)).resolves.toBeUndefined();
+    // Cut here at once, and the target asked to close it.
+    expect(session.caller.closes).toHaveLength(1);
+    await vi.waitFor(() =>
+      expect(
+        context.peer.sent.filter(
+          (sent) =>
+            sent.type === "host.shell.session.close" && sent.sessionId === session.sessionId,
+        ),
+      ).not.toEqual([]),
+    );
+    // Asked again by the next pass, it still waits and asks the target once more.
+    const asked = context.peer.sent.length;
+    await expect(context.hub.stopConnectionAttempt(attempt)).resolves.toBeUndefined();
+    await vi.waitFor(() => expect(context.peer.sent.length).toBe(asked + 1));
+    context.hub.detach(context.peer, "transport-disconnected");
+    await expect(context.hub.stopConnectionAttempt(attempt)).resolves.toBe("contact-lost");
+    // A Home that never held the stream it was opened on (it started after the last one went)
+    // hears nothing from it either.
+    const restarted = harness();
+    await expect(
+      restarted.hub.stopConnectionAttempt({
+        id: ShellSessionIdSchema.parse(`shs_${globalThis.crypto.randomUUID()}`),
+        runnerId: restarted.target,
+        targetFence: {
+          ...restarted.stream.fence,
+          auxiliaryStreamId: context.stream.fence.auxiliaryStreamId,
+        },
+      }),
+    ).resolves.toBe("contact-lost");
+    // A row that names no stream was never offered to a target.
+    await expect(
+      context.hub.stopConnectionAttempt({ ...attempt, targetFence: null }),
+    ).resolves.toBe("ended");
+  });
+});
+
+describe("ShellHub ending that could not be written (B4)", () => {
+  it("keeps retrying past the old cap and lists the session as ending meanwhile", async () => {
+    vi.useFakeTimers();
+    try {
+      const context = harness();
+      const session = await activate(context, await openSession(context));
+      session.caller.deliver(10);
+      context.store.state.failEndWrites = 12;
+      await expect(context.hub.end(session.sessionId, "client-closed")).resolves.toEqual({
+        ended: false,
+      });
+      expect(context.hub.liveSessionBytes(context.target).get(session.sessionId)).toEqual({
+        bytesIn: 10,
+        bytesOut: 0,
+        ending: true,
+      });
+      // Its old id names nothing that could carry a byte again.
+      const late = byteSocket();
+      context.hub.attachCaller(session.sessionId, late);
+      expect(late.closes).toEqual([{ code: 1011, reason: "shell session is not active" }]);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(context.store.state.ended).toEqual([
+        { bytesIn: 10, bytesOut: 0, reason: "client-closed", sessionId: session.sessionId },
+      ]);
+      expect(context.hub.liveSessionBytes(context.target).size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("ShellHub stale detach (F2)", () => {
+  it("ends only the sessions of the stream that went, never those on its successor", async () => {
+    const context = lineagedHarness();
+    const old = await activate(context, await openSession(context));
+    // The computer reconnects: a new stream for the same Runner, and a session opened on it.
+    const successor: Machine = {
+      peer: controlPeer(),
+      stream: auxiliaryStream({ runnerId: context.target }),
+      target: context.target,
+    };
+    context.hub.attach(successor.peer, successor.stream);
+    const fresh = await activate(
+      context,
+      await openSession(context, { machine: successor }),
+      successor,
+    );
+    // Only now does the old stream's close arrive.
+    context.hub.detach(context.peer, "superseded");
+    await vi.waitFor(() =>
+      expect(context.store.state.ended).toMatchObject([
+        { reason: "machine-disconnected", sessionId: old.sessionId },
+      ]),
+    );
+    expect(context.store.state.evidence).toEqual([
+      { fence: context.stream.fence, sessionIds: [old.sessionId], contactLost: true },
+    ]);
+    // The new session still moves bytes and has ended nowhere.
+    fresh.caller.deliver(8);
+    expect(context.hub.liveSessionBytes(context.target).get(fresh.sessionId)).toEqual({
+      bytesIn: 8,
+      bytesOut: 0,
+    });
+    expect(fresh.caller.closes).toEqual([]);
+    expect(context.store.state.ended.map((entry) => entry.sessionId)).not.toContain(
+      fresh.sessionId,
+    );
+  });
+});

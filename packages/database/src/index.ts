@@ -78,6 +78,7 @@ export { assignmentSummaryInTransaction } from "./assignment-store.js";
 export {
   personalDeploymentOwner,
   personalShellSessionState,
+  type ShellConnectionWitness,
   type ShellStopIdempotency,
 } from "./machine-store.js";
 

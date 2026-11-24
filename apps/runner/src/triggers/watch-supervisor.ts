@@ -346,24 +346,29 @@ export class WatchSupervisor {
           maxOutputBytes: Number.MAX_SAFE_INTEGER,
           stdin: "closed",
         });
-        active.process = child;
-        active.healthySince = new Date().toISOString();
-        active.lastError = null;
-        active.observed = "running";
-        await this.#report(active);
         const output = Promise.all([
           this.#consume(child.stdout, active, "stdout"),
           this.#consume(child.stderr, active, "stderr"),
         ]);
-        const exit = await child.exited;
-        await output;
-        active.process = undefined;
-        active.lastExitCode = exit.code;
-        if (active.abort.signal.aborted) break;
-        active.restartCount += 1;
-        active.lastError = exit.signal
-          ? `Watch script ended from ${exit.signal}`
-          : `Watch script exited with code ${String(exit.code)}`;
+        active.process = child;
+        active.healthySince = new Date().toISOString();
+        active.lastError = null;
+        active.observed = "running";
+        try {
+          await this.#report(active);
+          const exit = await child.exited;
+          await output;
+          active.process = undefined;
+          active.lastExitCode = exit.code;
+          if (active.abort.signal.aborted) break;
+          active.restartCount += 1;
+          active.lastError = exit.signal
+            ? `Watch script ended from ${exit.signal}`
+            : `Watch script exited with code ${String(exit.code)}`;
+        } catch (error) {
+          await output.catch(() => undefined);
+          throw error;
+        }
       } catch (error) {
         active.process = undefined;
         if (active.abort.signal.aborted) break;

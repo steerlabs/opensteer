@@ -1,6 +1,10 @@
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { createId, notificationPushWindowMilliseconds } from "@opensteer/core";
-import type { DecidedNotification, NotificationTransition } from "@opensteer/database";
+import type {
+  DecidedNotification,
+  NotificationPublication,
+  NotificationTransition,
+} from "@opensteer/database";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   NotificationDispatcher,
@@ -49,8 +53,10 @@ function setup(
     readonly timing?: Pick<NotificationDispatcherOptions, "now" | "wait">;
     readonly kind?: "reply-published" | "request-opened";
     readonly ready?: Promise<void>;
-    readonly answers?: readonly (number | "network" | "not-configured")[];
+    readonly answers?: readonly (number | "network" | "not-configured" | "garbled")[];
     readonly noTarget?: boolean;
+    /** A connected agent's Request: its alert is an attempt in that connection's Disconnect set. */
+    readonly connection?: string;
   } = {},
 ) {
   const { change, decided } = fixture(input.kind);
@@ -75,6 +81,7 @@ function setup(
     });
     const answer = input.answers?.[calls.length - 1] ?? 202;
     if (answer === "network") throw new Error(`Bearer osc_${"a".repeat(43)}`);
+    if (answer === "garbled") return new Response("{", { status: 202 });
     if (answer === "not-configured")
       return new Response(
         JSON.stringify({
@@ -99,10 +106,30 @@ function setup(
       },
     );
   });
+  /**
+   * What the hand-off statement reads: whether the connection is still live. The Request still
+   * pending is read from `publicationSkipReason`, the same fact the dispatcher reads earlier.
+   */
+  const world = { live: true };
+  const settled: { readonly id: string; readonly state: string }[] = [];
   const store = {
-    decide: vi.fn(async (_change: NotificationTransition) => [{ ...decided, sequence: "3" }]),
-    publicationSkipReason: vi.fn(async () => null as string | null),
+    decide: vi.fn(async (_change: NotificationTransition) => [
+      { ...decided, sequence: "3", connectionId: input.connection ?? null },
+    ]),
+    publicationSkipReason: vi.fn(async (_entry?: NotificationPublication) => null as string | null),
     accountSubjects: vi.fn(async () => [`acct_${crypto.randomUUID()}`] as readonly string[]),
+    beginPublication: vi.fn(async (entry: NotificationPublication) =>
+      world.live && !(await store.publicationSkipReason(entry))
+        ? { kind: "begun" as const, attemptId: "cat_fixture" }
+        : { kind: "refused" as const, reason: "withdrawn" },
+    ),
+    continuePublication: vi.fn(
+      async (_id: string, entry: NotificationPublication) =>
+        world.live && !(await store.publicationSkipReason(entry)),
+    ),
+    settlePublication: vi.fn(async (id: string, state: "done" | "failed" | "unknown") => {
+      settled.push({ id, state });
+    }),
   };
   const onLive = vi.fn<NotificationDispatcherOptions["onLive"]>();
   const onError = vi.fn<NotificationDispatcherOptions["onError"]>();
@@ -126,6 +153,8 @@ function setup(
     change,
     decided,
     store,
+    world,
+    settled,
     target,
     fetch,
     calls,
@@ -151,6 +180,21 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 describe("NotificationDispatcher", () => {
+  it("does not publish a request notice withdrawn during recipient lookup", async () => {
+    const f = setup({ kind: "request-opened", connection: "agc_fixture" });
+    dispatchers.push(f.dispatcher);
+    const accountIds = await f.store.accountSubjects();
+    f.store.accountSubjects.mockClear();
+    const recipients = Promise.withResolvers<readonly string[]>();
+    f.store.accountSubjects.mockReturnValueOnce(recipients.promise);
+    f.dispatcher.dispatch(f.change);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.store.accountSubjects).toHaveBeenCalledOnce();
+    f.store.publicationSkipReason.mockResolvedValue("Request was withdrawn");
+    recipients.resolve(accountIds);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
   it("drains the complete grace and retry intervals on a domain clock", async () => {
     const clock = new ManualClock(instant.getTime());
     const f = start({
@@ -384,5 +428,164 @@ describe("NotificationDispatcher", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(f.onLive).toHaveBeenCalledTimes(1);
     expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  describe("a connected agent's Request alert (A5)", () => {
+    const connected = (input: Parameters<typeof setup>[0] = {}) =>
+      start({ kind: "request-opened", connection: "agc_fixture", ...input });
+
+    it("hands off once, after every await, and records it acknowledged", async () => {
+      const f = connected();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.fetch).toHaveBeenCalledOnce();
+      // The hand-off is the last thing before the request leaves.
+      expect(f.store.beginPublication.mock.invocationCallOrder[0]!).toBeGreaterThan(
+        f.target.mock.invocationCallOrder[0]!,
+      );
+      expect(f.store.beginPublication.mock.invocationCallOrder[0]!).toBeLessThan(
+        f.fetch.mock.invocationCallOrder[0]!,
+      );
+      expect(f.settled).toEqual([{ id: "cat_fixture", state: "done" }]);
+    });
+
+    it("sends nothing when the Disconnect lands while the account target is resolved", async () => {
+      const f = setup({ kind: "request-opened", connection: "agc_fixture" });
+      dispatchers.push(f.dispatcher);
+      const resolved = Promise.withResolvers<{
+        controlApiOrigin: URL;
+        hostCredential: string;
+      } | null>();
+      f.target.mockReturnValueOnce(resolved.promise);
+      f.dispatcher.dispatch(f.change);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.target).toHaveBeenCalledOnce();
+      f.world.live = false;
+      resolved.resolve({
+        controlApiOrigin: new URL("https://accounts.invalid"),
+        hostCredential: `osc_${"a".repeat(43)}`,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.fetch).not.toHaveBeenCalled();
+      // Refused where it would be recorded: no attempt, nothing to settle.
+      expect(f.settled).toEqual([]);
+    });
+
+    it("sends nothing when the Request is withdrawn during the skip check", async () => {
+      const f = setup({ kind: "request-opened", connection: "agc_fixture" });
+      dispatchers.push(f.dispatcher);
+      const skip = Promise.withResolvers<string | null>();
+      f.store.publicationSkipReason.mockReturnValueOnce(skip.promise);
+      f.dispatcher.dispatch(f.change);
+      await vi.advanceTimersByTimeAsync(0);
+      f.store.publicationSkipReason.mockResolvedValue("Request was withdrawn");
+      skip.resolve(null);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.fetch).not.toHaveBeenCalled();
+      expect(f.settled).toEqual([]);
+    });
+
+    it("completes the same attempt after a lost acknowledgement, never a second alert", async () => {
+      const f = connected({ answers: ["network", 202] });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(f.calls).toHaveLength(2);
+      expect(f.calls[0]!.body.notificationId).toBe(f.calls[1]!.body.notificationId);
+      expect(f.store.beginPublication).toHaveBeenCalledOnce();
+      expect(f.store.continuePublication).toHaveBeenCalledOnce();
+      expect(f.settled).toEqual([{ id: "cat_fixture", state: "done" }]);
+    });
+
+    it("keeps a lost acknowledgement unknown when the Disconnect lands before the next send", async () => {
+      const f = connected({ answers: ["network", 202] });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.calls).toHaveLength(1);
+      f.world.live = false;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(f.calls).toHaveLength(1);
+      expect(f.settled).toEqual([{ id: "cat_fixture", state: "unknown" }]);
+    });
+
+    it("records unknown, not failed, when every acknowledgement was lost", async () => {
+      const f = connected({ answers: [503, 503, 503, 503, 503, 503] });
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(f.calls).toHaveLength(6);
+      expect(f.settled).toEqual([{ id: "cat_fixture", state: "unknown" }]);
+    });
+
+    it("records unknown for an acknowledgement it could not read, and does not send it again", async () => {
+      const f = connected({ answers: ["garbled"] });
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(f.calls).toHaveLength(1);
+      expect(f.settled).toEqual([{ id: "cat_fixture", state: "unknown" }]);
+    });
+
+    it("records failed only when the account refused it before taking it", async () => {
+      const bad = connected({ answers: [400] });
+      const missing = connected({ answers: ["not-configured"] });
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(bad.settled).toEqual([{ id: "cat_fixture", state: "failed" }]);
+      expect(missing.settled).toEqual([{ id: "cat_fixture", state: "failed" }]);
+    });
+
+    it("waits out a Disconnect during an in-flight send and records what the account said", async () => {
+      const acknowledged = setup({ kind: "request-opened", connection: "agc_fixture" });
+      const lost = setup({ kind: "request-opened", connection: "agc_fixture" });
+      for (const f of [acknowledged, lost]) dispatchers.push(f.dispatcher);
+      const answers = [
+        Promise.withResolvers<Response>(),
+        Promise.withResolvers<Response>(),
+      ] as const;
+      acknowledged.fetch.mockReturnValueOnce(answers[0].promise);
+      lost.fetch.mockReturnValueOnce(answers[1].promise);
+      for (const f of [acknowledged, lost]) f.dispatcher.dispatch(f.change);
+      await vi.advanceTimersByTimeAsync(0);
+      for (const f of [acknowledged, lost]) {
+        expect(f.fetch).toHaveBeenCalledOnce();
+        // In flight when the connection is disconnected: running, so the Disconnect waits.
+        f.world.live = false;
+        expect(f.settled).toEqual([]);
+      }
+      answers[0].resolve(
+        new Response(
+          JSON.stringify({
+            accepted: true,
+            deliveries: 1,
+            notificationId: acknowledged.decided.view.id,
+          }),
+          { status: 202 },
+        ),
+      );
+      answers[1].reject(new Error("socket hang up"));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(acknowledged.settled).toEqual([{ id: "cat_fixture", state: "done" }]);
+      // Lost on the wire: never sent again, unknown.
+      expect(lost.fetch).toHaveBeenCalledOnce();
+      expect(lost.settled).toEqual([{ id: "cat_fixture", state: "unknown" }]);
+    });
+
+    it("records an attempt cut off by shutdown as unknown", async () => {
+      const f = setup({ kind: "request-opened", connection: "agc_fixture" });
+      dispatchers.push(f.dispatcher);
+      f.fetch.mockImplementationOnce(
+        async (_url, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+              once: true,
+            });
+          }),
+      );
+      f.dispatcher.dispatch(f.change);
+      await vi.advanceTimersByTimeAsync(0);
+      await f.dispatcher.close();
+      expect(f.settled).toEqual([{ id: "cat_fixture", state: "unknown" }]);
+    });
+
+    it("leaves your own agents' Request alerts exactly as they were", async () => {
+      const f = start({ kind: "request-opened", answers: [503, 202] });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(f.calls).toHaveLength(2);
+      expect(f.store.beginPublication).not.toHaveBeenCalled();
+      expect(f.store.continuePublication).not.toHaveBeenCalled();
+      expect(f.store.settlePublication).not.toHaveBeenCalled();
+    });
   });
 });

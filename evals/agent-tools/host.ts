@@ -225,7 +225,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const clients: Client[] = [];
   const activeCalls = new Map<string, number>();
   const mockOffsets = new Map<string, number>();
-  const automationWrites = new Map<string, unknown>();
+  const automationWrites = new Map<string, Record<string, unknown>>();
   const endpoints = new Map<
     string,
     {
@@ -320,11 +320,19 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
               original.structuredContent.error.message === validated));
         calls[index] = { at: calls[index]?.at ?? Date.now(), tool: name, args, valid };
         if (!valid) return original as CallToolResult;
-        let result = Object.hasOwn(mocks, name)
+        const fixture = Object.hasOwn(mocks, name)
           ? mocks[name]
           : tabFixtureTools.has(name)
             ? undefined
-            : (taskFixtureResult(testCase, name, args, scope.threadId) ?? defaultResult(name));
+            : taskFixtureResult(testCase, name, args, scope.threadId);
+        // Nothing configured for this tool: its empty answer, or an unavailable refusal when its
+        // output has no place for one. The call was valid; only the case's answer is missing.
+        let result =
+          fixture !== undefined || tabFixtureTools.has(name)
+            ? fixture
+            : definition!.output.safeParse(defaultResult(name)).success
+              ? defaultResult(name)
+              : { $error: unconfigured, $code: "unavailable" };
         // A Home that changed answers with the change: `$after` reads `changed` once an earlier
         // accepted call in this sample matched `call` (tool and partial arguments), else
         // `before`, so a model that checks its own work sees what the Home would show. It may
@@ -415,9 +423,10 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
         if (name === "opensteer_automation_read" && isRecord(result)) {
           if (isRecord(result.automation) && typeof result.automation.id === "string") {
             const automationId = result.automation.id;
+            // A write answers with the automation alone; the read keeps its own fields.
             result = {
               ...result,
-              automation: automationWrites.get(automationId) ?? result.automation,
+              automation: { ...result.automation, ...automationWrites.get(automationId) },
             };
           }
         }
@@ -428,9 +437,10 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
         )
           result = {
             ...result,
+            // A list entry keeps its summary fields (source, task, latest occurrence).
             automations: result.automations.map((automation) =>
               isRecord(automation) && typeof automation.id === "string"
-                ? (automationWrites.get(automation.id) ?? automation)
+                ? { ...automation, ...automationWrites.get(automation.id) }
                 : automation,
             ),
           };
@@ -670,6 +680,9 @@ function taskFixtureResult(
   return undefined;
 }
 
+const unconfigured =
+  "No matching fixture is configured for this operation. No resource was created.";
+
 function defaultResult(name: string): unknown {
   switch (name) {
     case "discover":
@@ -681,16 +694,16 @@ function defaultResult(name: string): unknown {
     case "opensteer_task_list":
       return { tasks: [], hasMore: false, nextCursor: null };
     case "opensteer_request_list":
-      return { requests: [] };
+      return {
+        requests: [],
+        window: { byteCount: 0, hasMore: false, itemCount: 0, nextCursor: null, totalItems: 0 },
+      };
     case "browser_profile_list":
       return { profiles: [], sites: [] };
     case "opensteer_automation_list":
       return { automations: [] };
     default:
-      return {
-        status: "unavailable",
-        message: "No matching fixture is configured for this operation. No resource was created.",
-      };
+      return { status: "unavailable", message: unconfigured };
   }
 }
 

@@ -667,15 +667,17 @@ export function migrationProvider(options?: {
               "0107_needs_you_counts_requests": {
                 /**
                  * A Home that used teams counted its teammates' asks in Needs you, and those
-                 * rows no longer list: the count is what the list shows, Requests alone. A
-                 * database still converting is left to its conversion, which counts the same.
+                 * rows no longer list: the count is what the list shows, Requests alone, and the
+                 * pending count with it, so neither can sit below the other. A database still
+                 * converting gets the same: one past its count stage keeps this, one before it
+                 * counts again the same way.
                  */
                 async up(database: Kysely<unknown>) {
-                  await sql`update client_sync_state set needs_you_count=listed.count
+                  await sql`update client_sync_state set pending_request_count=listed.count,
+                      needs_you_count=listed.count
                     from (select count(*)::integer as count from personal_attention where kind='request') listed
-                    where ready and needs_you_count is distinct from listed.count`.execute(
-                    database,
-                  );
+                    where pending_request_count is distinct from listed.count
+                      or needs_you_count is distinct from listed.count`.execute(database);
                 },
               },
               [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
@@ -774,7 +776,9 @@ export function migrationProvider(options?: {
                  * Records why an interrupted Run ended (e.g. a shared engine had to retire),
                  * why a queued Run is being held back from starting, when a late stop proof
                  * arrived, and the failure code of a failed task so lists do not collapse
-                 * unconfirmed stops into generic failures.
+                 * unconfirmed stops into generic failures. A shell a connected agent's Run opens
+                 * carries its Disconnect attempt: the connection and grant it was admitted under,
+                 * the target's stream, and that stream's end evidence.
                  */
                 async up(database: Kysely<unknown>) {
                   await sql`
@@ -790,6 +794,23 @@ export function migrationProvider(options?: {
                       add column if not exists machine_boot_id text;
                     alter table run_attempts
                       add column if not exists machine_boot_id text;
+                    -- A shell a connection's Run opens is an attempt in its Disconnect set:
+                    -- admitted under the live connection, bound to the target's exact shell
+                    -- stream, ended by that stream's close receipt or by contact loss (A4).
+                    alter table machine_access_sessions
+                      add column if not exists connection_id text
+                        references agent_connections(id) on delete cascade,
+                      add column if not exists admitted_grant_revision integer,
+                      add column if not exists admitted_access_mode text,
+                      add column if not exists target_fence jsonb,
+                      add column if not exists terminal_evidence_at timestamptz,
+                      add column if not exists contact_lost_at timestamptz;
+                    create index if not exists machine_access_sessions_connection
+                      on machine_access_sessions(connection_id)
+                      where connection_id is not null;
+                    create index if not exists machine_access_sessions_unsettled
+                      on machine_access_sessions(runner_id)
+                      where connection_id is not null and terminal_evidence_at is null;
                     create index if not exists threads_unconfirmed_stop_idx
                       on threads(environment_id)
                       where unconfirmed_stop_run_id is not null or run_start_hold_reason is not null;
