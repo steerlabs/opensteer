@@ -1814,8 +1814,13 @@ integration("Cloud Computer Account service", () => {
     await cloud.mutate(replaced.id, "replace", undefined, "aabbccdd");
     expect(await notReady()).toEqual([]);
     now = new Date(now.getTime() + 31 * 60_000);
-    expect((await notReady()).map(({ computerId }) => computerId).toSorted()).toEqual(
-      [resumed.id, replaced.id].toSorted(),
+    const paged = await notReady();
+    expect(paged).toHaveLength(2);
+    expect(paged).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ computerId: resumed.id, phase: "provisioning" }),
+        expect.objectContaining({ computerId: replaced.id, phase: "provisioning" }),
+      ]),
     );
   });
 
