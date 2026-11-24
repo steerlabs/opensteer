@@ -37,7 +37,8 @@ export type CommandFamily = (typeof commandFamilies)[number];
  * What a command does to authority. `narrow` takes authority away or ends something;
  * `widen-self` gives the caller's own work more; `approve` lifts a gate the person set;
  * `widen-other` gives authority to another principal; `person-view` is the person's own screen
- * and device state, never an agent's to change or to ask about.
+ * and device state, and their own approval of what an agent proposed, never an agent's to change
+ * or to ask about.
  */
 export const effectClasses = [
   "read",
@@ -465,11 +466,11 @@ export const commandTable: CommandTable = {
     family: "tasks",
     scope: "task",
     step: "none",
-    // The person's own approval of an agent's proposal: an agent sending it asks about an ask.
-    faces: one("approve"),
+    // The person's own approval of an agent's proposal, on their own screen: no agent's, not even
+    // to ask about, so to an agent it reads as a command that does not exist (rule 5).
+    faces: [personView],
     governsKinds: ["request"],
     governs: (c) => resource("request", c.requestId),
-    answersAsk: { faces: [0], of: (c) => ({ kind: "request", id: c.requestId }) },
     editor: null,
   },
   "agent.session.stop": {

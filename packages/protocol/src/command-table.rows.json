@@ -563,17 +563,17 @@
       "faces": [
         {
           "when": null,
-          "class": "approve",
+          "class": "person-view",
           "answers": {
-            "a": "ask",
-            "b": "ask",
-            "c": "ask",
-            "d": "ask"
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
           }
         }
       ],
       "step": "—",
-      "note": "A4: the person's answer to a command Request; an agent's ask about it points at that Request",
+      "note": "A4: the person's answer to a command Request, on their own screen; to an agent it reads as a command that does not exist",
       "effect": {
         "where": "outside",
         "why": "registry.ts:118: runs another command",
