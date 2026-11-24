@@ -738,6 +738,7 @@ export class RunnerRuntime {
       options.watchSupervisor ??
       new WatchSupervisor({
         environmentId: options.environmentId,
+        isAnchorHeld: (anchorThreadId) => this.#uncontainedThreads.has(anchorThreadId),
         nodeExecutable: options.nodeExecutable ?? process.execPath,
         planLaunch: (executionId) => this.#planProgramLaunch(executionId),
         privateStateDirectory: this.#privateStateDirectory,
@@ -1865,13 +1866,16 @@ export class RunnerRuntime {
         case "trigger.execute":
           return this.#admitTriggerProgram(command, sink);
         case "watch.reconcile": {
-          await this.#watchSupervisor.reconcile(command, sink);
-          const desired = new Set(command.desired.map(({ activationId }) => activationId));
+          const desired = command.desired.filter(
+            (item) => !this.#uncontainedThreads.has(item.anchorThreadId),
+          );
+          await this.#watchSupervisor.reconcile({ ...command, desired }, sink);
+          const desiredIds = new Set(desired.map(({ activationId }) => activationId));
           for (const report of this.#endedAttempts.values())
             if (
               typeof report !== "string" &&
               report.type === "runner.watch-status" &&
-              !desired.has(report.activationId)
+              !desiredIds.has(report.activationId)
             )
               void sink.send(report).catch(() => undefined);
           return { status: "accepted" };
@@ -3032,9 +3036,6 @@ export class RunnerRuntime {
         ? reject("conflict", "The Run's previous attempt is still stopping", true)
         : reject("conflict", "Run is already active", false);
     }
-    if (this.#threads.has(command.context.threadId)) {
-      return reject("conflict", "Thread already has an active run", true);
-    }
     if (this.#uncontainedThreads.has(command.context.threadId)) {
       return reject(
         "conflict",
@@ -3042,6 +3043,9 @@ export class RunnerRuntime {
         true,
         { reason: "previous-stop-unconfirmed" },
       );
+    }
+    if (this.#threads.has(command.context.threadId)) {
+      return reject("conflict", "Thread already has an active run", true);
     }
     if (this.#runs.size >= this.#maxConcurrentRuns) {
       return reject("conflict", "Runner Run concurrency limit is saturated", true);
@@ -3166,6 +3170,14 @@ export class RunnerRuntime {
     if (this.#endedAttempts.has(key) || this.#unverifiedTriggerEnds.has(key))
       return reject("conflict", "Trigger attempt already stopped", false);
     if (this.#draining) return reject("conflict", "Runner is draining", true);
+    if (this.#uncontainedThreads.has(command.context.anchorThreadId)) {
+      return reject(
+        "conflict",
+        "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+        true,
+        { reason: "previous-stop-unconfirmed" },
+      );
+    }
     if (this.#triggerPrograms.has(command.context.occurrenceId)) {
       return reject("conflict", "Trigger occurrence is already active", false);
     }
@@ -3987,6 +3999,16 @@ export class RunnerRuntime {
             }),
           },
         });
+        // Hold the thread BEFORE emitting the unproven terminal event so no
+        // follow-up Run, firing, or Watch can slip into the gap, and cover
+        // both "unknown" and "unverifiable" containment proofs (W2).
+        this.#holdUncontainedThread(
+          context.threadId,
+          context.runId,
+          warmEngine?.scope ?? active.containmentScope,
+          engineStopping,
+          engineLastResort,
+        );
       } else this.#endedAttempts.set(`${context.runId}:${context.bindingGeneration}`, "ended");
       if (terminal.type === "run.failed") {
         // The logger names the line `message`; the reason is `detail`.
@@ -4012,15 +4034,6 @@ export class RunnerRuntime {
         });
       this.#runs.delete(context.runId);
       this.#activityChanged();
-      if (termination === "unknown") {
-        this.#holdUncontainedThread(
-          context.threadId,
-          context.runId,
-          warmEngine?.scope ?? active.containmentScope,
-          engineStopping,
-          engineLastResort,
-        );
-      }
       if (this.#threads.get(context.threadId) === context.runId) {
         this.#threads.delete(context.threadId);
       }

@@ -32,3 +32,17 @@ func waitWithoutReaping(processID int) error {
 	}
 	return nil
 }
+
+func enableChildSubreaper() error {
+	return nil
+}
+
+func signalSubreaperDescendants(_ int, _ syscall.Signal) error {
+	return nil
+}
+
+func subreaperDescendantsEmpty(_ int) (bool, error) {
+	return true, nil
+}
+
+func reapAdoptedChildren(_ int) {}

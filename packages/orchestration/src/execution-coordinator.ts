@@ -402,7 +402,11 @@ export class ExecutionCoordinator {
         // Waiting is not an error: nothing is logged, and no timer is set. It is listed again
         // only once what it waits for is back, and that wakes the coordinator.
         this.#dispatchBackoff.delete(command.id);
-        await this.#settle(command.id, () => this.#store.retryCommand(command.id, dispatchError));
+        await this.#settle(command.id, () =>
+          dispatchError.provenNotStarted
+            ? this.#store.retryCommand(command.id, dispatchError, { provenNotStarted: true })
+            : this.#store.retryCommand(command.id, dispatchError),
+        );
         return { kind: "done" };
       }
       this.#onDispatchError?.(error, claimed.command);

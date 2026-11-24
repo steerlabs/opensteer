@@ -984,6 +984,37 @@ describe("ExecutionCoordinator", () => {
     expect(dispatched).toEqual([waiting[0]!.id]);
     await coordinator.stop();
   });
+  it("V1 (A1): a held firing the Runner refused after its frame left is retried as proven not started", async () => {
+    const command = pendingCommand({
+      payload: { type: "trigger.execute" },
+      runId: null,
+      type: "trigger.execute",
+    });
+    const store = fakeStore(command);
+    const coordinator = new ExecutionCoordinator({
+      dispatcher: {
+        isAvailable: () => true,
+        dispatch: async () => {
+          throw new CommandDispatchError("Automation is held", "held", { provenNotStarted: true });
+        },
+      },
+      dispatcherId: "test-dispatcher",
+      maxConcurrentRuns: 1,
+      maxConcurrentTriggerPrograms: 1,
+      maxQueuedBytes: 10_000,
+      maxQueuedCommands: 10,
+      pollIntervalMs: 10_000,
+      store: store.value,
+    });
+    coordinator.start();
+    await waitFor(() => store.retryCommand.mock.calls.length === 1);
+    await coordinator.stop();
+    expect(store.retryCommand).toHaveBeenCalledWith(
+      command.id,
+      expect.objectContaining({ disposition: "held", provenNotStarted: true }),
+      { provenNotStarted: true },
+    );
+  });
 });
 function backoffStore(pending: () => readonly PendingCommandRow[]) {
   const claimCommand = vi.fn(async (id: CommandId) => {

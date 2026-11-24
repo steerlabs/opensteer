@@ -1268,14 +1268,16 @@ integration("Runs that outlive their connection", () => {
     await writeFile(
       worker,
       `import { spawn } from "node:child_process";
-if (process.argv.includes("app-server")) {
+if (process.argv.includes("app-server") && process.env.OPENSTEER_EXECUTION_SCOPE) {
   const child = spawn(process.execPath, ["-e", ${JSON.stringify(
     `const fs = require("node:fs");
-process.on("SIGTERM", () => fs.writeFileSync(${JSON.stringify(termFile)}, String(process.pid)));
+process.on("SIGTERM", () => fs.writeFileSync(${JSON.stringify(termFile)} + "." + process.pid, String(process.pid)));
 fs.writeFileSync(${JSON.stringify(detachedPidFile)} + "." + process.ppid, String(process.pid));
 setInterval(() => {}, 60_000);`,
   )}], { detached: true, stdio: "ignore" });
   child.unref();
+  process.on("SIGTERM", () => {});
+  process.argv.push("--survive-parent", "--orphan-engine");
 }
 process.argv[1] = ${JSON.stringify(fakeCodexAppServer)};
 await import(${JSON.stringify(fakeCodexAppServer)});`,
@@ -1317,6 +1319,7 @@ await import(${JSON.stringify(fakeCodexAppServer)});`,
     const restoreViews: (() => void)[] = [];
     try {
       const { stack: active, turnPids } = await start({
+        config: { shutdownGraceMs: 100 },
         executionLeaseMs: 60_000,
         realRunner: true,
         agentsStoppedSince: null,
@@ -1564,7 +1567,7 @@ await import(${JSON.stringify(fakeCodexAppServer)});`,
           reason: "device-restarting",
         }),
       );
-      expect(await readFile(termFile, "utf8")).toBe(String(stubbornPid));
+      expect(await readFile(`${termFile}.${stubbornPid}`, "utf8")).toBe(String(stubbornPid));
       for (const group of [stubbornPid, ssh.pid])
         expect(() => process.kill(-group, 0)).toThrow(/ESRCH/);
       await ssh.ended;

@@ -103,6 +103,109 @@ describe("HostCommandDispatcher Request responses", () => {
     );
     expect(dispatchRequestResponse).toHaveBeenCalledWith(command.id, expect.any(Function));
   });
+
+  it("V1: keeps a Runner previous-stop-unconfirmed rejection on trigger.execute as retry with provenNotStarted: true", async () => {
+    const environmentId = createId("environment");
+    const runnerId = createId("runner");
+    const triggerId = createId("trigger");
+    const occurrenceId = createId("triggerOccurrence");
+    const revisionId = createId("triggerRevision");
+    const threadId = createId("thread");
+    const userId = createId("user");
+    const now = new Date();
+    const command: CommandRow = {
+      requestResponseKeyVersion: null,
+      actorPrincipalId:
+        "pri_00000000-0000-4000-8000-000000000099" as CommandRow["actorPrincipalId"],
+      attempts: 1,
+      authoritySource: { kind: "user-session" },
+      createdAt: now,
+      dispatcherId: "test",
+      encryptedRequestResponse: null,
+      environmentId,
+      id: createId("command"),
+      idempotencyKey: "v1-trigger-execute",
+      lastError: null,
+      payload: { occurrenceId, triggerId, type: "trigger.execute" },
+      requestedBy: userId,
+      runId: null,
+      status: "dispatched",
+      threadId,
+      type: "trigger.execute",
+      updatedAt: now,
+    };
+    const context = {
+      agentHome: { computerId: runnerId, path: "/workspace" },
+      anchorThread: { environmentId, id: threadId },
+      encryptedSecrets: null,
+      occurrence: {
+        commandId: command.id,
+        id: occurrenceId,
+        payload: null,
+        scheduledFor: null,
+        sourceKind: "manual" as const,
+        triggerId,
+      },
+      revision: { id: revisionId },
+      script: { interpreter: null, text: "console.log('ok')" },
+      trigger: { createdBy: userId, id: triggerId, name: "V1 trigger" },
+    };
+    const runnerRefusal = new CommandDispatchError("Stopping could not be confirmed.", "retry", {
+      cause: {
+        code: "conflict",
+        message: "Stopping could not be confirmed.",
+        reason: "previous-stop-unconfirmed",
+        retryable: true,
+      },
+      provenNotStarted: true,
+    });
+    const dispatcher = new HostCommandDispatcher({
+      executionLeaseMs: 90_000,
+      attachmentRunTokens: { issue: () => "attachment-token" } as never,
+      attachments: { listForRun: async () => [] },
+      requestResponseVault: {} as never,
+      runToolTokens: {} as never,
+      browser: { hasBrowserProfiles: async () => false } as never,
+      egress: {} as never,
+      pluginVersions: async () => [],
+      pluginsTokens: {} as never,
+      publicUrl: new URL("https://host.example"),
+      runners: {
+        dispatch: vi.fn(async () => {
+          throw runnerRefusal;
+        }),
+        identityForEnvironment: () => ({
+          bootId: "rbt_v1",
+          capabilities: ["agent-tools-plan-v1", "automation-script-v1", "execution-plane-v2"],
+          connectionGeneration: 1,
+          runnerId,
+        }),
+      } as never,
+      store: {
+        getEnvironment: async () => ({ id: environmentId, runnerId }),
+        markCommandFrameSent: vi.fn(async () => undefined),
+        runnerCapabilities: async () => [
+          "agent-tools-plan-v1",
+          "automation-script-v1",
+          "execution-plane-v2",
+        ],
+      } as never,
+      triggerControlTokens: { issue: () => "trigger-token" } as never,
+      triggers: {
+        loadDispatchContext: async () => context,
+        startExecution: async () => ({
+          connectionId: null,
+          context,
+          executionGeneration: 1,
+        }),
+      } as never,
+    });
+
+    await expect(dispatcher.dispatch(command, new AbortController().signal)).rejects.toMatchObject({
+      disposition: "retry",
+      provenNotStarted: true,
+    });
+  });
   it("never opens a response envelope after its Request reservation is cancelled", async () => {
     const open = vi.fn(async () => Buffer.from("unreachable"));
     const runnersDispatch = vi.fn(async () => undefined);

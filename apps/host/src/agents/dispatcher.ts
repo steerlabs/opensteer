@@ -2,6 +2,7 @@ import { runHasBrowserPages } from "./browser-capability.js";
 import { promptCacheExpiresAt } from "@opensteer/core";
 import {
   connectionIsWaiting,
+  triggerAnchorStopIsHeld,
   triggerChatIsWaiting,
   dispatchNodeStop,
   grantedContent,
@@ -874,19 +875,20 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     const identity = this.#runners.identityForEnvironment(command.environmentId);
     if (!identity) throw new CommandDispatchError("Runner is offline", "retry");
-    // An automation of a paused chat is held, never failed: only when the one read of its standing
-    // refused it for that, before anything is handed to the Runner. A conflict, a missing row or a
-    // lineage without personal context fails as itself, paused or not. Once the send has passed,
-    // what happens is the Runner's, and an unknown end stays unknown.
-    const heldIfChatWaits = async <T>(step: () => Promise<T>): Promise<T> => {
+    // An automation of a paused chat or an anchor with an unconfirmed Stop is held, never failed:
+    // only when the one read of its standing refused it for that, before anything is handed to the
+    // Runner. A conflict, a missing row or a lineage without personal context fails as itself.
+    // Once the send has passed, what happens is the Runner's, and an unknown end stays unknown.
+    const heldIfWaiting = async <T>(step: () => Promise<T>): Promise<T> => {
       try {
         return await step();
       } catch (error) {
         if (triggerChatIsWaiting(error)) throw chatRunHeld();
+        if (triggerAnchorStopIsHeld(error)) throw anchorStopHeld();
         throw error;
       }
     };
-    const initial = await heldIfChatWaits(() => this.#triggers.loadDispatchContext(command.id));
+    const initial = await heldIfWaiting(() => this.#triggers.loadDispatchContext(command.id));
     if (!initial.script) {
       throw new CommandDispatchError(TRIGGER_SCRIPT_UPDATE_REASON, "failed");
     }
@@ -908,7 +910,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       runnerId: identity.runnerId,
     });
     try {
-      const { context, executionGeneration, connectionId } = await heldIfChatWaits(() =>
+      const { context, executionGeneration, connectionId } = await heldIfWaiting(() =>
         this.#triggers.startExecution({
           commandId: command.id,
           runnerBootId: identity.bootId,
@@ -1003,11 +1005,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         // Held here, the Runner never had it: the registry records it not admitted, which undoes
         // the running stamp, and the coordinator returns it to pending.
         beforeSend: async () => {
-          await heldIfChatWaits(() =>
+          await heldIfWaiting(() =>
             this.#triggers.assertActiveExecutionBinding({
               environmentId: context.anchorThread.environmentId,
               executionGeneration,
               occurrenceId: context.occurrence.id,
+              rejectHeldAnchor: true,
               requestedBy: context.trigger.createdBy,
               runnerBootId: identity.bootId,
               runnerId: identity.runnerId,
@@ -1238,4 +1241,13 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
 /** A Run of a paused chat waits for the chat: no failure, no error, no timer; its resume wakes it. */
 function chatRunHeld(): CommandDispatchError {
   return new CommandDispatchError("Its chat is paused; this waits until it is back.", "held");
+}
+
+/** An automation whose anchor has an unconfirmed Stop stays held until proof clears the hold. */
+function anchorStopHeld(): CommandDispatchError {
+  return new CommandDispatchError(
+    "Stopping could not be confirmed. Automation is held while something from the previous Run may still be running on that device.",
+    "held",
+    { provenNotStarted: true },
+  );
 }

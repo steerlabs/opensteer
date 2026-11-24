@@ -149,6 +149,10 @@ const holdTurnStartFile = process.argv
 const holdFollowupTurnStartFile = process.argv
   .find((argument) => argument.startsWith("--hold-followup-turn-start-file="))
   ?.slice("--hold-followup-turn-start-file=".length);
+// Opt-in: hold child turn/started notification after subAgentActivity until this file appears.
+const holdChildTurnStartFile = process.argv
+  .find((argument) => argument.startsWith("--hold-child-turn-start-file="))
+  ?.slice("--hold-child-turn-start-file=".length);
 // Opt-in: delay child thread/unsubscribe replies so root unload times out first.
 const delayChildUnsubscribeMs = Number(
   process.argv
@@ -1164,6 +1168,20 @@ function handleClientMethod(message) {
         }
         if (!process.argv.includes("--ignore-interrupt")) {
           sendChildTurnCompleted(message.params.threadId, message.params.turnId, "interrupted");
+          if (
+            process.argv.includes("--second-child-turn-after-interrupt") &&
+            message.params.turnId === "child-turn-1"
+          ) {
+            send({
+              method: "turn/started",
+              params: {
+                threadId: message.params.threadId,
+                turn: childTurn("child-turn-2", "inProgress"),
+              },
+            });
+            sendChildTurnCompleted(message.params.threadId, "child-turn-2", "completed");
+            sendTurnCompleted("completed");
+          }
         }
         const starting = current().followUpStart;
         current().followUpStart = undefined;
@@ -1178,6 +1196,23 @@ function handleClientMethod(message) {
       capture({ rootInterrupted: message.params.turnId ?? null });
       // Opt-in: an engine that acknowledges an interrupt and keeps going.
       if (scenario === "image-stop-before-completed") {
+        sendTurnCompleted("completed", undefined, message.params.turnId ?? turnId);
+      } else if (scenario === "subagents-root-completes-after-interrupt") {
+        // Root delivers its final answer and completes AFTER interrupt's idle check,
+        // while the child's terminal turn/completed never arrives.
+        send({
+          method: "item/completed",
+          params: {
+            item: {
+              id: "root-final-answer",
+              phase: "final_answer",
+              text: "Root delivered its final answer",
+              type: "agentMessage",
+            },
+            threadId,
+            turnId: message.params.turnId ?? turnId,
+          },
+        });
         sendTurnCompleted("completed", undefined, message.params.turnId ?? turnId);
       } else if (!process.argv.includes("--ignore-interrupt")) {
         sendTurnCompleted("interrupted", undefined, message.params.turnId ?? turnId);
@@ -2501,34 +2536,46 @@ function handleTurnStart(message) {
       announceChildThread();
       return;
     }
-    send({
-      method: "turn/started",
-      params: { threadId: announceChildThread(), turn: childTurn("child-turn-1", "inProgress") },
-    });
-    sendChildItem("item/completed", {
-      content: [{ text: "Look up the release notes", type: "text" }],
-      id: "child-prompt-1",
-      type: "userMessage",
-    });
-    sendChildItem("item/started", {
-      command: "cat NOTES.md",
-      cwd: "/workspace",
-      id: "child-command-1",
-      status: "inProgress",
-      type: "commandExecution",
-    });
-    sendResponseUsage("response", childThreadOf(), "child-turn-1", responseUsage.childRuns);
-    if (scenario === "subagents") sendChildApproval();
-    if (scenario === "subagents-late-sibling" || scenario === "subagents-late-root-followup") {
-      // Root finishes its turn while child 1 keeps running (root idle).
-      const child = threads.get(childThreadOf());
-      if (child) {
-        child.inFlightTurn = true;
-        child.activeTurnId = "child-turn-1";
+    const emitChildTurn = () => {
+      send({
+        method: "turn/started",
+        params: { threadId: announceChildThread(), turn: childTurn("child-turn-1", "inProgress") },
+      });
+      sendChildItem("item/completed", {
+        content: [{ text: "Look up the release notes", type: "text" }],
+        id: "child-prompt-1",
+        type: "userMessage",
+      });
+      sendChildItem("item/started", {
+        command: "cat NOTES.md",
+        cwd: "/workspace",
+        id: "child-command-1",
+        status: "inProgress",
+        type: "commandExecution",
+      });
+      sendResponseUsage("response", childThreadOf(), "child-turn-1", responseUsage.childRuns);
+      if (scenario === "subagents") sendChildApproval();
+      if (scenario === "subagents-late-sibling" || scenario === "subagents-late-root-followup") {
+        // Root finishes its turn while child 1 keeps running (root idle).
+        const child = threads.get(childThreadOf());
+        if (child) {
+          child.inFlightTurn = true;
+          child.activeTurnId = "child-turn-1";
+        }
+        sendTurnCompleted("completed");
       }
-      sendTurnCompleted("completed");
+    };
+    if (holdChildTurnStartFile && !existsSync(holdChildTurnStartFile)) {
+      const heldThread = current();
+      const timer = setInterval(() => {
+        if (!existsSync(holdChildTurnStartFile)) return;
+        clearInterval(timer);
+        threadScope.run(heldThread, emitChildTurn);
+      }, 10);
+      timer.unref();
       return;
     }
+    emitChildTurn();
     // `subagents-hold` leaves the child working until it is interrupted.
     return;
   }

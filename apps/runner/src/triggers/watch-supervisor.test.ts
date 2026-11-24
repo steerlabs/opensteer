@@ -668,6 +668,131 @@ describe("WatchSupervisor", () => {
       await fixture.close();
     }
   });
+
+  it("W3: does not restart a crashed Watch while its anchor task is Stop-held, and restarts once a later reconcile arrives after lift", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-watch-w3-"));
+    roots.push(root);
+    const workspace = join(root, "workspace");
+    await mkdir(workspace, { recursive: true });
+    const countFile = join(root, "starts.log");
+    const crashFlag = join(root, "crash-now");
+    const script = {
+      interpreter: null,
+      text: `import fs from "node:fs";
+fs.appendFileSync(${JSON.stringify(countFile)}, "start\\n");
+setInterval(() => {
+  if (fs.existsSync(${JSON.stringify(crashFlag)})) {
+    fs.rmSync(${JSON.stringify(crashFlag)}, { force: true });
+    process.exit(1);
+  }
+}, 20);`,
+    } as const;
+    const server = createServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ script, secrets: {} }));
+    });
+    await new Promise<void>((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP test server");
+    const environmentId = createId("environment");
+    const activationId = createId("triggerWatchActivation");
+    const anchorThreadId = createId("thread");
+    const revisionId = createId("triggerRevision");
+    const triggerId = createId("trigger");
+    let anchorHeld = false;
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = {
+      async send(message) {
+        messages.push(message);
+      },
+    };
+    const restartBackoffMs = vi.fn(() => 20);
+    const supervisor = new WatchSupervisor({
+      environmentId,
+      isAnchorHeld: (threadId) => anchorHeld && threadId === anchorThreadId,
+      nodeExecutable: process.execPath,
+      planLaunch: async () => (launch) => launch,
+      privateStateDirectory: join(root, "private"),
+      restartBackoffMs,
+      terminate: async () => "proven",
+      transport: { mode: "development" },
+      agentHome: {
+        prepare: async () => ({ instructions: undefined, path: workspace }),
+        folder: async ({ path }) => path,
+      },
+    });
+    const makeCommand = (
+      reconcileGeneration: number,
+    ): Extract<RunnerCommand, { readonly type: "watch.reconcile" }> => ({
+      commandId: createId("command"),
+      correlationId: CorrelationIdSchema.parse(`watch-w3:${crypto.randomUUID()}`),
+      desired: [
+        {
+          agentHome: { computerId: createId("runner"), path: workspace },
+          activationId,
+          anchorThreadId,
+          capabilities: {
+            browserCdp: null,
+            mcp: {
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+              token: "control-token",
+              url: `http://127.0.0.1:${address.port}/mcp`,
+            },
+          },
+          executionGeneration: 1,
+          revisionId,
+          triggerId,
+        },
+      ],
+      environmentId,
+      reconcileGeneration,
+      type: "watch.reconcile",
+    });
+    try {
+      await supervisor.reconcile(makeCommand(1), sink);
+      await vi.waitFor(
+        async () => {
+          expect(await readFile(countFile, "utf8")).toBe("start\n");
+        },
+        { timeout: 5_000 },
+      );
+
+      // Anchor becomes Stop-held while Watch is running, then Watch crashes.
+      anchorHeld = true;
+      await writeFile(crashFlag, "1");
+      await vi.waitFor(
+        () => {
+          expect(
+            messages.some(
+              (message) =>
+                message.type === "runner.watch-status" &&
+                message.observed === "halted" &&
+                message.lastError?.includes("previous Stop is unconfirmed"),
+            ),
+          ).toBe(true);
+        },
+        { timeout: 5_000 },
+      );
+      expect(supervisor.activeActivationIds()).toEqual([]);
+      expect(restartBackoffMs).not.toHaveBeenCalled();
+      expect(await readFile(countFile, "utf8")).toBe("start\n");
+
+      // Lift hold and reconcile: Watch starts cleanly again.
+      anchorHeld = false;
+      await supervisor.reconcile(makeCommand(2), sink);
+      await vi.waitFor(
+        async () => {
+          expect(await readFile(countFile, "utf8")).toBe("start\nstart\n");
+        },
+        { timeout: 5_000 },
+      );
+    } finally {
+      await supervisor.close();
+      await new Promise<void>((resolvePromise, reject) =>
+        server.close((error) => (error ? reject(error) : resolvePromise())),
+      );
+    }
+  });
 });
 
 async function watchHarness(

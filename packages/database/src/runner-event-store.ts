@@ -9,7 +9,12 @@ import {
   writeThreadSummary,
 } from "./thread-status.js";
 import { refreshRequestState } from "./request-persistence.js";
-import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
+import {
+  commitPersonalMutation,
+  wakeTriggerSchedules,
+  wakeWatches,
+  type PersonalMutation,
+} from "./personal-mutation.js";
 import { acceptPersonalRunnerStatement } from "./personal-runner-receipts.js";
 import { beginPersonalRunFinish, readFinishChildren } from "./personal-run-state.js";
 import { completePersonalToolCall, startPersonalToolCall } from "./personal-tool-calls.js";
@@ -1026,6 +1031,8 @@ export async function commitRunnerEvent(
             await projectThreadState(tx, run.threadId, confirmedAt, true);
             await publishTranscriptRun(tx, mutation, run.id);
             await publishRunQueue(tx, run.threadId);
+            await wakeTriggerSchedules(tx);
+            await wakeWatches(tx, run.environmentId);
             return "applied";
           }
           const lostExecution =

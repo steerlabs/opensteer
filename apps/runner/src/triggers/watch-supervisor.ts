@@ -20,7 +20,12 @@ import {
   WATCH_START_RETRY_MS,
   type AutomationScript,
 } from "@opensteer/triggers";
-import { createId, type EnvironmentId, type TriggerWatchActivationId } from "@opensteer/core";
+import {
+  createId,
+  type EnvironmentId,
+  type ThreadId,
+  type TriggerWatchActivationId,
+} from "@opensteer/core";
 import type { RunnerOperationalReport, WatchReconcileActivation } from "@opensteer/protocol";
 import { isNodeError } from "@opensteer/shared/nodeError";
 import { randomUUID } from "node:crypto";
@@ -77,6 +82,8 @@ export interface WatchSupervisorOptions {
   readonly cliBinDirectory?: string;
   readonly cliScriptPath?: string;
   readonly environmentId: EnvironmentId;
+  /** True while the Watch's anchor task has an unconfirmed Stop on this Runner (W3). */
+  readonly isAnchorHeld?: (anchorThreadId: ThreadId) => boolean;
   readonly nodeExecutable: string;
   /** Plans one script launch; see the Runner's own automation script launches. */
   readonly planLaunch: (
@@ -115,6 +122,7 @@ export class WatchSupervisor {
   readonly #cliBinDirectory: string;
   readonly #cliScriptPath: string;
   readonly #environmentId: EnvironmentId;
+  readonly #isAnchorHeld?: WatchSupervisorOptions["isAnchorHeld"];
   readonly #nodeExecutable: string;
   readonly #planLaunch: WatchSupervisorOptions["planLaunch"];
   readonly #onStopped: WatchSupervisorOptions["onStopped"];
@@ -137,6 +145,7 @@ export class WatchSupervisor {
     this.#cliBinDirectory = resolve(options.cliBinDirectory ?? cliDefaults.cliBinDirectory);
     this.#cliScriptPath = resolve(options.cliScriptPath ?? cliDefaults.cliScriptPath);
     this.#environmentId = options.environmentId;
+    this.#isAnchorHeld = options.isAnchorHeld;
     this.#nodeExecutable = options.nodeExecutable;
     this.#planLaunch = options.planLaunch;
     this.#restartBackoffMs = options.restartBackoffMs ?? watchRestartBackoffMs;
@@ -291,6 +300,10 @@ export class WatchSupervisor {
 
   async #run(active: ActiveWatch): Promise<void> {
     while (!active.abort.signal.aborted && active.observed !== "expired") {
+      if (this.#isAnchorHeld?.(active.desired.anchorThreadId)) {
+        await this.#haltForHeldAnchor(active);
+        break;
+      }
       let workspace: AgentHomeWorkspace | undefined;
       let materializationRoot: string | undefined;
       active.observed = "starting";
@@ -397,12 +410,33 @@ export class WatchSupervisor {
         await this.#report(active);
         break;
       }
+      if (this.#isAnchorHeld?.(active.desired.anchorThreadId)) {
+        await this.#haltForHeldAnchor(active);
+        break;
+      }
       active.observed = "backoff";
       await this.#report(active);
       await delay(this.#restartBackoffMs(active.restartCount), active.abort.signal).catch(
         () => undefined,
       );
     }
+  }
+
+  async #haltForHeldAnchor(active: ActiveWatch): Promise<void> {
+    if (active.leaseTimer) clearTimeout(active.leaseTimer);
+    const endpoints = active.endpoints;
+    delete active.endpoints;
+    delete active.scriptPayload;
+    endpoints?.revoke();
+    await endpoints?.close().catch(() => undefined);
+    if (this.#watches.get(active.desired.activationId) === active) {
+      this.#watches.delete(active.desired.activationId);
+    }
+    active.lastError = active.lastError
+      ? `${active.lastError} (stopped restarting while its task's previous Stop is unconfirmed)`
+      : "Watch stopped restarting while its task's previous Stop is unconfirmed.";
+    active.observed = "halted";
+    await this.#report(active);
   }
 
   async #materialize(

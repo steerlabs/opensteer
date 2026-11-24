@@ -3889,6 +3889,140 @@ describe("one Codex app-server per account", () => {
     }
   });
 
+  it("B7: settles as run.interrupted without waiting for requestTimeoutMs when root turn completes after interrupt idle check while child terminal event never arrives", async () => {
+    const fixture = await setup("subagents-root-completes-after-interrupt", {
+      requestTimeoutMs: 1_500,
+      serverArguments: ["--unique-threads", "--ignore-interrupt"],
+    });
+    try {
+      const session = await fixture.adapter.startSession(taskContext(fixture, "b7-crossing"));
+      const observer = observe(session.events);
+      const execution = session.execute(fixture.turn("Delegate and answer during Stop"));
+      await vi.waitFor(() =>
+        expect(
+          observer.events.some(
+            (event) => event.type === "node.updated" && event.data.stopSupported,
+          ),
+        ).toBe(true),
+      );
+      const childNode = observer.events.find((event) => event.type === "node.started");
+      if (childNode?.type !== "node.started") throw new Error("Expected child node");
+      const childThreadId = childNode.data.sessionRef!;
+
+      // Interrupt while root is executing and child ignores interrupt (child never emits turn/completed).
+      // Root delivers final_answer + turn/completed("completed") AFTER #performInterrupt's idle check.
+      const startedInterruptAt = Date.now();
+      await session.interrupt();
+      await execution;
+      const elapsedMs = Date.now() - startedInterruptAt;
+      // Must settle from what it knows rather than waiting the full 1500ms requestTimeoutMs.
+      expect(elapsedMs).toBeLessThan(1_000);
+
+      // Final answer is preserved in transcript, yet Run outcome is run.interrupted (never run.completed / run.failed).
+      expect(
+        observer.events.some(
+          (event) =>
+            event.type === "assistant.message" &&
+            event.data.content.some(
+              (part) => part.type === "text" && part.text === "Root delivered its final answer",
+            ),
+        ),
+      ).toBe(true);
+      expect(observer.events.some((event) => event.type === "run.interrupted")).toBe(true);
+      expect(observer.events.some((event) => event.type === "run.completed")).toBe(false);
+      expect(observer.events.some((event) => event.type === "run.failed")).toBe(false);
+
+      // Stop proof still independently unloads and closes the child thread.
+      await session.stop();
+      await observer.done;
+      const captured = await fixture.capture();
+      expect(captured).toContainEqual({ fakeThreadClosed: childThreadId });
+      expect(captured).toContainEqual({ fakeThreadClosed: session.providerSessionReference });
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("B7b: remembers stopNode called between node.started and child turn/started and interrupts the child turn once it arrives", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "opensteer-codex-b7b-"));
+    const releaseFile = join(dir, "release-child-turn");
+    const fixture = await setup("subagents-hold", {
+      requestTimeoutMs: 2_000,
+      serverArguments: [
+        "--unique-threads",
+        "--ignore-interrupt",
+        `--hold-child-turn-start-file=${releaseFile}`,
+      ],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "b7b-stopping"));
+      const observer = observe(stopping.events);
+      void stopping.execute(fixture.turn("Delegate to a researcher"));
+      const nodeStarted = await observer.waitFor("node.started");
+      const childThreadId = nodeStarted.data.sessionRef!;
+
+      // Forced order: call stopNode BEFORE child turn/started has been sent.
+      const stoppingNode = stopping.stopNode!(nodeStarted.data.nodeId);
+      await writeFile(releaseFile, "go", "utf8");
+      await stoppingNode;
+
+      void stopping.interrupt();
+      await stopping.stop();
+      await observer.done;
+      const captured = await fixture.capture();
+      const childInterrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === childThreadId,
+      );
+      expect(childInterrupts).toHaveLength(1);
+    } finally {
+      await fixture.adapter.close();
+      await rm(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("W7: clears remembered stopNode state once sent so a later turn of the same child in the same Run is not interrupted", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "opensteer-codex-w7-"));
+    const releaseFile = join(dir, "release-child-turn");
+    const fixture = await setup("subagents-hold", {
+      requestTimeoutMs: 2_000,
+      serverArguments: [
+        "--unique-threads",
+        "--second-child-turn-after-interrupt",
+        `--hold-child-turn-start-file=${releaseFile}`,
+      ],
+    });
+    try {
+      const session = await fixture.adapter.startSession(taskContext(fixture, "w7-second-turn"));
+      const observer = observe(session.events);
+      const executing = session.execute(fixture.turn("Delegate to a researcher"));
+      const nodeStarted = await observer.waitFor("node.started");
+      const childThreadId = nodeStarted.data.sessionRef!;
+
+      // Remember stopNode before child-turn-1 starts.
+      const stoppingNode = session.stopNode!(nodeStarted.data.nodeId);
+      await writeFile(releaseFile, "go", "utf8");
+      await stoppingNode;
+      await executing;
+      await session.stop();
+      await observer.done;
+
+      const captured = await fixture.capture();
+      const childInterrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === childThreadId,
+      );
+      expect(childInterrupts).toHaveLength(1);
+      expect((childInterrupts[0]!.params as JsonRecord).turnId).toBe("child-turn-1");
+      expect(observer.events.some((event) => event.type === "run.completed")).toBe(true);
+    } finally {
+      await fixture.adapter.close();
+      await rm(dir, { force: true, recursive: true });
+    }
+  });
+
   it("H2(a): interrupts a late follow-up turn/start reply after the old active-turn path is unavailable and retries root unload without retiring neighbours", async () => {
     const dir = await mkdtemp(join(tmpdir(), "opensteer-codex-late-turn-start-"));
     const turnStartRelease = join(dir, "turn-start-release");

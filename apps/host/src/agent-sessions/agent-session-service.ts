@@ -582,6 +582,15 @@ export class AgentSessionService {
               taskId,
               running.result as Promise<DirectOperationResult<Result>>,
             );
+          // The row was read while its executor ran, and that executor has since let go: it
+          // settled the row before letting go, so the row now says how it ended (rule 4: a
+          // completed operation is never answered unknown). Still handed off, no executor here
+          // holds it: its outcome cannot be known.
+          const current = await readAgentOperation(this.#store.database, row.id);
+          if (current.state !== "handed-off") {
+            row = current;
+            break;
+          }
           return { status: "unknown", ...base, next: unknownNext };
         }
         case "admitted":

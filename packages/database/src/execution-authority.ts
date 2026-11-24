@@ -285,9 +285,18 @@ export async function lineageExecutionStanding(
     readonly userId: UserId;
     readonly agentConnectionId: string | null;
   },
+  options?: {
+    /** Lock the anchor `threads` row (`FOR SHARE`) in the same statement as the standing read. */
+    readonly lockAnchor?: boolean;
+  },
 ): Promise<
   | { readonly kind: "admitted"; readonly environmentId: EnvironmentId }
   | { readonly kind: "waiting" }
+  | {
+      readonly kind: "held";
+      readonly reason: "previous-stop-unconfirmed";
+      readonly environmentId: EnvironmentId;
+    }
   | { readonly kind: "lost" }
 > {
   if (input.agentConnectionId) {
@@ -299,10 +308,22 @@ export async function lineageExecutionStanding(
     if (standing === "waiting") return { kind: "waiting" };
     if (standing === "ended") return { kind: "lost" };
   }
-  const admission = await admitThreadExecution(database, input.threadId, input.userId);
-  return admission
-    ? { kind: "admitted", environmentId: admission.environmentId }
-    : { kind: "lost" };
+  let query = database
+    .selectFrom("threads")
+    .select(["threads.environmentId", "threads.unconfirmedStopRunId"])
+    .where("threads.id", "=", input.threadId)
+    .where(threadExecutionAdmitted(input.userId));
+  if (options?.lockAnchor) query = query.forShare();
+  const row = await query.executeTakeFirst();
+  if (!row) return { kind: "lost" };
+  if (row.unconfirmedStopRunId !== null) {
+    return {
+      kind: "held",
+      reason: "previous-stop-unconfirmed",
+      environmentId: row.environmentId,
+    };
+  }
+  return { kind: "admitted", environmentId: row.environmentId };
 }
 function availableExecutionEnvironmentSubquery(userId: UserId) {
   return expressionBuilder<DatabaseSchema, "threads">()

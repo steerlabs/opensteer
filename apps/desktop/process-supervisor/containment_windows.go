@@ -240,6 +240,8 @@ func (containment *windowsProcessContainment) empty() (bool, error) {
 	return accounting.ActiveProcesses == 1, nil
 }
 
+func (containment *windowsProcessContainment) reapAdopted() {}
+
 func terminationSignals() []os.Signal {
 	return []os.Signal{os.Interrupt}
 }

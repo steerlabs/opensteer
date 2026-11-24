@@ -991,6 +991,59 @@ describeStore("app lifecycle admission", (it) => {
     expect((await b.store.get(f.userId, reserved.appId)).server?.desiredState).toBe("stopped");
   });
 
+  it("puts a start to the person when the Run is in a connected agent's lineage: its server outlives that Disconnect", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const f = await storeFixture.startRunFixture("app-start-lineage");
+    const connection = await new AgentConnectionStore(database).create({
+      userId: f.userId,
+      label: "Agent",
+      clientName: "Agent",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+      grant: { scope: "everything" },
+    });
+    await new AgentConnectionStore(database).activate(connection.id, `hash-${crypto.randomUUID()}`);
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: connection.id, accessMode: "full-access" })
+      .where("id", "=", f.threadId)
+      .execute();
+    await database
+      .updateTable("runs")
+      .set({ accessMode: "full-access", connectionId: connection.id })
+      .where("id", "=", f.run.id)
+      .execute();
+    const b = await setup(database, f.agentHome);
+    const reserved = await b.store.reserve({
+      scope: runScope(f),
+      creationKey: "lineage",
+      name: "Lineage",
+      computerId: f.runnerId,
+    });
+    await b.store.commit({
+      scope: runScope(f),
+      appId: reserved.appId,
+      name: "Lineage",
+      publishKey: "lineage",
+      server: { folder: f.agentHome, command: "serve" },
+      serverGeneration: reserved.generation,
+    });
+    await b.store.setDesiredState(f.userId, reserved.appId, "stopped");
+    const service = serviceFor(database, f.agentHome, {
+      tunnels: b.tunnels as unknown as ConstructorParameters<typeof AppService>[0]["tunnels"],
+    }).service;
+    await service.onRunnerConnected(f.runnerId);
+    // The door's app.start asks under a connection (its lineage face): the same answer here.
+    await expect(
+      service.start({ kind: "run", claims: toolScope(f) }, reserved.appId),
+    ).rejects.toMatchObject({ code: "conflict", reason: "asks-person" });
+    expect(b.tunnels.start).not.toHaveBeenCalled();
+    expect((await b.store.get(f.userId, reserved.appId)).server?.desiredState).toBe("stopped");
+  });
+
   it("enforces the stored-app limit before allocating a new publication and keeps all existing server records in reconciliation", async ({
     storeFixture,
   }) => {

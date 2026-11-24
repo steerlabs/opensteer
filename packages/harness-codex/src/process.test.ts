@@ -62,72 +62,93 @@ describe("Codex stdio process", () => {
     }
   });
 
-  it.skipIf(process.platform === "win32")(
-    "leaves recovery processes alive after the killed Runner's supervisor finishes",
-    async () => {
-      const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-orphan-"));
-      const capture = join(directory, "capture.jsonl");
-      const engine = spawnSupervised({
-        executable: process.execPath,
-        args: [
-          fakeServer,
-          "--scenario=recovery-held",
-          "--survive-parent",
-          "--recovery-tool",
-          `--capture=${capture}`,
-        ],
-        cwd: directory,
-        environment: {},
-        output: "raw",
+  async function runKilledRunnerSupervisorRecoveryCheck(expectReaped: boolean): Promise<void> {
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-orphan-"));
+    const capture = join(directory, "capture.jsonl");
+    const engine = spawnSupervised({
+      executable: process.execPath,
+      args: [
+        fakeServer,
+        "--scenario=recovery-held",
+        "--survive-parent",
+        "--recovery-tool",
+        `--capture=${capture}`,
+      ],
+      cwd: directory,
+      environment: {},
+      output: "raw",
+    });
+    const output = collectStreamText(engine.stdout);
+    const errors = collectStreamText(engine.stderr);
+    let pids: number[] = [];
+    try {
+      for (const message of [
+        { id: 1, method: "initialize", params: {} },
+        { id: 2, method: "thread/start", params: {} },
+        { id: 3, method: "turn/start", params: { threadId: "codex-thread-1", input: [] } },
+      ])
+        engine.child.stdin.write(JSON.stringify(message) + "\n");
+      await vi.waitFor(
+        async () => {
+          const records = (await readFile(capture, "utf8"))
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line));
+          pids = records.flatMap((record) =>
+            record.recoveryTurn
+              ? [record.recoveryTurn.pid]
+              : record.recoveryChild
+                ? [record.recoveryChild.pid]
+                : [],
+          );
+          expect(pids).toHaveLength(2);
+        },
+        { timeout: 2000 },
+      );
+      // EOF on this pipe is what SIGKILL of the owning Runner leaves behind.
+      const control = engine.child.stdio[3];
+      if (!control || typeof control === "number" || !("destroy" in control))
+        throw new Error("No supervisor control pipe");
+      control.destroy();
+      await withTimeout(engine.exited, 2000, {
+        timeoutError: () => new Error("Supervisor did not finish its parent-death cleanup"),
       });
-      const output = collectStreamText(engine.stdout);
-      const errors = collectStreamText(engine.stderr);
-      let pids: number[] = [];
-      try {
-        for (const message of [
-          { id: 1, method: "initialize", params: {} },
-          { id: 2, method: "thread/start", params: {} },
-          { id: 3, method: "turn/start", params: { threadId: "codex-thread-1", input: [] } },
-        ])
-          engine.child.stdin.write(JSON.stringify(message) + "\n");
-        await vi.waitFor(
-          async () => {
-            const records = (await readFile(capture, "utf8"))
-              .trim()
-              .split("\n")
-              .map((line) => JSON.parse(line));
-            pids = records.flatMap((record) =>
-              record.recoveryTurn
-                ? [record.recoveryTurn.pid]
-                : record.recoveryChild
-                  ? [record.recoveryChild.pid]
-                  : [],
-            );
-            expect(pids).toHaveLength(2);
-          },
-          { timeout: 2000 },
-        );
-        // EOF on this pipe is what SIGKILL of the owning Runner leaves behind.
-        const control = engine.child.stdio[3];
-        if (!control || typeof control === "number" || !("destroy" in control))
-          throw new Error("No supervisor control pipe");
-        control.destroy();
-        await withTimeout(engine.exited, 2000, {
-          timeoutError: () => new Error("Supervisor did not finish its parent-death cleanup"),
-        });
+      if (expectReaped) {
+        // On Linux, opensteer-process-supervisor enables PR_SET_CHILD_SUBREAPER
+        // and reaps detached descendants on parent-death cleanup before exiting.
         for (const pid of pids)
           expect(
             () => process.kill(pid, 0),
-            `Recovery PID ${pid} must survive supervisor cleanup`,
+            `Linux subreaper must reap detached recovery PID ${pid} before supervisor exit`,
+          ).toThrow();
+      } else {
+        for (const pid of pids)
+          expect(
+            () => process.kill(pid, 0),
+            `Recovery PID ${pid} must survive supervisor cleanup on macOS`,
           ).not.toThrow();
-      } finally {
-        for (const pid of pids) killFixture(pid);
-        await engine.terminate(0);
-        await withTimeout(Promise.all([output, errors]), 2000, {
-          timeoutError: () => new Error("Recovery fixture pipes did not close"),
-        });
-        await rm(directory, { recursive: true, force: true });
       }
+    } finally {
+      for (const pid of pids) killFixture(pid);
+      await engine.terminate(0);
+      await withTimeout(Promise.all([output, errors]), 2000, {
+        timeoutError: () => new Error("Recovery fixture pipes did not close"),
+      });
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
+  it.runIf(process.platform === "linux")(
+    "reaps detached recovery processes when the killed Runner's supervisor finishes on Linux",
+    async () => {
+      await runKilledRunnerSupervisorRecoveryCheck(true);
+    },
+  );
+
+  it.runIf(process.platform === "darwin")(
+    "leaves detached recovery processes alive after the killed Runner's supervisor finishes on macOS",
+    async () => {
+      await runKilledRunnerSupervisorRecoveryCheck(false);
     },
   );
 
