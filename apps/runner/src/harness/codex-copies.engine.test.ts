@@ -171,23 +171,22 @@ it.skipIf(!oldCodex || !oldVersion)(
     };
     harnesses.configureInstance(definition);
     // The old copy would fail its own version check here; Opensteer's answers.
-    let inspected = await harnesses.inspectDefinition(
-      definition,
-      environment,
-      providerState,
-      project,
-      AbortSignal.timeout(120_000),
-    );
-    for (let attempt = 0; inspected.status === "preparing" && attempt < 120; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      inspected = await harnesses.inspectDefinition(
+    const inspect = () =>
+      harnesses.inspectDefinition(
         definition,
         environment,
         providerState,
         project,
         AbortSignal.timeout(120_000),
       );
-    }
+    let inspected = await inspect();
+    await vi.waitFor(
+      async () => {
+        if (inspected.status === "preparing") inspected = await inspect();
+        if (inspected.status === "preparing") throw new Error("Codex is still preparing");
+      },
+      { interval: 500, timeout: 60_000 },
+    );
     // The engine answered for itself: an old copy refuses here as "older than".
     // The stand-in's API key is no OpenAI account, so it asks for a sign-in;
     // a turn needs none against the stand-in.
