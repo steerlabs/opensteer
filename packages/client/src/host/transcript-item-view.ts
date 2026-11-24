@@ -4,6 +4,7 @@ import type { NodeDetailEntry } from "./node-detail.js";
 import type { MessageEntry, TranscriptEntry, RunEntryStatus } from "./client.js";
 import { executionNodeEntry } from "./subagent-model.js";
 import { hydrateTranscriptMessage } from "./transcript.js";
+import { transcriptMessageKind } from "./thread-transcript-store.js";
 
 export function transcriptCard(
   item: TranscriptItem,
@@ -15,9 +16,7 @@ export function transcriptCard(
   const preview = view.preview ?? "";
   switch (item.kind) {
     case "message": {
-      const messageKind =
-        item.messageKind ??
-        (view.author === "assistant" || !item.isTurnStart ? "assistant" : "input");
+      const messageKind = transcriptMessageKind(item);
       const author: MessageAuthor = item.author ?? { kind: "platform", cause: "transcript" };
       const message: MessageEntry = {
         ...base,

@@ -21,6 +21,7 @@ import type {
   ReasoningEntry,
   RequestReceiptEntry,
   RunEntry,
+  RunQueueEntry,
   NodeEntry,
   ToolEntry,
   TranscriptEntry,
@@ -707,6 +708,36 @@ interface ConversationRowOptions {
 }
 
 /**
+ * The item a transcript row stands for, which is what a reading position names and a new cut
+ * centres on: what the row shows the reader, so the cut holds it.
+ */
+export function transcriptRowItemId(group: TranscriptGroup): string | undefined {
+  // A turn folds its steps under what the agent said: that is the row's place, however many steps
+  // fold above it.
+  const entry =
+    group.kind === "turn"
+      ? (group.turn.reply ??
+        group.turn.work.findLast((step) => step.kind === "message") ??
+        group.turn.work[0] ??
+        group.turn.run)
+      : group.entry;
+  return entry ? entryItemId(entry) : undefined;
+}
+
+/** Whether the row draws the item `itemId`, wherever in it the item stands. */
+export function transcriptRowHolds(group: TranscriptGroup, itemId: string): boolean {
+  if (group.kind !== "turn") return entryItemId(group.entry) === itemId;
+  const { turn } = group;
+  return [turn.run, turn.reply, ...turn.work, ...turn.assignments].some(
+    (entry) => entry !== null && entryItemId(entry) === itemId,
+  );
+}
+
+function entryItemId(entry: TranscriptEntry): string | undefined {
+  return ("itemId" in entry ? (entry.itemId ?? entry.id) : entry.id) || undefined;
+}
+
+/**
  * What a conversation draws, in order: every group except a turn with nothing
  * of its own to show. The stretch of a reply before a message that joined it,
  * or a reply waiting on an approval, holds only steps, which that reply's
@@ -1126,44 +1157,328 @@ export function liveTurnWords(groups: readonly TranscriptGroup[]): string | null
 }
 
 function liveLabel(turn: Turn, state: Exclude<TurnState, "settled">): string {
-  if (state === "stopping") return "Stopping";
-  if (state === "waiting") return "Waiting for you";
+  return liveStep(turn, state).label;
+}
+
+/**
+ * What a turn under way is doing, and the entry that is doing it. `entry` is
+ * null when the words come from the Run itself — stopping, waiting, starting —
+ * and when nothing in the turn is named, which is when `label` says "Working".
+ */
+interface LiveStep {
+  readonly label: string;
+  readonly entry: WorkEntry | null;
+  /** Nothing in the turn is named: the Run is live and `label` is "Working". */
+  readonly unnamed?: true;
+}
+
+function liveStep(turn: Turn, state: Exclude<TurnState, "settled">): LiveStep {
+  if (state === "stopping") return { label: "Stopping", entry: null };
+  if (state === "waiting") return { label: "Waiting for you", entry: null };
   // The turn is over; what it started runs on in the background.
   if (turn.run?.background) {
     const live = turn.work.filter(
       (entry) => entry.kind === "node" && entry.status === "running",
     ).length;
-    return live > 0 ? `Background · ${countNoun(live, "task")}` : "Background";
+    return {
+      label: live > 0 ? `Background · ${countNoun(live, "task")}` : "Background",
+      entry: null,
+    };
   }
   const computer = turnComputer(turn);
   if (computer) {
+    const entry = turn.work.findLast((candidate) => candidate.kind === "tool") ?? null;
     if (computer.kind === "phone") {
       const preposition =
         computer.action === "Using" ? " " : computer.action === "Looking" ? " at " : " on ";
-      return `${computer.action}${preposition}${computer.computer}`;
+      return { label: `${computer.action}${preposition}${computer.computer}`, entry };
     }
-    return `${computer.action} on ${computer.computer}`;
+    return { label: `${computer.action} on ${computer.computer}`, entry };
   }
   for (let index = turn.work.length - 1; index >= 0; index -= 1) {
     const entry = turn.work[index];
     if (entry?.kind === "tool" && entry.state === "running") {
-      return toolPresentation(entry).activeLabel;
+      return { label: toolPresentation(entry).activeLabel, entry };
     }
-    if (entry?.kind === "reasoning" && entry.state === "streaming") return "Thinking";
+    if (entry?.kind === "reasoning" && entry.state === "streaming")
+      return { label: "Thinking", entry };
     // A running subagent says what it is doing on its own row and in Running
     // now; the turn's line says what the agent itself is doing.
     if (entry?.kind === "node" && entry.status === "running" && entry.nodeKind === "task")
-      return entry.title;
+      return { label: entry.title, entry };
   }
   for (let index = turn.work.length - 1; index >= 0; index -= 1) {
     const entry = turn.work[index];
     if (entry?.kind !== "message") break;
-    if (entry.streaming === true) return "Writing";
+    if (entry.streaming === true) return { label: "Writing", entry };
   }
   const startHold = turnStartHold(turn);
-  if (startHold !== null) return startHold;
-  if (turn.run?.status === "queued" || turn.run?.status === "starting") return "Starting";
-  return "Working";
+  if (startHold !== null) return { label: startHold, entry: null };
+  if (turn.run?.status === "queued" || turn.run?.status === "starting")
+    return { label: "Starting", entry: null };
+  return { label: "Working", entry: null, unnamed: true };
+}
+
+/* ---- The live line ---- */
+
+/**
+ * A turn's head while the line above the composer speaks for its Run: only the
+ * disclosure for its steps, so the live words are said once and the head
+ * neither moves nor repeats them.
+ */
+export const liveTurnHeadLabel = "Steps";
+
+/** A step's subject — a command, a path, a query — and whether it reads verbatim. */
+export interface LiveTurnDetail {
+  readonly text: string;
+  readonly code: boolean;
+}
+
+/** The Run the Host has the Thread on now, as its run queue says it. */
+export type LiveRun = Pick<RunQueueEntry, "createdAt" | "finishing" | "id" | "status">;
+
+/**
+ * A task's Run under way, as the line pinned above its composer reads it.
+ * Between steps it names the step the agent last finished rather than saying
+ * "Working", so a run of quick calls never reads as a run that stopped.
+ * Clock time is the reader's to apply: `liveTurnLine` words it at a moment.
+ */
+export interface LiveTurn {
+  readonly runId: string;
+  readonly state: Exclude<TurnState, "settled">;
+  /**
+   * The Run is executing and has done something — not queued, starting,
+   * finishing, waiting on a person or stopping — so a silence from it can mean
+   * something. Before its first entry the Host's own start deadlines speak.
+   */
+  readonly executing: boolean;
+  /** What the agent is doing now, or between steps the step it last finished. */
+  readonly label: string;
+  readonly detail: LiveTurnDetail | null;
+  /**
+   * Something is under way that a silence belongs to: a step, a thought, the
+   * reply, a helper, a provider retry or a compaction.
+   */
+  readonly active: boolean;
+  /** When the step `label` names began, while it is under way; epoch ms. */
+  readonly stepStartedAt: number | null;
+  /** When the Run began; epoch ms. */
+  readonly startedAt: number | null;
+  /** The latest moment the Run's loaded entries carry, a steer into it included; epoch ms. */
+  readonly lastActivityAt: number | null;
+  /**
+   * Changes whenever something new arrives at the Run's end or a step changes
+   * state, and not when earlier history loads. An entry does not always say
+   * when it changed — a thought carries only its start — so a reader notes
+   * when it saw this change and counts that as activity.
+   */
+  readonly signature: string;
+}
+
+/**
+ * The Run the Host says the Thread is on, described from its transcript; null
+ * when there is none, or nothing of it is loaded yet, which the line under the
+ * transcript covers. The run queue decides that a Run is under way because its
+ * own entry can sit on a page of history the reader has not loaded.
+ */
+export function liveTurn(
+  groups: readonly TranscriptGroup[],
+  run: LiveRun | null,
+  {
+    reachesLatest = true,
+  }: {
+    /**
+     * The reader's window reaches the conversation's latest. One that stops short of it, held
+     * around an older update or paged forward from one, lacks what the Run did since: its rows
+     * would make a busy Run read as quiet, so the line waits until the reader is back.
+     */
+    readonly reachesLatest?: boolean;
+  } = {},
+): LiveTurn | null {
+  if (run === null || !reachesLatest) return null;
+  let turn: Turn | null = null;
+  let lastActivityAt: number | null = null;
+  let finished: ToolEntry | null = null;
+  let finishedAt = Number.NEGATIVE_INFINITY;
+  let entries = 0;
+  let producing = 0;
+  let lastId = "";
+  const saw = (value: string | null | undefined) => {
+    const moment = epoch(value);
+    if (moment !== null && (lastActivityAt === null || moment > lastActivityAt))
+      lastActivityAt = moment;
+  };
+  // A steer splits a Run into stretches; the Run is all of them, and the steer is news.
+  for (const group of groups) {
+    if (group.kind === "message") {
+      if (group.joinedRun && group.entry.runId === run.id) saw(group.entry.createdAt);
+      continue;
+    }
+    if (group.kind !== "turn" || group.turn.runId !== run.id) continue;
+    turn = group.turn;
+    for (const entry of group.turn.work) {
+      entries += 1;
+      lastId = entry.id;
+      saw(entry.createdAt);
+      if (entry.kind === "tool" || entry.kind === "reasoning" || entry.kind === "node")
+        saw(entry.completedAt);
+      if (isProducing(entry)) producing += 1;
+      else if (entry.kind === "tool") {
+        // Calls run side by side: the step last finished is the one that ended last.
+        const ended = epoch(entry.completedAt) ?? epoch(entry.createdAt) ?? finishedAt;
+        if (ended >= finishedAt) {
+          finished = entry;
+          finishedAt = ended;
+        }
+      }
+    }
+  }
+  if (turn === null) return null;
+  // The Run's own entry, when the page that holds it is loaded.
+  const record = turn.run;
+  const state =
+    record?.stopping === true ? "stopping" : run.status === "waiting" ? "waiting" : "live";
+  // The queue's time stands in only while the Run's own entry is not loaded.
+  const startedAt = epoch(record?.startedAt) ?? epoch(record?.createdAt) ?? epoch(run.createdAt);
+  if (startedAt !== null && (lastActivityAt === null || startedAt > lastActivityAt))
+    lastActivityAt = startedAt;
+
+  const doing = liveStep(turn, state);
+  let { label } = doing;
+  let detailOf: WorkEntry | null = doing.entry;
+  if ((record?.attempt ?? 1) > 1 && (run.status === "queued" || run.status === "starting")) {
+    // A steer restarted the Run; the attempt that takes the message has not begun.
+    label = "Restarting with your message";
+    detailOf = null;
+  } else if (doing.unnamed && finished !== null) {
+    // Nothing named under way: say the step last finished, not "Working".
+    label = toolPresentation(finished).label;
+    detailOf = finished;
+  }
+  return {
+    runId: run.id,
+    state,
+    executing:
+      run.status === "running" && run.finishing !== true && state === "live" && entries > 0,
+    label,
+    detail: detailOf === null || turnComputer(turn) !== null ? null : liveDetail(detailOf),
+    active:
+      producing > 0 ||
+      record?.background === true ||
+      record?.retry?.status === "retrying" ||
+      record?.compaction?.status === "running",
+    stepStartedAt:
+      doing.entry !== null && isProducing(doing.entry) ? epoch(doing.entry.createdAt) : null,
+    startedAt,
+    lastActivityAt,
+    signature: `${producing}:${lastId}:${state}:${run.status}`,
+  };
+}
+
+function liveDetail(entry: WorkEntry): LiveTurnDetail | null {
+  if (entry.kind === "tool") {
+    const presentation = toolPresentation(entry);
+    const text = firstLine(presentation.hint).trim();
+    return text === "" ? null : { text, code: presentation.hintKind === "code" };
+  }
+  if (entry.kind === "reasoning") {
+    const text = reasoningHeadline(entry.text);
+    return text === "" ? null : { text, code: false };
+  }
+  return null;
+}
+
+function epoch(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** Silence this long, with nothing under way, reads as quiet. */
+export const liveTurnQuietAfterMs = 2 * 60_000;
+/** Silence this long, with nothing under way, reads as possibly stuck. */
+export const liveTurnStalledAfterMs = 10 * 60_000;
+
+/**
+ * `working` — under way, or quiet only briefly. `quiet` and `stalled` — an
+ * executing Run silent with nothing under way, after `liveTurnQuietAfterMs` and
+ * `liveTurnStalledAfterMs`. `held` — the Run waits on a person or is stopping,
+ * or this reader is out of touch with the Host, so silence says nothing.
+ */
+export type LiveTurnTone = "working" | "quiet" | "stalled" | "held";
+
+export interface LiveTurnLine {
+  readonly tone: LiveTurnTone;
+  readonly label: string;
+  readonly detail: LiveTurnDetail | null;
+  /** How recent the line is: "running 6s", "updated 8s ago". */
+  readonly since: string | null;
+  /** How long the Run has gone. */
+  readonly elapsed: string | null;
+  /** A quiet line's reason, in a sentence. */
+  readonly note: string | null;
+}
+
+/**
+ * The live line's words at `now`, decided once for every client. `observedAt`
+ * is when this reader last saw the Run change (`LiveTurn.signature`), which
+ * counts as activity beside the moments its entries carry.
+ */
+export function liveTurnLine(
+  live: LiveTurn,
+  now: number,
+  {
+    connected = true,
+    observedAt = null,
+  }: { readonly connected?: boolean; readonly observedAt?: number | null } = {},
+): LiveTurnLine {
+  // A Run younger than a second has no time worth saying yet.
+  const elapsed =
+    live.startedAt === null || now - live.startedAt < 1_000
+      ? null
+      : formatDuration(now - live.startedAt);
+  const base = { detail: live.detail, elapsed, note: null };
+  if (!connected || live.state !== "live") {
+    return { ...base, tone: "held", label: live.label, since: null };
+  }
+  const last =
+    observedAt === null || (live.lastActivityAt !== null && live.lastActivityAt > observedAt)
+      ? live.lastActivityAt
+      : observedAt;
+  const quietFor = last === null ? 0 : Math.max(0, now - last);
+  if (live.executing && !live.active && last !== null) {
+    if (quietFor >= liveTurnStalledAfterMs) {
+      return {
+        ...base,
+        tone: "stalled",
+        label: `No activity for ${formatDuration(quietFor)}`,
+        detail: { text: `Last: ${live.label}`, code: false },
+        since: null,
+        note: "It may be stuck. Stop the run to try again.",
+      };
+    }
+    if (quietFor >= liveTurnQuietAfterMs) {
+      return {
+        ...base,
+        tone: "quiet",
+        label: `Quiet for ${formatDuration(quietFor)}`,
+        detail: { text: `Last: ${live.label}`, code: false },
+        since: null,
+        note: "Nothing is running. The agent may be thinking without reporting.",
+      };
+    }
+  }
+  const since =
+    live.stepStartedAt !== null
+      ? now - live.stepStartedAt < 1_000
+        ? "just started"
+        : `running ${formatDuration(now - live.stepStartedAt)}`
+      : last === null
+        ? null
+        : quietFor < 1_000
+          ? "updated just now"
+          : `updated ${formatDuration(quietFor)} ago`;
+  return { ...base, tone: "working", label: live.label, since };
 }
 
 /**

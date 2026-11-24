@@ -44,9 +44,10 @@ import { presentClientIssue, type ClientIssue } from "@opensteer/client/feedback
 import type { HostClient } from "@opensteer/client/host";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import * as Clipboard from "expo-clipboard";
-import { useState, type ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { Alert } from "react-native";
 import { AppFrame } from "../thread/app-frame.js";
+import { ConversationLinksProvider } from "../thread/conversation-links.js";
 import { Sheet } from "../ui/sheet.js";
 import { confirmDestructive } from "./confirm.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
@@ -95,6 +96,7 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
   const [access, setAccess] = useState<PluginAccess | null>(null);
   const [starting, setStarting] = useState<Workflow | null>(null);
   const [pageOpen, setPageOpen] = useState(false);
+  const closePage = useCallback(() => setPageOpen(false), []);
   const [webhook, setWebhook] = useState<string | null>(null);
   const runs = usePluginScheduleRuns(host, pluginId);
   const workflowRuns = usePluginWorkflowRuns(host, pluginId);
@@ -594,7 +596,14 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
       ) : null}
       {pageOpen && data.page && !data.page.unavailable ? (
         <Sheet open title={plugin.name} onClose={() => setPageOpen(false)}>
-          <AppFrame client={host} appId={data.page.reference.pluginId} kind="plugin" />
+          {/* A link's tab opens on the screen under this sheet, so the sheet gives way first. */}
+          <ConversationLinksProvider
+            deploymentId={deploymentId}
+            hostClient={host}
+            onOpen={closePage}
+          >
+            <AppFrame client={host} appId={data.page.reference.pluginId} kind="plugin" />
+          </ConversationLinksProvider>
         </Sheet>
       ) : null}
       {webhook ? (

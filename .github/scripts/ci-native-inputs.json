@@ -55,6 +55,7 @@
     "apps/desktop/src/app/navigation-policy.ts",
     "apps/desktop/src/app/published-app-protocol.ts",
     "apps/desktop/src/app/window-context-menu.ts",
+    "apps/desktop/src/bridge/desktop-bridge-channels.ts",
     "apps/desktop/src/computer-use/computer-app-setup-panel.ts",
     "apps/desktop/src/computer-use/computer-use-bridge-server.test.ts",
     "apps/desktop/src/computer-use/computer-use-bridge-server.ts",

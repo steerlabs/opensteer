@@ -333,6 +333,7 @@ describe("desktop bridge", () => {
       desktopBridgeChannels.downloadsChanged,
       desktopBridgeChannels.updateChanged,
       desktopBridgeChannels.workspaceTabCommand,
+      desktopBridgeChannels.appLink,
       desktopBridgeChannels.deploymentAccessSnapshotChanged,
       desktopBridgeChannels.hostWebSocketEvent,
       desktopBridgeChannels.localExecutionStatusChanged,

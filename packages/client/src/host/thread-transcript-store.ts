@@ -17,7 +17,8 @@ type DetailSnapshot = Extract<
   { items: unknown }
 >;
 type Listener = () => void;
-type Page = import("zod").infer<typeof TranscriptPageSchema>;
+export type TranscriptPage = import("zod").infer<typeof TranscriptPageSchema>;
+type Page = TranscriptPage;
 type RequestSummary = DetailSnapshot["pendingRequests"][number];
 type Pending =
   | {
@@ -32,6 +33,36 @@ type Pending =
       readonly sequence: string;
       readonly value?: RequestSummary;
     };
+
+/**
+ * How many history items live rows may grow a window to. Live rows are the only growth nobody asked
+ * for: a reader following the latest keeps this many as more arrive, and one reading elsewhere
+ * keeps all they loaded while what arrives past it waits a page away. Pages the reader asks for
+ * are theirs, and are never given up (a jump or Return to latest replaces the window whole).
+ */
+export const transcriptWindowItems = 250;
+
+/**
+ * Whether the reader follows the live latest, as the view reports it when live rows must be
+ * bounded. A store no view reads follows.
+ */
+export type TranscriptFollowReader = () => boolean;
+
+/**
+ * What a page read was for. A page that extends the window names the edge cursor it was read
+ * from: it installs only while that is still the window's edge, so it can never leave a gap or
+ * restore rows the window has since given up. Around and latest pages replace the window.
+ */
+export type TranscriptPageAsk =
+  | { readonly mode: "earlier" | "newer"; readonly from: TranscriptOrderCursor }
+  | { readonly mode: "around" | "latest" };
+
+/**
+ * How a page install ended. `stale`: the read raced a change it could not account for, and is
+ * read again. `moved`: the window's edge is no longer the one the page continues, so the page
+ * answers a window that is gone and is dropped.
+ */
+export type TranscriptPageInstall = "installed" | "stale" | "moved";
 
 export interface TranscriptState {
   readonly generation: number;
@@ -85,7 +116,10 @@ const emptyState: TranscriptState = {
   repairs: 0,
 };
 
-function comparePosition(a: TranscriptItem, b: TranscriptItem) {
+function comparePosition(
+  a: Pick<TranscriptItem, "id" | "position">,
+  b: Pick<TranscriptItem, "id" | "position">,
+) {
   const delta = BigInt(a.position) - BigInt(b.position);
   return delta < 0n ? -1 : delta > 0n ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
@@ -95,12 +129,80 @@ function newer(held: { readonly revision: string } | undefined, revision: string
 }
 
 export function displayedItemIds(state: TranscriptState): readonly string[] {
+  const placed = placeRunCards(state);
   // A provisional card belongs at the tail: a window of history never shows one.
-  if (!state.liveItems.size || !state.newest) return state.ids;
-  const ids = [...state.ids];
+  if (!state.liveItems.size || !state.newest) return placed;
+  const ids = [...placed];
   const items = { get: (id: string) => state.items.get(id) ?? state.liveItems.get(id) };
   for (const item of state.liveItems.values()) insertId(ids, item, items);
   return ids;
+}
+
+/** Whether a message is the reader's or another sender's input, rather than the agent's words. */
+export function transcriptMessageKind(item: Extract<TranscriptItem, { kind: "message" }>) {
+  return (
+    item.messageKind ??
+    (item.view.author === "assistant" || !item.isTurnStart ? "assistant" : "input")
+  );
+}
+
+/**
+ * A Run's card is what every row of the Run reads its state and its reply from, however far above
+ * them the Run began. Held for rows in the window while it stands above it, it is drawn with the
+ * first of them it belongs beside (the Run's own steps, never a message sent into it), so it joins
+ * their turn rather than standing as a row of its own. One with no such row draws nothing.
+ */
+function placeRunCards(state: TranscriptState): readonly string[] {
+  const history = new Set(state.historyIds);
+  const held = state.ids.filter((id) =>
+    isHeldRunCard(state.items.get(id), history, state.activeIds),
+  );
+  if (!held.length) return state.ids;
+  const heldIds = new Set(held);
+  const ids = state.ids.filter((id) => !heldIds.has(id));
+  for (const id of held) {
+    const card = state.items.get(id)!;
+    const at = ids.findIndex((rowId) => {
+      const row = state.items.get(rowId);
+      return (
+        row !== undefined &&
+        history.has(rowId) &&
+        row.runId === card.runId &&
+        (row.kind !== "message" || transcriptMessageKind(row) !== "input")
+      );
+    });
+    if (at >= 0) ids.splice(at, 0, id);
+  }
+  return ids;
+}
+
+function isHeldRunCard(
+  item: TranscriptItem | undefined,
+  history: ReadonlySet<string>,
+  activeIds: ReadonlySet<string>,
+) {
+  return item?.kind === "run" && !history.has(item.id) && !activeIds.has(item.id);
+}
+
+/** Whether the window holds any row of `runId`. */
+function holdsRun(
+  historyIds: readonly string[],
+  items: ReadonlyMap<string, TranscriptItem>,
+  runId: string | null,
+) {
+  return runId !== null && historyIds.some((id) => items.get(id)?.runId === runId);
+}
+
+/** Lets go of held Run cards whose rows the window no longer holds. */
+function sweepRunCards(
+  items: Map<string, TranscriptItem>,
+  historyIds: readonly string[],
+  activeIds: ReadonlySet<string>,
+) {
+  const history = new Set(historyIds);
+  const runs = new Set(historyIds.map((id) => items.get(id)?.runId));
+  for (const [id, item] of items)
+    if (isHeldRunCard(item, history, activeIds) && !runs.has(item.runId)) items.delete(id);
 }
 
 export function finalizedItemText(item: TranscriptItem | undefined): boolean {
@@ -158,8 +260,18 @@ export class ThreadTranscriptStore {
   readonly #reads = new Set<number>();
   #readCount = 0;
   #lostReads = 0;
+  #follows: TranscriptFollowReader | undefined;
 
   getSnapshot = () => this.#state;
+
+  /** The view's report of whether the reader follows the live latest. Undefined releases it. */
+  setFollowing(read: TranscriptFollowReader | undefined) {
+    this.#follows = read;
+  }
+
+  #following() {
+    return this.#follows?.() ?? true;
+  }
 
   subscribe = (listener: Listener) => {
     this.#listeners.add(listener);
@@ -343,8 +455,10 @@ export class ThreadTranscriptStore {
               const history = historyIds ?? state.historyIds;
               const first = (items ?? state.items).get(history[0] ?? "");
               const last = (items ?? state.items).get(history.at(-1) ?? "");
+              // A provisional card lands where it was shown: at the foot of a window that reaches
+              // the latest. A window short of it never showed one, and takes the row by its place.
               const inHistory =
-                provisional ||
+                (provisional && state.newest) ||
                 ((!snapshot?.nextBefore || !first || comparePosition(next, first) >= 0) &&
                   (state.newest || !last || comparePosition(next, last) <= 0));
               const wasActive = (activeIds ?? state.activeIds).has(id);
@@ -354,7 +468,12 @@ export class ThreadTranscriptStore {
                 if (active) activeIds.add(id);
                 else activeIds.delete(id);
               }
-              if (!inHistory && !active && !history.includes(id)) {
+              if (
+                !inHistory &&
+                !active &&
+                !history.includes(id) &&
+                !(next.kind === "run" && holdsRun(history, items ?? state.items, next.runId))
+              ) {
                 if (previous) {
                   items ??= new Map(state.items);
                   items.delete(id);
@@ -376,16 +495,26 @@ export class ThreadTranscriptStore {
             }
           }
         }
-        if (items && historyIds && historyIds.length > 250) {
+        // Live rows grow the window where they land: at the foot while it reaches the latest,
+        // otherwise inside it. Only growth is bounded, and only by what arrived.
+        let newest = state.newest;
+        if (items && historyIds) {
+          sweepRunCards(items, historyIds, activeIds ?? state.activeIds);
+          if (ids) ids = ids.filter((id) => items!.has(id));
+        }
+        if (items && historyIds && historyIds.length > state.historyIds.length) {
           ids ??= [...state.ids];
-          snapshot = trimWindow(
+          const bounded = boundLiveRows(
             historyIds,
             items,
             activeIds ?? state.activeIds,
             snapshot,
-            state.newest ? "latest" : "earlier",
+            this.#following() && state.newest,
+            historyFoot(state),
             state.cursorScope,
           );
+          snapshot = bounded.snapshot;
+          if (bounded.detached) newest = false;
           ids = ids.filter((id) => items!.has(id));
         }
         if (snapshot?.queue && (queueEntries || snapshot.queue !== state.snapshot?.queue)) {
@@ -397,6 +526,7 @@ export class ThreadTranscriptStore {
         this.#set(
           {
             ...state,
+            newest,
             through: frame.throughSequence,
             snapshot,
             liveItems: liveItems ?? state.liveItems,
@@ -431,13 +561,15 @@ export class ThreadTranscriptStore {
   ) {
     const state = this.#state;
     const items = new Map<string, TranscriptItem>();
-    for (const item of [...next.activeItems, ...next.items]) {
+    // The cut's Run cards come beside its rows: held for them, outside its history.
+    for (const item of [...(next.runs ?? []), ...next.activeItems, ...next.items]) {
       const previous = items.get(item.id);
       if (previous && !newer(previous, item.revision)) continue;
       const held = state.items.get(item.id);
       items.set(item.id, held?.revision === item.revision ? held : item);
     }
     const historyIds = next.items.map(({ id }) => id);
+    sweepRunCards(items, historyIds, new Set(next.activeItems.map(({ id }) => id)));
     // After `host.synchronized` this is the Host's repair: it replaces the scope. Rows, queue
     // entries and overlays held from before may be stale, and page reads begun before it are
     // fenced; the reader reads again what it had loaded on top.
@@ -530,9 +662,9 @@ export class ThreadTranscriptStore {
   installPage(
     page: Page,
     generation: number,
-    mode: "earlier" | "newer" | "around" | "latest",
+    ask: TranscriptPageAsk,
     read?: number,
-  ) {
+  ): TranscriptPageInstall {
     const state = this.#state;
     if (
       state.generation !== generation ||
@@ -541,10 +673,24 @@ export class ThreadTranscriptStore {
       state.through === null ||
       !this.#readable(read)
     )
-      return false;
-    const merge = mode === "earlier" || mode === "newer";
-    const items = new Map([...state.items].filter(([id]) => merge || state.activeIds.has(id)));
-    for (const item of page.items) {
+      return "stale";
+    const { mode } = ask;
+    const merge = ask.mode === "earlier" || ask.mode === "newer";
+    if (
+      (ask.mode === "earlier" || ask.mode === "newer") &&
+      !sameBoundary(
+        ask.mode === "earlier" ? state.snapshot.nextBefore : state.snapshot.nextAfter,
+        ask.from,
+      )
+    )
+      return "moved";
+    const items = new Map(
+      [...state.items].filter(
+        ([id, item]) => merge || state.activeIds.has(id) || item.kind === "run",
+      ),
+    );
+    // The page's rows, and beside them the Run cards they read from.
+    for (const item of [...(page.runs ?? []), ...page.items]) {
       const previous = state.items.get(item.id);
       items.set(item.id, previous && !newer(previous, item.revision) ? previous : item);
     }
@@ -552,23 +698,34 @@ export class ThreadTranscriptStore {
       ...new Set([...(merge ? state.historyIds : []), ...page.items.map(({ id }) => id)]),
     ];
     const nextBefore = mode === "newer" ? state.snapshot.nextBefore : page.nextBefore;
-    const newest =
-      mode !== "around" && (mode === "earlier" ? state.newest : page.nextAfter == null);
-    this.#replay(items, historyIds, nextBefore != null, newest);
+    // The window reaches the latest exactly when it has no cursor past its foot, whatever read
+    // made it: a jump that lands at the foot follows live rows from then on.
+    const nextAfter =
+      mode === "earlier" ? (state.snapshot.nextAfter ?? null) : (page.nextAfter ?? null);
+    this.#replay(items, historyIds, nextBefore != null, nextAfter == null);
     historyIds.sort((a, b) => comparePosition(items.get(a)!, items.get(b)!));
-    const snapshot = trimWindow(
+    // A page the reader asked for gives nothing up: what they load is theirs, so paging one way
+    // never undoes paging the other, and nothing on screen leaves under them. Rows that arrived
+    // live while it was read are live rows, bounded as any (see `apply`): past the page and what
+    // was shown they wait a page away, but for a reader returning to the latest, who follows.
+    const pageFoot = page.items.at(-1);
+    const shownFoot = merge ? historyFoot(state) : undefined;
+    const foot =
+      pageFoot && shownFoot
+        ? comparePosition(pageFoot, shownFoot) > 0
+          ? pageFoot
+          : shownFoot
+        : (pageFoot ?? shownFoot);
+    const { snapshot } = boundLiveRows(
       historyIds,
       items,
       state.activeIds,
-      {
-        ...state.snapshot,
-        nextBefore,
-        nextAfter:
-          mode === "earlier" ? (state.snapshot.nextAfter ?? null) : (page.nextAfter ?? null),
-      },
-      mode === "earlier" ? "earlier" : "latest",
+      { ...state.snapshot, nextBefore, nextAfter },
+      mode === "latest",
+      foot,
       state.cursorScope,
     );
+    sweepRunCards(items, historyIds, state.activeIds);
     let liveItems: Map<string, TranscriptItem> | undefined;
     for (const { id } of page.items) {
       if (!state.liveItems.has(id)) continue;
@@ -582,9 +739,9 @@ export class ThreadTranscriptStore {
       items,
       liveItems: liveItems ?? state.liveItems,
       readRevision: maxRevision(state.readRevision, page.revision),
-      newest: mode !== "around" && snapshot?.nextAfter == null,
+      newest: snapshot?.nextAfter == null,
     });
-    return true;
+    return "installed";
   }
 
   installOverlays(
@@ -712,7 +869,7 @@ export class ThreadTranscriptStore {
   checkpoint(state = this.#state): DetailSnapshot | undefined {
     const { snapshot, items } = state;
     if (!snapshot || !this.canCheckpoint(state)) return;
-    const { inputQueue: _inputQueue, ...rest } = snapshot;
+    const { inputQueue: _inputQueue, runs: _runs, ...rest } = snapshot;
     const activeItems = [...state.activeIds].map((id) => items.get(id)!);
     const baseSnapshot = {
       ...rest,
@@ -738,6 +895,25 @@ export class ThreadTranscriptStore {
     }
     if (packed.length === 0 && candidates.length > 0) return;
     const history = packed.reverse();
+    // The saved rows carry the Run cards they read from, as a cut does: the cards this window
+    // holds now, for these rows. They share the budget, and the oldest rows give way for them.
+    const cards = new Map<string, TranscriptItem>();
+    for (const item of items.values())
+      if (item.kind === "run" && item.runId) cards.set(item.runId, item);
+    const runsFor = (rows: readonly TranscriptItem[]) => {
+      const held = new Set(rows.flatMap((row) => (row.kind === "run" ? [row.runId] : [])));
+      return [
+        ...new Set(rows.flatMap((row) => (row.runId && !held.has(row.runId) ? [row.runId] : []))),
+      ].flatMap((runId) => cards.get(runId) ?? []);
+    };
+    let runs = runsFor(history);
+    const size = (rows: readonly TranscriptItem[]) =>
+      rows.reduce((sum, row) => sum + utf8ByteLength(JSON.stringify(row)) + 1, 0);
+    while (history.length > 1 && runs.length && bytes + size(runs) > budget) {
+      bytes -= size([history.shift()!]);
+      runs = runsFor(history);
+    }
+    if (runs.length && bytes + size(runs) > budget) return;
     const boundary = history[0];
     const trimmed = state.historyIds.length > history.length;
     if (trimmed && (!boundary || !state.cursorScope)) return;
@@ -749,6 +925,7 @@ export class ThreadTranscriptStore {
       ...baseSnapshot,
       nextBefore,
       items: history,
+      ...(runs.length ? { runs } : {}),
     };
     if (utf8ByteLength(JSON.stringify(checkpointSnapshot)) > personalCheckpointMaxBytes) return;
     return checkpointSnapshot;
@@ -787,37 +964,87 @@ function insertId(
   items: Pick<ReadonlyMap<string, TranscriptItem>, "get">,
 ) {
   removeId(ids, item.id);
+  ids.splice(lowerBound(ids, items, item), 0, item.id);
+}
+
+/**
+ * The index where `item` stands, or would, in a window sorted by position; with `after`, the
+ * index just past it.
+ */
+function lowerBound(
+  ids: readonly string[],
+  items: Pick<ReadonlyMap<string, TranscriptItem>, "get">,
+  item: Pick<TranscriptItem, "id" | "position">,
+  after = false,
+) {
   let first = 0;
   let end = ids.length;
   while (first < end) {
     const mid = Math.floor((first + end) / 2);
-    if (comparePosition(items.get(ids[mid]!)!, item) < 0) first = mid + 1;
+    const order = comparePosition(items.get(ids[mid]!)!, item);
+    if (order < 0 || (after && order === 0)) first = mid + 1;
     else end = mid;
   }
-  ids.splice(first, 0, item.id);
+  return first;
 }
 
-function trimWindow(
+/**
+ * The last durable row `state` holds. A reader not following the latest keeps everything to it;
+ * provisional cards past it are the live tail, which a window that must stop leaves behind.
+ */
+function historyFoot(state: TranscriptState) {
+  return state.items.get(state.historyIds.at(-1) ?? "");
+}
+
+function sameBoundary(
+  held: Pick<TranscriptOrderCursor, "beforeId" | "beforePosition"> | null | undefined,
+  from: Pick<TranscriptOrderCursor, "beforeId" | "beforePosition">,
+) {
+  return held?.beforeId === from.beforeId && held.beforePosition === from.beforePosition;
+}
+
+/**
+ * Bounds live rows in a sorted window, in place, once it holds more than `transcriptWindowItems`.
+ * A reader `following` the latest keeps the newest of them: the window gives way at its head. A
+ * reader elsewhere keeps all they were shown up to `foot`, and what arrived past it waits a page
+ * away, so nothing they read leaves under them. Each edge that gave way gets its cursor.
+ * `detached` says the foot gave way: the window no longer reaches the latest.
+ */
+function boundLiveRows(
   historyIds: string[],
   items: Map<string, TranscriptItem>,
   activeIds: ReadonlySet<string>,
   snapshot: DetailSnapshot | null,
-  edge: "earlier" | "latest",
+  following: boolean,
+  foot: Pick<TranscriptItem, "id" | "position"> | undefined,
   fallback?: TranscriptState["cursorScope"],
-) {
-  const extra = historyIds.length - 250;
-  if (!snapshot || extra <= 0) return snapshot;
-  const removed = historyIds.splice(edge === "earlier" ? 250 : 0, extra);
-  for (const id of removed) if (!activeIds.has(id)) items.delete(id);
-  const template = snapshot.nextBefore ?? snapshot.nextAfter ?? fallback;
-  if (!template) return snapshot;
-  const boundary = items.get((edge === "earlier" ? historyIds.at(-1) : historyIds[0])!)!;
-  const cursor = {
+): { snapshot: DetailSnapshot | null; detached: boolean } {
+  const extra = historyIds.length - transcriptWindowItems;
+  const template = snapshot?.nextBefore ?? snapshot?.nextAfter ?? fallback;
+  if (!snapshot || !template || extra <= 0) return { snapshot, detached: false };
+  const head = following ? extra : 0;
+  const arrived =
+    following || !foot ? 0 : historyIds.length - lowerBound(historyIds, items, foot, true);
+  if (!head && !arrived) return { snapshot, detached: false };
+  const removed = [
+    ...historyIds.splice(historyIds.length - arrived, arrived),
+    ...historyIds.splice(0, head),
+  ];
+  // A Run's card stays while the window holds any of its rows: they read the Run from it.
+  for (const id of removed)
+    if (!activeIds.has(id) && items.get(id)?.kind !== "run") items.delete(id);
+  sweepRunCards(items, historyIds, activeIds);
+  const cursor = (boundary: TranscriptItem) => ({
     ...template,
     beforeId: boundary.id,
     beforePosition: boundary.position,
+  });
+  return {
+    snapshot: {
+      ...snapshot,
+      ...(head ? { nextBefore: cursor(items.get(historyIds[0]!)!) } : {}),
+      ...(arrived ? { nextAfter: cursor(items.get(historyIds.at(-1)!)!) } : {}),
+    },
+    detached: arrived > 0,
   };
-  return edge === "earlier"
-    ? { ...snapshot, nextAfter: cursor }
-    : { ...snapshot, nextBefore: cursor };
 }

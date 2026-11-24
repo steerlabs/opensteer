@@ -22,7 +22,8 @@ import { needsYouEntryKey, settleTeamAsk } from "./needs-you.js";
 import { withThreadState } from "./optimistic-command-patches.js";
 import { ScopedThreadReader, TranscriptBodies, transcriptBodyKey } from "./scoped-thread-reader.js";
 import { nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
-import { displayedItemIds } from "./thread-transcript-store.js";
+import { displayedItemIds, type TranscriptFollowReader } from "./thread-transcript-store.js";
+import { ViewRegistry } from "./view-registry.js";
 import {
   scopedPersonalApiVersion,
   personalDetailFrameMaxBytes,
@@ -375,7 +376,9 @@ export class HttpHostClient {
   readonly #assignmentReads = new FencedReads({ epoch: () => String(this.#viewerGeneration) });
   readonly #assignmentsRead = new Set<string>();
   /** Each task view's one-shot measurement of the row in view, for its reader. */
-  readonly #positionMeasures = new Map<string, () => string | undefined | null>();
+  // Each Thread's views, oldest first: the newest is the one asked.
+  readonly #positionMeasures = new ViewRegistry<() => string | undefined | null>();
+  readonly #transcriptFollowing = new ViewRegistry<TranscriptFollowReader>();
   /** When each assignment was last pushed, by a counter a read notes as it begins. */
   readonly #assignmentPushes = new Map<string, number>();
   /** Every task whose assignments were asked for under this viewer. */
@@ -1398,11 +1401,18 @@ export class HttpHostClient {
     this.#reader(threadId)?.revealed();
   }
 
-  setTranscriptPosition(threadId: string, measure: (() => string | undefined | null) | null) {
+  setTranscriptPosition(threadId: string, measure: () => string | undefined | null) {
     // Kept for the task's reader, which may be made after the view mounts.
-    if (measure) this.#positionMeasures.set(threadId, measure);
-    else this.#positionMeasures.delete(threadId);
-    this.#reader(threadId)?.setMeasure(measure ?? undefined);
+    return this.#positionMeasures.register(threadId, measure, (current) =>
+      this.#reader(threadId)?.setMeasure(current),
+    );
+  }
+
+  setTranscriptFollowing(threadId: string, following: TranscriptFollowReader) {
+    // Kept for the task's reader, which may be made after the view mounts.
+    return this.#transcriptFollowing.register(threadId, following, (current) =>
+      this.#reader(threadId)?.setFollowing(current),
+    );
   }
 
   async loadMoreOverlays(threadId: string, kind: "requests" | "tools" | "nodes") {
@@ -1491,7 +1501,8 @@ export class HttpHostClient {
       reader = new ScopedThreadReader(detail, this.rpc, this.#bodies);
       this.#scopeReaders.set(threadId, reader);
     }
-    reader.setMeasure(this.#positionMeasures.get(threadId));
+    reader.setMeasure(this.#positionMeasures.current(threadId));
+    reader.setFollowing(this.#transcriptFollowing.current(threadId));
     let placeItems: ReturnType<typeof detail.transcript.getSnapshot>["items"] | undefined;
     let placeQueue: NonNullable<
       ReturnType<typeof detail.transcript.getSnapshot>["snapshot"]

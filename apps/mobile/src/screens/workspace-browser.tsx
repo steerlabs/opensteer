@@ -110,6 +110,7 @@ import {
   type Size,
 } from "../layout.js";
 import { AppFrame } from "../thread/app-frame.js";
+import { ConversationLinksProvider } from "../thread/conversation-links.js";
 import type { NativeMenuOption, NativeMenuSection } from "../thread/composer-menu.js";
 import { ThreadPane, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { useKeyboardVisible } from "../ui/keyboard.js";
@@ -717,18 +718,24 @@ function Focused(
   };
   const body =
     viewer.kind === "app" ? (
-      <AppTab
-        appId={viewer.appId}
-        closeFailure={closing.failure}
-        closing={closing.closing}
+      <ConversationLinksProvider
+        deploymentId={deploymentId}
         hostClient={hostClient}
         key={viewer.appId}
-        onRetryClose={closing.close}
-        onTyping={setTyping}
-        pair={appPair}
-        reloadRef={appReload}
-        title={title}
-      />
+        threadId={route.threadId}
+      >
+        <AppTab
+          appId={viewer.appId}
+          closeFailure={closing.failure}
+          closing={closing.closing}
+          hostClient={hostClient}
+          onRetryClose={closing.close}
+          onTyping={setTyping}
+          pair={appPair}
+          reloadRef={appReload}
+          title={title}
+        />
+      </ConversationLinksProvider>
     ) : viewer.kind !== "page" ? (
       <ComputerOwnerView
         active={props.presence.interactive}

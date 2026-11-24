@@ -249,6 +249,8 @@ export const PersonalDetailSnapshotSchema = z.object({
   /** False when `inputQueue` stops short of `queue.inputs`; read the rest with `thread.inputQueue.get`. */
   inputQueueComplete: z.boolean().optional(),
   items: z.array(TranscriptItemSchema).max(50),
+  /** The Run cards of the Runs `items` belong to that `items` does not hold (see the page's). */
+  runs: z.array(TranscriptItemSchema).max(50).optional(),
   pendingRequests: z.array(PersonalRequestSummarySchema).max(20),
   activeItems: z.array(TranscriptItemSchema).max(20),
   nextBefore: TranscriptOrderCursorViewSchema.nullable(),
