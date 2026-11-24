@@ -1884,6 +1884,21 @@ test("keeps the eight most recently shown inactive tasks whole while they fit th
   expect(f.detail.transcript.getSnapshot().items.get(item.id)?.id).toBe(item.id);
 });
 
+test("tells its owner whenever it lets an inactive task go", () => {
+  const released = vi.fn();
+  const stream = new ScopedPersonalStream(undefined, undefined, undefined, released);
+  const sent: ScopedClientMessage[] = [];
+  stream.attach((frame) => sent.push(frame));
+  const scopes = Array.from({ length: 3 }, () => ({
+    kind: "thread" as const,
+    threadId: createId("thread"),
+  }));
+  // Observed and released without a cut: an empty inactive scope is let go at once.
+  for (const scope of scopes) stream.observe(scope)();
+  expect(released).toHaveBeenCalledTimes(3);
+  for (const scope of scopes) expect(stream.peekDetail(scope)).toBeUndefined();
+});
+
 test("past the text budget keeps only the two most recently shown inactive tasks", () => {
   const f = fixture();
   f.syncShell();

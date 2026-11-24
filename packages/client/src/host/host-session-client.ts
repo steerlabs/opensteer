@@ -752,6 +752,7 @@ export class HttpHostClient {
       options.streamCache,
       this.#resources,
       options.cacheDeploymentId,
+      () => this.#sweepSoon(),
     );
     this.browserPasskeys = new BrowserPasskeys(options.passkeys);
     this.iphoneSetup = options.iphoneSetup
@@ -1326,7 +1327,6 @@ export class HttpHostClient {
     if (previous && previous !== threadId) this.#releaseDetail(previous);
     this.#watchDetail(threadId);
     this.#stream.select({ kind: "thread", threadId: id.data });
-    this.#sweepReaders();
   }
 
   deactivateThread(threadId: string) {
@@ -1334,7 +1334,6 @@ export class HttpHostClient {
     this.#activeThreadId = null;
     this.#stream.select(undefined);
     this.#releaseDetail(threadId);
-    this.#sweepReaders();
   }
 
   deploymentPosition(): Sequence | null {
@@ -1354,7 +1353,6 @@ export class HttpHostClient {
       if (count <= 1) this.#observedThreads.delete(threadId);
       else this.#observedThreads.set(threadId, count - 1);
       this.#releaseDetail(threadId);
-      this.#sweepReaders();
     };
   }
 
@@ -1458,6 +1456,18 @@ export class HttpHostClient {
   }
 
   /** Disposes the parked readers whose scope the stream no longer keeps, and drops their browser usage. */
+  #sweepDue = false;
+
+  /** The stream let a scope go on its own (eviction, a forgotten task): sweep once it settles. */
+  #sweepSoon() {
+    if (this.#sweepDue) return;
+    this.#sweepDue = true;
+    queueMicrotask(() => {
+      this.#sweepDue = false;
+      if (!this.#disposed) this.#sweepReaders();
+    });
+  }
+
   #sweepReaders() {
     const dropped = new Set<string>();
     for (const [threadId, reader] of this.#scopeReaders) {
@@ -2887,14 +2897,15 @@ export class HttpHostClient {
             ...(previousUses ?? []).filter((use) => use.runId !== null && !replaced.has(use.runId)),
             ...uses,
           ];
+    const usesChanged =
+      previousUses === undefined || JSON.stringify(previousUses) !== JSON.stringify(nextUses);
+    // An unchanged read keeps the rows already published, so no later update redraws them.
     this.#browserUses.delete(threadId);
-    this.#browserUses.set(threadId, nextUses);
+    this.#browserUses.set(threadId, usesChanged ? nextUses : previousUses);
     const previousStatus = this.#snapshot.browserUsage?.[threadId];
     const nextStatus = { loading: false, error } as const;
     const statusChanged =
       previousStatus?.loading !== nextStatus.loading || previousStatus.error !== nextStatus.error;
-    const usesChanged =
-      previousUses === undefined || JSON.stringify(previousUses) !== JSON.stringify(nextUses);
     if (!statusChanged && !usesChanged) return;
     this.#update({
       ...this.#snapshot,

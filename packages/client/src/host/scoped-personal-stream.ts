@@ -189,11 +189,16 @@ export class ScopedPersonalStream {
     cache?: PersonalStreamCache,
     resources?: PersonalResourcePort,
     cacheDeploymentId?: string,
+    released?: () => void,
   ) {
     this.cache = cache;
     this.#resources = resources;
     this.#cacheDeploymentId = cacheDeploymentId;
+    this.#released = released;
   }
+
+  /** Told after the stream lets go of an inactive scope, so what was built on it can go too. */
+  readonly #released: (() => void) | undefined;
 
   peekDetail(scope: DetailScope) {
     return this.#details.get(scopeKey(scope));
@@ -667,7 +672,10 @@ export class ScopedPersonalStream {
       if (detail.observers > 0 || key === this.#selected) {
         detail.transcript.begin(++this.#generation, false);
         delete detail.saved;
-      } else this.#details.delete(key);
+      } else {
+        this.#details.delete(key);
+        this.#released?.();
+      }
     }
     const identity = this.#identity;
     if (identity && this.cache)
@@ -1078,7 +1086,10 @@ export class ScopedPersonalStream {
         if (kept <= 2 || (kept <= retainedDetails && text <= retainedTextBudget)) continue;
       }
       if (detail.observers > 0) detail.transcript.begin(++this.#generation, false);
-      else this.#details.delete(key);
+      else {
+        this.#details.delete(key);
+        this.#released?.();
+      }
     }
   }
 
