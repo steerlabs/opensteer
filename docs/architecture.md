@@ -698,17 +698,33 @@ The same Home on a Linux server, packaged in `deploy/home` ([operator guide](../
 
 ### The Opensteer Cloud Computer
 
-A Linux Home on a server Opensteer runs for one person: one Google Compute Engine VM per person,
-bought through web checkout with Stripe. The account service holds a
-desired state; a reconciler outside the Home (`apps/home-provisioner`) makes it true, journals
+An Opensteer Cloud Computer is two things Opensteer runs for one person, bought through web
+checkout with Stripe:
+
+- **Their own small VM, which is their Home.** One Google Compute Engine VM per person, `e2-medium`
+  (4 GiB) by default, running the Host, its PostgreSQL, the Runner where their own agents run, the
+  gateway and the Channel Runtime. No browser runs in it. It sizes each service's CPU and memory
+  limits from the machine it is on, so together they never ask for more than it has.
+- **Their browser, in the browser pool.** The pool is a set of shared Compute Engine hosts. Each
+  person's browser is its own Firecracker micro-VM on one of them, and their browser profiles live
+  on that host's durable profile disk, in the part kept for their slot. What they share with other
+  people is the host machine, that disk and the pool's software, never the micro-VM. Their pages
+  leave through an egress proxy assigned to them alone, whose password only the pool host is
+  given.
+
+Every Cloud Computer's browser runs in the pool: the account service and the reconciler refuse to
+start without the pool's settings. A Linux Home on a person's own server and a Mac Home keep their
+browser on the same computer, as before. The account service holds a desired state; a reconciler
+outside the Home (`apps/home-provisioner`) makes it true for both the VM and the pool, journals
 each provider write, and reports back. See [cloud-computer-operations.md](cloud-computer-operations.md).
 
 - Sign-in is through the person's Opensteer account. A replacement made from a snapshot keeps the
   owner; the old VM is deleted only after the account has issued the owner a sign-in to the
   replacement.
-- Public page loads leave through a pinned egress proxy and fail closed when it is missing or
-  broken. This is a browser setting, not a boundary against an agent that controls the browser.
-  Task shells use the VM's own address. The person sees it as the Browser IP.
+- Public page loads leave through the person's pinned egress proxy, from their browser's
+  micro-VM, and fail closed when it is missing or broken. This is a browser setting, not a
+  boundary against an agent that controls the browser. Task shells use the VM's own address. The
+  person sees the proxy's address as the Browser IP.
 - A Cloud Computer that is turned off is **Suspended**. "Last backup reported by this Cloud
   Computer" is what the computer reported.
 

@@ -4,11 +4,12 @@ This runbook is for the Opensteer operator who runs Opensteer Cloud Computer.
 
 ## What runs where
 
-Three components run the managed service:
+Four components run the managed service:
 
 1. **Account service** (`apps/control-plane`) runs in Kubernetes (`opensteer-system`, two replicas by default) backed by PostgreSQL. It owns customer billing, Stripe webhooks, desired state, the backup target pool, the egress endpoint pool, the reconciler lease, and automatic claiming of each new Home.
 2. **Home reconciler** (`apps/home-provisioner`) runs in Kubernetes (`opensteer-system`) as a single replica (`replicas: 1`, `Recreate` strategy) using a dedicated Google service account. It polls Account for desired state, creates and powers Compute Engine VMs, manages Cloudflare DNS records, and verifies each Home's pinned identity.
-3. **One VM per customer** runs on Google Compute Engine (Ubuntu 24.04 LTS). Cloud-init downloads the signed-by-hash standalone installer, exchanges the bootstrap token with Account, starts seven Docker Compose services (`postgres`, `host`, `gateway`, `runner`, `browser-runtime`, `browser-egress`, `channel-runtime`), and calls `boot-complete`.
+3. **One VM per customer** runs on Google Compute Engine (Ubuntu 24.04 LTS, `e2-medium` with 4 GiB by default). It is the person's Home and nothing else. Cloud-init downloads the signed-by-hash standalone installer, exchanges the bootstrap token with Account, starts five Docker Compose services (`postgres`, `host`, `gateway`, `runner`, `channel-runtime`), and calls `boot-complete`. The `browser-runtime` and `browser-egress` images are selected but never started there: no browser runs in the VM. The Home sizes each service's CPU and memory limits from the VM it is on ([Home deployment guide](../deploy/home/README.md)).
+4. **Browser pool hosts** are shared Compute Engine VMs (`n2-standard-8` by default) that the reconciler creates and Account places browsers on. Each person's browser is its own Firecracker micro-VM there, with its own durable profile on the host's profile disk and its own egress proxy. A Cloud Computer cannot be sold or created without the pool: Account and the reconciler both refuse to start without its settings. [deploy/home-provisioner/google-compute.md](../deploy/home-provisioner/google-compute.md#browser-pool-hosts) sets it up.
 
 External provider accounts involved:
 
@@ -16,7 +17,7 @@ External provider accounts involved:
 - **Stripe**: handles Checkout, the Billing Portal, recurring subscriptions, and webhooks.
 - **Cloudflare**: hosts the DNS zone for customer Home hostnames (`OPENSTEER_CLOUD_COMPUTER_DOMAIN`).
 - **S3-compatible object storage**: stores encrypted restic snapshots. Account assigns a registered principal and non-overlapping prefix; operators enforce the principal's prefix permissions in S3. The daily timer attempts a backup and reports successful scheduled snapshots to Account. An upload can succeed even when the report fails.
-- **Static browser egress proxy provider**: provides HTTPS proxy endpoints and credentials for the pool. A Home without an assignment waits; the provider supplies the stable external IP, which the installer does not verify.
+- **Static browser egress proxy provider**: provides HTTPS proxy endpoints and credentials for the pool. A person's browser on its pool host asks Account for its endpoint and waits without one; the Home never receives an egress password. The provider supplies the stable external IP, which nothing verifies.
 
 ```text
 Customer (Desktop / Mobile / Web)
@@ -37,10 +38,16 @@ Customer (Desktop / Mobile / Web)
 |  - Cloudflare API      | +--|  - POST /v1/cloud-computers/:id/boot        |
 |  - Pinned TLS probe    |    |  - POST /v1/cloud-computers/:id/boot-complete
 +------------------------+    |  - Docker Compose: postgres, host, gateway, |
-                              |    runner, browser-runtime, browser-egress, |
-                              |    channel-runtime                          |
+                              |    runner, channel-runtime (no browser)     |
                               |  - Daily backup -> exclusive S3 prefix      |
-                              |  - Browser traffic -> exclusive egress proxy|
+                              +---------------------------------------------+
+                                  |  agent and relay ports (7310, 7312)
+                                  v
+                              +---------------------------------------------+
+                              | Browser pool host (shared, n2-standard-8)   |
+                              |  - one micro-VM per person's browser        |
+                              |  - its profile on the host's profile disk   |
+                              |  - its traffic -> exclusive egress proxy    |
                               +---------------------------------------------+
 ```
 
@@ -71,6 +78,10 @@ Account also requires its core variables to be valid for Cloud Computer: `OPENST
 | `OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR`                    | Positive integer price in minor currency units (for example `2000` for `$20.00`)                | Yes      | None    | ConfigMap / non-secret |
 | `OPENSTEER_CLOUD_COMPUTER_PRICE_INTERVAL`                 | Billing interval (`day`, `week`, `month`, or `year`)                                            | No       | `month` | ConfigMap / non-secret |
 | `OPENSTEER_CLOUD_COMPUTER_IPV6`                           | Publish IPv6 `AAAA` records and enable IPv6 Compose ports (`off` or `on`)                       | No       | `off`   | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST`            | Browsers per pool host; without it Account refuses to start                                     | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON`              | Pool host installer and artifacts; without it Account refuses to start                          | Yes      | None    | ConfigMap / non-secret |
+
+The other pool settings (machine type, guest size, profile size and disk, ports) are optional and listed in [deploy/home-provisioner/google-compute.md](../deploy/home-provisioner/google-compute.md#pool-variables-and-capacity-sizing). Set `OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE=default` so the reconciler's machine type applies.
 
 Set `OPENSTEER_CLOUD_COMPUTER_BACKUP_KEY_PROJECT` to a dedicated Google Cloud project before enabling sales. Enable Secret Manager and grant the Account workload identity permission to create secrets, add/access versions, and delete secrets there. PostgreSQL records the key version. The repository passwords live in Secret Manager and on the owning VM. Per-Home secrets use the `opensteer-backup-cc_…` prefix and are destroyed with all versions on final deletion. Keep historical repository passwords out of operational exports and database backups.
 
@@ -85,7 +96,7 @@ Run `apps/home-provisioner` with `deploy/home-provisioner/deployment.yaml` (`rep
 | `OPENSTEER_HOME_GCP_ZONE`              | Compute Engine zone (for example `us-central1-a`); also selects the region                                      | Yes      | None                          | Deployment secret/env         |
 | `OPENSTEER_HOME_GCP_NETWORK`           | VPC network name                                                                                                | Yes      | None                          | Deployment secret/env         |
 | `OPENSTEER_HOME_GCP_SUBNET`            | Subnet name                                                                                                     | Yes      | None                          | Deployment secret/env         |
-| `OPENSTEER_HOME_GCP_MACHINE_TYPE`      | Machine type when a desired record has `serverType: null`                                                       | No       | `e2-standard-4`               | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_MACHINE_TYPE`      | Machine type when a desired record has `serverType: null`                                                       | No       | `e2-medium` (4 GiB)           | Deployment secret/env         |
 | `OPENSTEER_HOME_GCP_IMAGE`             | Ubuntu 24.04 LTS image or image family resource path                                                            | No       | Ubuntu 24.04 LTS amd64 family | Deployment secret/env         |
 | `OPENSTEER_HOME_GCP_DISK_TYPE`         | Boot disk type (`pd-balanced`, `pd-standard`, `pd-ssd`)                                                         | No       | `pd-balanced`                 | Deployment secret/env         |
 | `OPENSTEER_HOME_GCP_DISK_SIZE_GB`      | Boot disk size in GB                                                                                            | No       | `30`                          | Deployment secret/env         |
@@ -99,6 +110,9 @@ Run `apps/home-provisioner` with `deploy/home-provisioner/deployment.yaml` (`rep
 | `OPENSTEER_HOME_READINESS_TIMEOUT_MS`  | Max wait for a Home to become ready in milliseconds (`1000`–`3600000`)                                          | No       | `600000`                      | Deployment secret/env         |
 | `OPENSTEER_HOME_ORPHAN_GRACE_MS`       | Grace period before deleting orphaned VMs or DNS records (`60000`–`86400000`)                                   | No       | `300000`                      | Deployment secret/env         |
 | `OPENSTEER_HOME_CONCURRENCY`           | Max Cloud Computers reconciled in parallel (`1`–`16`)                                                           | No       | `4`                           | Deployment secret/env         |
+| `OPENSTEER_POOL_PROVISIONER_KEY`       | Ed25519 key that signs the reconciler's calls to pool hosts; without it the reconciler refuses to start         | Yes      | None                          | Secret (`_FILE` or SecretRef) |
+| `OPENSTEER_POOL_HOME_CIDR`             | Subnet range of the Cloud Computer VMs, allowed to reach pool hosts                                             | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_POOL_PROVISIONER_CIDR`      | Range of the reconciler's own pods or nodes, allowed to reach pool hosts' admin port                            | Yes      | None                          | Deployment secret/env         |
 
 ### Home VM environment (on each VM)
 
@@ -244,7 +258,7 @@ Put the proxy password in a root-only file (`chmod 0600`) so it stays out of she
   node dist/cloud-computer-operator-main.js egress-assign <computer-id>
   ```
 
-  Returns the assigned endpoint ID and the recorded public address, which can be null. Repeating it returns the same assignment. A Home with egress refresh support consumes the assignment on its next refresh.
+  Returns the assigned endpoint ID and the recorded public address, which can be null. Repeating it returns the same assignment. The Cloud Computer's pool host receives it on its browser's next egress request; the Home never does.
 
 ### Backup targets
 
@@ -321,9 +335,9 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
    - Cloud-init writes `/root/opensteer-home-boot.json` and `/root/opensteer-home-bootstrap-token` and enables a systemd download unit. The unit fetches `installerUrl`, checks `installerSha256`, and runs the installer with those files.
    - The installer stages `/etc/opensteer-home/boot/*` and starts `opensteer-home-managed.service`, which retries until completion (stopping on exit `78` if the token is rejected).
    - `managed-boot.sh boot` calls `POST /v1/cloud-computers/:id/boot` with `{ hostname, bootstrapToken }`.
-   - Account validates the token, assigns one free egress endpoint (or sets `egressUnavailable` if the pool is empty), registers an OIDC client for the Home, creates or reads its repository password in Secret Manager, and returns the pinned release images, setup code digest, OIDC client credentials, egress credentials (if assigned), and backup repository credentials.
-   - The VM pulls the six images, applies AppArmor/seccomp policies and the pod `iptables`/`ip6tables` firewall, and starts all seven Compose containers.
-   - Customer sees `status: "preparing"` and `egress: "assigned"` (or `"unavailable"`).
+   - Account validates the token, registers an OIDC client for the Home, creates or reads its repository password in Secret Manager, and returns the pinned release images, setup code digest, OIDC client credentials, backup repository credentials and `browserPool: true`. It returns no egress: the person's browser runs on a pool host, which asks for its own endpoint.
+   - The VM pulls the six images, applies AppArmor/seccomp policies and the pod `iptables`/`ip6tables` firewall, and starts the five Compose containers that run on a Cloud Computer, with limits sized from the VM.
+   - Customer sees `status: "preparing"` and `egress: "pending"` until the pool host has asked for its endpoint.
 5. **Boot-complete**:
    - Once all containers are healthy, the installer reads the local Host discovery document (`/.well-known/opensteer` on loopback) and calls `POST /v1/cloud-computers/:id/boot-complete` with `{ hostname, bootstrapToken, identity: { deploymentId, hostKeyFingerprint } }`.
    - Account pins that `deploymentId` and `hostKeyFingerprint`, marks `bootCompletedAt`, and revokes the bootstrap token. A matching completion replay only acknowledges the same identity. The subsequent accepted `ready` report marks the generation ready.
@@ -506,16 +520,16 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
   - **Egress pool empty**: `show <id>` shows `egressUnavailable: true` (customer sees Browser IP: "Browsing paused"). `node dist/cloud-computer-operator-main.js egress-list` shows every row has a non-null `computerId` or `needsRotation: true`.
 - **What the system does**:
   - With no free backup target, Account refuses new checkouts.
-  - With no free egress endpoint, boot still completes and the Home comes up, but without an upstream proxy and the customer sees browsing paused.
+  - With no free egress endpoint, the Home comes up, and its browser on the pool host has no upstream proxy: the customer sees browsing paused.
 - **What the operator does**:
   1. Add new entries with `backup-add` / `egress-add`, or rotate released entries (`needsRotation: true`) with `backup-rotate` / `egress-rotate`.
   2. New checkouts succeed immediately once a backup target is free.
-  3. Run `egress-assign <computer-id>`. The Home can then fetch its exclusive credentials without rebuilding. Installed versions without the VM refresh support still require the VM-side change below.
+  3. Run `egress-assign <computer-id>`. The pool host receives the endpoint on its browser's next egress request.
 
 ### Managed Home installer contract
 
 - **Release feed.** The optional `releaseManifestUrl` must be HTTPS without credentials, a query, or a fragment and resolve only to public addresses. The installer saves it in root-only `config.env` as `OPENSTEER_HOME_RELEASE_MANIFEST_URL` and enables the managed update timer only when a feed is configured. The updater checks DNS again and pins the fetch to the checked addresses without a proxy or redirects. Boot uses the six digests in the pinned `release`; a managed update refuses tags. Publishing a feed or changing an Account setting does not change the configuration on an installed VM.
-- **Late browser egress.** While a managed Home has no upstream, root maintenance calls `GET /v1/cloud-computers/<id>/egress` on the configured Account origin. The timer fires 15 seconds after maintenance last became inactive. It sends HTTP Basic using `OPENSTEER_HOME_OIDC_CLIENT_ID` and `secrets/oidc_client_secret` through stdin, not process arguments. A successful response is `{}` or `{"egress":{"url":"…","username":"…","password":"…"}}`. On assignment, maintenance writes three `0444` secret files in the root-only Home directory for the egress mounts and recreates the proxy. Chromium's public page loads fail closed with no working upstream; this is a browser setting, not a firewall boundary against a task shell or an agent controlling Chromium. Account rejects a revoked or superseded credential and a suspended or deleting Home.
+- **Late browser egress.** A Cloud Computer's Home runs no browser and Account answers its egress request with `{}`, so it never writes the files below; the person's browser gets its egress on its pool host. The rest of this paragraph is how a managed Home with its browser in the VM behaved, which no Cloud Computer is any more. While a managed Home has no upstream, root maintenance calls `GET /v1/cloud-computers/<id>/egress` on the configured Account origin. The timer fires 15 seconds after maintenance last became inactive. It sends HTTP Basic using `OPENSTEER_HOME_OIDC_CLIENT_ID` and `secrets/oidc_client_secret` through stdin, not process arguments. A successful response is `{}` or `{"egress":{"url":"…","username":"…","password":"…"}}`. On assignment, maintenance writes three `0444` secret files in the root-only Home directory for the egress mounts and recreates the proxy. Chromium's public page loads fail closed with no working upstream; this is a browser setting, not a firewall boundary against a task shell or an agent controlling Chromium. Account rejects a revoked or superseded credential and a suspended or deleting Home.
 
 ### Restoring a backup by hand on the VM
 
@@ -568,10 +582,18 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
   3. **Restart Account and let the reconciler run**: Start `apps/control-plane`. `0037_remove_organizations` succeeds and drops the empty organization tables and columns while keeping the Cloud Computer row intact; `apps/home-provisioner` reconciles it normally with no organization fields.
   4. **What the Home's own migration (`0110_remove_organizations_contract`) then does**: When that Cloud Computer's Home upgrades and starts, `0110_remove_organizations_contract` drops `work_home_policy`, `work_audit_outbox`, `work_audit_head`, and the work triggers and columns, turning the Home into an ordinary personal Home of its one person without widening any connected agent's authority: open connections above `externalMaxMode` are narrowed to the cap, open connections refused by `allowEverything` / `allowTasks` (or on a closing work Home) are revoked through the full Disconnect set, already-expired connections are left untouched, and chats ended for retired organization or closing reasons keep no reason ("This chat has ended.").
 
+### A Cloud Computer made before its browser moved to the pool
+
+- **What happened to it**: `0039_browser_always_pooled` moved every row that said `browser_mode = 'local'` into the pool. A live one got a browser pool slot with the pool's default guest size (two vCPUs, 2048 MiB, a 2048 MiB profile); one already deleted or being deleted was marked as having no slot to erase. No row was dropped, and `browser_mode` now only accepts `pool`.
+- **What it means**: its VM still runs the Home it was installed with, browser included, until it is replaced. Its old browser profiles stay in that VM's `browser-profiles` volume and its backups; they are not copied to the pool.
+- **What the operator does**: replace it (`replace <computer-id>`, from a snapshot when its Home's data matters). The replacement's boot answer says `browserPool: true`, so it starts without a local browser and its browser runs on a pool host.
+
 ## What has never been run for real
 
 The automated test suite and local Colima proof (`scripts/verify-home-deployment.mjs`) exercise the Account store, reconciler, Stripe client, and Home container stack against local mocks and containers only. None of the following has been run in production or against live third-party services:
 
+- **A Cloud Computer's browser end to end**: nothing yet shows a person using their browser in the pool from their Cloud Computer. The Host does not start its side of the pool (`startManagedBrowserPool` has no caller yet), and the Home's own pod firewall (`deploy/home/firewall.sh`) rejects every private address, which includes the pool host's VPC address and its agent and relay ports (`7310`, `7312`). Which process on the Home may reach those ports, and how the Home learns the pool's address range, is not decided.
+- **A 4 GiB Home under load**: the limits `home_limits` sets on an `e2-medium` have only been computed and checked by tests, not measured with the person's own agents running.
 - **Live Stripe**: Checkout Sessions (`2026-11-18.endive` with `allowed_payment_method_types[0]=card`), Billing Portal sessions, real webhook signing and delivery to `/v1/cloud-computers/stripe-webhook`, and live `validateOffer` / 60-second billing reconciliation.
 - **The live Compute Engine adapter**: the reconciler's instance creation with a reserved static address, cloud-init on the instance it created, firewall rules `opensteer-cloud-computers-v4`/`-v6`, stop and start, dual-stack addressing, and instance and address deletion. Its tests run against a stand-in for the Compute Engine API.
 - **Live Cloudflare DNS**: creating, updating, and deleting unproxied `A` / `AAAA` records with the `Opensteer Cloud Computer` comment, and orphan DNS cleanup.

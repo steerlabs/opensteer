@@ -124,18 +124,36 @@ with `OPENSTEER_HOME_RUNNER_CPUS` and `OPENSTEER_HOME_RUNNER_MEMORY`. The Browse
 Runtime's defaults are two CPUs and 4 GiB. Set
 `OPENSTEER_HOME_BROWSER_CPUS` and `OPENSTEER_HOME_BROWSER_MEMORY` to change them.
 Host and PostgreSQL are each capped at two CPUs and 2 GiB. Caddy, the browser
-egress proxy, and Channel Runtime are each capped at one CPU and 512 MiB.
+egress proxy, and Channel Runtime are each capped at one CPU and 512 MiB. These
+caps total 17.5 GiB; they are upper bounds, so give a Home on your own server
+enough memory that several services can approach their caps together.
 
-Compute Engine defaults to `e2-standard-4` (4 vCPUs, 16 GiB) because the
-Runner's default `cpus: 4` cap requires at least four vCPUs. The current
-Compose memory caps total 17.5 GiB. They are upper bounds, so the VM can run
-out of memory if several services approach their caps together. A 4 GB shape
-becomes the default once Chromium moves to the browser pool and Home sizes
-its CPU and memory limits from the machine type.
+An Opensteer Cloud Computer's Home is different in two ways, both set by
+`compose.browser-pool.yaml`, which only a Cloud Computer whose boot answer said
+`browserPool: true` uses:
 
-The listed on-demand Linux compute price in `us-central1` was USD $0.134 per
-hour (about $97.84 for 730 hours) on November 20, 2026. Disk and networking
-are billed separately. [Google machine specifications](https://cloud.google.com/compute/docs/general-purpose-machines) · [Regional list-price mirror](https://gcloud-compute.com/us-central1/e2-standard-4.html)
+- **No browser runs in it.** The person's browser runs in the browser pool, so
+  `browser-runtime` and `browser-egress` are scaled to zero: no Chromium, no
+  browser profiles and no egress proxy on the VM. Both images are still
+  selected, so release checks and updates treat all six alike.
+- **Its limits come from its machine.** `home_limits` in `common.sh` reads the
+  machine's memory and CPU count and sets each running service's limits so
+  that together they never ask for more memory than the machine has. It keeps
+  an eighth of memory, at least 512 MiB, for the kernel, Docker and the
+  system. PostgreSQL gets an eighth of the rest (512 MiB to 2 GiB), the Host a
+  fifth (768 MiB to 2 GiB), Caddy and Channel Runtime 256 MiB each, and the
+  Runner what remains. No CPU limit exceeds the machine's CPU count: the
+  Runner may use every CPU, and the Host and PostgreSQL up to two each. A
+  machine where the Runner would get less than 768 MiB is refused. The
+  `OPENSTEER_HOME_*` limit settings above do not apply to it.
+
+On Compute Engine's default `e2-medium` (2 vCPUs, 4 GiB) that gives PostgreSQL
+512 MiB, the Host 768 MiB, Caddy and Channel Runtime 256 MiB each, and the
+Runner 1792 MiB and both CPUs; Linux reports a little under 4 GiB as the
+machine's memory, so the Runner gets about 1.6 GiB there. Whether the person's
+own agents' Runs fit in that has not been measured on a real machine.
+
+Disk and networking are billed apart from the machine. [Google machine specifications](https://cloud.google.com/compute/docs/general-purpose-machines) · [Compute Engine prices](https://cloud.google.com/compute/vm-instance-pricing)
 
 For a static ISP upstream, pass `OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL`,
 `OPENSTEER_BROWSER_EGRESS_UPSTREAM_USERNAME` and
@@ -258,7 +276,8 @@ unit downloads the installer, verifies its SHA-256, and passes the files to it
 with `--boot-spec … --bootstrap-token-file …`. The installer exchanges the token
 using the contract in [managed-boot.sh](managed-boot.sh). The systemd installer
 keeps the first accepted boot configuration across reboots. It sends the running
-Home's identity only after all seven services are healthy and retries an ambiguous
+Home's identity only after every service that runs is healthy (five on a Cloud
+Computer, which runs no browser) and retries an ambiguous
 completion with the same identity. The Opensteer account revokes the single-use token on
 completion; a matching replay only acknowledges the same identity. The installer
 removes its local token and boot-result files before enabling normal operation,
@@ -279,7 +298,9 @@ HTTP Basic using that generation's Opensteer account OIDC credentials. When the 
 assigns an upstream, maintenance writes the three secret files under the
 root-only configuration directory, with mode `0444` for the proxy mounts, and
 recreates the egress proxy. An
-interrupted change resumes at the next maintenance tick.
+interrupted change resumes at the next maintenance tick. A Cloud Computer's Home
+is always answered `{}`: it runs no egress proxy, and its browser's egress is
+given to its pool host only.
 
 ## Known limits
 

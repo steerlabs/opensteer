@@ -193,7 +193,7 @@ cluster.
 | `OPENSTEER_HOME_GCP_ZONE`         | Required zone, such as `us-central1-a`. This also selects the region.                                                                                                             |
 | `OPENSTEER_HOME_GCP_NETWORK`      | Required VPC name.                                                                                                                                                                |
 | `OPENSTEER_HOME_GCP_SUBNET`       | Required subnet name.                                                                                                                                                             |
-| `OPENSTEER_HOME_GCP_MACHINE_TYPE` | Defaults to `e2-standard-4` with 4 vCPUs and 16 GiB of memory.                                                                                                                    |
+| `OPENSTEER_HOME_GCP_MACHINE_TYPE` | Defaults to `e2-medium` with 2 vCPUs and 4 GiB of memory: the Home's own VM, with no browser in it. The Home sizes its services' limits from it.                                  |
 | `OPENSTEER_HOME_GCP_IMAGE`        | Defaults to `projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64`. Accepts a Compute image or image family resource path. Pin an image name to qualify a release. |
 | `OPENSTEER_HOME_GCP_DISK_TYPE`    | Defaults to `pd-balanced`. Also accepts `pd-standard` and `pd-ssd`.                                                                                                               |
 | `OPENSTEER_HOME_GCP_DISK_SIZE_GB` | Defaults to `30`.                                                                                                                                                                 |
@@ -213,15 +213,16 @@ on the Home's Compose ports when using the external dual-stack subnet.
 
 See the machine requirements and release commands in the [Home deployment guide](../home/README.md).
 
-## Browser pool hosts (optional)
+## Browser pool hosts
 
-When pooling is enabled (**both** `OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST` set in Account
-**and** `OPENSTEER_POOL_PROVISIONER_KEY` set in `home-provisioner`), the provisioner also
-manages Firecracker browser pool hosts in the same Compute project, VPC, subnet, and zone as Cloud
-Computer Homes. Both switches must be set together: if Account pooling is enabled while the active
-provisioner has no `OPENSTEER_POOL_PROVISIONER_KEY`, `home-provisioner` logs a
-`home-provisioner.pool.misconfigured` error on every pass and Account operator pool commands show a
-warning until both switches match.
+Every Cloud Computer's browser runs in the browser pool; none runs in the person's own VM. The
+provisioner manages Firecracker browser pool hosts in the same Compute project, VPC, subnet, and
+zone as Cloud Computer Homes, and Account places one micro-VM per person's browser on them. The
+pool is required on both sides: Account refuses to start without
+`OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST` and `OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON`,
+and `home-provisioner` refuses to start without `OPENSTEER_POOL_PROVISIONER_KEY`,
+`OPENSTEER_POOL_HOME_CIDR` and `OPENSTEER_POOL_PROVISIONER_CIDR`. Account's operator pool commands
+still warn if the provisioner holding the lease reported no pool key.
 
 ### Additional Google Cloud prerequisites
 
@@ -263,16 +264,16 @@ in `home-provisioner`.
 
 | Variable                                             | Where       | Value                                                                                                                                                                         |
 | ---------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST`       | Account     | Positive integer; enables pooling for newly created Cloud Computers (must be paired with `OPENSTEER_POOL_PROVISIONER_KEY`).                                                   |
-| `OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON`         | Account     | Pool host installer URL/SHA-256 and pinned agent/relay/rootfs/kernel/egress artifacts.                                                                                        |
+| `OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST`       | Account     | Required positive integer: browsers placed on one pool host.                                                                                                                  |
+| `OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON`         | Account     | Required: pool host installer URL/SHA-256 and pinned agent/relay/rootfs/kernel/egress artifacts.                                                                              |
 | `OPENSTEER_CLOUD_COMPUTER_POOL_MACHINE_TYPE`         | Account     | Defaults to `n2-standard-8` (32 GiB RAM, nested-virt-capable Intel Ice Lake/Cascade Lake).                                                                                    |
 | `OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_MIB`          | Account     | Per-slot profile size in MiB (`64`–`1048576`, default `2048`).                                                                                                                |
 | `OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_DISK_SIZE_GB` | Account     | Durable profile disk size in GiB (default `500`). Account refuses configurations where `slotsPerHost * profileMib` exceeds 90% of disk size (10% reserved for ext4 overhead). |
 | `OPENSTEER_CLOUD_COMPUTER_POOL_AGENT_PORT`           | Account     | Optional Home-to-agent port (default `7310`).                                                                                                                                 |
 | `OPENSTEER_CLOUD_COMPUTER_POOL_RELAY_PORT`           | Account     | Optional Home-to-relay port (default `7312`).                                                                                                                                 |
-| `OPENSTEER_POOL_PROVISIONER_KEY` (`_FILE`)           | Provisioner | Ed25519 private key (base64 PKCS8 DER or PEM) used to sign admin requests to pool hosts (must be paired with `OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST`).                 |
-| `OPENSTEER_POOL_HOME_CIDR`                           | Provisioner | Subnet CIDR of Cloud Computer Home VMs (for host-side `nftables` on agent/relay ports).                                                                                       |
-| `OPENSTEER_POOL_PROVISIONER_CIDR`                    | Provisioner | Provisioner CIDR (for VPC firewall and host-side `nftables` on the admin port).                                                                                               |
+| `OPENSTEER_POOL_PROVISIONER_KEY` (`_FILE`)           | Provisioner | Required Ed25519 private key (base64 PKCS8 DER or PEM) used to sign admin requests to pool hosts.                                                                             |
+| `OPENSTEER_POOL_HOME_CIDR`                           | Provisioner | Required subnet CIDR of Cloud Computer Home VMs (for host-side `nftables` on agent/relay ports).                                                                              |
+| `OPENSTEER_POOL_PROVISIONER_CIDR`                    | Provisioner | Required provisioner CIDR (for VPC firewall and host-side `nftables` on the admin port).                                                                                      |
 | `OPENSTEER_POOL_ADMIN_PORT`                          | Provisioner | Optional provisioner-to-agent admin port (default `7311`).                                                                                                                    |
 | `OPENSTEER_POOL_LOCAL_SSD_COUNT`                     | Provisioner | NVMe Local SSDs attached per pool host (`1`–`24`, default `1`).                                                                                                               |
 | `OPENSTEER_POOL_PROFILE_DISK_TYPE`                   | Provisioner | Durable profile disk type (`pd-ssd`, `pd-balanced`, `pd-standard`; default `pd-ssd`).                                                                                         |
