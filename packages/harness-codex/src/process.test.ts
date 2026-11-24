@@ -115,11 +115,21 @@ describe("Codex stdio process", () => {
         await withTimeout(engine.exited, 2000, {
           timeoutError: () => new Error("Supervisor did not finish its parent-death cleanup"),
         });
-        for (const pid of pids)
-          expect(
-            () => process.kill(pid, 0),
-            `Recovery PID ${pid} must survive supervisor cleanup`,
-          ).not.toThrow();
+        if (process.platform === "linux") {
+          // On Linux, opensteer-process-supervisor enables PR_SET_CHILD_SUBREAPER
+          // and reaps detached descendants on parent-death cleanup before exiting.
+          for (const pid of pids)
+            expect(
+              () => process.kill(pid, 0),
+              `Linux subreaper must reap detached recovery PID ${pid} before supervisor exit`,
+            ).toThrow();
+        } else {
+          for (const pid of pids)
+            expect(
+              () => process.kill(pid, 0),
+              `Recovery PID ${pid} must survive supervisor cleanup`,
+            ).not.toThrow();
+        }
       } finally {
         for (const pid of pids) killFixture(pid);
         await engine.terminate(0);

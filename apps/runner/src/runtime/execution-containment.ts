@@ -454,22 +454,50 @@ async function listSupervisedProcesses(variable: string): Promise<readonly Liste
   }));
 }
 
-const linuxProcSliceSize = 128;
+const linuxProcSliceBudgetMs = 15;
 
 /** A process's start identity remains readable after it loses its start environment. */
 export async function listLinuxProcesses(
   variable: string,
   procRoot = "/proc",
 ): Promise<ProcessInventory> {
-  const maxAttempts = 5;
+  const maxAttempts = 3;
+  const checkLiveOnHost = procRoot === "/proc";
+  let previousVanished: ReadonlySet<number> | undefined;
   let last: { readonly processes: readonly ListedProcess[]; readonly incomplete: boolean } = {
     processes: [],
     incomplete: true,
   };
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const scan = await scanLinuxProcOnce(variable, procRoot);
-    last = { processes: scan.processes, incomplete: scan.incomplete || scan.vanished };
-    if (scan.incomplete || !scan.vanished) return last;
+    if (scan.incomplete) {
+      return { processes: scan.processes, incomplete: true };
+    }
+    if (previousVanished) {
+      // A PID that vanished on the prior pass must now be absent from /proc and
+      // dead; if it is still listed or still alive (e.g. privilege change or a
+      // broken /proc listing), the scan cannot prove containment.
+      for (const pid of previousVanished) {
+        if (scan.listedPids.has(pid) || (checkLiveOnHost && defaultProbeAlive(pid) !== "gone")) {
+          return { processes: scan.processes, incomplete: true };
+        }
+      }
+    }
+    if (scan.vanishedPids.size === 0) {
+      return { processes: scan.processes, incomplete: false };
+    }
+    if (checkLiveOnHost) {
+      for (const pid of scan.vanishedPids) {
+        if (defaultProbeAlive(pid) !== "gone") {
+          return { processes: scan.processes, incomplete: true };
+        }
+      }
+    }
+    previousVanished = scan.vanishedPids;
+    // After retrying so any child forked before prior vanished PIDs exited is
+    // captured in a fresh readdirSync, remaining disjoint dead PIDs on a busy
+    // host do not poison containment unless a PID keeps vanishing or stays alive.
+    last = { processes: scan.processes, incomplete: false };
   }
   return last;
 }
@@ -480,44 +508,52 @@ async function scanLinuxProcOnce(
 ): Promise<{
   readonly processes: readonly ListedProcess[];
   readonly incomplete: boolean;
-  readonly vanished: boolean;
+  readonly listedPids: ReadonlySet<number>;
+  readonly vanishedPids: ReadonlySet<number>;
 }> {
   let entries: string[];
   try {
     entries = readdirSync(procRoot);
   } catch {
-    return { processes: [], incomplete: true, vanished: false };
+    return {
+      processes: [],
+      incomplete: true,
+      listedPids: new Set(),
+      vanishedPids: new Set(),
+    };
   }
   const prefix = `${variable}=`;
   const myUid = process.getuid?.();
   const found: ListedProcess[] = [];
   const readablePids = new Set<number>();
-  const accessDenied: {
-    readonly entry: string;
+  const listedPids = new Set<number>();
+  const deferredDenied: {
     readonly pid: number;
     readonly ppid: number;
     readonly processGroupId: number;
     readonly startTime: string;
   }[] = [];
+  const vanishedPids = new Set<number>();
   let incomplete = false;
-  let vanished = false;
-  let processed = 0;
-  // /proc entries are kernel-backed memory; reading them in bounded slices avoids
-  // both libuv threadpool saturation and multi-hundred-ms event-loop stalls.
+  let sliceStart = performance.now();
+  // /proc entries are kernel-backed memory; yielding only when a slice reaches
+  // its wall-clock budget keeps normal scans fast and atomic while bounding
+  // event-loop stalls on large or heavily loaded hosts.
   for (const entry of entries) {
     if (!/^[1-9][0-9]*$/u.test(entry)) continue;
-    processed++;
-    if (processed % linuxProcSliceSize === 0) {
+    if (performance.now() - sliceStart >= linuxProcSliceBudgetMs) {
       await new Promise<void>((resolve) => setImmediate(resolve));
+      sliceStart = performance.now();
     }
     const pid = Number(entry);
+    listedPids.add(pid);
     if (pid === process.pid) continue;
     let stat: string;
     try {
       stat = readFileSync(`${procRoot}/${entry}/stat`, "latin1");
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
-      if (code === "ENOENT" || code === "ESRCH") vanished = true;
+      if (code === "ENOENT" || code === "ESRCH") vanishedPids.add(pid);
       else incomplete = true;
       continue;
     }
@@ -544,6 +580,9 @@ async function scanLinuxProcOnce(
       incomplete = true;
       continue;
     }
+    // Linux kernel threads (kthreadd and its children) never belong to a user
+    // execution and never expose a readable /proc/<pid>/environ.
+    if (pid === 2 || ppid === 2) continue;
     let environ = "";
     try {
       environ = readFileSync(`${procRoot}/${entry}/environ`, "latin1");
@@ -563,11 +602,56 @@ async function scanLinuxProcOnce(
         continue;
       }
       if (code === "ENOENT" || code === "ESRCH") {
-        vanished = true;
+        vanishedPids.add(pid);
         continue;
       }
       if (code === "EACCES" || code === "EPERM") {
-        accessDenied.push({ entry, pid, ppid, processGroupId, startTime });
+        // Check inline whether an unreadable /proc/<pid>/environ is a direct child
+        // of this Runner or a setuid child of our user (realUid === myUid &&
+        // effectiveUid !== myUid). Pre-existing non-dumpable login daemons and
+        // unrelated system daemons are kept only if their parent is readable.
+        if (ppid === process.pid) {
+          incomplete = true;
+          found.push({
+            identity: `${pid}@${startTime}`,
+            pid,
+            ppid,
+            processGroupId,
+            scope: null,
+            unreadable: true,
+          });
+          continue;
+        }
+        let status: string;
+        try {
+          status = readFileSync(`${procRoot}/${entry}/status`, "latin1");
+        } catch (statusError) {
+          const statusCode = (statusError as NodeJS.ErrnoException)?.code;
+          if (statusCode === "ENOENT" || statusCode === "ESRCH") vanishedPids.add(pid);
+          else incomplete = true;
+          continue;
+        }
+        const uidLine = /^Uid:\s+(\d+)\s+(\d+)/mu.exec(status);
+        if (!uidLine) {
+          incomplete = true;
+          continue;
+        }
+        const realUid = Number(uidLine[1]);
+        const effectiveUid = Number(uidLine[2]);
+        const isSetuidForUs = myUid === undefined || (realUid === myUid && effectiveUid !== myUid);
+        if (isSetuidForUs) {
+          incomplete = true;
+          found.push({
+            identity: `${pid}@${startTime}`,
+            pid,
+            ppid,
+            processGroupId,
+            scope: null,
+            unreadable: true,
+          });
+        } else {
+          deferredDenied.push({ pid, ppid, processGroupId, startTime });
+        }
         continue;
       }
       incomplete = true;
@@ -583,53 +667,8 @@ async function scanLinuxProcOnce(
     });
     readablePids.add(pid);
   }
-  for (const denied of accessDenied) {
-    // Check whether an unreadable /proc/<pid>/environ is a setuid child of our user
-    // (realUid === myUid && effectiveUid !== myUid) or a direct child of this Runner.
-    // Pre-existing non-dumpable login daemons (e.g. sshd with realUid === effectiveUid === myUid
-    // under root sshd) and unrelated system daemons are kept in the tree as unreadable nodes
-    // only if they sit under our execution's tree, without poisoning unrelated scans.
-    if (denied.ppid === process.pid) {
-      incomplete = true;
-      found.push({
-        identity: `${denied.pid}@${denied.startTime}`,
-        pid: denied.pid,
-        ppid: denied.ppid,
-        processGroupId: denied.processGroupId,
-        scope: null,
-        unreadable: true,
-      });
-      continue;
-    }
-    let status: string;
-    try {
-      status = readFileSync(`${procRoot}/${denied.entry}/status`, "latin1");
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException)?.code;
-      if (code === "ENOENT" || code === "ESRCH") vanished = true;
-      else incomplete = true;
-      continue;
-    }
-    const uidLine = /^Uid:\s+(\d+)\s+(\d+)/mu.exec(status);
-    if (!uidLine) {
-      incomplete = true;
-      continue;
-    }
-    const realUid = Number(uidLine[1]);
-    const effectiveUid = Number(uidLine[2]);
-    const isSetuidForUs = myUid === undefined || (realUid === myUid && effectiveUid !== myUid);
-    if (isSetuidForUs) {
-      incomplete = true;
-      found.push({
-        identity: `${denied.pid}@${denied.startTime}`,
-        pid: denied.pid,
-        ppid: denied.ppid,
-        processGroupId: denied.processGroupId,
-        scope: null,
-        unreadable: true,
-      });
-    } else if (readablePids.has(denied.ppid)) {
-      // Keep as a tree node (not globally incomplete unless it sits under our execution).
+  for (const denied of deferredDenied) {
+    if (readablePids.has(denied.ppid)) {
       found.push({
         identity: `${denied.pid}@${denied.startTime}`,
         pid: denied.pid,
@@ -639,7 +678,7 @@ async function scanLinuxProcOnce(
       });
     }
   }
-  return { processes: found, incomplete, vanished };
+  return { processes: found, incomplete, listedPids, vanishedPids };
 }
 
 /**
