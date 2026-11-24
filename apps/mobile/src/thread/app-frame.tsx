@@ -23,6 +23,7 @@ import { WebView, type WebViewMessageEvent, type WebViewProps } from "react-nati
 import type { EdgeInsets } from "../layout.js";
 import { color, space } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
+import { useConversationLinks } from "./link-context.js";
 
 /** An app filling a tab, under chrome that is the tab's rather than the app's. */
 export interface AppTabFrame {
@@ -83,8 +84,29 @@ function openExternal(url: string): void {
   if (/^https?:\/\//iu.test(url)) void Linking.openURL(url).catch(() => undefined);
 }
 
-/** What every copy of an app is held to: no shared storage, and only its own pages inside. */
-function isolation(url: string): WebViewProps {
+/**
+ * Where a web page a person tapped out of an app opens: where the links of the
+ * conversation or tab around it open, which is a tab in Opensteer's browser
+ * where this phone can browse, and the system's browser where it cannot or
+ * where nothing around the app says.
+ */
+function useAppLinks(): (url: string) => void {
+  const links = useConversationLinks();
+  return (url) => {
+    if (!/^https?:\/\//iu.test(url)) return;
+    if (links) links.open(url);
+    else openExternal(url);
+  };
+}
+
+/**
+ * What every copy of an app is held to: no shared storage, and only its own pages inside.
+ * The WebView opens a window only for a person's tap (it may not open one on its own), and the
+ * bootstrap turns a tapped link into one, so only a window reaches `open`'s places. A navigation
+ * of the app's frame says nothing reliable about a tap (Android omits its kind, and a script's
+ * synthetic click reads as one on iOS), so it goes to the system, as every app link once did.
+ */
+function isolation(url: string, open: (url: string) => void): WebViewProps {
   return {
     source: { uri: url },
     // Route every scheme through our policy; WebView otherwise opens non-whitelisted URLs itself.
@@ -111,7 +133,7 @@ function isolation(url: string): WebViewProps {
         openExternal(request.url);
       return false;
     },
-    onOpenWindow: (event) => openExternal(event.nativeEvent.targetUrl),
+    onOpenWindow: (event) => open(event.nativeEvent.targetUrl),
   };
 }
 
@@ -169,6 +191,7 @@ function useAppLoad(
 function CardDocument(props: { readonly url: string; readonly retry: () => void }) {
   const [height, setHeight] = useState(280);
   const webView = useRef<WebView<object>>(null);
+  const open = useAppLinks();
   const { events, loadFailed } = useAppLoad(webView, (message) => {
     const reported = appContentHeight(message);
     if (reported !== null) setHeight(reported);
@@ -181,7 +204,7 @@ function CardDocument(props: { readonly url: string; readonly retry: () => void 
   };
   return (
     <WebView
-      {...isolation(props.url)}
+      {...isolation(props.url, open)}
       {...events}
       ref={webView}
       style={frameStyle}
@@ -276,6 +299,7 @@ function TabDocument(props: {
 }): ReactNode {
   const { chrome, onGround, onReady, reloadRef, retry } = props;
   const webView = useRef<WebView<object>>(null);
+  const open = useAppLinks();
   useEffect(() => {
     reloadRef.current = () => {
       if (webView.current) webView.current.reload();
@@ -300,7 +324,7 @@ function TabDocument(props: {
   return (
     <Animated.View style={[styles.fill, reveal]}>
       <WebView
-        {...isolation(props.url)}
+        {...isolation(props.url, open)}
         {...events}
         automaticallyAdjustContentInsets={false}
         containerStyle={styles.fill}

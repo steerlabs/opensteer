@@ -61,6 +61,11 @@ export interface ObservedDetail {
   /** Sets the anchor for an explicit move (a jump, a link, Return to latest) and tells the Host. */
   anchorTo(itemId: string | undefined): void;
   /**
+   * Cuts the scope again from the Host, centred where the reader is: what it holds can no longer
+   * be extended (the Host's history moved to a new epoch). Nothing while it is not subscribed.
+   */
+  recut(): void;
+  /**
    * The view's one-shot measurement of the row in view: undefined at the latest messages. Asked
    * only when the position is needed (a repair, a subscription) and no move is under way.
    */
@@ -70,7 +75,15 @@ export interface ObservedDetail {
    * failed: its target is the anchor. `read` once its page is installed and the view is to reveal.
    */
   moving?:
-    { readonly intent: number; readonly target: string | undefined; read?: boolean } | undefined;
+    | {
+        readonly intent: number;
+        readonly target: string | undefined;
+        /** Its page landed. */
+        read?: boolean;
+        /** The view revealed its target, possibly before the read settled. */
+        revealed?: boolean;
+      }
+    | undefined;
   /**
    * The reader's explicit moves, numbered (a jump, a link, Return to latest). A jump's page, a
    * repair's reread and a subscription's first cut act only for the move they began under.
@@ -195,6 +208,9 @@ export class ScopedPersonalStream {
       revision: 0,
       subscriptions: 0,
       anchorTo: (itemId) => this.#anchorTo(detail, itemId),
+      recut: () => {
+        if (detail.slot) this.#subscribe(detail, false, true);
+      },
       intent: 0,
       intend: () => ++detail.intent,
       subscribedIntent: 0,

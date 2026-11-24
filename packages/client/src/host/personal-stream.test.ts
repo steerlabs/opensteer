@@ -465,58 +465,6 @@ test("a failed Request read tries again while the Request stays pending, and sto
   expect(vi.getTimerCount()).toBe(0);
 });
 
-test("retains the moved item's anchor across a history reset and refuses a response that omits it", async () => {
-  const f = fixture();
-  f.syncShell();
-  f.syncDetail();
-  const moved = { ...item, position: "9", revision: "2" };
-  f.stream.receive({
-    ...f.address,
-    type: "host.changes",
-    fromSequence: "1",
-    throughSequence: "2",
-    changes: [
-      {
-        entityKind: "item",
-        entityId: item.id,
-        operation: "upsert",
-        sequence: "2",
-        ordinal: 0,
-        value: moved,
-      },
-    ],
-  });
-  const page = {
-    kind: "page",
-    threadId,
-    nodeId: null,
-    revision: "2",
-    hasMore: false,
-    nextBefore: null,
-  };
-  const read = vi
-    .fn()
-    .mockResolvedValueOnce({ ok: true, data: { kind: "history-reset" } })
-    .mockResolvedValueOnce({ ok: true, data: { ...page, items: [] } })
-    .mockResolvedValueOnce({ ok: true, data: { kind: "history-reset" } })
-    .mockResolvedValueOnce({ ok: true, data: { ...page, items: [moved] } });
-  const rpc = {
-    "thread.items.page": read,
-    "thread.inputQueue.get": vi.fn().mockResolvedValue({
-      ok: true,
-      data: { threadId, revision: "2", items: [], paused: false, steerRunId: null },
-    }),
-  } as unknown as import("@opensteer/protocol").HostApiClient;
-  const reader = new ScopedThreadReader(f.detail, rpc, new TranscriptBodies());
-  f.detail.anchorTo(item.id);
-  await expect(reader.history("earlier")).rejects.toThrow("history anchor");
-  const installed = f.detail.transcript.getSnapshot().items.get(item.id);
-  await reader.history("earlier");
-  expect(read).toHaveBeenLastCalledWith({ threadId, anchorItemId: item.id }, expect.anything());
-  expect(f.detail.transcript.getSnapshot().items.get(item.id)).toBe(installed);
-  reader.dispose();
-});
-
 test("the scope's anchor follows the reader: set by a jump, cleared on return to latest", async () => {
   const f = fixture();
   f.syncShell();
@@ -610,6 +558,243 @@ test("scrolling tells nobody; a jump is told at once, and paging keeps the reade
   f.stream.receive({ ...repair, snapshot: { ...repair.snapshot, anchorItemId: linked.id } });
   expect(f.detail.anchor).toBe(linked.id);
   expect(reader.getSnapshot().repairs).toBe(1);
+  reader.dispose();
+});
+
+test("earlier and newer pages fly together: neither cancels the other, and both land", async () => {
+  const f = fixture();
+  f.syncShell();
+  // A window in the middle of history: rows before it and after it are a page away.
+  const cut = f.detailSnapshot();
+  f.stream.receive({ ...cut, snapshot: { ...cut.snapshot, nextAfter: cursor } });
+  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
+  const before = { ...item, id: "before", messageId: createId("message"), position: "0" };
+  const after = { ...item, id: "after", messageId: createId("message"), position: "2" };
+  const pages = new Map<string, () => void>();
+  const read = vi.fn(
+    (query: { before?: unknown; after?: unknown }) =>
+      new Promise((resolve) => {
+        const items = query.before ? [before] : [after];
+        pages.set(query.before ? "earlier" : "newer", () =>
+          resolve({
+            ok: true,
+            data: {
+              kind: "page",
+              threadId,
+              nodeId: null,
+              revision: "1",
+              hasMore: false,
+              nextBefore: null,
+              nextAfter: null,
+              items,
+            },
+          }),
+        );
+      }),
+  );
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  const newer = reader.history("newer");
+  const earlier = reader.history("earlier");
+  expect(read).toHaveBeenCalledTimes(2);
+  pages.get("earlier")!();
+  pages.get("newer")!();
+  await Promise.all([newer, earlier]);
+  expect(f.detail.transcript.getSnapshot().historyIds).toEqual([before.id, item.id, after.id]);
+  expect(reader.getSnapshot()).toMatchObject({ hasMore: false, hasNewer: false });
+  reader.dispose();
+});
+
+test("a jump the view reveals while its page is still landing ends there, so no later cut returns to it", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const linked = { ...item, id: "linked", messageId: createId("message"), position: "0" };
+  const read = vi.fn().mockResolvedValue({
+    ok: true,
+    data: {
+      kind: "page",
+      threadId,
+      nodeId: null,
+      revision: "1",
+      hasMore: false,
+      nextBefore: null,
+      nextAfter: null,
+      items: [linked, item],
+    },
+  });
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  reader.setMeasure(() => undefined);
+  // The view draws the linked message as the page lands and says so at once, before the read
+  // settles, as a React effect run on the store's notification does.
+  reader.subscribe(() => {
+    if (f.detail.transcript.getSnapshot().items.has(linked.id)) reader.revealed();
+  });
+  await expect(reader.history("around", linked.messageId)).resolves.toBe(true);
+  expect(f.detail.moving).toBeUndefined();
+  // A repair now centres where the reader is, not back on the link.
+  reader.setMeasure(() => item.id);
+  f.stream.receive(f.detailSnapshot());
+  expect(f.detail.anchor).toBe(item.id);
+  reader.dispose();
+});
+
+test("a jump the view revealed before its page landed ends as the page lands", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const linked = { ...item, id: "linked", messageId: createId("message"), position: "0" };
+  let land!: () => void;
+  const read = vi.fn(
+    () =>
+      new Promise((resolve) => {
+        land = () =>
+          resolve({
+            ok: true,
+            data: {
+              kind: "page",
+              threadId,
+              nodeId: null,
+              revision: "1",
+              hasMore: false,
+              nextBefore: null,
+              nextAfter: null,
+              items: [linked, item],
+            },
+          });
+      }),
+  );
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  reader.setMeasure(() => undefined);
+  const jump = reader.history("around", linked.messageId);
+  // The linked message was already on screen: the view reveals it before the page arrives.
+  reader.revealed();
+  expect(f.detail.moving).toMatchObject({ revealed: true });
+  land();
+  await expect(jump).resolves.toBe(true);
+  expect(f.detail.moving).toBeUndefined();
+  reader.dispose();
+});
+
+test("a Load newer begun before a repair continues the window the repair's reread restores", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  f.syncShell();
+  const cut = f.detailSnapshot();
+  f.stream.receive({ ...cut, snapshot: { ...cut.snapshot, nextAfter: cursor } });
+  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
+  const after = { ...item, id: "after", messageId: createId("message"), position: "2" };
+  const tail = { ...item, id: "tail", messageId: createId("message"), position: "5" };
+  const page = (items: TranscriptItem[], nextAfter: TranscriptOrderCursor | null) => ({
+    ok: true,
+    data: {
+      kind: "page",
+      threadId,
+      nodeId: null,
+      revision: "1",
+      hasMore: false,
+      nextBefore: null,
+      nextAfter,
+      items,
+    },
+  });
+  const held: (() => void)[] = [];
+  const read = vi.fn(
+    (query: { after?: unknown; anchorItemId?: string }) =>
+      new Promise((resolve) =>
+        held.push(() => resolve(query.anchorItemId ? page([item], cursor) : page([after], null))),
+      ),
+  );
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  reader.setMeasure(() => item.id);
+  const newer = reader.history("newer");
+  // A repair cuts at the latest; the reader was on a row it lacks, so that row is read again.
+  f.stream.receive({
+    ...f.detailSnapshot([tail]),
+    snapshot: {
+      ...f.detailSnapshot([tail]).snapshot,
+      nextBefore: { ...cursor, beforeId: tail.id, beforePosition: tail.position },
+    },
+  });
+  expect(read).toHaveBeenCalledTimes(2);
+  // The newer page answers the window the repair replaced: it is read again, once the reread
+  // has settled where the reader is.
+  held[0]!();
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(read).toHaveBeenCalledTimes(2);
+  // The anchor's window lands, with rows after it: the newer page is read from there.
+  held[1]!();
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+  expect(read.mock.calls[2]![0]).toMatchObject({ after: { beforeId: item.id } });
+  held[2]!();
+  await newer;
+  expect(f.detail.transcript.getSnapshot().historyIds).toEqual([item.id, after.id]);
+  reader.dispose();
+});
+
+test("a page read across a new history epoch cuts the scope again where the reader is, and reads on from the new cut", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const earlier = { ...item, id: "earlier", messageId: createId("message"), position: "0" };
+  const read = vi
+    .fn()
+    .mockResolvedValueOnce({ ok: true, data: { kind: "history-reset" } })
+    .mockResolvedValueOnce({
+      ok: true,
+      data: {
+        kind: "page",
+        threadId,
+        nodeId: null,
+        revision: "1",
+        hasMore: false,
+        nextBefore: null,
+        nextAfter: null,
+        items: [earlier],
+      },
+    });
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  // The reader is on a row: the new cut centres there, as a repair's would.
+  f.detail.anchorTo(item.id);
+  const subscribed = f.sent.length;
+  const paging = reader.history("earlier");
+  await vi.waitFor(() =>
+    expect(f.sent.slice(subscribed).some((frame) => frame.type === "client.subscribe")).toBe(true),
+  );
+  const subscribe = f.sent.findLast((frame) => frame.type === "client.subscribe") as Extract<
+    ScopedClientMessage,
+    { type: "client.subscribe" }
+  >;
+  expect(subscribe.anchorItemId).toBe(item.id);
+  const address = {
+    scope: subscribe.scope,
+    subscriptionId: subscribe.subscriptionId,
+    generation: subscribe.generation,
+  };
+  f.stream.receive({ ...f.detailSnapshot(), ...address });
+  f.stream.receive({ ...address, type: "host.synchronized", throughSequence: "1" });
+  await paging;
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(f.detail.transcript.getSnapshot().historyIds).toEqual([earlier.id, item.id]);
   reader.dispose();
 });
 
@@ -776,9 +961,9 @@ describe("the reader's intended position", () => {
     const read = vi.fn(
       (query: { aroundMessageId?: string; anchorItemId?: string }) =>
         new Promise((resolve, reject) => {
-          const target = targets.find(
-            ({ messageId, id }) => messageId === query.aroundMessageId || id === query.anchorItemId,
-          );
+          // The Host places an anchor by its row or by the message it names.
+          const anchor = query.anchorItemId ?? query.aroundMessageId;
+          const target = targets.find(({ messageId, id }) => messageId === anchor || id === anchor);
           const items = target ? [target, item] : [item];
           pending.push({
             query,
@@ -905,7 +1090,7 @@ describe("the reader's intended position", () => {
     // The page asked for before the repair is read again in the new cut, for the same jump.
     pending.shift()!.answer();
     await vi.waitFor(() => expect(pending).toHaveLength(1));
-    expect(pending[0]!.query.aroundMessageId).toBe(targets[3]!.messageId);
+    expect(pending[0]!.query.anchorItemId).toBe(targets[3]!.messageId);
     pending.shift()!.answer();
     await expect(jump).resolves.toBe(true);
     expect(f.detail.anchor).toBe(targets[3]!.id);
@@ -926,7 +1111,7 @@ describe("the reader's intended position", () => {
     expect(f.detail.anchor, "the repair measured over the jump").toBe(targets[3]!.messageId);
     // The jump's target is read again, and installs, so the view can still reveal it.
     await vi.waitFor(() => expect(pending).toHaveLength(1));
-    expect(pending[0]!.query.aroundMessageId).toBe(targets[3]!.messageId);
+    expect(pending[0]!.query.anchorItemId).toBe(targets[3]!.messageId);
     pending.shift()!.answer();
     await vi.waitFor(() =>
       expect(f.detail.transcript.getSnapshot().items.has(targets[3]!.id)).toBe(true),
@@ -1811,8 +1996,14 @@ test("keeps the latest publication and distinct place markers across overlapping
     nextBefore: null,
   };
   const { generation } = f.detail.transcript.getSnapshot();
-  f.detail.transcript.installPage(page, generation, "earlier");
-  f.detail.transcript.installPage(page, generation, "earlier");
+  const from = f.detail.transcript.getSnapshot().snapshot!.nextBefore!;
+  expect(f.detail.transcript.installPage(page, generation, { mode: "earlier", from })).toBe(
+    "installed",
+  );
+  // The same page again continues an edge the window no longer has: it answers nothing.
+  expect(f.detail.transcript.installPage(page, generation, { mode: "earlier", from })).toBe(
+    "moved",
+  );
   const state = f.detail.transcript.getSnapshot();
   expect(state.ids).toEqual([middle.id, revisited.id, publication.id]);
   expect(state.items.get(publication.id)).toEqual(publication);
