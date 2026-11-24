@@ -341,11 +341,17 @@ redirects, popups, and subresource requests to `chrome-extension:` URLs blocked 
 connected agent binds the page via CDP, and are isolated from extension targets and content-script
 execution worlds (with agent-chosen world names namespaced so they never match or probe extension
 worlds). Two residuals remain: main-world DOM mutations written directly into a page by an
-extension's content script remain readable from the page's default world, and a tab opened via
-`tab.open` is not marked connection-controlled until a connected agent binds it via CDP (which is
-for ever for an agent that never binds it), so before binding that page can navigate itself, load
-subframes, `window.open`, or probe any web-accessible extension page or resource just as any
-website can in Chrome (while CDP attach itself refuses any tab at a `chrome-extension:` address). The person's own actions in their own app (installing from the Web Store window or removing
+extension's content script remain readable from the page's default world, and before a connected
+agent binds a page it opened via `tab.open` (and for ever if it never binds), that page can
+navigate itself, frame, or `window.open` to any page of an installed extension, web-accessible or
+not (Electron does not refuse non-web-accessible `chrome-extension:` navigations on non-connection
+pages the way Chrome does); the agent cannot attach to or drive a tab that ended there.
+
+Observed on real Electron: `will-frame-navigate` fires for `data:` and `blob:` iframes and not for
+`srcdoc`, and a content-script execution world is reported over CDP with `auxData.isDefault: false`,
+`type: "isolated"`, the extension's name, and a `chrome-extension:` origin.
+
+The person's own actions in their own app (installing from the Web Store window or removing
 an extension from the toolbar's Extensions menu, each with a native confirmation dialog) stay on the
 desktop bridge as the person's hand in their own browser, just like installing or removing an
 extension in Chrome. The person sees every extension in the toolbar's Extensions menu (with a quiet

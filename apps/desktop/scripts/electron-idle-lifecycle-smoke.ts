@@ -18,9 +18,6 @@ import {
   bridgeMockPersonalRealtime,
   handleMockPersonalRpc,
 } from "./test-support/mock-personal-host-server.js";
-import { installSmokeGuard } from "./test-support/smoke-guard.js";
-
-installSmokeGuard("idle-lifecycle", 300000);
 
 /** Native lifecycle → real preload → shared client sockets and OwnerView effects. */
 export async function idleLifecyclePhase(platform: CdpSession, directory: string): Promise<void> {

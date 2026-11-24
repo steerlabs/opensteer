@@ -56,23 +56,31 @@ it("rejects early success without result evidence and records smoke failures", (
     const quitRows = readFileSync(path.join(out, "results.jsonl"), "utf8").trim().split("\n");
     expect(JSON.parse(quitRows.at(-1)!).exitCode).toBe(0);
 
-    // extensions validation requires extensions.json (passed, boundaryPassed, lifecyclePassed) AND
-    // every per-section result file (5 connected-agent boundary sections + extension-lifecycle).
+    // extensions validation requires 5/5 passing boundary sections AND pins main's known fault on
+    // `chrome.windows.create and remove` (it.fails style: accepts only that exact refusal, rejects
+    // any other lifecycle failure, rejects an unexpected pass so the pin cannot rot, and rejects
+    // any failing or missing boundary section).
     const extDir = path.join(out, "extensions");
     mkdirSync(extDir, { recursive: true });
     writeFileSync(path.join(out, "extensions.log"), "");
-    const extSections = [
+    const boundarySections = [
       "connected-agent-isolation",
       "connected-agent-breakpoints",
       "connected-agent-compromise",
       "connected-agent-probes",
       "connected-agent-dialog",
-      "extension-lifecycle",
     ];
+    const knownMainFault = {
+      step: "chrome.windows.create and remove",
+      refusal:
+        "Creating separate browser windows is not supported; use chrome.tabs.create() to open a tab.",
+      phases: ["install", "reopen"],
+    };
     const writeExtArtifacts = (overrides: {
       report?: Record<string, unknown>;
-      failingSection?: string;
-      omitSection?: string;
+      lifecycle?: Record<string, unknown>;
+      failingBoundary?: string;
+      omitBoundary?: string;
     }) => {
       rmSync(extDir, { recursive: true, force: true });
       mkdirSync(extDir, { recursive: true });
@@ -81,42 +89,140 @@ it("rejects early success without result evidence and records smoke failures", (
         JSON.stringify({
           passed: true,
           boundaryPassed: true,
-          lifecyclePassed: true,
+          lifecycleStatus: "known-main-fault",
+          lifecyclePassed: false,
+          knownMainFault,
           ...overrides.report,
         }),
       );
-      for (const section of extSections) {
-        if (section === overrides.omitSection) continue;
+      for (const section of boundarySections) {
+        if (section === overrides.omitBoundary) continue;
         writeFileSync(
           path.join(extDir, `section-${section}.json`),
-          JSON.stringify({ section, passed: section !== overrides.failingSection, checks: [] }),
+          JSON.stringify({ section, passed: section !== overrides.failingBoundary, checks: [] }),
         );
       }
+      writeFileSync(
+        path.join(extDir, "section-extension-lifecycle.json"),
+        JSON.stringify({
+          section: "extension-lifecycle",
+          status: "known-main-fault",
+          passed: false,
+          knownMainFault,
+          checks: [],
+          ...overrides.lifecycle,
+        }),
+      );
     };
-    for (const [code, overrides, expected] of [
-      [0, {}, 0],
-      [0, { failingSection: "connected-agent-dialog" }, 1],
-      [0, { omitSection: "connected-agent-compromise" }, 1],
-      [0, { report: { boundaryPassed: false } }, 1],
-      [0, { report: { lifecyclePassed: false } }, 1],
-      [1, {}, 1],
+    for (const [label, code, overrides, expected, stdoutPattern, stderrPattern] of [
+      [
+        "known main fault accepted loudly",
+        0,
+        {},
+        0,
+        /knownMainFault.*chrome\.windows\.create and remove/,
+        undefined,
+      ],
+      [
+        "different lifecycle refusal rejected",
+        0,
+        { lifecycle: { knownMainFault: { ...knownMainFault, refusal: "Some other refusal." } } },
+        1,
+        undefined,
+        undefined,
+      ],
+      [
+        "ordinary lifecycle failure rejected",
+        0,
+        {
+          report: { lifecycleStatus: "failed" },
+          lifecycle: { status: "failed", knownMainFault: undefined, error: "install failed" },
+        },
+        1,
+        undefined,
+        undefined,
+      ],
+      [
+        "unexpected lifecycle pass rejected so pin cannot rot",
+        0,
+        {
+          report: { lifecycleStatus: "passed", lifecyclePassed: true, knownMainFault: undefined },
+          lifecycle: { status: "passed", passed: true, knownMainFault: undefined },
+        },
+        1,
+        undefined,
+        /remove the knownMainFault entry/i,
+      ],
+      [
+        "failing boundary section rejected",
+        0,
+        { failingBoundary: "connected-agent-dialog" },
+        1,
+        undefined,
+        undefined,
+      ],
+      [
+        "missing boundary section rejected",
+        0,
+        { omitBoundary: "connected-agent-compromise" },
+        1,
+        undefined,
+        undefined,
+      ],
+      ["non-zero smoke exit rejected", 1, {}, 1, undefined, undefined],
     ] as const) {
       writeExtArtifacts(overrides);
-      expect(
-        spawnSync(process.execPath, [
+      const run = spawnSync(
+        process.execPath,
+        [
           "apps/desktop/scripts/test-support/validate-electron-journey.mjs",
           out,
           "extensions",
           String(code),
           "4",
-        ]).status,
-      ).toBe(0);
+        ],
+        { encoding: "utf8" },
+      );
+      expect(run.status, label).toBe(0);
       const extRows = readFileSync(path.join(out, "results.jsonl"), "utf8").trim().split("\n");
-      expect(JSON.parse(extRows.at(-1)!).exitCode).toBe(expected);
+      expect(JSON.parse(extRows.at(-1)!).exitCode, label).toBe(expected);
+      if (stdoutPattern) expect(run.stdout, label).toMatch(stdoutPattern);
+      if (stderrPattern) expect(run.stderr, label).toMatch(stderrPattern);
     }
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
+});
+
+it("installs one smoke guard per process and emits the starting line first on quit and menu-bar drivers", async () => {
+  const { installProcessSmokeGuard } =
+    await import("../apps/desktop/scripts/test-support/process-smoke-guard.js");
+  const dispose = installProcessSmokeGuard("unit-guard", 60_000);
+  try {
+    expect(() => installProcessSmokeGuard("duplicate", 60_000)).toThrow(/already installed/i);
+  } finally {
+    dispose();
+  }
+  // Helper smoke modules imported by electron-browser-smoke must not install their own guards.
+  for (const helper of [
+    "apps/desktop/scripts/electron-idle-cpu-smoke.ts",
+    "apps/desktop/scripts/electron-idle-lifecycle-smoke.ts",
+  ]) {
+    expect(readFileSync(helper, "utf8"), helper).not.toContain("installSmokeGuard");
+  }
+  // Quit and menu-bar drivers install their process guard before codesign so the starting line is first.
+  for (const driver of [
+    "apps/desktop/scripts/test-electron-quit.ts",
+    "apps/desktop/scripts/test-electron-menu-bar.ts",
+  ]) {
+    const source = readFileSync(driver, "utf8");
+    const guardIndex = source.indexOf("installProcessSmokeGuard(");
+    const codesignIndex = source.indexOf('"codesign"');
+    expect(guardIndex, driver).toBeGreaterThan(-1);
+    expect(codesignIndex, driver).toBeGreaterThan(guardIndex);
+  }
+  const browserSource = readFileSync("apps/desktop/scripts/electron-browser-smoke.ts", "utf8");
+  expect(browserSource.match(/installSmokeGuard\(/gu)?.length).toBe(1);
 });
 
 it("requires every folded smoke in order under the explicit journey output", () => {

@@ -55,7 +55,7 @@ import { requireSmokeProtectedStorage } from "./test-support/require-smoke-prote
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 import { installSmokeGuard } from "./test-support/smoke-guard.js";
 
-installSmokeGuard("quit", 360000);
+installSmokeGuard(`quit:${process.env.OPENSTEER_QUIT_E2E_TRIAL ?? "trial"}`, 180_000);
 
 const smokeDownloads = smokeDesktopDownloads();
 

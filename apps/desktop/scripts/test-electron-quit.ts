@@ -20,6 +20,9 @@ import { readPersonalRuntimeRelease } from "../src/releases/personal-runtime-rel
 import { readPersonalProcessSupervisorRelease } from "../src/supervisor/personal-process-port.js";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import { desktopShutdownTimeoutMs } from "../src/app/desktop-shutdown.js";
+import { installProcessSmokeGuard } from "./test-support/process-smoke-guard.js";
+
+installProcessSmokeGuard("quit", 360_000);
 
 const restoreOnly = process.argv.includes("--tab-restore");
 const fixtureStarted = performance.now();

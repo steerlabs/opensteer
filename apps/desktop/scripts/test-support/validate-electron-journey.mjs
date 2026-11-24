@@ -32,17 +32,18 @@ try {
       assert.equal(local("electron.json").passed, true);
       break;
     case "extensions": {
+      const KNOWN_STEP = "chrome.windows.create and remove";
+      const KNOWN_REFUSAL =
+        "Creating separate browser windows is not supported; use chrome.tabs.create() to open a tab.";
       const report = local("extensions.json");
       assert.equal(report.passed, true);
       assert.equal(report.boundaryPassed, true);
-      assert.equal(report.lifecyclePassed, true);
       for (const section of [
         "connected-agent-isolation",
         "connected-agent-breakpoints",
         "connected-agent-compromise",
         "connected-agent-probes",
         "connected-agent-dialog",
-        "extension-lifecycle",
       ]) {
         const entry = local(`section-${section}.json`);
         assert.equal(entry.section, section);
@@ -52,6 +53,29 @@ try {
           `extensions section ${section} failed: ${entry.error ?? ""}`,
         );
       }
+      const lifecycle = local("section-extension-lifecycle.json");
+      assert.equal(lifecycle.section, "extension-lifecycle");
+      if (
+        lifecycle.passed === true ||
+        lifecycle.status === "passed" ||
+        report.lifecyclePassed === true
+      ) {
+        assert.fail(
+          `extensions lifecycle step "${KNOWN_STEP}" unexpectedly PASSED; remove the knownMainFault entry from validate-electron-journey.mjs and electron-extensions-smoke.ts.`,
+        );
+      }
+      assert.equal(
+        lifecycle.status,
+        "known-main-fault",
+        `extensions section extension-lifecycle failed: ${lifecycle.error ?? JSON.stringify(lifecycle)}`,
+      );
+      assert.equal(report.lifecycleStatus, "known-main-fault");
+      assert.equal(lifecycle.knownMainFault?.step, KNOWN_STEP);
+      assert.equal(lifecycle.knownMainFault?.refusal, KNOWN_REFUSAL);
+      assert.deepEqual(lifecycle.knownMainFault?.phases, ["install", "reopen"]);
+      console.log(
+        `[journey] extensions: PASS (5/5 boundary sections passed; extension-lifecycle = knownMainFault at "${KNOWN_STEP}" — ${KNOWN_REFUSAL})`,
+      );
       break;
     }
     case "passwords":

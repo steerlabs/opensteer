@@ -58,7 +58,7 @@ import { menuBarSmokeTrials } from "./menu-bar-smoke-plan.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 import { installSmokeGuard } from "./test-support/smoke-guard.js";
 
-installSmokeGuard("menu-bar", 300000);
+installSmokeGuard(`menu-bar:${process.env.OPENSTEER_MENU_BAR_E2E_TRIAL ?? "trial"}`, 180_000);
 
 const root = path.resolve(z.string().parse(process.env.OPENSTEER_MENU_BAR_E2E_DATA));
 const trial = z.enum(menuBarSmokeTrials).parse(process.env.OPENSTEER_MENU_BAR_E2E_TRIAL);

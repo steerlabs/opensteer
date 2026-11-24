@@ -61,7 +61,10 @@ import { idleCpuPhase } from "./electron-idle-cpu-smoke.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 import { installSmokeGuard } from "./test-support/smoke-guard.js";
 
-installSmokeGuard("browser", 360000);
+installSmokeGuard(
+  process.env.OPENSTEER_IDLE_CPU_SMOKE === "1" ? "idle" : "browser",
+  process.env.OPENSTEER_IDLE_CPU_SMOKE === "1" ? 300_000 : 360_000,
+);
 
 const smokeDownloads = smokeDesktopDownloads();
 

@@ -24,6 +24,9 @@ import { z } from "zod";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { desktopShutdownTimeoutMs } from "../src/app/desktop-shutdown.js";
 import { menuBarSmokeTrialPlan, type MenuBarTrialOutcome } from "./menu-bar-smoke-plan.js";
+import { installProcessSmokeGuard } from "./test-support/process-smoke-guard.js";
+
+installProcessSmokeGuard("menu-bar", 300_000);
 
 const directory = path.resolve(
   process.env.OPENSTEER_MENU_BAR_E2E_ARTIFACT_DIR ?? "/tmp/opensteer-menu-bar-smoke",

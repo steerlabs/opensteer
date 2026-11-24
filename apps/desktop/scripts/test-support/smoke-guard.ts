@@ -1,13 +1,21 @@
 import { app } from "electron";
 
+let activeSmokeGuard: string | null = null;
+
 /**
  * Prevents any Electron smoke from hanging silently for 30 minutes:
  * - emits a startup line immediately;
  * - exits non-zero on uncaught exceptions or unhandled rejections instead of opening Electron's
  *   modal error dialog;
- * - enforces an overall wall-clock bound for the smoke process.
+ * - enforces a single overall wall-clock bound per process.
  */
 export function installSmokeGuard(name: string, timeoutMs = 180_000): () => void {
+  if (activeSmokeGuard !== null) {
+    throw new Error(
+      `Smoke guard already installed for "${activeSmokeGuard}" in this process; refusing duplicate "${name}".`,
+    );
+  }
+  activeSmokeGuard = name;
   process.stdout.write(`[smoke] ${name}: starting (pid=${process.pid}, timeout=${timeoutMs}ms)\n`);
   const fail = (kind: string, detail: unknown): void => {
     const message =
@@ -27,5 +35,6 @@ export function installSmokeGuard(name: string, timeoutMs = 180_000): () => void
     clearTimeout(timer);
     process.off("uncaughtException", onUncaught);
     process.off("unhandledRejection", onUnhandled);
+    if (activeSmokeGuard === name) activeSmokeGuard = null;
   };
 }

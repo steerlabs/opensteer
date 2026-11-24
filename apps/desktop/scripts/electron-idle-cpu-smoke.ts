@@ -8,9 +8,6 @@ import { z } from "zod";
 import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
 import { idleLifecyclePhase } from "./electron-idle-lifecycle-smoke.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
-import { installSmokeGuard } from "./test-support/smoke-guard.js";
-
-installSmokeGuard("idle-cpu", 300000);
 
 const smokeDownloads = smokeDesktopDownloads();
 
