@@ -5,10 +5,17 @@ export const agentGrantsMigrationName = "0100_agent_grants";
 
 /**
  * Connections carry one grant; everything that can execute later carries its connection. Existing
- * connections keep exactly what they could already do (`everything` at consent version 1). Lineage
- * applies to work created from now on: existing tasks, Runs and automations stay the person's. The
- * backfill uses immutable input lineage: a queued input, a Run still queued from such an input,
- * and existing plugin executions whose Run or seed names a connection.
+ * connections keep exactly what they could already do (`everything` at consent version 1).
+ *
+ * What a connected agent wrote before the update keeps its writer: main stored it only in the
+ * input's own authority source, and the lineage walk reads `thread_inputs.connection_id`. Every
+ * input the walk counts (anything but one cancelled before it reached a Run) whose stored source
+ * is a connection gets that connection when the connection is the task owner's and the source
+ * names the owner; otherwise (the connection is gone, or is someone else's) it gets one ended,
+ * hidden connection of the owner's, as 0109 does for chats, so the task is never the person's own
+ * again and nothing is given to a connection it did not hold. Unfinished Runs seeded by such an
+ * input, and their attempts, carry the same connection so Disconnect finds them. Tasks and
+ * automations gain no origin: main recorded none, and their lineage reaches these inputs.
  */
 export async function applyAgentGrants(database: Kysely<DatabaseSchema>) {
   await sql`
@@ -33,7 +40,7 @@ export async function applyAgentGrants(database: Kysely<DatabaseSchema>) {
         (cleanup_reason is null) = (cleanup_requested_at is null)
         and (cleanup_completed_at is null or cleanup_requested_at is not null)
         and ((cleanup_claim_token is null) = (cleanup_claim_expires_at is null))
-        and (removed_at is null or cleanup_completed_at is not null));
+        and (removed_at is null or cleanup_requested_at is not null));
     create index agent_connections_token_hash on agent_connections(token_hash)
       where token_hash is not null;
     create index agent_connections_cleanup_open on agent_connections(cleanup_requested_at)
@@ -104,15 +111,46 @@ export async function applyAgentGrants(database: Kysely<DatabaseSchema>) {
       where connection_id is not null;
     create index triggers_origin_connection on triggers(origin_connection_id)
       where origin_connection_id is not null;
-    update thread_inputs set connection_id = authority_source->>'connectionId'
-      where state in ('pending', 'awaiting-approval')
-        and authority_source->>'kind' = 'connection'
-        and authority_source->>'connectionId' in (select id from agent_connections);
+    -- Who wrote each input the lineage walk counts, from what main stored with it.
+    create temporary table legacy_connection_inputs on commit drop as
+      select i.message_id, t.created_by as owner_id,
+        case when c.user_id = t.created_by and i.requested_by = t.created_by
+          and i.authority_source->>'userId' = t.created_by then c.id end as connection_id
+      from thread_inputs i
+      join threads t on t.id = i.thread_id
+      left join agent_connections c on c.id = i.authority_source->>'connectionId'
+      where i.authority_source->>'kind' = 'connection'
+        and (i.state <> 'cancelled' or i.run_id is not null
+          or i.steer_command_id is not null or i.delivered_at is not null);
+    -- A writer that is gone, or not the owner's, is carried by one ended, hidden, supervised,
+    -- tasks-only connection of the owner's. Its cleanup stays open, so the Home's ordinary
+    -- Disconnect ends whatever of that work is still running.
+    create temporary table legacy_connection_carriers on commit drop as
+      select owner_id as user_id, 'mcn_' || gen_random_uuid() as id
+      from (select distinct owner_id from legacy_connection_inputs where connection_id is null) owner;
+    insert into agent_connections (
+      id, user_id, label, client_name, access_mode, resource, token_hash, created_at,
+      expires_at, revoked_at, removed_at, "grant", grant_revision, consent_version,
+      cleanup_reason, cleanup_requested_at, cleanup_completed_at)
+    select carrier.id, carrier.user_id, 'Connected agents from before the update', 'Connected agent',
+      'approval-required', 'opensteer:before-update', null, now(), now(), now(), now(),
+      '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2, 'revoked', now(), null
+    from legacy_connection_carriers carrier;
+    update thread_inputs i set connection_id = coalesce(legacy.connection_id, carrier.id)
+      from legacy_connection_inputs legacy
+      left join legacy_connection_carriers carrier on carrier.user_id = legacy.owner_id
+      where i.message_id = legacy.message_id;
     update runs set connection_id = thread_inputs.connection_id
       from thread_inputs
-      where runs.status = 'queued' and runs.connection_id is null
+      where runs.status in ('queued', 'starting', 'running', 'waiting')
+        and runs.connection_id is null
         and thread_inputs.message_id = runs.seed_input_id
         and thread_inputs.connection_id is not null;
+    update run_attempts a set connection_id = r.connection_id
+      from runs r
+      where a.run_id = r.id and a.connection_id is null and a.terminal_evidence_at is null
+        and r.status in ('queued', 'starting', 'running', 'waiting')
+        and r.connection_id is not null;
     update plugin_executions p set connection_id = c.id,
       admitted_grant_revision = r.admitted_grant_revision,
       admitted_access_mode = coalesce(r.admitted_access_mode, r.access_mode)

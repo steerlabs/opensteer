@@ -197,7 +197,7 @@ describe("fresh personal/team lineage", () => {
     ).toEqual([]);
     expect(await database.selectFrom("agentHomeSettings").selectAll().execute()).toEqual([]);
   });
-  it("gives existing connections their old authority, backfills only queued connection inputs, and exposes lineage through the work view", async () => {
+  it("gives existing connections their old authority, backfills connection-written inputs, and exposes lineage through the work view", async () => {
     await migrateToLatest(database, migrationsBefore(agentGrantsMigrationName));
     const owner = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
     const connectionId = `mcn_${crypto.randomUUID()}`;
