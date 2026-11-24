@@ -3,8 +3,8 @@ import {
   useSyncingPlaceholder,
   useThreadRow,
   useThreadScope,
+  useTabSource,
   useThreadTranscript,
-  useTranscriptTabs,
 } from "@opensteer/client/react";
 import { useOutboxTranscript } from "@opensteer/client/react";
 import { hostMessageOutbox, splitLocalMessages } from "@opensteer/client/host";
@@ -514,8 +514,8 @@ const ThreadView = memo(function ThreadView({
           ),
     [conversation, conversational, entries, inputQueue, projected, thread.id],
   );
-  // Links in the transcript name tabs; one of those tabs changing gives them a new source to read.
-  const tabSource = useTranscriptTabs(hostClient, withOutbox, scope.browserUses);
+  // Links in the transcript name tabs; each chip reads its own from here, so only it follows them.
+  const tabSource = useTabSource(hostClient);
   const hasQueuedInputs = Boolean(inputQueue?.items.length);
   const startsRun = threadStartsRunForMessage({ runQueue, thread });
   const local = useMemo(
@@ -1588,6 +1588,8 @@ const ThreadView = memo(function ThreadView({
                       <AgentTranscript
                         teamChannelName={teamSource?.channel.name ?? null}
                         followTail={atTail && !historical}
+                        // Live work appends to the newest window of one cut; a page read does not.
+                        liveCut={canLoadNewer || historical || loadingEarlier ? null : cuts}
                         pinnedMessageIds={pinnedMessageIds}
                         pinnedRowKeys={pinnedRowKeys}
                         revealMessage={revealMessage}

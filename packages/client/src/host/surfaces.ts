@@ -1,12 +1,7 @@
 import { TabIdSchema, type BrowserPageContentPart, type TabId } from "@opensteer/core";
 import { computerAppIdentityKey, type ComputerAppIdentity } from "@opensteer/protocol";
 import type { Turn } from "./agent-activity-model.js";
-import type {
-  BrowserSessionUseSummary,
-  HostSnapshot,
-  PlaceEntry,
-  TranscriptEntry,
-} from "./client.js";
+import type { BrowserSessionUseSummary, HostSnapshot, PlaceEntry } from "./client.js";
 import { placeList, placeOf, type PlaceItem } from "./places.js";
 import { mergeTaskEntries } from "./task-entries.js";
 import { threadsWaitingOnReader } from "./waiting-requests.js";
@@ -401,39 +396,6 @@ export function replyPlaces(
     if (!unique.has(key)) unique.set(key, place);
   }
   return [...unique.values()];
-}
-
-/**
- * Everything a transcript's page, app and phone chips read of the tab list (`placePage`,
- * `messagePages`, `usedPages`, `turnApps` and `turnPhones` above): the profiles, the rows of the
- * tabs it names, and, once it names a Mac app or a phone, the other tabs with their order. Item by
- * item the same until one of those changes, so a transcript follows its own tabs, not every tab.
- */
-export function transcriptTabReads(
-  entries: readonly TranscriptEntry[],
-  uses: readonly BrowserSessionUseSummary[],
-  source: TabSource,
-): readonly unknown[] {
-  const named = new Set<string>();
-  let native = false;
-  for (const entry of entries) {
-    if (entry.kind === "place") named.add(entry.tabId);
-    else if (entry.kind === "message") for (const page of entry.pages ?? []) named.add(page.tabId);
-    else if (
-      entry.kind === "tool" &&
-      entry.tool?.name !== "computer_use" &&
-      (entry.integration?.computerApp || entry.integration?.phone)
-    )
-      native = true;
-  }
-  for (const use of uses) if (use.runId !== null && use.tabId) named.add(use.tabId);
-  const reads: unknown[] = [source.browserProfiles];
-  for (const tabId of named) reads.push(source.tabs.get(tabId as TabId));
-  if (native) {
-    reads.push(source.tabs.strip);
-    for (const tab of source.tabs.rows.values()) if (tab.kind !== "page") reads.push(tab);
-  }
-  return reads;
 }
 
 export type LiveWorkState = "needs-you" | "working" | "waiting" | "idle";

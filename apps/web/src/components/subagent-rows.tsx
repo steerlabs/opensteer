@@ -646,11 +646,9 @@ export function TaskRows({ entries }: { entries: readonly AssignmentEntry[] }) {
   const { hostClient } = useShell();
   // A working task names its step while its own transcript is held live.
   const workers = useWorkerTranscripts(hostClient);
-  // These tasks as held now, and what their cards read, live: the shell here is stable.
-  const scope = useAssignmentScope(
-    hostClient,
-    entries.map((entry) => entry.assignment.id),
-  );
+  // These tasks as held now, else as recorded, and what their cards read, live: the shell here is
+  // stable.
+  const scope = useAssignmentScope(hostClient, entries);
   const tasks = useMemo(
     () => entries.map((entry) => currentAssignment(entry, scope.assignments)),
     [entries, scope.assignments],

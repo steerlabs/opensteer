@@ -1,5 +1,7 @@
 import type { AssignmentSummary } from "@opensteer/core";
+import { currentAssignment } from "./assignment-presentation.js";
 import type {
+  AssignmentEntry,
   BrowserSessionUseSummary,
   HostSnapshot,
   ThreadSummary,
@@ -85,14 +87,18 @@ export function threadScope(
   };
 }
 
-/** What cards about these assignments read; see `WorkScope`. */
+/**
+ * What cards about these assignments read, each assignment as its card draws it: the client's copy,
+ * or the transcript's while the client holds none as new (`currentAssignment`). An older settled
+ * task the client no longer lists still finds its worker; see `WorkScope`.
+ */
 export function assignmentScope(
   snapshot: HostSnapshot,
-  assignmentIds: readonly string[],
+  recorded: readonly Pick<AssignmentEntry, "assignment">[],
 ): WorkScope {
   return workScope(
     snapshot,
-    assignmentIds.flatMap((id) => snapshot.assignments[id] ?? []),
+    recorded.map((entry) => currentAssignment(entry, snapshot.assignments)),
     [],
   );
 }

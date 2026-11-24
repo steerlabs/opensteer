@@ -348,7 +348,7 @@ function currentStep(
  * behind it; revision alone orders them, so an older event cannot reopen a card.
  */
 export function currentAssignment(
-  entry: AssignmentEntry,
+  entry: Pick<AssignmentEntry, "assignment">,
   assignments: Readonly<Record<string, AssignmentSummary>>,
 ): AssignmentSummary {
   const held = assignments[entry.assignment.id];

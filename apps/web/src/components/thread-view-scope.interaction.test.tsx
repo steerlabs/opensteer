@@ -348,13 +348,40 @@ describe("what the open task shows of itself", () => {
     await until("the answered question never left", () => expect(stack()).not.toContain("of 2"));
   });
 
-  it("follows the tabs its own transcript names", async () => {
+  // Failure mode: the cards read the workers of the assignments this client lists, so a task only
+  // the transcript still records (settled, past the newest page) keeps the name it was handed out
+  // under after its worker is renamed.
+  it("names a task only its transcript still records after its worker", async () => {
+    await open(architecture);
+    const tasks = () => document.querySelector(".agent-tasks")?.textContent ?? "";
+    const handed = Object.values(fixture.host.getSnapshot().assignments).find(
+      (assignment) =>
+        assignment.parentThreadId === architecture &&
+        tasks().includes(assignment.workerThread.title),
+    );
+    expect(handed, "a task it handed out").toBeDefined();
+    const worker = handed!.workerThread.id;
+    fixture.publish((snapshot) => ({
+      ...snapshot,
+      assignments: Object.fromEntries(
+        Object.entries(snapshot.assignments).filter(([id]) => id !== handed!.id),
+      ),
+      threads: snapshot.threads.map((thread) =>
+        thread.id === worker ? { ...thread, title: "Table for four, Friday" } : thread,
+      ),
+    }));
+    await until("its worker's new name never showed", () =>
+      expect(tasks()).toContain("Table for four, Friday"),
+    );
+  });
+
+  it("follows the tabs its own transcript names, each where it is drawn", async () => {
     await open(architecture);
     const stop = () => document.querySelector(".trace-place__title")?.textContent;
     expect(stop()).toBe("Le Petit Jardin");
     const counts = await drawsDuring(() => fixture.retitleTab(restaurant, "Le Petit Jardin · Fri"));
-    expect(counts.ThreadView, "its own tab").toBeGreaterThan(0);
-    expect(counts.AgentTranscript, "its own tab, in its transcript").toBeGreaterThan(0);
+    // The stop reads its own tab: the transcript around it is not drawn again.
+    expect(counts.AgentTranscript, "its transcript").toBe(0);
     await until("its tab's new title never showed", () =>
       expect(stop()).toBe("Le Petit Jardin · Fri"),
     );

@@ -23,7 +23,16 @@ import {
   mockComputerUseToolRefs,
   mockComputerUseTurn,
 } from "@opensteer/client/mock";
-import { TabIdSchema, createId, defaultTaskSymbol, ThreadIdSchema } from "@opensteer/core";
+import {
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
+  TabIdSchema,
+  createId,
+  defaultTaskSymbol,
+  ThreadIdSchema,
+  type BrowserPageContentPart,
+  type Tab,
+} from "@opensteer/core";
 import { computerUseStops } from "@opensteer/client/integrations";
 import {
   createMessageOutboxStorage,
@@ -1180,6 +1189,111 @@ it("keeps an edited message's history a click away after a Run took it", async (
   expect(listMessageRevisions).toHaveBeenLastCalledWith("thread-1", "message-asked", undefined);
 });
 
+describe("a message's pages", () => {
+  // Failure mode: the screen works out which tabs a transcript names from the rows it was given,
+  // so a page only the opened message names, past those its preview carries, keeps the title and
+  // the link it had when the message was opened.
+  it("follow their tabs, the pages an opened message adds to its preview too", async () => {
+    const mock = new MockHostClient({ latencyMs: 0 });
+    try {
+      await mock.load();
+      const threadId = "thr_00000000-0000-4000-8000-000000000005";
+      mock.activateThread(threadId);
+      const viewer = createId("user");
+      const pages = [
+        "mock-tab-0-0",
+        "mock-tab-4-0",
+        "mock-tab-8-0",
+        "mock-tab-11-0",
+        "mock-tab-3-0",
+      ].map((tabId, index): BrowserPageContentPart => ({
+        type: "browser-page",
+        sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000802"),
+        tabId: BrowserSurfaceIdSchema.parse(tabId),
+        title: `Page ${index}`,
+        url: `https://pages.example/${index}`,
+      }));
+      const author = {
+        displayName: "Me",
+        kind: "human",
+        principalId: viewer,
+        userId: viewer,
+      } as const;
+      // The row carries the preview: its words and the first page alone.
+      const preview: MessageEntry = {
+        ...note,
+        author,
+        body: "Everything I read about it",
+        id: "message-pages",
+        itemId: "message-pages",
+        messageKind: "input",
+        pages: pages.slice(0, 1),
+        previewTruncated: true,
+        runId: null,
+      };
+      const read = vi.spyOn(mock, "readTranscriptItem").mockResolvedValue({
+        body: {
+          kind: "message",
+          message: {
+            author,
+            content: [{ type: "text", text: preview.body }, ...pages],
+            createdAt: preview.createdAt,
+            id: preview.id,
+            kind: "input",
+            runId: null,
+            sequence: "1",
+            threadId,
+          },
+        },
+      } as unknown as Awaited<ReturnType<MockHostClient["readTranscriptItem"]>>);
+      const { tabs, browserProfiles } = mock.getSnapshot();
+      const container = document.createElement("div");
+      document.body.append(container);
+      const root = createRoot(container);
+      roots.push(root);
+      await act(async () =>
+        root.render(
+          <MemoryRouter>
+            <TestWorkspace>
+              <AgentTranscript
+                attachmentReader={mock}
+                browserSessions={{ tabs, browserProfiles }}
+                entries={[preview]}
+                threadId={threadId}
+                viewerUserId={viewer}
+              />
+            </TestWorkspace>
+          </MemoryRouter>,
+        ),
+      );
+      const chips = () => [...container.querySelectorAll(".msg--user__pages .surface-chip")];
+      const titles = () =>
+        chips().map((chip) => chip.querySelector(".surface-chip__title")?.textContent);
+      expect(titles()).toEqual(["Your reading list"]);
+      await act(async () =>
+        container.querySelector<HTMLButtonElement>(".message-fold__toggle")!.click(),
+      );
+      await vi.waitFor(() => expect(titles()).toHaveLength(5));
+      expect(read).toHaveBeenCalledWith(threadId, preview.id, undefined);
+      expect(titles()[4]).toBe("Launch brief");
+      const retitle = (change: (rows: Tab[]) => Tab[]) =>
+        act(() => tabs.replaceRows(change([...tabs.rows.values()]), tabs.complete));
+      retitle((rows) =>
+        rows.map((tab) =>
+          tab.tabId === "mock-tab-3-0" ? { ...tab, title: "Launch brief v2" } : tab,
+        ),
+      );
+      expect(titles()[4]).toBe("Launch brief v2");
+      // Closed, it is named as it was sent and opens nothing.
+      retitle((rows) => rows.filter((tab) => tab.tabId !== "mock-tab-3-0"));
+      expect(titles()[4]).toBe("Page 4");
+      expect(chips()[4]?.classList.contains("surface-chip--ended")).toBe(true);
+    } finally {
+      mock.dispose();
+    }
+  });
+});
+
 describe("a message still on this device", () => {
   it("offers Edit and Don't send for files alone, and Edit takes it back", async () => {
     const mock = new MockHostClient({ latencyMs: 0 });
@@ -1242,7 +1356,7 @@ describe("a message still on this device", () => {
 describe("arrival motion", () => {
   // Failure mode: every turn rises in whenever it mounts, so opening or returning to a task with a
   // long report composites the whole turn (hundreds of ms), as does each row scrolled into view.
-  it("moves only a row live work appends, never rows there when shown, history or a new cut", async () => {
+  it("moves only a row live work appends, never rows there when shown, history, a repair or a new cut", async () => {
     const message = (index: number): MessageEntry => ({
       ...note,
       runId: null,
@@ -1256,14 +1370,21 @@ describe("arrival motion", () => {
     document.body.append(scroller);
     const root = createRoot(scroller);
     roots.push(root);
-    const show = async (entries: MessageEntry[]) =>
+    // The live conversation's newest rows, of the cut given; null for a window of history.
+    const show = async (entries: MessageEntry[], liveCut: number | null = 1) =>
       act(async () => {
         root.render(
           <MemoryRouter initialEntries={["/tasks/arrival"]}>
-            <AgentTranscript entries={entries} scroller={() => scroller} />
+            <AgentTranscript entries={entries} liveCut={liveCut} scroller={() => scroller} />
           </MemoryRouter>,
         );
       });
+    const settle = () => {
+      for (const slot of scroller.querySelectorAll(".transcript__virtual-slot--arrived"))
+        act(() => {
+          slot.dispatchEvent(new Event("animationend"));
+        });
+    };
     const moving = () =>
       [...scroller.querySelectorAll(".transcript__virtual-slot--arrived")].map((slot) =>
         slot.querySelector("[data-message-id]")?.getAttribute("data-message-id"),
@@ -1303,6 +1424,22 @@ describe("arrival motion", () => {
     expect(moving()).toEqual([]);
     await show(range(30, 53));
     expect(moving()).toEqual(["arrival-52"]);
+    settle();
+    // A repair installs a new cut that keeps every row and adds one: it was read, not appended.
+    await show(range(30, 54), 2);
+    expect(moving()).toEqual([]);
+    await show(range(30, 55), 2);
+    expect(moving()).toEqual(["arrival-54"]);
+    settle();
+    // In a window of history, Load newer appends a page; landing on the newest rows, it still
+    // moves nothing, and only live work after it does.
+    await show(range(30, 55), null);
+    await show(range(30, 56), null);
+    expect(moving()).toEqual([]);
+    await show(range(30, 57), 2);
+    expect(moving()).toEqual([]);
+    await show(range(30, 58), 2);
+    expect(moving()).toEqual(["arrival-57"]);
   });
 });
 

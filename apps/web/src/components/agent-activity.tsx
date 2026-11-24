@@ -26,7 +26,12 @@ import {
   providerRetryLabel,
 } from "@opensteer/client/host";
 import { TeamInputSource } from "../team/task-source-chip.js";
-import { useToolOutput, useTranscriptMessage, useTranscriptText } from "@opensteer/client/react";
+import {
+  useTabRead,
+  useToolOutput,
+  useTranscriptMessage,
+  useTranscriptText,
+} from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
 import { voiceCallSeed } from "@opensteer/core";
 import { AppCard } from "./apps/app-card.js";
@@ -107,6 +112,7 @@ import {
   type TranscriptGroup,
   type PlaceEntry,
   type ReasoningEntry,
+  type ReplyPlace,
   type RequestReceiptEntry,
   type RunEntry,
   type ThreadActivity,
@@ -148,9 +154,12 @@ import {
   appChip,
   pageChip,
   phoneChip,
+  sameChip,
+  sameChips,
   SurfaceChip,
   SurfaceChips,
   SurfaceLink,
+  type ChipSurface,
 } from "./surface-chips.js";
 import { MessageFold } from "./message-fold.js";
 import { AnsweredQuestionRow } from "./answered-question.js";
@@ -225,7 +234,10 @@ const TaskViews = createContext<TaskRenderer | undefined>(undefined);
 /** The reader's Home: a message from it leads to Home itself, not to a Thread page. */
 /** Every browser this reader can see, which a Run's pages are looked up in. */
 const TranscriptBrowserUses = createContext<readonly BrowserSessionUseSummary[]>([]);
-/** The person's tabs, as links in the transcript open them; a new object on every tab change. */
+/**
+ * The person's tabs, as links in the transcript open them. Each view that draws a tab reads it from
+ * here itself (`useTabRead`), so a tab changing redraws the chips that draw it and nothing else.
+ */
 export type TranscriptTabSource = Pick<HostSnapshot, "tabs" | "browserProfiles">;
 const noTabs: TranscriptTabSource = { tabs: new TabStore(), browserProfiles: [] };
 const TranscriptBrowsers = createContext<TranscriptTabSource>(noTabs);
@@ -348,8 +360,8 @@ const noBrowserUses: readonly BrowserSessionUseSummary[] = [];
 const noPinnedRowKeys: readonly string[] = [];
 
 /** The one or two rows live work appended after `before`, each of whose rows stands where it was. */
-function appendedKeys(before: readonly string[] | null, after: readonly string[]): string[] {
-  if (before === null || before.length === 0) return [];
+function appendedKeys(before: readonly string[], after: readonly string[]): string[] {
+  if (before.length === 0) return [];
   const added = after.length - before.length;
   if (added < 1 || added > 2) return [];
   for (let index = 0; index < before.length; index++) {
@@ -403,6 +415,7 @@ export const AgentTranscript = memo(function AgentTranscript({
   viewerUserId = null,
   scroller = null,
   followTail = false,
+  liveCut = null,
   pinnedRowKeys = noPinnedRowKeys,
   pinnedMessageIds = noPinnedRowKeys,
 }: {
@@ -472,6 +485,12 @@ export const AgentTranscript = memo(function AgentTranscript({
   scroller?: (() => HTMLElement | null) | null;
   /** True while the caller is actively following the live tail. */
   followTail?: boolean;
+  /**
+   * The snapshot (cut) the rows were drawn from while they are the live conversation's newest rows;
+   * null while they are a window of history, a page of it is being read, or the transcript is not
+   * live. Only a row live work appends within one such cut rises in.
+   */
+  liveCut?: number | null;
   /** Row keys that the caller needs mounted even while off-screen (e.g. restore anchors). */
   pinnedRowKeys?: readonly string[];
   /** Message IDs whose containing row must stay mounted (survives turn-row renames on prepend). */
@@ -690,20 +709,24 @@ export const AgentTranscript = memo(function AgentTranscript({
       pinnedRowKeys.length === 0 && pinnedMessageIds.length === 0 && revealMessage === null,
   });
   // Only a row that live work appends while the transcript is shown rises in: the rows committed
-  // last, each in place, with one or two more after them. Rows there when it was shown (a task
-  // opened or returned to), a page of history, a jump or a new cut hold still, as do rows scrolled
-  // back into view: animating a whole turn makes the browser composite it, which for a long report
-  // costs hundreds of milliseconds.
+  // last, each in place, with one or two more after them, all within one live cut. Rows there when
+  // it was shown (a task opened or returned to), a page of history, a jump, a repair or a new cut
+  // hold still, as do rows scrolled back into view: animating a whole turn makes the browser
+  // composite it, which for a long report costs hundreds of milliseconds.
   const slots = useRef(new Map<string, HTMLElement>());
-  const committedKeys = useRef<readonly string[] | null>(null);
+  const committed = useRef<{
+    readonly cut: number | null;
+    readonly keys: readonly string[];
+  } | null>(null);
   useLayoutEffect(() => {
-    const before = committedKeys.current;
-    committedKeys.current = rowKeys;
-    for (const key of appendedKeys(before, rowKeys)) {
+    const before = committed.current;
+    committed.current = { cut: liveCut, keys: rowKeys };
+    if (liveCut === null || before?.cut !== liveCut) return;
+    for (const key of appendedKeys(before.keys, rowKeys)) {
       const slot = slots.current.get(key);
       if (slot) riseIn(slot);
     }
-  }, [rowKeys]);
+  }, [liveCut, rowKeys]);
   const observeSlot = (key: string, element: HTMLElement | null) => {
     virtual.observeRow(key, element);
     if (element) slots.current.set(key, element);
@@ -1356,20 +1379,25 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
  */
 function ReplySurfaces({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   const uses = useContext(TranscriptBrowserUses);
-  const sessions = useContext(TranscriptBrowsers);
   const whole = useContext(ActivityOfTurn).get(turnKey)?.turn ?? turn;
-  const surfaces = useMemo(
-    () =>
-      replyPlaces(whole, uses, sessions).map((place) =>
-        place.kind === "page"
-          ? pageChip(place.page)
-          : place.kind === "phone"
-            ? phoneChip(place.phone)
-            : appChip(place.app),
-      ),
-    [uses, sessions, whole],
+  const surfaces = useTabRead(
+    useContext(TranscriptBrowsers),
+    useCallback(
+      (sessions: TranscriptTabSource) => replyPlaces(whole, uses, sessions).map(replyPlaceChip),
+      [uses, whole],
+    ),
+    sameChips,
   );
   return <SurfaceChips label="Pages and apps this reply used" surfaces={surfaces} />;
+}
+
+/** A place a reply's Run used, as its chip. */
+function replyPlaceChip(place: ReplyPlace): ChipSurface {
+  return place.kind === "page"
+    ? pageChip(place.page)
+    : place.kind === "phone"
+      ? phoneChip(place.phone)
+      : appChip(place.app);
 }
 
 /**
@@ -2015,14 +2043,14 @@ function TracePlace({
   turn: Turn;
   markOnly?: boolean;
 }) {
-  const sessions = useContext(TranscriptBrowsers);
-  const place = useMemo(() => placeReply(entry, sessions), [entry, sessions]);
-  const page =
-    place.kind === "page"
-      ? pageChip(place.page)
-      : place.kind === "app"
-        ? appChip(place.app)
-        : phoneChip(place.phone);
+  const page = useTabRead(
+    useContext(TranscriptBrowsers),
+    useCallback(
+      (sessions: TranscriptTabSource) => replyPlaceChip(placeReply(entry, sessions)),
+      [entry],
+    ),
+    sameChip,
+  );
   // An agent is in one tab at a time: the live turn's latest stop, while its tab is listed.
   const acting =
     turnState(turn) !== "settled" &&
@@ -2031,10 +2059,10 @@ function TracePlace({
   if (markOnly)
     return (
       <>
-        {place.kind === "phone" ? (
+        {page.phone ? (
           <Icon name="phone" />
-        ) : place.kind === "app" ? (
-          <AppMark identity={place.app.app} />
+        ) : page.app ? (
+          <AppMark identity={page.app} />
         ) : (
           <SiteMark favicon={page.favicon ?? null} />
         )}
@@ -2055,10 +2083,10 @@ function TracePlace({
       }
     >
       <span className="trace-place__stop">
-        {place.kind === "phone" ? (
+        {page.phone ? (
           <Icon name="phone" />
-        ) : place.kind === "app" ? (
-          <AppMark identity={place.app.app} />
+        ) : page.app ? (
+          <AppMark identity={page.app} />
         ) : (
           <SiteMark favicon={page.favicon ?? null} />
         )}
@@ -2962,16 +2990,23 @@ function PersonWords({ text }: { readonly text: string }) {
 
 /** The pages a person included with their message, above its words. */
 function MessagePages({ pages }: { pages: readonly BrowserPageContentPart[] }) {
-  const sessions = useContext(TranscriptBrowsers);
-  if (pages.length === 0) return null;
+  return pages.length === 0 ? null : <MessagePageChips pages={pages} />;
+}
+
+/** Each page as the message drawn names it, an opened message's whole list included. */
+function MessagePageChips({ pages }: { pages: readonly BrowserPageContentPart[] }) {
+  const chips = useTabRead(
+    useContext(TranscriptBrowsers),
+    useCallback(
+      (sessions: TranscriptTabSource) => messagePages(pages, sessions).map(pageChip),
+      [pages],
+    ),
+    sameChips,
+  );
   return (
     <div aria-label="Pages included" className="msg--user__pages" role="group">
-      {pages.map((part) => (
-        <SurfaceChip
-          key={`${part.sessionId}:${part.tabId}`}
-          surface={pageChip(messagePages([part], sessions)[0]!)}
-          withSite
-        />
+      {pages.map((part, index) => (
+        <SurfaceChip key={`${part.sessionId}:${part.tabId}`} surface={chips[index]!} withSite />
       ))}
     </div>
   );
