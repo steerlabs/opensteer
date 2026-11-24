@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("electron", () => ({ clipboard: {}, Menu: {} }));
+vi.mock("electron", () => ({ clipboard: {}, Menu: {}, shell: {} }));
 const { windowContextMenuTemplate } = await import("./window-context-menu.js");
 
 const flags = {
@@ -25,6 +25,7 @@ const plain: Params = {
 };
 const actions = {
   replaceMisspelling: vi.fn(),
+  openLinkOutside: vi.fn(),
   copyLink: vi.fn(),
   copyImage: vi.fn(),
   lookUp: vi.fn(),
@@ -65,8 +66,9 @@ describe("the app window's context menu", () => {
     expect(labels({ selectionText: "Host" }, "linux")).toEqual(["copy"]);
   });
 
-  it("copies web links and window images, never app-internal links or a frame's image", () => {
+  it("opens and copies web links and window images, never app-internal links or a frame's image", () => {
     expect(labels({ linkURL: "https://example.com", mediaType: "image" })).toEqual([
+      "Open Link in Default Browser",
       "Copy Link",
       "separator",
       "Copy Image",

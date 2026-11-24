@@ -1505,6 +1505,18 @@ export const DesktopWebLinkDeliverySchema = z.strictObject({
 });
 export type DesktopWebLinkDelivery = z.infer<typeof DesktopWebLinkDeliverySchema>;
 
+/**
+ * A web page a person followed out of a published app by a way the app's own
+ * page could not route (a window it opened, a navigation of its frame). Main
+ * never opens it itself: the page decides where it goes, as for every app link.
+ */
+export const DesktopAppLinkSchema = z.strictObject({
+  url: DesktopWebUrlSchema,
+  /** The app document that asked, so the page credits only a press in that app's own frame. */
+  source: z.string().min(1).max(8192),
+});
+export type DesktopAppLink = z.infer<typeof DesktopAppLinkSchema>;
+
 export const DesktopPersonalTabCommandSchema = z.union([
   DesktopWebLinkSchema,
   z.strictObject({
@@ -1870,6 +1882,7 @@ export interface OpensteerDesktopBridge {
   /** Suspends, resumes or deletes one; the Account decides what is allowed. */
   cloudComputerAct?(input: DesktopCloudComputerActInput): Promise<DesktopCloudComputerActResult>;
   onPersonalTabCommand(listener: (command: DesktopPersonalTabCommand) => void): () => void;
+  onAppLink?(listener: (link: DesktopAppLink) => void): () => void;
   reportDisplayDiagnostic?(record: DisplayClientDiagnostic): Promise<void>;
   reportRealtimeDiagnostic?(record: RealtimeFrameDiagnostic): Promise<void>;
   reportRendererFailure?(record: RendererFailureDiagnostic): Promise<void>;

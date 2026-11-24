@@ -189,8 +189,8 @@ it("runs a server-style app with relative JSON POST, assets, incremental SSE and
     expect(await page.evaluate("Math.max(...window.appHeights)")).toBeGreaterThan(2_000);
     const frame = page.frames().find((frame) => frame.url().endsWith(appPrefix))!;
     expect(await frame.evaluate(() => document.documentElement.dataset.theme)).toBe("dark");
-    // Ordinary links leave through a new window (the system browser on desktop and mobile);
-    // the app's own document and in-page fragments stay put.
+    // Outside a workspace an ordinary link leaves through the page around the app, to the
+    // person's own browser; the app's own document and in-page fragments stay put.
     await page
       .context()
       .route("https://example.com/**", (route) =>
@@ -221,6 +221,202 @@ it("runs a server-style app with relative JSON POST, assets, incremental SSE and
     expect(new URL(frame.url()).pathname).toBe(appPrefix + "settings");
     expect(page.context().pages()).toHaveLength(1);
   } finally {
+    if (server.listening) await closeHttpServerNow(server);
+  }
+});
+
+it("opens a person's clicks out of an app as workspace tabs, asks when it cannot tell, keeps a browser's own gestures, and opens nothing an app asks for alone", async () => {
+  const bundle = await build({
+    stdin: {
+      contents: `
+      import React from 'react';
+      import {createRoot} from 'react-dom/client';
+      import {MemoryRouter} from 'react-router';
+      import {AppCard} from './src/components/apps/app-card.tsx';
+      import {WorkspaceProvider} from './src/components/workspace/workspace-context.tsx';
+      import {TranscriptHostClientContext} from './src/components/attachments/message-attachments.tsx';
+      import {ToastProvider} from './src/components/toast.tsx';
+      const snapshot = {connection:'connected',session:'authenticated',appVersions:{},tabs:{rows:new Map()}};
+      const client = {subscribe:()=>()=>{},getSnapshot:()=>snapshot,viewApp:async()=>({title:'Leads',url:location.origin+'${appPrefix}'})};
+      window.opened=[];
+      const card=React.createElement(TranscriptHostClientContext,{value:client},React.createElement(AppCard,{entry:{appId:'app_test',title:'Leads'}}));
+      createRoot(document.getElementById('root')).render(React.createElement(MemoryRouter,null,React.createElement(ToastProvider,null,
+        React.createElement(WorkspaceProvider,{attention:0,nav:{},openDrawer(){},openWebLink:a=>window.opened.push(a)},card))));
+    `,
+      resolveDir: process.cwd() + "/apps/web",
+      loader: "tsx",
+    },
+    bundle: true,
+    write: false,
+    platform: "browser",
+    format: "iife",
+    jsx: "automatic",
+    define: { "process.env.NODE_ENV": '"production"' },
+  });
+  const server = createServer((request, response) => {
+    if (request.url === "/parent.js") {
+      response.writeHead(200, { "content-type": "text/javascript" });
+      response.end(bundle.outputFiles[0]!.text);
+      return;
+    }
+    if (request.url === appPrefix) {
+      response.writeHead(200, appFrameHeaders());
+      response.end(
+        prepareAppHtml(
+          `<!doctype html><html><head></head><body>
+          <a href="https://www.linkedin.com/in/someone">LinkedIn</a>
+          <button id="reddit" onclick="window.open('https://www.reddit.com/r/opensteer','_blank')">Reddit</button>
+          <button id="burst" onclick="for(const n of [1,2,3])window.open('https://burst.test/'+n)">Burst</button>
+          <button id="sign-in" onclick="window.signIn=window.open('https://login.test/','signin','width=400,height=500');window.signInHandle=!!window.signIn">Sign in</button>
+          <script>
+            // The app looks for the bootstrap's port, before and after it arrives.
+            window.sawPort=false;
+            addEventListener('message',e=>{if(e.ports.length||(e.data&&e.data.type==='opensteer-app:links'))window.sawPort=true},true);
+            // Asked while nobody pressed anything, or by imitating the bootstrap: never opened.
+            addEventListener('load',()=>{
+              window.open('https://alone.test/a');
+              parent.postMessage({type:'opensteer-app:open-link',url:'https://alone.test/b'},'*');
+              const channel=new MessageChannel();
+              parent.postMessage({type:'opensteer-app:ready'},'*',[channel.port2]);
+              channel.port1.postMessage({url:'https://alone.test/c'});
+              setTimeout(()=>parent.postMessage({type:'app-asked'},'*'),100);
+            });
+          </script></body></html>`,
+          "dark",
+        ),
+      );
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(
+      '<!doctype html><button id="page-press">Page</button><div id="root"></div><script src="/parent.js"></script>',
+    );
+  });
+  const context = await browser!.newContext();
+  const tab = await context.newPage();
+  try {
+    const listening = once(server, "listening", { signal: AbortSignal.timeout(5_000) });
+    server.listen(0, "127.0.0.1");
+    await listening;
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Test listener missing");
+    await tab.addInitScript(() => {
+      addEventListener("message", (event) => {
+        if ((event.data as { type?: string } | null)?.type === "app-asked")
+          Reflect.set(window, "appAsked", true);
+      });
+      // Every question Opensteer shows, kept after its toast leaves.
+      const questions: string[] = [];
+      Reflect.set(window, "questions", questions);
+      new MutationObserver((records) => {
+        for (const record of records)
+          for (const node of record.addedNodes)
+            if (node instanceof HTMLElement)
+              for (const toast of node.matches(".toast") ? [node] : node.querySelectorAll(".toast"))
+                if (toast.querySelector(".toast__action")) questions.push(toast.textContent ?? "");
+      }).observe(document, { childList: true, subtree: true });
+    });
+    await tab.goto(`http://127.0.0.1:${address.port}`, { timeout: 1_500 });
+    await tab.waitForFunction(() => Reflect.get(window, "appAsked") === true, undefined, {
+      timeout: 1_500,
+    });
+    const frame = tab.frames().find((candidate) => candidate.url().endsWith(appPrefix))!;
+    const opened = () => tab.evaluate(() => Reflect.get(window, "opened") as string[]);
+    expect(await opened()).toEqual([]);
+    expect(context.pages()).toHaveLength(1);
+    expect(await frame.evaluate(() => Reflect.get(window, "sawPort"))).toBe(false);
+
+    const questions = () => tab.evaluate(() => Reflect.get(window, "questions") as string[]);
+
+    // A click this page can tell was in the app opens at once, in the workspace.
+    await frame.getByRole("link", { name: "LinkedIn" }).click({ timeout: 1_500 });
+    await tab.waitForFunction(() => Reflect.get(window, "opened").length === 1);
+    expect(await opened()).toEqual(["https://www.linkedin.com/in/someone"]);
+    expect(context.pages()).toHaveLength(1);
+    expect(new URL(frame.url()).pathname).toBe(appPrefix);
+
+    // One press opens one page at once; the app asking for more while it lasts is asked about,
+    // once per page. A press lends activation for five seconds, so each case waits that out.
+    await tab.waitForTimeout(5_100);
+    await frame.getByRole("button", { name: "Burst" }).click({ timeout: 1_500 });
+    await tab.waitForFunction(() => Reflect.get(window, "opened").length === 2);
+    await tab.getByText("This app wants to open burst.test/2").waitFor({ timeout: 1_500 });
+    expect(await questions()).toHaveLength(1);
+    expect(await opened()).toEqual(["https://www.linkedin.com/in/someone", "https://burst.test/1"]);
+
+    // A window the app's script opens for a press is a link too.
+    await tab.waitForTimeout(5_100);
+    await frame.getByRole("button", { name: "Reddit" }).click({ timeout: 1_500 });
+    await tab.waitForFunction(() => Reflect.get(window, "opened").length === 3);
+    expect((await opened())[2]).toBe("https://www.reddit.com/r/opensteer");
+    expect(context.pages()).toHaveLength(1);
+
+    // A modifier keeps the browser's own gesture: its own new tab, not the workspace.
+    await tab.waitForTimeout(800);
+    const newTab = context.waitForEvent("page", { timeout: 1_500 });
+    await frame
+      .getByRole("link", { name: "LinkedIn" })
+      .click({ modifiers: ["ControlOrMeta"], timeout: 1_500 });
+    // Headless Chromium opens a modifier's background tab without ever loading it, so the tab
+    // itself is the evidence that the browser, not the app's bootstrap, took the gesture.
+    const outside = await newTab;
+    await outside.close();
+    await tab.waitForTimeout(200);
+    expect(await opened()).toHaveLength(3);
+
+    // A sign-in window the app opens by name and size stays the browser's own, handle and all.
+    await tab.waitForTimeout(800);
+    const popup = context.waitForEvent("page", { timeout: 1_500 });
+    await frame.getByRole("button", { name: "Sign in" }).click({ timeout: 1_500 });
+    await (await popup).close();
+    expect(await frame.evaluate(() => Reflect.get(window, "signInHandle"))).toBe(true);
+    expect(await opened()).toHaveLength(3);
+
+    // A key in the app, the pointer elsewhere: this page cannot tell where the press was, so it
+    // asks, and the person's answer opens it.
+    await tab.mouse.move(1, 1);
+    await frame.getByRole("link", { name: "LinkedIn" }).focus({ timeout: 1_500 });
+    await tab.keyboard.press("Enter");
+    const keyQuestion = tab.getByText("This app wants to open linkedin.com/in/someone");
+    await keyQuestion.waitFor({ timeout: 1_500 });
+    expect(await opened()).toHaveLength(3);
+    await tab
+      .locator(".toast", { has: keyQuestion })
+      .locator(".toast__action")
+      .click({ timeout: 1_500 });
+    await tab.waitForFunction(() => Reflect.get(window, "opened").length === 4);
+    expect((await opened())[3]).toBe("https://www.linkedin.com/in/someone");
+
+    // A press on the page around the app activates the page, never the app: an app trying
+    // all the while opens nothing and asks nothing. (The same page is asked about once per
+    // toast's life, so this waits out the question above.)
+    await tab.waitForTimeout(4_700);
+    const asked = (await questions()).length;
+    await frame.evaluate(() => {
+      Reflect.set(
+        window,
+        "sneaky",
+        setInterval(() => window.open("https://sneaky.test/"), 20),
+      );
+    });
+    await tab.getByRole("button", { name: "Page" }).click({ timeout: 1_500 });
+    await tab.waitForTimeout(400);
+    await frame.evaluate(() => clearInterval(Reflect.get(window, "sneaky") as number));
+    expect(await opened()).toHaveLength(4);
+    expect(await questions()).toHaveLength(asked);
+    expect(context.pages()).toHaveLength(1);
+
+    // Just after that press on the page, a click in the app is asked about rather than trusted.
+    await frame.getByRole("link", { name: "LinkedIn" }).click({ timeout: 1_500 });
+    await tab.waitForFunction(
+      (before) => (Reflect.get(window, "questions") as string[]).length > before,
+      asked,
+      { timeout: 1_500 },
+    );
+    expect((await questions()).at(-1)).toContain("linkedin.com/in/someone");
+    expect(await opened()).toHaveLength(4);
+  } finally {
+    await context.close();
     if (server.listening) await closeHttpServerNow(server);
   }
 });

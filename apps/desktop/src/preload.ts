@@ -77,6 +77,7 @@ import { z } from "zod";
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   DesktopPersonalTabCommand,
+  DesktopAppLink,
   DeploymentAccessSnapshot,
   DesktopAgentPhoneArtifact,
   DesktopChooseUsbDeviceInput,
@@ -127,6 +128,7 @@ import {
   RealtimeFrameDiagnosticSchema,
   RendererFailureDiagnosticSchema,
   DesktopPersonalTabCommandSchema,
+  DesktopAppLinkSchema,
   DeploymentAccessSnapshotSchema,
   DesktopPersonalOldDataStateSchema,
   DesktopCloudComputerActInputSchema,
@@ -385,6 +387,12 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       listener(DesktopPersonalTabCommandSchema.parse(value));
     ipcRenderer.on(desktopBridgeChannels.workspaceTabCommand, receive);
     return () => ipcRenderer.removeListener(desktopBridgeChannels.workspaceTabCommand, receive);
+  },
+  onAppLink: (listener: (link: DesktopAppLink) => void) => {
+    const receive = (_event: Electron.IpcRendererEvent, value: unknown) =>
+      listener(DesktopAppLinkSchema.parse(value));
+    ipcRenderer.on(desktopBridgeChannels.appLink, receive);
+    return () => ipcRenderer.removeListener(desktopBridgeChannels.appLink, receive);
   },
   passkeys: Object.freeze({
     available: async () => z.boolean().parse(await invoke(desktopBridgeChannels.passkeyAvailable)),

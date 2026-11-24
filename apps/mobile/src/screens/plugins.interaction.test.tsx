@@ -47,6 +47,9 @@ vi.mock("./confirm.js", () => ({
   confirmDestructive: (input: { readonly onConfirm: () => void }) => input.onConfirm(),
 }));
 vi.mock("../thread/app-frame.js", () => ({ AppFrame: () => null }));
+vi.mock("../thread/conversation-links.js", () => ({
+  ConversationLinksProvider: (props: { children?: unknown }) => props.children,
+}));
 vi.mock("../ui/sheet.js", () => ({ Sheet: () => null }));
 vi.mock("./device-app-setup-sheet.js", () => ({
   DeviceAppSetupSheet: (props: { readonly definition: { readonly id: string } }) => {

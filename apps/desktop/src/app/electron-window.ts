@@ -1,4 +1,4 @@
-import { resolveDesktopAppBranding } from "@opensteer/protocol/desktop";
+import { DesktopAppLinkSchema, resolveDesktopAppBranding } from "@opensteer/protocol/desktop";
 import { isAppNavigation, isAppOriginUrl } from "@opensteer/shared/appFrame";
 import { configureDesktopPermissions } from "./media-permissions.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
@@ -8,7 +8,6 @@ import {
   BrowserWindow,
   WebContentsView,
   systemPreferences,
-  shell,
   type BaseWindowConstructorOptions,
   type Event,
   type OnBeforeRequestListenerDetails,
@@ -23,6 +22,7 @@ import type { DesktopConfiguration } from "../config.js";
 import type { DesktopWindowFactory } from "./desktop-main-process.js";
 import { DesktopAppOriginPolicy } from "./navigation-policy.js";
 import { configureDesktopWindowContextMenu } from "./window-context-menu.js";
+import { desktopBridgeChannels } from "../bridge/desktop-bridge-channels.js";
 import type { DesktopUsbDeviceAccess } from "./usb-device-access.js";
 
 const desktopTitleBarHeight = 52;
@@ -139,19 +139,24 @@ export function configureDesktopWindowNavigation(
   const guardNavigation = (event: Event, url: string) => {
     if (!policy.allowsNavigation(url)) event.preventDefault();
   };
+  // A page leaving an app goes back to the window's own page, which opens it where every app
+  // link opens, and only for a person's press; main never opens it in the system on its own.
+  const leaveApp = (url: string, source: string) => {
+    const link = DesktopAppLinkSchema.safeParse({ url, source });
+    if (link.success && !webContents.isDestroyed())
+      webContents.send(desktopBridgeChannels.appLink, link.data);
+  };
   webContents.setWindowOpenHandler(({ url }) => {
     // App responses suppress referrers; a clicked link's focused frame identifies its source.
     const source = webContents.focusedFrame?.url;
-    if (source && policy.isPublishedApp(source) && /^https?:\/\//iu.test(url))
-      void shell.openExternal(url).catch(() => undefined);
+    if (source && policy.isPublishedApp(source)) leaveApp(url, source);
     return { action: "deny" };
   });
   webContents.on("will-frame-navigate", (event) => {
     const source = event.frame?.url;
     if (source && policy.isPublishedApp(source) && !isAppNavigation(event.url, source)) {
       event.preventDefault();
-      if (/^https?:\/\//iu.test(event.url))
-        void shell.openExternal(event.url).catch(() => undefined);
+      leaveApp(event.url, source);
     }
   });
   webContents.on("will-attach-webview", (event) => event.preventDefault());
@@ -173,8 +178,7 @@ export function configureDesktopWindowNavigation(
       !policy.allowsNavigation(event.url, source)
     ) {
       event.preventDefault();
-      if (source && policy.isPublishedApp(source) && /^https?:\/\//iu.test(event.url))
-        void shell.openExternal(event.url).catch(() => undefined);
+      if (source && policy.isPublishedApp(source)) leaveApp(event.url, source);
     }
   });
 }

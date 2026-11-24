@@ -31,6 +31,7 @@ export const desktopBridgeChannels = {
   deploymentUpdateRequest: "opensteer.desktop.deployment-updates.request",
   deploymentUpdateCancel: "opensteer.desktop.deployment-updates.cancel",
   workspaceTabCommand: "opensteer.desktop.workspace.tab-command",
+  appLink: "opensteer.desktop.app-link.open",
   browserNavigationAvailable: "opensteer.desktop.browser.navigationAvailable",
   browserIsLocal: "opensteer.desktop.browser.browserIsLocal",
   browserPresent: "opensteer.desktop.browser.browserPresent",

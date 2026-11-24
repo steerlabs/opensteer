@@ -233,7 +233,7 @@ function PluginPageView({
   return (
     <Dialog title={title} wide onClose={onClose}>
       {view ? (
-        <AppFrame title={title} url={view.url} theme={theme} retry={retry} />
+        <AppFrame title={title} url={view.url} theme={theme} retry={retry} workspaceLinks={false} />
       ) : failed ? (
         <AppLoadFailure retry={retry} />
       ) : (

@@ -1,6 +1,7 @@
 import {
   clipboard,
   Menu,
+  shell,
   type BaseWindow,
   type ContextMenuParams,
   type MenuItemConstructorOptions,
@@ -14,6 +15,8 @@ type MenuParams = Pick<
 
 export interface WindowContextMenuActions {
   readonly replaceMisspelling: (word: string) => void;
+  /** A click opens a web link in Opensteer; this is the way to the person's own browser. */
+  readonly openLinkOutside: () => void;
   readonly copyLink: () => void;
   readonly copyImage: () => void;
   readonly lookUp: () => void;
@@ -58,7 +61,10 @@ export function windowContextMenuTemplate(
   }
   if (/^https?:\/\//iu.test(params.linkURL)) {
     separate();
-    items.push({ label: "Copy Link", click: actions.copyLink });
+    items.push(
+      { label: "Open Link in Default Browser", click: actions.openLinkOutside },
+      { label: "Copy Link", click: actions.copyLink },
+    );
   }
   // Chromium copies a subframe's image only from its own coordinates, which a published app's
   // frame does not share with the window.
@@ -81,6 +87,11 @@ export function configureDesktopWindowContextMenu(
       {
         replaceMisspelling: (word) => {
           if (live()) contents.replaceMisspelling(word);
+        },
+        // Only the web addresses the item was offered for; never another scheme the OS would open.
+        openLinkOutside: () => {
+          if (/^https?:\/\//iu.test(params.linkURL))
+            void shell.openExternal(params.linkURL, { activate: true }).catch(() => undefined);
         },
         copyLink: () => void clipboard.writeText(params.linkURL).catch(() => undefined),
         copyImage: () => {

@@ -214,7 +214,7 @@ test("an older stream's close leaves the replacement text installed", () => {
   ).toBe("ignored");
 });
 
-test("sliding a history window retains a cursor immediately beside either evicted edge", () => {
+test("pages accumulate whole, and a live row bounds the window with a cursor beside its evicted edge", () => {
   const store = new ThreadTranscriptStore();
   store.begin(1, false);
   const address = { subscriptionId, generation: 1, scope };
@@ -255,14 +255,38 @@ test("sliding a history window retains a cursor immediately beside either evicte
     nextBefore: from ? cursor(all[from]!) : null,
     nextAfter: end < all.length ? cursor(all[end - 1]!) : null,
   });
-  store.installPage(page(150, 250), 1, "earlier");
-  store.installPage(page(50, 150), 1, "earlier");
-  store.installPage(page(0, 50), 1, "earlier");
-  expect(store.getSnapshot().ids).toEqual(all.slice(0, 250).map(({ id }) => id));
-  expect(store.getSnapshot().snapshot?.nextAfter?.beforeId).toBe(all[249]!.id);
-  store.installPage(page(250, 300), 1, "newer");
-  expect(store.getSnapshot().ids).toEqual(all.slice(50).map(({ id }) => id));
-  expect(store.getSnapshot().snapshot?.nextBefore?.beforeId).toBe(all[50]!.id);
+  const earlier = (from: number, end: number) =>
+    store.installPage(page(from, end), 1, {
+      mode: "earlier",
+      from: store.getSnapshot().snapshot!.nextBefore!,
+    });
+  expect(earlier(150, 250)).toBe("installed");
+  expect(earlier(50, 150)).toBe("installed");
+  expect(earlier(0, 50)).toBe("installed");
+  // Every page the reader asked for is held: nothing they loaded leaves under them.
+  expect(store.getSnapshot().ids).toEqual(all.map(({ id }) => id));
+  expect(store.getSnapshot().snapshot?.nextBefore).toBeNull();
+  expect(store.getSnapshot().newest).toBe(true);
+  // Following the latest, the next live row bounds the window above the reader.
+  const next = { ...item, id: createId("message"), position: "301", revision: "2" };
+  store.apply({
+    ...address,
+    type: "host.changes",
+    fromSequence: "1",
+    throughSequence: "2",
+    changes: [
+      {
+        operation: "upsert",
+        entityKind: "item",
+        sequence: "2",
+        ordinal: 0,
+        entityId: next.id,
+        value: next,
+      },
+    ],
+  } as never);
+  expect(store.getSnapshot().historyIds).toEqual([...all.slice(51), next].map(({ id }) => id));
+  expect(store.getSnapshot().snapshot?.nextBefore?.beforeId).toBe(all[51]!.id);
 });
 
 test("history pages land during a Run and keep an unhide or removal made while they were read", () => {
@@ -336,10 +360,10 @@ test("history pages land during a Run and keep an unhide or removal made while t
         nextAfter: cursor(all[4]!),
       },
       1,
-      "earlier",
+      { mode: "earlier", from: store.getSnapshot().snapshot!.nextBefore! },
       read,
     ),
-  ).toBe(true);
+  ).toBe("installed");
   store.endRead(read);
   const ids = store.getSnapshot().historyIds;
   expect(ids).toContain(unhidden.id);
@@ -372,10 +396,10 @@ test("history pages land during a Run and keep an unhide or removal made while t
         nextAfter: cursor(all[2]!),
       },
       1,
-      "around",
+      { mode: "around" },
       jump,
     ),
-  ).toBe(true);
+  ).toBe("installed");
   store.endRead(jump);
   expect(store.getSnapshot().historyIds).toEqual(all.slice(0, 3).map(({ id }) => id));
 });
@@ -446,7 +470,7 @@ test("a repair replaces the scope: no stale history, no older page, no omitted q
       nextAfter: cursor(all[29]!),
     },
     1,
-    "earlier",
+    { mode: "earlier", from: store.getSnapshot().snapshot!.nextBefore! },
   );
   const late = store.beginRead();
   store.liveItem({ ...all[79]!, revision: "1" }, "provisional", false);
@@ -481,10 +505,10 @@ test("a repair replaces the scope: no stale history, no older page, no omitted q
         nextAfter: cursor(all[29]!),
       },
       1,
-      "earlier",
+      { mode: "earlier", from: store.getSnapshot().snapshot!.nextBefore! },
       late,
     ),
-  ).toBe(false);
+  ).toBe("stale");
 });
 
 test("a held provisional card takes a new face and its place; a window of history shows none", () => {
