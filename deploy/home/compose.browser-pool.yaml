@@ -24,6 +24,11 @@ services:
     environment:
       # As many Runs at once as its memory holds (home_limits); the Host holds the next back.
       OPENSTEER_MAX_CONCURRENT_RUNS: ${OPENSTEER_HOME_LIMIT_RUNNER_RUNS:?Machine limits required}
+      # No local Browser Runtime runs here: the Host reaches the pool host itself, and the Runner
+      # is not pointed at a runtime that is not there.
+      OPENSTEER_BROWSER_BRIDGE_URL: !reset null
+      OPENSTEER_BROWSER_BRIDGE_TOKEN_FILE: !reset null
+      OPENSTEER_BROWSER_RUNTIME_ID: !reset null
   # No browser runs in the VM: not Chromium, not the person's profiles, and no egress proxy that
   # could send a page out from the VM's own address. Compose creates no container for either.
   browser-runtime:

@@ -5,7 +5,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, it } from "vitest";
-import { parse } from "yaml";
+import { parse as parseYaml } from "yaml";
+
+/** Compose's `!reset` tag: the key is removed from what the files before it set. */
+const reset = Symbol("reset");
+const parse = (text: string) =>
+  parseYaml(text, {
+    customTags: [{ tag: "!reset", identify: () => false, resolve: () => reset }],
+  }) as unknown;
 
 const home = join(import.meta.dirname, "../deploy/home");
 const read = (name: string) => readFileSync(join(home, name), "utf8");
@@ -203,9 +210,20 @@ it("applies the machine's limits on a pooled Cloud Computer only, never on a sel
       mem_limit: `\${OPENSTEER_HOME_LIMIT_${name}_MEMORY:?Machine limits required}`,
       memswap_limit: `\${OPENSTEER_HOME_LIMIT_${name}_MEMORY:?Machine limits required}`,
     });
+  // No local Browser Runtime runs, so the Runner is not pointed at one: its bridge settings go.
+  const bridge = [
+    "OPENSTEER_BROWSER_BRIDGE_URL",
+    "OPENSTEER_BROWSER_BRIDGE_TOKEN_FILE",
+    "OPENSTEER_BROWSER_RUNTIME_ID",
+  ];
   expect(override.services.runner?.environment).toEqual({
     OPENSTEER_MAX_CONCURRENT_RUNS: "${OPENSTEER_HOME_LIMIT_RUNNER_RUNS:?Machine limits required}",
+    ...Object.fromEntries(bridge.map((name) => [name, reset])),
   });
+  const base = parse(read("compose.yaml")) as {
+    services: { runner: { environment: Record<string, string> } };
+  };
+  for (const name of bridge) expect(base.services.runner.environment).toHaveProperty(name);
   // The self-hosted recipe keeps its own limits and their OPENSTEER_HOME_* overrides, and the
   // Runner's own default number of Runs.
   expect(read("compose.yaml")).not.toContain("OPENSTEER_HOME_LIMIT_");
