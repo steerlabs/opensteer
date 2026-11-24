@@ -56,11 +56,15 @@ export interface ShellControlStreamHandler {
   ): Promise<void>;
   /**
    * What one machine's live sessions have moved so far, which the row does not
-   * know until they end.
+   * know until they end, and which of them are ending: cut here, their end still
+   * being written down.
    */
   liveSessionBytes(
     runnerId: RunnerId,
-  ): ReadonlyMap<ShellSessionId, { readonly bytesIn: number; readonly bytesOut: number }>;
+  ): ReadonlyMap<
+    ShellSessionId,
+    { readonly bytesIn: number; readonly bytesOut: number; readonly ending?: true }
+  >;
   /** Keeps the stream's renewed lease visible to whatever derives from it. */
   renew(peer: ShellControlPeer, stream: RunnerAuxiliaryStream): void;
   /**

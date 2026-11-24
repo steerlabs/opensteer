@@ -658,6 +658,12 @@ export const ShellSessionSummarySchema = z.object({
   startedAt: IsoDateTimeSchema,
   threadId: ThreadIdSchema,
   threadTitle: z.string().max(240),
+  /**
+   * The Home cut this session and is still writing its end down: no byte moves and its id
+   * names nothing that can carry one again. It says nothing about whether the process on the
+   * computer has exited.
+   */
+  ending: z.literal(true).optional(),
 });
 export type ShellSessionSummary = z.infer<typeof ShellSessionSummarySchema>;
 

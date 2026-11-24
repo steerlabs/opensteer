@@ -23,6 +23,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { StandardCdpAttemptReconciliation } from "@opensteer/protocol/standard-cdp";
+import type { RunnerAuxiliaryFrameFence, ShellSessionId } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
 import { cancelPending } from "./request-cancellation.js";
 import { senderUnlinkedFailure } from "./bridge-admission.js";
@@ -77,7 +78,20 @@ export type LineageAttempt =
   /** A message to a bridge's chat: written before it is sent, its status is its evidence. */
   | ConnectionAttempt<"chat">
   /** A command acting outside the database (G4): written before it acts, settled after. */
-  | ConnectionAttempt<"command">;
+  | ConnectionAttempt<"command">
+  /**
+   * A phone alert for the connection's Request or its Run's reply or failure, recorded at its hand-off to the Opensteer
+   * account (A5): acknowledged, definitely unsent, or unknown (it may have reached the phone).
+   */
+  | ConnectionAttempt<"notification">
+  /**
+   * A shell its Run opened on another computer (A4): ended by that computer's close receipt on
+   * the exact stream the open was sent on (`targetFence`), or by losing that stream. Its
+   * generation is the target Runner's connection generation, its boot the target's boot.
+   */
+  | (ConnectionAttempt<"shell", ShellSessionId> & {
+      readonly targetFence: RunnerAuxiliaryFrameFence | null;
+    });
 
 export interface ConnectionAttemptStopper {
   stop(
@@ -121,6 +135,7 @@ export async function connectionAttempts(
       readonly grant: unknown;
       readonly sessionTargets:
         readonly { grant: AgentOperationTarget["grant"]; effect: string }[] | null;
+      readonly shellFence: RunnerAuxiliaryFrameFence | null;
     }
   >`
     with floor as (
@@ -289,12 +304,23 @@ export async function connectionAttempts(
       -- A command with an effect outside the database, acting now in this Home's process: its
       -- settled state is its evidence; one that may have acted is unknown, contact lost (G4). A
       -- narrowed grant waits on it as a Disconnect does, as it does on sessions (K4).
-      select 'command', a.id, null, null, null, null, null, a.state = 'running',
+      -- A phone alert of the connection's (A5, F1) is the same kind of row, told apart by its type.
+      select case when a.type = 'notification.publish' then 'notification' else 'command' end,
+        a.id, null, null, null, null, null, a.state = 'running',
         case when a.state <> 'running' then a.settled_at end,
         case when a.state = 'unknown' then a.settled_at end, null
       from command_attempts a join floor f on f.id = a.connection_id
       where (f.disconnected or f.cleanup_reason = 'narrowed') and (
         a.state = 'running' or (a.state = 'unknown' and a.settled_at >= f.cleanup_requested_at))
+      union all
+      -- A shell its Run opened: reserved under the live connection before the open frame was
+      -- sent; its target's close receipt on that exact stream, or the stream's loss, ends it (A4).
+      select 'shell', m.id, (m.target_fence->>'connectionGeneration')::integer, m.thread_id,
+        null, m.runner_id, m.target_fence->>'bootId', true,
+        m.terminal_evidence_at, m.contact_lost_at, null
+      from machine_access_sessions m join floor f on f.id = m.connection_id
+      where (m.terminal_evidence_at is null or m.contact_lost_at is not null)
+        and ${belowFloor("m.admitted_grant_revision", "m.admitted_access_mode")}
       union all
       select 'session', s.id, null, s.thread_id, null, null, null, false, null, null, null
       from agent_sessions s join floor f on f.id = s.connection_id
@@ -314,23 +340,36 @@ export async function connectionAttempts(
       case when kind = 'session' and not floor.disconnected then (
         select jsonb_agg(distinct jsonb_build_object('grant', o.target->'grant', 'effect', o.effect))
         from agent_operations o where o.session_id = attempts.id and o.state <> 'refused'
-      ) end as session_targets
+      ) end as session_targets,
+      case when kind = 'shell' then (
+        select m.target_fence from machine_access_sessions m where m.id = attempts.id
+      ) end as shell_fence
     from attempts cross join floor
     left join cdp_attempts on attempts.kind = 'standard-cdp' and cdp_attempts.id = attempts.id
     order by case when kind = 'session' then 0 else 1 end, kind, attempts.id
   `.execute(database);
-  return rows.flatMap(({ disconnected, grant, sessionTargets, recovery, ...attempt }) => {
-    if (attempt.kind === "standard-cdp" && recovery)
-      return [{ ...attempt, standardCdpRecovery: recovery }];
-    if (attempt.kind !== "session" || disconnected) return [attempt];
-    const currentGrant = AgentGrantSchema.parse(grant);
-    const withdrawn = sessionTargets?.some(({ grant: target, effect }) => {
-      if (target.kind === "device") return false;
-      const access = agentGrantAccess(currentGrant, target);
-      return !access || (effect === "write" && access !== "read-write");
-    });
-    return withdrawn ? [attempt] : [];
-  });
+  return rows.flatMap(
+    ({
+      disconnected,
+      grant,
+      sessionTargets,
+      recovery,
+      shellFence,
+      ...attempt
+    }): LineageAttempt[] => {
+      if (attempt.kind === "standard-cdp" && recovery)
+        return [{ ...attempt, standardCdpRecovery: recovery }];
+      if (attempt.kind === "shell") return [{ ...attempt, targetFence: shellFence ?? null }];
+      if (attempt.kind !== "session" || disconnected) return [attempt];
+      const currentGrant = AgentGrantSchema.parse(grant);
+      const withdrawn = sessionTargets?.some(({ grant: target, effect }) => {
+        if (target.kind === "device") return false;
+        const access = agentGrantAccess(currentGrant, target);
+        return !access || (effect === "write" && access !== "read-write");
+      });
+      return withdrawn ? [attempt] : [];
+    },
+  );
 }
 
 export function outstandingAttempts(attempts: readonly LineageAttempt[]) {
@@ -577,6 +616,14 @@ export async function recordConnectionStop(
           .where("terminalEvidenceAt", "is", null)
           .execute();
       }
+    } else if (attempt.kind === "shell") {
+      await tx
+        .updateTable("machineAccessSessions")
+        .set(evidence)
+        .where("id", "=", attempt.id)
+        .where("runnerId", "=", attempt.runnerId!)
+        .where("terminalEvidenceAt", "is", null)
+        .execute();
     } else if (attempt.kind === "watch") {
       await tx
         .updateTable("triggerWatchActivations")
@@ -687,7 +734,12 @@ export async function latestConnectionUncertainty(
       attemptId: latest.id,
       generation: latest.generation,
       taskId: latest.threadId,
-      reason: "Contact was lost before this attempt confirmed it ended.",
+      reason:
+        latest.kind === "shell"
+          ? "Contact with this device was lost before it confirmed that the connected agent's shell there had closed."
+          : latest.kind === "notification"
+            ? "A phone alert about this connected agent's work may have been sent; your Opensteer account did not confirm it."
+            : "Contact was lost before this action confirmed it had ended.",
       ...(latest.runnerId
         ? {
             device:
@@ -902,6 +954,28 @@ export async function markConnectionAttemptsContactLost(
         .where("executionGeneration", "=", executionGeneration)
         .execute();
     }
+    // A connection's shells on that boot: the streams they were opened on went with it, so no
+    // close receipt for them can arrive. They end with contact lost (A4).
+    const shells = await tx
+      .selectFrom("machineAccessSessions")
+      .select("id")
+      .where("runnerId", "=", input.runnerId)
+      .where("connectionId", "is not", null)
+      .where("terminalEvidenceAt", "is", null)
+      .where(sql<boolean>`target_fence->>'bootId' = ${input.runnerBootId}`)
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+    if (shells.length > 0)
+      await tx
+        .updateTable("machineAccessSessions")
+        .set({ terminalEvidenceAt: now, contactLostAt: now })
+        .where(
+          "id",
+          "in",
+          shells.map(({ id }) => id),
+        )
+        .execute();
     // The attempts in id order first, as the tables above: two Runs a connection started on one
     // boot are two rows, and an unordered update of both can deadlock against another writer.
     const attempts = await tx

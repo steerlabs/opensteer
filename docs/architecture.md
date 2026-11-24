@@ -350,14 +350,20 @@ admitted once it commits. Then one worker converges over one set
 of attempts (`packages/database/src/connection-disconnect.ts`, driven by
 `OpensteerStore.driveConnectionCleanups`). The set holds everything in the connection's lineage:
 Runs and their handed-off generations, automation occurrences and their attempts, Watch
-activations, queued inputs, Requests, steering commands, active automations (paused), agent
-sessions and operations, plugin executions, standard CDP connections and shared Chrome tabs.
+activations, queued inputs, Requests, the phone alerts for its Requests and its Runs' replies
+and failures, steering commands,
+active automations (paused), agent sessions and operations, plugin executions, standard CDP
+connections, shared Chrome tabs, and the shells its Runs opened on other computers.
 Display streams are opened only by a person's own session (`computer-use-display-routes.ts` ->
 `DisplayStreamHub.attachViewer`), so they are not in any connection's Disconnect set.
 
 **Nothing leaves the Home before it is in the set.** A Run is recorded before its frame is built;
 a CDP attempt before the attach ticket goes to the browser runtime; a plugin execution before the
-call reaches the plugin engine. The one-use `browser_connect` address an agent receives is not a
+call reaches the plugin engine; a shell before its open frame goes to the target computer, bound
+to that computer's exact shell stream; a phone alert in the statement that checks, after
+every other wait, that the connection is live and (for a Request) the Request still pending. Each is
+recorded while holding the connection row the revoke locks, so a revoke that committed first
+refuses it and nothing is sent. The one-use `browser_connect` address an agent receives is not a
 handoff: it does nothing until redeemed, and redemption checks authority again and writes the
 attempt first. The worker stops each attempt through its own stop command and accepts only an answer for
 that exact attempt, generation, Runner and Runner boot.
@@ -370,6 +376,16 @@ What the person sees follows evidence:
   lost; it counts as ended, and the connection shows **Check its last action**.
 - With no answer and no contact loss, the connection stays Stopping. There is no timeout, and it
   cannot be removed until it settles.
+
+A shell ends on its target's close receipt on the stream it was opened on (a receipt on any other
+stream proves nothing), or with contact lost when that stream, the target's Runner boot or this
+Home's process is gone. A phone alert ends when the Opensteer account acknowledges it, when it is
+known never to have reached the account, or as unknown when the acknowledgement was lost; it is
+never sent again after that. Sending the same alert again after a lost acknowledgement, before
+then, completes the same attempt rather than making a second one: the account keeps one
+publication per notification id and answers a repeat from it, and the repeat passes the same
+check first. An alert already on the phone cannot be taken back: it stays until the person
+dismisses it, and opening it shows the question no longer waiting.
 
 Expiry, a narrowed grant and a lowered mode go through the same worker. The person's other work is untouched. Disconnect does not close tabs.
 
