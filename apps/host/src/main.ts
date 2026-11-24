@@ -33,6 +33,10 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
     onPersonalUpgradeHeartbeat: () => {
       process.stdout.write(`${personalUpgradeHeartbeatLine}\n`);
     },
+    // Before the Host listens nothing else says a long update is under way, on any Home.
+    onDatabaseMigration: (step, of) => {
+      process.stdout.write(`Updating your Home's database: step ${step} of ${of}\n`);
+    },
     onPersonalUpgradeBatch: (stage) => {
       const now = performance.now();
       if (stage === lastStage && now - lastProgressAt < 1_000) return;

@@ -17,6 +17,7 @@ import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { emptyPersonalResourceRevisions } from "./personal-state-schema.js";
 import { readTranscriptItem } from "./personal-sync-store.js";
+import { emptyPublicSchema, loadReleasedHome } from "./released-home.test-support.js";
 import { createRunFinishDrain } from "./run-finalization.js";
 import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
@@ -41,7 +42,7 @@ const ended = threadInputDelivery({
 beforeEach(async () => {
   clone = await cloneTestDatabase("host");
   database = createDatabase({ connectionString: clone.url });
-  await sql`drop schema public cascade; create schema public`.execute(database);
+  await sql.raw(emptyPublicSchema()).execute(database);
 });
 
 afterEach(async () => {
@@ -52,13 +53,9 @@ afterEach(async () => {
   }
 });
 
-/** Main's last migration, by the real migrator; nothing of this release's own has run. */
+/** Main's last migration, as main's own code made it; nothing of this release's own has run. */
 async function migrateToMain() {
-  const all = await migrationProvider().getMigrations();
-  const main = Object.fromEntries(
-    Object.entries(all).filter(([name]) => name <= "0046_run_provider_retry"),
-  );
-  await migrateToLatest(database, { getMigrations: async () => main });
+  await loadReleasedHome(clone.url);
 }
 
 /** Main before its current-state conversion (0038): the update crosses it. */
@@ -649,7 +646,7 @@ describe("the resource revisions 0038 created", () => {
     const fresh = await cloneTestDatabase("host");
     const freshDatabase = createDatabase({ connectionString: fresh.url });
     try {
-      await sql`drop schema public cascade; create schema public`.execute(freshDatabase);
+      await sql.raw(emptyPublicSchema()).execute(freshDatabase);
       await migrateToLatest(freshDatabase);
       expect(upgraded).toEqual(await revisionCatalog(freshDatabase));
     } finally {

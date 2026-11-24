@@ -859,14 +859,23 @@ export class MigrationLineageError extends Error {
 export async function migrateToLatest(
   database: Kysely<DatabaseSchema>,
   provider: MigrationProvider = migrationProvider(),
-  conversion?: Parameters<typeof completePersonalStateConversion>[2],
+  conversion?: Parameters<typeof completePersonalStateConversion>[2] & {
+    /** Called as each pending migration starts: the `step`th of `of`. */
+    readonly beforeMigration?: ((step: number, of: number) => void) | undefined;
+  },
 ): Promise<MigrationResultSet> {
   const migrations = await provider.getMigrations();
   const resolved: MigrationProvider = { getMigrations: async () => migrations };
+  const before = conversion?.beforeMigration;
   if (!Object.hasOwn(migrations, personalCurrentStateMigrationName))
-    return migrateRegisteredLineage(database, resolved, Object.keys(migrations));
+    return migrateRegisteredLineage(database, resolved, Object.keys(migrations), before);
   return withPersonalStateStartupLock(database, async (signal) => {
-    const result = await migrateRegisteredLineage(database, resolved, Object.keys(migrations));
+    const result = await migrateRegisteredLineage(
+      database,
+      resolved,
+      Object.keys(migrations),
+      before,
+    );
     signal.throwIfAborted();
     await completePersonalStateConversion(database, signal, conversion);
     return result;
@@ -877,17 +886,20 @@ async function migrateRegisteredLineage(
   database: Kysely<DatabaseSchema>,
   provider: MigrationProvider,
   migrationNames: readonly string[],
+  beforeMigration?: (step: number, of: number) => void,
 ): Promise<MigrationResultSet> {
   const ledger = await sql<{
     exists: boolean;
   }>`select to_regclass('public.kysely_migration') is not null as exists`.execute(database);
   let hasAppliedMigrations = false;
+  const appliedNames = new Set<string>();
   if (ledger.rows[0]?.exists) {
     const known = new Set(migrationNames);
     const applied = await sql<{
       name: string;
     }>`select name from public.kysely_migration order by name`.execute(database);
     hasAppliedMigrations = applied.rows.length > 0;
+    for (const { name } of applied.rows) appliedNames.add(name);
     const unknown = applied.rows.map((row) => row.name).filter((name) => !known.has(name));
     if (unknown.length) throw new MigrationLineageError(unknown);
     // Every migrated lineage has its Deployment row; a team server's is refused before any
@@ -910,7 +922,26 @@ async function migrateRegisteredLineage(
     );
     if (existing.rows.length) throw new MigrationLineageError(["unversioned-database"]);
   }
-  const result = await new Migrator({ db: database, provider }).migrateToLatest();
+  // Kysely has no hook as a migration starts: each pending one says so before its own body.
+  const pending = migrationNames.filter((name) => !appliedNames.has(name));
+  const migrations = await provider.getMigrations();
+  const announced: MigrationProvider = beforeMigration
+    ? {
+        getMigrations: async () =>
+          Object.fromEntries(
+            Object.entries(migrations).map(([name, migration]) => {
+              const step = pending.indexOf(name) + 1;
+              if (!step) return [name, migration];
+              const up = async (db: Kysely<unknown>) => {
+                beforeMigration(step, pending.length);
+                await migration.up(db);
+              };
+              return [name, { ...migration, up }];
+            }),
+          ),
+      }
+    : provider;
+  const result = await new Migrator({ db: database, provider: announced }).migrateToLatest();
   const failure = result.results?.find((entry) => entry.status === "Error");
   if (result.error || failure)
     throw new Error(`Database migration failed${failure ? ` at ${failure.migrationName}` : ""}`, {

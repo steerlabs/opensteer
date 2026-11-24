@@ -446,6 +446,8 @@ export interface PersonalHostRuntime {
 export type HostRuntime = PersonalHostRuntime;
 export interface HostRuntimeOptions {
   readonly onPersonalUpgradeHeartbeat?: () => void;
+  /** As each pending database migration starts: the `step`th of `of`. */
+  readonly onDatabaseMigration?: (step: number, of: number) => void;
   readonly onPersonalUpgradeBatch?: NonNullable<
     Parameters<typeof migrateToLatest>[2]
   >["afterBatch"];
@@ -554,7 +556,11 @@ export async function createHostRuntime(
     authorityLease = await acquireDeploymentAuthorityLease(database);
     // Conversion must finish before startup reads or creates a Deployment.
     await withUpgradeHeartbeat(
-      () => migrateToLatest(database, undefined, { afterBatch: options.onPersonalUpgradeBatch }),
+      () =>
+        migrateToLatest(database, undefined, {
+          afterBatch: options.onPersonalUpgradeBatch,
+          beforeMigration: options.onDatabaseMigration,
+        }),
       options.onPersonalUpgradeHeartbeat,
     ).catch((error: unknown) => {
       throw config.mode === "development" ? withDevelopmentDatabaseReset(error) : error;

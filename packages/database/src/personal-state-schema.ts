@@ -36,7 +36,6 @@ import type { PersonalChange } from "@opensteer/protocol/personal-sync";
 import type { TranscriptMessageRefs } from "@opensteer/protocol/transcript";
 import { sql, type Generated, type Kysely } from "kysely";
 import type { DatabaseSchema, Timestamp } from "./schema.js";
-import { runNewsAt, unreadTaskSql } from "./personal-attention-store.js";
 
 export type PersonalScopeKey = "shell" | `thread:${string}` | `node:${string}`;
 /** `reset` rows are Host-only: a scope whose commit outgrew the feed is repaired by snapshot. */
@@ -738,6 +737,23 @@ export async function applyInlineTranscriptMessages(database: Kysely<DatabaseSch
 }
 
 export const stoppedRunsNotNewsMigrationName = "0044_stopped_runs_are_not_news";
+
+// 0044's two fragments, frozen as main released them: the live `runNewsAt` and `unreadTaskSql`
+// (personal-attention-store.ts) may change, and a Home that ran 0044 before must not differ
+// from one that runs it now.
+const releasedUnreadTask = sql<boolean>`(select listed and purpose='task' and status<>'archived'
+    and removed_at is null and latest_run_completed_at is not null
+    and (last_visited_at is null or latest_run_completed_at>last_visited_at)
+  from threads t left join thread_visits v on v.thread_id=t.id and v.user_id=t.created_by
+  where t.id=threads.id)`;
+function releasedRunNewsAt(run: string) {
+  const status = sql.ref(`${run}.status`);
+  return sql<Date | null>`case when ${status} in ('completed','failed') or (${status}='interrupted'
+    and ${sql.ref(`${run}.started_at`)} is not null
+    and not exists (select from commands where commands.run_id=${sql.ref(`${run}.id`)}
+      and commands.type='run.interrupt' and commands.authority_source->>'kind'='user-session'))
+    then ${sql.ref(`${run}.completed_at`)} end`;
+}
 /**
  * A Run its owner stopped, or one that ended before it started, no longer makes its task unread.
  * Earlier Hosts labelled every Stop the person's own (`user-session`), so first restore who really
@@ -763,13 +779,13 @@ export async function applyStoppedRunsNotNews(database: Kysely<DatabaseSchema>) 
       from commands where type='run.interrupt' and authority_source->>'kind'='user-session') legacy
     where commands.id=legacy.id and (legacy.team is not null or legacy.caller is not null);
     update threads set latest_run_completed_at=news.at
-    from (select source.id,(select ${runNewsAt("runs")} from runs
+    from (select source.id,(select ${releasedRunNewsAt("runs")} from runs
         where runs.thread_id=source.id and runs.maintenance is null
         order by runs.run_ordinal desc limit 1) as at
       from threads source where source.latest_run_completed_at is not null) news
     where threads.id=news.id and threads.latest_run_completed_at is distinct from news.at;
     update client_sync_state set epoch=gen_random_uuid(),
-      unread_task_count=(select count(*) from threads where ${unreadTaskSql});
+      unread_task_count=(select count(*) from threads where ${releasedUnreadTask});
   `.execute(database);
 }
 
