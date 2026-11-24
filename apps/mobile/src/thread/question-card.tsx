@@ -41,6 +41,7 @@ import { MessageFold } from "./message-fold.js";
 import { requestAnswerMaxLength } from "./request-form-model.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
 import { useQuestionAnswering } from "./use-question-answering.js";
+import { useStackedLayout } from "../ui/stacked-layout.js";
 
 /** Body lines of detail shown before Show more: a short draft whole, its answers still near. */
 const detailFoldLines = 6;
@@ -88,6 +89,7 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
   const { draft, field, fields, index, responder, step } = question;
   const { session } = responder;
   const { height } = useWindowDimensions();
+  const stacked = useStackedLayout();
   const asked = useRequestAsker(props.hostClient, request);
   const asker = props.asker === false ? null : asked;
   const queue =
@@ -144,7 +146,16 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
           />
         </View>
       )}
-      <View style={[styles.head, asker !== null && styles.headAfterAsker]}>
+      {/* At an accessibility text size the waiting count stands above the heading, which takes
+          the full width: beside it, "Connected" broke inside itself. */}
+      <View
+        style={[
+          styles.head,
+          stacked && styles.headStacked,
+          asker !== null && styles.headAfterAsker,
+        ]}
+      >
+        {stacked && asker === null ? queue : null}
         <AppText
           {...(asker === null ? {} : { accessibilityLabel: `${asker.title} asks: ${heading}` })}
           role="secondaryMedium"
@@ -152,7 +163,7 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
         >
           {heading}
         </AppText>
-        {asker === null ? queue : null}
+        {!stacked && asker === null ? queue : null}
       </View>
       <View>
         <ScrollView
@@ -333,9 +344,7 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
               {reason}
             </AppText>
           )}
-          {session.failure === null ? null : (
-            <ActionLine line={session.failure} numberOfLines={2} />
-          )}
+          {session.failure === null ? null : <ActionLine line={session.failure} />}
         </View>
       )}
       {question.dismiss === null &&
@@ -439,7 +448,8 @@ const styles = StyleSheet.create({
     paddingTop: space[10] - 1,
   },
   headAfterAsker: { paddingTop: space[4] },
-  heading: { flex: 1 },
+  headStacked: { alignItems: "flex-end", flexDirection: "column" },
+  heading: { alignSelf: "stretch", flexGrow: 1, flexShrink: 1 },
   input: {
     ...material.control,
     borderRadius: radius.lg,

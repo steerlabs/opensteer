@@ -39,13 +39,14 @@ export const chatScreenHooks = {
     "Sends and reads only what these lists hold: its client is typed from ChatScreenHost (`ConnectedAgentsHost`); it takes the whole client to hear that connections changed.",
   useConnectedAgentLive:
     "Reads what a connected agent's task is doing now (connections.activity) for Watch; sends nothing.",
+  useConnectedAgentActivity:
+    "Reads what a connected agent did and asked (connections.activity) for Recent activity, again when its live task changes; sends nothing.",
   useLiveTasks:
     "Reads the tasks' live state the Home pushes for every task (the snapshot's task directory), so a chat's Stop ends when its Run does; sends nothing.",
   useChromeTabGrantCatalog:
     "Reads which shared Chrome tabs a grant may name (browser.sources.get); sends nothing.",
   useAgentAppOptions: "Reads which Mac apps and phone screens a grant may name; sends nothing.",
   useAgentPluginOptions: "Reads which plugins a grant may name; sends nothing.",
-  useWorkPolicy: "Reads the work Home's policy from the snapshot; no call of its own.",
   usePersonalRemoteAccess:
     "Remote access to this Home, shown on the Connected agents list: its own page and its own tests, no chat or account.",
   useScreenAction:

@@ -15,6 +15,9 @@ journey() {
       true
       OPENSTEER_WINDOW_GROUP_CASES=current,settle,cancellation,video,receipt-switch,read-only bash scripts/test-computer-use-window-groups.sh ;;
     launch) pnpm -w test:gui ;;
+    # Sign in → On this Mac → the phone step, against the real account service code: see
+    # tests/first-run/journey.ts for what is real, what stands in, and what stays unverified.
+    first-run) pnpm exec tsx ../../tests/first-run/journey.ts ;;
     remote-input) bash scripts/test-viewer-clipboard.sh && pnpm test:electron-display:run && bash ../web/scripts/run-display-editing-viewer-checks.sh ;;
     # Its bundle is rebuilt here: the smoke bundle step above clears .electron-smoke.
     native-browser)

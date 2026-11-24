@@ -3,7 +3,12 @@ import type {
   HarnessProcessLaunch,
   HarnessSessionContext,
 } from "@opensteer/harness";
-import type { OpensteerError, PendingRequest, ThreadAccessMode } from "@opensteer/core";
+import type {
+  OpensteerError,
+  PendingRequest,
+  ThreadAccessMode,
+  ToolIdentity,
+} from "@opensteer/core";
 
 export type AcpProtocolVersion = 1 | 2;
 
@@ -78,6 +83,9 @@ export interface AcpToolCall {
   readonly id: string;
   readonly kind?: string;
   readonly locations?: readonly { readonly path?: string }[];
+  /** The frame's ACP `_meta` bag, where engines name an MCP call's server and tool. */
+  readonly meta?: Readonly<Record<string, unknown>>;
+  /** Not part of ACP; a few engines add it. */
   readonly name?: string;
   readonly rawInput?: unknown;
   readonly rawOutput?: unknown;
@@ -156,6 +164,11 @@ export interface AcpNativeHooks {
   /** Engine-specific extensions and quirks only; standard ACP updates are normalized first. */
   normalizeUpdate?(update: unknown): readonly AcpNormalizedUpdate[] | undefined;
   toolUpdates?(call: AcpToolCall): readonly AcpNormalizedUpdate[];
+  /**
+   * Names a call by the engine's own title convention, read once from the
+   * call's first frame. Undefined falls back to the structured ACP fields.
+   */
+  toolIdentity?(call: AcpToolCall, context: HarnessSessionContext): ToolIdentity | undefined;
   /** Also interprets a settled prompt result when `error` is undefined. */
   classifyError(error: unknown, context: AcpErrorContext): OpensteerError;
   /** Holds a short assistant-only prefix until the prompt result can validate it. */

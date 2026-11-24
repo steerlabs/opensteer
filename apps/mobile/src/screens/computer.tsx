@@ -81,7 +81,7 @@ export function ComputerScreen(props: ComputerScreenProps): ReactNode {
               ? "This deployment is no longer on this phone."
               : `Open ${row.name} to see this computer.`}
           </AppText>
-          {failure === null ? null : <ActionLine line={failure} numberOfLines={2} />}
+          {failure === null ? null : <ActionLine line={failure} />}
           {row === undefined ? null : (
             <SecondaryButton
               busy={opening}
@@ -247,11 +247,7 @@ function ComputerDetail(props: {
               />
             ) : null}
             {phoneOpening.line === null ? null : (
-              <ActionLine
-                line={phoneOpening.line}
-                numberOfLines={2}
-                onDismiss={phoneOpening.dismiss}
-              />
+              <ActionLine line={phoneOpening.line} onDismiss={phoneOpening.dismiss} />
             )}
             <PhoneUseBlock
               canRespond={canRespond}

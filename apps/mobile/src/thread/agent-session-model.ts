@@ -2,6 +2,7 @@ import {
   agentWithdrawnLine,
   operationDecisionField,
   operationRequestView,
+  pageSiteLabel,
   sessionAgent,
   sessionAgentPart,
   sessionSlotFromHome,
@@ -22,6 +23,8 @@ import {
   phoneSentence,
 } from "@opensteer/client/host";
 import type { AgentOperationView } from "@opensteer/core";
+import { isAddress } from "../ui/address-words.js";
+import { sentenceAround, type SentencePart as AddressSentencePart } from "../ui/sentence-parts.js";
 
 type AgentWorkSource = Pick<HostSnapshot, "threads">;
 
@@ -168,5 +171,37 @@ export function whoLines(
     verified: who.verified,
     withdrawn: line === null ? null : { line, detail: workWords("who.withdrawnDetail") },
     warning: options.consent ? who.warning : null,
+  };
+}
+
+/**
+ * Who works a connected agent's task, said twice. `short` is the floating title's one line:
+ * "Connected agent · claude.ai", the host kept with a port that is not the default and a scheme
+ * that is not https, drawn plain and giving up its start when it does not fit (`HostLine`).
+ * `whole` heads the pane: "Connected agent · https://claude.ai", the origin drawn as an address.
+ * `who.detail` is an origin only when `isAddress` says so: for a verified pair it is a sentence
+ * ("Errand asked for this. AgentPay will hold the access."), and words stay words.
+ */
+export function sourceLines(view: Pick<SessionTaskView, "agent" | "header">): {
+  readonly short: string;
+  /** The title names a host, so it keeps that end when it does not fit. */
+  readonly endsInHost: boolean;
+  readonly whole: readonly AddressSentencePart[];
+} {
+  const who = view.agent.who;
+  const words = { endsInHost: false, short: view.header, whole: [view.header] };
+  if (who === null || who.local) return words;
+  const header = (origin: string) => workWords("work.header", { origin });
+  // When detail is a sentence rather than an origin, the title falls back to a verified origin.
+  const origin = isAddress(who.detail)
+    ? who.detail
+    : (who.origins.find(({ role }) => role === "verified")?.origin ??
+      who.origins[0]?.origin ??
+      null);
+  const host = origin === null ? null : pageSiteLabel(origin, { origin: true });
+  return {
+    endsInHost: host !== null,
+    short: host === null ? view.header : header(host),
+    whole: isAddress(who.detail) ? sentenceAround(header, who.detail) : [view.header],
   };
 }

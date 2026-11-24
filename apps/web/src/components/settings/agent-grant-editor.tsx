@@ -17,7 +17,6 @@ import {
   draftSharedProfiles,
   setDraftPluginAccess,
   toggleDraftResource,
-  workPolicyLimits,
   type AgentGrantDraft,
   type AppOption,
   type BrowserOptions,
@@ -31,7 +30,6 @@ import {
   useAgentPluginOptions,
   type AgentOptionsRead,
 } from "@opensteer/client/react";
-import type { WorkPolicy } from "@opensteer/control-plane-protocol";
 import type { ChatGrantShape, ThreadAccessMode } from "@opensteer/core";
 import { Icon } from "../icon.js";
 import { SentenceText } from "../../ui/address-text.js";
@@ -54,7 +52,6 @@ export function AgentGrantEditor({
   draft,
   home,
   onChange,
-  workPolicy,
   chat,
 }: {
   /** Its name (a `{ name }`), or Opensteer's words for an agent with none. */
@@ -66,14 +63,11 @@ export function AgentGrantEditor({
   readonly draft: AgentGrantDraft;
   readonly home: string;
   readonly onChange: (draft: AgentGrantDraft) => void;
-  /** A work Home's effective policy, once the Home reports it; it rules choices out. */
-  readonly workPolicy?: WorkPolicy | undefined;
   /** A chat's grant as the Home says it may be: only that is offered, and Tasks stays on. */
   readonly chat?: ChatGrantShape | undefined;
 }) {
   const offers = (kind: ChatGrantShape["resources"][number]) =>
     chat === undefined || chat.resources.includes(kind);
-  const limits = workPolicyLimits(workPolicy);
   const [open, setOpen] = useState<Disclosure>(null);
   const apps = useAgentAppOptions(client, open === "apps" || hasKind(draft, "computer-app"));
   const plugins = useAgentPluginOptions(client, open === "plugins" || hasKind(draft, "plugin"));
@@ -101,7 +95,6 @@ export function AgentGrantEditor({
               label={agentWords("consent.scope.everything.label")}
               name="agent-grant-scope"
               onSelect={() => onChange({ ...draft, scope: "everything" })}
-              unavailable={limits.everything}
               value="everything"
             />
           )}
@@ -262,11 +255,7 @@ export function AgentGrantEditor({
                 </OptionsState>
               </div>
             ) : null}
-            <div
-              className={
-                limits.tasks !== null && !draft.tasks ? "card__row is-unavailable" : "card__row"
-              }
-            >
+            <div className="card__row">
               <span aria-hidden className="card__row-glyph">
                 <Icon name="list" />
               </span>
@@ -277,7 +266,7 @@ export function AgentGrantEditor({
                 <span className="card__row-detail" id="agent-grant-tasks-detail">
                   {chat
                     ? agentWords("chat.grant.tasks")
-                    : (limits.tasks ?? agentWords("consent.tasks.detail", { home }))}
+                    : agentWords("consent.tasks.detail", { home })}
                 </span>
               </span>
               <span className="card__row-actions">
@@ -286,9 +275,7 @@ export function AgentGrantEditor({
                   aria-labelledby="agent-grant-tasks"
                   checked={draft.tasks}
                   className="switch"
-                  disabled={
-                    disabled || chat !== undefined || (limits.tasks !== null && !draft.tasks)
-                  }
+                  disabled={disabled || chat !== undefined}
                   onChange={(event) => onChange({ ...draft, tasks: event.currentTarget.checked })}
                   role="switch"
                   type="checkbox"
@@ -347,7 +334,6 @@ export function ConnectionModeChoices({
   mode,
   onChange,
   showSettingsNote,
-  workPolicy,
 }: {
   /** What each mode means for this connection (a chat for anyone has its own). */
   readonly descriptions?: Readonly<Record<ThreadAccessMode, ConnectionModeDescription>>;
@@ -355,10 +341,7 @@ export function ConnectionModeChoices({
   readonly mode: ThreadAccessMode;
   readonly onChange: (mode: ThreadAccessMode) => void;
   readonly showSettingsNote: boolean;
-  /** A work Home's effective policy, once the Home reports it; it caps the mode. */
-  readonly workPolicy?: WorkPolicy | undefined;
 }) {
-  const limits = workPolicyLimits(workPolicy);
   return (
     <fieldset className="settings-group" disabled={disabled}>
       <legend className="settings-group__title">{agentWords("consent.safety.title")}</legend>
@@ -371,7 +354,6 @@ export function ConnectionModeChoices({
             label={option.label}
             name="agent-consent-mode"
             onSelect={() => onChange(option.mode)}
-            unavailable={limits.mode(option.mode)}
             value={option.mode}
           />
         ))}
@@ -389,7 +371,6 @@ function Choice({
   label,
   name,
   onSelect,
-  unavailable = null,
   value,
 }: {
   readonly checked: boolean;
@@ -397,26 +378,14 @@ function Choice({
   readonly label: string;
   readonly name: string;
   readonly onSelect: () => void;
-  /** Why this choice can't be made here; it stays visible, disabled, with the reason. */
-  readonly unavailable?: string | null;
   readonly value: string;
 }) {
   return (
-    <label
-      aria-disabled={unavailable === null ? undefined : true}
-      className="card__row agent-consent__mode"
-    >
-      <input
-        checked={checked}
-        disabled={unavailable !== null && !checked}
-        name={name}
-        onChange={onSelect}
-        type="radio"
-        value={value}
-      />
+    <label className="card__row agent-consent__mode">
+      <input checked={checked} name={name} onChange={onSelect} type="radio" value={value} />
       <span className="card__row-body">
         <span className="card__row-title">{label}</span>
-        <span className="card__row-detail">{unavailable ?? detail}</span>
+        <span className="card__row-detail">{detail}</span>
       </span>
     </label>
   );

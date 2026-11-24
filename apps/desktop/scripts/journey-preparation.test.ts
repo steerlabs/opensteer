@@ -10,6 +10,8 @@ it.each([
   [["passkeys"], "passkeys"],
   [["native-browser"], "native-browser"],
   [["native-browser", "electron"], "native-browser"],
+  [["first-run"], "first-run"],
+  [["electron", "first-run"], "electron"],
   [["launch"], undefined],
 ] as const)("stages current runtime services for %j in %s", (selected, expected) => {
   expect(runtimeResourceJourney(selected)).toBe(expected);

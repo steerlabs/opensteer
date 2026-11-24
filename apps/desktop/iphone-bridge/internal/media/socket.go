@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -27,6 +28,7 @@ type pendingACK struct {
 
 type mediaSocket struct {
 	conn       *net.UnixConn
+	writeMu    sync.Mutex
 	pending    []pendingACK
 	totalBytes int
 }
@@ -48,24 +50,34 @@ func (s *mediaSocket) credit(now time.Time) bool {
 		(len(s.pending) == 0 || now.Sub(s.pending[0].sent) < maxUnackedAge)
 }
 
-func (s *mediaSocket) send(sequence uint64, data []byte) error {
-	if len(data) > maxEnvelope || len(data) == 0 || s.totalBytes+len(data) > maxUnackedBytes {
+func (s *mediaSocket) reserve(sequence uint64, size int, now time.Time) error {
+	if size > maxEnvelope || size == 0 || s.totalBytes+size > maxUnackedBytes {
 		return errors.New("display media exceeds available credit")
 	}
-	now := time.Now()
-	if err := s.conn.SetWriteDeadline(now.Add(100 * time.Millisecond)); err != nil {
+	s.totalBytes += size
+	s.pending = append(s.pending, pendingACK{sequence, size, now})
+	return nil
+}
+
+func (s *mediaSocket) writeFrame(data []byte) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
 		return err
 	}
 	var prefix [5]byte
 	prefix[0] = socketMedia
 	binary.BigEndian.PutUint32(prefix[1:], uint32(len(data)))
 	buffers := net.Buffers{prefix[:], data}
-	if _, err := buffers.WriteTo(s.conn); err != nil {
+	_, err := buffers.WriteTo(s.conn)
+	return err
+}
+
+func (s *mediaSocket) send(sequence uint64, data []byte) error {
+	if err := s.reserve(sequence, len(data), time.Now()); err != nil {
 		return err
 	}
-	s.totalBytes += len(data)
-	s.pending = append(s.pending, pendingACK{sequence, len(data), now})
-	return nil
+	return s.writeFrame(data)
 }
 
 func (s *mediaSocket) ack(sequence uint64) {

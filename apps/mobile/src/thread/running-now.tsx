@@ -123,11 +123,7 @@ export const RunningRowView = memo(function RunningRowView(props: {
               <AppText role="caption" tone="muted">{`  in ${within}`}</AppText>
             )}
           </AppText>
-          {line === null ? (
-            <AgentPhrases phrases={card.detail} />
-          ) : (
-            <ActionLine line={line} numberOfLines={1} />
-          )}
+          {line === null ? <AgentPhrases phrases={card.detail} /> : <ActionLine line={line} />}
         </View>
         <Elapsed endedAt={card.endedAt} startedAt={card.startedAt} />
       </Pressable>

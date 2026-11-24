@@ -539,10 +539,7 @@ export class OpensteerStore {
     readonly bytesOut?: number;
     readonly endedAt?: Date;
     /** A Stop the person may click twice; the second click reports the first. */
-    readonly idempotency?: {
-      readonly key: string;
-      readonly requestedBy: UserId;
-    };
+    readonly idempotency?: machineStore.ShellStopIdempotency;
     readonly reason: ShellCloseReason;
     readonly sessionId: ShellSessionId;
   }): Promise<{
@@ -1380,7 +1377,11 @@ export class OpensteerStore {
     readonly assignmentId: AssignmentId;
     readonly ownerId: UserId;
     readonly reader: TaskReader;
-  }): Promise<AssignmentView | null> {
+    readonly connectionAuthority?: Extract<
+      import("./thread-caller.js").ThreadCallerAuthority,
+      { kind: "connection" }
+    >;
+  }): Promise<(AssignmentView & { readonly pendingRequests?: number }) | null> {
     return threadStore.getAssignmentForOwner(this.#database, input);
   }
   async listThreadAssignmentsForOwner(input: {
@@ -1424,6 +1425,10 @@ export class OpensteerStore {
     ownerId: UserId,
     lineageConnectionId?: string,
     nativeOnly?: boolean,
+    connectionAuthority?: Extract<
+      import("./thread-caller.js").ThreadCallerAuthority,
+      { kind: "connection" }
+    >,
   ): Promise<Thread | null> {
     return threadStore.getThreadForOwner(
       this.#database,
@@ -1431,6 +1436,7 @@ export class OpensteerStore {
       ownerId,
       lineageConnectionId,
       nativeOnly,
+      connectionAuthority,
     );
   }
   /** A task as its reader may see it; one it may not read is null, as a missing one. */

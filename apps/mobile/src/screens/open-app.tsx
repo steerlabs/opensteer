@@ -292,7 +292,7 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
           <>
             {line === null ? null : (
               <View style={styles.notice}>
-                <ActionLine line={line} numberOfLines={2} onDismiss={opener.dismiss} />
+                <ActionLine line={line} onDismiss={opener.dismiss} />
               </View>
             )}
             {profiles.length === 0 ? null : (

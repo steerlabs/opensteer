@@ -12,10 +12,18 @@ import {
 import { resetToDeployment } from "../navigation-ref.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
-import { AppText, Field, PrimaryButton, RowGroup, SecondaryButton } from "../ui/primitives.js";
+import {
+  AppText,
+  DisplayTitle,
+  Field,
+  PrimaryButton,
+  RowGroup,
+  SecondaryButton,
+} from "../ui/primitives.js";
 import { ActionLine } from "../ui/action-line.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { DeploymentDoorSymbol } from "./add-deployment.js";
+import { AddressText } from "../ui/address-text.js";
 
 /**
  * The address door, for a Home on someone's own server, in two
@@ -77,9 +85,9 @@ export function AddServerScreen(): ReactNode {
           <View style={styles.headingMark}>
             <DeploymentDoorSymbol kind="server" size={22} />
           </View>
-          <AppText role="displaySmall" style={styles.headingText}>
+          <DisplayTitle size="small" style={styles.headingText}>
             Add a Home by address
-          </AppText>
+          </DisplayTitle>
         </View>
         {failure === null ? null : (
           <ActionLine
@@ -90,7 +98,6 @@ export function AddServerScreen(): ReactNode {
               haptic: "warning",
               link: verified === null ? { label: "Try again", onPress: verify } : null,
             }}
-            numberOfLines={2}
           />
         )}
         {verified === null ? (
@@ -127,9 +134,7 @@ export function AddServerScreen(): ReactNode {
                   <AppText role="title">
                     {defaultDeploymentName(verified.endpoint.origin, false)}
                   </AppText>
-                  <AppText role="secondary" tone="soft">
-                    {verified.endpoint.origin}
-                  </AppText>
+                  <AddressText role="secondary" tone="soft" value={verified.endpoint.origin} />
                   <AppText role="caption" tone="muted">
                     Signing key {hostKeyFingerprint(verified.discoveryEnvelope.publicKey.spki)}
                   </AppText>

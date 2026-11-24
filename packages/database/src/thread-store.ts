@@ -697,16 +697,29 @@ export async function getAssignmentForOwner(
     readonly ownerId: UserId;
     /** Who reads: one whose worker its reader may not read is null, as a missing one. */
     readonly reader: TaskReader;
+    readonly connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
   },
-): Promise<AssignmentView | null> {
+): Promise<(AssignmentView & { readonly pendingRequests?: number }) | null> {
   return withPersonalReadTransaction(
     database,
     async (transaction) => {
       await requirePersonalOwner(transaction, input.ownerId);
+      const visibleRequests = input.connectionAuthority
+        ? await connectionRequests(transaction, input.connectionAuthority, { ownerVerified: true })
+        : undefined;
       const row = await transaction
         .selectFrom("delegations")
         .innerJoin("threads as workerThread", "workerThread.id", "delegations.childThreadId")
         .selectAll("delegations")
+        .$if(visibleRequests !== undefined, (query) =>
+          query.select(
+            sql<number>`(
+              select count(*)::int from (${visibleRequests!}) as visible_requests
+              where visible_requests.originating_thread_id = ${sql.ref("workerThread.id")}
+                and visible_requests.status = 'pending'
+            )`.as("pendingRequests"),
+          ),
+        )
         .where("delegations.id", "=", input.assignmentId)
         .$if(input.reader.kind === "work", (query) =>
           query.where(readerSees(input.reader, sql.ref("workerThread.origin_connection_id"))),
@@ -718,7 +731,13 @@ export async function getAssignmentForOwner(
         .select("threads.id")
         .where("threads.id", "=", row.parentThreadId)
         .executeTakeFirst();
-      return parent ? assignmentFromRow(row) : null;
+      if (!parent) return null;
+      return {
+        ...assignmentFromRow(row),
+        ...(visibleRequests !== undefined
+          ? { pendingRequests: Number((row as { pendingRequests?: number }).pendingRequests ?? 0) }
+          : {}),
+      };
     },
     "repeatable read",
   );
@@ -939,7 +958,7 @@ export async function agentThreadPageForOwner(
             where messages.thread_id = threads.id
               and messages.published
               and messages.kind <> 'continuation'
-              and ${keptMessageSql}
+              and ${keptMessageSql()}
               and jsonb_to_tsvector('simple', jsonb_path_query_array(messages.content, '$[*] ? (@.type == "text").text'), '["string"]') @@ plainto_tsquery('simple', ${search})
           ))`,
         );
@@ -1088,16 +1107,18 @@ export async function agentThreadPageForOwner(
   );
 }
 /** A task as the person reads it. Work reading a task reads it through `readTask`. */
-export async function getThreadForOwner(
+export function getThreadForOwner(
   database: Kysely<DatabaseSchema>,
   threadId: ThreadId,
   ownerId: UserId,
   lineageConnectionId?: string,
   nativeOnly?: boolean,
+  connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>,
 ): Promise<Thread | null> {
   return readTask(database, personTaskReader, threadId, ownerId, {
     ...(lineageConnectionId === undefined ? {} : { lineageConnectionId }),
     ...(nativeOnly === undefined ? {} : { nativeOnly }),
+    ...(connectionAuthority === undefined ? {} : { connectionAuthority }),
   });
 }
 /**
@@ -1117,16 +1138,26 @@ export async function readTask(
      * connection reads every task but changes only those, so a change reads any other as missing.
      */
     readonly writableBy?: string;
+    readonly connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
   } = {},
 ): Promise<Thread | null> {
-  const { lineageConnectionId, nativeOnly, writableBy } = options;
+  const { lineageConnectionId, nativeOnly, writableBy, connectionAuthority } = options;
   return withPersonalReadTransaction(database, async (tx) => {
     await requirePersonalOwner(tx, ownerId);
+    const visibleRequests = connectionAuthority
+      ? await connectionRequests(tx, connectionAuthority, { ownerVerified: true })
+      : undefined;
     const row = await tx
       .selectFrom("threads")
       .selectAll("threads")
       .select([
-        threadPendingRequestsSelection,
+        visibleRequests
+          ? sql<number>`(
+              select count(*)::int from (${visibleRequests}) as visible_requests
+              where visible_requests.originating_thread_id = threads.id
+                and visible_requests.status = 'pending'
+            )`.as("pendingRequests")
+          : threadPendingRequestsSelection,
         threadVisitSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
@@ -1665,8 +1696,8 @@ export async function updateThreadExecutionSelection(
             id: providerSessionId,
             leaseExpiresAt: null,
             leaseTokenHash: null,
-            // Whether it may use the person's personal context and own lineage, from its first
-            // row: never widen past the previous session or the task's own origin.
+            // Whether it may use the person's personal context or own lineage, from its first row:
+            // never widen from the prior session or from the task's lineage.
             personalContext:
               (selected?.personalContext ?? true) &&
               (await lineagePersonalContext(transaction, thread.originConnectionId)),

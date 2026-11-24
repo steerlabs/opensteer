@@ -238,9 +238,6 @@ else
   if [[ -n $managed ]]; then
     if jq -e '.ipv6Enabled' "$result" >/dev/null; then touch "$home_dir/ipv6.enabled"; fi
     touch "$home_dir/managed"
-    if jq -e '.work != null' "$result" >/dev/null; then
-      jq -ce .work "$result" | save_secret "$home_dir/managed-work.json"
-    fi
     if valid_managed_egress "$result"; then
       save_managed_egress "$result"
     fi

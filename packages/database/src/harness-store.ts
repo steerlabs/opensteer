@@ -3,6 +3,7 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { executionDate } from "./personal-transaction.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   type HarnessId,
@@ -19,6 +20,7 @@ import {
   emptyExecutionPreferences,
   type ExecutionChoice,
   rememberExecutionChoice as rememberExecutionChoiceInStore,
+  threadAccessModeAtMost,
 } from "@opensteer/core";
 import {
   type HarnessInstanceCatalog,
@@ -828,18 +830,19 @@ export async function recordHarnessCatalogs(
         await adoptSupersededContinuationIdentities(transaction, input.environmentId, catalog);
     }
     // Publish catalogs only after every affected Thread and provider row is fenced.
+    const capturedAt = executionDate(transaction);
     for (const catalog of currentCatalogs) {
       await transaction
         .insertInto("harnessCatalogs")
         .values({
-          capturedAt: new Date(),
+          capturedAt,
           catalog: jsonValue(catalog),
           environmentId: input.environmentId,
           harnessInstanceId: catalog.harnessInstanceId,
         })
         .onConflict((conflict) =>
           conflict.columns(["environmentId", "harnessInstanceId"]).doUpdateSet({
-            capturedAt: new Date(),
+            capturedAt,
             catalog: jsonValue(catalog),
           }),
         )
@@ -1116,10 +1119,15 @@ export async function rememberExecutionChoice(
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
     return administrationCommand(transaction, administration, async () => {
-      const merged = rememberExecutionChoiceInStore(
-        ExecutionPreferencesSchema.parse(existing.executionPreferences),
-        choice,
-      );
+      const current = ExecutionPreferencesSchema.parse(existing.executionPreferences);
+      // Raising the mode new tasks start in lifts a gate the person set: the store says which.
+      if (choice.accessMode !== undefined)
+        await administration?.face?.(transaction, {
+          face: threadAccessModeAtMost(choice.accessMode, current.accessMode)
+            ? "preference"
+            : "approve",
+        });
+      const merged = rememberExecutionChoiceInStore(current, choice);
       await transaction
         .updateTable("personalSettings")
         .set({ executionPreferences: jsonValue(merged) })

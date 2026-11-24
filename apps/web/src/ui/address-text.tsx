@@ -32,12 +32,12 @@ export function OutsideName({ value }: { readonly value: string }) {
 }
 
 /**
- * A sentence given as parts: its words as words, each name an `OutsideName` (quoted when it stands
- * inside running text so Opensteer's words cannot run into it; unquoted when drawn alone as a
- * heading or standalone label), each address an `Address`.
+ * A sentence given as parts: its words as words, each name an `OutsideName` (quoted when anything
+ * else stands beside it, words or an address, so nothing can run into it; unquoted when drawn
+ * alone as a heading or standalone label), each address an `Address`.
  */
 export function SentenceText({ parts }: { readonly parts: readonly SentencePart[] }) {
-  const inSentence = parts.some((part) => typeof part === "string");
+  const inSentence = parts.length > 1;
   return (
     <>
       {parts.map((part, index) =>

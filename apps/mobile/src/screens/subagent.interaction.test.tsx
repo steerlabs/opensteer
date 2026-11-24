@@ -67,6 +67,7 @@ vi.mock("react-native-reanimated", () => ({
 }));
 vi.mock("../ui/motion.js", () => ({ appear: undefined, enter: undefined, exit: undefined }));
 vi.mock("../ui/primitives.js", () => ({
+  DisplayTitle: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   AppText: ({ children }: { readonly children?: ReactNode }) => <span>{children}</span>,
   StatusDot: () => null,
   monoFontFamily: "monospace",

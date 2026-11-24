@@ -27,7 +27,7 @@ export function withManagedHomeConfigFiles(env: NodeJS.ProcessEnv): NodeJS.Proce
   for (const file of readdirSync(directory, { withFileTypes: true })) {
     if (
       !file.isFile() ||
-      !/^OPENSTEER_(?:CLOUD_COMPUTER|ORGANIZATION)_[A-Z0-9_]+$/u.test(file.name) ||
+      !/^OPENSTEER_CLOUD_COMPUTER_[A-Z0-9_]+$/u.test(file.name) ||
       file.name.endsWith("_FILE")
     )
       continue;

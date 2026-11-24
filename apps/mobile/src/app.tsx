@@ -107,7 +107,8 @@ import { iphoneApps } from "./platform/iphone-apps.js";
 import { AppLinksProvider, type AppLinks } from "./ui/app-links-context.js";
 import { MobileClientProvider, useMobileState } from "./ui/mobile-client-context.js";
 import { MobileNotificationsProvider } from "./ui/notifications-context.js";
-import { AppText, Notice } from "./ui/primitives.js";
+import { Notice } from "./ui/primitives.js";
+import { StartupFailureView } from "./startup-failure.js";
 import { failureWords } from "./ui/client-feedback.js";
 import {
   subscribeToDraftPastes,
@@ -139,7 +140,6 @@ const configuration = readMobileConfiguration(
     EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS,
     EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS,
     EXPO_PUBLIC_OPENSTEER_MOCK_AGENTS: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_AGENTS,
-    EXPO_PUBLIC_OPENSTEER_MOCK_WORK: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_WORK,
     EXPO_PUBLIC_OPENSTEER_MOCK_CLOUD: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_CLOUD,
     EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE,
   },
@@ -350,7 +350,6 @@ function mobileClient(): MobileRoot {
           subagents: configuration.mockSubagents,
           plugins: configuration.mockPlugins,
           agents: configuration.mockAgents,
-          work: configuration.mockWork,
         })
       : createNetworkHostPort({
           browserPreferencesStorage: createBrowsingChoiceStorage(
@@ -663,10 +662,7 @@ export function App(): ReactNode {
     return (
       <SafeAreaProvider>
         <StatusBar style="light" />
-        <View style={styles.failure}>
-          <AppText role="displaySmall">Opensteer could not start</AppText>
-          <Notice detail={startupFailure.detail} title={startupFailure.title} tone="neutral" />
-        </View>
+        <StartupFailureView detail={startupFailure.detail} title={startupFailure.title} />
       </SafeAreaProvider>
     );
   }
@@ -840,11 +836,4 @@ function LinkFailure(props: {
 const styles = StyleSheet.create({
   root: { backgroundColor: color.background, flex: 1 },
   linkFailure: { backgroundColor: color.background, paddingBottom: space[8] },
-  failure: {
-    backgroundColor: color.background,
-    flex: 1,
-    gap: space[16],
-    justifyContent: "center",
-    padding: space[24],
-  },
 });

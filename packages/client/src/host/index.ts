@@ -1,6 +1,4 @@
 export * from "./access-modes.js";
-export * from "./work-policy-limits.js";
-export * from "./work-home.js";
 export * from "./assignment-presentation.js";
 export * from "./attachment-stage.js";
 export * from "./agent-activity-model.js";
@@ -88,6 +86,7 @@ export * from "./request-settlement.js";
 export * from "./personal-remote-access.js";
 export * from "./home-account-link.js";
 export * from "./remote-access.js";
+export * from "./remote-access-activity.js";
 export * from "./browser-cursor.js";
 export * from "./connected-agents.js";
 export * from "./chat-screen-host.js";

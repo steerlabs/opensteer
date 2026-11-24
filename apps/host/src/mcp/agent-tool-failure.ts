@@ -32,17 +32,12 @@ export function agentToolFailure(
   access: AgentToolAccess,
   /** Which Devices this caller may learn of; a caller nobody vouched for learns none. */
   mayKnowDevice?: (deviceId: string) => boolean,
+  /**
+   * The caller acts under a connection's grant: the connection itself, or a Run in its lineage.
+   * Every such caller is refused alike, here and nowhere else (rule 5, AD11).
+   */
   connection = false,
 ): AgentToolFailure {
-  if (
-    connection &&
-    error instanceof Error &&
-    "code" in error &&
-    error.code === "42501" &&
-    (error.message === "Your organization doesn't allow this" ||
-      error.message === "Sign-in and new work on this Home have ended")
-  )
-    return { code: "forbidden", reason: "work-policy", message: error.message, retryable: false };
   if (error instanceof OperationOutcomeUnknown)
     return {
       code: "outcome_unknown",
@@ -88,6 +83,15 @@ export function agentToolFailure(
       retryable: false,
     };
   }
+  // Outside the grant reads exactly like something that does not exist, for every caller under a
+  // connection's grant: the same code, the same words, no reason and no advice (AD11).
+  if (
+    connection &&
+    error instanceof OpensteerError &&
+    (error.code === "forbidden" || error.code === "not_found") &&
+    hiddenTargetRefusals.has(error.message)
+  )
+    return { code: "not_found", message: error.message, retryable: false };
   if (error instanceof OpensteerError && error.code !== "internal") {
     const device =
       error.reason === "device-access-off" ||

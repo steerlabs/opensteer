@@ -167,3 +167,159 @@ func TestLockStateCancellationClosesBlockedGetValue(t *testing.T) {
 		t.Fatal("cancelled lockdown fixture did not finish")
 	}
 }
+
+func TestWarmLockdownReusesConnectionAndReconnectsOnEOF(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	life, lifeCancel := context.WithCancel(context.Background())
+	defer lifeCancel()
+
+	opens := 0
+	var peers []net.Conn
+	servePeer := func(replies ...map[string]interface{}) net.Conn {
+		client, peer := net.Pipe()
+		peers = append(peers, peer)
+		go func() {
+			defer peer.Close()
+			codec := ios.NewPlistCodecReadWriter(peer, peer)
+			for _, reply := range replies {
+				var req map[string]interface{}
+				if err := codec.Read(&req); err != nil {
+					return
+				}
+				if req["Request"] != "GetValue" || req["Key"] != "PasswordProtected" {
+					return
+				}
+				if err := codec.Write(reply); err != nil {
+					return
+				}
+			}
+		}()
+		return client
+	}
+
+	w := &warmLockdown{
+		life: life,
+		open: func(context.Context) (*ios.LockDownConnection, error) {
+			opens++
+			if opens == 1 {
+				// First connection serves two GetValue queries, then closes (simulating idle EOF).
+				return ios.NewLockDownConnection(ios.NewDeviceConnectionWithConn(
+					servePeer(
+						map[string]interface{}{"Value": false},
+						map[string]interface{}{"Value": true},
+					),
+				)), nil
+			}
+			// Second connection serves the transparent reconnect retry.
+			return ios.NewLockDownConnection(ios.NewDeviceConnectionWithConn(
+				servePeer(map[string]interface{}{"Value": false}),
+			)), nil
+		},
+	}
+	defer w.close()
+
+	if got := w.read(ctx); got != "unlocked" {
+		t.Fatalf("first read=%s want=unlocked", got)
+	}
+	if got := w.read(ctx); got != "locked" {
+		t.Fatalf("second read=%s want=locked", got)
+	}
+	if opens != 1 {
+		t.Fatalf("expected 1 warm lockdown open across 2 reads, got %d", opens)
+	}
+	// Peer 1 exits after serving 2 replies, causing EOF on the 3rd read; warmLockdown must reconnect once transparently.
+	if got := w.read(ctx); got != "unlocked" {
+		t.Fatalf("third read after EOF=%s want=unlocked", got)
+	}
+	if opens != 2 {
+		t.Fatalf("expected transparent reconnect (2 opens), got %d", opens)
+	}
+}
+
+func TestWarmLockdownBoundsStalledCallAndRespectsMonitorDeadline(t *testing.T) {
+	life, lifeCancel := context.WithCancel(context.Background())
+	defer lifeCancel()
+
+	opens := 0
+	stalledReq := make(chan struct{}, 1)
+	var firstPeer net.Conn
+	w := &warmLockdown{
+		life: life,
+		open: func(context.Context) (*ios.LockDownConnection, error) {
+			opens++
+			client, peer := net.Pipe()
+			if opens == 1 {
+				firstPeer = peer
+				go func() {
+					defer peer.Close()
+					codec := ios.NewPlistCodecReadWriter(peer, peer)
+					var req map[string]interface{}
+					if err := codec.Read(&req); err == nil {
+						stalledReq <- struct{}{}
+						// Stall without replying until closed.
+						var b [1]byte
+						_, _ = peer.Read(b[:])
+					}
+				}()
+				return ios.NewLockDownConnection(ios.NewDeviceConnectionWithConn(client)), nil
+			}
+			go func() {
+				defer peer.Close()
+				codec := ios.NewPlistCodecReadWriter(peer, peer)
+				var req map[string]interface{}
+				if err := codec.Read(&req); err == nil {
+					_ = codec.Write(map[string]interface{}{"Value": false})
+				}
+			}()
+			return ios.NewLockDownConnection(ios.NewDeviceConnectionWithConn(client)), nil
+		},
+	}
+	defer w.close()
+
+	// Start a slow caller that stalls inside GetValue.
+	slowCtx, slowCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer slowCancel()
+	slowResult := make(chan string, 1)
+	go func() { slowResult <- w.read(slowCtx) }()
+	select {
+	case <-stalledReq:
+	case <-time.After(time.Second):
+		t.Fatal("stalled caller never reached peer")
+	}
+
+	// A concurrent monitor call with a short deadline must return "unknown" promptly without
+	// waiting for the stalled caller.
+	monStart := time.Now()
+	monCtx, monCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer monCancel()
+	if got := w.read(monCtx); got != "unknown" {
+		t.Fatalf("monitor read=%s want=unknown", got)
+	}
+	if elapsed := time.Since(monStart); elapsed > 250*time.Millisecond {
+		t.Fatalf("monitor read blocked for %v past its 50ms deadline", elapsed)
+	}
+
+	// Cancel the stalled caller and verify the next read reconnects cleanly.
+	slowCancel()
+	if firstPeer != nil {
+		_ = firstPeer.Close()
+	}
+	select {
+	case got := <-slowResult:
+		if got != "unknown" {
+			t.Fatalf("cancelled slow read=%s want=unknown", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled slow read did not exit")
+	}
+
+	recoverCtx, recoverCancel := context.WithTimeout(context.Background(), time.Second)
+	defer recoverCancel()
+	if got := w.read(recoverCtx); got != "unlocked" {
+		t.Fatalf("recovery read=%s want=unlocked", got)
+	}
+	if opens != 2 {
+		t.Fatalf("expected reconnect on recovery read, got %d opens", opens)
+	}
+}

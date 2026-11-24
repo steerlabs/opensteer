@@ -413,7 +413,6 @@ function ScheduleBody(props: {
           {props.line === null ? null : (
             <ActionLine
               line={props.line}
-              numberOfLines={2}
               onDismiss={props.line.tone === "danger" ? props.onDismissLine : undefined}
             />
           )}
@@ -437,7 +436,7 @@ function ScheduleBody(props: {
         </View>
       ) : null}
       {recovery.line === null ? null : (
-        <ActionLine line={recovery.line} numberOfLines={2} onDismiss={recovery.dismiss} />
+        <ActionLine line={recovery.line} onDismiss={recovery.dismiss} />
       )}
       {managed ? (
         <View style={styles.plate}>

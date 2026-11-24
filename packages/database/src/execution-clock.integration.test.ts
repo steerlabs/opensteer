@@ -1,7 +1,6 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WorkHomeMarkerSchema } from "@opensteer/control-plane-protocol";
 import { createId } from "@opensteer/core";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import pg from "pg";
@@ -9,7 +8,6 @@ import { expect, vi } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { OpensteerStore } from "./store.js";
 import { describeStore, pendingEvent } from "./store.integration.test-support.js";
-import { WorkHomeStore } from "./work-home.js";
 
 // Classification remains held back: expiry itself must refuse renewal, events
 // and tools. An ordinary refused event must not consume its Runner ordinal;
@@ -171,7 +169,7 @@ describeStore("execution lease clock", (it) => {
     console.info(`Expired execution authority evidence: ${directory}`);
   });
 
-  it("checks native personal Run authority in one statement and enforces grant, owner, runner, delegation, connection and Work Home refusals", async ({
+  it("checks native personal Run authority in one statement and enforces grant, owner, runner, delegation and connection refusals", async ({
     storeFixture: { startRunFixture, store, database },
   }) => {
     const f = await startRunFixture("single-statement-grant-authority");
@@ -217,9 +215,6 @@ describeStore("execution lease clock", (it) => {
       spy.mockRestore();
     }
     expect(sqlStatements).toHaveLength(1);
-    expect(
-      sqlStatements.some((statement) => /work_home_policy|organization/u.test(statement)),
-    ).toBe(false);
 
     // Wrong grantId and revoked grant both refuse with "Run tool authority has ended".
     await expect(
@@ -397,34 +392,5 @@ describeStore("execution lease clock", (it) => {
       .set({ connectionId: null, admittedGrantRevision: null, admittedAccessMode: null })
       .where("id", "=", f.run.id)
       .execute();
-
-    // Work Home offboarding refuses authority once the database is marked as a Work Home.
-    const deployment = await database
-      .selectFrom("deployments")
-      .select("id")
-      .where("singletonKey", "=", "primary")
-      .executeTakeFirstOrThrow();
-    const workHome = new WorkHomeStore(database);
-    await workHome.initialize(
-      WorkHomeMarkerSchema.parse({
-        organizationId: "org_00000000-0000-4000-8000-000000000001",
-        assignmentId: "was_00000000-0000-4000-8000-000000000001",
-        organizationName: "Test Org",
-      }),
-      deployment.id,
-    );
-    await expect(store.assertActiveGrant(authority)).resolves.toEqual({
-      agentConnectionId: null,
-      taskOriginConnectionId: null,
-    });
-    await database
-      .updateTable("workHomePolicy")
-      .set({ state: "offboarding" })
-      .where("singleton", "=", true)
-      .execute();
-    await expect(store.assertActiveGrant(authority)).rejects.toMatchObject({
-      code: "forbidden",
-      message: "Execution capability came from a stale or invalid binding",
-    });
   });
 });

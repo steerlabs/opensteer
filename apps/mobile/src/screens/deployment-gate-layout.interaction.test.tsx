@@ -13,6 +13,8 @@ import {
   overlaps,
   reachable,
   textElement,
+  readingColumn,
+  textFaults,
 } from "../../test-support/yoga-frames.js";
 
 /*
@@ -27,6 +29,10 @@ const geometry = vi.hoisted(() => ({
   window: { height: 0, width: 0 },
 }));
 
+vi.mock("@react-navigation/elements", async () => ({
+  // The bar's height a route's screens are given: none on a route without one.
+  HeaderHeightContext: (await import("react")).createContext<number | undefined>(undefined),
+}));
 vi.mock(
   "react-native",
   async () => (await import("../../test-support/yoga-frames.js")).layoutReactNative,
@@ -68,6 +74,7 @@ vi.mock("./use-deployment-update.js", () => ({ useDeploymentUpdate: () => null }
 vi.mock("./deployment-update.js", () => ({ deploymentUpdateRows: () => [] }));
 
 const { DeploymentGate } = await import("./deployment-gate.js");
+const { HeaderHeightContext } = await import("@react-navigation/elements");
 const { deploymentsTitle } = await import("./deployments-title.js");
 const { View } = (await import("../../test-support/yoga-frames.js")).layoutReactNative;
 
@@ -79,7 +86,13 @@ afterEach(() => {
   layoutWindow.fontScale = 1;
 });
 
-async function draw(phone: LayoutPhone, fontScale: number) {
+/**
+ * How the route shows a bar: a transparent one over the content, whose height it hands the gate
+ * (Home, a thread); an opaque one the stack lays the screen out below; or none.
+ */
+type Bar = "transparent" | "opaque" | "none";
+
+async function draw(phone: LayoutPhone, fontScale: number, bar: Bar = "transparent") {
   geometry.insets = phone.insets;
   geometry.window = phone.window;
   Object.assign(layoutWindow, phone.window, { fontScale });
@@ -91,16 +104,24 @@ async function draw(phone: LayoutPhone, fontScale: number) {
   await act(async () =>
     root.render(
       <View style={phone.window}>
-        <DeploymentGate
-          deploymentId="dep_00000000-0000-4000-8000-0000000000ff"
-          paddingTop={phone.header}
-        />
+        {/* The safe-area provider stands outside the stack: under an opaque bar its top inset
+            is still the status bar's, though the bar already clears it. */}
+        <HeaderHeightContext.Provider value={bar === "none" ? undefined : phone.header}>
+          <DeploymentGate
+            deploymentId="dep_00000000-0000-4000-8000-0000000000ff"
+            {...(bar === "transparent" ? { paddingTop: phone.header } : {})}
+          />
+        </HeaderHeightContext.Provider>
       </View>,
     ),
   );
   const frames = await layout(container, phone.window);
   // A layout that never comes to rest is a measure loop: the phone's main thread stays busy.
   expect(frames.settled, "the layout never comes to rest").toBe(true);
+  expect(
+    textFaults(frames, { column: readingColumn(phone) }),
+    "a text a person reads is broken or cut",
+  ).toEqual([]);
   return { container, frames };
 }
 
@@ -127,4 +148,44 @@ describe("a Home that is no longer here, at every text size", () => {
           "the way back is smaller than a touch",
         ).toBeGreaterThanOrEqual(43.5);
       });
+});
+
+/*
+ * The reader's re-check of 5ebc2cbbd: a route with no header (setting up this phone again, where
+ * a removed phone is told so) passes the gate no room for a bar, and the gate gave its words none
+ * for the status bar either: at the largest text size they scrolled up under the island.
+ */
+describe("the gate on a route with no header, at the largest text size", () => {
+  const islandPhone: LayoutPhone = {
+    header: 103,
+    insets: { bottom: 34, left: 0, right: 0, top: 59 },
+    name: "a phone with an island",
+    window: { height: 844, width: 390 },
+  };
+  for (const phone of [layoutPhones[0]!, islandPhone])
+    it(`keeps its words below the status bar on ${phone.name}`, async () => {
+      const { container, frames } = await draw(phone, layoutTextSizes.at(-1)!, "none");
+      const title = textElement(container, "This Home is no longer here");
+      expect(frames.frame(title).y).toBeGreaterThanOrEqual(phone.insets.top);
+    });
+});
+
+/*
+ * The reader's re-check 9, finding 6: 04f9b2b89 cleared the status bar whenever the gate was not
+ * handed a bar's height, and every route with an opaque bar hands none, the stack laying the
+ * screen out below it: 59 pt of space under the bar on Tabs, Apps, Done, Needs you and more.
+ */
+describe("the gate under an opaque bar, at the largest text size", () => {
+  const islandPhone: LayoutPhone = {
+    header: 103,
+    insets: { bottom: 34, left: 0, right: 0, top: 59 },
+    name: "a phone with an island",
+    window: { height: 844, width: 390 },
+  };
+  for (const phone of [layoutPhones[0]!, islandPhone])
+    it(`starts its words under the bar, with no room for the status bar again, on ${phone.name}`, async () => {
+      const { container, frames } = await draw(phone, layoutTextSizes.at(-1)!, "opaque");
+      const title = textElement(container, "This Home is no longer here");
+      expect(frames.frame(title).y).toBeLessThan(phone.insets.top);
+    });
 });

@@ -1,3 +1,4 @@
+import { credentialStorageError } from "@opensteer/client/auth";
 import type { SecureStoreLike } from "./secure-record-store.js";
 
 /** What a person reads when this phone's Keychain or Keystore refuses their sign-in. */
@@ -21,7 +22,8 @@ export function signInStorage(
       return await call();
     } catch (cause) {
       report(cause);
-      throw new Error(signInStorageSentence(noun), { cause });
+      // The client's own storage failure, so every layer above knows it for what it is.
+      throw credentialStorageError(cause, signInStorageSentence(noun));
     }
   };
   return {

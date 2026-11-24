@@ -1648,7 +1648,7 @@ export class TriggerStore {
       .where("triggers.status", "=", "active")
       .where(executableProgram)
       // As the claim: a paused chat's schedule is not due, so the loop neither spins nor backs off.
-      .where((eb) => eb.not(triggerChatHeld(this.#database)))
+      .where((eb) => eb.not(triggerChatHeld()))
       .executeTakeFirst();
     return row?.next ? new Date(row.next) : null;
   }
@@ -1686,7 +1686,7 @@ export class TriggerStore {
         .where("triggers.nextFireAt", "<=", now)
         .where(executableProgram)
         // A paused chat's schedule does not fire: no occurrence, no move, no pause, no error.
-        .where((eb) => eb.not(triggerChatHeld(database)));
+        .where((eb) => eb.not(triggerChatHeld()));
     const candidate = await dueSchedules(this.#database)
       .select("triggers.id")
       .limit(1)
@@ -2713,12 +2713,12 @@ async function automationHandoffWitness(
  * authority and Disconnect read it) that is paused, as SQL over the unaliased `triggers` row, for
  * the schedule's claim and deadline. Its schedule does not fire until the chat is back.
  */
-function triggerChatHeld(database: object) {
+function triggerChatHeld() {
   return sql<boolean>`exists (
     select 1 from agent_connections
     where agent_connections.id = triggers.origin_connection_id
       and agent_connections.bridge_account_id is not null
-      and ${connectionState(database)} = 'waiting')`;
+      and ${connectionState()} = 'waiting')`;
 }
 /** The refusal of a program for a lineage without personal context. */
 function noProgramWithoutPersonalContext(): OpensteerError {

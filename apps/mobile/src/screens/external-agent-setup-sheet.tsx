@@ -13,6 +13,7 @@ import { AppText, monoFontFamily, PrimaryButton, SecondaryButton } from "../ui/p
 import { Sheet } from "../ui/sheet.js";
 import { Symbol } from "../ui/symbol.js";
 import { ExternalAgentMark } from "./external-agent-mark.js";
+import { CopyableAddressText } from "../ui/copyable-address-text.js";
 
 /**
  * How to add one agent: three plain steps. The only thing that changes while
@@ -108,9 +109,13 @@ function AddressStep(props: {
     );
   return (
     <View style={styles.address}>
-      <AppText selectable role="caption" style={styles.url}>
-        {address.url}
-      </AppText>
+      {/* Copied whole by its button: drawn text holds joiners, so it is not selectable. */}
+      <CopyableAddressText
+        layoutStyle={styles.urlRoom}
+        role="caption"
+        style={styles.url}
+        value={address.url}
+      />
       <Pressable
         accessibilityLabel={copied ? "Copied" : "Copy address"}
         accessibilityRole="button"
@@ -155,5 +160,7 @@ const styles = StyleSheet.create({
   },
   step: { flexDirection: "row", gap: space[14] },
   stepBody: { flex: 1, gap: space[10], paddingTop: space[2] },
-  url: { color: color.text, flex: 1, fontFamily: monoFontFamily },
+  url: { color: color.text, fontFamily: monoFontFamily },
+  // Beside its Copy button, the address takes the rest of the row and wraps there.
+  urlRoom: { flex: 1 },
 });

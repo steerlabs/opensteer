@@ -63,7 +63,7 @@ describe("a device page's switches", () => {
     expect(home.footer).toBe("Your Opensteer lives on this Mac, so it can’t be removed.");
   });
 
-  it("never tells a Cloud Computer, a work Home or a server that it is a Mac", () => {
+  it("never tells a Cloud Computer or a server that it is a Mac", () => {
     const home = machine({
       kind: "home",
       ownership: "deployment",
@@ -71,7 +71,6 @@ describe("a device page's switches", () => {
     });
     for (const [homeKind, footer] of [
       ["cloud", "Your Opensteer lives on this Cloud Computer, so it can’t be removed."],
-      ["work", "Your Opensteer lives on this Cloud Computer, so it can’t be removed."],
       ["server", "Your Opensteer lives on this server, so it can’t be removed."],
     ] as const) {
       const view = deviceSwitches(home, { devicesAvailable: true, homeKind });

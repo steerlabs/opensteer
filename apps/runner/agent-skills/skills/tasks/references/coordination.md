@@ -40,7 +40,7 @@ Omit `aiAccountId` and `model` to inherit this task's choices. The Host places t
 
 For another AI account or model, search `opensteer_ai_account_list` with `query`, then use its `aiAccountId` and a model's `providerId`, `modelId` and offered `options` exactly; boolean options stay booleans. Pass `aiAccountId` to page through that account's models with `cursor` set to `nextCursor`, and start again if the list changes.
 
-`opensteer_task_configure` changes an existing task with the same IDs; `opensteer_task_read` shows its current AI account, model and access mode. A known native-session switch may need `continuation`; never invent its ID. `opensteer_defaults_read` and `opensteer_defaults_update` cover what new tasks start with, not existing tasks.
+`opensteer_task_configure` changes an existing task with the same IDs; `opensteer_task_read` shows its current AI account, model and access mode. A known native-session switch may need `continuation`; never invent its ID. `opensteer_state` (`settings`) reads what new tasks start with and `opensteer_command` (`execution.preferences.remember`) changes it; neither changes existing tasks.
 
 ## Forward places
 

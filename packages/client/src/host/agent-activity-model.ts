@@ -2161,6 +2161,12 @@ const opensteerSteps = new Map<string, OpensteerStep>([
 
   ["opensteer_ai_account_list", said(["Looking up AI accounts", "Looked up AI accounts"], "list")],
   [
+    "opensteer_commands",
+    said(["Looking up what it can change", "Looked up what it can change"], "list"),
+  ],
+  ["opensteer_command", said(["Changing Opensteer", "Changed Opensteer"], "pencil")],
+  ["opensteer_state", said(["Reading Opensteer's settings", "Read Opensteer's settings"], "list")],
+  [
     "opensteer_ai_account_update",
     saidByAction(
       {
@@ -2390,10 +2396,32 @@ const toolKinds = new Map<string, StepKind>(
           "pi/bash",
           "pi/powershell",
           "opencode/bash",
+          "antigravity/run_command",
+          "acp/execute",
         ],
       ],
-      ["read", ["claude/Read", "cursor/read", "pi/read", "opencode/read"]],
-      ["search", ["claude/Grep", "cursor/grep", "pi/grep", "opencode/grep"]],
+      [
+        "read",
+        [
+          "claude/Read",
+          "cursor/read",
+          "pi/read",
+          "opencode/read",
+          "antigravity/view_file",
+          "acp/read",
+        ],
+      ],
+      [
+        "search",
+        [
+          "claude/Grep",
+          "cursor/grep",
+          "pi/grep",
+          "opencode/grep",
+          "antigravity/grep_search",
+          "acp/search",
+        ],
+      ],
       [
         "list",
         [
@@ -2405,6 +2433,8 @@ const toolKinds = new Map<string, StepKind>(
           "pi/ls",
           "opencode/glob",
           "opencode/list",
+          "antigravity/list_dir",
+          "antigravity/find_by_name",
         ],
       ],
       [
@@ -2423,13 +2453,26 @@ const toolKinds = new Map<string, StepKind>(
           "opencode/write",
           "opencode/patch",
           "opencode/multiedit",
+          "antigravity/write_to_file",
+          "antigravity/replace_file_content",
+          "antigravity/multi_replace_file_content",
+          "acp/edit",
         ],
       ],
       [
         "web-search",
-        ["codex/web_search", "claude/WebSearch", "cursor/web_search", "opencode/websearch"],
+        [
+          "codex/web_search",
+          "claude/WebSearch",
+          "cursor/web_search",
+          "opencode/websearch",
+          "antigravity/search_web",
+        ],
       ],
-      ["web-page", ["claude/WebFetch", "opencode/webfetch"]],
+      [
+        "web-page",
+        ["claude/WebFetch", "opencode/webfetch", "antigravity/read_url_content", "acp/fetch"],
+      ],
       ["plan", ["codex.dynamic/update_plan", "claude/TodoWrite", "opencode/todowrite"]],
       ["delegate", ["claude/Task", "opencode/task"]],
     ] as const
@@ -2817,7 +2860,7 @@ export function effectiveArguments(tool: ToolEntry): unknown {
 
 function commandFrom(args: unknown): string | null {
   if (!isRecord(args)) return null;
-  const command = args.command ?? args.cmd;
+  const command = args.command ?? args.cmd ?? args.command_line;
   if (typeof command === "string" && command.trim()) return displayCommand(command);
   if (Array.isArray(command) && command.length > 0) {
     const parts = command.map(String);
@@ -2877,7 +2920,14 @@ function withoutWorkingDirectory(command: string): string {
 
 function pathsFrom(args: unknown): string[] {
   if (!isRecord(args)) return [];
-  for (const key of ["file_path", "path", "filePath", "notebook_path", "target_file"]) {
+  for (const key of [
+    "file_path",
+    "path",
+    "filePath",
+    "notebook_path",
+    "target_file",
+    "absolute_path",
+  ]) {
     const value = args[key];
     if (typeof value === "string" && value) return [value];
   }

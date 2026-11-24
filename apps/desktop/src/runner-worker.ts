@@ -59,7 +59,6 @@ void delivered
         notifyAwake = control.notifyAwake;
         recheckEngines = control.recheckEngines;
       },
-      enrollmentNotice: (message) => process.stderr.write(`${message}\n`),
       onStarted: (control) => parent.postMessage({ type: "runner.worker.ready", control }),
       onShutdown: (result) => {
         proof = result;

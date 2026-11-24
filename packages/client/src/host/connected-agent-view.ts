@@ -1,4 +1,5 @@
 import { workWords } from "./agent-work-copy.js";
+import { activityRows } from "./agent-work.js";
 import {
   BrowserProfileIdSchema,
   agentGrantPluginTargetKey,
@@ -135,6 +136,22 @@ export interface ConnectedAgentActivityItem {
 export type ConnectedAgentActivity =
   | { readonly kind: "unavailable" }
   | { readonly kind: "ready"; readonly items: readonly ConnectedAgentActivityItem[] };
+
+/** A connection's Recent activity from a page of `connections.activity`: one ordered list. */
+export function connectedAgentActivity(
+  page: Parameters<typeof activityRows>[0],
+): ConnectedAgentActivity {
+  return {
+    kind: "ready",
+    items: activityRows(page).map((row) => ({
+      id: row.id,
+      action: row.action,
+      outcome: row.outcome.label,
+      tone: row.outcome.tone === "busy" ? "muted" : row.outcome.tone,
+      at: row.at,
+    })),
+  };
+}
 
 export interface ConnectedAgentDetail {
   readonly row: ConnectedAgentRow;

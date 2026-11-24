@@ -158,15 +158,13 @@ describe("portal Deployment cards", () => {
     );
   });
 
-  it("calls a Cloud Computer a Cloud Computer, and a work Home's organization by name, never Team", () => {
+  it("calls a Cloud Computer a Cloud Computer, never Team", () => {
     // A Cloud Computer is a personal Home at its own address.
     const deployment = directoryDeployment(personalHomeAtItsAddress());
-    const mine = deploymentCard(deployment, true, { organization: null });
+    const mine = deploymentCard(deployment, true, "cloud");
     expect(mine).toContain("Cloud Computer");
     expect(mine).not.toContain(">Team<");
     expect(mine).toContain("M17.5 18.5"); // the cloud, not a server
-    const work = deploymentCard(deployment, true, { organization: "Acme" });
-    expect(work).toContain("Work · Acme · Cloud Computer");
     // A retired team server's row, still in the directory until removed, says no kind.
     const retired = deploymentCard(retiredTeamServerEntry(), true, "not-cloud");
     for (const word of ["Team", "Server", "Cloud Computer"])
@@ -242,7 +240,7 @@ describe("portal Deployment cards", () => {
     // Trusted membership names the Cloud Computer; the other Home at its own address is a server;
     // a retired team server's row says no kind.
     const known = await page({
-      listForAccount: async () => [{ deploymentId: cloud.id, status: "ready", work: null }],
+      listForAccount: async () => [{ deploymentId: cloud.id, status: "ready" }],
     });
     expect(notes(known)).toEqual([cloudWords("cloud.shortTitle"), "Server"]);
     expect(known).not.toContain(">Team<");

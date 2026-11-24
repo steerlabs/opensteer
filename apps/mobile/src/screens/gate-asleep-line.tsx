@@ -5,7 +5,7 @@ import { AsleepMoment } from "../computers/cloud-suggestion.js";
 
 /**
  * Under "Can't reach" for a Mac Home only: it may be asleep, and a Cloud Computer keeps agents
- * working while it sleeps. Never for a server, a Cloud Computer or a work Home.
+ * working while it sleeps. Never for a server or a Cloud Computer.
  */
 export function GateAsleepLine(props: {
   readonly deploymentId: string;

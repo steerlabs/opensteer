@@ -10,13 +10,6 @@ export const settingsDestinations = [
   { route: "SettingsSignIns", title: "Sign-ins", group: "For your agents" },
 ] as const;
 
-/** On a work Home: its mark as the group's title, and the way to what its organization can see. */
-export interface SettingsHomeWork {
-  readonly badge: string;
-  readonly title: string;
-  readonly onPress: () => void;
-}
-
 /** The Settings pages that belong to no one Home. */
 const settingsWithoutHome: ReadonlySet<SettingsDestination["route"]> = new Set([
   "SettingsAiSharing",
