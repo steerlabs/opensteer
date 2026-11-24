@@ -134,7 +134,10 @@ export async function runDisplayEditingJourney(directory: string) {
               ],
             });
             await Promise.all(completions);
-            const copy = await editing.send({ kind: "copy" });
+            const copy = await editing.send({
+              kind: "copy",
+              contextId: fixture.context.contextId,
+            });
             assert.equal(new TextDecoder().decode(copy?.items[0]?.bytes), "fixture selection");
             await assert.rejects(
               editing.send({
@@ -166,11 +169,15 @@ export async function runDisplayEditingJourney(directory: string) {
                 kind: "edit",
                 edit: { contextId: fixture.context.contextId, text: "한", before: "", after: "" },
               },
-              { kind: "command", command: "moveBackward" },
-              { kind: "command", command: "deleteBackward" },
-              { kind: "command", command: "deleteBackward" },
-              { kind: "paste", text: "line one\nline two 🦊" },
-              { kind: "copy" },
+              { kind: "command", command: "moveBackward", contextId: fixture.context.contextId },
+              { kind: "command", command: "deleteBackward", contextId: fixture.context.contextId },
+              { kind: "command", command: "deleteBackward", contextId: fixture.context.contextId },
+              {
+                kind: "paste",
+                text: "line one\nline two 🦊",
+                contextId: fixture.context.contextId,
+              },
+              { kind: "copy", contextId: fixture.context.contextId },
             ]);
             const producerEvents = fixture.sent.flatMap((message) =>
               message.type === "host.integrations.display.input" ||

@@ -58,6 +58,7 @@ test("native popup and viewer input refusals retain their typed reason", async (
         type: "clipboard.paste",
         surfaceId: BrowserSurfaceIdSchema.parse("page"),
         text: "viewer typed",
+        contextId: "00000000-0000-4000-8000-000000000001",
       },
     }),
   ).rejects.toEqual(new PhoneBrowserError("stale-geometry", "The drawn page geometry changed."));

@@ -55,7 +55,7 @@ public enum PhoneBrowserTickets {
     return object
   }
 
-  private static func validateClaims(_ claims: [String: Any]) throws {
+  static func validateClaims(_ claims: [String: Any]) throws {
     let required = ["creationOrigin", "access", "audience", "wireVersion", "operationExpiresAt", "remainingBudgetMs", "expiresAt", "identity", "issuedAt", "nonce", "runtimeId", "sessionId", "subject"]
     let optional = ["passkeys", "navigationVersion", "initialNavigation", "navigationAttributionVersion", "editingVersion", "basicInput", "surfaceState", "clipboard", "tabRestoreVersion", "popupFollowVersion", "initialSurfaceId", "viewport"]
     guard Set(required).isSubset(of: Set(claims.keys)), Set(claims.keys).isSubset(of: Set(required + optional)),
@@ -73,8 +73,8 @@ public enum PhoneBrowserTickets {
     for name in ["passkeys", "navigationVersion", "navigationAttributionVersion", "basicInput", "surfaceState", "tabRestoreVersion", "popupFollowVersion"] where claims[name] != nil {
       _ = try WireField.int(claims, name, range: 1...1)
     }
-    if claims["editingVersion"] != nil { _ = try WireField.int(claims, "editingVersion", range: 1...2) }
-    if (claims["editingVersion"] as? Int) == 2 {
+    let editingVersion = claims["editingVersion"] == nil ? nil : try WireField.int(claims, "editingVersion", range: 1...2)
+    if editingVersion == 2 {
       guard PhoneBrowserValidation.boolean(claims["clipboard"]) else { throw PhoneBrowserFailure.forbidden }
     } else if claims["clipboard"] != nil { throw PhoneBrowserFailure.forbidden }
     let identity = try WireField.object(claims, "identity")

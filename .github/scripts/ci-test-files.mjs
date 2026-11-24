@@ -37,6 +37,7 @@ export const realBrowserTests = [
   "apps/web/src/ui/address-text.chromium.test.tsx",
   "apps/web/src/components/workspace/workspace-tabs-chromium.interaction.test.tsx",
   "tests/browser-repl.test.ts",
+  "tests/editing-far-model.test.ts",
   "tests/passkey-relay-provider.test.ts",
   "tests/passkey-routing.test.ts",
 ];
@@ -64,10 +65,13 @@ export const darwinOnlyTests = [
 ];
 // Opt-in measurements that skip every case unless their benchmark command supplies options, so
 // integration discovery leaves them out: `pnpm bench:mobile-network`,
-// OPENSTEER_PERSONAL_STATE_PERF=1 and OPENSTEER_PERSONAL_WRITE_PERF=1.
+// OPENSTEER_PERSONAL_STATE_PERF=1 and OPENSTEER_PERSONAL_WRITE_PERF=1. The pool's real-host
+// proof is the same kind: it runs only where OPENSTEER_POOL_REAL_HOST names a real pool host's
+// endpoints, so no shard can execute it and the lane's inventory must not count it.
 export const optInIntegrationBenchmarks = [
   "packages/database/src/personal-state-performance.integration.test.ts",
   "packages/database/src/personal-write-performance.integration.test.ts",
+  "tests/browser-pool-guest.real-host.integration.test.ts",
 ];
 // These write and verify a package of the most files one may hold, over 10,000 real files
 // each. They need the integration lane's time, not its database.

@@ -31,11 +31,11 @@ sealed interface DisplayInput {
     data class Delete(val count: Int) : DisplayInput
     data object Submit : DisplayInput
     data class Key(val action: String, val code: String, val key: String, val modifiers: List<String>, val location: Int?, val repeat: Boolean?, val text: String?) : DisplayInput
-    data class Command(val command: String) : DisplayInput
+    data class Command(val command: String, val contextId: String = "00000000-0000-4000-8000-000000000000") : DisplayInput
     data class Edit(val contextId: String, val text: String, val before: String, val after: String) : DisplayInput
     data class Cut(val contextId: String) : DisplayInput
-    data object Copy : DisplayInput
-    data class Paste(val text: String) : DisplayInput
+    data class Copy(val contextId: String) : DisplayInput
+    data class Paste(val text: String, val contextId: String = "00000000-0000-4000-8000-000000000000") : DisplayInput
     data object UnsupportedPaste : DisplayInput
 }
 data class DisplayAck(val sequence: Long)
@@ -138,14 +138,14 @@ object DisplayWire {
             "key" -> DisplayInput.Key(f.enum("action", setOf("down", "up")), f.string("code", 0, 100), f.string("key", 0, 100),
                 f.stringArray("modifiers", 5).also { values -> if (values.any { it !in setOf("alt", "control", "meta", "shift", "primary") }) f.fail("modifiers", "is not an editing modifier") },
                 f.optionalInt("location", 0, 3)?.toInt(), f.optionalBool("repeat"), f.optionalString("text", 1, 64))
-            "command" -> DisplayInput.Command(f.enum("command", editingCommands))
+            "command" -> DisplayInput.Command(f.enum("command", editingCommands), f.string("contextId", pattern = Ids.uuid))
             "edit" -> {
                 val edit = f.obj("edit")
                 DisplayInput.Edit(edit.string("contextId", pattern = Ids.uuid), edit.string("text", 0, 10000), edit.string("before", 0, 10000), edit.string("after", 0, 10000))
                     .also { if (it.text.isEmpty() && it.before.isEmpty() && it.after.isEmpty()) edit.fail("text", "is an empty edit"); edit.end() }
             }
             "cut" -> DisplayInput.Cut(f.string("contextId", pattern = Ids.uuid))
-            "copy" -> DisplayInput.Copy
+            "copy" -> DisplayInput.Copy(f.string("contextId", pattern = Ids.uuid))
             "paste" -> if (f.has("items")) {
                 var total = 0L
                 f.array("items", 1, 16).forEach { value ->
@@ -157,7 +157,7 @@ object DisplayWire {
                 }
                 if (total > 16L * 1024 * 1024) f.fail("items", "exceeds the clipboard byte bound")
                 DisplayInput.UnsupportedPaste
-            } else DisplayInput.Paste(f.string("text", 1, 30000))
+            } else DisplayInput.Paste(f.string("text", 1, 30000), f.string("contextId", pattern = Ids.uuid))
             else -> f.fail("kind", "is not an input event")
         }
         f.end()

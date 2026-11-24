@@ -39,6 +39,7 @@ import type { NativeMenuSection } from "../thread/composer-menu.js";
 import { GlassSurface } from "../ui/glass.js";
 import { AppText, SecondaryButton } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
+import { ViewNotMountedError } from "../platform/view-not-mounted.js";
 import {
   DisplayControls,
   type DisplayPicture,
@@ -48,6 +49,7 @@ import {
 import {
   NativeDisplay,
   macWindowVideoSupported,
+  decoderFunctions,
   phoneDisplayBinary,
   type DisplayFrameMetadata,
   type NativeDecoder,
@@ -192,7 +194,8 @@ export function ComputerDisplay({
     };
   }, []);
   const resetDecoder = useCallback((next: number, keepPicture = false) => {
-    const native = decoder.current;
+    const instance = decoder.current;
+    const native = decoderFunctions(instance);
     if (!native) return;
     if (keepPicture && !native.resetKeepingPicture) {
       setPicture(null);
@@ -202,10 +205,12 @@ export function ComputerDisplay({
       keepPicture && native.resetKeepingPicture
         ? native.resetKeepingPicture(String(next))
         : native.reset(String(next));
-    void reset.catch(() => {
+    void reset.catch((error: unknown) => {
+      // No tag yet: the view reports its epoch when it joins its window, and is reset then.
+      if (error instanceof ViewNotMountedError) return;
       // Native teardown already clears its surface. A bridge call queued before
       // removal can reject after that view's tag is gone.
-      if (!mounted.current || decoder.current !== native || epoch.current !== next) return;
+      if (!mounted.current || decoder.current !== instance || epoch.current !== next) return;
       setShown(false);
       setWords("Video sharing is unavailable");
     });
@@ -368,7 +373,7 @@ export function ComputerDisplay({
         const { frame, epoch: current } = queued.shift()!;
         if (current !== epoch.current) continue;
         submitting++;
-        const native = decoder.current;
+        const native = decoderFunctions(decoder.current);
         const { width, height, ptsUs, key } = frame.header;
         decodingPicture.current = { generation: frame.header.generation, width, height };
         let result: Promise<boolean>;
@@ -525,6 +530,13 @@ export function ComputerDisplay({
           ref={decoder}
           style={[StyleSheet.absoluteFill, (restarting || timedOut) && { opacity: 0 }]}
           onNeedsKeyframe={({ nativeEvent }) => {
+            // A view whose reset was made before it existed joins its window at the empty
+            // epoch and would refuse every frame of this one: reset it now, then ask for a key.
+            if (nativeEvent.epoch === "" && epoch.current > 0) {
+              resetDecoder(epoch.current);
+              requestKeyframe.current?.();
+              return;
+            }
             if (nativeEvent.epoch !== String(epoch.current)) return;
             if (nativeEvent.pictureGone) {
               controls.current?.resetInput();

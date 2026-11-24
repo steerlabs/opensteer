@@ -1065,10 +1065,13 @@ export class BrowserController {
         message.type === "clipboard.cut" ||
         message.type === "clipboard.paste-data" ||
         message.type === "clipboard.part")
-    )
-      return this.enqueueFailure(
-        new BrowserRuntimeError("forbidden", "The engine clipboard was not negotiated."),
+    ) {
+      return this.refuseClipboard(message).then(() =>
+        this.enqueueFailure(
+          new BrowserRuntimeError("forbidden", "The engine clipboard was not negotiated."),
+        ),
       );
+    }
     if (this.editing && message.type === "clipboard.part") {
       this.clipboardParts.part(message);
       return Promise.resolve();
@@ -2050,6 +2053,8 @@ export class BrowserController {
             message.type === "input.compose" ? message.composition : message.edit,
             message.type === "input.compose",
             () => this.recordPasskeyInput(message, active.surface.id),
+            message.producerId,
+            message.type === "input.text" && message.follows === true,
           ))
         )
           this.editingCounters.stale = (this.editingCounters.stale ?? 0) + 1;
@@ -2064,13 +2069,20 @@ export class BrowserController {
               (m) => this.send(m),
             ),
           );
-        await observer.input(() => {
-          this.recordPasskeyInput(message, active.surface.id);
-          return cdp.send(
-            "Input.dispatchKeyEvent",
-            editingCommandParameters(message.command, this.platform),
-          );
-        });
+        const applied = await observer.command(
+          message.contextId,
+          message.command,
+          () => {
+            this.recordPasskeyInput(message, active.surface.id);
+            return cdp.send(
+              "Input.dispatchKeyEvent",
+              editingCommandParameters(message.command, this.platform),
+            );
+          },
+          message.producerId,
+          message.follows === true,
+        );
+        if (!applied) this.editingCounters.stale = (this.editingCounters.stale ?? 0) + 1;
         return;
       }
       const outcome = (result: "refused" | "pasted" | "empty" | "too-large") =>
@@ -2085,9 +2097,21 @@ export class BrowserController {
         await outcome("refused");
         return;
       }
+      // CZ5, PH2, PH5: clipboard ops target the field they were made for, or nowhere: refused whole.
+      const follows = message.type === "clipboard.paste-data" && message.follows === true;
+      if (!observer.admitsInsertion(message.contextId, message.producerId, follows)) {
+        if (message.type === "clipboard.paste-data") this.clipboardParts.discard(message);
+        await outcome("refused");
+        return;
+      }
       const input =
         message.type === "clipboard.paste-data" ? await this.clipboardParts.take(message) : null;
       if (message.type === "clipboard.paste-data" && input === null) return;
+      // Focus may have moved while bytes arrived: checked again, and again live in page inside run().
+      if (!observer.admitsInsertion(message.contextId, message.producerId, follows)) {
+        await outcome("refused");
+        return;
+      }
       const command =
         message.type === "clipboard.paste-data"
           ? "paste"
@@ -2095,16 +2119,30 @@ export class BrowserController {
             ? "copy"
             : "cut";
       try {
-        const result = await this.clipboard!.run(active.page, input, () =>
-          observer.input(() => {
+        const result = await this.clipboard!.run(active.page, input, () => {
+          const dispatch = () => {
             this.recordPasskeyInput(message, active.surface.id);
             return cdp.send(
               "Input.dispatchKeyEvent",
               editingCommandParameters(command, this.platform),
             );
-          }),
-        );
-        if (command === "paste") await outcome("pasted");
+          };
+          if (message.type === "clipboard.paste-data")
+            return observer.paste(
+              message.contextId,
+              dispatch,
+              message.producerId,
+              message.follows === true,
+            );
+          return observer.copyOrCut(
+            message.contextId,
+            dispatch,
+            message.producerId,
+            command === "cut",
+          );
+        });
+        if (!result.result) await outcome("refused");
+        else if (command === "paste") await outcome("pasted");
         else
           await publishClipboardItems(
             {
@@ -2300,7 +2338,8 @@ export class BrowserController {
           ...resolved,
         });
       };
-      if (this.editing) await (await this.editingObserver(active.surface.id)).input(dispatch);
+      if (this.editing)
+        await (await this.editingObserver(active.surface.id)).input(dispatch, message.producerId);
       else await dispatch();
       if (message.action === "up") {
         keys.delete(message.code);
@@ -2321,10 +2360,20 @@ export class BrowserController {
     }
     if (message.type === "clipboard.paste") {
       if (message.surfaceId !== active.surface.id) return;
-      this.ledger.recordHumanActivity(message.surfaceId, { kind: "typing" });
-      this.ledger.recordViewerInput(message.surfaceId, message.producerId);
-      this.recordPasskeyInput(message, active.surface.id);
-      await cdp.send("Input.insertText", { text: message.text });
+      // CZ5, PH2: into the field it was made for, verified live in page, or nowhere.
+      const observer = await this.editingObserver(active.surface.id);
+      const applied = await observer.paste(
+        message.contextId,
+        () => {
+          this.ledger.recordHumanActivity(message.surfaceId, { kind: "typing" });
+          this.ledger.recordViewerInput(message.surfaceId, message.producerId);
+          this.recordPasskeyInput(message, active.surface.id);
+          return cdp.send("Input.insertText", { text: message.text });
+        },
+        message.producerId,
+        message.follows === true,
+      );
+      if (!applied) throw new BrowserRuntimeError("conflict", "The field changed. Paste again.");
       return;
     }
     if (message.type === "dialog.respond") {

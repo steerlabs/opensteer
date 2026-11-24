@@ -194,6 +194,16 @@ describe("BrowserRuntimeServer", () => {
   it("delivers paste parts queued during attachment before waiting for the paste", async () => {
     const ready = gate({ label: "browser attachment handoff", deadlineMs: 2_000 });
     const page = new FakePage();
+    const sendCdp = page.cdpSession.send.bind(page.cdpSession);
+    vi.spyOn(page.cdpSession, "send").mockImplementation((method, parameters) => {
+      if (
+        method === "Runtime.evaluate" &&
+        typeof parameters?.expression === "string" &&
+        parameters.expression.includes("prepareClipboard")
+      )
+        return Promise.resolve({ result: { value: { ok: true, composing: false } } });
+      return sendCdp(method, parameters);
+    });
     let pasted: readonly EngineClipboardItem[] | null = null;
     const browser = Object.assign(new FakeLaunchedBrowser(new FakeContext([page])), {
       clipboard: {
@@ -239,6 +249,9 @@ describe("BrowserRuntimeServer", () => {
       await ready.entered;
       const surfaceId = committedBrowserTabs(messages).rows.keys().next().value;
       expect(surfaceId).toBeDefined();
+      const editing = messages.findLast((message) => message.type === "browser.editing");
+      expect(editing?.type).toBe("browser.editing");
+      const contextId = editing?.type === "browser.editing" ? editing.context.contextId : "";
       const operationId = randomUUID();
       const result = Promise.withResolvers<unknown>();
       socket.on("message", (raw, binary) => {
@@ -252,6 +265,7 @@ describe("BrowserRuntimeServer", () => {
           type: "clipboard.paste-data",
           surfaceId,
           operationId,
+          contextId,
           items: [{ type: "text/plain", size: 5 }],
         }),
       );

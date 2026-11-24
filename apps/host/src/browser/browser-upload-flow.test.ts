@@ -112,6 +112,7 @@ it("backpressures a bounded 10 MiB clipboard stream without ending the browser s
         surfaceId: "page-upload",
         operationId,
         items: [{ type: "image/png", size: 10 * 1024 * 1024 }],
+        contextId: randomUUID(),
       }),
     );
     for (let index = 0; index < 20; index++)

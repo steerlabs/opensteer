@@ -251,6 +251,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         await waitForBrowserState(() =>
           messages.some((m) => m.type === "browser.editing" && m.context.field !== null),
         );
+      const context = () => messages.filter((m) => m.type === "browser.editing").at(-1)!;
       if (mode === "undo" || mode === "undo-baseline") {
         for (const text of ["a", "b"]) {
           stroke({ key: text, code: `Key${text.toUpperCase()}`, modifiers: [], text });
@@ -258,7 +259,13 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
             read<boolean>(`t.value===${JSON.stringify(text === "a" ? "a" : "ab")}`),
           );
         }
-        if (negotiated) send({ type: "input.command", surfaceId, command: "undo" });
+        if (negotiated)
+          send({
+            type: "input.command",
+            surfaceId,
+            command: "undo",
+            contextId: context().context.contextId,
+          });
         else
           stroke({
             key: "z",
@@ -274,7 +281,6 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         capture = undefined;
         return;
       }
-      const context = () => messages.filter((m) => m.type === "browser.editing").at(-1)!;
       if (mode === "editing" || mode === "editing-v2") {
         send({
           type: "input.key",
@@ -429,14 +435,33 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         await waitForBrowserState(() => read<boolean>("t.value==='仮'"));
         await read("second.value='untouched';second.focus()");
         await waitForBrowserState(() => context().context.contextId !== composing);
+        // The page reports the focus move more than once (the first field's composition ends
+        // too): it has settled when a frame and a round trip through the controller publish
+        // nothing new.
+        const quiet = async () => {
+          await read(
+            "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))",
+          );
+          await agent("Browser.getVersion");
+        };
+        for (let seen = "", rounds = 0; seen !== context().context.contextId; rounds++) {
+          if (rounds > 20) throw new Error("The page never settled after the focus move.");
+          seen = context().context.contextId;
+          await quiet();
+        }
         const secondContext = context().context.contextId;
         send({
           type: "input.text",
           surfaceId,
           edit: { contextId: composing, before: "", after: "", text: "wrong field" },
         });
-        await waitForBrowserState(() => context().context.contextId !== secondContext);
+        // The rule: an edit under another field's context is refused alone, and nothing rotates,
+        // so no context is published for it. (This waited for a new context, which only an
+        // unrelated republication of the page gave, two runs in three.) A command sent after it
+        // through the same controller answers once the edit has been taken and refused.
+        await quiet();
         expect(await read("second.value")).toBe("untouched");
+        expect(context().context.contextId).toBe(secondContext);
         checks.push("first composition takes over verified text; focus change refuses old commit");
         await read(
           "t.value='az';t.focus();t.setSelectionRange(2,2);window.layoutBinding=e=>{if(!(e.metaKey||e.ctrlKey)||e.altKey||e.shiftKey)return;if(e.keyCode===65){e.preventDefault();t.select()}if(e.keyCode===90){e.preventDefault();document.execCommand('undo')}};t.addEventListener('keydown',layoutBinding)",
@@ -461,7 +486,12 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           keyCode: 90,
         });
         await read("t.removeEventListener('keydown',layoutBinding)");
-        send({ type: "input.command", surfaceId, command: "redo" });
+        send({
+          type: "input.command",
+          surfaceId,
+          command: "redo",
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() => read<boolean>("t.value==='x'"));
         expect(await read("events.filter(e=>e.type==='keydown').at(-1)")).toMatchObject(
           process.platform === "darwin"
@@ -489,7 +519,12 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         await read(
           "window.commandCanceled=false;t.addEventListener('keydown',e=>{e.preventDefault();window.commandCanceled=true},{once:true});t.setSelectionRange(3,3)",
         );
-        send({ type: "input.command", surfaceId, command: "moveToBeginningOfLine" });
+        send({
+          type: "input.command",
+          surfaceId,
+          command: "moveToBeginningOfLine",
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() => read<boolean>("commandCanceled"));
         expect(await read("t.selectionStart")).toBe(3);
         checks.push("page keydown cancellation suppresses the native editing command");
@@ -506,12 +541,23 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
             context().context.contextId !== secondContext &&
             context().context.field?.sensitive === false,
         );
-        send({ type: "input.command", surfaceId, command: "selectAll" });
+        send({
+          type: "input.command",
+          surfaceId,
+          command: "selectAll",
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() =>
           read<boolean>("t.selectionStart === 0 && t.selectionEnd === t.value.length"),
         );
         const operationId = randomUUID();
-        send({ type: "clipboard.cut", surfaceId, operationId, consumerToken });
+        send({
+          type: "clipboard.cut",
+          surfaceId,
+          operationId,
+          consumerToken,
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() =>
           messages.some((m) => m.type === "clipboard.result" && m.operationId === operationId),
         );
@@ -529,6 +575,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           operationId: pasteId,
           consumerToken,
           items: [{ type: "text/plain", size: pasteBytes.length }],
+          contextId: context().context.contextId,
         });
         send({
           type: "input.key",
@@ -549,10 +596,58 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         );
         expect(await read("events.filter(e=>e.type==='paste').every(e=>e.trusted)")).toBe(true);
         checks.push("paste parts retain lane position and native trusted paste");
+        // CZ5: a paste is made for one field. Focus moves to another while its bytes are in
+        // flight: nothing lands in either field, and the person is told it was refused.
+        const madeFor = context().context.contextId;
+        const before = await read<string>("t.value");
+        const movedId = randomUUID();
+        const movedBytes = Buffer.from("made for t");
+        send({
+          type: "clipboard.paste-data",
+          surfaceId,
+          operationId: movedId,
+          consumerToken,
+          items: [{ type: "text/plain", size: movedBytes.length }],
+          contextId: madeFor,
+        });
+        await agent("Browser.getVersion");
+        await read("second.value='untouched';second.focus()");
+        await waitForBrowserState(
+          () =>
+            context().context.contextId !== madeFor && context().context.field?.multiline === false,
+        );
+        send({
+          type: "clipboard.part",
+          part: { operationId: movedId, index: 0, data: movedBytes.toString("base64") },
+        });
+        await waitForBrowserState(() =>
+          messages.some((m) => m.type === "clipboard.result" && m.operationId === movedId),
+        );
+        expect(
+          messages.find((m) => m.type === "clipboard.result" && m.operationId === movedId),
+        ).toMatchObject({ outcome: "refused", consumerToken });
+        expect(await read("second.value")).toBe("untouched");
+        expect(await read("t.value")).toBe(before);
+        const beforeSwitchBack = messages.length;
+        await read("t.focus()");
+        await waitForBrowserState(() => context().context.field?.multiline === true);
+        expect(
+          messages
+            .slice(beforeSwitchBack)
+            .filter((m) => m.type === "browser.editing" && m.context.field === null),
+        ).toEqual([]);
+        checks.push("a paste whose field lost focus in flight lands nowhere and is refused");
         await read("p.focus();p.value='secret';p.select()");
+        await waitForBrowserState(() => context().context.field?.sensitive === true);
         const sensitiveId = randomUUID();
         const copyEvents = await read<number>("events.filter(e=>e.type==='copy').length");
-        send({ type: "clipboard.copy", surfaceId, operationId: sensitiveId, consumerToken });
+        send({
+          type: "clipboard.copy",
+          surfaceId,
+          operationId: sensitiveId,
+          consumerToken,
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() =>
           messages.some((m) => m.type === "clipboard.result" && m.operationId === sensitiveId),
         );
@@ -790,7 +885,12 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           modifiers: [],
         });
         const emptyCopyId = randomUUID();
-        send({ type: "clipboard.copy", surfaceId, operationId: emptyCopyId });
+        send({
+          type: "clipboard.copy",
+          surfaceId,
+          operationId: emptyCopyId,
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() =>
           messages.some((m) => m.type === "clipboard.result" && m.operationId === emptyCopyId),
         );
@@ -832,7 +932,12 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           attached.sessionId,
         );
         const interleavedCopy = randomUUID();
-        send({ type: "clipboard.copy", surfaceId, operationId: interleavedCopy });
+        send({
+          type: "clipboard.copy",
+          surfaceId,
+          operationId: interleavedCopy,
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() =>
           messages.some((m) => m.type === "clipboard.result" && m.operationId === interleavedCopy),
         );
@@ -846,6 +951,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           type: "clipboard.paste-data",
           surfaceId,
           operationId,
+          contextId: context().context.contextId,
           items: items.map((item) => ({
             type: item.type,
             size: item.bytes.length,
@@ -956,11 +1062,21 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         });
         await waitForBrowserState(() => read<boolean>("editContext.text==='한국'"));
         checks.push("generic EditContext composition commits once");
+        const beforeRich = context().context.contextId;
         await read(
           "rich.innerHTML='<b>Bold</b> text';rich.focus();const range=document.createRange();range.selectNodeContents(rich);getSelection().removeAllRanges();getSelection().addRange(range)",
         );
+        await waitForBrowserState(
+          () =>
+            context().context.contextId !== beforeRich && context().context.field?.kind === "rich",
+        );
         const htmlCopy = randomUUID();
-        send({ type: "clipboard.copy", surfaceId, operationId: htmlCopy });
+        send({
+          type: "clipboard.copy",
+          surfaceId,
+          operationId: htmlCopy,
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() =>
           messages.some((m) => m.type === "clipboard.result" && m.operationId === htmlCopy),
         );
@@ -1051,12 +1167,14 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           surfaceId,
           producerId: contender,
           command: "deleteBackward",
+          contextId: blockedContext,
         });
         send({
           type: "clipboard.cut",
           surfaceId,
           producerId: contender,
           operationId: randomUUID(),
+          contextId: blockedContext,
         });
         await waitForBrowserState(
           () =>
@@ -1100,6 +1218,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           producerId: pressureProducer,
           operationId: pressurePaste,
           items: [{ type: "text/plain", size: 1 }],
+          contextId: context().context.contextId,
           inputSequence: 1,
         });
         const sentKeys = 6;

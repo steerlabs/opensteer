@@ -552,7 +552,8 @@ final class HelperWireFixtureTests: XCTestCase {
       "display.input-reset": .object(["streamId": .string(streamId), "source": owner]),
       "display.input": .object(["streamId": .string(streamId), "source": owner,
         "geometry": .number(1), "sequence": .number(0),
-        "events": .array([.object(["kind": .string("copy")])])]),
+        "events": .array([.object(["kind": .string("copy"),
+          "contextId": .string("00000000-0000-4000-8000-000000000001")])])]),
       "display.resolve": .object(["source": source]),
       "display.start": .object([
         "streamId": .string(streamId), "target": target, "sources": .array([source]),

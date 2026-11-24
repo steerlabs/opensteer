@@ -8,7 +8,12 @@ import {
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
+  caretMoveEditingCommands,
+  committedRemainder,
+  caretRelativeEditingCommands,
+  EditingContexts,
   EditingContextSchema,
+  type EditingCommand,
   type EditingContext,
   type EditingComposition,
   type EditingTextEdit,
@@ -32,6 +37,8 @@ const bindingReport = z.object({
 });
 const prepared = z.object({
   ok: z.boolean(),
+  /** Whether the page's own composition events say the field is composing. */
+  composing: z.boolean().optional(),
   reason: z.string().optional(),
   replacementStart: z.number().optional(),
   replacementEnd: z.number().optional(),
@@ -179,8 +186,30 @@ export class PageEditingObserver {
   readonly #inventory = new ExecutionContextInventory();
   #focused: { context: number; frame: string; fieldId: string; selectionRevision: number } | null =
     null;
-  #context: EditingContext = { contextId: randomUUID(), field: null, caret: null };
-  #composition = false;
+  /**
+   * Shared editing-admission state (docs/editing-admission.md): tracks the focused field identity,
+   * its current context, and up to 64 earlier contexts of that same field.
+   */
+  readonly #admission = new EditingContexts(() => randomUUID());
+  #context: EditingContext = { contextId: this.#admission.current, field: null, caret: null };
+  /**
+   * CZ7: each producer's last refused edit, by its context, until that producer's next edit that
+   * applies: the moves it computed from it go with it. One per producer: another viewer's
+   * refusal neither takes this one's moves nor releases them.
+   */
+  readonly #refusedFrom = new Map<string | undefined, string>();
+  /**
+   * The open composition's context: who composed it, so the context that ends with it open
+   * closes it as its own act, attributed to it, before another context's operation is prepared.
+   * Whether the field is composing is the page's (its composition events), never assumed.
+   */
+  #composer: {
+    contextId: string;
+    producer: string | undefined;
+    admitted?: (() => void) | undefined;
+    /** The composition's text as last sent: what the page keeps if it ends it itself. */
+    text: string;
+  } | null = null;
   #script: string | null = null;
   #closed = false;
   #generation = 0;
@@ -249,7 +278,10 @@ export class PageEditingObserver {
         }
       },
     );
-    this.#publish = publish;
+    this.#publish = (context) => {
+      if (context.contextId === this.#admission.current) this.#admission.markPublished();
+      publish(context);
+    };
     this.#menu = menu;
     cdp.on("Runtime.bindingCalled", this.#onBinding);
     cdp.on("Runtime.executionContextCreated", this.#onContext);
@@ -312,6 +344,9 @@ export class PageEditingObserver {
     this.#appliedRemote = initialRemote;
     this.#started = true;
     await this.#frames.start();
+    // CY7: a page has a context from the start, with no field until one is focused, so every
+    // command (a Select all of the page too) says the context it was made for.
+    this.#publish(this.#context);
     if (!this.#closed && this.#appliedRemote !== this.#remoteEditing) this.#scheduleRemoteSync();
   }
 
@@ -402,10 +437,57 @@ export class PageEditingObserver {
     edit: EditingComposition | EditingTextEdit,
     composition: boolean,
     admitted?: () => void,
+    producer?: string,
+    follows = false,
   ): Promise<boolean> {
-    if (this.#activeChild) return this.#activeChild.edit(edit, composition, admitted);
+    if (this.#activeChild)
+      return this.#activeChild.edit(edit, composition, admitted, producer, follows);
     const focus = this.#focused;
-    if (!focus || edit.contextId !== this.#context.contextId) return this.#stale();
+    // What the person types: text inserted at the page's caret, with nothing around it the page
+    // could find changed. A replacement or a composition says what it replaces.
+    const insertion =
+      !composition && edit.text.length > 0 && !edit.before?.length && !edit.after?.length;
+    // S6 (Rule 5): a refusal when no field is focused rotates nothing.
+    if (!focus) return false;
+    // P2 (S2): an insertion over a selection follows its selection removal as one unit.
+    if (follows && this.#refusedFrom.get(producer) === edit.contextId) return false;
+    // Docs/editing-admission.md: insertions are relative (Rule 2, any context of the same field);
+    // browser replacements/compositions keep exact context + selectionRevision (exactNamed: true).
+    if (
+      !this.#admission.admits(edit.contextId, insertion ? "relative" : "named", {
+        exactNamed: true,
+      })
+    ) {
+      this.#refusedFrom.set(producer, edit.contextId);
+      return false;
+    }
+    const earlier = edit.contextId !== this.#admission.current;
+    // CW1: another context's (or viewer's) composition is closed only for an operation the page
+    // admits whatever its text: an insertion at the caret. A replacement or a composition of
+    // another composer while one is open is refused alone; the composition and the record stay.
+    const composer = this.#composer;
+    if (
+      composer &&
+      (composer.contextId !== edit.contextId || composer.producer !== producer) &&
+      !insertion
+    ) {
+      // Only while the page still composes: a composition it ended itself (focus left) is over.
+      const open = await this.#cdp
+        .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+          contextId: focus.context,
+          expression: "globalThis.editingOwner?.composition()",
+          returnByValue: true,
+          silent: true,
+        })
+        .catch(() => null);
+      if (typeof open?.result?.value === "string" && open.result.value.length > 0) {
+        this.#refusedFrom.set(producer, edit.contextId);
+        return this.#stale();
+      }
+      this.#composer = null;
+    }
+    // CY3: another composer's composition is closed only for an edit the page will apply: after
+    // prepare has admitted it, in the one place below. A refused edit closes and records nothing.
     const generation = this.#generation;
     const response = await this.#cdp
       .send<{
@@ -413,13 +495,18 @@ export class PageEditingObserver {
         exceptionDetails?: { text?: string; exception?: { className?: string } };
       }>("Runtime.evaluate", {
         contextId: focus.context,
-        expression: `globalThis.editingOwner?.prepare(${JSON.stringify({ fieldId: focus.fieldId, revision: focus.selectionRevision, before: edit.before ?? "", after: edit.after ?? "", composing: this.#composition, deleting: !composition && edit.text.length === 0 })})`,
+        expression: `globalThis.editingOwner?.prepare(${JSON.stringify({ fieldId: focus.fieldId, revision: focus.selectionRevision, before: edit.before ?? "", after: edit.after ?? "", deleting: !composition && edit.text.length === 0, insertion, earlier })})`,
         returnByValue: true,
         silent: true,
       })
       .catch(() => null);
     const parsed = prepared.safeParse(response?.result?.value);
-    if (!parsed.success || !parsed.data.ok || generation !== this.#generation) {
+    // An insertion goes in at the caret however the page moved on meanwhile, while focus stays
+    // in the same field.
+    const moved = insertion
+      ? this.#focused?.fieldId !== focus.fieldId || this.#focused?.context !== focus.context
+      : generation !== this.#generation;
+    if (!parsed.success || !parsed.data.ok || moved) {
       if (parsed.success && parsed.data.ok) await this.#finishInput(focus.context);
       if (process.env.OPENSTEER_BROWSER_DIAGNOSTICS === "1")
         console.info(
@@ -432,10 +519,35 @@ export class PageEditingObserver {
             transportFailed: response === null,
           }),
         );
+      this.#refusedFrom.set(producer, edit.contextId);
+      // P3 (S1): refusing a relative insertion under an earlier context because the live selection
+      // is non-collapsed changes no context (Rule 5).
+      if (parsed.success && parsed.data.reason === "selection-not-collapsed") return false;
       return this.#stale();
     }
+    // CY4: the composer's commit of a composition the page ended itself (it rewrote the field and
+    // kept the text, sending no compositionend): what the page holds from it is applied, and only
+    // what the commit adds goes (committedRemainder, the rule the phone applies to a change of
+    // context).
+    const ended =
+      insertion &&
+      !parsed.data.composing &&
+      composer !== null &&
+      this.#composer === composer &&
+      composer.contextId === edit.contextId &&
+      composer.producer === producer;
+    const text = ended ? committedRemainder(composer.text, edit.text) : edit.text;
+    if (ended) this.#composer = null;
     try {
+      if (this.#composer) {
+        await this.#close(focus, edit.contextId, producer);
+        // Read again after the close's awaits: focus moved meanwhile, and nothing is applied.
+        if (this.#focused?.fieldId !== focus.fieldId || this.#focused?.context !== focus.context)
+          return false;
+      }
       admitted?.();
+      // Applied: what this producer computes from here on is its own again.
+      if (this.#refusedFrom.get(producer) === edit.contextId) this.#refusedFrom.delete(producer);
       if (composition && "selectionStart" in edit) {
         await this.#cdp.send("Input.imeSetComposition", {
           text: edit.text,
@@ -448,7 +560,10 @@ export class PageEditingObserver {
                 replacementEnd: parsed.data.replacementEnd,
               }),
         });
-        this.#composition = edit.text.length > 0;
+        this.#composer =
+          edit.text.length > 0
+            ? { contextId: edit.contextId, producer, admitted, text: edit.text }
+            : null;
       } else {
         if (
           parsed.data.replacementStart !== undefined &&
@@ -461,7 +576,18 @@ export class PageEditingObserver {
             replacementStart: parsed.data.replacementStart,
             replacementEnd: parsed.data.replacementEnd,
           });
-        if (edit.text.length) await this.#cdp.send("Input.insertText", { text: edit.text });
+        if (ended) {
+          if (text) await this.#cdp.send("Input.insertText", { text });
+        } else if (edit.text.length) await this.#cdp.send("Input.insertText", { text: edit.text });
+        // An edit replaces an open composition: an empty one removes it, as the empty
+        // composition of a cancel does. A Backspace would delete one of its characters and
+        // commit the rest.
+        else if (parsed.data.composing)
+          await this.#cdp.send("Input.imeSetComposition", {
+            text: "",
+            selectionStart: 0,
+            selectionEnd: 0,
+          });
         else
           await this.#cdp.send("Input.dispatchKeyEvent", {
             type: "rawKeyDown",
@@ -470,7 +596,7 @@ export class PageEditingObserver {
             windowsVirtualKeyCode: 8,
             commands: ["deleteBackward"],
           });
-        this.#composition = false;
+        this.#composer = null;
       }
       return true;
     } finally {
@@ -478,8 +604,204 @@ export class PageEditingObserver {
     }
   }
 
-  async input<T>(action: () => Promise<T>): Promise<T> {
-    if (this.#activeChild) return this.#activeChild.input(action);
+  /**
+   * CV1: a command made in `contextId`. One relative to the caret (the protocol's list, CY7) made
+   * under an earlier context of the focused field applies at the caret as it now is. Any other
+   * command under an earlier context, and any command under another field's, is refused alone,
+   * and nothing rotates.
+   */
+  async command(
+    contextId: string,
+    command: EditingCommand,
+    action: () => Promise<unknown>,
+    producer?: string,
+    follows = false,
+  ): Promise<boolean> {
+    if (this.#activeChild)
+      return this.#activeChild.command(contextId, command, action, producer, follows);
+    const relative = caretRelativeEditingCommands.has(command);
+    // CY6: admitted under its own context, and admitted again after every await, against focus
+    // and context as they are then: anything moved, and it is refused alone.
+    const focus = this.#focused;
+    const kind = relative ? "relative" : "exact";
+    const admitted = () =>
+      this.#focused?.fieldId === focus?.fieldId &&
+      this.#focused?.context === focus?.context &&
+      this.#admission.admits(contextId, kind);
+    if (!admitted()) return false;
+    // A move computed from an edit the page refused goes with it (CY5, CZ7): only one that says
+    // it follows that edit. The person's own moves, and a Backspace, are theirs.
+    if (
+      follows &&
+      caretMoveEditingCommands.has(command) &&
+      this.#refusedFrom.get(producer) === contextId
+    )
+      return false;
+    if (!focus) {
+      // S7: even when the observer believes no field is focused, verify live in-page that no
+      // editable field took focus before dispatching a page-level command.
+      for (const execContext of this.#contexts.keys()) {
+        const began = await this.#cdp
+          .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+            contextId: execContext,
+            expression: `globalThis.editingOwner?.beginInput(${JSON.stringify({ fieldId: null, requireCollapsed: false })})`,
+            returnByValue: true,
+            silent: true,
+          })
+          .catch(() => null);
+        const parsedBegin = prepared.safeParse(began?.result?.value);
+        if (!parsedBegin.success || !parsedBegin.data.ok) return false;
+      }
+      if (this.#focused !== null || !admitted()) return false;
+      await action();
+      return true;
+    }
+    // Another composer's composition is closed by the command's own context, not the current one.
+    await this.#close(focus, contextId, producer);
+    if (!admitted()) return false;
+    const requireCollapsed = relative && contextId !== this.#admission.current;
+    const began = await this.#cdp
+      .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+        contextId: focus.context,
+        expression: `globalThis.editingOwner?.beginInput(${JSON.stringify({ fieldId: focus.fieldId, requireCollapsed, ...(relative ? {} : { revision: focus.selectionRevision }) })})`,
+        returnByValue: true,
+        silent: true,
+      })
+      .catch(() => null);
+    const parsedBegin = prepared.safeParse(began?.result?.value);
+    if (!parsedBegin.success || !parsedBegin.data.ok) return false;
+    try {
+      if (!admitted()) return false;
+      await action();
+      return true;
+    } finally {
+      await this.#finishInput(focus.context);
+    }
+  }
+
+  /**
+   * CZ5, PH2: whether a paste made for `contextId` may go in now: as an insertion, while that field
+   * (in that context or an earlier one of it) is the one focused, and not following a refused
+   * selection-deletion edit from the same producer under that context.
+   */
+  admitsInsertion(contextId: string, producer?: string, follows = false): boolean {
+    if (this.#activeChild) return this.#activeChild.admitsInsertion(contextId, producer, follows);
+    if (follows && this.#refusedFrom.get(producer) === contextId) return false;
+    return this.#admission.admits(contextId, "relative");
+  }
+
+  /**
+   * PH2: performs a paste after verifying the focused field LIVE in the page (after all awaits,
+   * including closing any open composition and clipboard setup). Refuses if focus moved, the field
+   * became disabled/readOnly, or a preceding selection-deletion edit under this context was refused.
+   */
+  paste(
+    contextId: string,
+    action: () => Promise<unknown>,
+    producer?: string,
+    follows = false,
+  ): Promise<boolean> {
+    return this.#clipboard(contextId, action, {
+      requireNonSensitive: false,
+      mutatesSelection: true,
+      producer,
+      follows,
+    });
+  }
+
+  /**
+   * PH5, P3: performs a copy or cut after verifying the focused field LIVE in the page (same rule as
+   * paste, plus live non-sensitive check; cut under an earlier context also requires a collapsed
+   * live selection so it never deletes a page-made selection the viewer never saw).
+   */
+  copyOrCut(
+    contextId: string,
+    action: () => Promise<unknown>,
+    producer?: string,
+    isCut = false,
+  ): Promise<boolean> {
+    return this.#clipboard(contextId, action, {
+      requireNonSensitive: true,
+      mutatesSelection: isCut,
+      producer,
+      follows: false,
+    });
+  }
+
+  async #clipboard(
+    contextId: string,
+    action: () => Promise<unknown>,
+    options: {
+      readonly requireNonSensitive: boolean;
+      readonly mutatesSelection: boolean;
+      readonly producer?: string | undefined;
+      readonly follows: boolean;
+    },
+  ): Promise<boolean> {
+    if (this.#activeChild) return this.#activeChild.#clipboard(contextId, action, options);
+    const { requireNonSensitive, mutatesSelection, producer, follows } = options;
+    const admitted = () =>
+      this.#admission.admits(contextId, "relative") &&
+      !(requireNonSensitive && this.#context.field?.sensitive) &&
+      !(follows && this.#refusedFrom.get(producer) === contextId);
+    if (!admitted()) return false;
+    const focus = this.#focused;
+    if (!focus) {
+      for (const execContext of this.#contexts.keys()) {
+        const response = await this.#cdp
+          .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+            contextId: execContext,
+            expression: `globalThis.editingOwner?.prepareClipboard(${JSON.stringify({ fieldId: null, requireNonSensitive, requireCollapsed: false })})`,
+            returnByValue: true,
+            silent: true,
+          })
+          .catch(() => null);
+        const parsed = prepared.safeParse(response?.result?.value);
+        if (!parsed.success || !parsed.data.ok) return false;
+      }
+      if (this.#focused !== null || !admitted()) return false;
+      await action();
+      return true;
+    }
+    await this.#close(focus, contextId, producer);
+    if (
+      this.#focused?.fieldId !== focus.fieldId ||
+      this.#focused?.context !== focus.context ||
+      !admitted()
+    )
+      return false;
+    const requireCollapsed = mutatesSelection && contextId !== this.#admission.current;
+    const response = await this.#cdp
+      .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+        contextId: focus.context,
+        expression: `globalThis.editingOwner?.prepareClipboard(${JSON.stringify({ fieldId: focus.fieldId, requireNonSensitive, requireCollapsed })})`,
+        returnByValue: true,
+        silent: true,
+      })
+      .catch(() => null);
+    const parsed = prepared.safeParse(response?.result?.value);
+    const stillFocused =
+      this.#focused?.fieldId === focus.fieldId &&
+      this.#focused?.context === focus.context &&
+      admitted();
+    if (!parsed.success || !parsed.data.ok || !stillFocused) {
+      if (parsed.success && parsed.data.ok) await this.#finishInput(focus.context);
+      return false;
+    }
+    try {
+      if (!requireNonSensitive && this.#refusedFrom.get(producer) === contextId)
+        this.#refusedFrom.delete(producer);
+      await action();
+      return true;
+    } finally {
+      await this.#finishInput(focus.context);
+    }
+  }
+
+  async input<T>(action: () => Promise<T>, producer?: string): Promise<T> {
+    if (this.#activeChild) return this.#activeChild.input(action, producer);
+    const focus = this.#focused;
+    if (focus) await this.#close(focus, this.#context.contextId, producer);
     const context = this.#focused?.context;
     if (context === undefined) return action();
     await this.#cdp.send("Runtime.evaluate", {
@@ -504,10 +826,64 @@ export class PageEditingObserver {
       .catch(() => undefined);
   }
 
+  /**
+   * Ends a composition another context left open, as that context's closing act: exactly the
+   * marked text the page holds is committed, nothing added, attributed to the context that
+   * composed it. The page's own input bracket keeps its selection revision, so the operation
+   * prepared next reads the selection the close left. A composition the page ended itself
+   * (focus left) sends nothing.
+   */
+  async #close(
+    focus: { context: number; fieldId: string },
+    contextId: string,
+    producer: string | undefined,
+  ): Promise<void> {
+    const composer = this.#composer;
+    if (!composer || (composer.contextId === contextId && composer.producer === producer)) return;
+    this.#composer = null;
+    const response = await this.#cdp
+      .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+        contextId: focus.context,
+        expression: "globalThis.editingOwner?.composition()",
+        returnByValue: true,
+        silent: true,
+      })
+      .catch(() => null);
+    const text = response?.result?.value;
+    if (typeof text !== "string" || text.length === 0) return;
+    // CW1: decided and acted on together. Just before the send the page is read again: the same
+    // field focused, the same marked text, still composing; anything moved, and nothing is sent.
+    // (One CDP hop remains between that read and the insertion: the page cannot commit an IME's
+    // text itself.)
+    const generation = this.#generation;
+    await this.input(async () => {
+      // The re-read arms a one-shot guard in the page (armClose): the insertion's own beforeinput
+      // is cancelled if, by then, focus has left this field or its composition has ended. What
+      // the guard cannot cover: a navigation to another document inside this hop (the new
+      // document has no guard) stays a known residual.
+      const again = await this.#cdp
+        .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+          contextId: focus.context,
+          expression: `globalThis.editingOwner?.armClose(${JSON.stringify(focus.fieldId)})`,
+          returnByValue: true,
+          silent: true,
+        })
+        .catch(() => null);
+      if (
+        again?.result?.value !== text ||
+        this.#focused?.context !== focus.context ||
+        this.#generation !== generation
+      )
+        return;
+      composer.admitted?.();
+      await this.#cdp.send("Input.insertText", { text });
+    }).catch(() => undefined);
+  }
+
   #stale(): false {
     this.#generation++;
-    this.#composition = false;
-    this.#context = { ...this.#context, contextId: randomUUID() };
+    const contextId = this.#admission.mismatch();
+    this.#context = { ...this.#context, contextId };
     this.#publish(this.#context);
     this.refresh();
     return false;
@@ -515,10 +891,11 @@ export class PageEditingObserver {
 
   #clear = (): void => {
     this.#generation++;
+    const contextId = this.#admission.reset();
     this.#focused = null;
-    this.#composition = false;
+    this.#composer = null;
     if (!this.#activeChild) {
-      this.#context = { contextId: randomUUID(), field: null, caret: null };
+      this.#context = { contextId, field: null, caret: null };
       this.#publish(this.#context);
     }
   };
@@ -591,17 +968,24 @@ export class PageEditingObserver {
     }
     const childWasActive = this.#activeChild !== null;
     this.#activeChild = null;
-    const changed =
-      childWasActive ||
-      this.#focused?.context !== parsed.data.executionContextId ||
-      this.#focused?.fieldId !== fieldId ||
+    if (childWasActive) this.#admission.reset();
+    const contentChanged =
+      this.#focused?.context === parsed.data.executionContextId &&
+      this.#focused?.fieldId === fieldId &&
       this.#focused?.selectionRevision !== selectionRevision;
-    if (changed) {
-      this.#generation++;
-      this.#composition = false;
-    }
+    const changed =
+      this.#admission.observe(
+        {
+          id: `${parsed.data.executionContextId}:${fieldId}`,
+          kind: field.kind,
+          sensitive: field.sensitive,
+          editable: true,
+        },
+        contentChanged,
+      ) || childWasActive;
+    if (changed) this.#generation++;
     this.#focused = { context: parsed.data.executionContextId, frame, fieldId, selectionRevision };
-    const contextId = changed ? randomUUID() : this.#context.contextId;
+    const contextId = this.#admission.current;
     this.#context = { contextId, field, caret: this.#context.caret };
     // Resolve frame ownership through CDP, including cross-origin frames; the
     // private world's payload contains only geometry and field facts.
@@ -899,7 +1283,9 @@ function editingObserverSource(
     lastCaretRect = null,
     lastPersonKey = "",
     observedEditContext = null,
-    stopEditContext = () => {};
+    stopEditContext = () => {},
+    // The field composing, by its own composition events: the element and the marked text.
+    composing = null;
   const on = (target, type, fn, options = true) => {
     target.addEventListener(type, fn, options);
     listeners.push(() => target.removeEventListener(type, fn, options));
@@ -913,6 +1299,20 @@ function editingObserverSource(
     if (!ids.has(element)) ids.set(element, String(++next));
     return ids.get(element);
   };
+  // CY1: a field is the same field only while it is the same element of the same kind: its
+  // mechanism, its type, whether it is sensitive, whether it can be edited. An <input> reused for
+  // a password after a username is another field: a new context, nothing earlier carried.
+  const fieldKey = (element) =>
+    [
+      identity(element),
+      mechanism(element) ?? "",
+      element.type ?? "",
+      element.type === "password" ||
+        /(?:^|\\s)(?:current-password|new-password|one-time-code|cc-number|cc-csc)(?:$|\\s)/.test(
+          element.autocomplete ?? "",
+        ),
+      Boolean(element.readOnly || element.disabled),
+    ].join(":");
   const mechanism = (element) =>
     element?.editContext
       ? "editcontext"
@@ -946,13 +1346,46 @@ function editingObserverSource(
     if (anchor && (anchor.length !== current.length || anchor.some((value, index) => value !== current[index]))) selectionRevision++;
     anchor = current;
   };
-  const beginInput = () => {syncSelection();ownInput++;};
+  const isCollapsedSelection = (element, kind) => {
+    if (kind === "control" || kind === "editcontext") {
+      const model = kind === "control" ? element : element.editContext;
+      const start = model.selectionStart, end = model.selectionEnd;
+      return start !== null && end !== null && start === end;
+    }
+    const s = selection(element);
+    return !!(s?.rangeCount && s.isCollapsed);
+  };
+  const beginInput = (request) => {
+    if (request) {
+      const element = active(), kind = mechanism(element);
+      if (request.fieldId === null) {
+        if (document.hasFocus() && kind && !element.disabled && !element.readOnly)
+          return { ok: false, reason: "focus-changed" };
+        return { ok: true };
+      }
+      if (!kind || !document.hasFocus() || element.disabled || element.readOnly || fieldKey(element) !== request.fieldId)
+        return { ok: false, reason: "focus-changed" };
+      syncSelection();
+      if (request.revision !== undefined && selectionRevision !== request.revision)
+        return { ok: false, reason: "selection-changed" };
+      if (request.requireCollapsed && !isCollapsedSelection(element, kind))
+        return { ok: false, reason: "selection-not-collapsed" };
+    } else {
+      syncSelection();
+    }
+    ownInput++;
+    return { ok: true };
+  };
   const finishInput = (immediate = true) => {
+    closeGuard = null;
     anchor = selectionAnchor();
     ownInput = Math.max(0, ownInput - 1);
     if (immediate) publish();
     else schedule();
   };
+  // CY3: the close's guard, armed by its re-read: the insertion that follows is cancelled at its
+  // beforeinput when focus has left the field or its composition ended meanwhile.
+  let closeGuard = null;
   const accept = (result = {ok:true}) => {ownInput++;return result;};
   const rect = (range) => {
     const boxes = range.getClientRects();
@@ -1232,10 +1665,13 @@ function editingObserverSource(
       if (button) takeSave(button);
     });
   }
+  let blurTimer = 0;
   const publish = () => {
     publishPerson();
     if (scheduled) cancelAnimationFrame(scheduled);
     scheduled = 0;
+    if (blurTimer) clearTimeout(blurTimer);
+    blurTimer = 0;
     if (!remote) return;
     syncSelection();
     const element = active(),
@@ -1260,9 +1696,25 @@ function editingObserverSource(
             "compositionstart",
             "compositionend",
           ];
-        for (const event of events) context.addEventListener(event, schedule);
+        const track = (event) => {
+          if (event.type === "compositionstart") composing = { element, text: "" };
+          if (event.type === "compositionend") composing = null;
+          // CZ10: what an EditContext's own events left, as an input's do for the other editors.
+          if (event.type === "compositionstart" || (event.type === "textupdate" && event.isTrusted))
+            composedText = context.text;
+          if (event.type === "compositionend") composedText = null;
+          // During a composition each textupdate replaces the composition with its text.
+          if (event.type === "textupdate" && composing?.element === element) composing.text = event.text;
+        };
+        for (const event of events) {
+          context.addEventListener(event, schedule);
+          context.addEventListener(event, track);
+        }
         stopEditContext = () => {
-          for (const event of events) context.removeEventListener(event, schedule);
+          for (const event of events) {
+            context.removeEventListener(event, schedule);
+            context.removeEventListener(event, track);
+          }
         };
       } else stopEditContext = () => {};
     }
@@ -1305,7 +1757,7 @@ function editingObserverSource(
       if (r && Number.isFinite(r.x) && Number.isFinite(r.y) && Number.isFinite(r.height))
         caret = { x: r.x, y: r.y, height: r.height };
     } catch {}
-    const message = JSON.stringify({ fieldId: identity(element), selectionRevision, field, caret });
+    const message = JSON.stringify({ fieldId: fieldKey(element), selectionRevision, field, caret });
     if (message !== last) {
       last = message;
       globalThis[${JSON.stringify(binding)}](message);
@@ -1318,11 +1770,16 @@ function editingObserverSource(
   const prepare = (request) => {
     const element = active(),
       kind = mechanism(element);
-    if (!kind || !document.hasFocus() || identity(element) !== request.fieldId)
+    if (!kind || !document.hasFocus() || fieldKey(element) !== request.fieldId)
       return { ok: false, reason: "focus-changed" };
     syncSelection();
-    if (selectionRevision !== request.revision) return {ok:false,reason:"selection-changed"};
-    if (request.composing) return accept();
+    // An insertion goes in at the caret as it is now, whatever the page did since — except under an
+    // earlier context where the live selection is non-collapsed (P3/S1).
+    if (!request.insertion && selectionRevision !== request.revision) return {ok:false,reason:"selection-changed"};
+    if (request.insertion && request.earlier && !isCollapsedSelection(element, kind))
+      return { ok: false, reason: "selection-not-collapsed" };
+    rewritten();
+    if (composing && composing.element === element) return accept({ ok: true, composing: true });
     const before = request.before,
       after = request.after,
       rangeEdit = !!(before.length || after.length);
@@ -1407,19 +1864,65 @@ function editingObserverSource(
     "resize",
   ])
     on(event === "resize" ? window : document, event, () => {syncSelection();schedule();});
+  on(document, "compositionstart", () => {
+    composing = { element: active(), text: "" };
+  });
+  on(document, "compositionupdate", (event) => {
+    if (composing) composing.text = event.data ?? "";
+  });
   on(document, "compositionend", () => {
+    if (closeGuard) closeGuard.ended = true;
+    composing = null;
     if (!ownInput) selectionRevision++;
     schedule();
   });
+  // CY4: Blink ends a composition without a compositionend when the page rewrites the field's
+  // value under it (a mask): its text then is not what the composition's last input left, and
+  // the field composes no more.
+  let composedText = null;
+  const fieldText = (element) => {
+    const kind = mechanism(element);
+    return kind === "control" ? element.value : kind === "editcontext" ? element.editContext.text : element.textContent;
+  };
+  on(document, "compositionstart", () => {composedText = fieldText(active());});
+  // CZ10: the browser's own input only: a page's synthetic input event says nothing of it.
+  on(document, "input", (event) => {if (composing && event.isTrusted) composedText = fieldText(composing.element);});
+  on(document, "compositionend", () => {composedText = null;});
+  /** Read wherever the script asks whether the field composes: no event says it. */
+  const rewritten = () => {
+    if (composing && composedText !== null && fieldText(composing.element) !== composedText) {
+      composing = null;
+      composedText = null;
+    }
+  };
+  // The close's guard (CY3) sees the first beforeinput after it was armed: the close's own.
+  on(window, "beforeinput", (event) => {
+    const guard = closeGuard;
+    if (!guard) return;
+    closeGuard = null;
+    if (active() !== guard.element || guard.ended) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  });
   on(document, "focusout", () => {
     last = null;
-    publish();
-    queueMicrotask(schedule);
+    // W4: during focusout activeElement is transiently document.body before focusin runs on the
+    // next field; deferring to a 0ms macrotask lets SetFocusedElement finish so switching fields
+    // publishes the new field directly with no transient field: null.
+    if (!blurTimer) blurTimer = setTimeout(publish, 0);
   });
-  on(window, "blur", () => {
-    last = null;
-    publish();
-  });
+  // Target-phase only: capture-phase blur on window intercepts every element's blur while
+  // activeElement is transiently document.body during a field-to-field focus switch.
+  on(
+    window,
+    "blur",
+    () => {
+      last = null;
+      publish();
+    },
+    false,
+  );
   const resize = new ResizeObserver(schedule);
   if (document.documentElement) resize.observe(document.documentElement);
   else
@@ -1476,6 +1979,31 @@ function editingObserverSource(
       if (!event.defaultPrevented) globalThis[${JSON.stringify(binding)}](JSON.stringify(facts));
     }, 0);
   });
+  const prepareClipboard = (request) => {
+    const element = active(),
+      kind = mechanism(element);
+    if (request.fieldId !== null) {
+      if (
+        !kind ||
+        !document.hasFocus() ||
+        element.disabled ||
+        element.readOnly ||
+        fieldKey(element) !== request.fieldId
+      )
+        return { ok: false, reason: "focus-changed" };
+      if (request.requireNonSensitive && isSensitive(element))
+        return { ok: false, reason: "sensitive" };
+      if (request.requireCollapsed && !isCollapsedSelection(element, kind))
+        return { ok: false, reason: "selection-not-collapsed" };
+      syncSelection();
+      ownInput++;
+      return { ok: true };
+    }
+    if (document.hasFocus() && kind && !element.disabled && !element.readOnly)
+      return { ok: false, reason: "focus-changed" };
+    if (request.requireNonSensitive && sensitive()) return { ok: false, reason: "sensitive" };
+    return { ok: true };
+  };
   globalThis.editingOwner = {
     sensitive,
     release,
@@ -1500,6 +2028,20 @@ function editingObserverSource(
       schedule();
     },
     prepare,
+    prepareClipboard,
+    /** The marked text of the active field's open composition, or null. */
+    composition: () => {
+      rewritten();
+      return composing && composing.element === active() ? composing.text : null;
+    },
+    /** The same, read for the close's send: arms its one-shot guard (CY3). */
+    armClose: (fieldId) => {
+      const element = active();
+      rewritten();
+      if (!composing || composing.element !== element || fieldKey(element) !== fieldId) return null;
+      closeGuard = { element, ended: false };
+      return composing.text;
+    },
     stop: () => {
       personBindings.clear();
       saveFields = new WeakMap();
@@ -1509,6 +2051,7 @@ function editingObserverSource(
       stopEditContext();
       resize.disconnect();
       cancelAnimationFrame(scheduled);
+      clearTimeout(blurTimer);
       mirror?.remove();
       delete globalThis.editingOwner;
     },

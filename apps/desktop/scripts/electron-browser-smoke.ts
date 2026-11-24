@@ -597,6 +597,9 @@ async function run(): Promise<void> {
       operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
       remainingBudgetMs: 18_000,
       wireVersion: 2,
+      // An editing session, as the Electron panel's: its contexts are what a paste is made for.
+      editingVersion: 2,
+      clipboard: false,
       access: "read-write",
       audience: "opensteer-browser-runtime",
       creationOrigin: "person",
@@ -1014,6 +1017,7 @@ async function run(): Promise<void> {
     surfaceId: rootSurface.id,
     text: pasted,
     type: "clipboard.paste",
+    contextId: await fieldContext(routedMessages, rootSurface.id),
   });
   const afterTyping = await targetInfo(rootTargetId);
   const typingActivity = asRecord(afterTyping.userActivity);
@@ -5345,4 +5349,23 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<vo
     if (Date.now() >= deadline) throw new Error("Electron browser smoke condition timed out.");
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+}
+
+/** The page's latest editing context once a field holds focus: a paste is made for it (CZ5). */
+async function fieldContext(
+  messages: readonly BrowserRuntimeServerMessage[],
+  surfaceId: string,
+): Promise<string> {
+  let contextId: string | undefined;
+  await waitFor(() => {
+    const published = messages
+      .filter((message) => message.type === "browser.editing" && message.surfaceId === surfaceId)
+      .at(-1);
+    contextId =
+      published?.type === "browser.editing" && published.context.field !== null
+        ? published.context.contextId
+        : undefined;
+    return contextId !== undefined;
+  });
+  return contextId!;
 }

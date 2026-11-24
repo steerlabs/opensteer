@@ -92,10 +92,10 @@ final class OwnerInputStateTests: XCTestCase {
       #"{"kind":"mouse","phase":"cancel","button":"none","x":0.5,"y":0.5}"#,
       #"{"kind":"scroll","x":0.5,"y":0.5,"dx":0,"dy":0.1}"#,
       #"{"kind":"key","action":"down","key":"a","code":"KeyA"}"#,
-      #"{"kind":"command","command":"selectAll"}"#,
+      #"{"kind":"command","command":"selectAll","contextId":"00000000-0000-4000-8000-000000000001"}"#,
       #"{"kind":"edit","edit":{"contextId":"00000000-0000-0000-0000-000000000001","text":"a","before":"","after":""}}"#,
-      #"{"kind":"paste","text":"a"}"#,
-      #"{"kind":"copy"}"#,
+      #"{"kind":"paste","text":"a","contextId":"00000000-0000-4000-8000-000000000001"}"#,
+      #"{"kind":"copy","contextId":"00000000-0000-4000-8000-000000000001"}"#,
     ]
     for json in inputs {
       let input = try event(json)

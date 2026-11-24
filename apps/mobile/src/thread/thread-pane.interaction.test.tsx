@@ -482,6 +482,7 @@ vi.mock("@expo/ui/community/menu", () => ({
 vi.mock("../computers/phone-display-native.js", () => ({
   macWindowVideoSupported: () => true,
   nativePictureView: () => null,
+  pictureFunctions: (instance: unknown) => instance,
 }));
 vi.mock("../computers/phone-display.js", () => ({
   ComputerDisplay: (props: {
