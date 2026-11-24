@@ -6372,6 +6372,8 @@ async function startFakeRuntime(
     readonly clipboard?: boolean | undefined;
     /** The snapshot offers reply budgets and command cancellation, as the shipped runtime does. */
     readonly cdpReplyBudget?: boolean;
+    /** The snapshot offers scoped script attachments, as the shipped runtime does. */
+    readonly scriptAttachments?: boolean;
   } = {},
 ): Promise<{
   connectionCount(): number;
@@ -6579,6 +6581,9 @@ async function startFakeRuntime(
           ...(options.inputLanes ? { inputLanesVersion: 1 } : {}),
           ...(options.targetedStreaming !== false ? { targetedStreamingVersion: 1 } : {}),
           ...(options.cdpReplyBudget ? { cdpReplyBudget: 1, scriptCancellation: 1 } : {}),
+          ...(options.scriptAttachments
+            ? { cdpReplyBudget: 1, scriptAttachments: 1, scriptCancellation: 1 }
+            : {}),
           ...(options.editing && claims.editingVersion
             ? {
                 editingVersion: claims.editingVersion,
@@ -10697,9 +10702,244 @@ describe("work under a connection's authority never uses the clipboard or change
     expect(JSON.stringify(rootEvents)).not.toContain("preexisting-ext-target");
     expect(JSON.stringify(rootEvents)).toContain("web-target");
 
+    // F1: manual attach to an already-admitted web page without prior Target.targetCreated must
+    // still receive its Target.detachedFromTarget and Target.targetDestroyed terminal events.
+    const request = connectedRoot.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "already-admitted-web-page", flatten: true },
+    });
+    const forward = await runtime.nextCommand();
+    expect(forward).toMatchObject({
+      type: "cdp.command",
+      command: { method: "Target.attachToTarget" },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: forward.requestId,
+      result: { sessionId: "cdp_manual" },
+    });
+    await expect(request).resolves.toEqual({ sessionId: "cdp_manual" });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        parameters: { targetId: "already-admitted-web-page", sessionId: "cdp_manual" },
+        sequence: 7,
+      },
+    });
+    await vi.waitFor(() =>
+      expect(rootEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Target.detachedFromTarget",
+          parameters: { targetId: "already-admitted-web-page", sessionId: "cdp_manual" },
+        }),
+      ),
+    );
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "already-admitted-web-page" },
+        sequence: 8,
+      },
+    });
+    await vi.waitFor(() =>
+      expect(rootEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Target.targetDestroyed",
+          parameters: { targetId: "already-admitted-web-page" },
+        }),
+      ),
+    );
+
+    // F1 race: Target.detachedFromTarget arriving BEFORE the Target.attachToTarget reply settles
+    // is still delivered once the attach succeeds, while an unseen extension detach during a
+    // failed attach is never leaked.
+    const earlyAttach = connectedRoot.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "early-detach-page", flatten: true },
+    });
+    const earlyForward = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        parameters: { targetId: "early-detach-page", sessionId: "cdp_early" },
+        sequence: 9,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        parameters: { targetId: "unseen-ext-during-race", sessionId: "ext_other_sess" },
+        sequence: 10,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: earlyForward.requestId,
+      result: { sessionId: "cdp_early" },
+    });
+    await expect(earlyAttach).resolves.toEqual({ sessionId: "cdp_early" });
+    await vi.waitFor(() =>
+      expect(rootEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Target.detachedFromTarget",
+          parameters: { targetId: "early-detach-page", sessionId: "cdp_early" },
+        }),
+      ),
+    );
+    expect(JSON.stringify(rootEvents)).not.toContain("unseen-ext-during-race");
+    expect(JSON.stringify(rootEvents)).not.toContain("ext_other_sess");
+
+    // A rejected attach for an unseen extension target must not leak its terminal events either.
+    const rejectedAttach = connectedRoot.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "unseen-ext-refused", flatten: true },
+    });
+    const rejectedForward = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "unseen-ext-refused" },
+        sequence: 11,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.error",
+      requestId: rejectedForward.requestId,
+      error: {
+        code: "not_found",
+        message: "CDP target is not available here.",
+        retryable: false,
+        unsent: true,
+      },
+    });
+    await expect(rejectedAttach).rejects.toThrow(/CDP target is not available here/u);
+    expect(JSON.stringify(rootEvents)).not.toContain("unseen-ext-refused");
+
     connectedRoot.close();
     connectedCdp.close();
     cdp.close();
+  });
+
+  it("delivers scoped script-attachment terminal events without prior discovery (F1)", async () => {
+    const ownerId = createId("user");
+    const runId = createId("run");
+    const threadId = createId("thread");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      scriptAttachments: true,
+    });
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      connectionCommands: true,
+      surfaceState: true,
+    });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Script F1 Profile" });
+    const connectedBinding = { agentBindingId: `run:${runId}`, ownerId };
+    repository.resolveResourceAccess = async () => ({
+      access: "read-write",
+      runAccess: "read-write",
+      grantAccess: "read-write",
+      execution: {
+        ownerUserId: ownerId,
+        subject: { kind: "binding", bindingId: connectedBinding.agentBindingId },
+        actor: "agent",
+        threadId,
+        runId,
+        agentConnection: {
+          agentConnectionId: `acn_${randomUUID()}`,
+          grant: { scope: "everything" },
+          grantRevision: 1,
+          consentVersion: 1,
+          accessMode: "full-access",
+          bridgeSenders: null,
+        },
+        taskMode: "full-access",
+        runMode: "full-access",
+        mode: "full-access",
+      },
+    });
+    const opened = await service.openAgentSession({ ...connectedBinding, profileId: profile.id });
+    const scriptEvents: unknown[] = [];
+    const scriptTabId = BrowserSurfaceIdSchema.parse("tab_f1");
+    const connectedScript = await service.attachCdpForAgent(
+      {
+        ...connectedBinding,
+        sessionId: opened.session.id,
+        scriptTabId,
+      },
+      (event) => scriptEvents.push(event),
+    );
+    const nextCdpCommand = async () => {
+      for (;;) {
+        const command = await runtime.nextCommand();
+        if (command.type === "cdp.command") return command;
+      }
+    };
+    const scriptResumeDispatch = connectedScript.dispatch(
+      {
+        method: browserHostMethods.resumeTab,
+        parameters: { surfaceId: scriptTabId },
+      },
+      {
+        maxBytes: 65_536,
+        maxDepth: 16,
+        maxEntries: 64,
+        eventBudget: { maxBytes: 65_536, maxDepth: 16, maxEntries: 64 },
+      },
+    );
+    const scriptResumeForward = await nextCdpCommand();
+    const scriptAttachmentId = scriptResumeForward.scriptAttachmentId;
+    expect(scriptAttachmentId).toEqual(expect.any(String));
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: scriptResumeForward.requestId,
+      result: { targetId: "script-root-target" },
+    });
+    await expect((await scriptResumeDispatch).result).resolves.toEqual({
+      targetId: "script-root-target",
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        scriptAttachmentId,
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "script-root-target" },
+        sequence: 1,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        scriptAttachmentId,
+        method: "Target.detachedFromTarget",
+        parameters: { targetId: "script-root-target", sessionId: "cdp_script_session" },
+        sequence: 2,
+      },
+    });
+    await vi.waitFor(() => {
+      expect(scriptEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Target.targetDestroyed",
+          parameters: { targetId: "script-root-target" },
+        }),
+      );
+      expect(scriptEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Target.detachedFromTarget",
+          parameters: { targetId: "script-root-target", sessionId: "cdp_script_session" },
+        }),
+      );
+    });
+    connectedScript.close();
   });
 
   it("never deadlocks when attachCdpForAgent or agent start races #holdForAgent on the same profile (PH1)", async () => {

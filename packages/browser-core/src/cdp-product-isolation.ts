@@ -62,8 +62,11 @@ export class CdpProductIsolation {
         this.#frames.add(String(record.callFrameId));
       }
     }
-    if (context && internalName(context.description.name)) return false;
-    return !this.#referencesInternal(params, true);
+    const allowed =
+      !(context && internalName(context.description.name)) &&
+      !this.#referencesInternal(params, true);
+    if (!allowed && method === "Debugger.paused") this.#frames.clear();
+    return allowed;
   }
   observeResult(method: string, params: CdpParameters, result: unknown): void {
     if (!result || typeof result !== "object") return;

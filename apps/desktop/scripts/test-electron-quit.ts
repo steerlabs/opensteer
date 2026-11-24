@@ -22,9 +22,103 @@ import { processSupervisorExecutableVariable } from "@opensteer/shared/processCo
 import { desktopShutdownTimeoutMs } from "../src/app/desktop-shutdown.js";
 import { installProcessSmokeGuard } from "./test-support/process-smoke-guard.js";
 
-installProcessSmokeGuard("quit", 360_000);
-
 const restoreOnly = process.argv.includes("--tab-restore");
+const trials = restoreOnly
+  ? ["restore-before", "restore-normal", "restore-crash", "restore-after-crash"]
+  : (process.env.OPENSTEER_QUIT_E2E_TRIALS?.split(",") ?? [
+      "appleevent",
+      "sigterm",
+      "logout",
+      "partial",
+      "restart",
+      "background",
+      "quit-completely",
+    ]);
+const activeChildPids = new Set<number>();
+let cleanupExecutable: string | undefined;
+let cleanupResources: string | undefined;
+let cleanupFixture: ReturnType<typeof createServer> | undefined;
+const processInventory = () =>
+  execFileSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" })
+    .trim()
+    .split("\n")
+    .flatMap((line) => {
+      const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/u.exec(line);
+      return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), command: match[3]! }] : [];
+    });
+const processTree = (pid: number) => {
+  const all = processInventory();
+  const owned = new Set([pid]);
+  for (let pass = 0; pass < all.length; pass += 1) {
+    let changed = false;
+    for (const entry of all)
+      if (owned.has(entry.ppid) && !owned.has(entry.pid)) {
+        owned.add(entry.pid);
+        changed = true;
+      }
+    if (!changed) break;
+  }
+  return all.filter((entry) => owned.has(entry.pid));
+};
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const cleanupOwnedChildren = () => {
+  cleanupFixture?.closeAllConnections();
+  cleanupFixture?.close();
+  // Never address a process outside the children and isolated bundle this driver started.
+  for (const pid of activeChildPids) {
+    for (const entry of processTree(pid).toReversed()) {
+      if (alive(entry.pid)) {
+        try {
+          process.kill(entry.pid, "SIGKILL");
+        } catch {
+          /* The owned process exited meanwhile. */
+        }
+      }
+    }
+  }
+  activeChildPids.clear();
+  if (cleanupExecutable) {
+    let remaining = "";
+    try {
+      remaining = execFileSync("pgrep", ["-f", cleanupExecutable], { encoding: "utf8" }).trim();
+    } catch {
+      /* No owned processes remain. */
+    }
+    for (const pid of remaining.split(/\s+/u).filter(Boolean).map(Number)) {
+      if (alive(pid)) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          /* The owned process exited meanwhile. */
+        }
+      }
+    }
+  }
+  if (cleanupResources) {
+    for (const { pid } of processInventory().filter(({ command }) =>
+      command.startsWith(`${cleanupResources}/`),
+    )) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* The owned process exited meanwhile. */
+      }
+    }
+  }
+};
+const perTrialBudgetMs =
+  120_000 + (desktopShutdownTimeoutMs + 1_000) + 3_000 + (restoreOnly ? 5_000 : 10_000);
+const aggregateTimeoutMs = 60_000 + trials.length * perTrialBudgetMs;
+
+installProcessSmokeGuard("quit", aggregateTimeoutMs, cleanupOwnedChildren);
+
 const fixtureStarted = performance.now();
 const progress = (phase: string) =>
   process.stdout.write(
@@ -41,6 +135,7 @@ mkdirSync(directory, { recursive: true, mode: 0o700 });
 const root = realpathSync(mkdtempSync(path.join(directory, "quit-")));
 const sourceResources = z.string().min(1).parse(process.env.OPENSTEER_PERSONAL_E2E_RESOURCES);
 const resources = path.join(root, "resources");
+cleanupResources = resources;
 mkdirSync(resources, { mode: 0o700 });
 for (const name of ["personal-runtime", "process-supervisor"]) {
   execFileSync("cp", ["-cR", path.join(sourceResources, name), resources]);
@@ -70,6 +165,7 @@ writeFileSync(
 );
 execFileSync("codesign", ["--force", "--deep", "--sign", "-", bundle]);
 const executable = path.join(bundle, "Contents", "MacOS", path.basename(electron));
+cleanupExecutable = executable;
 progress("app-signed");
 const data = path.join(root, "data");
 mkdirSync(data, { mode: 0o700 });
@@ -111,36 +207,6 @@ const rows = (trial: string) => {
       .map((line) => JSON.parse(line)),
   );
 };
-const processInventory = () =>
-  execFileSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" })
-    .trim()
-    .split("\n")
-    .flatMap((line) => {
-      const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/u.exec(line);
-      return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), command: match[3]! }] : [];
-    });
-const processTree = (pid: number) => {
-  const all = processInventory();
-  const owned = new Set([pid]);
-  for (let pass = 0; pass < all.length; pass += 1) {
-    let changed = false;
-    for (const entry of all)
-      if (owned.has(entry.ppid) && !owned.has(entry.pid)) {
-        owned.add(entry.pid);
-        changed = true;
-      }
-    if (!changed) break;
-  }
-  return all.filter((entry) => owned.has(entry.pid));
-};
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
 const appleQuit = () => {
   // A unique bundle ID and absolute bundle target cannot address installed Beta.
   try {
@@ -180,6 +246,9 @@ async function verifyEngineOwner(): Promise<void> {
     },
   );
   assert(parent.pid);
+  const parentPid = parent.pid;
+  activeChildPids.add(parentPid);
+  parent.once("exit", () => activeChildPids.delete(parentPid));
   let output = "";
   const ready = new Promise<void>((resolve, reject) => {
     parent.stdout.on("data", (chunk: Buffer) => {
@@ -246,6 +315,7 @@ const fixture = createServer((request, response) => {
     `<title>Restore ${pathname}</title><link rel="icon" href="/icon.svg?color=${pathname === "/p1" ? "blue" : pathname === "/pop" ? "green" : "red"}"><button id="popup" onclick="window.open('/pop#/document/42')">Popup</button>${seed ? "<script>document.cookie='restore-proof=saved;path=/;max-age=86400';localStorage.setItem('restore-proof','saved')</script>" : ""}`,
   );
 });
+cleanupFixture = fixture;
 if (restoreOnly) await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
 const fixtureAddress = fixture.address();
 const fixtureUrl =
@@ -255,17 +325,7 @@ const fixtureUrl =
 
 try {
   if (!restoreOnly) await verifyEngineOwner();
-  for (const trial of restoreOnly
-    ? ["restore-before", "restore-normal", "restore-crash", "restore-after-crash"]
-    : (process.env.OPENSTEER_QUIT_E2E_TRIALS?.split(",") ?? [
-        "appleevent",
-        "sigterm",
-        "logout",
-        "partial",
-        "restart",
-        "background",
-        "quit-completely",
-      ])) {
+  for (const trial of trials) {
     fixturePhase = trial;
     const environment: NodeJS.ProcessEnv = {
       ...process.env,
@@ -284,6 +344,9 @@ try {
       child.once("exit", (code, signal) => resolve({ code, signal })),
     );
     assert(child.pid);
+    const childPid = child.pid;
+    activeChildPids.add(childPid);
+    child.once("exit", () => activeChildPids.delete(childPid));
     const startupDeadline = Date.now() + 120_000;
     while (!rows(trial).some(({ event }) => event === "test.ready")) {
       assert(alive(child.pid), `${trial} exited before ready; see ${output}`);
@@ -528,24 +591,5 @@ try {
   }
   process.stdout.write(`${root}/${restoreOnly ? "tab-restore" : "quit-smoke"}.json\n`);
 } finally {
-  fixture.closeAllConnections();
-  fixture.close();
-  // Never address a process outside the isolated app's tree.
-  let remaining = "";
-  try {
-    remaining = execFileSync("pgrep", ["-f", executable], { encoding: "utf8" }).trim();
-  } catch {
-    /* No owned processes remain. */
-  }
-  for (const pid of remaining.split(/\s+/u).filter(Boolean).map(Number))
-    if (alive(pid)) process.kill(pid, "SIGKILL");
-  for (const { pid } of processInventory().filter(({ command }) =>
-    command.startsWith(`${resources}/`),
-  )) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      /* The owned process exited meanwhile. */
-    }
-  }
+  cleanupOwnedChildren();
 }

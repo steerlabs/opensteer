@@ -4342,6 +4342,22 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
     expect(backend.channels.get("seed")!.commands.some((c) => c.method === "Page.reload")).toBe(
       false,
     );
+    // S-a fifth-look: Page.removeScriptToEvaluateOnNewDocument is also held behind inventory.
+    await expect(
+      heldClient.send({
+        method: "Page.removeScriptToEvaluateOnNewDocument",
+        sessionId: heldSession,
+        parameters: { identifier: "1" },
+      }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "The page is not answering; try again.",
+    });
+    expect(
+      backend.channels
+        .get("seed")!
+        .commands.some((c) => c.method === "Page.removeScriptToEvaluateOnNewDocument"),
+    ).toBe(false);
     heldClient.close();
     await heldClient.settled;
     await router.close();

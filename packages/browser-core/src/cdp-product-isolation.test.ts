@@ -291,4 +291,24 @@ it("refuses Debugger.setBreakpointByUrl with a non-empty condition outside expli
       expression: "1",
     }),
   ).toThrow();
+
+  // S-f fifth-look: when a Debugger.paused event has valid synchronous callFrames but is dropped
+  // afterwards because asyncStackTrace references an unobserved script, page call frames collected
+  // earlier in the same event are still cleared.
+  expect(
+    worlds.observe("Debugger.paused", {
+      callFrames: [
+        { callFrameId: "page-frame-async", location: { scriptId: "page-1", lineNumber: 0 } },
+      ],
+      asyncStackTrace: {
+        callFrames: [{ scriptId: "unseen-async-1", lineNumber: 0 }],
+      },
+    }),
+  ).toBe(false);
+  expect(() =>
+    worlds.assertCommand("Debugger.evaluateOnCallFrame", {
+      callFrameId: "page-frame-async",
+      expression: "1",
+    }),
+  ).toThrow();
 });
