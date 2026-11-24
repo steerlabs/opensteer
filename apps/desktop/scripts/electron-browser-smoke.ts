@@ -2494,7 +2494,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         firstLayout.resizes.length === 0 &&
         unsafe?.code === "forbidden" &&
         unsafe.message ===
-          "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
+          "CDP navigation is limited to HTTP(S) and extension pages, without embedded credentials.",
       outcome,
     );
     await agent("Target.closeTarget", { targetId: created.targetId });

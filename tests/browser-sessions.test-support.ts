@@ -143,7 +143,11 @@ export async function agentJourney(
   // A tab that cannot open is never left behind, and the page in use stays in use.
   expect(browsing.failed).toMatchObject({
     failures: [
-      { error: expect.stringContaining("Use about:blank or an HTTP(S) URL without credentials.") },
+      {
+        error: expect.stringContaining(
+          "Use about:blank, an HTTP(S) URL without credentials, or an extension page.",
+        ),
+      },
       { opened: expect.any(String) },
     ],
     tabs: 2,

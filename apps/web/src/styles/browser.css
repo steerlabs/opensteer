@@ -1263,6 +1263,227 @@ button.surface-chip:hover {
   backdrop-filter: var(--blur-glass);
 }
 
+/* ---- Extensions ----
+   The page's profile's extension buttons, then the puzzle that lists them
+   all, held together as one tight cluster before Downloads and the menu. */
+
+.browser-extensions {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  min-width: 0;
+  gap: var(--space-2);
+}
+
+/* A narrow pane keeps its room for the address: the actions fold into the
+   menu, where every one of them is still a click away. */
+@container browser-view (max-width: 640px) {
+  .browser-extension-btn:nth-child(n + 3) {
+    display: none;
+  }
+}
+
+@container browser-view (max-width: 520px) {
+  .browser-extension-btn {
+    display: none;
+  }
+}
+
+.browser-extension-btn.icon-btn {
+  position: relative;
+}
+
+.browser-extension-btn__icon,
+.browser-extension-row__icon {
+  display: block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Without an icon of its own: its initial on a quiet tile, as Chrome draws it. */
+.browser-extension-mark {
+  display: grid;
+  place-items: center;
+  background-color: var(--fill-plate);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: var(--weight-bold);
+  line-height: 1;
+}
+
+.browser-extension-mark--blank > svg,
+.surface-menu.icon-btn .browser-extension-mark--blank > svg {
+  width: 11px;
+  height: 11px;
+}
+
+.browser-extension-btn:hover .browser-extension-mark,
+.browser-extension-row:hover .browser-extension-mark {
+  color: var(--text-soft);
+}
+
+/* The count or status an extension shows over its button, on its own colour
+   when it names one and on the toolbar's ink when it does not. */
+.browser-extension-btn__badge {
+  position: absolute;
+  right: 1px;
+  bottom: 2px;
+  min-width: 13px;
+  max-width: calc(100% - 2px);
+  height: 12px;
+  padding: 0 3px;
+  border-radius: var(--radius-full);
+  background-color: color-mix(in srgb, var(--text) 78%, var(--ground));
+  color: var(--ground);
+  font-size: 9px;
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  line-height: 12px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+  box-shadow: 0 0 0 1.5px var(--ground);
+  pointer-events: none;
+}
+
+.browser-extension-btn__badge.has-color {
+  color: var(--text-on-color);
+}
+
+.popover.popover--extensions {
+  width: min(300px, calc(100vw - 20px));
+}
+
+.browser-extensions__list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* One extension: the row itself lights up, with its ⋯ inside it. */
+.browser-extension-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding-inline-end: var(--space-4);
+  border-radius: var(--radius-sm);
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.browser-extension-row:hover,
+.browser-extension-row.is-open,
+.browser-extension-row:has(.browser-extension-row__main:focus-visible) {
+  background-color: var(--fill-quiet);
+}
+
+.browser-extension-row .browser-extension-row__main {
+  gap: var(--space-8);
+  background-color: transparent;
+}
+
+.browser-extension-row .picker__row.browser-extension-row__main:hover:not(:disabled) {
+  background-color: transparent;
+}
+
+.browser-extension-row:hover .browser-extension-row__main,
+.browser-extension-row.is-open .browser-extension-row__main {
+  color: var(--text);
+}
+
+.browser-extension-row__main--static {
+  cursor: default;
+}
+
+.browser-extension-row__source {
+  color: var(--muted-dim);
+}
+
+.browser-extension-row__more.icon-btn {
+  flex: none;
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+  opacity: 0;
+  transition:
+    opacity var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.browser-extension-row:hover .browser-extension-row__more,
+.browser-extension-row:focus-within .browser-extension-row__more,
+.browser-extension-row__more.is-open {
+  opacity: 1;
+}
+
+.browser-extension-row__more.icon-btn:hover:not(:disabled),
+.browser-extension-row__more.is-open {
+  color: var(--text);
+  background-color: var(--fill-quiet);
+}
+
+@media (hover: none) {
+  .browser-extension-row__more.icon-btn {
+    opacity: 1;
+  }
+}
+
+.popover.popover--extension-actions {
+  width: min(200px, calc(100vw - 20px));
+}
+
+/* Nothing installed yet: a quiet welcome above the way to the store. */
+.browser-extensions__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-14) var(--space-12) var(--space-12);
+  text-align: center;
+}
+
+.browser-extensions__empty-mark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-bottom: var(--space-4);
+  border-radius: var(--radius-sm);
+  background-color: var(--fill-plate);
+  color: var(--muted);
+}
+
+.browser-extensions__empty-mark > svg {
+  width: 16px;
+  height: 16px;
+}
+
+.browser-extensions__empty-title {
+  color: var(--text);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+
+.browser-extensions__empty-detail {
+  max-width: 220px;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.browser-extensions__empty + .picker__section {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
 .browser-downloads {
   position: relative;
 }
