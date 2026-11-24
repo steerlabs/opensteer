@@ -1,6 +1,7 @@
 #!/bin/bash
-# Runs in the disposable guest, over SSH, before the job's first journey: the screen capture the
-# image's SSH sessions were allowed to make is approved again, as of the guest's own clock.
+# Runs in the disposable guest, over SSH, before the job's first journey (test-macos-journeys.sh
+# calls it): the screen capture the image's SSH sessions were allowed to make is approved again, as
+# of the guest's own clock.
 #
 # Why: macOS keeps, per responsible program, when it last asked whether that program may capture
 # the screen without the system picker (replayd's ScreenCaptureApprovals.plist). It asks again once

@@ -947,16 +947,6 @@ stat -f '%Su %u' /dev/console
           timeout: 60,
           stdin: keychainStep,
         });
-        // The image's approval of screen capture over SSH is renewed as of the guest's clock: past
-        // its 30 days macOS asks again at a journey's first capture and takes the active app.
-        await run([...ssh!, "/bin/bash -s"], {
-          name: "screen-capture-approval",
-          timeout: 60,
-          stdin: readFileSync(
-            path.join(import.meta.dirname, "test-vm/screen-capture-approval.sh"),
-            "utf8",
-          ),
-        });
         // Each SSH connection is a security session of its own, and a keychain's unlocked state
         // may not carry over from `begin`'s: the suite's own session unlocks it again first, and
         // its log says whether it had to. The job's VM is exported for keychain-diagnostic.sh.
