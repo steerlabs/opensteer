@@ -1371,7 +1371,7 @@ describe("arrival motion", () => {
     const root = createRoot(scroller);
     roots.push(root);
     // The live conversation's newest rows, of the cut given; null for a window of history.
-    const show = async (entries: MessageEntry[], liveCut: number | null = 1) =>
+    const show = async (entries: MessageEntry[], liveCut: string | null = "1:1") =>
       act(async () => {
         root.render(
           <MemoryRouter initialEntries={["/tasks/arrival"]}>
@@ -1426,9 +1426,9 @@ describe("arrival motion", () => {
     expect(moving()).toEqual(["arrival-52"]);
     settle();
     // A repair installs a new cut that keeps every row and adds one: it was read, not appended.
-    await show(range(30, 54), 2);
+    await show(range(30, 54), "1:2");
     expect(moving()).toEqual([]);
-    await show(range(30, 55), 2);
+    await show(range(30, 55), "1:2");
     expect(moving()).toEqual(["arrival-54"]);
     settle();
     // In a window of history, Load newer appends a page; landing on the newest rows, it still
@@ -1436,10 +1436,18 @@ describe("arrival motion", () => {
     await show(range(30, 55), null);
     await show(range(30, 56), null);
     expect(moving()).toEqual([]);
-    await show(range(30, 57), 2);
+    await show(range(30, 57), "1:2");
     expect(moving()).toEqual([]);
-    await show(range(30, 58), 2);
+    await show(range(30, 58), "1:2");
     expect(moving()).toEqual(["arrival-57"]);
+    settle();
+    // A reconnect resumes from its cursor without a new snapshot: while it catches up there is no
+    // live cut, and the row its replay appends was missed, not arriving.
+    await show(range(30, 58), null);
+    await show(range(30, 59), "2:2");
+    expect(moving()).toEqual([]);
+    await show(range(30, 60), "2:2");
+    expect(moving()).toEqual(["arrival-59"]);
   });
 });
 

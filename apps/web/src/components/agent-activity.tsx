@@ -486,11 +486,12 @@ export const AgentTranscript = memo(function AgentTranscript({
   /** True while the caller is actively following the live tail. */
   followTail?: boolean;
   /**
-   * The snapshot (cut) the rows were drawn from while they are the live conversation's newest rows;
-   * null while they are a window of history, a page of it is being read, or the transcript is not
-   * live. Only a row live work appends within one such cut rises in.
+   * Names the subscription and snapshot (cut) the rows were drawn from while they are the live,
+   * synchronized conversation's newest rows; null while they are a window of history, a page of it
+   * is being read, or the transcript is catching up. Only a row live work appends within one such
+   * cut rises in.
    */
-  liveCut?: number | null;
+  liveCut?: string | null;
   /** Row keys that the caller needs mounted even while off-screen (e.g. restore anchors). */
   pinnedRowKeys?: readonly string[];
   /** Message IDs whose containing row must stay mounted (survives turn-row renames on prepend). */
@@ -715,7 +716,7 @@ export const AgentTranscript = memo(function AgentTranscript({
   // composite it, which for a long report costs hundreds of milliseconds.
   const slots = useRef(new Map<string, HTMLElement>());
   const committed = useRef<{
-    readonly cut: number | null;
+    readonly cut: string | null;
     readonly keys: readonly string[];
   } | null>(null);
   useLayoutEffect(() => {

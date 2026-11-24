@@ -234,6 +234,7 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
           runQueue={transcript.runQueue}
           detailCurrent={transcript.synchronized}
           cuts={transcript.cuts ?? 0}
+          generation={transcript.generation ?? 0}
         />
       ) : null}
     </Gated>
@@ -273,6 +274,8 @@ interface ThreadViewProps {
   detailCurrent?: boolean;
   /** Counts the snapshots installed for this conversation (a subscription's or a repair's). */
   cuts?: number;
+  /** The subscription the transcript was read under: a reconnect's replay is another one. */
+  generation?: number;
   runQueue?: readonly import("@opensteer/client/host").RunQueueEntry[];
   environmentStatus: EnvironmentStatus;
   executionPlacements: ThreadPlacementOption[];
@@ -313,6 +316,7 @@ const ThreadView = memo(function ThreadView({
   runQueue = noRuns,
   detailCurrent = true,
   cuts = 0,
+  generation = 0,
   shell,
   thread,
   userId,
@@ -1589,7 +1593,11 @@ const ThreadView = memo(function ThreadView({
                         teamChannelName={teamSource?.channel.name ?? null}
                         followTail={atTail && !historical}
                         // Live work appends to the newest window of one cut; a page read does not.
-                        liveCut={canLoadNewer || historical || loadingEarlier ? null : cuts}
+                        liveCut={
+                          detailCurrent && !canLoadNewer && !historical && !loadingEarlier
+                            ? `${generation}:${cuts}`
+                            : null
+                        }
                         pinnedMessageIds={pinnedMessageIds}
                         pinnedRowKeys={pinnedRowKeys}
                         revealMessage={revealMessage}
