@@ -35,6 +35,8 @@ import {
   MAX_PENDING_TRIGGER_OCCURRENCES,
   RETAINED_OUTPUT_OCCURRENCES,
   TRIGGER_SCRIPT_UPDATE_REASON,
+  TRIGGER_WEBHOOK_ADDRESS_REPLACED_REASON,
+  TRIGGER_WEBHOOK_UPDATE_REASON,
   WATCH_CRASH_NOTICE_THRESHOLD,
   WATCH_HEALTHY_WINDOW_MS,
   TriggerOccurrenceSchema,
@@ -701,8 +703,12 @@ export class TriggerStore {
       const updated = await transaction
         .updateTable("triggers")
         .set({
-          ...(input.script !== undefined && trigger.pauseReason === TRIGGER_SCRIPT_UPDATE_REASON
-            ? { pauseReason: null }
+          ...(input.script !== undefined
+            ? trigger.pauseReason === TRIGGER_SCRIPT_UPDATE_REASON
+              ? { pauseReason: null }
+              : trigger.pauseReason === TRIGGER_WEBHOOK_UPDATE_REASON
+                ? { pauseReason: TRIGGER_WEBHOOK_ADDRESS_REPLACED_REASON }
+                : {}
             : {}),
           currentRevisionId: revisionId,
           ...(input.name === undefined
@@ -4001,7 +4007,7 @@ function triggerFromRow(row: TriggerRow, needsProgramUpdate = false): Trigger {
     kind: row.kind,
     name: row.name,
     nextFireAt: blocked ? null : (row.nextFireAt?.toISOString() ?? null),
-    pauseReason: blocked ? TRIGGER_SCRIPT_UPDATE_REASON : row.pauseReason,
+    pauseReason: blocked ? (row.pauseReason ?? TRIGGER_SCRIPT_UPDATE_REASON) : row.pauseReason,
     waitingReason: blocked ? null : row.waitingReason,
     status: blocked ? "paused" : row.status,
     updatedAt: row.updatedAt.toISOString(),
@@ -4011,12 +4017,17 @@ function triggerFromRow(row: TriggerRow, needsProgramUpdate = false): Trigger {
 function revisionFromRow(row: TriggerRevisionRow): TriggerRevision {
   const script = row.script !== null ? AutomationScriptSchema.parse(row.script) : null;
   const legacySource = script === null ? (row.legacySource ?? undefined) : undefined;
+  const legacyLanguage = script === null ? (row.legacyLanguage ?? undefined) : undefined;
+  const legacyToolContractVersion =
+    script === null ? (row.legacyToolContractVersion ?? undefined) : undefined;
   return TriggerRevisionSchema.parse({
     createdAt: row.createdAt.toISOString(),
     createdBy: row.createdBy,
     createdByThreadId: row.createdByThreadId,
     id: row.id,
+    ...(legacyLanguage !== undefined ? { legacyLanguage } : {}),
     ...(legacySource !== undefined ? { legacySource } : {}),
+    ...(legacyToolContractVersion !== undefined ? { legacyToolContractVersion } : {}),
     ordinal: row.ordinal,
     script,
     source: row.source,
