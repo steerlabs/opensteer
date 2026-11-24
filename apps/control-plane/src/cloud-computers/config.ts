@@ -193,15 +193,6 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
 
 export type CloudComputerConfig = NonNullable<ReturnType<typeof loadCloudComputerConfig>>;
 
-const hetznerLocationLabels = new Map([
-  ["ash", "Ashburn, VA"],
-  ["hil", "Hillsboro, OR"],
-  ["fsn1", "Falkenstein"],
-  ["nbg1", "Nuremberg"],
-  ["hel1", "Helsinki"],
-  ["sin", "Singapore"],
-]);
-
 const googleRegionLabels = new Map([
   ["us-central1", "Council Bluffs, IA"],
   ["us-east1", "Moncks Corner, SC"],
@@ -225,7 +216,6 @@ export function cloudComputerRegion(
 ) {
   const label =
     (id === config.region ? config.regionLabel : undefined) ??
-    hetznerLocationLabels.get(id) ??
     googleRegionLabels.get(id.replace(/-[a-z]$/u, ""));
   return label ? { id, label } : undefined;
 }

@@ -18,7 +18,6 @@ import type { AccountApi } from "./account.js";
 import type { Addresses, CreateVm, DnsProvider, VmProvider, VmServer } from "./provider.js";
 import { Reconciler } from "./reconcile.js";
 import { ComputeFake, regionPath, zonePath } from "./google-compute.test-support.js";
-import { fakeHetzner } from "./hetzner.test-support.js";
 
 const home = CloudComputerDesiredSchema.parse({
   id: "cc_00000000-0000-4000-8000-000000000001",
@@ -184,11 +183,9 @@ function harness({
       dns,
       discover: async () => status.identity,
       accountOrigin: new URL("https://account.example.com"),
-      image: compute
-        ? "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64"
-        : "ubuntu-24.04",
-      defaultRegion: compute ? "us-central1" : "ash",
-      defaultServerType: compute ? "e2-medium" : "cpx22",
+      image: "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64",
+      defaultRegion: "us-central1",
+      defaultServerType: "e2-medium",
       concurrency,
       readinessTimeoutMs: 1000,
       orphanGraceMs: 60_000,
@@ -245,8 +242,8 @@ describe("Cloud Computer reconciliation", () => {
           providerServerId: 1,
         });
         expect(h.provider.create.mock.calls[0]?.[0]).toMatchObject({
-          region: "ash",
-          serverType: "cpx22",
+          region: "us-central1",
+          serverType: "e2-medium",
         });
       },
     },
@@ -485,12 +482,11 @@ describe("Cloud Computer reconciliation", () => {
   ];
   it.each(cases)("$name", ({ run }) => run(harness()));
 
-  it.each(["Hetzner", "Google"])(
+  it.each(["the in-memory provider", "Google"])(
     "reconciles the VM, DNS and Home identity through its lifecycle on %s",
     async (provider) => {
-      const google = provider === "Google";
-      const compute = google ? new ComputeFake() : undefined;
-      const h = harness(compute ? { compute } : { adapter: fakeHetzner() });
+      const compute = provider === "Google" ? new ComputeFake() : undefined;
+      const h = harness(compute ? { compute } : {});
       h.status.desired = [{ ...home, region: null, serverType: null }];
       await h.pass();
       expect(h.last()?.phase).toBe("booting");

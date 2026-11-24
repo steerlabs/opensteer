@@ -1,15 +1,11 @@
 import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
 import { openSync, closeSync, fstatSync, readFileSync, constants } from "node:fs";
 import { isBareOrigin, refused } from "@opensteer/core";
-import {
-  CloudComputerLocationSchema,
-  defaultBrowserPoolAdminPort,
-} from "@opensteer/control-plane-protocol";
+import { defaultBrowserPoolAdminPort } from "@opensteer/control-plane-protocol";
 import { z } from "zod";
 
 const envSchema = z.object({
   OPENSTEER_ACCOUNT_URL: z.url({ protocol: /^https$/u }).refine(isBareOrigin),
-  OPENSTEER_HOME_PROVIDER: z.enum(["hetzner", "google"]).default("hetzner"),
   OPENSTEER_HOME_CLOUDFLARE_ZONE_ID: z.string().regex(/^[a-f0-9]{32}$/u),
   OPENSTEER_HOME_INTERVAL_MS: integer(1_000, 300_000).default(10_000),
   OPENSTEER_HOME_REQUEST_TIMEOUT_MS: integer(100, 60_000).default(15_000),
@@ -20,11 +16,6 @@ const envSchema = z.object({
   OPENSTEER_HOME_CONCURRENCY: integer(1, 16).default(4),
 });
 
-const hetznerSchema = z.object({
-  OPENSTEER_HOME_DEFAULT_REGION: CloudComputerLocationSchema,
-  OPENSTEER_HOME_DEFAULT_SERVER_TYPE: CloudComputerLocationSchema,
-  OPENSTEER_HOME_IMAGE: z.string().regex(/^[a-z0-9][a-z0-9.-]{0,127}$/u),
-});
 const googleProject = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/u;
 const googleName = z.string().regex(/^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u);
 const googleSchema = z.object({
@@ -86,34 +77,20 @@ function readConfig<T>(schema: z.ZodType<T>, env: NodeJS.ProcessEnv) {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv) {
-  if (env.OPENSTEER_HOME_PROVIDER === "google") {
-    const google = readConfig(envSchema.extend(googleSchema.shape), env);
-    const pool = loadPoolConfig(env);
-    return {
-      ...sharedConfig(google, env),
-      provider: "google" as const,
-      project: google.OPENSTEER_HOME_GCP_PROJECT,
-      zone: google.OPENSTEER_HOME_GCP_ZONE,
-      network: google.OPENSTEER_HOME_GCP_NETWORK,
-      subnet: google.OPENSTEER_HOME_GCP_SUBNET,
-      diskType: google.OPENSTEER_HOME_GCP_DISK_TYPE,
-      diskSizeGb: google.OPENSTEER_HOME_GCP_DISK_SIZE_GB,
-      region: google.OPENSTEER_HOME_GCP_ZONE,
-      serverType: google.OPENSTEER_HOME_GCP_MACHINE_TYPE,
-      image: google.OPENSTEER_HOME_GCP_IMAGE,
-      ...(pool ? { pool } : {}),
-    };
-  }
-  const hetzner = readConfig(envSchema.extend(hetznerSchema.shape), env);
-  const imageId = z.coerce.number().int().positive().safeParse(hetzner.OPENSTEER_HOME_IMAGE);
-  const hetznerToken = readSecret(env, "OPENSTEER_HOME_HETZNER_TOKEN");
+  const google = readConfig(envSchema.extend(googleSchema.shape), env);
+  const pool = loadPoolConfig(env);
   return {
-    ...sharedConfig(hetzner, env),
-    provider: "hetzner" as const,
-    hetznerToken,
-    region: hetzner.OPENSTEER_HOME_DEFAULT_REGION,
-    serverType: hetzner.OPENSTEER_HOME_DEFAULT_SERVER_TYPE,
-    image: imageId.success ? imageId.data : hetzner.OPENSTEER_HOME_IMAGE,
+    ...sharedConfig(google, env),
+    project: google.OPENSTEER_HOME_GCP_PROJECT,
+    zone: google.OPENSTEER_HOME_GCP_ZONE,
+    network: google.OPENSTEER_HOME_GCP_NETWORK,
+    subnet: google.OPENSTEER_HOME_GCP_SUBNET,
+    diskType: google.OPENSTEER_HOME_GCP_DISK_TYPE,
+    diskSizeGb: google.OPENSTEER_HOME_GCP_DISK_SIZE_GB,
+    region: google.OPENSTEER_HOME_GCP_ZONE,
+    serverType: google.OPENSTEER_HOME_GCP_MACHINE_TYPE,
+    image: google.OPENSTEER_HOME_GCP_IMAGE,
+    ...(pool ? { pool } : {}),
   };
 }
 

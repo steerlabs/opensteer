@@ -23,8 +23,8 @@ const desired = {
   generation: 1,
   revision: 1,
   state: "active",
-  region: "ash",
-  serverType: "cpx22",
+  region: "us-central1-a",
+  serverType: "e2-standard-4",
   release: {
     version: "1.0.0",
     installerUrl: "https://releases.example.com/install.sh",
@@ -179,7 +179,7 @@ describe("Cloud Computer view facts", () => {
     const current = {
       ...preparing,
       deploymentId: identity.deploymentId,
-      region: { id: "ash", label: "Ashburn, VA" },
+      region: { id: "us-central1-a", label: "Council Bluffs, IA" },
       egressAddress: "2001:db8::7",
       renewsAt: "2027-01-15T00:00:00.000Z",
       steps: [{ id: "claim", state: "current" }],
@@ -195,7 +195,7 @@ describe("Cloud Computer view facts", () => {
   });
 
   it.each([
-    { region: { id: "ash", label: "" } },
+    { region: { id: "us-central1-a", label: "" } },
     { egressAddress: "gateway.example.test" },
     { renewsAt: null },
     { deploymentId: "unknown" },

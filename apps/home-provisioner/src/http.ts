@@ -2,8 +2,7 @@ import { OpensteerError, refused } from "@opensteer/core";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import type { z } from "zod";
 
-type Service =
-  "Account" | "Hetzner" | "Cloudflare" | "Google metadata" | "Google Compute Engine" | "Home";
+type Service = "Account" | "Cloudflare" | "Google metadata" | "Google Compute Engine" | "Home";
 export interface HttpOptions {
   readonly timeoutMs: number;
   readonly fetch?: typeof fetch;

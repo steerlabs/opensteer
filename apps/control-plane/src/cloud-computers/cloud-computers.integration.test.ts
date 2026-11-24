@@ -94,8 +94,8 @@ const services = [
 const config = loadCloudComputerConfig({
   OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL: provisionerEmail,
   OPENSTEER_CLOUD_COMPUTER_DOMAIN: "home.example.test",
-  OPENSTEER_CLOUD_COMPUTER_REGION: "ash",
-  OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE: "cpx22",
+  OPENSTEER_CLOUD_COMPUTER_REGION: "us-central1-a",
+  OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE: "e2-standard-4",
   OPENSTEER_CLOUD_COMPUTER_RELEASE_JSON: JSON.stringify({
     version: "1.2.3",
     installerUrl: "https://releases.example.test/install.sh",
@@ -643,7 +643,7 @@ integration("Cloud Computer Account service", () => {
     const initial = await read();
     expect(initial).toMatchObject({
       status: "preparing",
-      region: { id: "ash", label: "Ashburn, VA" },
+      region: { id: "us-central1-a", label: "Council Bluffs, IA" },
       steps: steps("current", "pending", "pending"),
     });
     for (const key of ["deploymentId", "egressAddress", "renewsAt", "lastBackupAt"])
@@ -884,8 +884,8 @@ integration("Cloud Computer Account service", () => {
       discover: async () => identity,
       accountOrigin: publicOrigin,
       image: "image",
-      defaultRegion: "ash",
-      defaultServerType: "cpx22",
+      defaultRegion: "us-central1-a",
+      defaultServerType: "e2-standard-4",
       concurrency: 1,
       readinessTimeoutMs: 10_000,
     };
@@ -2165,8 +2165,8 @@ integration("Cloud Computer Account service", () => {
           : async () => identity,
       accountOrigin: publicOrigin,
       image: "image",
-      defaultRegion: "ash",
-      defaultServerType: "cpx22",
+      defaultRegion: "us-central1-a",
+      defaultServerType: "e2-standard-4",
       concurrency: 1,
       readinessTimeoutMs: 20 * 60_000,
       now: () => now.getTime(),
