@@ -4,6 +4,7 @@ import {
   appFrameSandbox,
   appLinkPortMessage,
   appLinkRequest,
+  appPressReport,
   appOriginFrameSandbox,
   isAppOriginUrl,
   appFrameScheme,
@@ -11,14 +12,7 @@ import {
 } from "@opensteer/shared/appFrame";
 import { useEffect, useRef, useState } from "react";
 import { useOptionalWorkspace } from "../workspace/workspace-context.js";
-import { useToast } from "../toast.js";
-import {
-  appLinkLabel,
-  openAppLink,
-  watchAppInput,
-  watchFrameFocus,
-  type AppLinkPlaces,
-} from "./app-links.js";
+import { noteAppPress, openAppLink, type AppLinkPlaces } from "./app-links.js";
 
 export function useAppTheme(): AppTheme {
   const [theme, setTheme] = useState<AppTheme>(currentTheme);
@@ -83,24 +77,14 @@ export function AppLoading({ fill = false }: { readonly fill?: boolean }) {
 }
 
 /**
- * Where links out of an app go from here: the workspace's own opener, and a
- * question in Opensteer's toasts when this page cannot tell a press was in the
- * app. Read through a ref, so a port given to a document keeps the latest.
+ * Where links out of an app go from here: the workspace's own opener. Read
+ * through a ref, so a port given to a document keeps the latest.
  */
 export function useAppLinkPlaces(inWorkspace = true): { readonly current: AppLinkPlaces } {
   const found = useOptionalWorkspace();
   const workspace = inWorkspace ? found : null;
-  const toast = useToast();
-  const places = useRef<AppLinkPlaces>({ open: null, ask: () => undefined });
-  places.current = {
-    open: workspace?.openWebLink ?? null,
-    ask: (url, open) =>
-      toast.success(`This app wants to open ${appLinkLabel(url)}`, { label: "Open", run: open }),
-  };
-  useEffect(() => {
-    watchAppInput();
-    return watchFrameFocus();
-  }, []);
+  const places = useRef<AppLinkPlaces>({ open: null });
+  places.current = { open: workspace?.openWebLink ?? null };
   return places;
 }
 
@@ -148,6 +132,10 @@ export function AppFrame({
     const givePort = (target: Window) => {
       const channel = new MessageChannel();
       channel.port1.onmessage = (event: MessageEvent) => {
+        if (appPressReport(event.data)) {
+          noteAppPress(frame.current);
+          return;
+        }
         const link = appLinkRequest(event.data);
         if (link !== null)
           openAppLink(link, linkPlaces.current, { kind: "frame", frame: frame.current });
