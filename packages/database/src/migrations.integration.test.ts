@@ -1663,7 +1663,8 @@ it("applies 0113_automations_contract in one migration from pre-script state and
         pauseReason: string | null;
         pausedBy: string | null;
         pausedAt: Date | null;
-      }>`select id, name, status, next_fire_at, pause_reason, paused_by, paused_at from triggers`.execute(
+        webhookRouteKey: string | null;
+      }>`select id, name, status, next_fire_at, pause_reason, paused_by, paused_at, webhook_route_key from triggers`.execute(
         database,
       )
     ).rows.map((row) => [row.id, row]),
@@ -1672,14 +1673,24 @@ it("applies 0113_automations_contract in one migration from pre-script state and
   expect(triggers.get(legacyScheduleId)?.name).toBe("Legacy schedule");
   expect(triggers.get(legacyWebhookId)?.name).toBe("Automation");
 
-  for (const id of [legacyScheduleId, legacyWebhookId, legacyWatchId]) {
+  for (const id of [legacyScheduleId, legacyWatchId]) {
     const row = triggers.get(id);
     expect(row?.status).toBe("paused");
     expect(row?.nextFireAt).toBeNull();
     expect(row?.pauseReason).toBe("Needs an update: ask your agent");
     expect(row?.pausedBy).toBe("system");
     expect(row?.pausedAt).not.toBeNull();
+    expect(row?.webhookRouteKey).toBeNull();
   }
+  const migratedWebhook = triggers.get(legacyWebhookId);
+  expect(migratedWebhook?.status).toBe("paused");
+  expect(migratedWebhook?.nextFireAt).toBeNull();
+  expect(migratedWebhook?.pauseReason).toBe(
+    "Needs an update: ask your agent. Its webhook address was replaced, so update anything that calls it with the new address.",
+  );
+  expect(migratedWebhook?.pausedBy).toBe("system");
+  expect(migratedWebhook?.pausedAt).not.toBeNull();
+  expect(migratedWebhook?.webhookRouteKey).toMatch(/^whk_[A-Za-z0-9_-]{43}$/u);
   const watchAct = (
     await sql<{
       desired: string;
@@ -1692,13 +1703,17 @@ it("applies 0113_automations_contract in one migration from pre-script state and
   const legacyRev = (
     await sql<{
       script: unknown;
+      legacyLanguage: string | null;
       legacySource: string | null;
-    }>`select script, legacy_source from trigger_revisions where id = ${legacyScheduleRevId}`.execute(
+      legacyToolContractVersion: number | null;
+    }>`select script, legacy_language, legacy_source, legacy_tool_contract_version from trigger_revisions where id = ${legacyScheduleRevId}`.execute(
       database,
     )
   ).rows[0];
   expect(legacyRev).toEqual({
+    legacyLanguage: legacyProgram.language,
     legacySource: legacyProgram.source,
+    legacyToolContractVersion: legacyProgram.toolContractVersion,
     script: null,
   });
 

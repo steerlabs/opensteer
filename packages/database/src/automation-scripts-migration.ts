@@ -38,16 +38,23 @@ export async function applyAutomationsContract(database: Kysely<DatabaseSchema>)
       add column secrets_key_version integer check (secrets_key_version >= 1),
       add constraint triggers_secrets_envelope check (
         (encrypted_secrets is null) = (secrets_key_version is null)
-      ),
-      drop column if exists webhook_secret_hash,
-      drop column if exists consecutive_failures;
+      );
 
     alter table trigger_revisions
       add column script jsonb,
-      add column legacy_source text;
+      add column legacy_source text,
+      add column legacy_language text,
+      add column legacy_tool_contract_version integer;
 
     update trigger_revisions
-    set legacy_source = coalesce(program->>'source', program::text)
+    set
+      legacy_source = coalesce(program->>'source', program::text),
+      legacy_language = nullif(program->>'language', ''),
+      legacy_tool_contract_version = case
+        when (program->>'toolContractVersion') ~ '^[1-9][0-9]*$'
+          then (program->>'toolContractVersion')::integer
+        else null
+      end
     where script is null
       and legacy_source is null
       and program is not null;
@@ -57,6 +64,55 @@ export async function applyAutomationsContract(database: Kysely<DatabaseSchema>)
       add constraint trigger_revisions_script_or_legacy_check check (
         (script is not null) <> (legacy_source is not null)
       );
+
+    -- M3: main-era webhooks had a separate secret; once webhook_secret_hash is dropped, the address
+    -- itself is the credential, so every main-era webhook gets a newly generated 256-bit secret
+    -- address (3 x gen_random_uuid() = 366 bits CSPRNG -> sha256 -> base64url) before resume.
+    update triggers
+    set
+      webhook_route_key = 'whk_' || rtrim(
+        translate(
+          encode(
+            sha256(
+              (
+                gen_random_uuid()::text || ':' ||
+                gen_random_uuid()::text || ':' ||
+                gen_random_uuid()::text
+              )::bytea
+            ),
+            'base64'
+          ),
+          '+/',
+          '-_'
+        ),
+        '='
+      ),
+      status = case when status = 'archived' then 'archived' else 'paused' end,
+      next_fire_at = null,
+      pause_reason = case
+        when status = 'archived' then pause_reason
+        when system_role is null and exists (
+          select 1 from trigger_revisions
+          where trigger_revisions.id = triggers.current_revision_id
+            and trigger_revisions.script is null
+        ) then 'Needs an update: ask your agent. Its webhook address was replaced, so update anything that calls it with the new address.'
+        else 'Its webhook address was replaced, so update anything that calls it with the new address.'
+      end,
+      paused_by = case when status = 'archived' then paused_by else 'system' end,
+      paused_by_connection_id = case when status = 'archived' then paused_by_connection_id else null end,
+      paused_by_thread_id = case when status = 'archived' then paused_by_thread_id else null end,
+      paused_at = case when status = 'archived' then paused_at else coalesce(paused_at, now()) end,
+      updated_at = now()
+    where kind = 'webhook'
+      and (
+        webhook_secret_hash is not null
+        or webhook_route_key is null
+        or webhook_route_key !~ '^whk_[A-Za-z0-9_-]{43}$'
+      );
+
+    alter table triggers
+      drop column if exists webhook_secret_hash,
+      drop column if exists consecutive_failures;
 
     update triggers
     set
