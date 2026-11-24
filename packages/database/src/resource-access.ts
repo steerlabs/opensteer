@@ -1459,26 +1459,37 @@ async function commandReach(
       return tabsReach(ids);
     }
     case "tab-group": {
-      const layout = await database
-        .selectFrom("tabLayouts")
-        .select("items")
-        .where("ownerId", "=", owner)
-        .executeTakeFirst();
-      const items = (layout?.items ?? []) as readonly {
-        readonly kind: string;
-        readonly group?: { readonly groupId: string; readonly tabIds?: readonly string[] };
-      }[];
-      const group = items.find(
-        (item) => item.kind === "group" && item.group?.groupId === resource.id,
-      )?.group;
-      if (!group) return outOfReach;
-      // A group is reached only when every tab in it is: one holding some of its tabs, or none,
-      // finds no group. An empty group holds nothing a selected grant names.
-      const members = group.tabIds ?? [];
-      const reach =
-        members.length === 0 ? !selected : selected ? (await tabsReach(members)).reach : true;
+      // A group is reached only when every tab in it is (a selected grant through the profiles
+      // its tabs are in; never an empty one), decided in one statement whatever the group is: a
+      // hidden group does the same work as a missing one and answers the same (A6, rule 5).
+      const grantedProfiles = selected
+        ? (connection?.grant.scope === "selected" ? connection.grant.resources : [])
+            .flatMap((entry) => (entry.kind === "browser-profile" ? [entry.profileId] : []))
+            .filter((profileId) => granted({ kind: "browser-profile", profileId }))
+        : [];
+      const { rows } = await sql<{ readonly reach: boolean }>`
+        select exists (
+          select 1
+          from tab_layouts layout
+          cross join lateral jsonb_array_elements(layout.items) item
+          where layout.owner_id = ${owner}
+            and item->>'kind' = 'group'
+            and item->'group'->>'groupId' = ${resource.id}
+            and (${!selected}
+              or (jsonb_array_length(coalesce(item->'group'->'tabIds', '[]'::jsonb)) > 0
+                and not exists (
+                  select 1
+                  from jsonb_array_elements_text(coalesce(item->'group'->'tabIds', '[]'::jsonb))
+                    member(tab_id)
+                  where not exists (
+                    select 1 from personal_tabs tab
+                    where tab.id = member.tab_id
+                      and tab.owner_id = ${owner}
+                      and tab.profile_id = any(${grantedProfiles}::text[])))))
+        ) as reach
+      `.execute(database);
       // A group records no opener: it is never an agent's own work.
-      return reach ? { reach: true, ownWork: false } : outOfReach;
+      return rows[0]?.reach ? { reach: true, ownWork: false } : outOfReach;
     }
     case "browser-session": {
       const session = await database
