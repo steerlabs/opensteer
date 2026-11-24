@@ -14,6 +14,7 @@
     "./base64url": "./src/base64url.ts",
     "./markdownImages": "./src/markdownImages.ts",
     "./boundedAsyncInbox": "./src/boundedAsyncInbox.ts",
+    "./boundedCache": "./src/boundedCache.ts",
     "./boundedJson": "./src/boundedJson.ts",
     "./browserPage": "./src/browserPage.ts",
     "./browserTouch": "./src/browserTouch.ts",

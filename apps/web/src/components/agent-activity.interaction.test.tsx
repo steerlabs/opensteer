@@ -1240,79 +1240,92 @@ describe("a message still on this device", () => {
 });
 
 describe("a long transcript's bodies", () => {
-  it("defers older bodies on short transcripts and virtualizes long transcripts to a bounded window", async () => {
-    const observed: { element: Element; notify: () => void }[] = [];
-    vi.stubGlobal(
-      "IntersectionObserver",
-      class {
-        readonly #callback: IntersectionObserverCallback;
-        constructor(callback: IntersectionObserverCallback) {
-          this.#callback = callback;
-        }
-        observe(element: Element) {
-          observed.push({
-            element,
-            notify: () =>
-              this.#callback(
-                [{ isIntersecting: true, target: element } as IntersectionObserverEntry],
-                this as unknown as IntersectionObserver,
-              ),
-          });
-        }
-        disconnect() {}
-      },
-    );
-    const makeEntries = (count: number): MessageEntry[] =>
+  it("draws only the rows in and near view of any transcript it scrolls, each parsed at once", async () => {
+    const makeEntries = (count: number, thread: string): MessageEntry[] =>
       Array.from({ length: count }, (_, index) => ({
         ...note,
         runId: null,
         body: `Update **${index}**`,
         createdAt: new Date(Date.UTC(2026, 7, 16, 10, index)).toISOString(),
-        id: `message-${index}`,
+        id: `${thread}-message-${index}`,
       }));
-
-    // 1) Short transcript (<= 48 rows, non-virtualized): older rows stay deferred until intersecting.
-    const shortScroller = document.createElement("div");
-    document.body.append(shortScroller);
-    const shortRoot = createRoot(shortScroller);
-    roots.push(shortRoot);
-    await act(async () => {
-      shortRoot.render(
-        <MemoryRouter initialEntries={["/tasks/thread-1"]}>
-          <AgentTranscript entries={makeEntries(45)} scroller={() => shortScroller} />
-        </MemoryRouter>,
+    for (const [thread, count] of [
+      ["short", 45],
+      ["long", 100],
+    ] as const) {
+      const scroller = document.createElement("div");
+      document.body.append(scroller);
+      const root = createRoot(scroller);
+      roots.push(root);
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={[`/tasks/${thread}`]}>
+            <AgentTranscript entries={makeEntries(count, thread)} scroller={() => scroller} />
+          </MemoryRouter>,
+        );
+        await import("./markdown.js");
+      });
+      const body = (index: number) =>
+        scroller.querySelector(`[data-message-id="${thread}-message-${index}"]`);
+      // Without layout the window stands at the top, and the newest rows stay held at the tail.
+      await vi.waitFor(() =>
+        expect(body(count - 1)?.querySelector("strong")?.textContent).toBe(`${count - 1}`),
       );
-      await import("./markdown.js");
-    });
-    const shortBody = (index: number) =>
-      shortScroller.querySelector(`[data-message-id="message-${index}"]`)!;
-    await vi.waitFor(() => expect(shortBody(44).querySelector("strong")?.textContent).toBe("44"));
-    expect(shortBody(2).querySelector("strong")).toBeNull();
-    expect(shortBody(2).textContent).toContain("Update **2**");
-    const near = observed.find(({ element }) => shortBody(2).contains(element))!;
-    await act(async () => near.notify());
-    await vi.waitFor(() => expect(shortBody(2).querySelector("strong")?.textContent).toBe("2"));
-
-    // 2) Long transcript (> 48 rows, virtualized): mounts a bounded DOM window + spacers, parsing tail at once.
-    const longScroller = document.createElement("div");
-    document.body.append(longScroller);
-    const longRoot = createRoot(longScroller);
-    roots.push(longRoot);
-    await act(async () => {
-      longRoot.render(
-        <MemoryRouter initialEntries={["/tasks/thread-2"]}>
-          <AgentTranscript entries={makeEntries(100)} scroller={() => longScroller} />
-        </MemoryRouter>,
+      expect(body(2)?.querySelector("strong")?.textContent).toBe("2");
+      expect(scroller.dataset.virtualized).toBe("true");
+      expect(scroller.querySelectorAll("[data-transcript-row]").length).toBeLessThan(
+        Math.min(count, 60),
       );
-      await import("./markdown.js");
-    });
-    const longBody = (index: number) =>
-      longScroller.querySelector(`[data-message-id="message-${index}"]`);
-    await vi.waitFor(() => expect(longBody(99)?.querySelector("strong")?.textContent).toBe("99"));
-    expect(longScroller.querySelectorAll("[data-transcript-row]").length).toBeLessThan(60);
-    expect(longScroller.querySelectorAll(".transcript__spacer").length).toBeGreaterThan(0);
-    expect(longBody(50)).toBeNull();
-    vi.unstubAllGlobals();
+      expect(scroller.querySelectorAll(".transcript__spacer").length).toBeGreaterThan(0);
+      expect(body(count - 12)).toBeNull();
+    }
+  });
+
+  it("draws a task switched back to from its finished replies, without parsing them again", async () => {
+    const { drawnBlocks } = await import("./markdown.js");
+    const report = (turn: number) =>
+      Array.from(
+        { length: 6 },
+        (_, section) =>
+          `## Finding ${turn}.${section}\n\nThe **source** says [more](https://example.com/${turn}/${section}).\n\n` +
+          "```ts\nconst value = " +
+          `${turn * 10 + section}` +
+          ";\n```",
+      ).join("\n\n");
+    const entries: MessageEntry[] = Array.from({ length: 10 }, (_, turn) => ({
+      ...note,
+      runId: null,
+      body: report(turn),
+      createdAt: new Date(Date.UTC(2026, 7, 16, 10, turn)).toISOString(),
+      id: `switch-report-${turn}`,
+    }));
+    const open = async () => {
+      const scroller = document.createElement("div");
+      document.body.append(scroller);
+      const root = createRoot(scroller);
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={["/tasks/switch"]}>
+            <AgentTranscript entries={entries} scroller={() => scroller} />
+          </MemoryRouter>,
+        );
+        await import("./markdown.js");
+      });
+      await vi.waitFor(() =>
+        expect(scroller.querySelector('[data-message-id="switch-report-9"] h2')).not.toBeNull(),
+      );
+      const drawn = scroller.querySelector(".transcript")?.innerHTML ?? scroller.innerHTML;
+      act(() => root.unmount());
+      scroller.remove();
+      return drawn;
+    };
+    const parsed = vi.spyOn(drawnBlocks, "set");
+    const first = await open();
+    const firstParses = parsed.mock.calls.length;
+    expect(firstParses).toBeGreaterThan(0);
+    const again = await open();
+    expect(parsed.mock.calls.length).toBe(firstParses);
+    expect(again).toBe(first);
   });
 
   it("renders full assistant replies without an expand button in Task and Chat modes", async () => {

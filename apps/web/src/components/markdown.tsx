@@ -3,8 +3,15 @@ import { classifyHref } from "@opensteer/core";
 import { classifyMarkdownImageSource } from "@opensteer/shared/markdownImages";
 import { personMarkdownGfmOptions, personMarkdownTree } from "@opensteer/shared/personMarkdown";
 import { AssetImage } from "./asset-image.js";
-import { isValidElement, memo, useMemo, useRef, type ComponentProps } from "react";
-import ReactMarkdown, { type Components, type Options, type UrlTransform } from "react-markdown";
+import {
+  isValidElement,
+  memo,
+  useMemo,
+  useRef,
+  type ComponentProps,
+  type ReactElement,
+} from "react";
+import drawMarkdown, { type Components, type Options, type UrlTransform } from "react-markdown";
 
 type PluggableList = NonNullable<Options["remarkPlugins"]>;
 import remarkGfm from "remark-gfm";
@@ -13,8 +20,9 @@ import {
   repairStrong,
   splitMarkdownBlocks,
 } from "@opensteer/shared/markdown";
+import { BoundedCache } from "@opensteer/shared/boundedCache";
 import { CopyMark } from "./copy-mark.js";
-import { createMarkdownHighlight } from "./markdown-highlight.js";
+import { markdownHighlight } from "./markdown-highlight.js";
 import { remarkChipPunctuation } from "./references/chip-punctuation.js";
 import { ReferenceLink } from "./references/reference-link.js";
 
@@ -34,6 +42,8 @@ const personRemarkPlugins: PluggableList = [
   remarkChipPunctuation,
 ];
 const noRehypePlugins: [] = [];
+const rehypePlugins: PluggableList = [[markdownHighlight, { streaming: false }]];
+const streamingRehypePlugins: PluggableList = [[markdownHighlight, { streaming: true }]];
 
 function TranscriptImage({ alt, src }: ComponentProps<"img">) {
   const images = useTranscriptImages();
@@ -112,6 +122,7 @@ export const Markdown = memo(function Markdown({
   text: string;
 }) {
   const blocks = useMemo(() => splitMarkdownBlocks(text), [text]);
+  const variant = bare ? "bare" : excerpt ? "excerpt" : "block";
   return (
     <div className={profile === "person" ? "md-prose md-prose--person" : "md-prose"}>
       {blocks.map((block, index) => (
@@ -121,37 +132,60 @@ export const Markdown = memo(function Markdown({
           profile={profile}
           streaming={streaming && index === blocks.length - 1}
           text={block}
+          variant={`${profile}:${variant}`}
         />
       ))}
     </div>
   );
 });
 
+/**
+ * Each finished block, drawn, by how it was drawn and its words, shared by every reply on every
+ * screen. An element never changes, so a block mounted again (a task switched back to, a row
+ * scrolled back into view) reuses it instead of parsing again, and parsing is most of what drawing
+ * Markdown costs. An element and the tree it keeps hold about 20 bytes per character written, so
+ * this stays near 10 MB. A block still being written is never kept: it would only fill this with
+ * its prefixes.
+ */
+export const drawnBlocks = new BoundedCache<string, ReactElement>({ maxSize: 500_000 });
+// A short block still holds a whole element tree.
+const blockOverheadChars = 200;
+
 const MarkdownBlock = memo(function MarkdownBlock({
   components,
   profile,
   streaming,
   text,
+  variant,
 }: {
   components: Components;
   profile: MarkdownProfile;
   streaming: boolean;
   text: string;
+  variant: string;
 }) {
   const person = profile === "person";
-  const highlight = useMemo(createMarkdownHighlight, []);
-  return (
-    <ReactMarkdown
-      components={components}
-      remarkPlugins={
-        person ? personRemarkPlugins : streaming ? streamingRemarkPlugins : remarkPlugins
-      }
-      rehypePlugins={person ? noRehypePlugins : [[highlight, { streaming }]]}
-      urlTransform={urlTransform}
-    >
-      {streaming ? hideIncompleteLinkTail(text) : text}
-    </ReactMarkdown>
-  );
+  const draw = () =>
+    drawMarkdown({
+      children: streaming ? hideIncompleteLinkTail(text) : text,
+      components,
+      rehypePlugins: person ? noRehypePlugins : streaming ? streamingRehypePlugins : rehypePlugins,
+      remarkPlugins: person
+        ? personRemarkPlugins
+        : streaming
+          ? streamingRemarkPlugins
+          : remarkPlugins,
+      urlTransform,
+    });
+  if (streaming) return draw();
+  // Kept as it is drawn, not once committed: a render React restarts (a switch is a transition)
+  // finds its blocks already drawn.
+  const key = `${variant}\u0000${text}`;
+  const held = drawnBlocks.get(key);
+  if (held) return held;
+  const element = draw();
+  drawnBlocks.set(key, element, key.length + blockOverheadChars);
+  return element;
 });
 
 export default Markdown;
