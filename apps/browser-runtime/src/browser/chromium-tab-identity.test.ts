@@ -5,7 +5,7 @@
  * profile (same options, same bundled helper), without the runtime.
  */
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -72,7 +72,7 @@ interface Running {
   pid: number;
 }
 
-async function launch(directory: string): Promise<Running> {
+async function launch(directory: string, rewrite?: (worker: string) => string): Promise<Running> {
   const launcher = new PlaywrightChromiumLauncher({
     executablePath,
     chromiumSandbox: false,
@@ -80,6 +80,10 @@ async function launch(directory: string): Promise<Running> {
   });
   await initializeNativePreferences(directory);
   const extensionDir = await ensureTabLifecycleExtension(directory);
+  if (rewrite) {
+    const worker = path.join(extensionDir, "sw.js");
+    await writeFile(worker, rewrite(await readFile(worker, "utf8")));
+  }
   const context = await chromium.launchPersistentContext(
     directory,
     launcher.nativeLaunchOptions(directory, extensionDir, performance.now() + 30_000),
@@ -182,6 +186,91 @@ it("marks every tab as not discardable by Chromium itself, and answers an activa
   expect(reply.ok).toBe(true);
   expect(reply.tabId).toBe(asleep.tabId);
   expect(awake.tabId).toBe(reply.tabId);
+}, 60_000);
+
+/** Every tab's own flag, as the helper's worker reads it. */
+async function autoDiscardable(running: Running) {
+  const worker = await vi.waitFor(() => {
+    const found = running.context.serviceWorkers().find((w) => w.url().endsWith("/sw.js"));
+    expect(found).toBeDefined();
+    return found!;
+  });
+  return worker.evaluate(async () => {
+    const tabs = (
+      globalThis as unknown as {
+        chrome: {
+          tabs: { query(q: object): Promise<{ id: number; autoDiscardable: boolean }[]> };
+        };
+      }
+    ).chrome.tabs;
+    return (await tabs.query({})).map((tab) => ({ id: tab.id, auto: tab.autoDiscardable }));
+  });
+}
+
+/*
+ * K3 in every order: Chromium may refuse the worker's mark for a moment, and nothing may leave a
+ * tab discardable by Chromium for good. A refused mark is asked again; a tab whose mark was lost
+ * (an event that never came, a refusal given up on, a reset) is marked again by the runtime's
+ * next inventory read.
+ */
+it("keeps a tab from Chromium's own discard when its first mark is refused (K3)", async () => {
+  const url = await fixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-refused-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  // A test build of the helper whose first mark of each tab is refused, as Chromium can.
+  const mark = "chrome.tabs.update(tabId, { autoDiscardable: false })";
+  const running = await launch(directory, (worker) => {
+    expect(worker).toContain(mark);
+    return (
+      `const refusedOnce = new Set();
+const markOnce = (tabId, properties) => {
+  if (refusedOnce.has(tabId)) return chrome.tabs.update(tabId, properties);
+  refusedOnce.add(tabId);
+  return Promise.reject(new Error("Tabs cannot be edited right now (user may be dragging a tab)."));
+};
+` + worker.replace(mark, "markOnce(tabId, { autoDiscardable: false })")
+    );
+  });
+  const page = await running.context.newPage();
+  await page.goto(url(1, "refused"));
+  await vi.waitFor(
+    async () => expect((await autoDiscardable(running)).every((tab) => !tab.auto)).toBe(true),
+    { timeout: 5_000, interval: 50 },
+  );
+}, 60_000);
+
+it("marks again a tab whose mark was lost, at the runtime's next inventory read (K3)", async () => {
+  const url = await fixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-lost-mark-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const running = await launch(directory);
+  const page = await running.context.newPage();
+  await page.goto(url(1, "lost"));
+  await vi.waitFor(
+    async () => expect((await autoDiscardable(running)).every((tab) => !tab.auto)).toBe(true),
+    { timeout: 5_000, interval: 50 },
+  );
+  // The mark lost behind the worker's back.
+  const worker = running.context.serviceWorkers().find((w) => w.url().endsWith("/sw.js"))!;
+  await worker.evaluate(async () => {
+    const tabs = (
+      globalThis as unknown as {
+        chrome: {
+          tabs: {
+            query(q: object): Promise<{ id: number }[]>;
+            update(id: number, p: object): Promise<unknown>;
+          };
+        };
+      }
+    ).chrome.tabs;
+    for (const tab of await tabs.query({})) await tabs.update(tab.id, { autoDiscardable: true });
+  });
+  expect((await autoDiscardable(running)).some((tab) => tab.auto)).toBe(true);
+  await running.lifecycle.inventory();
+  await vi.waitFor(
+    async () => expect((await autoDiscardable(running)).every((tab) => !tab.auto)).toBe(true),
+    { timeout: 5_000, interval: 50 },
+  );
 }, 60_000);
 
 it("names a tab after Chromium discarded it: no page arrives while it sleeps, it keeps its target, and wakes by that name with its state (L2)", async () => {
