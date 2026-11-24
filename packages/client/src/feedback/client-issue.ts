@@ -131,6 +131,9 @@ const rejectionReasons: Readonly<Record<string, string>> = {
     "A secret with that name already exists with different capitalization.",
   "automation-secret-limit": "An automation can hold at most 64 secrets.",
   "automation-secret-size-limit": "All secrets on an automation together can't exceed 64 KiB.",
+  "automation-secrets-unreadable":
+    "These secrets can no longer be read. Clear all secrets before saving new ones.",
+  "automation-secrets-unavailable": "Couldn't read this automation's secrets right now. Try again.",
 };
 
 /** A read the Host answered, saying a source beyond it can't be reached now. */

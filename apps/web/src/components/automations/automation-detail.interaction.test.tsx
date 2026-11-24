@@ -509,3 +509,67 @@ it("lists secret names and lets the person add, replace, and remove secrets with
   await act(async () => button(node, "Confirm remove").click());
   await vi.waitFor(() => expect(node.textContent).not.toContain("API_TOKEN"), { timeout: 2000 });
 });
+
+it("shows an explicit recovery state with confirmation when secrets can no longer be read (R6)", async () => {
+  client = new MockHostClient({ latencyMs: 0 });
+  await client.load();
+  harness.client = client;
+  const trigger = unwrapRpcResult(await client.rpc["triggers.list"]({})).triggers.find(
+    (t) => t.source.kind === "schedule" && t.source.schedule.kind === "cron",
+  )!;
+  const baseRead = client.rpc["triggers.get"];
+  const baseDispatch = client.dispatch.bind(client);
+  let unreadable = true;
+  Object.defineProperty(client, "rpc", {
+    value: new Proxy(client.rpc, {
+      get(target, key) {
+        if (key !== "triggers.get") return Reflect.get(target, key);
+        return async (input: { triggerId: string }) => {
+          const res = unwrapRpcResult(await baseRead(input));
+          return {
+            ok: true as const,
+            data: {
+              ...res,
+              secretNames: unreadable ? [] : res.secretNames,
+              secretsUnreadable: unreadable,
+            },
+          };
+        };
+      },
+    }),
+  });
+  const dispatchSpy = vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+    if (command.type === "trigger.secrets.set" && command.clearAll) {
+      unreadable = false;
+    }
+    return baseDispatch(command);
+  });
+
+  const node = document.createElement("div");
+  document.body.append(node);
+  root = createRoot(node);
+  await act(async () =>
+    root!.render(
+      <MemoryRouter initialEntries={[`/automations/${trigger.id}`]}>
+        <Routes>
+          <Route path="/automations/:triggerId" element={<AutomationDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    ),
+  );
+  await vi.waitFor(
+    () => expect(node.textContent).toContain("These secrets can no longer be read."),
+    {
+      timeout: 2000,
+    },
+  );
+  expect(button(node, "Add")).toBeUndefined();
+  expect(button(node, "Clear all secrets")).toBeDefined();
+  await act(async () => button(node, "Clear all secrets").click());
+  expect(button(node, "Confirm clear all")).toBeDefined();
+  await act(async () => button(node, "Confirm clear all").click());
+  await vi.waitFor(() => expect(node.textContent).toContain("No secrets yet."), { timeout: 2000 });
+  expect(dispatchSpy).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "trigger.secrets.set", triggerId: trigger.id, clearAll: true }),
+  );
+});

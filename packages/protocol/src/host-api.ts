@@ -1239,6 +1239,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("trigger.cancel"),
   }),
   z.strictObject({
+    clearAll: z.literal(true).optional(),
     idempotencyKey: idempotencyKeySchema,
     names: z.array(AutomationSecretNameSchema).min(1).max(MAX_AUTOMATION_SECRETS).optional(),
     remove: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS).optional(),
@@ -2184,6 +2185,7 @@ const hostApiGroup4 = defineRpc({
       occurrences: z.array(TriggerOccurrenceViewSchema).max(100),
       revision: TriggerRevisionViewSchema,
       secretNames: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS).default([]),
+      secretsUnreadable: z.boolean().default(false),
       trigger: TriggerViewSchema,
       webhook: TriggerWebhookAddressViewSchema.nullable().optional(),
     }),

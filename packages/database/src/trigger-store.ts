@@ -1653,13 +1653,14 @@ export class TriggerStore {
     return row.encryptedSecrets ?? null;
   }
   async updateEncryptedSecrets<Result>(input: {
+    readonly allowStopWithoutRestart?: boolean;
     readonly commandIdentity?: CommandIdentity | Pick<CommandIdentity, "admit">;
     readonly actorConnectionId?: string;
     readonly actorThreadId: ThreadId | null;
     readonly ownerId: UserId;
     readonly transform: (current: Buffer | null) => Promise<{
-      readonly changed?: boolean;
-      readonly names?: readonly string[];
+      readonly changed: boolean;
+      readonly names: readonly string[];
       readonly result: Result;
       readonly sealed: { readonly envelope: Buffer; readonly keyVersion: number } | null;
     }>;
@@ -1692,13 +1693,12 @@ export class TriggerStore {
             : {}),
         });
         if (trigger.systemRole) throw conflict(MANAGED_MEMORY_REFUSAL);
-        if (trigger.status === "archived") throw conflict("Archived automations cannot be changed");
-        const {
-          changed = true,
-          names,
-          result,
-          sealed,
-        } = await input.transform(trigger.encryptedSecrets ?? null);
+        if (trigger.status === "archived" && !input.allowStopWithoutRestart) {
+          throw conflict("Archived automations cannot be changed");
+        }
+        const { changed, names, result, sealed } = await input.transform(
+          trigger.encryptedSecrets ?? null,
+        );
         if (!changed) {
           outcomeChanged = false;
           outcomeTrigger = triggerFromRow(trigger);
@@ -1706,17 +1706,25 @@ export class TriggerStore {
         }
         const now = new Date();
         let nextRevisionId = trigger.currentRevisionId;
-        if (trigger.kind === "watch") {
-          // S4: a watch restart checks the exact same execution authority and personal-context
-          // lineage rules as `update` and `setStatus` before replacing the active activation.
+        let pauseWatchWithoutRestart = false;
+        if (trigger.kind === "watch" && trigger.status !== "archived") {
+          // S4/R6: a watch restart checks the exact same execution authority and personal-context
+          // lineage rules as `update` and `setStatus`. If a watch cannot restart, adding/replacing
+          // secrets is refused; removing or clearing secrets still succeeds by stopping the watch
+          // without starting a replacement activation.
           if (trigger.status === "active") {
-            if (
-              trigger.originConnectionId !== null &&
-              !(await lineagePersonalContext(transaction, trigger.originConnectionId))
-            ) {
-              throw noProgramWithoutPersonalContext();
+            try {
+              if (
+                trigger.originConnectionId !== null &&
+                !(await lineagePersonalContext(transaction, trigger.originConnectionId))
+              ) {
+                throw noProgramWithoutPersonalContext();
+              }
+              await requireTriggerExecutionAuthority(transaction, trigger);
+            } catch (error) {
+              if (!input.allowStopWithoutRestart) throw error;
+              pauseWatchWithoutRestart = true;
             }
-            await requireTriggerExecutionAuthority(transaction, trigger);
           }
           const current = await transaction
             .selectFrom("triggerRevisions")
@@ -1738,23 +1746,32 @@ export class TriggerStore {
             })
             .execute();
         }
-        const nextNames =
-          names !== undefined ? [...names] : Array.isArray(result) ? [...result] : [];
         const updated = await transaction
           .updateTable("triggers")
           .set({
             currentRevisionId: nextRevisionId,
             encryptedSecrets: sealed?.envelope ?? null,
-            secretNames: jsonValue(nextNames),
+            secretNames: jsonValue([...names]),
             secretsKeyVersion: sealed?.keyVersion ?? null,
+            ...(pauseWatchWithoutRestart
+              ? {
+                  pauseReason:
+                    "Stopped because this watch could not restart after its secrets were removed.",
+                  pausedAt: now,
+                  pausedBy: "system",
+                  pausedByConnectionId: null,
+                  pausedByThreadId: null,
+                  status: "paused",
+                }
+              : {}),
             updatedAt: now,
           })
           .where("id", "=", trigger.id)
           .returningAll()
           .executeTakeFirstOrThrow();
-        if (trigger.kind === "watch") {
+        if (trigger.kind === "watch" && trigger.status !== "archived") {
           await stopActiveWatchActivation(transaction, trigger.id, now);
-          if (updated.status === "active") {
+          if (updated.status === "active" && !pauseWatchWithoutRestart) {
             const anchor = await transaction
               .selectFrom("threads")
               .select("environmentId")

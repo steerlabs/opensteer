@@ -827,6 +827,40 @@ describe("Managed memory passes", () => {
     await shown(screen, "API_TOKEN", "added secret name never appeared");
     expect(screen.textContent).not.toContain("mobile-secret-1");
 
+    // R7: Lost answer after a committed Add -> Check reads names and confirms (never says "Not saved.").
+    f.dispatch.mockImplementationOnce(async (command) => {
+      await f.mock.dispatch(command);
+      throw new Error("Lost answer");
+    });
+    press(button(screen, "Add"));
+    setInput("Secret name", "LOST_TOKEN");
+    setInput("Secret value", "SOL_R7_FIXTURE_TOKEN");
+    press(button(screen, "Save"));
+    await shown(screen, "Couldn't confirm the secret was saved.", "expected uncertainty");
+    press(button(screen, "Check"));
+    await shown(screen, "LOST_TOKEN", "committed secret name did not appear after Check");
+    await vi.waitFor(
+      () => {
+        expect(screen.textContent).not.toContain("Not saved.");
+        expect(screen.textContent).not.toContain("Couldn't confirm the secret was saved.");
+      },
+      { timeout: 2000 },
+    );
+    expect(screen.textContent).not.toContain("SOL_R7_FIXTURE_TOKEN");
+
+    // R7: Lost answer on Replace has no name-level evidence -> Check does NOT falsely say "Not saved."
+    f.dispatch.mockImplementationOnce(async (command) => {
+      await f.mock.dispatch(command);
+      throw new Error("Lost replace answer");
+    });
+    press(button(screen, "Replace LOST_TOKEN"));
+    setInput("New value", "SOL_R7_REPLACE_TOKEN");
+    press(button(screen, "Save"));
+    await shown(screen, "Couldn't confirm the secret was saved.", "expected replace uncertainty");
+    expect(screen.textContent).not.toContain("Not saved.");
+    expect(screen.textContent).not.toContain("SOL_R7_REPLACE_TOKEN");
+    press(button(screen, "Cancel"));
+
     // Failed save shows why the Home refused it rather than hiding the reason (S7).
     const beforeRefusedDispatch = f.dispatch.mock.calls.length;
     vi.spyOn(harness.host, "dispatch").mockRejectedValueOnce(
@@ -866,5 +900,57 @@ describe("Managed memory passes", () => {
     await vi.waitFor(() => expect(screen.textContent).not.toContain("API_TOKEN"), {
       timeout: 2000,
     });
+
+    // R7: Refresh failure after a committed write does NOT turn the write into an error/uncertainty.
+    f.get.mockRejectedValueOnce(new Error("refresh offline"));
+    press(button(screen, "Add"));
+    setInput("Secret name", "AFTER_REFRESH_FAIL");
+    setInput("Secret value", "mobile-secret-3");
+    press(button(screen, "Save"));
+    await vi.waitFor(
+      () => expect(screen.querySelector('input[aria-label="Secret value"]')).toBeNull(),
+      { timeout: 2000 },
+    );
+    expect(screen.textContent).not.toContain("Couldn't confirm");
+    expect(screen.textContent).not.toContain("Not saved.");
+    expect(screen.textContent).not.toContain("mobile-secret-3");
+  });
+
+  it("shows an explicit recovery state with confirmation when secrets can no longer be read (R6)", async () => {
+    const f = host();
+    const trigger = (await f.summaries()).find((t) => !t.systemRole)!;
+    const baseGet = f.mock.rpc["triggers.get"];
+    let unreadable = true;
+    f.get.mockImplementation(async (input) => {
+      const detail = unwrapRpcResult(await baseGet(input));
+      return {
+        ok: true as const,
+        data: {
+          ...detail,
+          secretNames: unreadable ? [] : detail.secretNames,
+          secretsUnreadable: unreadable,
+        },
+      };
+    });
+    f.dispatch.mockImplementation(async (command) => {
+      if (command.type === "trigger.secrets.set" && command.clearAll) {
+        unreadable = false;
+      }
+      return f.mock.dispatch(command);
+    });
+    const screen = detailScreen(trigger.id);
+    await shown(screen, "These secrets can no longer be read.", "unreadable state did not appear");
+    expect(() => button(screen, "Add")).toThrow();
+    press(button(screen, "Clear all secrets"));
+    await shown(screen, "Confirm clear all", "clear-all confirmation did not appear");
+    press(button(screen, "Confirm clear all"));
+    await shown(screen, "No secrets yet.", "empty readable state did not return after clearAll");
+    expect(f.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "trigger.secrets.set",
+        triggerId: trigger.id,
+        clearAll: true,
+      }),
+    );
   });
 });

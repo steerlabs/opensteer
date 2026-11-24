@@ -235,6 +235,7 @@ export class TriggerToolHandlers implements AgentAutomationExecutor {
           actor.userId,
           {
             triggerId: command.triggerId,
+            ...(command.clearAll === true ? { clearAll: true as const } : {}),
             ...(command.remove === undefined ? {} : { remove: command.remove }),
             ...(command.set === undefined ? {} : { set: command.set }),
           },

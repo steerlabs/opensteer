@@ -1,4 +1,4 @@
-import type { AesGcmSecretVault } from "@opensteer/access/host";
+import { isUnreadableSecretEnvelopeError, type AesGcmSecretVault } from "@opensteer/access/host";
 import { OpensteerError, type TriggerId } from "@opensteer/core";
 import {
   AutomationSecretNameSchema,
@@ -9,6 +9,7 @@ import {
 } from "@opensteer/triggers";
 
 export interface AutomationSecretsPatch {
+  readonly clearAll?: true | undefined;
   readonly remove?: readonly string[] | undefined;
   readonly set?: Readonly<Record<string, string>> | undefined;
 }
@@ -45,15 +46,24 @@ export class AutomationSecrets {
   }
 
   /**
-   * Applies set/replace/remove edits, returning whether anything changed and the sorted names.
-   * When an existing ciphertext cannot be decrypted (e.g. a different credentialKey, S6), starts
-   * from empty and marks `changed: true` so the person can remove or re-enter secrets to recover.
+   * Applies set/replace/remove or explicit `clearAll` edits, returning whether anything changed
+   * and the sorted names. When an existing envelope cannot be opened, selective `set`/`remove`
+   * is refused without touching the ciphertext (distinguishing permanent unreadable-envelope
+   * failures from transient vault errors); only explicit `clearAll: true` resets it (R6).
    */
   async applyWithMeta(
     triggerId: TriggerId,
     currentSealed: Buffer | null,
     patch: AutomationSecretsPatch,
   ): Promise<AppliedAutomationSecrets> {
+    if (patch.clearAll === true) {
+      return {
+        changed: currentSealed !== null,
+        names: [],
+        sealed: null,
+      };
+    }
+
     const setEntries = Object.entries(patch.set ?? {});
     const removeNames = patch.remove ?? [];
 
@@ -77,13 +87,26 @@ export class AutomationSecrets {
     }
 
     let current: Record<string, string> = {};
-    let unreadableCurrent = false;
     if (currentSealed) {
       try {
         current = { ...(await this.values(triggerId, currentSealed)) };
-      } catch {
-        current = {};
-        unreadableCurrent = true;
+      } catch (error) {
+        if (isUnreadableSecretEnvelopeError(error)) {
+          throw new OpensteerError({
+            cause: error,
+            code: "conflict",
+            reason: "automation-secrets-unreadable",
+            message:
+              "These secrets can no longer be read. Clear all secrets before saving new ones.",
+          });
+        }
+        throw new OpensteerError({
+          cause: error,
+          code: "internal",
+          reason: "automation-secrets-unavailable",
+          retryable: true,
+          message: "Couldn't read this automation's secrets right now. Try again.",
+        });
       }
     }
     const next: Record<string, string> = { ...current };
@@ -126,7 +149,6 @@ export class AutomationSecrets {
     const sortedNames = keys.toSorted();
     const currentKeys = Object.keys(current).toSorted();
     const changed =
-      unreadableCurrent ||
       sortedNames.length !== currentKeys.length ||
       sortedNames.some((key, index) => key !== currentKeys[index] || next[key] !== current[key]);
 

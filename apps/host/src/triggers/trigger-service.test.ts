@@ -624,13 +624,15 @@ describe("TriggerService", () => {
         updateEncryptedSecrets: vi.fn(
           async (input: {
             transform: (current: Buffer | null) => Promise<{
+              changed: boolean;
+              names: readonly string[];
               result: readonly string[];
               sealed: { envelope: Buffer; keyVersion: number } | null;
             }>;
           }) => {
-            const { result, sealed } = await input.transform(storedEnvelope);
+            const { changed, result, sealed } = await input.transform(storedEnvelope);
             storedEnvelope = sealed?.envelope ?? null;
-            return { result, trigger: triggerRecord };
+            return { changed, result, trigger: triggerRecord };
           },
         ),
       } as never,

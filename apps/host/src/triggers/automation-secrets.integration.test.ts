@@ -938,11 +938,13 @@ describeStore("automation secrets through the one door", (it) => {
     expect(revAfterNoop).toBe(revBeforeNoop);
     expect(watchChanged).not.toHaveBeenCalled();
 
-    // S6: Corrupt encrypted_secrets (simulating wrong credentialKey) -> triggers.get STILL lists
-    // secretNames without decrypting, and removing a secret succeeds to recover!
+    // R6: Corrupt encrypted_secrets (simulating wrong credentialKey) -> triggers.get STILL opens
+    // without throwing, selective remove/set is REFUSED and preserves the ciphertext intact,
+    // and ONLY explicit `clearAll: true` clears the unreadable envelope.
+    const corruptBytes = Buffer.from("corrupted-ciphertext-wrong-key");
     await database
       .updateTable("triggers")
-      .set({ encryptedSecrets: Buffer.from("corrupted-ciphertext-wrong-key") })
+      .set({ encryptedSecrets: corruptBytes })
       .where("id", "=", triggerId)
       .execute();
 
@@ -956,17 +958,43 @@ describeStore("automation secrets through the one door", (it) => {
         "KEY_B",
       ]);
     }
-    const recovered = await personDispatch({
+    await expect(
+      personDispatch({
+        type: "trigger.secrets.set",
+        triggerId,
+        remove: ["KEY_A"],
+      }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      reason: "automation-secrets-unreadable",
+    });
+    // Ciphertext is preserved untouched until the person explicitly confirms clearAll.
+    const preservedRow = await database
+      .selectFrom("triggers")
+      .select(["encryptedSecrets", "secretNames"])
+      .where("id", "=", triggerId)
+      .executeTakeFirstOrThrow();
+    expect(preservedRow.encryptedSecrets).toEqual(corruptBytes);
+    expect(preservedRow.secretNames).toEqual(["KEY_A", "KEY_B"]);
+
+    const cleared = await personDispatch({
       type: "trigger.secrets.set",
       triggerId,
-      remove: ["KEY_A"],
+      clearAll: true,
     });
-    expect(recovered).toEqual({
+    expect(cleared).toEqual({
       type: "trigger.secrets.set",
       secretNames: [],
     });
 
-    // S4: Active watch restart enforces requireTriggerExecutionAuthority (same as update/setStatus).
+    // R6: Re-add KEY_A, revoke runner execution authority on the active watch:
+    // adding new secrets is still refused (cannot restart), while removing KEY_A succeeds,
+    // stops the watch activation, and starts NO replacement activation.
+    await personDispatch({
+      type: "trigger.secrets.set",
+      triggerId,
+      set: { KEY_A: "val_before_revoke" },
+    });
     await database
       .updateTable("runners")
       .set({ revokedAt: new Date() })
@@ -982,6 +1010,71 @@ describeStore("automation secrets through the one door", (it) => {
       code: "forbidden",
       message: /execution authority is no longer active/u,
     });
+
+    const removedWhileRevoked = await personDispatch({
+      type: "trigger.secrets.set",
+      triggerId,
+      remove: ["KEY_A"],
+    });
+    expect(removedWhileRevoked).toEqual({
+      type: "trigger.secrets.set",
+      secretNames: [],
+    });
+    const activeActivationsAfterRemove = await database
+      .selectFrom("triggerWatchActivations")
+      .select(["id", "desired"])
+      .where("triggerId", "=", triggerId)
+      .where("desired", "=", "active")
+      .execute();
+    expect(activeActivationsAfterRemove).toEqual([]);
+
+    // R6: Archived automation refuses `set`, while allowing `remove` and `clearAll` so stored
+    // secrets can still be deleted after archiving.
+    await database
+      .updateTable("runners")
+      .set({ revokedAt: null })
+      .where("id", "=", f.runnerId)
+      .execute();
+    const archCreated = (await personDispatch({
+      type: "trigger.create",
+      input: {
+        anchorThreadId: f.threadId,
+        name: "Archived secret job",
+        script,
+        source: scheduleSource,
+      },
+    })) as { readonly trigger: { readonly id: TriggerId } };
+    await personDispatch({
+      type: "trigger.secrets.set",
+      triggerId: archCreated.trigger.id,
+      set: { ONE: "v1", TWO: "v2" },
+    });
+    await personDispatch({
+      type: "trigger.status.set",
+      triggerId: archCreated.trigger.id,
+      status: "archived",
+    });
+    await expect(
+      personDispatch({
+        type: "trigger.secrets.set",
+        triggerId: archCreated.trigger.id,
+        set: { THREE: "v3" },
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(
+      await personDispatch({
+        type: "trigger.secrets.set",
+        triggerId: archCreated.trigger.id,
+        remove: ["ONE"],
+      }),
+    ).toEqual({ type: "trigger.secrets.set", secretNames: ["TWO"] });
+    expect(
+      await personDispatch({
+        type: "trigger.secrets.set",
+        triggerId: archCreated.trigger.id,
+        clearAll: true,
+      }),
+    ).toEqual({ type: "trigger.secrets.set", secretNames: [] });
   });
 
   it("never leaks a secret marker value in any response, Request, error, event, DB table, or Host log (S8)", async ({

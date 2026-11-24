@@ -20,7 +20,16 @@ import {
   useNavigation,
   type StaticScreenProps,
 } from "@react-navigation/native";
-import { memo, useCallback, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -453,6 +462,7 @@ function ScheduleBody(props: {
           hostClient={props.hostClient}
           names={definition.secretNames ?? []}
           triggerId={item.id}
+          unreadable={definition.secretsUnreadable === true}
         />
       )}
       <View style={styles.runs}>
@@ -739,39 +749,105 @@ function AutomationSecretsCard(props: {
   readonly hostClient: HostClient;
   readonly names: readonly string[];
   readonly triggerId: string;
+  readonly unreadable: boolean;
 }): ReactNode {
   const [editing, setEditing] = useState<{
     readonly mode: "add" | "replace";
     readonly name: string;
   } | null>(null);
   const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null);
+  const [confirmingClearAll, setConfirmingClearAll] = useState(false);
+  const [unreadableDetected, setUnreadableDetected] = useState(false);
   const [nameInput, setNameInput] = useState("");
   const [valueInput, setValueInput] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
+  // Keep the typed value ONLY in a transient local ref cleared immediately before dispatch and on
+  // unmount, never in `useScreenAction`'s retained input (R7).
+  const pendingValueRef = useRef<string | null>(null);
+  useEffect(
+    () => () => {
+      pendingValueRef.current = null;
+    },
+    [],
+  );
 
-  const saveAction = useScreenAction<{ readonly name: string; readonly value: string }, void>(
-    props.hostClient,
-    `trigger-secrets-save:${props.triggerId}`,
-    {
-      label: "save this secret",
-      done: "saved",
-      happened: "the secret was saved",
-      execute: async ({ name, value }) => {
+  const isUnreadable = props.unreadable || unreadableDetected;
+
+  const refreshSecretDetail = async () => {
+    const resource = schedulesClient(props.hostClient).detail(props.triggerId);
+    await resource.refresh();
+    const shown = resource.getSnapshot();
+    if (shown.status !== "ready") return null;
+    return {
+      names: shown.data.definition.secretNames ?? [],
+      unreadable: shown.data.definition.secretsUnreadable === true,
+    };
+  };
+
+  const saveAction = useScreenAction<
+    { readonly mode: "add" | "replace"; readonly name: string },
+    void
+  >(props.hostClient, `trigger-secrets-save:${props.triggerId}`, {
+    label: "save this secret",
+    done: "saved",
+    happened: "the secret was saved",
+    execute: async ({ name }) => {
+      const value = pendingValueRef.current;
+      pendingValueRef.current = null;
+      if (value === null) return;
+      try {
         await props.hostClient.dispatch({
           idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${props.triggerId}`),
           set: { [name]: value },
           triggerId: props.triggerId,
           type: "trigger.secrets.set",
         });
+      } catch (error) {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "reason" in error &&
+          (error as { readonly reason?: unknown }).reason === "automation-secrets-unreadable"
+        ) {
+          setUnreadableDetected(true);
+          setEditing(null);
+        }
+        throw error;
+      }
+      setEditing(null);
+      setNameInput("");
+      setValueInput("");
+      setValidationError(null);
+      // A refresh error after a committed write must never turn the write into an unconfirmed or failed action (R7).
+      try {
         await schedulesClient(props.hostClient).detail(props.triggerId).refresh();
-        setEditing(null);
-        setNameInput("");
-        setValueInput("");
-        setValidationError(null);
-      },
-      reconcile: async () => notDone("saved"),
+      } catch {
+        // Detail will refresh on next focus or pull.
+      }
     },
-  );
+    reconcile: async ({ mode, name }) => {
+      try {
+        const fresh = await refreshSecretDetail();
+        if (!fresh) return null;
+        if (fresh.unreadable) {
+          setUnreadableDetected(true);
+          return null;
+        }
+        // For a replacement, the name already existed before the save so `secretNames` gives no
+        // evidence whether the old or new value is stored; preserve uncertainty so the person can save again (R7).
+        if (mode === "replace") return null;
+        if (fresh.names.includes(name)) {
+          setEditing(null);
+          setNameInput("");
+          setValueInput("");
+          return { kind: "confirmed", value: undefined };
+        }
+        return notDone("saved");
+      } catch {
+        return null;
+      }
+    },
+  });
   const removeAction = useScreenAction<string, void>(
     props.hostClient,
     `trigger-secrets-remove:${props.triggerId}`,
@@ -780,22 +856,90 @@ function AutomationSecretsCard(props: {
       done: "removed",
       happened: "the secret was removed",
       execute: async (name) => {
+        try {
+          await props.hostClient.dispatch({
+            idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${props.triggerId}`),
+            remove: [name],
+            triggerId: props.triggerId,
+            type: "trigger.secrets.set",
+          });
+        } catch (error) {
+          if (
+            typeof error === "object" &&
+            error !== null &&
+            "reason" in error &&
+            (error as { readonly reason?: unknown }).reason === "automation-secrets-unreadable"
+          ) {
+            setUnreadableDetected(true);
+            setConfirmingRemove(null);
+          }
+          throw error;
+        }
+        setConfirmingRemove(null);
+        try {
+          await schedulesClient(props.hostClient).detail(props.triggerId).refresh();
+        } catch {
+          // Detail will refresh on next focus or pull.
+        }
+      },
+      reconcile: async (name) => {
+        try {
+          const fresh = await refreshSecretDetail();
+          if (!fresh) return null;
+          if (!fresh.names.includes(name)) {
+            setConfirmingRemove(null);
+            return { kind: "confirmed", value: undefined };
+          }
+          return notDone("removed");
+        } catch {
+          return null;
+        }
+      },
+    },
+  );
+  const clearAllAction = useScreenAction<void, void>(
+    props.hostClient,
+    `trigger-secrets-clear:${props.triggerId}`,
+    {
+      label: "clear all secrets",
+      done: "cleared",
+      happened: "the secrets were cleared",
+      execute: async () => {
         await props.hostClient.dispatch({
+          clearAll: true,
           idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${props.triggerId}`),
-          remove: [name],
           triggerId: props.triggerId,
           type: "trigger.secrets.set",
         });
-        await schedulesClient(props.hostClient).detail(props.triggerId).refresh();
-        setConfirmingRemove(null);
+        setConfirmingClearAll(false);
+        setUnreadableDetected(false);
+        try {
+          await schedulesClient(props.hostClient).detail(props.triggerId).refresh();
+        } catch {
+          // Detail will refresh on next focus or pull.
+        }
       },
-      reconcile: async () => notDone("removed"),
+      reconcile: async () => {
+        try {
+          const fresh = await refreshSecretDetail();
+          if (!fresh) return null;
+          if (!fresh.unreadable && fresh.names.length === 0) {
+            setConfirmingClearAll(false);
+            setUnreadableDetected(false);
+            return { kind: "confirmed", value: undefined };
+          }
+          return notDone("cleared");
+        } catch {
+          return null;
+        }
+      },
     },
   );
-  const busy = saveAction.running || removeAction.running;
+  const busy = saveAction.running || removeAction.running || clearAllAction.running;
 
   const openAdd = () => {
     setConfirmingRemove(null);
+    setConfirmingClearAll(false);
     setEditing({ mode: "add", name: "" });
     setNameInput("");
     setValueInput("");
@@ -803,12 +947,14 @@ function AutomationSecretsCard(props: {
   };
   const openReplace = (name: string) => {
     setConfirmingRemove(null);
+    setConfirmingClearAll(false);
     setEditing({ mode: "replace", name });
     setNameInput(name);
     setValueInput("");
     setValidationError(null);
   };
   const close = () => {
+    pendingValueRef.current = null;
     setEditing(null);
     setNameInput("");
     setValueInput("");
@@ -823,7 +969,7 @@ function AutomationSecretsCard(props: {
       : null;
 
   const save = () => {
-    if (!editing || busy) return;
+    if (!editing || busy || isUnreadable) return;
     const targetName = editing.mode === "add" ? nameInput.trim() : editing.name;
     if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/u.test(targetName)) {
       setValidationError(
@@ -835,23 +981,31 @@ function AutomationSecretsCard(props: {
       setValidationError("Enter a value.");
       return;
     }
-    const valueToSave = valueInput;
+    const effectiveMode: "add" | "replace" =
+      editing.mode === "add" && props.names.includes(targetName) ? "replace" : editing.mode;
+    pendingValueRef.current = valueInput;
     setValueInput("");
     setValidationError(null);
-    void saveAction.run({ name: targetName, value: valueToSave });
+    void saveAction.run({ mode: effectiveMode, name: targetName });
   };
 
   const remove = (name: string) => {
-    if (busy) return;
+    if (busy || isUnreadable) return;
     setValidationError(null);
     void removeAction.run(name);
+  };
+
+  const clearAll = () => {
+    if (busy) return;
+    setValidationError(null);
+    void clearAllAction.run(undefined);
   };
 
   return (
     <View style={styles.secretSection}>
       <View style={styles.secretHead}>
         <ScheduleGroupHead title="Secrets" />
-        {props.changeable && editing === null ? (
+        {props.changeable && editing === null && !isUnreadable ? (
           <Pressable
             accessibilityLabel="Add"
             accessibilityRole="button"
@@ -869,143 +1023,195 @@ function AutomationSecretsCard(props: {
         that prints a secret puts it in its run’s record, where agents that can read this automation
         can see it.
       </AppText>
-      {editing !== null ? (
-        <View style={[styles.plate, styles.secretForm]}>
-          {editing.mode === "add" ? (
-            <>
-              <TextInput
-                accessibilityLabel="Secret name"
-                autoCapitalize="none"
-                autoCorrect={false}
-                onChangeText={setNameInput}
-                placeholder="API_TOKEN"
-                placeholderTextColor={color.mutedDim}
-                style={styles.secretInput}
-                value={nameInput}
-              />
-              {existingMatch !== null ? (
-                <AppText role="caption" tone="muted">
-                  {existingMatch === trimmedAddName
-                    ? `Saving replaces the existing ${existingMatch} secret.`
-                    : `Conflicts with existing ${existingMatch} (names are case-insensitive).`}
-                </AppText>
-              ) : null}
-            </>
-          ) : (
-            <AppText role="secondaryMedium">Replacing {editing.name}</AppText>
-          )}
-          <TextInput
-            accessibilityLabel={editing.mode === "add" ? "Secret value" : "New value"}
-            autoCapitalize="none"
-            autoCorrect={false}
-            onChangeText={setValueInput}
-            placeholder="Secret value"
-            placeholderTextColor={color.mutedDim}
-            secureTextEntry
-            style={styles.secretInput}
-            value={valueInput}
-          />
-          <View style={styles.secretActions}>
-            <Pressable
-              accessibilityLabel="Cancel"
-              accessibilityRole="button"
-              disabled={busy}
-              onPress={close}
-              style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
-            >
-              <AppText role="secondary">Cancel</AppText>
-            </Pressable>
-            <Pressable
-              accessibilityLabel="Save"
-              accessibilityRole="button"
-              disabled={busy}
-              onPress={save}
-              style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
-            >
-              <AppText role="secondaryMedium">{busy ? "Saving…" : "Save"}</AppText>
-            </Pressable>
+      {isUnreadable ? (
+        <View style={styles.plate}>
+          <View style={styles.secretRow}>
+            <AppText role="secondary" style={styles.words} tone="muted">
+              These secrets can no longer be read. Clear all secrets before saving new ones.
+            </AppText>
+            <View style={styles.secretActions}>
+              {confirmingClearAll ? (
+                <>
+                  <Pressable
+                    accessibilityLabel="Cancel clear all"
+                    accessibilityRole="button"
+                    disabled={busy}
+                    onPress={() => setConfirmingClearAll(false)}
+                    style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
+                  >
+                    <AppText role="secondary">Cancel</AppText>
+                  </Pressable>
+                  <Pressable
+                    accessibilityLabel="Confirm clear all"
+                    accessibilityRole="button"
+                    disabled={busy}
+                    onPress={clearAll}
+                    style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
+                  >
+                    <AppText role="secondaryMedium" style={styles.secretError}>
+                      Confirm clear all
+                    </AppText>
+                  </Pressable>
+                </>
+              ) : (
+                <Pressable
+                  accessibilityLabel="Clear all secrets"
+                  accessibilityRole="button"
+                  disabled={busy}
+                  onPress={() => setConfirmingClearAll(true)}
+                  style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
+                >
+                  <AppText role="secondaryMedium" style={styles.secretError}>
+                    Clear all secrets
+                  </AppText>
+                </Pressable>
+              )}
+            </View>
           </View>
         </View>
-      ) : null}
-      {validationError !== null ? (
-        <AppText role="caption" style={styles.secretError}>
-          {validationError}
-        </AppText>
-      ) : null}
-      {saveAction.line !== null ? (
-        <ActionLine line={saveAction.line} onDismiss={saveAction.dismiss} />
-      ) : removeAction.line !== null ? (
-        <ActionLine line={removeAction.line} onDismiss={removeAction.dismiss} />
-      ) : null}
-      <View style={styles.plate}>
-        {props.names.length === 0 ? (
-          <View style={styles.secretRow}>
-            <AppText role="secondary" tone="muted">
-              No secrets yet.
-            </AppText>
-          </View>
-        ) : (
-          props.names.map((name, index) => (
-            <View key={name} style={[styles.secretRow, index > 0 && styles.separated]}>
-              <AppText numberOfLines={1} role="secondaryMedium" style={styles.words}>
-                {name}
-              </AppText>
-              {props.changeable ? (
-                <View style={styles.secretActions}>
-                  {confirmingRemove === name ? (
-                    <>
-                      <Pressable
-                        accessibilityLabel={`Cancel remove ${name}`}
-                        accessibilityRole="button"
-                        disabled={busy}
-                        onPress={() => setConfirmingRemove(null)}
-                        style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
-                      >
-                        <AppText role="secondary">Cancel</AppText>
-                      </Pressable>
-                      <Pressable
-                        accessibilityLabel="Confirm remove"
-                        accessibilityRole="button"
-                        disabled={busy}
-                        onPress={() => remove(name)}
-                        style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
-                      >
-                        <AppText role="secondaryMedium" style={styles.secretError}>
-                          Confirm remove
-                        </AppText>
-                      </Pressable>
-                    </>
-                  ) : (
-                    <>
-                      <Pressable
-                        accessibilityLabel={`Replace ${name}`}
-                        accessibilityRole="button"
-                        disabled={busy}
-                        onPress={() => openReplace(name)}
-                        style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
-                      >
-                        <AppText role="secondary">Replace</AppText>
-                      </Pressable>
-                      <Pressable
-                        accessibilityLabel={`Remove ${name}`}
-                        accessibilityRole="button"
-                        disabled={busy}
-                        onPress={() => {
-                          close();
-                          setConfirmingRemove(name);
-                        }}
-                        style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
-                      >
-                        <AppText role="secondary">Remove</AppText>
-                      </Pressable>
-                    </>
-                  )}
-                </View>
-              ) : null}
+      ) : (
+        <>
+          {editing !== null ? (
+            <View style={[styles.plate, styles.secretForm]}>
+              {editing.mode === "add" ? (
+                <>
+                  <TextInput
+                    accessibilityLabel="Secret name"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    onChangeText={setNameInput}
+                    placeholder="API_TOKEN"
+                    placeholderTextColor={color.mutedDim}
+                    style={styles.secretInput}
+                    value={nameInput}
+                  />
+                  {existingMatch !== null ? (
+                    <AppText role="caption" tone="muted">
+                      {existingMatch === trimmedAddName
+                        ? `Saving replaces the existing ${existingMatch} secret.`
+                        : `Conflicts with existing ${existingMatch} (names are case-insensitive).`}
+                    </AppText>
+                  ) : null}
+                </>
+              ) : (
+                <AppText role="secondaryMedium">Replacing {editing.name}</AppText>
+              )}
+              <TextInput
+                accessibilityLabel={editing.mode === "add" ? "Secret value" : "New value"}
+                autoCapitalize="none"
+                autoCorrect={false}
+                onChangeText={setValueInput}
+                placeholder="Secret value"
+                placeholderTextColor={color.mutedDim}
+                secureTextEntry
+                style={styles.secretInput}
+                value={valueInput}
+              />
+              <View style={styles.secretActions}>
+                <Pressable
+                  accessibilityLabel="Cancel"
+                  accessibilityRole="button"
+                  disabled={busy}
+                  onPress={close}
+                  style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
+                >
+                  <AppText role="secondary">Cancel</AppText>
+                </Pressable>
+                <Pressable
+                  accessibilityLabel="Save"
+                  accessibilityRole="button"
+                  disabled={busy}
+                  onPress={save}
+                  style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
+                >
+                  <AppText role="secondaryMedium">{busy ? "Saving…" : "Save"}</AppText>
+                </Pressable>
+              </View>
             </View>
-          ))
-        )}
-      </View>
+          ) : null}
+          {validationError !== null ? (
+            <AppText role="caption" style={styles.secretError}>
+              {validationError}
+            </AppText>
+          ) : null}
+          {saveAction.line !== null ? (
+            <ActionLine line={saveAction.line} onDismiss={saveAction.dismiss} />
+          ) : removeAction.line !== null ? (
+            <ActionLine line={removeAction.line} onDismiss={removeAction.dismiss} />
+          ) : clearAllAction.line !== null ? (
+            <ActionLine line={clearAllAction.line} onDismiss={clearAllAction.dismiss} />
+          ) : null}
+          <View style={styles.plate}>
+            {props.names.length === 0 ? (
+              <View style={styles.secretRow}>
+                <AppText role="secondary" tone="muted">
+                  No secrets yet.
+                </AppText>
+              </View>
+            ) : (
+              props.names.map((name, index) => (
+                <View key={name} style={[styles.secretRow, index > 0 && styles.separated]}>
+                  <AppText numberOfLines={1} role="secondaryMedium" style={styles.words}>
+                    {name}
+                  </AppText>
+                  <View style={styles.secretActions}>
+                    {confirmingRemove === name ? (
+                      <>
+                        <Pressable
+                          accessibilityLabel={`Cancel remove ${name}`}
+                          accessibilityRole="button"
+                          disabled={busy}
+                          onPress={() => setConfirmingRemove(null)}
+                          style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
+                        >
+                          <AppText role="secondary">Cancel</AppText>
+                        </Pressable>
+                        <Pressable
+                          accessibilityLabel="Confirm remove"
+                          accessibilityRole="button"
+                          disabled={busy}
+                          onPress={() => remove(name)}
+                          style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
+                        >
+                          <AppText role="secondaryMedium" style={styles.secretError}>
+                            Confirm remove
+                          </AppText>
+                        </Pressable>
+                      </>
+                    ) : (
+                      <>
+                        {props.changeable ? (
+                          <Pressable
+                            accessibilityLabel={`Replace ${name}`}
+                            accessibilityRole="button"
+                            disabled={busy}
+                            onPress={() => openReplace(name)}
+                            style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
+                          >
+                            <AppText role="secondary">Replace</AppText>
+                          </Pressable>
+                        ) : null}
+                        <Pressable
+                          accessibilityLabel={`Remove ${name}`}
+                          accessibilityRole="button"
+                          disabled={busy}
+                          onPress={() => {
+                            close();
+                            setConfirmingRemove(name);
+                          }}
+                          style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
+                        >
+                          <AppText role="secondary">Remove</AppText>
+                        </Pressable>
+                      </>
+                    )}
+                  </View>
+                </View>
+              ))
+            )}
+          </View>
+        </>
+      )}
     </View>
   );
 }

@@ -179,6 +179,7 @@ function AutomationView({
   const [pending, setPending] = useState(false);
   const [changingTime, setChangingTime] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [secretsUnreadableDetected, setSecretsUnreadableDetected] = useState(false);
   const deleteRef = useRef<HTMLButtonElement | null>(null);
   const conversation = conversationPath(trigger.anchorThreadId);
   const conversationTitle = conversationName(detail.anchorThreadTitle);
@@ -493,30 +494,70 @@ function AutomationView({
           archived={archived}
           disabled={pending}
           names={detail.secretNames ?? []}
-          onRemove={(name) =>
-            void act(async () => {
+          onClearAll={() =>
+            act(async () => {
               await client.dispatch({
+                clearAll: true,
                 idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${trigger.id}`),
-                remove: [name],
                 triggerId: trigger.id,
                 type: "trigger.secrets.set",
               });
+              setSecretsUnreadableDetected(false);
+              await refresh();
+              return "Cleared all secrets";
+            })
+          }
+          onRemove={(name) =>
+            act(async () => {
+              try {
+                await client.dispatch({
+                  idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${trigger.id}`),
+                  remove: [name],
+                  triggerId: trigger.id,
+                  type: "trigger.secrets.set",
+                });
+              } catch (error) {
+                if (
+                  typeof error === "object" &&
+                  error !== null &&
+                  "reason" in error &&
+                  (error as { readonly reason?: unknown }).reason ===
+                    "automation-secrets-unreadable"
+                ) {
+                  setSecretsUnreadableDetected(true);
+                }
+                throw error;
+              }
               await refresh();
               return `Removed ${name}`;
             })
           }
           onSave={(name, value, mode) =>
             act(async () => {
-              await client.dispatch({
-                idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${trigger.id}`),
-                set: { [name]: value },
-                triggerId: trigger.id,
-                type: "trigger.secrets.set",
-              });
+              try {
+                await client.dispatch({
+                  idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${trigger.id}`),
+                  set: { [name]: value },
+                  triggerId: trigger.id,
+                  type: "trigger.secrets.set",
+                });
+              } catch (error) {
+                if (
+                  typeof error === "object" &&
+                  error !== null &&
+                  "reason" in error &&
+                  (error as { readonly reason?: unknown }).reason ===
+                    "automation-secrets-unreadable"
+                ) {
+                  setSecretsUnreadableDetected(true);
+                }
+                throw error;
+              }
               await refresh();
               return mode === "add" ? `Added ${name}` : `Replaced ${name}`;
             })
           }
+          unreadable={detail.secretsUnreadable === true || secretsUnreadableDetected}
         />
       )}
 
@@ -959,26 +1000,32 @@ function AutomationSecretsSection({
   archived,
   disabled,
   names,
+  onClearAll,
   onRemove,
   onSave,
+  unreadable,
 }: {
   readonly archived: boolean;
   readonly disabled: boolean;
   readonly names: readonly string[];
+  readonly onClearAll: () => void;
   readonly onRemove: (name: string) => void;
   readonly onSave: (name: string, value: string, mode: "add" | "replace") => Promise<void>;
+  readonly unreadable: boolean;
 }) {
   const [editing, setEditing] = useState<{
     readonly mode: "add" | "replace";
     readonly name: string;
   } | null>(null);
   const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null);
+  const [confirmingClearAll, setConfirmingClearAll] = useState(false);
   const [nameInput, setNameInput] = useState("");
   const [valueInput, setValueInput] = useState("");
   const [invalid, setInvalid] = useState<string | null>(null);
 
   const openAdd = () => {
     setConfirmingRemove(null);
+    setConfirmingClearAll(false);
     setEditing({ mode: "add", name: "" });
     setNameInput("");
     setValueInput("");
@@ -986,6 +1033,7 @@ function AutomationSecretsSection({
   };
   const openReplace = (name: string) => {
     setConfirmingRemove(null);
+    setConfirmingClearAll(false);
     setEditing({ mode: "replace", name });
     setNameInput(name);
     setValueInput("");
@@ -1004,7 +1052,7 @@ function AutomationSecretsSection({
       : null;
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!editing) return;
+    if (!editing || unreadable) return;
     const targetName = editing.mode === "add" ? nameInput.trim() : editing.name;
     const parsedName = AutomationSecretNameSchema.safeParse(targetName);
     if (!parsedName.success) {
@@ -1030,7 +1078,7 @@ function AutomationSecretsSection({
         <h2 className="automations-group__title" id="automation-secrets">
           Secrets
         </h2>
-        {archived || editing ? null : (
+        {archived || editing || unreadable ? null : (
           <button className="btn btn--small" disabled={disabled} onClick={openAdd} type="button">
             Add
           </button>
@@ -1042,121 +1090,170 @@ function AutomationSecretsSection({
         script that prints a secret puts it in its run’s record, where agents that can read this
         automation can see it.
       </p>
-      {editing ? (
-        <form className="automation-time" noValidate onSubmit={(event) => void submit(event)}>
-          {editing.mode === "add" ? (
-            <label className="field">
-              <span className="field__label">Name</span>
-              <input
-                autoComplete="off"
-                className="text-input"
-                name="secret-name"
-                onChange={(event) => setNameInput(event.currentTarget.value)}
-                placeholder="API_TOKEN"
-                required
-                type="text"
-                value={nameInput}
-              />
-              {existingMatch ? (
-                <span className="field__hint">
-                  {existingMatch === trimmedAddName
-                    ? `Saving replaces the existing ${existingMatch} secret.`
-                    : `Conflicts with existing ${existingMatch} (names are case-insensitive).`}
-                </span>
-              ) : null}
-            </label>
-          ) : (
-            <p className="automation-secrets__target">
-              Replacing <code>{editing.name}</code>
-            </p>
-          )}
-          <label className="field">
-            <span className="field__label">Value</span>
-            <input
-              autoComplete="off"
-              className="text-input"
-              name="secret-value"
-              onChange={(event) => setValueInput(event.currentTarget.value)}
-              required
-              type="password"
-              value={valueInput}
-            />
-          </label>
-          <div className="automation-time__actions">
-            <button className="btn btn--small btn--ghost" onClick={close} type="button">
-              Cancel
-            </button>
-            <button className="btn btn--small btn--primary" disabled={disabled} type="submit">
-              {disabled ? "Saving…" : "Save"}
-            </button>
-          </div>
-          {invalid ? (
-            <p className="form-actions__error" role="alert">
-              {invalid}
-            </p>
-          ) : null}
-        </form>
-      ) : null}
-      <div className="automations-list">
-        {names.length === 0 ? (
-          <p className="automations-list__empty">No secrets yet.</p>
-        ) : (
-          names.map((name) => (
-            <div className="automation-secret-row" key={name}>
-              <code className="automation-secret-row__name">{name}</code>
-              {archived ? null : (
-                <div className="automation-secret-row__actions">
-                  {confirmingRemove === name ? (
-                    <>
-                      <button
-                        className="btn btn--small btn--ghost"
-                        disabled={disabled}
-                        onClick={() => setConfirmingRemove(null)}
-                        type="button"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        className="btn btn--small btn--danger"
-                        disabled={disabled}
-                        onClick={() => {
-                          setConfirmingRemove(null);
-                          onRemove(name);
-                        }}
-                        type="button"
-                      >
-                        Confirm remove
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        className="btn btn--small btn--ghost"
-                        disabled={disabled}
-                        onClick={() => openReplace(name)}
-                        type="button"
-                      >
-                        Replace
-                      </button>
-                      <button
-                        className="btn btn--small btn--ghost btn--danger"
-                        disabled={disabled}
-                        onClick={() => {
-                          close();
-                          setConfirmingRemove(name);
-                        }}
-                        type="button"
-                      >
-                        Remove
-                      </button>
-                    </>
-                  )}
-                </div>
+      {unreadable ? (
+        <div className="automations-list">
+          <p className="notice" role="alert">
+            These secrets can no longer be read.
+          </p>
+          <div className="automation-secret-row">
+            <div className="automation-secret-row__actions">
+              {confirmingClearAll ? (
+                <>
+                  <button
+                    className="btn btn--small btn--ghost"
+                    disabled={disabled}
+                    onClick={() => setConfirmingClearAll(false)}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="btn btn--small btn--danger"
+                    disabled={disabled}
+                    onClick={() => {
+                      setConfirmingClearAll(false);
+                      onClearAll();
+                    }}
+                    type="button"
+                  >
+                    Confirm clear all
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="btn btn--small btn--danger"
+                  disabled={disabled}
+                  onClick={() => {
+                    close();
+                    setConfirmingClearAll(true);
+                  }}
+                  type="button"
+                >
+                  Clear all secrets
+                </button>
               )}
             </div>
-          ))
-        )}
-      </div>
+          </div>
+        </div>
+      ) : (
+        <>
+          {editing ? (
+            <form className="automation-time" noValidate onSubmit={(event) => void submit(event)}>
+              {editing.mode === "add" ? (
+                <label className="field">
+                  <span className="field__label">Name</span>
+                  <input
+                    autoComplete="off"
+                    className="text-input"
+                    name="secret-name"
+                    onChange={(event) => setNameInput(event.currentTarget.value)}
+                    placeholder="API_TOKEN"
+                    required
+                    type="text"
+                    value={nameInput}
+                  />
+                  {existingMatch ? (
+                    <span className="field__hint">
+                      {existingMatch === trimmedAddName
+                        ? `Saving replaces the existing ${existingMatch} secret.`
+                        : `Conflicts with existing ${existingMatch} (names are case-insensitive).`}
+                    </span>
+                  ) : null}
+                </label>
+              ) : (
+                <p className="automation-secrets__target">
+                  Replacing <code>{editing.name}</code>
+                </p>
+              )}
+              <label className="field">
+                <span className="field__label">Value</span>
+                <input
+                  autoComplete="off"
+                  className="text-input"
+                  name="secret-value"
+                  onChange={(event) => setValueInput(event.currentTarget.value)}
+                  required
+                  type="password"
+                  value={valueInput}
+                />
+              </label>
+              <div className="automation-time__actions">
+                <button className="btn btn--small btn--ghost" onClick={close} type="button">
+                  Cancel
+                </button>
+                <button className="btn btn--small btn--primary" disabled={disabled} type="submit">
+                  {disabled ? "Saving…" : "Save"}
+                </button>
+              </div>
+              {invalid ? (
+                <p className="form-actions__error" role="alert">
+                  {invalid}
+                </p>
+              ) : null}
+            </form>
+          ) : null}
+          <div className="automations-list">
+            {names.length === 0 ? (
+              <p className="automations-list__empty">No secrets yet.</p>
+            ) : (
+              names.map((name) => (
+                <div className="automation-secret-row" key={name}>
+                  <code className="automation-secret-row__name">{name}</code>
+                  <div className="automation-secret-row__actions">
+                    {confirmingRemove === name ? (
+                      <>
+                        <button
+                          className="btn btn--small btn--ghost"
+                          disabled={disabled}
+                          onClick={() => setConfirmingRemove(null)}
+                          type="button"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          className="btn btn--small btn--danger"
+                          disabled={disabled}
+                          onClick={() => {
+                            setConfirmingRemove(null);
+                            onRemove(name);
+                          }}
+                          type="button"
+                        >
+                          Confirm remove
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        {archived ? null : (
+                          <button
+                            className="btn btn--small btn--ghost"
+                            disabled={disabled}
+                            onClick={() => openReplace(name)}
+                            type="button"
+                          >
+                            Replace
+                          </button>
+                        )}
+                        <button
+                          className="btn btn--small btn--ghost btn--danger"
+                          disabled={disabled}
+                          onClick={() => {
+                            close();
+                            setConfirmingRemove(name);
+                          }}
+                          type="button"
+                        >
+                          Remove
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </>
+      )}
     </section>
   );
 }

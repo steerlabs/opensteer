@@ -3758,6 +3758,7 @@ async function executeMockCommand(
       return rpcSuccess(
         hostApi["commands.dispatch"].success.parse({
           secretNames: client.setTriggerSecrets(command.triggerId, {
+            ...(command.clearAll ? { clearAll: true as const } : {}),
             ...(command.remove ? { remove: command.remove } : {}),
             ...(command.set ? { set: command.set } : {}),
           }),
@@ -9333,12 +9334,14 @@ class MockHostState {
         this.snapshot.threads.find(({ id }) => id === record.trigger.createdByThreadId)?.title ??
         null,
       secretNames: [...(record.secretNames ?? [])],
+      secretsUnreadable: record.secretsUnreadable === true,
     };
   }
 
   setTriggerSecrets(
     triggerId: string,
     patch: {
+      readonly clearAll?: true;
       readonly remove?: readonly string[];
       readonly set?: Readonly<Record<string, string>>;
     },
@@ -9351,20 +9354,32 @@ class MockHostState {
         status: rpcErrorStatus("conflict"),
       });
     }
-    if (record.trigger.status === "archived") {
+    const setsEntries = Object.keys(patch.set ?? {}).length > 0;
+    if (record.trigger.status === "archived" && setsEntries) {
       throw new HostClientRequestError({
         code: "conflict",
         message: "Archived automations cannot be changed",
         status: rpcErrorStatus("conflict"),
       });
     }
-    const next = new Set(record.secretNames ?? []);
-    for (const name of patch.remove ?? []) next.delete(name);
-    for (const name of Object.keys(patch.set ?? {})) next.add(name);
+    if (record.secretsUnreadable && !patch.clearAll) {
+      throw new HostClientRequestError({
+        code: "conflict",
+        message: "Stored secrets can no longer be read. Clear all secrets before adding new ones.",
+        reason: "automation-secrets-unreadable",
+        status: rpcErrorStatus("conflict"),
+      });
+    }
+    const next = patch.clearAll ? new Set<string>() : new Set(record.secretNames ?? []);
+    if (!patch.clearAll) {
+      for (const name of patch.remove ?? []) next.delete(name);
+      for (const name of Object.keys(patch.set ?? {})) next.add(name);
+    }
     const secretNames = [...next].sort();
     this.triggers.set(triggerId, {
       ...record,
       secretNames,
+      secretsUnreadable: patch.clearAll ? false : record.secretsUnreadable === true,
       trigger: { ...record.trigger, updatedAt: this.now().toISOString() },
     });
     this.triggersChanged();

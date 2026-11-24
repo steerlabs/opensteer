@@ -188,6 +188,7 @@ export async function handleTriggerCommand(
             await triggers.setSecrets(
               ownerId,
               {
+                ...(command.clearAll === true ? { clearAll: true as const } : {}),
                 ...(command.remove === undefined ? {} : { remove: command.remove }),
                 ...(command.set === undefined ? {} : { set: command.set }),
                 triggerId: command.triggerId,

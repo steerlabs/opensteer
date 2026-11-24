@@ -32,6 +32,13 @@ export interface SecretEnvelopeContext {
 
 export type SealedSecret = SealedCredential;
 
+export const UNREADABLE_SECRET_ENVELOPE_REASON = "secret-envelope-unreadable";
+
+/** True when `open` failed permanently (corrupt envelope, wrong key, or missing key version), not on a transient outage. */
+export function isUnreadableSecretEnvelopeError(error: unknown): boolean {
+  return error instanceof OpensteerError && error.reason === UNREADABLE_SECRET_ENVELOPE_REASON;
+}
+
 const EnvelopeSchema = z.strictObject({
   algorithm: z.literal("aes-256-gcm"),
   ciphertext: z.string(),
@@ -131,6 +138,7 @@ export class StaticEncryptionKeyProvider implements EncryptionKeyProvider {
     if (!key)
       throw new OpensteerError({
         code: "internal",
+        reason: UNREADABLE_SECRET_ENVELOPE_REASON,
         message: "Encryption key version is unavailable",
       });
     return { key: Buffer.from(key), version };
@@ -206,6 +214,7 @@ async function openPayload(
     throw new OpensteerError({
       cause: error,
       code: "internal",
+      reason: UNREADABLE_SECRET_ENVELOPE_REASON,
       message: `${label} envelope is invalid`,
     });
   }
@@ -226,6 +235,7 @@ async function openPayload(
     throw new OpensteerError({
       cause: error,
       code: "internal",
+      reason: UNREADABLE_SECRET_ENVELOPE_REASON,
       message: `${label} could not be decrypted`,
     });
   } finally {

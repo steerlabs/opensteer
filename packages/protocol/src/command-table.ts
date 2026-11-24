@@ -1601,12 +1601,13 @@ export const commandTable: CommandTable = {
       { class: "secret" },
     ],
     face: (c) =>
-      c.remove !== undefined &&
-      c.remove.length > 0 &&
-      c.set === undefined &&
-      (c.names === undefined || c.names.length === 0)
+      c.clearAll === true ||
+      (c.remove !== undefined &&
+        c.remove.length > 0 &&
+        (c.set === undefined || Object.keys(c.set).length === 0) &&
+        (c.names === undefined || c.names.length === 0))
         ? 0
-        : c.set !== undefined
+        : c.set !== undefined && Object.keys(c.set).length > 0
           ? 1
           : 2,
     governsKinds: ["automation"],

@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { isUnreadableSecretEnvelopeError } from "@opensteer/access/host";
 import type { ThreadId, TriggerId, TriggerOccurrenceId, UserId } from "@opensteer/core";
 import { isLoopbackHostname, OpensteerError, ThreadIdSchema } from "@opensteer/core";
 import type {
@@ -31,10 +32,7 @@ interface TriggerServiceOptions {
   readonly publicUrl: URL;
   /** Live public tunnel/remote origin when Personal Remote Access is active (Y3). */
   readonly remoteOrigin?: () => Promise<string | null>;
-  readonly secrets?:
-    | (Pick<AutomationSecrets, "apply" | "names"> &
-        Partial<Pick<AutomationSecrets, "applyWithMeta">>)
-    | undefined;
+  readonly secrets?: Pick<AutomationSecrets, "applyWithMeta" | "names"> | undefined;
   readonly store: TriggerStore;
   readonly runnerStore: AutomationScriptRunnerStore;
   readonly threads: Pick<OpensteerStore, "readTask">;
@@ -205,6 +203,7 @@ export class TriggerService {
           : { scope: (await this.#resolveWebhookOrigin()).scope, url: null }
         : null;
     let secretNames: string[] = [];
+    let secretsUnreadable = false;
     if (this.#secrets) {
       const stored = this.#store.getSecretNames
         ? await this.#store.getSecretNames(ownerId, detail.trigger.id)
@@ -219,13 +218,24 @@ export class TriggerService {
             if (this.#store.backfillSecretNames) {
               await this.#store.backfillSecretNames(ownerId, detail.trigger.id, secretNames);
             }
-          } catch {
-            secretNames = [];
+          } catch (error) {
+            if (isUnreadableSecretEnvelopeError(error)) {
+              secretNames = [];
+              secretsUnreadable = true;
+            } else {
+              throw new OpensteerError({
+                cause: error,
+                code: "internal",
+                reason: "automation-secrets-unavailable",
+                retryable: true,
+                message: "Couldn't read this automation's secrets right now. Try again.",
+              });
+            }
           }
         }
       }
     }
-    return { ...detail, secretNames, webhook };
+    return { ...detail, secretNames, secretsUnreadable, webhook };
   }
   async update(
     ownerId: UserId,
@@ -254,6 +264,7 @@ export class TriggerService {
   async setSecrets(
     ownerId: UserId,
     input: {
+      readonly clearAll?: true | undefined;
       readonly remove?: readonly string[] | undefined;
       readonly set?: Readonly<Record<string, string>> | undefined;
       readonly triggerId: TriggerId;
@@ -269,46 +280,42 @@ export class TriggerService {
         message: "Automation secrets are unavailable.",
       });
     }
+    const isClearAll = input.clearAll === true;
     const hasSet = input.set !== undefined && Object.keys(input.set).length > 0;
     const hasRemove = input.remove !== undefined && input.remove.length > 0;
-    if (!hasSet && !hasRemove) {
+    if (!isClearAll && !hasSet && !hasRemove) {
       throw new OpensteerError({
         code: "bad_request",
         message: "Provide at least one secret to set or remove.",
       });
     }
+    const allowStopWithoutRestart = isClearAll || (!hasSet && hasRemove);
     const {
       changed,
       result: secretNames,
       trigger,
     } = await this.#store.updateEncryptedSecrets({
+      allowStopWithoutRestart,
       actorThreadId,
       ownerId,
       triggerId: input.triggerId,
       ...(commandIdentity ? { commandIdentity } : {}),
       ...(actorConnectionId ? { actorConnectionId } : {}),
       transform: async (current) => {
-        if (secrets.applyWithMeta) {
-          const applied = await secrets.applyWithMeta(input.triggerId, current, {
-            ...(input.remove ? { remove: input.remove } : {}),
-            ...(input.set ? { set: input.set } : {}),
-          });
-          return {
-            changed: applied.changed,
-            names: applied.names,
-            result: applied.names,
-            sealed: applied.sealed,
-          };
-        }
-        const sealed = await secrets.apply(input.triggerId, current, {
+        const applied = await secrets.applyWithMeta(input.triggerId, current, {
+          ...(isClearAll ? { clearAll: true as const } : {}),
           ...(input.remove ? { remove: input.remove } : {}),
           ...(input.set ? { set: input.set } : {}),
         });
-        const names = await secrets.names(input.triggerId, sealed?.envelope ?? null);
-        return { changed: true, names, result: names, sealed };
+        return {
+          changed: applied.changed,
+          names: applied.names,
+          result: applied.names,
+          sealed: applied.sealed,
+        };
       },
     });
-    if (changed !== false) {
+    if (changed) {
       this.#onChanged?.();
       if (trigger.kind === "watch") this.#onWatchChanged?.(trigger.id);
     }

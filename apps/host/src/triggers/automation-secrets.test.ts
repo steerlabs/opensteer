@@ -67,4 +67,52 @@ describe("AutomationSecrets", () => {
       }),
     ).rejects.toThrow(/total/iu);
   });
+
+  it("distinguishes permanent unreadable envelopes from transient vault errors and requires explicit clearAll (R6)", async () => {
+    const secrets = makeSecrets();
+    const sealed = await secrets.apply(triggerA, null, { set: { KEEP_ME: "val" } });
+    expect(sealed).not.toBeNull();
+
+    // Permanent unreadable error (wrong key / corrupted ciphertext) -> conflict with automation-secrets-unreadable
+    const wrongKey = Buffer.alloc(32, 0x99);
+    const wrongVault = new AesGcmSecretVault(
+      new StaticEncryptionKeyProvider(new Map([[1, wrongKey]]), 1),
+    );
+    const wrongSecrets = new AutomationSecrets(wrongVault);
+    await expect(
+      wrongSecrets.applyWithMeta(triggerA, sealed!.envelope, { remove: ["KEEP_ME"] }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      reason: "automation-secrets-unreadable",
+    });
+    await expect(
+      wrongSecrets.applyWithMeta(triggerA, sealed!.envelope, { set: { NEW_KEY: "v" } }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      reason: "automation-secrets-unreadable",
+    });
+    // Explicit clearAll: true clears even when ciphertext cannot be opened.
+    const cleared = await wrongSecrets.applyWithMeta(triggerA, sealed!.envelope, {
+      clearAll: true,
+    });
+    expect(cleared).toEqual({ changed: true, names: [], sealed: null });
+
+    // Transient vault failure -> unavailable with automation-secrets-unavailable, never silent wipe
+    const flakyVault = {
+      open: async () => {
+        throw new Error("vault temporarily offline");
+      },
+      seal: async () => {
+        throw new Error("vault temporarily offline");
+      },
+    };
+    const flakySecrets = new AutomationSecrets(flakyVault);
+    await expect(
+      flakySecrets.applyWithMeta(triggerA, sealed!.envelope, { remove: ["KEEP_ME"] }),
+    ).rejects.toMatchObject({
+      code: "internal",
+      reason: "automation-secrets-unavailable",
+      retryable: true,
+    });
+  });
 });

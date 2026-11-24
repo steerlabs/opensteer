@@ -29,6 +29,7 @@ export interface MockTriggerRecord {
   readonly occurrences: readonly TriggerOccurrence[];
   readonly revision: TriggerRevision;
   readonly secretNames?: readonly string[];
+  readonly secretsUnreadable?: boolean;
   readonly trigger: Trigger;
 }
 
