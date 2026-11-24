@@ -41,7 +41,9 @@ import { readThreadWaitSnapshot } from "@opensteer/database";
 import { withDatabaseTransaction } from "@opensteer/database";
 import { assertThreadCaller } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
-import type { PersonShowMessage } from "@opensteer/protocol";
+import type { HostApiCommand, PersonShowMessage } from "@opensteer/protocol";
+import type { CommandAuthority } from "../../commands/dispatch.js";
+import { CommandTools } from "./commands.js";
 import {
   answeredQuestionPreviewBytes,
   agentDelegationMaxDepth,
@@ -138,6 +140,30 @@ const unknownEnvironment = "Selected execution environment does not exist";
 const chooseExecutionNext = "See the current choices with opensteer_ai_account_list.";
 
 export class ProductToolHandlers {
+  /** Home commands through the one door (rule 2, A3), set by the handler table that has it. */
+  #door: CommandTools | undefined;
+  useDoor(door: CommandTools): void {
+    this.#door = door;
+  }
+  /**
+   * A task write of an agent, as its table command through the one door: admitted for whoever
+   * sends it, put to the person where the table says so, and run only by the door (A3).
+   */
+  #through<T>(
+    caller: AgentCaller,
+    command: Record<string, unknown>,
+    act: (door: CommandAuthority) => Promise<T>,
+  ): Promise<T> {
+    // Without the runtime's door (one with its Request service) it is the same door over this
+    // store: the same admission, and an ask is refused rather than put to the person.
+    this.#door ??= new CommandTools({
+      database: this.#store.database,
+      registry: {} as never,
+      requests: () => undefined,
+      administration: {} as never,
+    });
+    return this.#door.through(caller, command as unknown as HostApiCommand, act);
+  }
   async #readableTabPlaces<T extends { tabId: import("@opensteer/core").TabId }>(
     caller: AgentCaller,
     rows: readonly T[],
@@ -938,7 +964,13 @@ export class ProductToolHandlers {
         action === "rename"
           ? { ...shared, action: "rename" as const, title: input.title! }
           : { ...shared, action: action };
-      const result = await this.#threads.write(caller, write);
+      const result = await this.#through(
+        caller,
+        action === "rename"
+          ? { type: "thread.rename", ...shared, title: input.title! }
+          : { type: "thread.done.set", ...shared, done: action === "done" },
+        (door) => this.#threads.write(caller, write, door),
+      );
       return {
         title: result.thread.title,
         link: formatReferenceLink(result.thread.id, result.thread.title),
@@ -960,12 +992,28 @@ export class ProductToolHandlers {
       actorRunId: claims.runId,
       idempotencyKey: idempotencyKey(caller, requestId, "thread.write"),
     };
+    const tableCommand = {
+      threadId,
+      idempotencyKey: command.idempotencyKey,
+      ...(write.action === "rename"
+        ? { type: "thread.rename", title: write.title! }
+        : { type: "thread.done.set", done: write.action === "done" }),
+    };
+    const admitted = (door: CommandAuthority) => ({
+      ...runAdmission(caller, "opensteer_task_update", input, requestId, [threadId]),
+      // Again at commit only under a connection, where its grant can change (A3, rule 7).
+      ...(door.identity.admit && callerLineage(caller)
+        ? { commandAdmit: door.identity.admit }
+        : {}),
+    });
     if (write.action === "done" || write.action === "reopen") {
-      const result = await this.#commands.setThreadDone({
-        ...command,
-        done: write.action === "done",
-        admission: runAdmission(caller, "opensteer_task_update", input, requestId, [threadId]),
-      });
+      const result = await this.#through(caller, tableCommand, (door) =>
+        this.#commands.setThreadDone({
+          ...command,
+          done: write.action === "done",
+          admission: admitted(door),
+        }),
+      );
       return {
         title: result.thread.title,
         link: formatReferenceLink(result.thread.id, result.thread.title),
@@ -973,11 +1021,13 @@ export class ProductToolHandlers {
         doneWhenRunEnds: result.doneWhenRunEnds,
       };
     }
-    const result = await this.#commands.renameThread({
-      ...command,
-      admission: runAdmission(caller, "opensteer_task_update", input, requestId, [threadId]),
-      title: write.title!,
-    });
+    const result = await this.#through(caller, tableCommand, (door) =>
+      this.#commands.renameThread({
+        ...command,
+        admission: admitted(door),
+        title: write.title!,
+      }),
+    );
     return {
       title: result.thread.title,
       link: formatReferenceLink(result.thread.id, result.thread.title),
@@ -1148,32 +1198,57 @@ export class ProductToolHandlers {
       if (!this.#requestResponseVault)
         throw conflict("Request answers are unavailable on this Host");
       if (!request.originatingRunId) throw conflict("This Request has no waiting Run");
-      const agentResponder = AgentRequestResponderSchema.parse({
+      const parsedResponder = AgentRequestResponderSchema.parse({
         authority: threadCallerAuthority(caller),
         expectedRevision: input.expectedRevision,
       });
       const response = input.response!;
-      const sealedResponse = await sealRequestResponse(this.#requestResponseVault, response, {
-        requestId: request.id,
-        runId: request.originatingRunId,
-        threadId: request.originatingThreadId,
-      });
-      await this.#commands.sendControl({
-        type: "request.respond",
-        requestId: request.id,
-        expectedRevision: agentResponder.expectedRevision,
-        response,
-        sealedResponse,
-        requestedBy: caller.userId,
-        runId: request.originatingRunId,
-        threadId: request.originatingThreadId,
-        idempotencyKey: idempotencyKey(
-          caller,
-          operationId(caller, operationKey, "opensteer_request_answer"),
-          "respond",
-        ),
-        agentResponder,
-      });
+      const vault = this.#requestResponseVault;
+      const originatingRunId = request.originatingRunId;
+      const respondKey = idempotencyKey(
+        caller,
+        operationId(caller, operationKey, "opensteer_request_answer"),
+        "respond",
+      );
+      await this.#through(
+        caller,
+        {
+          type: "request.respond",
+          requestId: request.id,
+          response,
+          ...(input.expectedRevision ? { expectedRevision: input.expectedRevision } : {}),
+          idempotencyKey: respondKey,
+        },
+        async (door) => {
+          // The answer is admitted again where it is recorded (A3).
+          const agentResponder = {
+            ...parsedResponder,
+            authority: {
+              ...parsedResponder.authority,
+              ...(door.identity.admit && callerLineage(caller)
+                ? { admit: door.identity.admit }
+                : {}),
+            },
+          };
+          const sealedResponse = await sealRequestResponse(vault, response, {
+            requestId: request.id,
+            runId: originatingRunId,
+            threadId: request.originatingThreadId,
+          });
+          return this.#commands.sendControl({
+            type: "request.respond",
+            requestId: request.id,
+            expectedRevision: agentResponder.expectedRevision,
+            response,
+            sealedResponse,
+            requestedBy: caller.userId,
+            runId: originatingRunId,
+            threadId: request.originatingThreadId,
+            idempotencyKey: respondKey,
+            agentResponder,
+          });
+        },
+      );
       return { request: agentRequest((await this.#store.requests.get(request.id))!, "full") };
     }
     if (input.action === "read") {
@@ -1322,19 +1397,18 @@ export class ProductToolHandlers {
     if (existing) return { thread: existing };
     const expected =
       harnessRevision === undefined ? {} : { expectedHarnessRevision: harnessRevision };
-    const { thread } = await this.#threads.create(
-      caller,
-      {
-        type: "thread.create",
-        environmentId,
-        harnessInstanceId,
-        modelSelection,
-        accessMode: caller.accessMode,
-        title: input.title ?? provisionalThreadTitle(input.message),
-        ...(!input.title ? { generateTitle: true } : {}),
-        idempotencyKey: idempotencyKey(caller, requestId, "create"),
-      },
-      expected,
+    const create = {
+      type: "thread.create" as const,
+      environmentId,
+      harnessInstanceId,
+      modelSelection,
+      accessMode: caller.accessMode,
+      title: input.title ?? provisionalThreadTitle(input.message),
+      ...(!input.title ? { generateTitle: true as const } : {}),
+      idempotencyKey: idempotencyKey(caller, requestId, "create"),
+    };
+    const { thread } = await this.#through(caller, create, (door) =>
+      this.#threads.create(caller, create, expected, door),
     );
     return { thread, ...expected };
   }
@@ -1346,19 +1420,18 @@ export class ProductToolHandlers {
       placement.harnessRevision === undefined
         ? {}
         : { expectedHarnessRevision: placement.harnessRevision };
-    const { thread } = await this.#threads.create(
-      caller,
-      {
-        type: "thread.create",
-        environmentId: environment.id,
-        harnessInstanceId: placement.harnessInstanceId,
-        modelSelection: placement.modelSelection,
-        accessMode: caller.accessMode,
-        title: input.title ?? provisionalThreadTitle(input.message),
-        ...(!input.title ? { generateTitle: true } : {}),
-        idempotencyKey: idempotencyKey(caller, requestId, "create"),
-      },
-      { ...expected, placed: true },
+    const create = {
+      type: "thread.create" as const,
+      environmentId: environment.id,
+      harnessInstanceId: placement.harnessInstanceId,
+      modelSelection: placement.modelSelection,
+      accessMode: caller.accessMode,
+      title: input.title ?? provisionalThreadTitle(input.message),
+      ...(!input.title ? { generateTitle: true as const } : {}),
+      idempotencyKey: idempotencyKey(caller, requestId, "create"),
+    };
+    const { thread } = await this.#through(caller, create, (door) =>
+      this.#threads.create(caller, create, { ...expected, placed: true }, door),
     );
     return { thread, ...expected };
   }
@@ -1390,21 +1463,34 @@ export class ProductToolHandlers {
         (caller.kind === "connection"
           ? await this.#createConnectionTask(caller, input, requestId)
           : await this.#createRunStandaloneTask(call, requestId));
-      const delivered = await this.#threads.sendInput(
+      const seedKey = idempotencyKey(caller, requestId, "message");
+      const delivered = await this.#through(
         caller,
         {
-          ...(expectedHarnessRevision === undefined ? {} : { expectedHarnessRevision }),
+          type: "thread.sendMessage",
           threadId: created.id,
-          requestedBy: caller.userId,
           content: [{ type: "text", text: input.message }],
-          policy: "queue",
-          requireUnassigned: true,
-          source: messageSource(caller, requestId),
-          idempotencyKey: idempotencyKey(caller, requestId, "message"),
+          delivery: "queue",
+          idempotencyKey: seedKey,
         },
-        caller.kind === "connection"
-          ? undefined
-          : mutationAdmission(caller, "opensteer_task_send", input, requestId, [created.id]),
+        (door) =>
+          this.#threads.sendInput(
+            caller,
+            {
+              ...(expectedHarnessRevision === undefined ? {} : { expectedHarnessRevision }),
+              threadId: created.id,
+              requestedBy: caller.userId,
+              content: [{ type: "text", text: input.message }],
+              policy: "queue",
+              requireUnassigned: true,
+              source: messageSource(caller, requestId),
+              idempotencyKey: seedKey,
+            },
+            caller.kind === "connection"
+              ? undefined
+              : mutationAdmission(caller, "opensteer_task_send", input, requestId, [created.id]),
+            door,
+          ),
       );
       const connectionAuthority = connectionAuthorityForLineage(caller);
       const thread = (await this.#store.readTask(
@@ -1717,21 +1803,36 @@ export class ProductToolHandlers {
         caller.kind === "program" && caller.program.kind === "trigger"
           ? await this.#memoryPasses?.admissionSelection(caller.program.occurrenceId, thread)
           : undefined;
-      const delivered = await this.#threads.sendInput(
+      const sendKey = idempotencyKey(caller, requestId, "message");
+      const delivered = await this.#through(
         caller,
         {
-          content: [{ type: "text", text: input.message }],
-          idempotencyKey: idempotencyKey(caller, requestId, "message"),
-          policy: input.delivery,
-          ...(input.freshContext !== undefined ? { freshContext: input.freshContext } : {}),
-          requestedBy: caller.userId,
-          source: messageSource(caller, requestId),
+          type: "thread.sendMessage",
           threadId: thread.id,
-          ...(memoryPass ? { memoryPass } : {}),
+          content: [{ type: "text", text: input.message }],
+          // A report is a quieter queue: the same widening, the same command.
+          delivery: input.delivery === "steer" ? "steer" : "queue",
+          ...(input.freshContext !== undefined ? { freshContext: input.freshContext } : {}),
+          idempotencyKey: sendKey,
         },
-        caller.kind === "connection"
-          ? undefined
-          : mutationAdmission(caller, "opensteer_task_send", input, requestId, [thread.id]),
+        (door) =>
+          this.#threads.sendInput(
+            caller,
+            {
+              content: [{ type: "text", text: input.message }],
+              idempotencyKey: sendKey,
+              policy: input.delivery,
+              ...(input.freshContext !== undefined ? { freshContext: input.freshContext } : {}),
+              requestedBy: caller.userId,
+              source: messageSource(caller, requestId),
+              threadId: thread.id,
+              ...(memoryPass ? { memoryPass } : {}),
+            },
+            caller.kind === "connection"
+              ? undefined
+              : mutationAdmission(caller, "opensteer_task_send", input, requestId, [thread.id]),
+            door,
+          ),
       );
       return {
         assignmentId: delivered.input.assignmentId,
@@ -1839,21 +1940,24 @@ export class ProductToolHandlers {
     operationKey,
   }: ToolCall<"opensteer_task_configure">) {
     const target = await this.#reachableThread(caller, input.taskId);
+    const configure = {
+      type: "thread.execution.update" as const,
+      threadId: target.id,
+      harnessInstanceId: input.aiAccountId ?? target.harnessInstanceId,
+      modelSelection: input.modelSelection ?? target.modelSelection,
+      ...(input.continuation ? { continuation: input.continuation } : {}),
+      idempotencyKey: idempotencyKey(
+        caller,
+        operationId(caller, operationKey, "opensteer_task_configure"),
+        "configure",
+      ),
+    };
     const thread =
       input.aiAccountId || input.modelSelection
         ? (
-            await this.#threads.configure(caller, {
-              type: "thread.execution.update",
-              threadId: target.id,
-              harnessInstanceId: input.aiAccountId ?? target.harnessInstanceId,
-              modelSelection: input.modelSelection ?? target.modelSelection,
-              ...(input.continuation ? { continuation: input.continuation } : {}),
-              idempotencyKey: idempotencyKey(
-                caller,
-                operationId(caller, operationKey, "opensteer_task_configure"),
-                "configure",
-              ),
-            })
+            await this.#through(caller, configure, (door) =>
+              this.#threads.configure(caller, configure, door),
+            )
           ).thread
         : target;
     return {
@@ -1893,25 +1997,35 @@ export class ProductToolHandlers {
           messageId: input.messageId!,
         });
         break;
-      case "move":
-        await this.#threads.move(caller, {
+      case "move": {
+        const move = {
           ...command,
-          type: "thread.input.move",
+          type: "thread.input.move" as const,
           messageId: input.messageId!,
           beforeMessageId: input.beforeMessageId!,
-        });
+        };
+        await this.#through(caller, move, (door) =>
+          this.#threads.move(caller, move, undefined, door),
+        );
         break;
-      case "steer":
-        await this.#threads.steer(caller, {
+      }
+      case "steer": {
+        const steer = {
           ...command,
-          type: "thread.input.steer",
+          type: "thread.input.steer" as const,
           messageId: input.messageId!,
           expectedRunId: input.expectedRunId!,
-        });
+        };
+        await this.#through(caller, steer, (door) =>
+          this.#threads.steer(caller, steer, undefined, door),
+        );
         break;
-      case "resume":
-        await this.#threads.resume(caller, { ...command, type: "thread.inputQueue.resume" });
+      }
+      case "resume": {
+        const resume = { ...command, type: "thread.inputQueue.resume" as const };
+        await this.#through(caller, resume, (door) => this.#threads.resume(caller, resume, door));
         break;
+      }
     }
     return this.#queue(caller, target);
   }
