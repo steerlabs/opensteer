@@ -31,7 +31,11 @@ import {
 } from "@opensteer/protocol";
 import { afterAll, describe, expect, it as baseIt } from "vitest";
 import "./connection.js";
-import { ShellSessionIdSchema } from "@opensteer/protocol";
+import {
+  ShellSessionIdSchema,
+  type RunnerAuxiliaryFrameFence,
+  type ShellSessionId,
+} from "@opensteer/protocol";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { connectionAttempts } from "./connection-disconnect.js";
 import { createDatabase, OpensteerStore } from "./index.js";
@@ -1288,6 +1292,264 @@ integration.sequential("Run stop fencing", () => {
     await connections.revoke(f.userId, connection.id);
     const attempts = await connectionAttempts(database, connection.id);
     expect(attempts.map(({ id }) => id)).toContain(sessionId);
+  });
+
+  /** A Run of a live Everything / Full access connection, and a shell reservation for it (A4). */
+  async function lineagedShell(storeFixture: StoreFixture, suffix: string) {
+    const { fixture, running, database, store } = storeFixture;
+    const f = await fixture(suffix);
+    const run = await running(f, suffix);
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: f.userId,
+      label: "Fixture",
+      clientName: "Fixture",
+      resource: "http://localhost/mcp",
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    await connections.activate(connection.id, `fixture-${suffix}`);
+    await database
+      .updateTable("runs")
+      .set({ connectionId: connection.id })
+      .where("id", "=", run.id)
+      .executeTakeFirstOrThrow();
+    const { grantRevision } = await database
+      .selectFrom("agentConnections")
+      .select("grantRevision")
+      .where("id", "=", connection.id)
+      .executeTakeFirstOrThrow();
+    const fence = (stream: string, boot = `rbt_${suffix}`) =>
+      ({
+        auxiliaryStreamId: `rax_${stream}`,
+        bootId: boot,
+        connectionGeneration: 1,
+        connectionId: `rcn_${suffix}`,
+        connectionLeaseId: `rls_${suffix}`,
+        module: "shell",
+        runnerId: f.runnerId,
+      }) as unknown as RunnerAuxiliaryFrameFence;
+    const reserve = (
+      sessionId: ShellSessionId,
+      options: {
+        readonly targetFence?: RunnerAuxiliaryFrameFence;
+        readonly revision?: number;
+      } = {},
+    ) =>
+      store.reserveShellSession({
+        callerMachineName: "Fixture",
+        callerRunnerId: f.runnerId,
+        connection: {
+          connectionId: connection.id,
+          grantRevision: options.revision ?? grantRevision,
+          mode: "full-access",
+        },
+        policyRevision: 1,
+        requestedBy: f.userId,
+        runId: run.id,
+        runnerId: f.runnerId,
+        sessionId,
+        startedAt: new Date(),
+        targetFence: options.targetFence ?? fence("first"),
+        threadId: f.thread.id,
+        threadTitle: "Fixture",
+      });
+    const outstanding = async () =>
+      (await connectionAttempts(database, connection.id)).filter(
+        (attempt) => attempt.kind === "shell" && attempt.terminalEvidenceAt === null,
+      );
+    const row = (sessionId: ShellSessionId) =>
+      database
+        .selectFrom("machineAccessSessions")
+        .select(["terminalEvidenceAt", "contactLostAt", "connectionId", "admittedGrantRevision"])
+        .where("id", "=", sessionId)
+        .executeTakeFirst();
+    return { f, connection, connections, fence, reserve, outstanding, row, grantRevision };
+  }
+  const shellId = (n: number) =>
+    ShellSessionIdSchema.parse(`shs_00000000-0000-4000-8000-${String(n).padStart(12, "0")}`);
+
+  it("refuses a shell whose revoke committed first and counts one reserved before it", async ({
+    storeFixture,
+  }) => {
+    const s = await lineagedShell(storeFixture, "shell-open-order");
+    const before = shellId(11);
+    await s.reserve(before);
+    expect(await s.row(before)).toMatchObject({
+      connectionId: s.connection.id,
+      admittedGrantRevision: s.grantRevision,
+    });
+    await s.connections.revoke(s.f.userId, s.connection.id);
+    // Reserved first: in the set, outstanding, with the target and its generation.
+    expect(await s.outstanding()).toMatchObject([
+      { id: before, runnerId: s.f.runnerId, runnerBootId: "rbt_shell-open-order", generation: 1 },
+    ]);
+    // Revoked first: refused where the row would be written, so no open frame is ever sent.
+    const after = shellId(12);
+    await expect(s.reserve(after)).rejects.toMatchObject({ code: "forbidden" });
+    expect(await s.row(after)).toBeUndefined();
+  });
+
+  it("holds a shell reservation behind a revoke in progress, then refuses it", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const s = await lineagedShell(storeFixture, "shell-open-race");
+    const locked = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const revoking = database.transaction().execute(async (tx) => {
+      await tx
+        .selectFrom("agentConnections")
+        .select("id")
+        .where("id", "=", s.connection.id)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      await tx
+        .updateTable("agentConnections")
+        .set({ revokedAt: new Date(), cleanupReason: "revoked", cleanupRequestedAt: new Date() })
+        .where("id", "=", s.connection.id)
+        .execute();
+      locked.resolve();
+      await release.promise;
+    });
+    await locked.promise;
+    const sessionId = shellId(13);
+    let settled = false;
+    const reserving = s.reserve(sessionId).finally(() => {
+      settled = true;
+    });
+    void reserving.catch(() => undefined);
+    // Held on the connection row the revoke has: neither written nor refused yet.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(settled).toBe(false);
+    release.resolve();
+    await revoking;
+    await expect(reserving).rejects.toMatchObject({ code: "forbidden" });
+    expect(await s.row(sessionId)).toBeUndefined();
+  });
+
+  it("refuses a shell admitted under a grant that changed before its row", async ({
+    storeFixture,
+  }) => {
+    const s = await lineagedShell(storeFixture, "shell-stale-grant");
+    await expect(s.reserve(shellId(14), { revision: s.grantRevision - 1 })).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    expect(await s.row(shellId(14))).toBeUndefined();
+  });
+
+  it("ends a shell attempt on its own stream's receipt, never another generation's", async ({
+    storeFixture,
+  }) => {
+    const { store } = storeFixture;
+    const s = await lineagedShell(storeFixture, "shell-receipt");
+    const sessionId = shellId(15);
+    await s.reserve(sessionId, { targetFence: s.fence("first") });
+    await s.connections.revoke(s.f.userId, s.connection.id);
+    // A later stream of the same computer, and an earlier boot: neither is the one it was sent on.
+    for (const other of [s.fence("second"), s.fence("first", "rbt_earlier")])
+      expect(
+        await store.recordShellTargetEvidence({
+          fence: other,
+          sessionIds: [sessionId],
+          contactLost: false,
+        }),
+      ).toBe(0);
+    expect(await s.outstanding()).toHaveLength(1);
+    expect(
+      await store.recordShellTargetEvidence({
+        fence: s.fence("first"),
+        sessionIds: [sessionId],
+        contactLost: false,
+      }),
+    ).toBe(1);
+    expect(await s.outstanding()).toEqual([]);
+    expect(await s.row(sessionId)).toMatchObject({
+      terminalEvidenceAt: expect.any(Date),
+      contactLostAt: null,
+    });
+  });
+
+  it("settles a Disconnect on a shell only once its target answers or contact is lost", async ({
+    storeFixture,
+  }) => {
+    const { store, database } = storeFixture;
+    const s = await lineagedShell(storeFixture, "shell-drive");
+    const sessionId = shellId(16);
+    await s.reserve(sessionId);
+    await s.connections.revoke(s.f.userId, s.connection.id);
+    const stops: string[] = [];
+    const answer: { value: void | "ended" | "contact-lost" } = { value: undefined };
+    const stopper = {
+      stop: async (attempt: { readonly kind: string; readonly id: string }) => {
+        if (attempt.kind !== "shell") return "ended" as const;
+        stops.push(attempt.id);
+        return answer.value;
+      },
+    };
+    const state = async () =>
+      database
+        .selectFrom("agentConnections")
+        .select(["cleanupCompletedAt", "lastActionUncertainAt", "lastActionUncertain"])
+        .where("id", "=", s.connection.id)
+        .executeTakeFirstOrThrow();
+    // No answer from the target and no contact loss: it stays Stopping, with no timeout.
+    await store.driveConnectionCleanups({ stopper });
+    await store.driveConnectionCleanups({ stopper });
+    expect(stops).toEqual([sessionId, sessionId]);
+    expect(await state()).toMatchObject({ cleanupCompletedAt: null, lastActionUncertainAt: null });
+    // The target's Runner boot is gone: contact lost, ended, and the person is told to check.
+    await store.markConnectionAttemptsContactLost({
+      runnerId: s.f.runnerId,
+      runnerBootId: "rbt_shell-drive",
+    });
+    await store.driveConnectionCleanups({ stopper });
+    expect(stops).toHaveLength(2);
+    expect(await state()).toMatchObject({
+      cleanupCompletedAt: expect.any(Date),
+      lastActionUncertainAt: expect.any(Date),
+      lastActionUncertain: expect.objectContaining({
+        attemptId: sessionId,
+        reason:
+          "Contact with this computer was lost before it confirmed the agent's shell there closed.",
+      }),
+    });
+  });
+
+  it("settles a shell whose open never left the Home with no doubt about it", async ({
+    storeFixture,
+  }) => {
+    const { store, database } = storeFixture;
+    const s = await lineagedShell(storeFixture, "shell-never-sent");
+    const sessionId = shellId(17);
+    await s.reserve(sessionId);
+    await s.connections.revoke(s.f.userId, s.connection.id);
+    await store.endShellSession({ reason: "run-ended", sessionId, neverSent: true });
+    expect(await s.outstanding()).toEqual([]);
+    expect(await s.row(sessionId)).toMatchObject({ contactLostAt: null });
+    await store.driveConnectionCleanups({ stopper: { stop: async () => "ended" as const } });
+    expect(
+      await database
+        .selectFrom("agentConnections")
+        .select(["cleanupCompletedAt", "lastActionUncertainAt"])
+        .where("id", "=", s.connection.id)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ cleanupCompletedAt: expect.any(Date), lastActionUncertainAt: null });
+  });
+
+  it("loses contact with every connection shell the last Home did not see end", async ({
+    storeFixture,
+  }) => {
+    const { store } = storeFixture;
+    const s = await lineagedShell(storeFixture, "shell-home-restart");
+    const sessionId = shellId(18);
+    await s.reserve(sessionId);
+    await store.endAllOpenShellSessions("host-shutdown");
+    expect(await s.row(sessionId)).toMatchObject({
+      terminalEvidenceAt: expect.any(Date),
+      contactLostAt: expect.any(Date),
+    });
   });
 });
 function pendingEvent<T extends PendingAgentEvent>(input: Omit<T, "emittedAt">): T {
