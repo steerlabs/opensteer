@@ -925,6 +925,11 @@ function handleClientMethod(message) {
           sendTurnCompleted("completed");
           break;
         }
+        if (scenario === "image-stop-before-completed") {
+          // Hold the crossing turn/completed("completed") until turn/interrupt arrives,
+          // forcing the order where Stop cancels imageGeneration before turn/completed lands.
+          break;
+        }
         const completed = {
           ...item,
           status: "completed",
@@ -1172,7 +1177,9 @@ function handleClientMethod(message) {
         });
       capture({ rootInterrupted: message.params.turnId ?? null });
       // Opt-in: an engine that acknowledges an interrupt and keeps going.
-      if (!process.argv.includes("--ignore-interrupt")) {
+      if (scenario === "image-stop-before-completed") {
+        sendTurnCompleted("completed", undefined, message.params.turnId ?? turnId);
+      } else if (!process.argv.includes("--ignore-interrupt")) {
         sendTurnCompleted("interrupted", undefined, message.params.turnId ?? turnId);
       }
       break;
