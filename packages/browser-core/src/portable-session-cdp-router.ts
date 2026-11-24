@@ -265,6 +265,12 @@ interface ConnectionState extends TargetRoot {
   readonly retiredTargets: Map<string, string>;
   /** Target IDs hidden from this connection (e.g., chrome-extension:), so no-URL destroy/detach drops too (S4). */
   readonly hiddenTargets: Set<string>;
+  /**
+   * For a connection: target IDs this state has projected as visible to it (an event's or a
+   * reply's `targetInfo`). A terminal event without `targetInfo` reaches a connection only for
+   * one of these, its script's root, or a target one of its own channels is on (M1).
+   */
+  readonly shownTargets: Set<string>;
   readonly aliases: Map<string, TargetRoot>;
   readonly eventListeners: Set<(event: CdpEvent) => void>;
   nextSequence: number;
@@ -514,6 +520,7 @@ export class SessionCdpRouter {
       channels: new Map(),
       retiredTargets: new Map(),
       hiddenTargets: new Set(),
+      shownTargets: new Set(),
       aliases: new Map(),
       ...targetRoot(standard === undefined),
       eventListeners: new Set(),
@@ -563,6 +570,7 @@ export class SessionCdpRouter {
     state.autoReady = undefined;
     state.discoveryReplay = undefined;
     state.discoveredTargets.clear();
+    state.shownTargets.clear();
     state.eventListeners.clear();
     for (const aliasId of state.aliases.keys()) this.#detachRootAlias(state, aliasId);
     state.retiredTargets.clear();
@@ -1451,7 +1459,17 @@ export class SessionCdpRouter {
       if (frameClaim && frameClaim.sessionId !== state.session.sessionId)
         delete projected.parentFrameId;
     }
+    if (state.connection) this.#rememberShownTarget(state, targetId);
     return projected;
+  }
+
+  #rememberShownTarget(state: ConnectionState, targetId: string): void {
+    if (state.shownTargets.has(targetId)) return;
+    if (state.shownTargets.size >= 4_096) {
+      const oldest = state.shownTargets.values().next().value;
+      if (oldest !== undefined) state.shownTargets.delete(oldest);
+    }
+    state.shownTargets.add(targetId);
   }
 
   #autoAttachTarget(
@@ -2530,9 +2548,31 @@ export class SessionCdpRouter {
         parameters = { ...parameters, targetInfo: info };
       } else {
         const targetId = readString(parameters, "targetId");
+        // A target this connection was told is an extension's stays hidden for its terminal
+        // events too. That holds for a script's own root the router has hidden (its address
+        // became a `chrome-extension:` page): its own `Target.targetDestroyed` and its channels'
+        // `Target.detachedFromTarget` naming it are dropped here, as they were before the
+        // allow-list below; the root's destroy still closes the attachment (`#discover`), so its
+        // later commands answer as a missing session.
         if (targetId && state.hiddenTargets.has(targetId)) {
           if (method === "Target.targetDestroyed") state.hiddenTargets.delete(targetId);
           return;
+        }
+        if (
+          state.connection &&
+          targetId &&
+          (method === "Target.targetDestroyed" || method === "Target.targetCrashed")
+        ) {
+          // M1: an allow-list, not a deny-list. A target claimed under this connection's pages
+          // before it was opened was never projected to it, so its end is not this
+          // connection's to hear unless it was shown, is its root, or one of its channels is on it.
+          if (
+            !state.shownTargets.has(targetId) &&
+            state.script?.root !== targetId &&
+            ![...state.channels.values()].some((channel) => channel.physicalTargetId === targetId)
+          )
+            return;
+          if (method === "Target.targetDestroyed") state.shownTargets.delete(targetId);
         }
       }
     }
@@ -2567,6 +2607,7 @@ export class SessionCdpRouter {
   }
 
   #rememberHiddenTarget(state: ConnectionState, targetId: string): void {
+    state.shownTargets.delete(targetId);
     if (state.hiddenTargets.size >= 1_024) {
       const oldest = state.hiddenTargets.values().next().value;
       if (oldest !== undefined) state.hiddenTargets.delete(oldest);

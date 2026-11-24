@@ -2796,7 +2796,94 @@ describe("SessionCdpRouter: a connection's list comes before every other check",
   });
 });
 
+function readId(parameters: unknown): unknown {
+  const record = parameters as { targetId?: unknown; targetInfo?: { targetId?: unknown } };
+  return record.targetInfo?.targetId ?? record.targetId;
+}
+
 describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
+  it("tells a connection's script of a target's end only for a target it was shown (M1)", async () => {
+    const backend = new FakeBackend();
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("session", "root", async () => true, "/files/a");
+    const extensionPage = `chrome-extension://${"a".repeat(32)}/page.html`;
+    // Claimed under the root before the script attachment opened, so never projected to it.
+    backend.emit("Target.targetCreated", {
+      targetInfo: { targetId: "ext-popup", type: "page", openerId: "root", url: extensionPage },
+    });
+    backend.emit("Target.targetCreated", {
+      targetInfo: { targetId: "web-early", type: "page", openerId: "root", url: "https://a.test/" },
+    });
+    backend.targetInfos.push({ targetId: "web-early", type: "page", url: "https://a.test/" });
+    const events: CdpEvent[] = [];
+    const budget = { maxBytes: 64_000, maxDepth: 16, maxEntries: 1_024 };
+    router.openScriptAttachment("session", "script", "root", budget, (e) => events.push(e), {
+      connection: true,
+    });
+    try {
+      backend.emit("Target.targetCreated", {
+        targetInfo: { targetId: "ext-popup-2", type: "page", openerId: "root", url: extensionPage },
+      });
+      backend.emit("Target.targetCreated", {
+        targetInfo: {
+          targetId: "web-late",
+          type: "page",
+          openerId: "root",
+          url: "https://b.test/",
+        },
+      });
+      backend.emit("Target.targetCrashed", {
+        targetId: "ext-popup",
+        status: "crashed",
+        errorCode: 1,
+      });
+      backend.emit("Target.targetDestroyed", { targetId: "ext-popup" });
+      backend.emit("Target.targetDestroyed", { targetId: "ext-popup-2" });
+      backend.emit("Target.targetDestroyed", { targetId: "web-late" });
+      // Shown in a reply: its end is this connection's to hear.
+      const { targetInfos } = (await router.send("session", {
+        method: "Target.getTargets",
+        scriptAttachmentId: "script",
+      })) as { targetInfos: { targetId: string }[] };
+      expect(targetInfos.map(({ targetId }) => targetId)).toEqual(["web-early"]);
+      backend.emit("Target.targetDestroyed", { targetId: "web-early" });
+      backend.emit("Target.targetCrashed", { targetId: "root", status: "crashed", errorCode: 1 });
+      backend.emit("Target.targetDestroyed", { targetId: "root" });
+      expect(JSON.stringify(events)).not.toContain("ext-popup");
+      expect(events.map(({ method, parameters }) => [method, readId(parameters)])).toEqual([
+        ["Target.targetCreated", "web-late"],
+        ["Target.targetDestroyed", "web-late"],
+        ["Target.targetDestroyed", "web-early"],
+        ["Target.targetCrashed", "root"],
+        ["Target.targetDestroyed", "root"],
+      ]);
+    } finally {
+      await router.close();
+    }
+  });
+
+  it("never tells a connection's script of another session's or another tab's target ending", async () => {
+    const backend = new FakeBackend();
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root-a", async () => true, "/files/a");
+    router.registerSession("b", "root-b", async () => true, "/files/b");
+    router.claimTarget("a", "other-tab-a");
+    const events: CdpEvent[] = [];
+    const budget = { maxBytes: 64_000, maxDepth: 16, maxEntries: 1_024 };
+    router.openScriptAttachment("a", "script", "root-a", budget, (e) => events.push(e), {
+      connection: true,
+    });
+    try {
+      for (const targetId of ["root-b", "other-tab-a", "unclaimed"]) {
+        backend.emit("Target.targetCrashed", { targetId, status: "crashed", errorCode: 1 });
+        backend.emit("Target.targetDestroyed", { targetId });
+      }
+      expect(events).toEqual([]);
+    } finally {
+      await router.close();
+    }
+  });
+
   const extId = "abcdefghijklmnopabcdefghijklmnop";
   const extOrigin = `chrome-extension://${extId}`;
   const extPopupUrl = `${extOrigin}/popup.html`;
