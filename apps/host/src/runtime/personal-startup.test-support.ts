@@ -607,7 +607,9 @@ export async function startPersonalRuntime(input: {
             }
           }
           const changed = wake.promise;
-          await withTimeout(changed, Math.max(1, 15000), {
+          // A held tool or a long command sends no event for a while: the Run's own
+          // deadline bounds the quiet, as it does for every other observation here.
+          await withTimeout(changed, vertical?.runTimeoutMs ?? 15000, {
             signal,
             timeoutError: () => new Error("Input never reached a terminal consuming Run"),
           });
