@@ -278,7 +278,7 @@ it("accepts only a private IPv4 network, at its own address, as the pool network
 });
 
 it("names a Home's release feed route and answers only an allowed feed address", () => {
-  const id = "cc_00000000-0000-4000-8000-000000000001";
+  const id = CloudComputerIdSchema.parse("cc_00000000-0000-4000-8000-000000000001");
   expect(cloudComputerReleaseFeedPath(id)).toBe(`/v1/cloud-computers/${id}/release-feed`);
   expect(
     CloudComputerReleaseFeedResponseSchema.parse({
