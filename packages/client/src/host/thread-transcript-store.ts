@@ -147,6 +147,12 @@ function inputQueueOf(
 export class ThreadTranscriptStore {
   readonly #listeners = new Set<Listener>();
   #state: TranscriptState = emptyState;
+  /**
+   * The state listeners were last told of. A catch-up applied quietly (see `apply`) is not it until
+   * `host.synchronized`; a catch-up abandoned before then (the scope left or resubscribed) is
+   * dropped, so a reader never keeps a partly caught-up transcript.
+   */
+  #published: TranscriptState = emptyState;
   // Changes that land while a page read is in flight, so the page cannot undo them.
   readonly #pending = new Map<string, Pending>();
   readonly #reads = new Set<number>();
@@ -193,7 +199,7 @@ export class ThreadTranscriptStore {
     this.#pending.clear();
     this.#lostReads = this.#readCount;
     this.#set({
-      ...(retained ? this.#state : emptyState),
+      ...(retained ? this.#published : emptyState),
       generation,
       synchronized: false,
       liveItems: emptyState.liveItems,
@@ -751,6 +757,7 @@ export class ThreadTranscriptStore {
   #set(state: TranscriptState, quiet = false) {
     this.#state = state;
     if (quiet) return;
+    this.#published = state;
     for (const listener of this.#listeners) listener();
   }
 }

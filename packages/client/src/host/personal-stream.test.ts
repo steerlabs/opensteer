@@ -1837,7 +1837,7 @@ test("refuses raw tool text in a feed preview while keeping the stable tool iden
   expect(f.detail.transcript.getSnapshot().items.get(safe.id)).toEqual(safe);
 });
 
-test("keeps the eight most recently shown inactive tasks whole, however large their windows", () => {
+test("keeps the eight most recently shown inactive tasks whole while they fit the text budget", () => {
   const f = fixture();
   f.syncShell();
   f.syncDetail();
@@ -1882,6 +1882,103 @@ test("keeps the eight most recently shown inactive tasks whole, however large th
   for (const detail of details.slice(4))
     expect(detail.transcript.getSnapshot().items.size).toBe(50);
   expect(f.detail.transcript.getSnapshot().items.get(item.id)?.id).toBe(item.id);
+});
+
+test("past the text budget keeps only the two most recently shown inactive tasks", () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const scopes = Array.from({ length: 4 }, () => ({
+    kind: "thread" as const,
+    threadId: createId("thread"),
+  }));
+  // Each window holds about 6M characters of inline text: two together pass 12M, three 18M.
+  const text = "x".repeat(120 * 1024);
+  const details = scopes.map((scope) => {
+    const release = f.stream.observe(scope);
+    const address = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+    const at = { subscriptionId: address.subscriptionId, generation: address.generation, scope };
+    const snapshot = f.detailSnapshot(
+      Array.from({ length: 50 }, (_, index) => ({
+        ...item,
+        id: String(index),
+        position: String(index + 1),
+        text,
+      })),
+    ).snapshot;
+    expect(
+      f.stream.receive({
+        ...at,
+        type: "host.snapshot",
+        throughSequence: "1",
+        snapshot: {
+          ...snapshot,
+          thread: detailThread({ ...task, id: scope.threadId }),
+          nextBefore: null,
+        },
+      }),
+    ).toBe(true);
+    f.stream.receive({ ...at, type: "host.synchronized", throughSequence: "1" });
+    const store = f.stream.detail(scope);
+    release();
+    return store;
+  });
+  expect(details.map((detail, index) => f.stream.peekDetail(scopes[index]!) === detail)).toEqual([
+    false,
+    false,
+    true,
+    true,
+  ]);
+});
+
+test("a catch-up left before it is synchronized is dropped: the kept rows are the last ones shown", () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  f.stream.select(undefined);
+  f.stream.select(threadScope);
+  const next = f.sent.findLast((frame) => frame.type === "client.subscribe") as Extract<
+    ScopedClientMessage,
+    { type: "client.subscribe" }
+  >;
+  const at = {
+    subscriptionId: next.subscriptionId,
+    generation: next.generation,
+    scope: next.scope,
+  };
+  const shown = f.detail.transcript.getSnapshot();
+  const notices = vi.fn();
+  f.detail.transcript.subscribe(notices);
+  f.stream.receive({
+    ...at,
+    type: "host.changes",
+    fromSequence: "1",
+    throughSequence: "2",
+    changes: [
+      {
+        entityKind: "item",
+        entityId: "partial",
+        ordinal: 0,
+        sequence: "2",
+        operation: "upsert",
+        value: { ...item, id: "partial", revision: "2", position: "2" },
+      },
+    ],
+  });
+  // Left again before the Host says it is caught up.
+  f.stream.select(undefined);
+  const kept = f.detail.transcript.getSnapshot();
+  expect(kept.items.has("partial")).toBe(false);
+  expect(kept.items).toBe(shown.items);
+  expect(kept.through).toBe("1");
+  expect(notices).toHaveBeenCalledTimes(1);
+  // The next visit resumes from what was shown, so the Host replays the commit whole.
+  f.stream.select(threadScope);
+  const again = f.sent.findLast((frame) => frame.type === "client.subscribe") as Extract<
+    ScopedClientMessage,
+    { type: "client.subscribe" }
+  >;
+  expect(again.cursor?.afterSequence).toBe("1");
 });
 
 test("publishes a resubscription's catch-up once, whole, when it is synchronized", () => {

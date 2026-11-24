@@ -12,6 +12,7 @@ import {
   type ScopedClientMessage,
   type ScopedHostMessage,
 } from "@opensteer/protocol/personal-sync";
+import type { TranscriptItem } from "@opensteer/protocol/transcript";
 import type {
   PersonalResourceKind,
   PersonalResourceRevisions,
@@ -111,9 +112,7 @@ export interface PersonalResourcePort {
 }
 
 type Identity = ScopedPersonalIdentity;
-type Dirty =
-  | { readonly detail: ObservedDetail; readonly state: TranscriptState; readonly fence: number }
-  | undefined;
+type Dirty = { readonly detail: ObservedDetail; readonly state: TranscriptState } | undefined;
 type DetailCheckpoint = {
   readonly cursor: PersonalResumeCursor;
   readonly state: import("zod").infer<typeof PersonalDetailSnapshotSchema>;
@@ -136,6 +135,11 @@ const checkpointIntervalMs = 2_000;
 
 /** Inactive scopes kept in memory, most recently shown first, beyond the subscribed ones. */
 const retainedDetails = 8;
+/**
+ * What those kept scopes may hold in inline text (UTF-16 code units, about 2 bytes each) past the
+ * two most recent, which are always kept so going back and forth between tasks stays instant.
+ */
+const retainedTextBudget = 16 * 1024 * 1024;
 
 /** The Host pauses a scope after 256 KiB of unacknowledged live text; ack well before that. */
 const liveAckBytes = 32 * 1024;
@@ -1063,13 +1067,31 @@ export class ScopedPersonalStream {
    */
   #evict() {
     let kept = 0;
+    let text = 0;
     const inactive = [...this.#details.entries()].reverse();
     for (const [key, detail] of inactive) {
       if (detail.slot || key === this.#selected) continue;
-      if (detail.transcript.getSnapshot().items.size > 0 && ++kept <= retainedDetails) continue;
+      const { items } = detail.transcript.getSnapshot();
+      if (items.size > 0) {
+        text += this.#inlineText(items);
+        kept++;
+        if (kept <= 2 || (kept <= retainedDetails && text <= retainedTextBudget)) continue;
+      }
       if (detail.observers > 0) detail.transcript.begin(++this.#generation, false);
       else this.#details.delete(key);
     }
+  }
+
+  readonly #inlineTexts = new WeakMap<ReadonlyMap<string, TranscriptItem>, number>();
+
+  /** The inline text a window holds: what makes one large, without serializing it. */
+  #inlineText(items: ReadonlyMap<string, TranscriptItem>) {
+    let length = this.#inlineTexts.get(items);
+    if (length !== undefined) return length;
+    length = 0;
+    for (const item of items.values()) if ("text" in item) length += item.text?.length ?? 0;
+    this.#inlineTexts.set(items, length);
+    return length;
   }
 
   #key(scope: PersonalScope): PersonalCacheScope | undefined {
@@ -1084,12 +1106,13 @@ export class ScopedPersonalStream {
 
   #checkpoint(scope: PersonalScope, detail?: ObservedDetail) {
     if (!this.cache || !this.#identity) return;
+    // Only a synchronized cut is worth saving; a catch-up frame never replaces the last one marked.
+    if (detail && !detail.transcript.getSnapshot().synchronized) return;
     this.#dirty.set(
       scopeKey(scope),
       detail && {
         detail,
         state: detail.transcript.getSnapshot(),
-        fence: detail.subscriptions,
       },
     );
     this.#flushTimer ??= setTimeout(() => {
@@ -1111,7 +1134,7 @@ export class ScopedPersonalStream {
       const authority = this.#authority;
       const fence = () =>
         entry ? entry.detail.subscriptions : this.shell.getSnapshot().generation;
-      const taken = entry ? entry.fence : fence();
+      const taken = fence();
       const current = () => authority === this.#authority && fence() === taken;
       const written = this.#fence;
       if (!written) continue;
@@ -1130,7 +1153,9 @@ export class ScopedPersonalStream {
     if (!cursor || !key || !state.synchronized) return;
     if (entry) {
       const { detail } = entry;
-      if (this.#details.get(key.scopeKey) !== detail) return;
+      // A scope let go for recency still writes what it showed; one replaced by another does not.
+      const held = this.#details.get(key.scopeKey);
+      if (held && held !== detail) return;
       const snapshot = detail.transcript.checkpoint(entry.state);
       if (!snapshot) return;
       const strip = (item: import("@opensteer/protocol/transcript").TranscriptItem) => {
