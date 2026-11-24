@@ -386,9 +386,22 @@ export class CommandRequestStore {
      */
     readonly stillAsks?: (transaction: Transaction<DatabaseSchema>) => Promise<boolean>;
   }): Promise<
-    | { readonly request: Request; readonly part: CommandRequestPart; readonly closed?: never }
-    | { readonly closed: true }
+    | {
+        readonly request: Request;
+        readonly part: CommandRequestPart;
+        readonly closed?: never;
+        readonly replayed?: never;
+      }
+    | { readonly closed: true; readonly replayed?: never }
+    | { readonly replayed: CommandRequestOutcome; readonly closed?: never }
   > {
+    // The same approval sent twice at once: the one that waited reads what the first came to.
+    return this.#beginApproval(input).catch((error: unknown) => {
+      if (error instanceof ApprovalReplay) return { replayed: error.outcome };
+      throw error;
+    });
+  }
+  #beginApproval(input: Parameters<CommandRequestStore["beginApproval"]>[0]) {
     return commitPersonalMutation(this.#database, async (transaction) => {
       // The proposer first: its connection row is held for share until this commits, so a
       // narrowing or a Disconnect waits for the approval or is seen by it (lock order: the
@@ -396,7 +409,10 @@ export class CommandRequestStore {
       const asks = input.stillAsks ? await input.stillAsks(transaction) : true;
       // An answer passes the Request's origin rule; closing the ask of a proposer that may no
       // longer ask only takes authority away, so it closes even once that origin has ended.
-      const row = await this.#lockPending(transaction, input, { checkConnection: asks });
+      const row = await this.#lockPending(transaction, input, {
+        checkConnection: asks,
+        approvalKey: input.approvalKey,
+      });
       const part = CommandRequestPartSchema.parse(row.command);
       input.accept(part);
       const now = this.#now();
@@ -522,7 +538,7 @@ export class CommandRequestStore {
       readonly expectedRevision: string;
       readonly resolvedBy: UserId;
     },
-    options?: { readonly checkConnection?: boolean },
+    options?: { readonly checkConnection?: boolean; readonly approvalKey?: string },
   ) {
     const origin = await transaction
       .selectFrom("requests")
@@ -538,10 +554,24 @@ export class CommandRequestStore {
       .executeTakeFirst();
     if (!row || row.command === null || row.requestedBy !== input.resolvedBy)
       throw new OpensteerError({ code: "not_found", message: "Request not found" });
+    if (row.status !== "pending" && options?.approvalKey !== undefined) {
+      const part = CommandRequestPartSchema.safeParse(row.command);
+      if (part.success && part.data.approvalKey === options.approvalKey)
+        throw new ApprovalReplay(part.data.outcome ?? { status: "running" });
+    }
     if (row.status !== "pending")
       throw new OpensteerError({ code: "conflict", message: "Request is no longer pending" });
     assertRequestRevision(row, input.expectedRevision);
     await lockActiveDurableRequestAuthority(transaction, requestFromRow(row), options);
     return row;
+  }
+}
+
+/** The approval this key already made, found under the Request's lock: answered, not repeated. */
+class ApprovalReplay extends Error {
+  readonly outcome: CommandRequestOutcome;
+  constructor(outcome: CommandRequestOutcome) {
+    super("This approval was already made");
+    this.outcome = outcome;
   }
 }

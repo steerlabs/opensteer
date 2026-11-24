@@ -1136,6 +1136,8 @@ export interface CommandHolder {
   readonly mode: ThreadAccessMode;
   /** A chat anyone in its conversation may message: it may have no automation (X15). */
   readonly anyoneChat?: boolean;
+  /** A connection with no active direct session: it has no session's Requests or session. */
+  readonly withoutSession?: boolean;
 }
 
 /**
@@ -1158,7 +1160,14 @@ export function commandHolds(type: CommandType, holder: CommandHolder): boolean 
   // A new thing has nothing to be outside of: admission reaches it, and a selected grant asks.
   if (row.scope === "new") return true;
   // Otherwise what it governs must be a kind this grant reaches some thing of.
-  return commandGovernedKinds(type).some((kind) => selectedHoldsKind(kind, grant));
+  // Without Tasks, a connection reaches Requests and a session only through its own active
+  // direct session (D9); with none yet, it holds neither.
+  const sessionOnly = holder.withoutSession && !agentGrantAllowsTasks(grant);
+  return commandGovernedKinds(type).some(
+    (kind) =>
+      !(sessionOnly && (kind === "request" || kind === "agent-session")) &&
+      selectedHoldsKind(kind, grant),
+  );
 }
 
 /**
@@ -1205,6 +1214,7 @@ export async function commandCallerHolder(
       grant: connection?.grant ?? null,
       mode: execution.mode,
       ...(connection && !lineageAllowsPersonalContext(connection) ? { anyoneChat: true } : {}),
+      ...(subject.kind === "connection" ? { withoutSession: true } : {}),
     };
   } catch (error) {
     if (error instanceof ConnectionWaiting) return "gone";
@@ -1331,6 +1341,37 @@ async function commandReach(
       .executeTakeFirst();
     return row?.ownerId === owner && granted({ kind: "browser-profile", profileId });
   };
+  /** Tabs by id: every one the owner's, and under a selected grant in a profile it holds. */
+  const tabsReach = async (ids: readonly string[]): Promise<CommandReach> => {
+    const tabs = await database
+      .selectFrom("personalTabs")
+      .select(["profileId", "ownerId", "openedBy"])
+      .where("id", "in", ids as never)
+      .execute();
+    if (tabs.length !== new Set(ids).size || tabs.some((tab) => tab.ownerId !== owner))
+      return outOfReach;
+    if (
+      tabs.some(
+        (tab) =>
+          !granted(
+            tab.profileId === null ? null : { kind: "browser-profile", profileId: tab.profileId },
+          ),
+      )
+    )
+      return outOfReach;
+    // Its own work is what its own task opened; the person's tabs, and anything that records
+    // no opener, are not.
+    const opened = (tab: (typeof tabs)[number]) => {
+      const by = tab.openedBy as unknown;
+      return (
+        ownTask !== null &&
+        typeof by === "object" &&
+        by !== null &&
+        (by as { taskId?: unknown }).taskId === ownTask
+      );
+    };
+    return { reach: true, ownWork: tabs.every(opened) };
+  };
   if (row.scope === "home") return inReach;
   if (row.scope === "other-connection") return connection ? outOfReach : inReach;
   switch (resource.kind) {
@@ -1393,37 +1434,9 @@ async function commandReach(
       // Opening a tab with no profile (a Guest page, a window, an app): no selected grant names
       // it; it is the caller's own work only from a task of its own.
       if (ids.length === 0) return { reach: !selected, ownWork: !selected && ownTask !== null };
-      const tabs = await database
-        .selectFrom("personalTabs")
-        .select(["profileId", "ownerId", "openedBy"])
-        .where("id", "in", ids as never)
-        .execute();
-      if (tabs.length !== new Set(ids).size || tabs.some((tab) => tab.ownerId !== owner))
-        return outOfReach;
-      if (
-        tabs.some(
-          (tab) =>
-            !granted(
-              tab.profileId === null ? null : { kind: "browser-profile", profileId: tab.profileId },
-            ),
-        )
-      )
-        return outOfReach;
-      // Its own work is what its own task opened; the person's tabs, and anything that records
-      // no opener, are not.
-      const opened = (tab: (typeof tabs)[number]) => {
-        const by = tab.openedBy as unknown;
-        return (
-          ownTask !== null &&
-          typeof by === "object" &&
-          by !== null &&
-          (by as { taskId?: unknown }).taskId === ownTask
-        );
-      };
-      return { reach: true, ownWork: tabs.every(opened) };
+      return tabsReach(ids);
     }
     case "tab-group": {
-      if (selected) return outOfReach;
       const layout = await database
         .selectFrom("tabLayouts")
         .select("items")
@@ -1431,12 +1444,19 @@ async function commandReach(
         .executeTakeFirst();
       const items = (layout?.items ?? []) as readonly {
         readonly kind: string;
-        readonly group?: { readonly groupId: string };
+        readonly group?: { readonly groupId: string; readonly tabIds?: readonly string[] };
       }[];
+      const group = items.find(
+        (item) => item.kind === "group" && item.group?.groupId === resource.id,
+      )?.group;
+      if (!group) return outOfReach;
+      // A group is reached only when every tab in it is: one holding some of its tabs, or none,
+      // finds no group. An empty group holds nothing a selected grant names.
+      const members = group.tabIds ?? [];
+      const reach =
+        members.length === 0 ? !selected : selected ? (await tabsReach(members)).reach : true;
       // A group records no opener: it is never an agent's own work.
-      return items.some((item) => item.kind === "group" && item.group?.groupId === resource.id)
-        ? { reach: true, ownWork: false }
-        : outOfReach;
+      return reach ? { reach: true, ownWork: false } : outOfReach;
     }
     case "browser-session": {
       const session = await database
@@ -1565,10 +1585,12 @@ const grantNamed = {
       entry.kind === "plugin" && entry.target.kind === "local-server",
   },
 } satisfies Partial<Record<CommandResourceKind, unknown>>;
-/** Kinds reached through a thing a grant names: a profile's sessions and tabs. */
+/** Kinds reached through a thing a grant names: a profile's sessions, tabs and tab groups. */
 const reachedThrough: Partial<Record<CommandResourceKind, keyof typeof grantNamed>> = {
   "browser-session": "browser-profile",
   tabs: "browser-profile",
+  // A group of tabs, each in a profile it holds (commandReach: tab-group).
+  "tab-group": "browser-profile",
 };
 
 function grantTargetOf(resource: CommandResource): AgentGrantTarget | null {

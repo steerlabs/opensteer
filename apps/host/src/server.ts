@@ -2603,7 +2603,7 @@ export async function createHostServer(
       case "tab.group.update":
       case "tab.group.delete":
       case "tab.group.close":
-        return dependencies.tabs.executeCommand(userId, command);
+        return dependencies.tabs.executeCommand(userId, command, readmit);
       case "app.rename":
       case "app.start":
       case "app.stop":

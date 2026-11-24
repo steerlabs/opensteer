@@ -283,6 +283,36 @@ describeStore("command Requests at the Home", (it) => {
       "Its script runs on this Cloud Computer, as its user.",
     );
     expect(await gives("server")).toBe("Its script runs on this server, as its user.");
+    // Another computer: its device, by its own name, quoted as every outside name is.
+    const deviceId = await store.requireSelfDeviceId(runner.id);
+    await database
+      .updateTable("devices")
+      .set({ platform: "macos", name: "Work laptop" })
+      .where("id", "=", deviceId)
+      .execute();
+    await database
+      .updateTable("runners")
+      .set({ kind: "local" })
+      .where("id", "=", runner.id)
+      .execute();
+    expect(await gives("server")).toBe("Its script runs on your Mac “Work laptop”, as you.");
+  });
+
+  it("answers the same approval sent twice at once with the first's outcome, running it once (G6)", async ({
+    storeFixture,
+  }) => {
+    const { store, ran, run, door, rename, approve } = await setup(storeFixture);
+    const asked = (await dispatchCommand(run, rename("Twice"), door(run))) as { requestId: string };
+    const command = (await store.requests.get(asked.requestId as never))!.command!.command;
+    const key = randomUUID();
+    const outcomes = await Promise.all([
+      approve(asked.requestId, command, key),
+      approve(asked.requestId, command, key),
+    ]);
+    expect(ran).toHaveLength(1);
+    // The first ran it; the second read it, done or still running, never a conflict.
+    expect(outcomes.map(({ status }) => status)).toContain("done");
+    for (const outcome of outcomes) expect(["done", "running"]).toContain(outcome.status);
   });
 
   it("never runs it for any declining answer, and hands the agent its words", async ({
