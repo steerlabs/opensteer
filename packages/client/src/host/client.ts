@@ -296,8 +296,6 @@ export interface TaskListState {
 
 export interface RunQueueEntry {
   maintenance?: Run["maintenance"];
-  /** The Run has finished its work and the Host is closing it out. */
-  finishing?: true;
   createdAt: string;
   id: string;
   status: "queued" | "starting" | "running" | "waiting";
