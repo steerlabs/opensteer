@@ -61,6 +61,8 @@ export interface CloudComputerTable {
   generationReady: Generated<boolean>;
   /** When it last became ready; see `report`. */
   readyAt: Generated<Date | null>;
+  /** When the current outage began; null while it is ready. See `report` and `watch`. */
+  downAt: Generated<Date | null>;
   dnsQuarantined: Generated<boolean>;
   createAttempted: Generated<boolean>;
   bootCompletedAt: NullableTimestamp;

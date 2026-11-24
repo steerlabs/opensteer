@@ -218,6 +218,14 @@ const HostEnvironmentSchema = z.object({
    * consent. Unset, nothing is sent. Never read on a Cloud Computer.
    */
   OPENSTEER_PROBLEM_REPORTS_URL: optionalUrl,
+  /** Sent as a bearer token with each report to that collector, which should require it. */
+  OPENSTEER_PROBLEM_REPORTS_TOKEN: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z
+      .string()
+      .regex(/^[\x21-\x7e]{16,512}$/u)
+      .optional(),
+  ),
   /**
    * `root-maintenance`: this Home's root maintenance writes `machine-status.json` into the Host's
    * data folder, where no agent's shell can write (deploy/home sets it). Unset, it is never read.
@@ -344,6 +352,8 @@ export interface HostConfig {
   readonly personalAccountIssuer?: URL;
   /** A self-hoster's own address for problem reports; see `OPENSTEER_PROBLEM_REPORTS_URL`. */
   readonly problemReportsOrigin?: URL;
+  /** The bearer token for that collector; see `OPENSTEER_PROBLEM_REPORTS_TOKEN`. */
+  readonly problemReportsToken?: string;
   /** Whether root's maintenance writes the machine status; see `OPENSTEER_MACHINE_STATUS`. */
   readonly machineStatus?: "root-maintenance";
   readonly exposure: HostExposure;
@@ -483,6 +493,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     "OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST",
     "OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN",
     "OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET",
+    "OPENSTEER_PROBLEM_REPORTS_TOKEN",
   ] as const) {
     const file = environment[`${name}_FILE`];
     if (
@@ -679,12 +690,10 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
         : {}),
     ...(managedHome ? { managedHome } : {}),
     ...(parsed.OPENSTEER_PROBLEM_REPORTS_URL
-      ? {
-          problemReportsOrigin: originUrl(
-            parsed.OPENSTEER_PROBLEM_REPORTS_URL,
-            "OPENSTEER_PROBLEM_REPORTS_URL",
-          ),
-        }
+      ? { problemReportsOrigin: collectorOrigin(parsed.OPENSTEER_PROBLEM_REPORTS_URL) }
+      : {}),
+    ...(parsed.OPENSTEER_PROBLEM_REPORTS_TOKEN
+      ? { problemReportsToken: parsed.OPENSTEER_PROBLEM_REPORTS_TOKEN }
       : {}),
     ...(parsed.OPENSTEER_MACHINE_STATUS ? { machineStatus: parsed.OPENSTEER_MACHINE_STATUS } : {}),
     ...(portalOrigin ? { portalOrigin } : {}),
@@ -780,6 +789,14 @@ function readBoundedDescriptor(
     throw new Error("Opensteer Account provisioning bundle has an invalid size");
   }
   return Buffer.concat(chunks, total).toString("utf8");
+}
+
+/** A collector's address: `https:`, or `http:` only on this machine's own loopback. */
+function collectorOrigin(value: string): URL {
+  const url = originUrl(value, "OPENSTEER_PROBLEM_REPORTS_URL");
+  if (url.protocol !== "https:" && !isLoopbackHostname(url.hostname))
+    throw new Error("OPENSTEER_PROBLEM_REPORTS_URL must be https (http only on loopback).");
+  return url;
 }
 
 function originUrl(value: string, name: string): URL {

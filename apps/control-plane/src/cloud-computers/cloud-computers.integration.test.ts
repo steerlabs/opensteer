@@ -1706,6 +1706,77 @@ integration("Cloud Computer Account service", () => {
     ]);
   });
 
+  it("never pages a working computer for one short restart, whatever clock was kept (U1)", async () => {
+    const { id } = await buy();
+    await database
+      .updateTable("cloudComputers")
+      .set({ bootCompletedAt: now, bootstrapReceiptAt: now, lastBackupAt: now })
+      .where("id", "=", id)
+      .execute();
+    const takeLease = () =>
+      http({
+        method: "POST",
+        url: cloudComputerLeasePath,
+        headers: leaseHeaders(),
+        payload: { holder: lease },
+      });
+    const to = async (phase: "ready" | "booting") => {
+      expect((await takeLease()).statusCode).toBe(200);
+      const current = (await getDesired(id))!;
+      expect(
+        (
+          await report(
+            current,
+            phase === "ready"
+              ? {}
+              : {
+                  phase: "booting",
+                  observedIdentity: null,
+                  providerServerId: 7,
+                  ipv4: "192.0.2.7",
+                },
+          )
+        ).json(),
+      ).toEqual({ recorded: true });
+    };
+    const notReady = async () =>
+      (await cloud.watch(30 * 60_000)).filter(
+        ({ event }) => event === "account.cloud_computer.not_ready",
+      );
+    const later = (ms: number) => {
+      now = new Date(now.getTime() + ms);
+    };
+    // A slow first set-up: ready ten minutes after its clock began.
+    later(10 * 60_000);
+    await to("ready");
+    // A 26-second restart (an update, a provider write not confirmed on one pass) at any minute
+    // of the next forty, the window the kept clock would have paged in included.
+    for (let minute = 1; minute <= 40; minute += 3) {
+      later(3 * 60_000);
+      await to("booting");
+      expect(await notReady(), `minute ${minute}`).toEqual([]);
+      later(26_000);
+      expect(await notReady(), `minute ${minute}`).toEqual([]);
+      await to("ready");
+    }
+    // The review's case: ready for hours, one real outage of 8 minutes, ready again for 23, then
+    // one booting report.
+    later(6 * 60 * 60_000);
+    await to("booting");
+    later(8 * 60_000);
+    await to("ready");
+    later(23 * 60_000);
+    await to("booting");
+    expect(await notReady()).toEqual([]);
+    later(26_000);
+    expect(await notReady()).toEqual([]);
+    // Still down two minutes on, inside the clock kept from the 8-minute outage: now it pages.
+    later(2 * 60_000);
+    expect(await notReady()).toEqual([
+      expect.objectContaining({ computerId: id, phase: "booting" }),
+    ]);
+  });
+
   it("pages a computer that keeps going down faster than the limit, though each outage is short (U2)", async () => {
     const { id } = await buy();
     // Up and claimed, as after its first set-up.

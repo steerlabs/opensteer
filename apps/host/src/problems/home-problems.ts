@@ -35,7 +35,7 @@ type Destination =
       readonly clientId: string;
       readonly clientSecret: string;
     }
-  | { readonly kind: "own"; readonly url: URL }
+  | { readonly kind: "own"; readonly url: URL; readonly token?: string }
   | { readonly kind: "none" };
 
 /**
@@ -46,7 +46,7 @@ type Destination =
  * nothing at all.
  */
 export function problemReportDestination(
-  config: Pick<HostConfig, "managedHome" | "problemReportsOrigin">,
+  config: Pick<HostConfig, "managedHome" | "problemReportsOrigin" | "problemReportsToken">,
 ): Destination {
   const managed = config.managedHome;
   if (managed)
@@ -57,7 +57,11 @@ export function problemReportDestination(
       clientSecret: managed.oidc.clientSecret,
     };
   if (config.problemReportsOrigin)
-    return { kind: "own", url: new URL(problemReportsPath, config.problemReportsOrigin) };
+    return {
+      kind: "own",
+      url: new URL(problemReportsPath, config.problemReportsOrigin),
+      ...(config.problemReportsToken ? { token: config.problemReportsToken } : {}),
+    };
   return { kind: "none" };
 }
 
@@ -200,7 +204,9 @@ export class HomeProblems {
                   `${destination.clientId}:${destination.clientSecret}`,
                 ).toString("base64")}`,
               }
-            : {}),
+            : destination.kind === "own" && destination.token
+              ? { authorization: `Bearer ${destination.token}` }
+              : {}),
         },
         body,
       });

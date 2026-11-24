@@ -115,6 +115,21 @@ export function createControlPlaneAuth(
     baseURL: config.publicOrigin.origin,
     database: databaseOption,
     databaseHooks: {
+      account: {
+        create: {
+          // The synthetic purchase's Account signs in only through its own sign-in: no Google,
+          // Apple or other sign-in is ever linked into it, whoever holds that email.
+          before: async (account) => {
+            const user = await database
+              .selectFrom("users")
+              .select("syntheticAt")
+              .where("id", "=", account.userId as never)
+              .executeTakeFirst();
+            if (user?.syntheticAt) return false;
+            return undefined;
+          },
+        },
+      },
       session: {
         delete: {
           before: async (session) => {

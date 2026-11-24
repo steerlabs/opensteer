@@ -148,6 +148,23 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
       .where("email", "in", [appReview.email, syntheticSignIn.email])
       .execute();
     expect(made).toEqual([{ email: syntheticSignIn.email, syntheticAt: expect.any(Date) }]);
+    // Nothing else is ever linked into it: a Google sign-in under that email adds no account (S4).
+    const { id: syntheticId } = await database
+      .selectFrom("users")
+      .select("id")
+      .where("email", "=", syntheticSignIn.email)
+      .executeTakeFirstOrThrow();
+    const context = await auth.$context;
+    await context.internalAdapter
+      .linkAccount({ userId: syntheticId, providerId: "google", accountId: "google-subject" })
+      .catch(() => undefined);
+    expect(
+      await database
+        .selectFrom("authAccounts")
+        .select("id")
+        .where("userId", "=", syntheticId)
+        .execute(),
+    ).toEqual([]);
     await database.deleteFrom("users").where("email", "=", syntheticSignIn.email).execute();
   });
 

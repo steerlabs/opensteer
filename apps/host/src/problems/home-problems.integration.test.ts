@@ -34,6 +34,16 @@ describe("a Home's problems and its one report", () => {
     expect(
       problemReportDestination({ problemReportsOrigin: new URL("https://collector.self.example") }),
     ).toEqual({ kind: "own", url: new URL("https://collector.self.example/v1/problem-reports") });
+    expect(
+      problemReportDestination({
+        problemReportsOrigin: new URL("https://collector.self.example"),
+        problemReportsToken: "t".repeat(32),
+      }),
+    ).toEqual({
+      kind: "own",
+      url: new URL("https://collector.self.example/v1/problem-reports"),
+      token: "t".repeat(32),
+    });
     expect(problemReportDestination({})).toEqual({ kind: "none" });
   });
 
@@ -121,6 +131,27 @@ describe("a Home's problems and its one report", () => {
       expect(sent[0]!.init.body).toBe((await problems.view()).body);
       expect(JSON.parse(String(sent[0]!.init.body))).toEqual(await problems.report());
       expect(problems.reporting()).toMatchObject({ destination: "own", lastResult: "sent" });
+      // With the operator's token, the collector can tell its own Home from a forged report (S2).
+      const signed = new HomeProblems({
+        database,
+        dataDirectory: directory,
+        home: "server",
+        readsMachineStatus: true,
+        version: "1.4.0",
+        readDisk: async () => "under-70",
+        destination: {
+          kind: "own",
+          url: new URL("https://collector.self.example/v1/problem-reports"),
+          token: "t".repeat(32),
+        },
+        fetch: fetch as typeof globalThis.fetch,
+      });
+      await signed.sendOnce();
+      expect(new Headers(sent.at(-1)!.init.headers).get("authorization")).toBe(
+        `Bearer ${"t".repeat(32)}`,
+      );
+      sent.pop();
+      await signed.close();
 
       // A machine status the maintenance stopped writing says nothing about services now.
       utimesSync(

@@ -118,6 +118,8 @@ const dispatchedWriteGraceMs = 15 * 60_000;
 const backupOverdueMs = 36 * 60 * 60_000;
 /** A pool with fewer free entries than this is about to stop checkout or browsing. */
 const lowPoolEntries = 2;
+/** How long a computer that was ready before must be down now before it counts as an outage. */
+const minimumOutageMs = 2 * 60_000;
 /** A ready Cloud Computer reports every 15 minutes; an hour without one is missing. */
 const reportMissingMs = 60 * 60_000;
 
@@ -973,6 +975,8 @@ export class CloudComputerStore {
         "bootstrapReceiptAt",
         "bootCompletedAt",
         "lastBackupAt",
+        "readyAt",
+        "downAt",
         "cloudComputerHealth.receivedAt as healthReceivedAt",
       ])
       .where("state", "=", "active")
@@ -991,10 +995,17 @@ export class CloudComputerStore {
       // before or not (after a Resume, a reboot, a VM that never came back), is a person who
       // pays and has no working computer: readiness restarts its clock on each of those.
       const working = row.phase === "ready" && claimed;
+      // A computer that has been ready before and is down now pages only once this outage itself
+      // has lasted a while too: one restart (an update, a provider write not confirmed on one
+      // pass) inside a clock kept from earlier is not a person with no working computer (U1).
+      const outageLasted =
+        row.phase === "ready" ||
+        row.readyAt === null ||
+        (row.downAt !== null && now - row.downAt.getTime() >= minimumOutageMs);
       if (
         row.phase === "failed" ||
         claim !== null ||
-        (!working && now - row.readinessStartedAt.getTime() >= notReadyAfterMs)
+        (!working && outageLasted && now - row.readinessStartedAt.getTime() >= notReadyAfterMs)
       ) {
         findings.push({
           event: "account.cloud_computer.not_ready",
@@ -1557,6 +1568,8 @@ export class CloudComputerStore {
           updatedAt: now,
           ...(ready ? { everReady: true, generationReady: true, dnsQuarantined: false } : {}),
           ...(ready && row.phase !== "ready" ? { readyAt: now } : {}),
+          // When the current outage began: kept while it stays down, cleared once it is ready.
+          downAt: ready ? null : (row.downAt ?? now),
           ...(report.lastError ===
           "The Cloud Computer reported a different Home identity for this generation."
             ? { dnsQuarantined: true }

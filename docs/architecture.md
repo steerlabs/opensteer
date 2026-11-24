@@ -778,7 +778,8 @@ could write the file, so it is not read.
 
 Rule 3 of AGENTS.md (nothing leaves the Home before it is in the Disconnect set) is about effects
 done for a connection, and a report is not one. It is the Home's own, sent on its own timer, never
-for a connection or a Run, and carries nothing a connection produced except codes and counts. An
+for a connection or a Run, and carries nothing a connection produced: only codes with their fixed
+details, counts, times to the minute, versions and the machine's own status. An
 agent reads problems through `opensteer_state` (area `problems`, for the person's own agents and
 `everything` grants; outside a grant it does not exist). No tool sends a report, reads one back, or
 changes where it goes or what it holds.
@@ -789,12 +790,12 @@ lets anyone forge counts or crowd real reports out, and the sending address can 
 person's other requests to Opensteer. Until both exist, every problem stays on the person's own
 Home, where they see it.
 
-Not built yet, and where each would attach. A consent prompt at first run would set the same
-setting, once, after setup. Crash reports from devices (Sentry's protocol, so a self-hoster could
-point them at their own collector) would be a second switch beside it, with the desktop's
-`crashReporter` started with uploads off until the person chooses. A "Report a problem" form would
-send this same report and the person's own words, after showing both, from the Problems group.
-Session recording and product analytics on devices are never to be built.
+Not built yet, and where each would attach. Such an opt-in report, and crash reports from devices
+(Sentry's protocol, so a self-hoster could point them at their own collector, with the desktop's
+`crashReporter` started with uploads off), would each need their own switch for the person, asked
+once after setup and off until they choose. A "Report a problem" form would send the Home's report
+and the person's own words, after showing both, from the Problems group. Session recording and
+product analytics on devices are never to be built.
 
 ## What was measured
 

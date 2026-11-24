@@ -67,6 +67,8 @@ services:
       # The operator's own collector for this Home's health report; setting it is the consent.
       # Empty: nothing leaves the machine.
       OPENSTEER_PROBLEM_REPORTS_URL: ${OPENSTEER_HOME_PROBLEM_REPORTS_URL:-}
+      # Sent as a bearer token with each report; the collector should require it.
+      OPENSTEER_PROBLEM_REPORTS_TOKEN: ${OPENSTEER_HOME_PROBLEM_REPORTS_TOKEN:-}
       # Root's maintenance writes machine-status.json into host-data, which no Runner mounts.
       OPENSTEER_MACHINE_STATUS: root-maintenance
       OPENSTEER_DATABASE_URL_FILE: /run/secrets/database_url

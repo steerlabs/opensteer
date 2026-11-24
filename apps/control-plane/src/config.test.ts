@@ -96,20 +96,37 @@ it("loads optional managed Home settings from the Account runtime directory", ()
           "https://user:password@releases.example.com/feed",
       }),
     ).toThrow("Missing or invalid OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL");
-    // The synthetic purchase's sign-in opens only beside a test-mode Stripe key (U6).
+    // The synthetic purchase's sign-in opens only beside a test-mode Stripe secret key (U6, S4).
     const synthetic = {
-      OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: "synthetic@example.com",
+      OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: "Synthetic@Example.com",
       OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD: "s".repeat(24),
     };
-    expect(loadControlPlaneConfig({ ...environment, ...synthetic }).syntheticSignIn).toBeDefined();
-    for (const key of ["sk_live_123456789", "rk_live_123456789"])
+    expect(loadControlPlaneConfig({ ...environment, ...synthetic }).syntheticSignIn).toEqual({
+      email: "synthetic@example.com",
+      password: "s".repeat(24),
+    });
+    for (const key of ["sk_live_123456789", "rk_live_123456789", "rk_test_123456789"])
       expect(() =>
         loadControlPlaneConfig({
           ...environment,
           ...synthetic,
           OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY: key,
         }),
-      ).toThrow("refused beside a live Stripe key");
+      ).toThrow("needs a test-mode Stripe secret key");
+    expect(() =>
+      loadControlPlaneConfig({
+        ...environment,
+        OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: "synthetic@example.com",
+      }),
+    ).toThrow("email and password together");
+    expect(() =>
+      loadControlPlaneConfig({
+        ...environment,
+        ...synthetic,
+        OPENSTEER_APP_REVIEW_EMAIL: "synthetic@example.com",
+        OPENSTEER_APP_REVIEW_PASSWORD: "r".repeat(24),
+      }),
+    ).toThrow("must not be the App Review account");
   } finally {
     rmSync(directory, { recursive: true });
   }
@@ -149,30 +166,16 @@ describe("control-plane configuration", () => {
     ).toThrow(/PostgreSQL/u);
   });
 
-  it("gives the synthetic purchase its own sign-in, never the App Review account (S7)", () => {
+  it("opens the synthetic purchase's sign-in on no stack that does not say it is a test stack (S4)", () => {
     expect(loadControlPlaneConfig(validEnvironment).syntheticSignIn).toBeUndefined();
-    const synthetic = {
-      OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: "Synthetic@Example.com",
-      OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD: "s".repeat(24),
-    };
-    expect(loadControlPlaneConfig({ ...validEnvironment, ...synthetic }).syntheticSignIn).toEqual({
-      email: "synthetic@example.com",
-      password: "s".repeat(24),
-    });
+    // No Cloud Computer setting at all, so no test-mode key: refused.
     expect(() =>
       loadControlPlaneConfig({
         ...validEnvironment,
         OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: "synthetic@example.com",
+        OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD: "s".repeat(24),
       }),
-    ).toThrow("email and password together");
-    expect(() =>
-      loadControlPlaneConfig({
-        ...validEnvironment,
-        ...synthetic,
-        OPENSTEER_APP_REVIEW_EMAIL: "synthetic@example.com",
-        OPENSTEER_APP_REVIEW_PASSWORD: "r".repeat(24),
-      }),
-    ).toThrow("must not be the App Review account");
+    ).toThrow("needs a test-mode Stripe secret key");
   });
 
   it("enables App Review sign-in only with a valid email and a long password together", () => {

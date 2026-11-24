@@ -927,6 +927,29 @@ describe("networked Personal Home", () => {
     ).toEqual(new URL("https://accounts.example.com"));
   });
 
+  it("sends a collector's reports over https only, with its bearer token when set (S2)", () => {
+    expect(
+      parseHostConfig({ ...home, OPENSTEER_PROBLEM_REPORTS_URL: "https://collector.example.com" })
+        .problemReportsOrigin,
+    ).toEqual(new URL("https://collector.example.com"));
+    expect(
+      parseHostConfig({ ...home, OPENSTEER_PROBLEM_REPORTS_URL: "http://127.0.0.1:9000" })
+        .problemReportsOrigin,
+    ).toEqual(new URL("http://127.0.0.1:9000"));
+    expect(() =>
+      parseHostConfig({ ...home, OPENSTEER_PROBLEM_REPORTS_URL: "http://collector.example.com" }),
+    ).toThrow("must be https");
+    const token = "t".repeat(32);
+    expect(
+      parseHostConfig({
+        ...home,
+        OPENSTEER_PROBLEM_REPORTS_URL: "https://collector.example.com",
+        OPENSTEER_PROBLEM_REPORTS_TOKEN: token,
+      }).problemReportsToken,
+    ).toBe(token);
+    expect(() => parseHostConfig({ ...home, OPENSTEER_PROBLEM_REPORTS_TOKEN: "short" })).toThrow();
+  });
+
   it("reads the machine status only where root's maintenance says it writes it (S1)", () => {
     expect(parseHostConfig(home).machineStatus).toBeUndefined();
     expect(

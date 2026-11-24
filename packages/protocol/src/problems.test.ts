@@ -18,86 +18,129 @@ type Def = Record<string, unknown>;
 const defOf = (schema: z.ZodType) => (schema as unknown as { _zod: { def: Def } })._zod.def;
 const checksOf = (def: Def) =>
   ((def.checks ?? []) as readonly { _zod: { def: Def } }[]).map((check) => check._zod.def);
+/** A string's patterns, each with its flags: a flag such as `m` changes what a source admits. */
 const patternsOf = (def: Def) =>
   checksOf(def)
     .filter((check) => check.check === "string_format" && check.format === "regex")
-    .map((check) => (check.pattern as RegExp).source);
-
-/** The only patterns a report's strings may have: a release version and a minute's time. */
-const namedPatterns = new Set(
-  [ReleaseVersionSchema, ReportTimeSchema].flatMap((schema) => patternsOf(defOf(schema))),
-);
-const maxEnumValues = 64;
-/** At most this many leaves along any path through nested arrays. */
-const maxArrayProduct = 64;
+    .map((check) => `/${(check.pattern as RegExp).source}/${(check.pattern as RegExp).flags}`);
+const maximumOf = (def: Def) =>
+  checksOf(def).find((check) => check.check === "max_length")?.maximum as number | undefined;
 
 /**
- * An allow-list of what a report may hold (docs/architecture.md, "Problems and reports"): an enum
- * of at most 64 values, a literal, a boolean, a bounded whole number, or a string with exactly
- * one of the two named patterns; records keyed by an enum; arrays whose maxima multiply to at
- * most 64 along any path; strict objects and unions of those. Anything else is reported, so a
- * field that could carry an address, a name, an error's own words or chosen digits fails here.
+ * The only patterns a report's strings may have, each with its own schema's maximum length: a
+ * release version and a minute's time.
  */
-function freeTextLeaves(schema: z.ZodType, path: string, out: string[], product = 1): void {
+const namedPatterns = new Map(
+  [ReleaseVersionSchema, ReportTimeSchema].map((schema) => {
+    const def = defOf(schema);
+    return [patternsOf(def)[0]!, maximumOf(def)!] as const;
+  }),
+);
+const maxEnumValues = 64;
+/** At most this many repeats along any path through arrays and records. */
+const maxArrayProduct = 64;
+/** At most this many leaves in all; the health report holds 498. */
+const maxLeaves = 512;
+
+/**
+ * The "no words" check on everything a Home sends (docs/architecture.md, "Problems and
+ * reports"). What it promises: no free text gets into a report, so no field can carry an
+ * address, a name, a path, a token or an error's own words. It allows an enum or a literal of at
+ * most 64 values, a boolean, a bounded whole number, or a string with exactly one of the two named
+ * patterns (flags and maximum length included); records keyed by an enum; arrays and records whose
+ * sizes multiply to at most 64 along any path, and at most 512 leaves in all; strict objects and
+ * unions of those. What it does not promise: a bound on how many chosen bits a report carries
+ * (about 340 bytes today, in counts, times and versions). It need not be one: the receiver is the
+ * operator of that Cloud Computer or the self-hoster's own collector, and the writers are the Host
+ * and root. Returns how many leaves the schema can hold.
+ */
+function freeTextLeaves(
+  schema: z.ZodType,
+  path: string,
+  out: string[],
+  product = 1,
+  root = true,
+): number {
   const def = defOf(schema);
-  const checks = checksOf(def);
-  const maximum = checks.find((check) => check.check === "max_length")?.maximum as
-    number | undefined;
-  switch (def.type) {
-    case "enum": {
-      const size = Object.keys(def.entries as object).length;
-      if (size > maxEnumValues) out.push(`${path} (an enum of ${size})`);
-      return;
+  const maximum = maximumOf(def);
+  const leaves = ((): number => {
+    switch (def.type) {
+      case "enum": {
+        const size = Object.keys(def.entries as object).length;
+        if (size > maxEnumValues) out.push(`${path} (an enum of ${size})`);
+        return 1;
+      }
+      case "literal": {
+        const size = (def.values as readonly unknown[]).length;
+        if (size > maxEnumValues) out.push(`${path} (a literal of ${size})`);
+        return 1;
+      }
+      case "boolean":
+        return 1;
+      case "number": {
+        // Whole numbers only, bounded: a count or minutes, never an id or a timestamp in disguise.
+        const number = schema as z.ZodNumber;
+        if (!number.isInt) out.push(`${path} (a fractional number)`);
+        if ((number.maxValue ?? Infinity) > 1_000_000 || (number.minValue ?? -Infinity) < 0)
+          out.push(`${path} (an unbounded number)`);
+        return 1;
+      }
+      case "string": {
+        const patterns = patternsOf(def);
+        const named =
+          def.format === undefined &&
+          patterns.length === 1 &&
+          namedPatterns.has(patterns[0]!) &&
+          maximum === namedPatterns.get(patterns[0]!);
+        if (!named) out.push(`${path} (free text)`);
+        return 1;
+      }
+      case "optional":
+      case "nullable":
+      case "readonly":
+        return freeTextLeaves(def.innerType as z.ZodType, path, out, product, false);
+      case "array": {
+        const total = maximum === undefined ? Infinity : product * maximum;
+        if (total > maxArrayProduct) out.push(`${path} (up to ${total} leaves)`);
+        return (
+          (maximum ?? Infinity) *
+          freeTextLeaves(def.element as z.ZodType, `${path}[]`, out, total, false)
+        );
+      }
+      case "record": {
+        const key = defOf(def.keyType as z.ZodType);
+        if (key.type !== "enum") {
+          out.push(`${path} (free keys)`);
+          return Infinity;
+        }
+        const keys = Object.keys(key.entries as object).length;
+        const total = product * keys;
+        if (total > maxArrayProduct) out.push(`${path} (up to ${total} leaves)`);
+        return (
+          keys * freeTextLeaves(def.valueType as z.ZodType, `${path}{value}`, out, total, false)
+        );
+      }
+      case "object": {
+        const catchall = def.catchall as z.ZodType | undefined;
+        if (!catchall || defOf(catchall).type !== "never") out.push(`${path} (not strict)`);
+        let sum = 0;
+        for (const [key, value] of Object.entries(def.shape as Record<string, z.ZodType>))
+          sum += freeTextLeaves(value, `${path}.${key}`, out, product, false);
+        return sum;
+      }
+      case "union": {
+        let most = 0;
+        for (const option of def.options as z.ZodType[])
+          most = Math.max(most, freeTextLeaves(option, path, out, product, false));
+        return most;
+      }
+      default:
+        out.push(`${path} (${String(def.type)})`);
+        return Infinity;
     }
-    case "literal":
-    case "boolean":
-      return;
-    case "number": {
-      // Whole numbers only, bounded: a count or minutes, never an id or a timestamp in disguise.
-      const number = schema as z.ZodNumber;
-      if (!number.isInt) out.push(`${path} (a fractional number)`);
-      if ((number.maxValue ?? Infinity) > 1_000_000 || (number.minValue ?? -Infinity) < 0)
-        out.push(`${path} (an unbounded number)`);
-      return;
-    }
-    case "string": {
-      const patterns = patternsOf(def);
-      const named =
-        def.format === undefined &&
-        patterns.length === 1 &&
-        namedPatterns.has(patterns[0]!) &&
-        maximum !== undefined &&
-        maximum <= 24;
-      if (!named) out.push(`${path} (free text)`);
-      return;
-    }
-    case "optional":
-    case "nullable":
-    case "readonly":
-      return freeTextLeaves(def.innerType as z.ZodType, path, out, product);
-    case "array": {
-      const total = maximum === undefined ? Infinity : product * maximum;
-      if (total > maxArrayProduct) out.push(`${path} (up to ${total} leaves)`);
-      return freeTextLeaves(def.element as z.ZodType, `${path}[]`, out, total);
-    }
-    case "record": {
-      if (defOf(def.keyType as z.ZodType).type !== "enum") out.push(`${path} (free keys)`);
-      else freeTextLeaves(def.keyType as z.ZodType, `${path}{key}`, out, product);
-      return freeTextLeaves(def.valueType as z.ZodType, `${path}{value}`, out, product);
-    }
-    case "object": {
-      const catchall = def.catchall as z.ZodType | undefined;
-      if (!catchall || defOf(catchall).type !== "never") out.push(`${path} (not strict)`);
-      for (const [key, value] of Object.entries(def.shape as Record<string, z.ZodType>))
-        freeTextLeaves(value, `${path}.${key}`, out, product);
-      return;
-    }
-    case "union":
-      for (const option of def.options as z.ZodType[]) freeTextLeaves(option, path, out, product);
-      return;
-    default:
-      out.push(`${path} (${String(def.type)})`);
-  }
+  })();
+  if (root && leaves > maxLeaves) out.push(`${path} (${leaves} leaves in all)`);
+  return leaves;
 }
 
 const report: HomeHealthReport = {
@@ -175,6 +218,7 @@ describe("problems", () => {
       "report.bytes (up to Infinity leaves)",
       "report.at (free text)",
       "report.tag (free text)",
+      "report (Infinity leaves in all)",
     ]);
   });
 
@@ -225,7 +269,72 @@ describe("problems", () => {
       "shape.nested[][] (up to 262144 leaves)",
       "shape.word (an enum of 5000)",
       "shape.either (free text)",
+      "shape (Infinity leaves in all)",
     ]);
+  });
+
+  it("the guard finds the third review's shapes: flags, longer bounds, literals, records, objects", () => {
+    const version = (defOf(ReleaseVersionSchema).checks as readonly { _zod: { def: Def } }[])
+      .map((check) => check._zod.def.pattern as RegExp | undefined)
+      .find(Boolean)!;
+    const time = (defOf(ReportTimeSchema).checks as readonly { _zod: { def: Def } }[])
+      .map((check) => check._zod.def.pattern as RegExp | undefined)
+      .find(Boolean)!;
+    const e64 = z.enum(
+      Array.from({ length: 64 }, (_, index) => `k${index}`) as [string, ...string[]],
+    );
+    const int = z.number().int().min(0).max(1_000_000);
+    const shapes = {
+      // The version's own source with `m`: "hunter2@gmail.com\n1.2.3" passes it.
+      multiline: z.string().max(24).regex(new RegExp(version.source, "mu")),
+      // The time's own source and flags, with a longer bound than its schema's 20.
+      longer: z.string().max(24).regex(time),
+      // A dictionary as one multi-value literal.
+      words: z.literal(Array.from({ length: 5_000 }, (_, index) => `w${index}`)),
+      // 262,144 numbers in records of records.
+      records: z.record(e64, z.record(e64, z.record(e64, int))),
+      // 4,096 numbers: a record of arrays, and an array of records.
+      recordOfArrays: z.record(e64, z.array(int).max(64)),
+      arrayOfRecords: z.array(z.record(e64, int)).max(64),
+      // 4,096 numbers in an array of objects of 64 fields.
+      arrayOfObjects: z
+        .array(
+          z.strictObject(
+            Object.fromEntries(Array.from({ length: 64 }, (_, index) => [`f${index}`, int])),
+          ),
+        )
+        .max(64),
+    };
+    for (const [name, schema] of Object.entries(shapes)) {
+      const leaves: string[] = [];
+      freeTextLeaves(schema as z.ZodType, name, leaves);
+      expect(leaves.length, `${name} passed the guard`).toBeGreaterThan(0);
+    }
+    const said = (schema: z.ZodType, name: string) => {
+      const leaves: string[] = [];
+      freeTextLeaves(schema, name, leaves);
+      return leaves;
+    };
+    expect(said(shapes.multiline, "multiline")).toEqual(["multiline (free text)"]);
+    expect(said(shapes.longer, "longer")).toEqual(["longer (free text)"]);
+    expect(said(shapes.words, "words")).toEqual(["words (a literal of 5000)"]);
+    expect(said(shapes.records, "records")).toEqual([
+      "records{value} (up to 4096 leaves)",
+      "records{value}{value} (up to 262144 leaves)",
+      "records (262144 leaves in all)",
+    ]);
+    expect(said(shapes.arrayOfObjects, "arrayOfObjects")).toEqual([
+      "arrayOfObjects (4096 leaves in all)",
+    ]);
+    // And the values those shapes would let through.
+    expect(
+      z
+        .string()
+        .max(24)
+        .regex(new RegExp(version.source, "mu"))
+        .safeParse("hunter2@gmail.com\n1.2.3").success,
+    ).toBe(true);
+    expect(ReleaseVersionSchema.safeParse("hunter2@gmail.com\n1.2.3").success).toBe(false);
   });
 
   it("refuses the reviews' leaks as values too, an impossible time among them", () => {
