@@ -2,12 +2,17 @@ import {
   appContentHeight,
   appFrameReady,
   appFrameSandbox,
+  appLinkPortMessage,
+  appLinkRequest,
+  appPressReport,
   appOriginFrameSandbox,
   isAppOriginUrl,
   appFrameScheme,
   type AppTheme,
 } from "@opensteer/shared/appFrame";
 import { useEffect, useRef, useState } from "react";
+import { useOptionalWorkspace } from "../workspace/workspace-context.js";
+import { noteAppPress, openAppLink, type AppLinkPlaces } from "./app-links.js";
 
 export function useAppTheme(): AppTheme {
   const [theme, setTheme] = useState<AppTheme>(currentTheme);
@@ -71,14 +76,32 @@ export function AppLoading({ fill = false }: { readonly fill?: boolean }) {
   );
 }
 
+/**
+ * Where links out of an app go from here: the workspace's own opener. Read
+ * through a ref, so a port given to a document keeps the latest.
+ */
+export function useAppLinkPlaces(inWorkspace = true): { readonly current: AppLinkPlaces } {
+  const found = useOptionalWorkspace();
+  const workspace = inWorkspace ? found : null;
+  const places = useRef<AppLinkPlaces>({ open: null });
+  places.current = { open: workspace?.openWebLink ?? null };
+  return places;
+}
+
 export function AppFrame({
   fill = false,
   retry,
   theme,
   title,
   url,
+  workspaceLinks = true,
 }: {
   readonly fill?: boolean;
+  /**
+   * False where the workspace cannot show the tab a link would open (a dialog
+   * over Settings, which fills the window): links go to the person's browser.
+   */
+  readonly workspaceLinks?: boolean;
   readonly retry: () => void;
   readonly theme: AppTheme;
   readonly title: string;
@@ -90,18 +113,49 @@ export function AppFrame({
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
   const origin = isAppOriginUrl(url) ? new URL(url).origin : "null";
+  const linkPlaces = useAppLinkPlaces(workspaceLinks);
   const sendTheme = () =>
     frame.current?.contentWindow?.postMessage(
       { type: "opensteer-app:theme", theme },
       origin === "null" ? "*" : origin,
     );
+  // Each document the frame loads gets its own port when it says it is ready, kept for the
+  // frame's life so a re-run listener never strands the port a document already holds.
+  const ports = useRef<MessagePort[]>([]);
+  useEffect(
+    () => () => {
+      for (const port of ports.current.splice(0)) port.close();
+    },
+    [],
+  );
   useEffect(() => {
+    const givePort = (target: Window) => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = (event: MessageEvent) => {
+        if (appPressReport(event.data)) {
+          noteAppPress(frame.current);
+          return;
+        }
+        const link = appLinkRequest(event.data);
+        if (link !== null)
+          openAppLink(link, linkPlaces.current, { kind: "frame", frame: frame.current });
+      };
+      ports.current.push(channel.port1);
+      // A document keeps the first port it is given, and says it is ready once; only an app
+      // repeating that itself could reach this bound, and only its own links stop.
+      while (ports.current.length > 32) ports.current.shift()!.close();
+      target.postMessage({ type: appLinkPortMessage }, origin === "null" ? "*" : origin, [
+        channel.port2,
+      ]);
+    };
     const receive = (event: MessageEvent) => {
-      if (event.source !== frame.current?.contentWindow || event.origin !== origin) return;
+      const target = frame.current?.contentWindow;
+      if (!target || event.source !== target || event.origin !== origin) return;
       if (appFrameReady(event.data)) {
         ready.current = true;
         setLoaded(true);
         setFailed(false);
+        givePort(target);
       }
       const height = appContentHeight(event.data);
       if (height !== null && !fill) setHeight(height);

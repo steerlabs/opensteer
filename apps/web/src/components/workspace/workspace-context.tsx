@@ -21,8 +21,6 @@ import { placeSelection, type PlaceSelection, type WorkspaceNavigation } from ".
  * It never chooses anything itself; only the person's controls navigate.
  */
 export interface WorkspaceState {
-  /** How many tasks need the reader: the drawer button carries it. */
-  readonly attention: number;
   readonly nav: WorkspaceNavigation;
   readonly openWebLink: (address: string) => void;
   readonly selection: PlaceSelection;
@@ -124,6 +122,16 @@ export function useOptionalWorkspace(): WorkspaceState | null {
   return useContext(WorkspaceContext);
 }
 
+/**
+ * How many tasks need the reader, for the drawer button that carries it. Apart from the rest of
+ * the workspace, so a task elsewhere coming to need the reader redraws only what says so.
+ */
+const WorkspaceAttention = createContext(0);
+
+export function useWorkspaceAttention(): number {
+  return useContext(WorkspaceAttention);
+}
+
 export function WorkspaceProvider({
   attention,
   children,
@@ -170,7 +178,6 @@ export function WorkspaceProvider({
   );
   const value = useMemo<WorkspaceState>(
     () => ({
-      attention,
       dock,
       drawer,
       highlight,
@@ -185,7 +192,6 @@ export function WorkspaceProvider({
       work: stableSelection.kind !== "talk",
     }),
     [
-      attention,
       dock,
       drawer,
       highlight,
@@ -201,7 +207,9 @@ export function WorkspaceProvider({
   );
   return (
     <WorkspaceContext.Provider value={value}>
-      <DeviceGrantFollowUpProvider>{children}</DeviceGrantFollowUpProvider>
+      <WorkspaceAttention value={attention}>
+        <DeviceGrantFollowUpProvider>{children}</DeviceGrantFollowUpProvider>
+      </WorkspaceAttention>
     </WorkspaceContext.Provider>
   );
 }

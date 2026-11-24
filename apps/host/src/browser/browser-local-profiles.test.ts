@@ -64,3 +64,67 @@ it("binds an empty profile once, acknowledges readiness durably, and refuses cha
   ).rejects.toThrow("original browser engine");
   expect(bind).toHaveBeenCalledTimes(1);
 });
+
+it("refreshes open tasks' browser usage after each deleted tombstone's reconciliation commits", async () => {
+  const deploymentId = createId("deployment");
+  const runnerId = createId("runner");
+  const storageInstanceId = randomUUID();
+  const binding = (): LocalProfileBinding => ({
+    version: 1,
+    deploymentId,
+    profileId: createId("browserProfile"),
+    runnerId,
+    storageInstanceId,
+    bindingId: randomUUID(),
+    engine: "chromium",
+  });
+  const kept = binding(),
+    deleted = binding(),
+    // A tombstone the Host already archived, re-sent as every attach does.
+    resent = binding();
+  const order: string[] = [];
+  const repository = {
+    reconcileBrowserProfileInventory: vi.fn(async (claim: { binding: LocalProfileBinding }) => {
+      order.push(`committed ${claim.binding.profileId}`);
+      return { archived: claim.binding.profileId === deleted.profileId };
+    }),
+  } as unknown as BrowserLocalProfileRepository;
+  const profiles = new BrowserLocalProfiles({
+    deploymentId,
+    repository,
+    baseUrl: new URL("https://host.test"),
+    onProfileArchived: () => order.push("refreshed"),
+    onReconciled: async (profileId) => {
+      order.push(`reconciled ${profileId}`);
+    },
+  });
+  await profiles.reconcileInventory(
+    {
+      identity: {
+        runnerId,
+        modules: { browser: { localProfileStorage: { engine: "chromium", storageInstanceId } } },
+      },
+    } as never,
+    {
+      type: "browser.profile.inventory",
+      module: "browser",
+      engine: "chromium",
+      storageInstanceId,
+      complete: true,
+      profiles: [
+        { phase: "ready", binding: kept },
+        { phase: "deleted", binding: deleted, deletionId: randomUUID(), erasure: "deleted" },
+        { phase: "deleted", binding: resent, deletionId: randomUUID(), erasure: "deleted" },
+      ],
+    } as never,
+  );
+  expect(order).toEqual([
+    `committed ${kept.profileId}`,
+    `reconciled ${kept.profileId}`,
+    `committed ${deleted.profileId}`,
+    "refreshed",
+    `reconciled ${deleted.profileId}`,
+    `committed ${resent.profileId}`,
+    `reconciled ${resent.profileId}`,
+  ]);
+});

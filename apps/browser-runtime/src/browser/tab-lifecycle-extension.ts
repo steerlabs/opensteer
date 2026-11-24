@@ -38,12 +38,18 @@ export const extensionServiceWorkerJs = `// Opensteer internal tab lifecycle hel
 // The worker keeps no memory of its own.
 // Chromium discards no tab by itself (memory pressure, Memory Saver): only the runtime does, so a
 // tab's page is never replaced behind it.
-function keepFromAutoDiscard(tabId) {
-  if (typeof tabId === "number") chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
+// A refusal (the tab not yet in a window that can edit it) is asked again, a few times; and every
+// inventory the runtime reads marks a tab it still finds discardable, whatever left it so.
+function keepFromAutoDiscard(tabId, tries = 0) {
+  if (typeof tabId !== "number") return;
+  chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {
+    if (tries < 5) setTimeout(() => keepFromAutoDiscard(tabId, tries + 1), 200);
+  });
 }
-chrome.tabs.query({}).then((tabs) => tabs.forEach((tab) => keepFromAutoDiscard(tab.id)), () => {});
+// Listening first: a tab created after this is announced, and one created before is in the query.
 chrome.tabs.onCreated.addListener((tab) => keepFromAutoDiscard(tab.id));
 chrome.tabs.onReplaced.addListener((addedTabId) => keepFromAutoDiscard(addedTabId));
+chrome.tabs.query({}).then((tabs) => tabs.forEach((tab) => keepFromAutoDiscard(tab.id)), () => {});
 globalThis.__opensteer = {
   async inventory() {
     const [tabs, targets, groups] = await Promise.all([
@@ -51,6 +57,7 @@ globalThis.__opensteer = {
       chrome.debugger.getTargets(),
       chrome.tabGroups.query({}),
     ]);
+    for (const tab of tabs) if (tab.autoDiscardable) keepFromAutoDiscard(tab.id);
     const titleByGroupId = new Map();
     for (const group of groups) titleByGroupId.set(group.id, group.title || "");
     const targetByTabId = new Map();

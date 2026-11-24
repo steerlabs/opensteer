@@ -1,13 +1,18 @@
-import { useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import {
+  sameTaskListSource,
+  sameTaskMark,
   taskAttention,
   taskList,
+  threadMark,
   type HostClient,
   type HostSnapshot,
   type TaskAttention,
   type TaskList,
+  type TaskMark,
   type TaskRow,
 } from "@opensteer/client/host";
+import { useHostSelector } from "@opensteer/client/react";
 import { useTaskSnapshot } from "../task-rows.js";
 import { taskAt } from "./navigation.js";
 
@@ -75,4 +80,46 @@ function taskDirectory(
     list,
     rows,
   };
+}
+
+/** What a task's own head says of where it stands: its state, and why it failed. */
+export interface TaskStanding {
+  readonly tone: TaskRow["tone"];
+  readonly failure: string | null;
+}
+
+const sameStanding = (left: TaskStanding | null, right: TaskStanding | null) =>
+  left === right ||
+  (left !== null && right !== null && left.tone === right.tone && left.failure === right.failure);
+
+/**
+ * One task's standing as every task list draws it. The list is worked out again only when what
+ * it is drawn from changed, and this redraws only when this task's standing did, never another's.
+ */
+export function useTaskStanding(hostClient: HostClient, threadId: string): TaskStanding | null {
+  const select = useMemo(() => {
+    let source: HostSnapshot | null = null;
+    let rows: ReadonlyMap<string, TaskRow> = new Map();
+    return (snapshot: HostSnapshot): TaskStanding | null => {
+      if (source === null || !sameTaskListSource(source, snapshot)) {
+        source = snapshot;
+        const list = taskList(snapshot);
+        rows = new Map(
+          [...list.working, ...list.ready, ...list.done].map((row) => [row.threadId, row]),
+        );
+      }
+      const row = rows.get(threadId);
+      return row ? { tone: row.tone, failure: row.tone === "failed" ? row.line : null } : null;
+    };
+  }, [threadId]);
+  return useHostSelector(hostClient, select, sameStanding);
+}
+
+/** A task's mark, wherever this client holds the task; null names no task and draws the default. */
+export function useTaskMark(hostClient: HostClient, threadId: string | null): TaskMark {
+  const select = useCallback(
+    (snapshot: HostSnapshot) => threadMark(threadId ?? "", snapshot),
+    [threadId],
+  );
+  return useHostSelector(hostClient, select, sameTaskMark);
 }

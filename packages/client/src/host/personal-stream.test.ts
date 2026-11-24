@@ -465,58 +465,6 @@ test("a failed Request read tries again while the Request stays pending, and sto
   expect(vi.getTimerCount()).toBe(0);
 });
 
-test("retains the moved item's anchor across a history reset and refuses a response that omits it", async () => {
-  const f = fixture();
-  f.syncShell();
-  f.syncDetail();
-  const moved = { ...item, position: "9", revision: "2" };
-  f.stream.receive({
-    ...f.address,
-    type: "host.changes",
-    fromSequence: "1",
-    throughSequence: "2",
-    changes: [
-      {
-        entityKind: "item",
-        entityId: item.id,
-        operation: "upsert",
-        sequence: "2",
-        ordinal: 0,
-        value: moved,
-      },
-    ],
-  });
-  const page = {
-    kind: "page",
-    threadId,
-    nodeId: null,
-    revision: "2",
-    hasMore: false,
-    nextBefore: null,
-  };
-  const read = vi
-    .fn()
-    .mockResolvedValueOnce({ ok: true, data: { kind: "history-reset" } })
-    .mockResolvedValueOnce({ ok: true, data: { ...page, items: [] } })
-    .mockResolvedValueOnce({ ok: true, data: { kind: "history-reset" } })
-    .mockResolvedValueOnce({ ok: true, data: { ...page, items: [moved] } });
-  const rpc = {
-    "thread.items.page": read,
-    "thread.inputQueue.get": vi.fn().mockResolvedValue({
-      ok: true,
-      data: { threadId, revision: "2", items: [], paused: false, steerRunId: null },
-    }),
-  } as unknown as import("@opensteer/protocol").HostApiClient;
-  const reader = new ScopedThreadReader(f.detail, rpc, new TranscriptBodies());
-  f.detail.anchorTo(item.id);
-  await expect(reader.history("earlier")).rejects.toThrow("history anchor");
-  const installed = f.detail.transcript.getSnapshot().items.get(item.id);
-  await reader.history("earlier");
-  expect(read).toHaveBeenLastCalledWith({ threadId, anchorItemId: item.id }, expect.anything());
-  expect(f.detail.transcript.getSnapshot().items.get(item.id)).toBe(installed);
-  reader.dispose();
-});
-
 test("the scope's anchor follows the reader: set by a jump, cleared on return to latest", async () => {
   const f = fixture();
   f.syncShell();
@@ -610,6 +558,243 @@ test("scrolling tells nobody; a jump is told at once, and paging keeps the reade
   f.stream.receive({ ...repair, snapshot: { ...repair.snapshot, anchorItemId: linked.id } });
   expect(f.detail.anchor).toBe(linked.id);
   expect(reader.getSnapshot().repairs).toBe(1);
+  reader.dispose();
+});
+
+test("earlier and newer pages fly together: neither cancels the other, and both land", async () => {
+  const f = fixture();
+  f.syncShell();
+  // A window in the middle of history: rows before it and after it are a page away.
+  const cut = f.detailSnapshot();
+  f.stream.receive({ ...cut, snapshot: { ...cut.snapshot, nextAfter: cursor } });
+  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
+  const before = { ...item, id: "before", messageId: createId("message"), position: "0" };
+  const after = { ...item, id: "after", messageId: createId("message"), position: "2" };
+  const pages = new Map<string, () => void>();
+  const read = vi.fn(
+    (query: { before?: unknown; after?: unknown }) =>
+      new Promise((resolve) => {
+        const items = query.before ? [before] : [after];
+        pages.set(query.before ? "earlier" : "newer", () =>
+          resolve({
+            ok: true,
+            data: {
+              kind: "page",
+              threadId,
+              nodeId: null,
+              revision: "1",
+              hasMore: false,
+              nextBefore: null,
+              nextAfter: null,
+              items,
+            },
+          }),
+        );
+      }),
+  );
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  const newer = reader.history("newer");
+  const earlier = reader.history("earlier");
+  expect(read).toHaveBeenCalledTimes(2);
+  pages.get("earlier")!();
+  pages.get("newer")!();
+  await Promise.all([newer, earlier]);
+  expect(f.detail.transcript.getSnapshot().historyIds).toEqual([before.id, item.id, after.id]);
+  expect(reader.getSnapshot()).toMatchObject({ hasMore: false, hasNewer: false });
+  reader.dispose();
+});
+
+test("a jump the view reveals while its page is still landing ends there, so no later cut returns to it", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const linked = { ...item, id: "linked", messageId: createId("message"), position: "0" };
+  const read = vi.fn().mockResolvedValue({
+    ok: true,
+    data: {
+      kind: "page",
+      threadId,
+      nodeId: null,
+      revision: "1",
+      hasMore: false,
+      nextBefore: null,
+      nextAfter: null,
+      items: [linked, item],
+    },
+  });
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  reader.setMeasure(() => undefined);
+  // The view draws the linked message as the page lands and says so at once, before the read
+  // settles, as a React effect run on the store's notification does.
+  reader.subscribe(() => {
+    if (f.detail.transcript.getSnapshot().items.has(linked.id)) reader.revealed();
+  });
+  await expect(reader.history("around", linked.messageId)).resolves.toBe(true);
+  expect(f.detail.moving).toBeUndefined();
+  // A repair now centres where the reader is, not back on the link.
+  reader.setMeasure(() => item.id);
+  f.stream.receive(f.detailSnapshot());
+  expect(f.detail.anchor).toBe(item.id);
+  reader.dispose();
+});
+
+test("a jump the view revealed before its page landed ends as the page lands", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const linked = { ...item, id: "linked", messageId: createId("message"), position: "0" };
+  let land!: () => void;
+  const read = vi.fn(
+    () =>
+      new Promise((resolve) => {
+        land = () =>
+          resolve({
+            ok: true,
+            data: {
+              kind: "page",
+              threadId,
+              nodeId: null,
+              revision: "1",
+              hasMore: false,
+              nextBefore: null,
+              nextAfter: null,
+              items: [linked, item],
+            },
+          });
+      }),
+  );
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  reader.setMeasure(() => undefined);
+  const jump = reader.history("around", linked.messageId);
+  // The linked message was already on screen: the view reveals it before the page arrives.
+  reader.revealed();
+  expect(f.detail.moving).toMatchObject({ revealed: true });
+  land();
+  await expect(jump).resolves.toBe(true);
+  expect(f.detail.moving).toBeUndefined();
+  reader.dispose();
+});
+
+test("a Load newer begun before a repair continues the window the repair's reread restores", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  f.syncShell();
+  const cut = f.detailSnapshot();
+  f.stream.receive({ ...cut, snapshot: { ...cut.snapshot, nextAfter: cursor } });
+  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
+  const after = { ...item, id: "after", messageId: createId("message"), position: "2" };
+  const tail = { ...item, id: "tail", messageId: createId("message"), position: "5" };
+  const page = (items: TranscriptItem[], nextAfter: TranscriptOrderCursor | null) => ({
+    ok: true,
+    data: {
+      kind: "page",
+      threadId,
+      nodeId: null,
+      revision: "1",
+      hasMore: false,
+      nextBefore: null,
+      nextAfter,
+      items,
+    },
+  });
+  const held: (() => void)[] = [];
+  const read = vi.fn(
+    (query: { after?: unknown; anchorItemId?: string }) =>
+      new Promise((resolve) =>
+        held.push(() => resolve(query.anchorItemId ? page([item], cursor) : page([after], null))),
+      ),
+  );
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  reader.setMeasure(() => item.id);
+  const newer = reader.history("newer");
+  // A repair cuts at the latest; the reader was on a row it lacks, so that row is read again.
+  f.stream.receive({
+    ...f.detailSnapshot([tail]),
+    snapshot: {
+      ...f.detailSnapshot([tail]).snapshot,
+      nextBefore: { ...cursor, beforeId: tail.id, beforePosition: tail.position },
+    },
+  });
+  expect(read).toHaveBeenCalledTimes(2);
+  // The newer page answers the window the repair replaced: it is read again, once the reread
+  // has settled where the reader is.
+  held[0]!();
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(read).toHaveBeenCalledTimes(2);
+  // The anchor's window lands, with rows after it: the newer page is read from there.
+  held[1]!();
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+  expect(read.mock.calls[2]![0]).toMatchObject({ after: { beforeId: item.id } });
+  held[2]!();
+  await newer;
+  expect(f.detail.transcript.getSnapshot().historyIds).toEqual([item.id, after.id]);
+  reader.dispose();
+});
+
+test("a page read across a new history epoch cuts the scope again where the reader is, and reads on from the new cut", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const earlier = { ...item, id: "earlier", messageId: createId("message"), position: "0" };
+  const read = vi
+    .fn()
+    .mockResolvedValueOnce({ ok: true, data: { kind: "history-reset" } })
+    .mockResolvedValueOnce({
+      ok: true,
+      data: {
+        kind: "page",
+        threadId,
+        nodeId: null,
+        revision: "1",
+        hasMore: false,
+        nextBefore: null,
+        nextAfter: null,
+        items: [earlier],
+      },
+    });
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  // The reader is on a row: the new cut centres there, as a repair's would.
+  f.detail.anchorTo(item.id);
+  const subscribed = f.sent.length;
+  const paging = reader.history("earlier");
+  await vi.waitFor(() =>
+    expect(f.sent.slice(subscribed).some((frame) => frame.type === "client.subscribe")).toBe(true),
+  );
+  const subscribe = f.sent.findLast((frame) => frame.type === "client.subscribe") as Extract<
+    ScopedClientMessage,
+    { type: "client.subscribe" }
+  >;
+  expect(subscribe.anchorItemId).toBe(item.id);
+  const address = {
+    scope: subscribe.scope,
+    subscriptionId: subscribe.subscriptionId,
+    generation: subscribe.generation,
+  };
+  f.stream.receive({ ...f.detailSnapshot(), ...address });
+  f.stream.receive({ ...address, type: "host.synchronized", throughSequence: "1" });
+  await paging;
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(f.detail.transcript.getSnapshot().historyIds).toEqual([earlier.id, item.id]);
   reader.dispose();
 });
 
@@ -776,9 +961,9 @@ describe("the reader's intended position", () => {
     const read = vi.fn(
       (query: { aroundMessageId?: string; anchorItemId?: string }) =>
         new Promise((resolve, reject) => {
-          const target = targets.find(
-            ({ messageId, id }) => messageId === query.aroundMessageId || id === query.anchorItemId,
-          );
+          // The Host places an anchor by its row or by the message it names.
+          const anchor = query.anchorItemId ?? query.aroundMessageId;
+          const target = targets.find(({ messageId, id }) => messageId === anchor || id === anchor);
           const items = target ? [target, item] : [item];
           pending.push({
             query,
@@ -905,7 +1090,7 @@ describe("the reader's intended position", () => {
     // The page asked for before the repair is read again in the new cut, for the same jump.
     pending.shift()!.answer();
     await vi.waitFor(() => expect(pending).toHaveLength(1));
-    expect(pending[0]!.query.aroundMessageId).toBe(targets[3]!.messageId);
+    expect(pending[0]!.query.anchorItemId).toBe(targets[3]!.messageId);
     pending.shift()!.answer();
     await expect(jump).resolves.toBe(true);
     expect(f.detail.anchor).toBe(targets[3]!.id);
@@ -926,7 +1111,7 @@ describe("the reader's intended position", () => {
     expect(f.detail.anchor, "the repair measured over the jump").toBe(targets[3]!.messageId);
     // The jump's target is read again, and installs, so the view can still reveal it.
     await vi.waitFor(() => expect(pending).toHaveLength(1));
-    expect(pending[0]!.query.aroundMessageId).toBe(targets[3]!.messageId);
+    expect(pending[0]!.query.anchorItemId).toBe(targets[3]!.messageId);
     pending.shift()!.answer();
     await vi.waitFor(() =>
       expect(f.detail.transcript.getSnapshot().items.has(targets[3]!.id)).toBe(true),
@@ -1811,8 +1996,14 @@ test("keeps the latest publication and distinct place markers across overlapping
     nextBefore: null,
   };
   const { generation } = f.detail.transcript.getSnapshot();
-  f.detail.transcript.installPage(page, generation, "earlier");
-  f.detail.transcript.installPage(page, generation, "earlier");
+  const from = f.detail.transcript.getSnapshot().snapshot!.nextBefore!;
+  expect(f.detail.transcript.installPage(page, generation, { mode: "earlier", from })).toBe(
+    "installed",
+  );
+  // The same page again continues an edge the window no longer has: it answers nothing.
+  expect(f.detail.transcript.installPage(page, generation, { mode: "earlier", from })).toBe(
+    "moved",
+  );
   const state = f.detail.transcript.getSnapshot();
   expect(state.ids).toEqual([middle.id, revisited.id, publication.id]);
   expect(state.items.get(publication.id)).toEqual(publication);
@@ -1837,14 +2028,16 @@ test("refuses raw tool text in a feed preview while keeping the stable tool iden
   expect(f.detail.transcript.getSnapshot().items.get(safe.id)).toEqual(safe);
 });
 
-test("evicts inactive scope previews before they exceed the structural budget", () => {
+test("keeps the eight most recently shown inactive tasks whole while they fit the text budget", () => {
   const f = fixture();
   f.syncShell();
   f.syncDetail();
-  const scopes = Array.from({ length: 22 }, () => ({
+  const scopes = Array.from({ length: 12 }, () => ({
     kind: "thread" as const,
     threadId: createId("thread"),
   }));
+  // Each window is far past the old 2 MiB budget for every inactive task together.
+  const text = "x".repeat(16 * 1024);
   const details = scopes.map((scope) => {
     const release = f.stream.observe(scope);
     const address = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
@@ -1853,27 +2046,230 @@ test("evicts inactive scope previews before they exceed the structural budget", 
         ...item,
         id: String(index),
         position: String(index + 1),
+        text,
       })),
     ).snapshot;
-    f.stream.receive({
-      subscriptionId: address.subscriptionId,
-      generation: address.generation,
-      scope,
-      type: "host.snapshot",
-      throughSequence: "1",
-      snapshot: {
-        ...snapshot,
-        thread: detailThread({ ...task, id: scope.threadId }),
-        nextBefore: null,
-      },
-    });
+    const at = { subscriptionId: address.subscriptionId, generation: address.generation, scope };
+    expect(
+      f.stream.receive({
+        ...at,
+        type: "host.snapshot",
+        throughSequence: "1",
+        snapshot: {
+          ...snapshot,
+          thread: detailThread({ ...task, id: scope.threadId }),
+          nextBefore: null,
+        },
+      }),
+    ).toBe(true);
+    f.stream.receive({ ...at, type: "host.synchronized", throughSequence: "1" });
     const store = f.stream.detail(scope);
     expect(store.transcript.getSnapshot().items.size).toBe(50);
     release();
     return store;
   });
-  expect(f.stream.detail(scopes[0]!) === details[0]).toBe(false);
-  expect(f.stream.detail(scopes.at(-1)!) === details.at(-1)).toBe(true);
+  const kept = details.map((detail, index) => f.stream.peekDetail(scopes[index]!) === detail);
+  expect(kept).toEqual([...Array<boolean>(4).fill(false), ...Array<boolean>(8).fill(true)]);
+  for (const detail of details.slice(4))
+    expect(detail.transcript.getSnapshot().items.size).toBe(50);
+  expect(f.detail.transcript.getSnapshot().items.get(item.id)?.id).toBe(item.id);
+});
+
+test("tells its owner whenever it lets an inactive task go", () => {
+  const released = vi.fn();
+  const stream = new ScopedPersonalStream(undefined, undefined, undefined, released);
+  const sent: ScopedClientMessage[] = [];
+  stream.attach((frame) => sent.push(frame));
+  const scopes = Array.from({ length: 3 }, () => ({
+    kind: "thread" as const,
+    threadId: createId("thread"),
+  }));
+  // Observed and released without a cut: an empty inactive scope is let go at once.
+  for (const scope of scopes) stream.observe(scope)();
+  expect(released).toHaveBeenCalledTimes(3);
+  for (const scope of scopes) expect(stream.peekDetail(scope)).toBeUndefined();
+});
+
+test("past the text budget keeps only the two most recently shown inactive tasks", () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const scopes = Array.from({ length: 4 }, () => ({
+    kind: "thread" as const,
+    threadId: createId("thread"),
+  }));
+  // Each window holds about 6M characters of inline text: two together pass 12M, three 18M.
+  const text = "x".repeat(120 * 1024);
+  const details = scopes.map((scope) => {
+    const release = f.stream.observe(scope);
+    const address = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+    const at = { subscriptionId: address.subscriptionId, generation: address.generation, scope };
+    const snapshot = f.detailSnapshot(
+      Array.from({ length: 50 }, (_, index) => ({
+        ...item,
+        id: String(index),
+        position: String(index + 1),
+        text,
+      })),
+    ).snapshot;
+    expect(
+      f.stream.receive({
+        ...at,
+        type: "host.snapshot",
+        throughSequence: "1",
+        snapshot: {
+          ...snapshot,
+          thread: detailThread({ ...task, id: scope.threadId }),
+          nextBefore: null,
+        },
+      }),
+    ).toBe(true);
+    f.stream.receive({ ...at, type: "host.synchronized", throughSequence: "1" });
+    const store = f.stream.detail(scope);
+    release();
+    return store;
+  });
+  expect(details.map((detail, index) => f.stream.peekDetail(scopes[index]!) === detail)).toEqual([
+    false,
+    false,
+    true,
+    true,
+  ]);
+});
+
+test("a catch-up left before it is synchronized is dropped: the kept rows are the last ones shown", () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  f.stream.select(undefined);
+  f.stream.select(threadScope);
+  const next = f.sent.findLast((frame) => frame.type === "client.subscribe") as Extract<
+    ScopedClientMessage,
+    { type: "client.subscribe" }
+  >;
+  const at = {
+    subscriptionId: next.subscriptionId,
+    generation: next.generation,
+    scope: next.scope,
+  };
+  const shown = f.detail.transcript.getSnapshot();
+  const notices = vi.fn();
+  f.detail.transcript.subscribe(notices);
+  f.stream.receive({
+    ...at,
+    type: "host.changes",
+    fromSequence: "1",
+    throughSequence: "2",
+    changes: [
+      {
+        entityKind: "item",
+        entityId: "partial",
+        ordinal: 0,
+        sequence: "2",
+        operation: "upsert",
+        value: { ...item, id: "partial", revision: "2", position: "2" },
+      },
+    ],
+  });
+  // Left again before the Host says it is caught up.
+  f.stream.select(undefined);
+  const kept = f.detail.transcript.getSnapshot();
+  expect(kept.items.has("partial")).toBe(false);
+  expect(kept.items).toBe(shown.items);
+  expect(kept.through).toBe("1");
+  expect(notices).toHaveBeenCalledTimes(1);
+  // The next visit resumes from what was shown, so the Host replays the commit whole.
+  f.stream.select(threadScope);
+  const again = f.sent.findLast((frame) => frame.type === "client.subscribe") as Extract<
+    ScopedClientMessage,
+    { type: "client.subscribe" }
+  >;
+  expect(again.cursor?.afterSequence).toBe("1");
+});
+
+test("publishes a resubscription's catch-up once, whole, when it is synchronized", () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  // Leave the task and come back: it resumes from its cursor with its rows still drawn.
+  f.stream.select(undefined);
+  f.stream.select(threadScope);
+  const next = f.sent.findLast((frame) => frame.type === "client.subscribe") as Extract<
+    ScopedClientMessage,
+    { type: "client.subscribe" }
+  >;
+  expect(next.cursor?.afterSequence).toBe("1");
+  const at = {
+    subscriptionId: next.subscriptionId,
+    generation: next.generation,
+    scope: next.scope,
+  };
+  expect(f.detail.transcript.getSnapshot()).toMatchObject({ synchronized: false });
+  expect(f.detail.transcript.getSnapshot().items.has(item.id)).toBe(true);
+  const notices = vi.fn();
+  f.detail.transcript.subscribe(notices);
+  const commits = 100;
+  for (let index = 1; index <= commits; index++) {
+    const id = `replayed-${index}`;
+    expect(
+      f.stream.receive({
+        ...at,
+        type: "host.changes",
+        fromSequence: String(index),
+        throughSequence: String(index + 1),
+        changes: [
+          {
+            entityKind: "item",
+            entityId: id,
+            ordinal: 0,
+            sequence: String(index + 1),
+            operation: "upsert",
+            value: { ...item, id, revision: String(index + 1), position: String(index + 1) },
+          },
+        ],
+      }),
+    ).toBe(true);
+  }
+  // Each commit is applied and acknowledged, but nothing renders a half-caught-up task.
+  expect(notices).not.toHaveBeenCalled();
+  expect(f.detail.transcript.getSnapshot().items.size).toBe(commits + 1);
+  expect(f.sent.filter((frame) => frame.type === "client.ack").at(-1)).toMatchObject({
+    throughSequence: String(commits + 1),
+  });
+  f.stream.receive({ ...at, type: "host.synchronized", throughSequence: String(commits + 1) });
+  expect(notices).toHaveBeenCalledTimes(1);
+  expect(f.detail.transcript.getSnapshot()).toMatchObject({
+    synchronized: true,
+    through: String(commits + 1),
+  });
+  // Once synchronized, each change is published as it lands.
+  f.stream.receive({
+    ...at,
+    type: "host.changes",
+    fromSequence: String(commits + 1),
+    throughSequence: String(commits + 2),
+    changes: [
+      {
+        entityKind: "item",
+        entityId: item.id,
+        ordinal: 0,
+        sequence: String(commits + 2),
+        operation: "remove",
+      },
+    ],
+  });
+  expect(notices).toHaveBeenCalledTimes(2);
+});
+
+test("publishes a subscription's first snapshot with its synchronization, not before", () => {
+  const f = fixture();
+  f.syncShell();
+  const notices = vi.fn();
+  f.detail.transcript.subscribe(notices);
+  f.stream.receive(f.detailSnapshot());
+  expect(notices).not.toHaveBeenCalled();
+  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
+  expect(notices).toHaveBeenCalledTimes(1);
   expect(f.detail.transcript.getSnapshot().items.get(item.id)?.id).toBe(item.id);
 });
 
@@ -2341,6 +2737,77 @@ test("a shell repair on an open socket keeps the connection, its reconnect work 
     expect(client.getThreadItemText(threadId)?.get("live-reply")?.text).toBe("Hello");
     expect(connections.every((connection) => connection === "connected")).toBe(true);
     expect(fetch.mock.calls.length).toBe(reads);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("a task shown again draws its kept rows at once from the same reader, until the stream lets it go", async () => {
+  const others = Array.from({ length: 9 }, () => ({ ...task, id: createId("thread") }));
+  const host = scriptedHost({ tasks: [task, ...others] });
+  const client = scriptedClient(host);
+  const synchronized = (id: string) =>
+    vi.waitFor(() => expect(client.getThreadTranscript(id)?.getSnapshot().synchronized).toBe(true));
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    await synchronized(threadId);
+    const reader = client.getThreadTranscript(threadId)!;
+    client.activateThread(others[0]!.id);
+    await synchronized(others[0]!.id);
+    // Before the task is shown again, its first frame already has its rows.
+    const parked = client.getThreadTranscript(threadId);
+    expect(parked).toBe(reader);
+    expect(parked?.getSnapshot().entries.map(({ id }) => id)).toContain(item.id);
+    expect(parked?.getSnapshot().synchronized).toBe(false);
+    client.activateThread(threadId);
+    expect(client.getThreadTranscript(threadId)).toBe(reader);
+    await synchronized(threadId);
+    // Past the tasks the stream keeps, the reader goes with its scope.
+    for (const other of others) {
+      client.activateThread(other.id);
+      await synchronized(other.id);
+    }
+    expect(client.getThreadTranscript(threadId)).toBeUndefined();
+  } finally {
+    client.dispose();
+  }
+});
+
+test("reads a task's browser usage only once its subscription is synchronized", async () => {
+  const host = scriptedHost();
+  const reads: string[] = [];
+  const client = scriptedClient(host, async (input, init) => {
+    const name = new URL(String(input)).pathname.slice("/v1/rpc/".length);
+    if (name === "thread.browserUsage.get") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { threadId: string };
+      reads.push(body.threadId);
+      return Response.json({ ok: true, data: { threadId: body.threadId, uses: [] } });
+    }
+    return Response.json({
+      ok: false,
+      error: { code: "not_found", message: "Unavailable", retryable: false },
+    });
+  });
+  const synchronized = () =>
+    vi.waitFor(() =>
+      expect(client.getThreadTranscript(threadId)?.getSnapshot().synchronized).toBe(true),
+    );
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    await synchronized();
+    await vi.waitFor(() => expect(reads).toHaveLength(1));
+    // Shown again: the subscription is not synchronized until the Host's cut arrives (a
+    // microtask later), and a notice landing meanwhile starts no read the Host could not
+    // follow up; the synchronized subscription reads the usage whole, once.
+    client.deactivateThread(threadId);
+    client.activateThread(threadId);
+    expect(client.getThreadTranscript(threadId)?.getSnapshot().synchronized).toBe(false);
+    host.socket().deliver({ type: "host.browser-usage-changed", threadIds: [threadId] } as never);
+    expect(reads).toHaveLength(1);
+    await synchronized();
+    await vi.waitFor(() => expect(reads).toHaveLength(2));
   } finally {
     client.dispose();
   }
@@ -4551,4 +5018,811 @@ test("a repair snapshot retires stale live text for finalized items and checkpoi
   expect(saved!.items.length).toBeLessThan(largeItems.length);
   expect(saved!.items.at(-1)?.id).toBe(largeItems.at(-1)!.id);
   expect(saved!.nextBefore?.beforeId).toBe(saved!.items[0]?.id);
+});
+
+test("retains browser usage for first paint across task switches, revalidates on revisit in one update (or none if unchanged), and merges incremental runs without duplicating thread summaries", async () => {
+  const threadA = createId("thread");
+  const threadB = createId("thread");
+  const sessionId = `bsn_${crypto.randomUUID()}`;
+  const runsA = Array.from({ length: 24 }, () => createId("run"));
+  const sortedRunsA = [...runsA].sort();
+  const extraRunA = createId("run");
+  const itemsFor = (runIds: readonly ReturnType<typeof createId<"run">>[]) =>
+    runIds.map((runId, index) => {
+      const id = createId("message");
+      return {
+        ...item,
+        id,
+        messageId: id,
+        runId,
+        position: String(index + 1),
+        revision: "1",
+        view: { preview: `Turn ${index + 1}` },
+      };
+    });
+  const itemsA = itemsFor(runsA);
+  const itemsB = itemsFor([createId("run")]);
+  const taskA = { ...task, id: threadA, title: "Task A" };
+  const taskB = { ...task, id: threadB, title: "Task B" };
+  const makeUse = (tid: string, runId: string | null, tabId: string | null, title: string) => ({
+    sessionId,
+    threadId: tid,
+    runId,
+    tabId,
+    pageTitle: title,
+    pageSite: tabId ? "https://docs.example" : null,
+    firstUsedAt: "2026-11-23T00:00:00.000Z",
+    lastUsedAt: "2026-11-23T00:00:01.000Z",
+  });
+  let versionA = 1;
+  const usageCalls: { threadId: string; runIds: string[] }[] = [];
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+    const name = new URL(String(input)).pathname.slice("/v1/rpc/".length);
+    if (name === "thread.assignments.list") {
+      const tid = new URL(String(input)).searchParams.get("threadId")!;
+      return Response.json({
+        ok: true,
+        data: {
+          assignments: [],
+          threadId: tid,
+          window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
+        },
+      });
+    }
+    if (name === "thread.browserUsage.get") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        threadId: string;
+        runIds: string[];
+      };
+      expect("runsOnly" in body).toBe(false);
+      expect(body.runIds.length).toBeLessThanOrEqual(16);
+      usageCalls.push(body);
+      if (body.threadId === threadA) {
+        const membership = makeUse(threadA, null, null, `V${versionA}`);
+        const runUses = body.runIds.map((rid) =>
+          makeUse(threadA, rid, `tab-${rid.slice(-6)}`, `V${versionA}-${rid.slice(-4)}`),
+        );
+        return Response.json({
+          ok: true,
+          data: {
+            threadId: threadA,
+            uses: [membership, ...runUses],
+          },
+        });
+      }
+      return Response.json({ ok: true, data: { threadId: body.threadId, uses: [] } });
+    }
+    return Response.json(
+      { ok: false, error: { code: "not_found", message: "Unavailable", retryable: false } },
+      { status: 404 },
+    );
+  });
+  let socket!: MockPersonalSocket;
+  let lastDetailA: Extract<ScopedClientMessage, { type: "client.subscribe" }> | undefined;
+  let detailASyncs = 0;
+  const connect = () =>
+    (socket = new MockPersonalSocket((raw) => {
+      const message = JSON.parse(raw) as ScopedClientMessage;
+      queueMicrotask(() => {
+        if (message.type === "client.subscribe" && message.scope.kind === "thread") {
+          const tid = message.scope.threadId;
+          if (tid === threadA) lastDetailA = message;
+          const address = {
+            scope: message.scope,
+            subscriptionId: message.subscriptionId,
+            generation: message.generation,
+            throughSequence: "1",
+          };
+          socket.deliver({
+            ...address,
+            type: "host.snapshot",
+            snapshot: {
+              thread: detailThread(tid === threadA ? taskA : taskB),
+              items: tid === threadA ? itemsA : itemsB,
+              activeItems: [],
+              pendingRequests: [],
+              nextBefore: null,
+            },
+          } as never);
+          socket.deliver({ ...address, type: "host.synchronized" } as never);
+          if (tid === threadA) detailASyncs += 1;
+        }
+        if (message.type !== "client.attach") return;
+        const shell = {
+          scope: shellScope,
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          throughSequence: "1",
+        };
+        socket.deliver({
+          ...shell,
+          type: "host.snapshot",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: [taskA, taskB],
+            visits: [],
+            attention: [],
+            counts,
+            ...shellLists,
+          },
+        });
+        socket.deliver({ ...shell, type: "host.synchronized" });
+      });
+    }));
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    webSocketFactory: connect,
+  });
+  try {
+    await client.load();
+    // 1. Opening task A with 24 runs batches by 16 (16 + 8) and deduplicates thread-level summaries.
+    client.activateThread(threadA);
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(2));
+    expect(usageCalls).toEqual([
+      { threadId: threadA, runIds: sortedRunsA.slice(0, 16) },
+      { threadId: threadA, runIds: sortedRunsA.slice(16) },
+    ]);
+    await vi.waitFor(() =>
+      expect(client.getSnapshot().browserUsage?.[threadA]).toEqual({ loading: false, error: null }),
+    );
+    const initialUsesA = client.getSnapshot().browserUses.filter((use) => use.threadId === threadA);
+    expect(initialUsesA).toHaveLength(1 + runsA.length);
+
+    // 2. Switching away to task B keeps task A's browserUses retained in the snapshot.
+    client.activateThread(threadB);
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(3));
+    expect(client.getSnapshot().browserUses.filter((use) => use.threadId === threadA)).toEqual(
+      initialUsesA,
+    );
+
+    // 3. Revisiting unchanged task A paints retained uses immediately (loading: false),
+    //    always revalidates on show, and causes ZERO browserUses snapshot updates when unchanged.
+    let unchangedUpdates = 0;
+    let unchangedRef = client.getSnapshot().browserUses;
+    const stopUnchanged = client.subscribe(() => {
+      const snap = client.getSnapshot();
+      expect(snap.browserUsage?.[threadA]?.loading).toBe(false);
+      if (snap.browserUses !== unchangedRef) {
+        unchangedRef = snap.browserUses;
+        unchangedUpdates += 1;
+      }
+    });
+    client.activateThread(threadA);
+    await vi.waitFor(() => expect(detailASyncs).toBe(2));
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(5));
+    await Promise.resolve();
+    stopUnchanged();
+    expect(unchangedUpdates).toBe(0);
+    expect(client.getSnapshot().browserUses.filter((use) => use.threadId === threadA)).toEqual(
+      initialUsesA,
+    );
+
+    // 4. Leaving task A, server usage changing while A is hidden WITHOUT any notice
+    //    (e.g., older v65 Host or subscribed-only RealtimeHub), then revisiting A:
+    //    - last known V1 uses stay visible immediately (never blanked or set loading: true)
+    //    - one revalidation runs (2 batches for 24 runs) and lands in ONE snapshot update with V2.
+    client.activateThread(threadB);
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(6));
+    versionA = 2;
+    expect(client.getSnapshot().browserUses.filter((use) => use.threadId === threadA)).toEqual(
+      initialUsesA,
+    );
+    let usageUpdates = 0;
+    let lastBrowserUses = client.getSnapshot().browserUses;
+    const stopCounting = client.subscribe(() => {
+      const snap = client.getSnapshot();
+      expect(snap.browserUsage?.[threadA]?.loading).toBe(false);
+      if (snap.browserUses !== lastBrowserUses) {
+        lastBrowserUses = snap.browserUses;
+        usageUpdates += 1;
+      }
+    });
+    client.activateThread(threadA);
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(8));
+    await vi.waitFor(() =>
+      expect(
+        client
+          .getSnapshot()
+          .browserUses.find((use) => use.threadId === threadA && use.runId === null)?.pageTitle,
+      ).toBe("V2"),
+    );
+    stopCounting();
+    expect(usageUpdates).toBe(1);
+    expect(usageCalls.slice(6, 8)).toEqual([
+      { threadId: threadA, runIds: sortedRunsA.slice(0, 16) },
+      { threadId: threadA, runIds: sortedRunsA.slice(16) },
+    ]);
+
+    // 5. A new Run arriving in shown task A triggers ONE incremental read whose response
+    //    replaces thread-level rows (no duplicates) while preserving prior Runs' uses.
+    versionA = 3;
+    const extraMessageId = createId("message");
+    socket.deliver({
+      type: "host.changes",
+      subscriptionId: lastDetailA!.subscriptionId,
+      generation: lastDetailA!.generation,
+      scope: lastDetailA!.scope,
+      fromSequence: "1",
+      throughSequence: "2",
+      changes: [
+        {
+          sequence: "2",
+          ordinal: 0,
+          entityKind: "item",
+          entityId: extraMessageId,
+          operation: "upsert",
+          value: {
+            ...item,
+            id: extraMessageId,
+            messageId: extraMessageId,
+            runId: extraRunA,
+            position: String(runsA.length + 1),
+            revision: "2",
+            view: { preview: "Extra turn" },
+          },
+        },
+      ],
+    } as never);
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(9));
+    expect(usageCalls[8]).toEqual({
+      threadId: threadA,
+      runIds: [extraRunA],
+    });
+    await vi.waitFor(() =>
+      expect(
+        client
+          .getSnapshot()
+          .browserUses.some((use) => use.threadId === threadA && use.runId === extraRunA),
+      ).toBe(true),
+    );
+    const finalUsesA = client.getSnapshot().browserUses.filter((use) => use.threadId === threadA);
+    const finalMembershipsA = finalUsesA.filter((use) => use.runId === null);
+    expect(finalMembershipsA).toHaveLength(1);
+    expect(finalMembershipsA[0]?.pageTitle).toBe("V3");
+    expect(finalUsesA).toHaveLength(1 + runsA.length + 1);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("browser usage retention follows reader eviction, drops on task tombstone, and refreshes on notice/profile changes", async () => {
+  const threads = Array.from({ length: 11 }, (_, index) => ({
+    ...task,
+    id: createId("thread"),
+    title: `Task ${index}`,
+  }));
+  const sessionId = `bsn_${crypto.randomUUID()}`;
+  const profileId = `bpr_${crypto.randomUUID()}`;
+  const runsByThread = new Map(threads.map((t) => [t.id, createId("run")]));
+  const itemsByThread = new Map(
+    threads.map((t) => {
+      const id = createId("message");
+      return [
+        t.id,
+        [
+          {
+            ...item,
+            id,
+            messageId: id,
+            runId: runsByThread.get(t.id)!,
+            position: "1",
+            revision: "1",
+            view: { preview: t.title },
+          },
+        ],
+      ];
+    }),
+  );
+  const titleByThread = new Map<string, string>(threads.map((t, index) => [t.id, `V1-${index}`]));
+  let profileArchived = false;
+  let holdNextUsageFor: string | null = null;
+  let releaseHeldUsage: (() => void) | null = null;
+  const usageCalls: string[] = [];
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+    const url = new URL(String(input));
+    const name = url.pathname.slice("/v1/rpc/".length);
+    if (name === "thread.assignments.list") {
+      const tid = url.searchParams.get("threadId")!;
+      return Response.json({
+        ok: true,
+        data: {
+          assignments: [],
+          threadId: tid,
+          window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
+        },
+      });
+    }
+    if (name === "resources.detail.get") {
+      const asked = JSON.parse(url.searchParams.get("input")!) as { kind: string };
+      if (asked.kind === "browser-profile") {
+        return Response.json({
+          ok: true,
+          data: {
+            kind: "browser-profile",
+            revision: profileArchived ? "2" : "1",
+            next: null,
+            data: {
+              kind: "browser-profile",
+              profiles: profileArchived
+                ? []
+                : [{ id: profileId, name: "Work", homeRunnerId: null, revision: 1 }],
+              deletions: [],
+            },
+          },
+        });
+      }
+    }
+    if (name === "thread.browserUsage.get") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { threadId: string; runIds: string[] };
+      usageCalls.push(body.threadId);
+      const snapshotTitle = titleByThread.get(body.threadId) ?? "Unknown";
+      const archivedAtCall = profileArchived;
+      if (holdNextUsageFor === body.threadId) {
+        holdNextUsageFor = null;
+        await new Promise<void>((resolve) => {
+          releaseHeldUsage = resolve;
+        });
+      }
+      return Response.json({
+        ok: true,
+        data: {
+          threadId: body.threadId,
+          uses: archivedAtCall
+            ? []
+            : [
+                {
+                  sessionId,
+                  threadId: body.threadId,
+                  runId: null,
+                  tabId: null,
+                  pageTitle: snapshotTitle,
+                  pageSite: "https://example.test",
+                  firstUsedAt: "2026-11-23T00:00:00.000Z",
+                  lastUsedAt: "2026-11-23T00:00:01.000Z",
+                },
+              ],
+        },
+      });
+    }
+    return Response.json(
+      { ok: false, error: { code: "not_found", message: "Unavailable", retryable: false } },
+      { status: 404 },
+    );
+  });
+  let socket!: MockPersonalSocket;
+  let shellGen = 0;
+  let shellSeq = 1;
+  const connect = () =>
+    (socket = new MockPersonalSocket((raw) => {
+      const message = JSON.parse(raw) as ScopedClientMessage;
+      queueMicrotask(() => {
+        if (message.type === "client.subscribe" && message.scope.kind === "thread") {
+          const tid = message.scope.threadId;
+          const t = threads.find((entry) => entry.id === tid)!;
+          const address = {
+            scope: message.scope,
+            subscriptionId: message.subscriptionId,
+            generation: message.generation,
+            throughSequence: "1",
+          };
+          socket.deliver({
+            ...address,
+            type: "host.snapshot",
+            snapshot: {
+              thread: detailThread(t),
+              items: itemsByThread.get(tid)!,
+              activeItems: [],
+              pendingRequests: [],
+              nextBefore: null,
+            },
+          } as never);
+          socket.deliver({ ...address, type: "host.synchronized" } as never);
+        }
+        if (message.type === "client.resources.watch") {
+          if (message.interests.includes("browser-profile")) {
+            socket.deliver({
+              type: "host.resource",
+              subscriptionId: "shell",
+              generation: shellGen,
+              revisions: { "browser-profile": profileArchived ? "2" : "1" },
+              reply: true,
+            } as never);
+          }
+          return;
+        }
+        if (message.type !== "client.attach") return;
+        shellGen = message.generation;
+        const shell = {
+          scope: shellScope,
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          throughSequence: String(shellSeq),
+        };
+        socket.deliver({
+          ...shell,
+          type: "host.snapshot",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: threads,
+            visits: [],
+            attention: [],
+            counts,
+            ...shellLists,
+          },
+        });
+        socket.deliver({ ...shell, type: "host.synchronized" });
+        if (message.selected?.scope.kind === "thread") {
+          const tid = message.selected.scope.threadId;
+          const t = threads.find((entry) => entry.id === tid)!;
+          const address = {
+            scope: message.selected.scope,
+            subscriptionId: message.selected.subscriptionId,
+            generation: message.selected.generation,
+            throughSequence: "1",
+          };
+          socket.deliver({
+            ...address,
+            type: "host.snapshot",
+            snapshot: {
+              thread: detailThread(t),
+              items: itemsByThread.get(tid)!,
+              activeItems: [],
+              pendingRequests: [],
+              nextBefore: null,
+            },
+          } as never);
+          socket.deliver({ ...address, type: "host.synchronized" } as never);
+        }
+      });
+    }));
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    webSocketFactory: connect,
+    reconnectBaseDelayMs: 5,
+    reconnectMaxDelayMs: 10,
+  });
+  try {
+    await client.load();
+
+    // 1. Retention follows the reader (ScopedPersonalStream keeps 8 inactive details + 1 active).
+    for (let index = 0; index < threads.length; index++) {
+      client.activateThread(threads[index]!.id);
+      await vi.waitFor(() => expect(usageCalls).toHaveLength(index + 1));
+      await vi.waitFor(() =>
+        expect(client.getSnapshot().browserUsage?.[threads[index]!.id]?.loading).toBe(false),
+      );
+    }
+    const retainedIds = new Set(client.getSnapshot().browserUses.map((use) => use.threadId));
+    expect(retainedIds.size).toBe(9);
+    expect(retainedIds.has(threads[0]!.id)).toBe(false);
+    expect(retainedIds.has(threads[1]!.id)).toBe(false);
+    expect(client.getSnapshot().browserUsage?.[threads[0]!.id]).toBeUndefined();
+    expect(client.getSnapshot().browserUsage?.[threads[1]!.id]).toBeUndefined();
+    expect(retainedIds.has(threads[2]!.id)).toBe(true);
+    expect(retainedIds.has(threads[10]!.id)).toBe(true);
+
+    // 2. Notice during in-flight refresh, then switching away before it completes, then returning:
+    //    must refresh on return and pick up the latest page title (never keep stale data).
+    const taskA = threads[10]!.id;
+    const taskB = threads[9]!.id;
+    titleByThread.set(taskA, "V2-inflight");
+    holdNextUsageFor = taskA;
+    const callsBeforeNotice = usageCalls.length;
+    socket.deliver({ type: "host.browser-usage-changed", threadIds: [taskA] } as never);
+    await vi.waitFor(() => expect(usageCalls.length).toBe(callsBeforeNotice + 1));
+    // Switch away to taskB while taskA's refresh is still in flight.
+    client.activateThread(taskB);
+    await vi.waitFor(() => expect(usageCalls.length).toBe(callsBeforeNotice + 2));
+    // Complete the abandoned in-flight read for taskA; taskA's retained title stays V1-10 for first paint.
+    releaseHeldUsage!();
+    releaseHeldUsage = null;
+    await Promise.resolve();
+    expect(client.getSnapshot().browserUses.find((use) => use.threadId === taskA)?.pageTitle).toBe(
+      "V1-10",
+    );
+    // Return to taskA: first paint has V1-10, and revalidation refreshes to V3-returned!
+    titleByThread.set(taskA, "V3-returned");
+    client.activateThread(taskA);
+    await vi.waitFor(() =>
+      expect(
+        client.getSnapshot().browserUses.find((use) => use.threadId === taskA)?.pageTitle,
+      ).toBe("V3-returned"),
+    );
+
+    // 3. Notice arriving while an earlier refresh is in flight on a SHOWN task:
+    //    the pre-notice response must not suppress the post-notice refresh.
+    titleByThread.set(taskA, "V4-pre-second-notice");
+    holdNextUsageFor = taskA;
+    socket.deliver({ type: "host.browser-usage-changed", threadIds: [taskA] } as never);
+    await vi.waitFor(() => expect(releaseHeldUsage).not.toBeNull());
+    // Second notice lands while V4 read is still in flight.
+    titleByThread.set(taskA, "V5-post-second-notice");
+    socket.deliver({ type: "host.browser-usage-changed", threadIds: [taskA] } as never);
+    const releaseV4 = releaseHeldUsage!;
+    releaseHeldUsage = null;
+    releaseV4();
+    await vi.waitFor(() =>
+      expect(
+        client.getSnapshot().browserUses.find((use) => use.threadId === taskA)?.pageTitle,
+      ).toBe("V5-post-second-notice"),
+    );
+
+    // 4. Tombstoning an inactive retained task through the shell drops its browser usage immediately.
+    const tombstoned = threads[8]!.id;
+    expect(client.getSnapshot().browserUses.some((use) => use.threadId === tombstoned)).toBe(true);
+    expect(client.getSnapshot().browserUsage?.[tombstoned]).toBeDefined();
+    shellSeq += 1;
+    socket.deliver({
+      type: "host.changes",
+      subscriptionId: "shell",
+      generation: shellGen,
+      scope: shellScope,
+      fromSequence: String(shellSeq - 1),
+      throughSequence: String(shellSeq),
+      changes: [
+        {
+          sequence: String(shellSeq),
+          ordinal: 0,
+          entityKind: "task",
+          entityId: tombstoned,
+          operation: "remove",
+        },
+      ],
+    } as never);
+    expect(client.getSnapshot().browserUses.some((use) => use.threadId === tombstoned)).toBe(false);
+    expect(client.getSnapshot().browserUsage?.[tombstoned]).toBeUndefined();
+
+    // 5. Archiving a browser profile refreshes the shown task via the Host's
+    //    `host.browser-usage-changed` notice; a `browser-profile` resource bump alone
+    //    does not trigger a redundant usage read.
+    const stopProfileWatch = client.subscribe(() => void client.getSnapshot().browserProfiles);
+    void client.getSnapshot().browserProfiles;
+    await vi.waitFor(() => expect(client.getSnapshot().browserProfiles).toHaveLength(1));
+    profileArchived = true;
+    const callsBeforeProfileBump = usageCalls.length;
+    socket.deliver({
+      type: "host.resource",
+      subscriptionId: "shell",
+      generation: shellGen,
+      revisions: { "browser-profile": "2" },
+    } as never);
+    await vi.waitFor(() => expect(client.getSnapshot().browserProfiles).toEqual([]));
+    expect(usageCalls.length).toBe(callsBeforeProfileBump);
+    socket.deliver({ type: "host.browser-usage-changed", threadIds: [taskA] } as never);
+    await vi.waitFor(() => expect(usageCalls.length).toBe(callsBeforeProfileBump + 1));
+    await vi.waitFor(() =>
+      expect(client.getSnapshot().browserUses.some((use) => use.threadId === taskA)).toBe(false),
+    );
+    stopProfileWatch();
+
+    // 6. Reconnect: retained threads keep last known data visible and revalidate on revisit.
+    profileArchived = false;
+    const retainedTarget = threads[7]!.id;
+    const beforeReconnectCalls = usageCalls.length;
+    socket.close();
+    await vi.waitFor(() => expect(usageCalls.length).toBeGreaterThan(beforeReconnectCalls));
+    expect(client.getSnapshot().browserUses.some((use) => use.threadId === retainedTarget)).toBe(
+      true,
+    );
+    const afterReconnectCalls = usageCalls.length;
+    client.activateThread(retainedTarget);
+    await vi.waitFor(() => expect(usageCalls.length).toBe(afterReconnectCalls + 1));
+    expect(usageCalls.at(-1)).toBe(retainedTarget);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("an in-flight usage read capturing pre-archive rows is discarded and re-read when the archive's browser-usage-changed notice arrives", async () => {
+  const threadA = createId("thread");
+  const runA = createId("run");
+  const messageId = createId("message");
+  const sessionId = `bsn_${crypto.randomUUID()}`;
+  const taskA = { ...task, id: threadA, title: "Task A" };
+  const detailItems = [
+    {
+      ...item,
+      id: messageId,
+      messageId,
+      runId: runA,
+      position: "1",
+      revision: "1",
+      view: { preview: "Hello" },
+    },
+  ];
+  let profileArchived = false;
+  let heldUsageCount = 2;
+  const releaseUsage: (() => void)[] = [];
+  const usageCalls: { threadId: string; runIds: string[] }[] = [];
+
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+    const url = new URL(String(input));
+    const name = url.pathname.slice("/v1/rpc/".length);
+    if (name === "thread.assignments.list") {
+      return Response.json({
+        ok: true,
+        data: {
+          assignments: [],
+          threadId: url.searchParams.get("threadId")!,
+          window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
+        },
+      });
+    }
+    if (name === "resources.detail.get") {
+      const asked = JSON.parse(url.searchParams.get("input")!) as { kind: string };
+      if (asked.kind === "browser-profile") {
+        // Both the first watch reply and the first inventory read already see the archived state.
+        return Response.json({
+          ok: true,
+          data: {
+            kind: "browser-profile",
+            revision: "2",
+            next: null,
+            data: {
+              kind: "browser-profile",
+              profiles: [],
+              deletions: [],
+            },
+          },
+        });
+      }
+    }
+    if (name === "thread.browserUsage.get") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { threadId: string; runIds: string[] };
+      usageCalls.push(body);
+      const archivedAtCall = profileArchived;
+      if (heldUsageCount > 0) {
+        heldUsageCount -= 1;
+        await new Promise<void>((resolve) => {
+          releaseUsage.push(resolve);
+        });
+      }
+      return Response.json({
+        ok: true,
+        data: {
+          threadId: body.threadId,
+          uses: archivedAtCall
+            ? []
+            : [
+                {
+                  sessionId,
+                  threadId: body.threadId,
+                  runId: runA,
+                  tabId: null,
+                  pageTitle: "Pre-archive page",
+                  pageSite: "https://example.test",
+                  firstUsedAt: "2026-11-23T00:00:00.000Z",
+                  lastUsedAt: "2026-11-23T00:00:01.000Z",
+                },
+              ],
+        },
+      });
+    }
+    return Response.json(
+      { ok: false, error: { code: "not_found", message: "Unavailable", retryable: false } },
+      { status: 404 },
+    );
+  });
+
+  let socket!: MockPersonalSocket;
+  let shellGen = 0;
+  const connect = () =>
+    (socket = new MockPersonalSocket((raw) => {
+      const message = JSON.parse(raw) as ScopedClientMessage;
+      queueMicrotask(() => {
+        if (message.type === "client.subscribe" && message.scope.kind === "thread") {
+          const address = {
+            scope: message.scope,
+            subscriptionId: message.subscriptionId,
+            generation: message.generation,
+            throughSequence: "1",
+          };
+          socket.deliver({
+            ...address,
+            type: "host.snapshot",
+            snapshot: {
+              thread: detailThread(taskA),
+              items: detailItems,
+              activeItems: [],
+              pendingRequests: [],
+              nextBefore: null,
+            },
+          } as never);
+          socket.deliver({ ...address, type: "host.synchronized" } as never);
+          return;
+        }
+        if (message.type === "client.resources.watch") {
+          if (message.interests.includes("browser-profile")) {
+            // The very first profile watch reply already reports the post-archive revision.
+            socket.deliver({
+              type: "host.resource",
+              subscriptionId: "shell",
+              generation: shellGen,
+              revisions: { "browser-profile": "2" },
+              reply: true,
+            } as never);
+          }
+          return;
+        }
+        if (message.type !== "client.attach") return;
+        shellGen = message.generation;
+        const shell = {
+          scope: shellScope,
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          throughSequence: "1",
+        };
+        socket.deliver({
+          ...shell,
+          type: "host.snapshot",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: [taskA],
+            visits: [],
+            attention: [],
+            counts,
+            ...shellLists,
+          },
+        });
+        socket.deliver({ ...shell, type: "host.synchronized" });
+      });
+    }));
+
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    webSocketFactory: connect,
+  });
+  try {
+    await client.load();
+    client.activateThread(threadA);
+
+    // First usage read starts and captures pre-archive rows before the archive commits.
+    await vi.waitFor(() => expect(releaseUsage).toHaveLength(1));
+    expect(client.getSnapshot().browserUsage?.[threadA]).toEqual({ loading: true, error: null });
+
+    // Profile is archived on the Host; the profile watch reply and inventory read both already
+    // see the archive (empty profile inventory, no browser-profile revision advance), and the
+    // Host delivers `host.browser-usage-changed` for the affected thread.
+    profileArchived = true;
+    const stopProfileWatch = client.subscribe(() => void client.getSnapshot().browserProfiles);
+    void client.getSnapshot().browserProfiles;
+    await vi.waitFor(() =>
+      expect(client.getSnapshot().loadedResources).toContain("browser-profile"),
+    );
+    expect(client.getSnapshot().browserProfiles).toEqual([]);
+
+    socket.deliver({ type: "host.browser-usage-changed", threadIds: [threadA] } as never);
+
+    // Resolve the stale pre-archive usage read. It must NOT install the pre-archive page or
+    // mark usage fresh; instead a post-archive re-read must start immediately.
+    releaseUsage[0]!();
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(2));
+    expect(usageCalls[1]).toEqual({ threadId: threadA, runIds: [runA] });
+    expect(client.getSnapshot().browserUses).toEqual([]);
+    expect(client.getSnapshot().browserUsage?.[threadA]).toEqual({ loading: true, error: null });
+
+    // Resolve the post-archive re-read and verify final settled state.
+    await vi.waitFor(() => expect(releaseUsage).toHaveLength(2));
+    releaseUsage[1]!();
+    await vi.waitFor(() =>
+      expect(client.getSnapshot().browserUsage?.[threadA]).toEqual({ loading: false, error: null }),
+    );
+    expect(client.getSnapshot().browserUses).toEqual([]);
+    expect(usageCalls).toHaveLength(2);
+    stopProfileWatch();
+  } finally {
+    client.dispose();
+  }
 });

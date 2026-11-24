@@ -366,6 +366,16 @@ export const DesktopUseComputerViewResultSchema = z.discriminatedUnion("activate
   }),
 ]);
 export type DesktopUseComputerViewResult = z.infer<typeof DesktopUseComputerViewResultSchema>;
+/**
+ * The desktop's own sentences for computer use that is off here, which its
+ * permission calls refuse with. A page shows them in place of a control that
+ * could do nothing.
+ */
+export const desktopComputerUseUnsupported =
+  "Computer use runs on macOS only, on the Mac the person is using.";
+export const desktopComputerUseOffInTrial =
+  "Apps are off in a trial of Opensteer, so there is nothing to allow in macOS for them.";
+
 export const DesktopComputerUsePermissionsResultSchema = ComputerUsePermissionsViewSchema;
 export type DesktopComputerUsePermissionsResult = z.infer<
   typeof DesktopComputerUsePermissionsResultSchema
@@ -1505,6 +1515,18 @@ export const DesktopWebLinkDeliverySchema = z.strictObject({
 });
 export type DesktopWebLinkDelivery = z.infer<typeof DesktopWebLinkDeliverySchema>;
 
+/**
+ * A web page a person followed out of a published app by a way the app's own
+ * page could not route (a window it opened, a navigation of its frame). Main
+ * never opens it itself: the page decides where it goes, as for every app link.
+ */
+export const DesktopAppLinkSchema = z.strictObject({
+  url: DesktopWebUrlSchema,
+  /** The app document that asked, so the page credits only a press in that app's own frame. */
+  source: z.string().min(1).max(8192),
+});
+export type DesktopAppLink = z.infer<typeof DesktopAppLinkSchema>;
+
 export const DesktopPersonalTabCommandSchema = z.union([
   DesktopWebLinkSchema,
   z.strictObject({
@@ -1870,6 +1892,7 @@ export interface OpensteerDesktopBridge {
   /** Suspends, resumes or deletes one; the Account decides what is allowed. */
   cloudComputerAct?(input: DesktopCloudComputerActInput): Promise<DesktopCloudComputerActResult>;
   onPersonalTabCommand(listener: (command: DesktopPersonalTabCommand) => void): () => void;
+  onAppLink?(listener: (link: DesktopAppLink) => void): () => void;
   reportDisplayDiagnostic?(record: DisplayClientDiagnostic): Promise<void>;
   reportRealtimeDiagnostic?(record: RealtimeFrameDiagnostic): Promise<void>;
   reportRendererFailure?(record: RendererFailureDiagnostic): Promise<void>;

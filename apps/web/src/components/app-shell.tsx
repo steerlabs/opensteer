@@ -145,6 +145,8 @@ import {
 } from "./account-sign-in-dialog.js";
 import { useToast } from "./toast.js";
 import { presentFailure } from "./use-action.js";
+import { openAppLink } from "./apps/app-links.js";
+import { thisComputerRunnerId } from "./this-computer.js";
 
 interface TaskStartDraft {
   readonly draftKey: string | null;
@@ -199,6 +201,11 @@ export interface ShellContext {
   reportActionError: (error: unknown) => void;
   /** Marks shared Done or reopens a task; a refusal is reported here. */
   setTaskDone: (threadId: string, done: boolean) => void;
+  /**
+   * The stable projection (`sameStableHostSnapshot`) everywhere but Home and an open ask on a
+   * call. A surface that shows a field it leaves out, or a thread field it does not compare,
+   * selects that field itself with `useHostSelector`.
+   */
   snapshot: HostSnapshot;
 }
 
@@ -299,6 +306,8 @@ export function AppShell({
   // Setup, like Settings, covers the workspace: no sidebar, no place beside it.
   const setupMode = isSetupPath(location.pathname);
   const fullWindow = settingsMode || setupMode;
+  const fullWindowRef = useRef(fullWindow);
+  fullWindowRef.current = fullWindow;
   const nav = useWorkspaceNavigation({
     deploymentId: snapshot.deploymentId,
     userId: snapshot.user?.id ?? null,
@@ -419,12 +428,25 @@ export function AppShell({
       ? null
       : (snapshot.environments.find((environment) => environment.id === hostedEnvironmentId)
           ?.runnerId ?? null);
-  const thisMachineId = localRunnerId ?? hostingRunnerId;
+  const thisMachineId = thisComputerRunnerId({ hostingRunnerId, localRunnerId });
   webLinkHere.current = thisMachineId;
   const openWebLink = useCallback(
     (address: string) =>
       openWorkspaceWebLink(hostClient, nav, address, location.state, thisMachineId),
     [hostClient, nav, location.state, thisMachineId],
+  );
+  // A window an app opened or a navigation of its frame reaches main, which hands it back here.
+  useEffect(
+    () =>
+      localBridge?.onAppLink?.(({ url, source }) => {
+        openAppLink(
+          url,
+          // Settings and setup fill the window, where a tab would open out of sight.
+          { open: fullWindowRef.current ? null : openWebLink },
+          { kind: "window", source },
+        );
+      }),
+    [localBridge, openWebLink],
   );
   // A link binds its computer for good, so it waits while this Mac is still saying whether it is one.
   const localWorker = viewedLocalExecutionStatus?.runner;
@@ -600,7 +622,7 @@ export function AppShell({
         flow: startAccountSignIn({
           client: hostClient,
           errorMessage: signInFailureWords,
-          localRunnerId,
+          localRunnerId: thisMachineId,
           target: {
             environmentId: placement.environmentId,
             harnessInstanceId: placement.harnessInstanceId,
@@ -615,7 +637,7 @@ export function AppShell({
         whereLabel: placement.whereLabel,
       });
     },
-    [harnessAuthenticationEnvironmentIds, hostClient, localRunnerId, toast],
+    [harnessAuthenticationEnvironmentIds, hostClient, thisMachineId, toast],
   );
   // The flow outlives a dialog closing but not the shell: leaving this
   // Deployment must not keep signing in, or leave an account half added, unseen.
@@ -641,7 +663,7 @@ export function AppShell({
         flow: startAccountSignIn({
           client: hostClient,
           errorMessage: signInFailureWords,
-          localRunnerId,
+          localRunnerId: thisMachineId,
           target: { kind: "create", request },
           ...(selectMethod ? { selectMethod } : {}),
         }),
@@ -651,7 +673,7 @@ export function AppShell({
         whereLabel,
       });
     },
-    [hostClient, localRunnerId],
+    [hostClient, thisMachineId],
   );
   const refreshHarnessCatalog = useCallback(
     async (placement: ThreadPlacementOption) => {
@@ -1349,11 +1371,15 @@ const selectBrowsersKnown = (snapshot: HostSnapshot) =>
 const selectDeploymentId = (snapshot: HostSnapshot) => snapshot.deploymentId;
 const selectUserId = (snapshot: HostSnapshot) => snapshot.user?.id ?? null;
 
-/** Home at the root and a task under /tasks stream; other routes stay stable. */
+/**
+ * Home at the root streams; every other route, a task's included, follows the stable projection.
+ * A task's view reads its live parts through selectors keyed to that task (`useThreadRow`,
+ * `useThreadScope`), so another task, tab or assignment changing never redraws it.
+ */
 function ShellRouteOutlet() {
   const { pathname } = useLocation();
   return (
-    <ShellScope live={pathname === "/" || pathname.startsWith("/tasks/")}>
+    <ShellScope live={pathname === "/"}>
       <Outlet />
     </ShellScope>
   );

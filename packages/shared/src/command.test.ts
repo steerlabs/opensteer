@@ -4,6 +4,7 @@ import {
   planLaunch,
   planShellLaunch,
   resolveCommand,
+  resolveCommandCopies,
   type CommandProbes,
   type ResolvedCommand,
 } from "./command.js";
@@ -249,6 +250,18 @@ describe("resolveCommand on POSIX", () => {
 
   it("does not find a file it may not execute", () => {
     expect(resolve("/opt/tool", "", posixDisk([], ["/opt/tool"]))).toBeUndefined();
+  });
+
+  it("lists every copy on PATH in PATH order, once each", () => {
+    const probes = posixDisk(["/a/tool", "/c/tool"], ["/b/tool"]);
+    expect(
+      resolveCommandCopies("tool", {
+        cwd: "/work",
+        environment: { PATH: "/a:/b:bin:/c:/a" },
+        platform: "darwin",
+        probes,
+      }).map(({ path }) => path),
+    ).toEqual(["/a/tool", "/c/tool"]);
   });
 
   it("reads PATH case-sensitively", () => {

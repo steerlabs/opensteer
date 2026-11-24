@@ -234,7 +234,7 @@ describe("Opensteer Cloud Computer on the phone", () => {
       detail: "203.0.113.24",
       addressIn: "detail",
     });
-    expect(row("status", "region")).toMatchObject({ detail: "Ashburn, Virginia" });
+    expect(row("status", "region")).toMatchObject({ detail: "Council Bluffs, Iowa" });
     // The plan by its name, never its price.
     expect(row("plan", "plan")).toMatchObject({
       label: "Opensteer Cloud Computer",

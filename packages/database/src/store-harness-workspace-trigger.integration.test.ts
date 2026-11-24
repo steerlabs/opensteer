@@ -15,7 +15,7 @@ import {
 } from "@opensteer/protocol";
 import { MAX_PENDING_TRIGGER_OCCURRENCES } from "@opensteer/triggers";
 import { sql } from "kysely";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 
 import { acquireDeploymentAuthorityLease, admitTriggerControlRequest } from "./index.js";
 import {
@@ -1453,6 +1453,21 @@ describeStore("PostgreSQL store", (it) => {
       ]),
     ).resolves.toBeInstanceOf(Error);
     await lease.close();
+    // PostgreSQL releases a terminated backend's locks as that backend exits, which can be after
+    // this side has seen its session end: wait for the lock itself to be gone, then take it.
+    await vi.waitFor(
+      async () => {
+        const held = await sql<{ held: boolean }>`
+          select exists (
+            select 1 from pg_locks
+            where locktype = 'advisory' and database = (select oid from pg_database where datname = current_database())
+              and objid::bigint = hashtextextended('opensteer-deployment-authority', 0) & 4294967295
+          ) as held
+        `.execute(database);
+        expect(held.rows).toEqual([{ held: false }]);
+      },
+      { interval: 10, timeout: 5_000 },
+    );
     const replacementLease = await acquireDeploymentAuthorityLease(database);
     await replacementLease.close();
   });

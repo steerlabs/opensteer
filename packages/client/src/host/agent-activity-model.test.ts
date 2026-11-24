@@ -30,6 +30,7 @@ import {
   conversationTurnRevealing,
   activityStepHead,
   displayCommand,
+  effectiveArguments,
   groupTranscriptEntries,
   passwordsSetupOffer,
   toolBody,
@@ -2850,5 +2851,26 @@ describe("ACP engine steps", () => {
     });
     expect(present("acp", "execute", { command: "pwd" })).toMatchObject({ kind: "command" });
     expect(present("acp", "edit", { path: "/a/b.ts" })).toMatchObject({ kind: "edit" });
+  });
+});
+
+describe("streamed tool arguments", () => {
+  it("parses a call's streamed text once for every entry any reader makes of it", () => {
+    const streamText = JSON.stringify({ command: "pnpm test --filter streamed-once" });
+    const first = tool({ streamText });
+    // A new reader of the same Thread makes a new entry for the same call.
+    const again = tool({ arguments: undefined, streamText });
+    const parsed = effectiveArguments(first);
+    expect(parsed).toEqual({ command: "pnpm test --filter streamed-once" });
+    expect(effectiveArguments(again)).toBe(parsed);
+  });
+
+  it("keeps an entry's own arguments when its streamed text is not JSON, or still streaming", () => {
+    const cut = '{"command": "pnpm te';
+    expect(effectiveArguments(tool({ streamText: cut }))).toEqual({});
+    expect(effectiveArguments(tool({ arguments: undefined, streamText: cut }))).toBeUndefined();
+    expect(
+      effectiveArguments(tool({ state: "running", streamText: JSON.stringify({ a: 1 }) })),
+    ).toEqual({});
   });
 });

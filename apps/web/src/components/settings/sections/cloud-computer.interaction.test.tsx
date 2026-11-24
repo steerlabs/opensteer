@@ -188,7 +188,7 @@ describe("Opensteer Cloud Computer on desktop", () => {
     expect(page.textContent).toContain(mockCloudComputerAddress);
     expect(page.textContent).toContain("Browser IP · Assigned");
     expect(page.textContent).toContain("Browser IP203.0.113.24");
-    expect(page.textContent).toContain("RegionAshburn, Virginia");
+    expect(page.textContent).toContain("RegionCouncil Bluffs, Iowa");
     expect(page.textContent).toContain("Renews Dec 20, 2026");
     await act(async () => button(page, "Open it").click());
     expect(bridge.select).toHaveBeenLastCalledWith({ deploymentId: cloudDeployment });

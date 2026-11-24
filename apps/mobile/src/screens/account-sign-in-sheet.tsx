@@ -280,10 +280,14 @@ export function AccountSignInSheet(props: {
           {`This sign-in finishes on ${whereLabel}. It opens there as a browser tab you use from here, and the tab closes when you’re done.`}
         </AppText>
         {failed}
+        {/* One way in from the phone: that computer's browser. The phone is offered only
+            once that browser could not open the page, to paste back where it lands. */}
         {homeBrowser.error === null ? null : (
-          <Notice detail={homeBrowser.error} title="That browser didn’t open" />
+          <>
+            <Notice detail={homeBrowser.error} title="That browser didn’t open" />
+            <SecondaryButton label="Open on this device" onPress={() => setHere(true)} />
+          </>
         )}
-        <SecondaryButton label="Open on this device" onPress={() => setHere(true)} />
         {alternatives}
       </>
     );

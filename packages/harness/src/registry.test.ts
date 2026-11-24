@@ -927,6 +927,138 @@ describe("HarnessRegistry installed engines", () => {
   );
 });
 
+/**
+ * Several copies of the person's CLI: the newest one Opensteer supports runs
+ * their sign-in. When every copy is too old and Opensteer ships the engine,
+ * Opensteer's own copy runs it and the engine says so in one line; an engine
+ * Opensteer does not ship keeps the copy their terminal runs, whose own check
+ * says what to update.
+ */
+describe("HarnessRegistry choosing among copies of the person's CLI", () => {
+  const ambient = { ...definition, id: createId("harnessInstance"), stateKind: "ambient" } as const;
+  const ambientProviderState = { ...testProviderState, kind: "ambient" } as const;
+  const shipped = driver({
+    create: async ({ instanceId }) => adapter(instanceId, () => undefined),
+    inspect: async () => ({
+      models: [{ ...model, displayName: "Shipped" }],
+      status: "ready" as const,
+    }),
+  });
+
+  function engine(
+    versions: Readonly<Record<string, string | undefined>>,
+    scope: "ambient" | "all",
+  ) {
+    const created: string[] = [];
+    const read: string[] = [];
+    const paths = Object.keys(versions);
+    return {
+      created,
+      read,
+      engine: {
+        copies: () => paths,
+        create: (executable: string) => {
+          created.push(executable);
+          return driver({
+            create: async ({ instanceId }) => adapter(instanceId, () => undefined),
+            inspect: async () => ({
+              models: [{ ...model, displayName: `Installed at ${executable}` }],
+              status: "ready" as const,
+            }),
+          });
+        },
+        locate: () => paths[0],
+        missing: "The CLI is not installed on this computer",
+        scope,
+        ...(scope === "ambient" ? { shippedVersion: "0.162.0" } : {}),
+        update: {
+          executableName: "Engine",
+          minimumVersion: "0.156.0",
+          version: { args: ["--version"], pattern: /(\d+\.\d+\.\d+)/u },
+        },
+        version: async (executable: string) => {
+          read.push(executable);
+          return versions[executable];
+        },
+      },
+    };
+  }
+
+  it.each(["ambient", "all"] as const)(
+    "runs the newest supported copy, not the first on PATH (%s)",
+    async (scope) => {
+      const registry = new HarnessRegistry();
+      const installed = engine(
+        {
+          "/usr/local/bin/engine": "0.146.1",
+          "/opt/homebrew/bin/engine": "0.158.0",
+          "/home/person/.local/bin/engine": "0.161.2",
+        },
+        scope,
+      );
+      registry.registerDriver(shipped, { status: "runtime-check" }, installed.engine);
+      registry.configureInstance(ambient);
+      await expect(
+        inspect(registry, ambient, undefined, ambientProviderState),
+      ).resolves.toMatchObject({
+        models: [{ displayName: "Installed at /home/person/.local/bin/engine" }],
+      });
+      await registry.adapter(ambient.id);
+      expect(installed.created).toEqual(["/home/person/.local/bin/engine"]);
+      // Versions are read once, not on every use.
+      await inspect(registry, ambient, undefined, ambientProviderState);
+      expect(installed.read).toHaveLength(3);
+      await expect(registry.installationNotice(driverKind)).resolves.toBeUndefined();
+    },
+  );
+
+  it("runs Opensteer's own copy when every copy here is too old, and says so", async () => {
+    const registry = new HarnessRegistry();
+    const installed = engine(
+      { "/usr/local/bin/engine": "0.146.1", "/opt/homebrew/bin/engine": "0.150.0" },
+      "ambient",
+    );
+    registry.registerDriver(shipped, { status: "runtime-check" }, installed.engine);
+    registry.configureInstance(ambient);
+    await expect(
+      inspect(registry, ambient, undefined, ambientProviderState),
+    ).resolves.toMatchObject({ models: [{ displayName: "Shipped" }], status: "ready" });
+    await registry.adapter(ambient.id);
+    expect(installed.created).toEqual([]);
+    expect(registry.driverSources(driverKind)).toEqual(testSources);
+    await expect(registry.installationNotice(driverKind)).resolves.toBe(
+      "Using Opensteer’s own Engine 0.162.0: the one on this computer (0.150.0) is too old.",
+    );
+  });
+
+  it("keeps the copy the person's terminal runs when Opensteer has none of its own", async () => {
+    const registry = new HarnessRegistry();
+    const installed = engine(
+      { "/usr/local/bin/engine": "0.146.1", "/opt/homebrew/bin/engine": "0.150.0" },
+      "all",
+    );
+    registry.registerDriver(shipped, { status: "runtime-check" }, installed.engine);
+    registry.configureInstance(ambient);
+    await expect(
+      inspect(registry, ambient, undefined, ambientProviderState),
+    ).resolves.toMatchObject({ models: [{ displayName: "Installed at /usr/local/bin/engine" }] });
+    await expect(registry.installationNotice(driverKind)).resolves.toBeUndefined();
+  });
+
+  it("keeps the first copy when no version can be read", async () => {
+    const registry = new HarnessRegistry();
+    const installed = engine(
+      { "/usr/local/bin/engine": undefined, "/opt/homebrew/bin/engine": undefined },
+      "ambient",
+    );
+    registry.registerDriver(shipped, { status: "runtime-check" }, installed.engine);
+    registry.configureInstance(ambient);
+    await expect(
+      inspect(registry, ambient, undefined, ambientProviderState),
+    ).resolves.toMatchObject({ models: [{ displayName: "Installed at /usr/local/bin/engine" }] });
+  });
+});
+
 describe("HarnessRegistry with an installed engine missing", () => {
   it("says how to install it", () => {
     const missing = "Install the CLI, then restart Opensteer.";

@@ -7,10 +7,19 @@ import { InputSurface } from "./input-surface.js";
 import { VoiceContext } from "@opensteer/client/react";
 import { VoiceIsland, type VoiceControls } from "./voice.js";
 
+const hostSnapshot = vi.hoisted(() => ({
+  activeTasks: [],
+  threads: [],
+  user: null,
+  waitingRequests: [],
+}));
 vi.mock("./app-shell.js", () => ({
   useShell: () => ({
     hostClient: {
       connection: { getSnapshot: () => ({}), subscribe: () => () => undefined, retry() {} },
+      // The conversation as the input surface reads it live, beside the stable shell.
+      getSnapshot: () => hostSnapshot,
+      subscribe: () => () => undefined,
     },
     snapshot: { threads: [], user: null, waitingRequests: [] },
     reportActionError: vi.fn(),

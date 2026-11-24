@@ -1720,16 +1720,26 @@ integration.sequential("Run recovery acceptance", () => {
       join(current.active.agentHome.path, "recovery-prior-pids.json"),
       JSON.stringify([engine.pid, child.pid]),
     );
-    await current.active.crashRunner(async () => {
-      expect(alive(engine.pid), "SIGKILL left the engine alive before startup reaping").toBe(true);
-      expect(alive(child.pid), "SIGKILL left the marked child alive").toBe(true);
-      checkpoints.push({
-        stage: "abandoned without close",
-        engine,
-        child,
-        alive: [alive(engine.pid), alive(child.pid)],
-      });
-    });
+    // On macOS, SIGKILLing only the Runner leaves detached setsid descendants
+    // alive after the supervisor exits. On Linux, the supervisor acts as a
+    // child subreaper and kills detached descendants when the control pipe
+    // closes, so a marked engine only survives into the next boot when the
+    // supervisor itself is SIGKILLed alongside the Runner before it can drain.
+    await current.active.crashRunner(
+      async () => {
+        expect(alive(engine.pid), "SIGKILL left the engine alive before startup reaping").toBe(
+          true,
+        );
+        expect(alive(child.pid), "SIGKILL left the marked child alive").toBe(true);
+        checkpoints.push({
+          stage: "abandoned without close",
+          engine,
+          child,
+          alive: [alive(engine.pid), alive(child.pid)],
+        });
+      },
+      { killSupervisors: true },
+    );
     expect(alive(engine.pid), "startup reaped the abandoned engine").toBe(false);
     expect(alive(child.pid), "startup reaped the abandoned child").toBe(false);
     checkpoints.push({

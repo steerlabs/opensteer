@@ -388,7 +388,7 @@ describe("what the Account reports about a Cloud Computer", () => {
         status: "ready",
         address: "https://a.example",
         deploymentId: "dep_00000000-0000-4000-8000-0000000000c1" as never,
-        region: { id: "ash", label: "Ashburn, Virginia" } as never,
+        region: { id: "us-central1-a", label: "Council Bluffs, Iowa" } as never,
         egressAddress: "203.0.113.24",
         renewsAt: "2026-12-20T12:00:00.000Z",
         lastBackupAt: "2026-12-19T12:00:00.000Z",
@@ -397,7 +397,7 @@ describe("what the Account reports about a Cloud Computer", () => {
     );
     expect(full).toMatchObject({
       deploymentId: "dep_00000000-0000-4000-8000-0000000000c1",
-      region: "Ashburn, Virginia",
+      region: "Council Bluffs, Iowa",
       browserAddress: "203.0.113.24",
       renews: "Renews Dec 20, 2026",
       lastBackup: new Intl.DateTimeFormat("en-US", {

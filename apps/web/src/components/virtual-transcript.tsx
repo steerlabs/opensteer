@@ -1,14 +1,37 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { BoundedCache } from "@opensteer/shared/boundedCache";
 import { windowPlan, type WindowItem } from "./workspace/windowed-rows.js";
-
-/** Threads with at most this many rows mount directly without virtualization overhead. */
-export const virtualTranscriptThreshold = 48;
 
 /** Generous off-screen draw distance (px) above and below the viewport, matching Legend List. */
 const transcriptOverscanPx = 900;
 
-/** Cap retained row height entries so very long browsing sessions stay bounded in memory. */
-const maxRetainedMeasurements = 2_000;
+/** Rows laid out at widths this close wrap alike, so they share their measured heights. */
+const widthStepPx = 16;
+const widthClass = (width: number) => Math.round(width / widthStepPx);
+
+/**
+ * Each row's last measured height (px, excluding the list's gap), by the width it was laid out at
+ * and its row key, shared by every transcript: row keys are item and turn ids, unique across
+ * Threads. A task switched back to lays out at its rows' real heights at once, so its scroll
+ * position is put back exactly. A row never measured at the list's width stands at its estimate:
+ * a narrow column's heights would make a wide one's spacers far too tall.
+ */
+const measuredHeights = new BoundedCache<string, number>({ maxEntries: 10_000 });
+
+export const rowHeights = {
+  /** The row's height as last measured at this width, if it was. */
+  peek: (width: number | null, key: string): number | undefined =>
+    width === null ? undefined : measuredHeights.peek(heightKey(width, key)),
+  set: (width: number, key: string, height: number): void =>
+    measuredHeights.set(heightKey(width, key), height),
+};
+
+function heightKey(width: number, key: string): string {
+  return `${widthClass(width)}:${key}`;
+}
+
+/** The width the last list was laid out at: the next one opens in the same column, most likely. */
+let lastWidth: number | null = null;
 
 export interface VirtualTranscriptOptions {
   /** Scroll container getter; null disables virtualization (e.g. SSR or static previews). */
@@ -17,8 +40,10 @@ export interface VirtualTranscriptOptions {
   readonly keys: readonly string[];
   /** Estimated outer height (px, excluding flex gap) for an unmeasured row. */
   readonly estimate: (index: number) => number;
-  /** Row keys that must remain mounted regardless of scroll offset (tail, jump target, focus). */
+  /** Row keys that must remain mounted regardless of scroll offset (jump target, focus). */
   readonly pinnedKeys: readonly string[];
+  /** The last rows stay mounted, up to this many and this tall in all (px), so live work is too. */
+  readonly tail?: { readonly rows: number; readonly px: number } | undefined;
   /** Start the initial window at the tail before the scroller has been positioned. */
   readonly initialAtTail?: boolean;
   /** True only while the caller is actively following the live tail (never during historical jumps). */
@@ -39,7 +64,7 @@ interface VisualAnchor {
 }
 
 /**
- * Variable-height viewport virtualization for long transcripts.
+ * Variable-height viewport virtualization for transcripts.
  *
  * Keeps only visible rows (+ overscan + pinned tail/jump/focus rows) in the DOM,
  * measures real row heights via ResizeObserver + layout effects, and pins the
@@ -51,11 +76,11 @@ export function useVirtualTranscript({
   keys,
   estimate,
   pinnedKeys,
+  tail,
   initialAtTail = true,
   followTail = false,
 }: VirtualTranscriptOptions): VirtualTranscriptState {
-  const enabled = scroller !== null && keys.length > virtualTranscriptThreshold;
-  const measured = useRef(new Map<string, number>());
+  const enabled = scroller !== null;
   const elements = useRef(new Map<string, HTMLElement>());
   const resizeObserver = useRef<ResizeObserver | null>(null);
   const initialized = useRef(false);
@@ -75,16 +100,17 @@ export function useVirtualTranscript({
     readonly viewport: number;
     readonly scrollTop: number;
   } | null>(null);
-  const [view, setView] = useState({ gap: 4, version: 0 });
+  // The width rows are laid out at is known once one is drawn; until then, the last list's.
+  const [view, setView] = useState(() => ({ gap: 4, version: 0, width: lastWidth }));
 
   const sizes = useMemo(
     () =>
       keys.map((key, index) => {
-        const height = measured.current.get(key) ?? estimate(index);
+        const height = rowHeights.peek(view.width, key) ?? estimate(index);
         return height + view.gap;
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [estimate, keys, view.gap, view.version],
+    [estimate, keys, view.gap, view.version, view.width],
   );
 
   // While following the tail (or before the first real scroll measurement on initial tail open),
@@ -104,17 +130,30 @@ export function useVirtualTranscript({
   const effectiveHeight =
     scroll.current.height || (typeof window !== "undefined" ? window.innerHeight : 900);
 
+  const tailRows = tail?.rows ?? 0;
+  const tailPx = tail?.px ?? 0;
   const pinnedIndices = useMemo(() => {
-    if (!enabled || pinnedKeys.length === 0) return [] as number[];
-    const byKey = new Map<string, number>();
-    for (let index = 0; index < keys.length; index++) byKey.set(keys[index]!, index);
-    const out: number[] = [];
-    for (const key of pinnedKeys) {
-      const index = byKey.get(key);
-      if (index !== undefined) out.push(index);
+    if (!enabled) return [] as number[];
+    const out = new Set<number>();
+    let height = 0;
+    for (
+      let index = keys.length - 1;
+      index >= Math.max(0, keys.length - tailRows) && height < tailPx;
+      index--
+    ) {
+      out.add(index);
+      height += sizes[index]! - view.gap;
     }
-    return out;
-  }, [enabled, keys, pinnedKeys]);
+    if (pinnedKeys.length > 0) {
+      const byKey = new Map<string, number>();
+      for (let index = 0; index < keys.length; index++) byKey.set(keys[index]!, index);
+      for (const key of pinnedKeys) {
+        const index = byKey.get(key);
+        if (index !== undefined) out.add(index);
+      }
+    }
+    return [...out];
+  }, [enabled, keys, pinnedKeys, sizes, tailPx, tailRows, view.gap]);
 
   const items: readonly WindowItem[] = useMemo(() => {
     if (!enabled) return keys.map((_, index) => ({ index }));
@@ -133,20 +172,20 @@ export function useVirtualTranscript({
     followTail,
     gap: view.gap,
     items,
-    keys,
     pinnedIndices,
     scroller,
     sizes,
+    width: view.width,
   });
   latest.current = {
     enabled,
     followTail,
     gap: view.gap,
     items,
-    keys,
     pinnedIndices,
     scroller,
     sizes,
+    width: view.width,
   };
 
   /** Captures the top-most visible mounted row's pixel offset from the scrollport top. */
@@ -210,6 +249,7 @@ export function useVirtualTranscript({
       followTail: isFollowingTail,
       gap,
       scroller: getScroller,
+      width,
     } = latest.current;
     if (!isEnabled) return;
     const scrollerEl = getScroller?.() ?? null;
@@ -253,38 +293,36 @@ export function useVirtualTranscript({
     }
 
     let changed = false;
+    let measuredWidth: number | null = null;
     for (const [key, element] of elements.current) {
       if (!element.isConnected) continue;
-      const height = element.getBoundingClientRect().height;
-      if (height <= 0) continue;
-      const previous = measured.current.get(key);
-      if (previous !== undefined && Math.abs(previous - height) < 0.5) continue;
-      measured.current.set(key, height);
-      changed = true;
+      const box = element.getBoundingClientRect();
+      if (box.height <= 0) continue;
+      // Every row fills the list's width, so any drawn row says what width the list lays out at.
+      measuredWidth = box.width;
+      const previous = rowHeights.peek(box.width, key);
+      // Set even when unchanged: a drawn row is the most recently used, so it is never dropped.
+      rowHeights.set(box.width, key, box.height);
+      if (previous === undefined || Math.abs(previous - box.height) >= 0.5) changed = true;
     }
+    if (measuredWidth !== null) lastWidth = measuredWidth;
+    const widthChanged =
+      measuredWidth !== null && (width === null || widthClass(measuredWidth) !== widthClass(width));
 
     const sample = elements.current.values().next().value;
     const parent = sample?.parentElement;
     const nextGap = parent ? parseFloat(getComputedStyle(parent).rowGap) || 0 : gap;
 
-    if (measured.current.size > maxRetainedMeasurements) {
-      const protectedKeys = new Set<string>(elements.current.keys());
-      for (const index of latest.current.pinnedIndices) {
-        const key = latest.current.keys[index];
-        if (key !== undefined) protectedKeys.add(key);
-      }
-      for (const key of measured.current.keys()) {
-        if (!protectedKeys.has(key)) measured.current.delete(key);
-        if (measured.current.size <= maxRetainedMeasurements) break;
-      }
-    }
-
     if (scrollerEl) {
       anchorRef.current = captureAnchor.current(scrollerEl);
     }
 
-    if (changed || Math.abs(nextGap - gap) > 0.5) {
-      setView((current) => ({ gap: nextGap, version: current.version + 1 }));
+    if (changed || widthChanged || Math.abs(nextGap - gap) > 0.5) {
+      setView((current) => ({
+        gap: nextGap,
+        version: current.version + 1,
+        width: widthChanged ? measuredWidth : current.width,
+      }));
     }
   });
 

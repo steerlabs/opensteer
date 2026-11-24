@@ -258,6 +258,8 @@ describe("a sign-in that returns to the Home's computer", () => {
     const { flow } = fakeFlow(returning(), tabId);
     await render(flow, vi.fn(), onShowTab);
     expect(document.body.textContent).toContain("This sign-in finishes on Studio Mac");
+    // One way in from the phone: that computer's browser, through the viewer.
+    expect(document.body.textContent).not.toContain("Open on this device");
     await press("Open in Studio Mac’s browser");
     expect(flow.openHomeBrowser).toHaveBeenCalledOnce();
     expect(onShowTab).toHaveBeenCalledWith(tabId);

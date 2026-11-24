@@ -67,22 +67,12 @@
   gap: var(--space-4);
 }
 
+/* Only the rows in and near view are drawn (useVirtualTranscript); ThreadFind (⌘F/Ctrl+F) searches
+   the whole conversation. */
 .transcript__row {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  /* Short threads (<= 48 rows) keep every row mounted with content-visibility skipping;
-     long threads virtualize off-screen rows to a bounded DOM window and use ThreadFind (⌘F/Ctrl+F)
-     to search the full conversation. */
-  content-visibility: auto;
-  contain-intrinsic-block-size: auto 160px;
-}
-
-/* A row holding an inline dialog lets it escape the containment that would trap a fixed layer;
-   an engine that would let skipped rows move the reader (see row-skipping.ts) lays them all out. */
-.transcript__row:has(.dialog-layer),
-:root[data-row-skipping="off"] .transcript__row {
-  content-visibility: visible;
 }
 
 .transcript__row:empty {
@@ -1704,6 +1694,25 @@ fieldset.action-panel {
   width: 16px;
   height: 16px;
   flex: none;
+}
+
+/* Load newer and Back to latest side by side: one floating group, each its own target. */
+.transcript__jumps {
+  position: absolute;
+  bottom: var(--space-16);
+  left: 50%;
+  z-index: 2;
+  display: flex;
+  gap: var(--space-8);
+  max-width: calc(100% - var(--space-32));
+  transform: translateX(-50%);
+}
+
+.transcript__jumps > .transcript__jump {
+  position: static;
+  max-width: none;
+  transform: none;
+  white-space: nowrap;
 }
 
 .transcript__jump--quiet {

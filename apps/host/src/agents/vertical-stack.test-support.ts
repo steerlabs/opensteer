@@ -18,6 +18,7 @@ import type {
 import type { HarnessInstanceCatalogView, HarnessModelDescriptor } from "@opensteer/protocol";
 import type { PersonalHostRuntime as HostRuntime } from "../runtime/runtime.js";
 import type { NetworkPartition } from "./network-partition.test-support.js";
+import type { RunnerCrashOptions } from "./runner-child.test-support.js";
 import type { RunnerWire, RunnerWireOptions } from "./runner-wire.test-support.js";
 import type {
   ArtifactContentPart,
@@ -88,7 +89,7 @@ export interface VerticalStack {
   stopRunLocally(runId: RunId): boolean;
   /** Settles once the Runner reports this Run among the work it is doing. */
   runStarted(runId: RunId): Promise<void>;
-  crashRunner(beforeRestart?: () => Promise<void>): Promise<void>;
+  crashRunner(beforeRestart?: () => Promise<void>, options?: RunnerCrashOptions): Promise<void>;
   /** A separate database/Deployment using this harness; closed with this fixture. */
   startAdditionalPersonal(): Promise<VerticalStack>;
   configureModel(

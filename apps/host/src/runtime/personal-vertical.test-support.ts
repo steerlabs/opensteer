@@ -180,8 +180,8 @@ export async function startPersonalVertical(options: VerticalStackOptions): Prom
             resolve();
           });
         }),
-      async crashRunner(beforeRestart) {
-        await current.crashRunner(beforeRestart);
+      async crashRunner(beforeRestart, options) {
+        await current.crashRunner(beforeRestart, options);
       },
       async startAdditionalPersonal() {
         const { agentHome: _home, ...additional } = options;

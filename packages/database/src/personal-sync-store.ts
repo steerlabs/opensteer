@@ -715,6 +715,57 @@ async function selectHydratedWindow(
   return { selected, bytes, turns };
 }
 
+type Selected = { readonly row: Item; readonly item: TranscriptItem };
+
+/**
+ * The Run cards of the Runs a page's rows belong to that the rows do not hold. Every row of a Run
+ * reads its state and its reply from the Run's card, however far above a page the Run began, so a
+ * page carries them beside its rows. They count against the page's bytes like its rows: while the
+ * two do not fit, the page gives up rows at its far ends, each part (in `parts` order, as `min`
+ * allows) from its end, and the cards those rows needed with them. A task's Runs only: a
+ * subagent's steps draw none.
+ */
+async function fitRunCards(
+  tx: Read,
+  scope: DetailScope,
+  parts: readonly { readonly rows: Selected[]; readonly min: number }[],
+  budget: number,
+): Promise<TranscriptItem[]> {
+  if (scope.kind !== "thread") return [];
+  const all = parts.flatMap(({ rows }) => rows);
+  const runIds = [...new Set(all.flatMap(({ row }) => (row.runId ? [row.runId] : [])))];
+  if (!runIds.length) return [];
+  const cards = new Map(
+    (
+      await drawableItems(tx, scope)
+        .where("kind", "=", "run")
+        .where("runId", "in", runIds)
+        .execute()
+    ).map((row) => [row.runId!, itemView(row)] as const),
+  );
+  const needed = () => {
+    const rows = parts.flatMap(({ rows }) => rows);
+    const held = new Set(rows.flatMap(({ row }) => (row.kind === "run" ? [row.runId] : [])));
+    const ids = new Set(
+      rows.flatMap(({ row }) => (row.runId && !held.has(row.runId) ? [row.runId] : [])),
+    );
+    return [...ids].flatMap((id) => cards.get(id) ?? []);
+  };
+  const bytes = (runs: readonly TranscriptItem[]) =>
+    parts.reduce(
+      (sum, { rows }) => rows.reduce((total, { item }) => total + encodedItemBytes(item), sum),
+      0,
+    ) + runs.reduce((sum, run) => sum + encodedItemBytes(run), 0);
+  let runs = needed();
+  while (runs.length && bytes(runs) > budget) {
+    const part = parts.find(({ rows, min }) => rows.length > min);
+    if (!part) break;
+    part.rows.pop();
+    runs = needed();
+  }
+  return runs;
+}
+
 export function readTranscriptPage(
   database: Database,
   input: {
@@ -810,18 +861,22 @@ export function readTranscriptPage(
         hardCeiling,
         maxTurns,
       );
+      const runs = await fitRunCards(tx, scope, [{ rows: selected, min: 1 }], budget);
       const hasMore = candidates.length > selected.length;
       return {
         kind: "page" as const,
         revision: state.sequence,
         items: selected.map(({ item }) => item),
+        ...(runs.length ? { runs } : {}),
         hasMore,
+        anchorItemId: null,
         nextBefore: null,
         nextAfter: hasMore ? makeCursor(selected.at(-1)?.row) : null,
       };
     }
-    let rows: { readonly row: Item; readonly item: TranscriptItem }[];
-    let newer: { readonly row: Item; readonly item: TranscriptItem }[] = [];
+    let rows: Selected[];
+    let newer: Selected[] = [];
+    let runs: TranscriptItem[] = [];
     let hasMore: boolean;
     let nextAfter: TranscriptCursor | null = null;
     if (anchor?.position) {
@@ -864,6 +919,16 @@ export function readTranscriptPage(
       );
       rows = [{ row: anchor, item: anchorItem }, ...selectedOlder.selected];
       newer = selectedNewer.selected;
+      // The older rows give way first, then the newer: the anchor always stays.
+      runs = await fitRunCards(
+        tx,
+        scope,
+        [
+          { rows, min: 1 },
+          { rows: newer, min: 0 },
+        ],
+        budget,
+      );
       const newest = newer.at(-1)?.row ?? anchor;
       const remainingNewer =
         newer.length < newerCandidates.length ||
@@ -878,12 +943,13 @@ export function readTranscriptPage(
             .executeTakeFirst(),
         );
       if (remainingNewer) nextAfter = makeCursor(newest);
-      hasMore = olderCandidates.length > selectedOlder.selected.length;
+      hasMore = olderCandidates.length > rows.length - 1;
     } else {
       const candidates = await olderKeyQuery.limit(limit + 1).execute();
       rows = (
         await selectHydratedWindow(tx, scope, candidates, limit, budget, hardCeiling, maxTurns)
       ).selected;
+      runs = await fitRunCards(tx, scope, [{ rows, min: 1 }], budget);
       hasMore = candidates.length > rows.length;
     }
     const oldest = rows.at(-1)?.row;
@@ -891,6 +957,7 @@ export function readTranscriptPage(
     return {
       kind: "page" as const,
       revision: state.sequence,
+      ...(runs.length ? { runs } : {}),
       items: [...rows.reverse(), ...newer].map(({ item }) => item),
       hasMore,
       nextBefore,

@@ -213,6 +213,12 @@ export const TranscriptPageSchema = z.object({
   nodeId: ExecutionNodeIdSchema.nullable(),
   revision: PersonalRevisionSchema,
   items: z.array(TranscriptItemSchema).max(100),
+  /**
+   * The Run cards of the Runs `items` belong to that `items` does not hold: what every row of a
+   * Run reads its state and its reply from, however far above the page the Run began. Metadata
+   * beside the page, outside its order and its cursors.
+   */
+  runs: z.array(TranscriptItemSchema).max(100).optional(),
   hasMore: z.boolean(),
   nextBefore: TranscriptOrderCursorViewSchema.nullable(),
   nextAfter: TranscriptOrderCursorViewSchema.nullable().optional(),

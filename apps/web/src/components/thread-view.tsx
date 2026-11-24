@@ -1,11 +1,19 @@
-import { useThreadTranscript } from "@opensteer/client/react";
+import {
+  useHostSelector,
+  useSyncingPlaceholder,
+  useThreadRow,
+  useThreadScope,
+  useTabSource,
+  useThreadTranscript,
+} from "@opensteer/client/react";
 import { useOutboxTranscript } from "@opensteer/client/react";
 import { hostMessageOutbox, splitLocalMessages } from "@opensteer/client/host";
 import { useThreadVisits } from "@opensteer/client/react";
 import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
-import { threadMark, type PasswordsSetupOffer } from "@opensteer/client/host";
+import type { PasswordsSetupOffer } from "@opensteer/client/host";
 import { readTail, type TailReading } from "@opensteer/shared/tailFollow";
 import {
+  memo,
   useCallback,
   useContext,
   useId,
@@ -19,6 +27,7 @@ import { createPortal } from "react-dom";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { placeContentLabel, type ModelSelection, type Request } from "@opensteer/core";
 import {
+  type AssignmentEntry,
   type ConversationActivitySelection,
   canContinueThreadOnPlacement,
   canRespondToRequests,
@@ -50,18 +59,14 @@ import {
   type ThreadPlacementOption,
   type ThreadSummary,
   type HostClient,
+  type HostSnapshot,
   type TranscriptEntry,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
-import {
-  useRunPage,
-  useTabsRevision,
-  useThreadInputQueue,
-  useWaitingInputs,
-} from "@opensteer/client/react";
+import { useRunPage, useThreadInputQueue, useWaitingInputs } from "@opensteer/client/react";
 import { fromLivePage, useMediaQuery, usePageVisible, useWindowInForeground } from "../ui-utils.js";
 import { AgentTranscript, ConversationActivity } from "./agent-activity.js";
-import { useShell } from "./app-shell.js";
+import { useShell, type ShellContext } from "./app-shell.js";
 import { ExecutionControls } from "./execution-controls.js";
 import {
   applyThreadExecution,
@@ -109,7 +114,7 @@ import { RunPlacePictureScope, useDisplayDecoding } from "./workspace/run-place-
 import { LivePlace, useRunPlaceView } from "./workspace/viewfinder.js";
 import { useWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskState, taskStateWords } from "./workspace/task-mark.js";
-import { useTaskDirectory } from "./workspace/task-directory.js";
+import { useTaskMark, useTaskStanding } from "./workspace/task-directory.js";
 import { PersonalReferences } from "./references/reference-scope.js";
 import { Unavailable } from "./references/unavailable.js";
 import { useConnectionGate, useConnectionLive } from "./connection-shell.js";
@@ -121,15 +126,31 @@ export function ThreadRoute() {
   return <ThreadSurface threadId={threadId ?? null} />;
 }
 
-/** One task, wherever it is reached from: a row, a link, Voice. */
+/**
+ * One task, wherever it is reached from: a row, a link, Voice. The shell here is the stable
+ * projection; this task's row and lookup, which it leaves out, are read live and for this task.
+ */
 export function ThreadSurface({ threadId }: { readonly threadId: string | null }) {
-  const { hostClient, placements, snapshot } = useShell();
+  const {
+    executionPreferences,
+    hostClient,
+    openHarnessAuthentication,
+    placements,
+    refreshHarnessCatalog,
+    reportActionError,
+    snapshot,
+  } = useShell();
   const { nav } = useWorkspace();
   const navigate = useNavigate();
   const transcript = useThreadTranscript(hostClient, threadId);
-  const thread = snapshot.threads.find((candidate) => candidate.id === threadId) ?? null;
-  const missing =
-    thread === null && threadId !== null && snapshot.threadLookups[threadId] === "missing";
+  const thread = useThreadRow(hostClient, threadId);
+  const selectLookup = useCallback(
+    (snapshot: HostSnapshot) => (threadId === null ? undefined : snapshot.threadLookups[threadId]),
+    [threadId],
+  );
+  const lookup = useHostSelector(hostClient, selectLookup);
+  const voiceThread = useHostSelector(hostClient, selectVoiceThreadId) === threadId;
+  const missing = thread === null && threadId !== null && lookup === "missing";
   useEffect(() => {
     if (!threadId) return;
     hostClient.activateThread(threadId);
@@ -150,10 +171,41 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
     ready: thread !== null || missing || threadId === null,
     onBack: back,
     failed:
-      threadId && snapshot.threadLookups[threadId] === "failed"
+      threadId && lookup === "failed"
         ? { resource: "this task", onRetry: () => hostClient.activateThread(threadId) }
         : null,
   });
+  const environmentId = thread?.environmentId ?? null;
+  const environmentStatus =
+    snapshot.environments.find((item) => item.id === environmentId)?.status ?? "disconnected";
+  // Only Codex carries a call, so the Voice Thread can change account but not engine.
+  const executionPlacements = useMemo(
+    () =>
+      placements.filter(
+        (placement) =>
+          placement.environmentId === environmentId &&
+          (!voiceThread || placement.driverKind === "codex"),
+      ),
+    [environmentId, placements, voiceThread],
+  );
+  const shell = useMemo<ThreadShell>(
+    () => ({
+      executionPreferences,
+      hostClient,
+      openHarnessAuthentication,
+      refreshHarnessCatalog,
+      reportActionError,
+    }),
+    [
+      executionPreferences,
+      hostClient,
+      openHarnessAuthentication,
+      refreshHarnessCatalog,
+      reportActionError,
+    ],
+  );
+  const deploymentId = snapshot.deploymentId;
+  const userId = snapshot.user?.id ?? null;
   // A link to a task that was deleted, or that this reader may not see, says so;
   // otherwise its connection or its own read does, until the task arrives and
   // renders in the same frame under the gate as it fades.
@@ -164,7 +216,11 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
     <Gated gate={gateView}>
       {thread ? (
         <ThreadView
-          key={`${snapshot.deploymentId ?? ""}:${snapshot.user?.id ?? ""}:${thread.id}`}
+          key={`${deploymentId ?? ""}:${userId ?? ""}:${thread.id}`}
+          deploymentId={deploymentId}
+          shell={shell}
+          userId={userId}
+          voiceThread={voiceThread}
           requests={transcript.requests}
           canLoadEarlier={transcript.hasMore}
           canLoadNewer={transcript.hasNewer}
@@ -173,20 +229,13 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
           moreNodes={transcript.moreNodes ?? false}
           inputQueueError={transcript.inputQueueError}
           entries={transcript.entries}
-          environmentStatus={
-            snapshot.environments.find((item) => item.id === thread.environmentId)?.status ??
-            "disconnected"
-          }
-          executionPlacements={placements.filter(
-            (placement) =>
-              placement.environmentId === thread.environmentId &&
-              // Only Codex carries a call, so this Thread can change account but not engine.
-              (thread.id !== snapshot.voiceThreadId || placement.driverKind === "codex"),
-          )}
+          environmentStatus={environmentStatus}
+          executionPlacements={executionPlacements}
           thread={thread}
           runQueue={transcript.runQueue}
           detailCurrent={transcript.synchronized}
           cuts={transcript.cuts ?? 0}
+          generation={transcript.generation ?? 0}
         />
       ) : null}
     </Gated>
@@ -195,7 +244,26 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
 
 const noRuns: readonly import("@opensteer/client/host").RunQueueEntry[] = [];
 
+const selectVoiceThreadId = (snapshot: HostSnapshot) => snapshot.voiceThreadId;
+const selectCanRespond = (snapshot: HostSnapshot) => canRespondToRequests(snapshot);
+const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
+
+/** What a task's view uses of the shell, apart from the snapshot, which it reads itself. */
+type ThreadShell = Pick<
+  ShellContext,
+  | "executionPreferences"
+  | "hostClient"
+  | "openHarnessAuthentication"
+  | "refreshHarnessCatalog"
+  | "reportActionError"
+>;
+
 interface ThreadViewProps {
+  deploymentId: string | null;
+  shell: ThreadShell;
+  userId: NonNullable<HostSnapshot["user"]>["id"] | null;
+  /** This is the person's Voice Thread. */
+  voiceThread: boolean;
   requests: readonly Request[];
   canLoadEarlier: boolean;
   canLoadNewer?: boolean;
@@ -207,6 +275,8 @@ interface ThreadViewProps {
   detailCurrent?: boolean;
   /** Counts the snapshots installed for this conversation (a subscription's or a repair's). */
   cuts?: number;
+  /** The subscription the transcript was read under: a reconnect's replay is another one. */
+  generation?: number;
   runQueue?: readonly import("@opensteer/client/host").RunQueueEntry[];
   environmentStatus: EnvironmentStatus;
   executionPlacements: ThreadPlacementOption[];
@@ -226,14 +296,20 @@ const readingPositions = new Map<
 const renderPasswordsSuggestion = (offer: PasswordsSetupOffer) => (
   <PasswordsSuggestion offer={offer} />
 );
+const renderTaskRows = (entries: readonly AssignmentEntry[]) => <TaskRows entries={entries} />;
 
-function ThreadView({
+/**
+ * The open task. It reads no shell context: what it draws of the snapshot it selects for this task
+ * (its scope, its tabs, a few facts), so it redraws when this task changes and for nothing else.
+ */
+const ThreadView = memo(function ThreadView({
   canLoadEarlier,
   canLoadNewer = false,
   moreRequests = false,
   moreTools = false,
   moreNodes = false,
   inputQueueError,
+  deploymentId,
   entries,
   environmentStatus,
   executionPlacements,
@@ -241,7 +317,11 @@ function ThreadView({
   runQueue = noRuns,
   detailCurrent = true,
   cuts = 0,
+  generation = 0,
+  shell,
   thread,
+  userId,
+  voiceThread,
 }: ThreadViewProps) {
   const { dock: workspaceDock, nav, phone, selection, work } = useWorkspace();
   // A subagent opened from this conversation: in its column, or beside it when it stands alone and wide.
@@ -261,8 +341,9 @@ function ThreadView({
     openHarnessAuthentication,
     refreshHarnessCatalog,
     reportActionError,
-    snapshot,
-  } = useShell();
+  } = shell;
+  // This task's handed-out work, its questions and its browsers, and nothing of anyone else's.
+  const scope = useThreadScope(hostClient, thread.id, entries);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   // On a phone the sheet is one scrolling body, transcript and requests
@@ -337,21 +418,15 @@ function ThreadView({
   // Each conversation, for each signed-in user of each deployment, has its own
   // composer: its draft, files and unsent message never follow the reader to
   // another one, and nothing that finishes late lands in the wrong one.
-  const composerKey = `${snapshot.deploymentId ?? ""}:${snapshot.user?.id ?? ""}:${thread.id}`;
+  const composerKey = `${deploymentId ?? ""}:${userId ?? ""}:${thread.id}`;
   // A connected agent's own task: its activity in place of a transcript, no composer.
-  const sessionView = useSessionTask(thread.id);
+  const sessionView = useSessionTask(hostClient, thread.id);
   useEffect(() => {
     setHistorical(false);
     setActivityView(null);
   }, [composerKey]);
   const inputQueue = useThreadInputQueue(hostClient, thread.id);
   const waiting = useWaitingInputs(hostClient, thread.id);
-  // Links in the transcript open tabs; a tab change gives them a new source to read.
-  const tabRevision = useTabsRevision(hostClient);
-  const tabSource = useMemo(
-    () => ({ tabs: snapshot.tabs, browserProfiles: snapshot.browserProfiles, tabRevision }),
-    [snapshot.tabs, snapshot.browserProfiles, tabRevision],
-  );
   // The composer's own record: words sent as new from an open edit are kept the same way.
   const outbox = hostMessageOutbox(hostClient);
   // The Tasks count opens a task at its exact request; one already answered stays answered.
@@ -363,10 +438,9 @@ function ThreadView({
     typeof location.state.focusRequest === "string"
       ? location.state.focusRequest
       : null;
-  const voiceThread = snapshot.voiceThreadId === thread.id;
   const onCall = useVoiceOn();
   // On a call, this Thread's Requests ride on the call bar, on every screen.
-  const dock = useRequestDock(thread.id, requests, voiceThread && onCall);
+  const dock = useRequestDock(hostClient, thread.id, requests, voiceThread && onCall);
   const { items: dockedRequests, openId: openRequestId, setOpenId: openRequest } = dock;
   // The exact request is opened and focused once it can be: its body may load
   // after the conversation does, and it may wait behind another request. Once
@@ -435,7 +509,7 @@ function ThreadView({
   // This device's waiting messages, drawn where they will stand once sent. They
   // meet the Host's copies before the queue is taken out, so one the Host
   // already holds in its queue is drawn once, there.
-  const projected = useOutboxTranscript(outbox, thread.id, entries, snapshot.user?.id ?? null);
+  const projected = useOutboxTranscript(outbox, thread.id, entries, userId);
   const withOutbox = useMemo(
     () =>
       projected === entries
@@ -446,6 +520,8 @@ function ThreadView({
           ),
     [conversation, conversational, entries, inputQueue, projected, thread.id],
   );
+  // Links in the transcript name tabs; each chip reads its own from here, so only it follows them.
+  const tabSource = useTabSource(hostClient);
   const hasQueuedInputs = Boolean(inputQueue?.items.length);
   const startsRun = threadStartsRunForMessage({ runQueue, thread });
   const local = useMemo(
@@ -453,8 +529,8 @@ function ThreadView({
     [conversational, hasQueuedInputs, startsRun, withOutbox],
   );
   const incomingMessages = useMemo(
-    () => incomingTranscriptMessages(conversation, snapshot.user?.id ?? null, conversational),
-    [conversation, conversational, snapshot.user?.id],
+    () => incomingTranscriptMessages(conversation, userId, conversational),
+    [conversation, conversational, userId],
   );
   const observed = useMemo(
     () => observedSequence(conversation, conversational),
@@ -644,6 +720,8 @@ function ThreadView({
       own,
     );
     if (follows && !own) scroller.scrollTop = scroller.scrollHeight;
+    // The reader moved on from where they were measured: a cut lands where they are now.
+    if (own && scroller.scrollTop !== previous.offset) reading.current = null;
     tailRef.current = { follows, offset: scroller.scrollTop };
     scrollGeometryRef.current = {
       scroller,
@@ -657,29 +735,21 @@ function ThreadView({
 
   /* ---- Reading position: the row in view, measured when asked ---- */
 
-  // Each row's first item, which is what the Host centres a repair or the next subscription on.
-  const rowItems = useMemo(() => {
-    let rows: Map<string, string> | undefined;
-    return () =>
-      (rows ??= new Map(
-        groupTranscriptEntries(conversation, { inputQueuePaused: thread.inputQueuePaused }).flatMap(
-          (group) => {
-            const first =
-              group.kind === "turn"
-                ? (group.turn.work[0] ?? group.turn.reply ?? group.turn.run)
-                : group.entry;
-            return first
-              ? [[group.key, "itemId" in first ? (first.itemId ?? first.id) : first.id] as const]
-              : [];
-          },
-        ),
-      ));
-  }, [conversation, thread.inputQueuePaused]);
+  // The rows as the transcript draws them, in order, each by its key and the item it starts at,
+  // which is what the Host centres a repair or the next subscription on.
+  const drawnRows = useRef<ReadonlyMap<string, string | undefined>>(new Map());
+  const rowItems = () => drawnRows.current;
   // The row the reader was looking at, and where it stood, when the client last asked: a repair
   // puts it back there. Ordinary scrolling reports nothing.
   const reading = useRef<ReadingAnchor | null>(null);
   const historicalRef = useRef(historical);
   historicalRef.current = historical;
+  const canLoadNewerRef = useRef(canLoadNewer);
+  canLoadNewerRef.current = canLoadNewer;
+  // Following the live latest: at the foot of a window that reaches it. At the foot of one that
+  // stops short of it, the reader follows nothing live, and is placed like any reader.
+  const followsLive = () =>
+    tailRef.current.follows && !historicalRef.current && !canLoadNewerRef.current;
   // The reader's explicit moves (jumps, returns), numbered: a frame scheduled for one never acts
   // after a newer one.
   const moves = useRef(0);
@@ -692,7 +762,7 @@ function ThreadView({
     const scroller = currentScroller();
     reading.current = null;
     if (!scroller) return null;
-    if (tailRef.current.follows && !historicalRef.current) return undefined;
+    if (followsLive()) return undefined;
     const rows = scroller.getElementsByClassName("transcript__row");
     const key = (row: Element) => (row as HTMLElement).dataset.transcriptRow;
     const anchor = findReadingAnchor(rows, scroller.getBoundingClientRect().top, key);
@@ -705,8 +775,16 @@ function ThreadView({
   const measure = useRef(measureNow);
   measure.current = measureNow;
   useEffect(() => {
-    hostClient.setTranscriptPosition(thread.id, () => measure.current());
-    return () => hostClient.setTranscriptPosition(thread.id, null);
+    // Another view of this Thread registered over this one answers until it goes; this one's
+    // release gives back only its own place.
+    return hostClient.setTranscriptPosition(thread.id, () => measure.current());
+  }, [hostClient, thread.id]);
+  // Whether the reader follows the live latest, asked only when live rows must be bounded: a
+  // follower keeps the newest; anyone else keeps all they loaded, and the rest waits a page away.
+  const following = useRef(followsLive);
+  following.current = followsLive;
+  useEffect(() => {
+    return hostClient.setTranscriptFollowing(thread.id, () => following.current());
   }, [hostClient, thread.id]);
   // A new cut (a repair, or a new subscription's snapshot) replaces the rows on screen: the row
   // measured just before it is put back where it stood, or its nearest surviving neighbour, or
@@ -717,7 +795,9 @@ function ThreadView({
     seenCuts.current = cuts;
     const measured = reading.current;
     reading.current = null;
-    if (tailRef.current.follows || !measured) return;
+    if (!measured) return;
+    // Measured, the reader was placed rather than following the live latest: they go back there.
+    setFollows(false);
     restoring.current = measured;
     setPinnedRowKeys([measured.key, ...(measured.neighbours ?? [])]);
     restoreReading();
@@ -767,6 +847,8 @@ function ThreadView({
 
   const goToTail = () => {
     abandonEarlier();
+    // The reader's jump is newer than any place measured for a cut still on its way.
+    reading.current = null;
     setFollows(true);
     keepTailInView();
   };
@@ -989,16 +1071,23 @@ function ThreadView({
    * then owns it: it hangs from that control, and closing it returns the
    * reader there.
    */
-  const openActivity = (
-    selection: ConversationActivitySelection,
-    opener: HTMLElement | null,
-    reveal: string | null = null,
-  ) => {
-    const source = opener !== null && selection.kind === "turn" && reveal === null;
-    const from = source ? opener : (opener ?? activityAnchor());
-    if (from === null) return;
-    setActivityView({ opener: from, reveal, selection, source: source ? "reply" : "header" });
-  };
+  const openActivity = useCallback(
+    (
+      selection: ConversationActivitySelection,
+      opener: HTMLElement | null,
+      reveal: string | null = null,
+    ) => {
+      const source = opener !== null && selection.kind === "turn" && reveal === null;
+      const from = source ? opener : (opener ?? headerTitleRef.current);
+      if (from === null) return;
+      setActivityView({ opener: from, reveal, selection, source: source ? "reply" : "header" });
+    },
+    [],
+  );
+  const openTurnActivity = useCallback(
+    (key: string, opener: HTMLElement) => openActivity({ key, kind: "turn" }, opener),
+    [openActivity],
+  );
 
   // Something said on the way to a reply is not in the conversation: a search
   // or a link that names it opens the Activity of the reply it led to, and the
@@ -1034,6 +1123,8 @@ function ThreadView({
   const returnToLatest = () => moveToLatest(++moves.current);
   const moveToLatest = async (move: number): Promise<boolean> => {
     abandonEarlier();
+    // The reader's move is newer than any place measured for a cut still on its way.
+    reading.current = null;
     // A newer move superseded this one: it owns the reader's position and the address.
     if (!(await hostClient.loadLatestTranscript(thread.id)) || move !== moves.current) return false;
     // The anchor is spent. Releasing it from the address as well is what lets
@@ -1099,27 +1190,35 @@ function ThreadView({
   /* ---- Quoting a reply ---- */
 
   /** Quotes a message into this conversation's own composer, focused and unsent. */
-  const replyWith = (message: MessageEntry) => {
-    const quote = quoteFromMessage(message);
-    const key = composerDraftKeyFor(snapshot.deploymentId, snapshot.user?.id, {
-      kind: "thread",
-      threadId: thread.id,
-    });
-    if (!key) return;
-    const editId = composerDrafts.read(key)?.editId;
-    void composerDrafts
-      .handBack(key, { edit: (text) => text, quote }, editId)
-      .catch(reportActionError);
-    requestAnimationFrame(() => composerInputRef.current?.focus());
-  };
+  const replyWith = useCallback(
+    (message: MessageEntry) => {
+      const quote = quoteFromMessage(message);
+      const key = composerDraftKeyFor(deploymentId, userId, {
+        kind: "thread",
+        threadId: thread.id,
+      });
+      if (!key) return;
+      const editId = composerDrafts.read(key)?.editId;
+      void composerDrafts
+        .handBack(key, { edit: (text) => text, quote }, editId)
+        .catch(reportActionError);
+      requestAnimationFrame(() => composerInputRef.current?.focus());
+    },
+    [deploymentId, reportActionError, thread.id, userId],
+  );
 
-  const canRespond = detailCurrent && canRespondToRequests(snapshot);
+  const canRespond = useHostSelector(hostClient, selectCanRespond) && detailCurrent;
   const connectionLive = useConnectionLive(hostClient.connection);
   const live = detailCurrent && connectionLive && environmentStatus === "connected";
   // What this client holds of the account is current only while it is live.
-  const startHold = live
-    ? threadStartHold({ environments: snapshot.environments, runQueue: runQueue, thread })
-    : null;
+  const startHold = useHostSelector(
+    hostClient,
+    useCallback(
+      (snapshot: HostSnapshot) =>
+        live ? threadStartHold({ environments: snapshot.environments, runQueue, thread }) : null,
+      [live, runQueue, thread],
+    ),
+  );
   const endedOriginMessage = thread.endedOrigin ? taskOriginEndedMessage(thread.endedOrigin) : null;
   const composerPlaceholder = threadComposerPlaceholder(conversation.length === 0);
   // The field names whom it writes to: the task by its name.
@@ -1137,9 +1236,16 @@ function ThreadView({
         <span className="thread__connection-label">{taskLabel}</span>
       </span>
     ) : null;
-  const historyState = snapshot.threadLookups[thread.id];
+  const historyState = useHostSelector(
+    hostClient,
+    useCallback((snapshot: HostSnapshot) => snapshot.threadLookups[thread.id], [thread.id]),
+  );
+  // Before its first cut a task's transcript is unknown, not empty: nothing is drawn, and only a
+  // slow first read says so, so a quick one never flashes a notice or the empty task's welcome.
+  const transcriptUnknown = !detailCurrent && cuts === 0;
+  const loadingTranscript = useSyncingPlaceholder(transcriptUnknown, withOutbox.length);
   const historyStatus =
-    historyState === "loading" && live ? (
+    (historyState === "loading" && live) || loadingTranscript ? (
       <span className="thread__connection" role="status">
         Loading messages…
       </span>
@@ -1156,29 +1262,23 @@ function ThreadView({
     () => usageLimitAlternative(executionPlacements, thread),
     [executionPlacements, thread],
   );
-  const computers = useMemo(
-    () => ({ hostClient, machines: snapshot.machines }),
-    [hostClient, snapshot.machines],
-  );
-  // Narrow reader so unrelated snapshot changes (tabs, machines, browserUses) do not
-  // broadcast to every subagent card in the transcript.
-  const subagentReader = useMemo(
-    () => ({
-      assignments: snapshot.assignments,
-      connection: snapshot.connection,
-      environments: snapshot.environments,
-      network: snapshot.network,
-      threads: snapshot.threads,
-      waitingRequests: snapshot.waitingRequests,
-    }),
-    [
-      snapshot.assignments,
-      snapshot.connection,
-      snapshot.environments,
-      snapshot.network,
-      snapshot.threads,
-      snapshot.waitingRequests,
-    ],
+  const machines = useHostSelector(hostClient, selectMachines);
+  const computers = useMemo(() => ({ hostClient, machines }), [hostClient, machines]);
+  // The way back to the live conversation from a window that stops short of it.
+  const backToLatest = (
+    <button
+      className="transcript__jump"
+      disabled={returning}
+      onClick={() => {
+        setReturning(true);
+        void returnToLatest()
+          .catch(reportActionError)
+          .finally(() => setReturning(false));
+      }}
+      type="button"
+    >
+      <Icon name="chevron-down" /> {returning ? "Loading…" : "Back to latest"}
+    </button>
   );
   // What the jump button says while the reader is away from a turn at work on
   // their Mac: that is where its Stop is. Only asked while they are away, so a
@@ -1188,10 +1288,10 @@ function ThreadView({
       live && !atTail
         ? threadComputerUseNow(
             groupTranscriptEntries(conversation, { inputQueuePaused: thread.inputQueuePaused }),
-            snapshot.machines,
+            machines,
           )
         : null,
-    [atTail, conversation, live, snapshot.machines, thread.inputQueuePaused],
+    [atTail, conversation, live, machines, thread.inputQueuePaused],
   );
   // The engine this Thread runs on is the one that would have to enforce a new
   // access mode, so it is the one the menu asks about.
@@ -1202,20 +1302,28 @@ function ThreadView({
 
   const title = conversationName(thread.title);
   // Under the name only when the task is not plainly working, and only what is known.
-  const waitingReason = useMemo(
-    () =>
-      thread.status === "waiting" ? taskWaitingReason(snapshot, thread.id, threadRunQueue) : null,
-    [snapshot, thread.id, thread.status, threadRunQueue],
+  const waitingReason = useHostSelector(
+    hostClient,
+    useCallback(
+      (snapshot: HostSnapshot) =>
+        thread.status === "waiting"
+          ? (taskWaitingReason(snapshot, thread.id, threadRunQueue)?.label ?? null)
+          : null,
+      [thread.id, thread.status, threadRunQueue],
+    ),
   );
+  // The assignment this task works on, if any: what pauses it, and what its strip says.
+  const ownAssignment = workerAssignment(scope.assignments, thread.id);
   // What the task's own strip used to say beyond its state — offline, its
   // account preparing, a result that could not be returned — is said here.
-  const assignmentBlock = useMemo(() => {
-    const assignment = workerAssignment(snapshot.assignments, thread.id);
-    return assignment
-      ? (blockingDetail(assignmentPresentation(assignment, snapshot))?.text ?? null)
-      : null;
-  }, [snapshot, thread.id]);
-  const cause = taskStatus ?? historyStatus ?? waitingReason?.label ?? assignmentBlock;
+  const assignmentBlock = useMemo(
+    () =>
+      ownAssignment
+        ? (blockingDetail(assignmentPresentation(ownAssignment, scope))?.text ?? null)
+        : null,
+    [ownAssignment, scope],
+  );
+  const cause = taskStatus ?? historyStatus ?? waitingReason ?? assignmentBlock;
 
   // On a phone with the conversation alone, its Run's page can stand above it.
   const threadRef = useRef<HTMLDivElement | null>(null);
@@ -1330,6 +1438,51 @@ function ThreadView({
   const shownRequest =
     dockItems.find((item) => item.surface.request.id === openRequestId) ?? dockItems[0];
   const dockQuestion = shownRequest?.surface.textRole === "answer" ? shownRequest : null;
+  // The transcript's own inputs keep their identity while they say the same, so the view's own
+  // state (where the reader stands, what is folded) is not news to it.
+  const queued = useMemo(
+    () =>
+      !conversational && (waiting || local.afterQueue.length) ? (
+        <WaitingInputs
+          client={hostClient}
+          disabled={!canRespond}
+          inputs={waiting ?? []}
+          local={local.afterQueue}
+          transcript={projected}
+          onError={reportActionError}
+          paused={inputQueue?.paused ?? false}
+          resumable={thread.status !== "archived" && endedOriginMessage === null}
+          threadId={thread.id}
+          viewerUserId={userId}
+        />
+      ) : null,
+    [
+      canRespond,
+      conversational,
+      endedOriginMessage,
+      hostClient,
+      inputQueue?.paused,
+      local.afterQueue,
+      projected,
+      reportActionError,
+      thread.id,
+      thread.status,
+      userId,
+      waiting,
+    ],
+  );
+  const closeActivity = useCallback(() => setActivityView(null), []);
+  const activityOwner = useMemo(
+    () =>
+      activityView?.source === "reply" && activityView.selection.kind === "turn"
+        ? {
+            onClose: closeActivity,
+            panelId: activityPanelId,
+            turnKey: activityView.selection.key,
+          }
+        : null,
+    [activityPanelId, activityView, closeActivity],
+  );
 
   return (
     <PersonalReferences client={hostClient} threadId={thread.id}>
@@ -1458,6 +1611,7 @@ function ThreadView({
                           their bubbles never jump when the Host takes them. */}
                       {withOutbox.length === 0 &&
                       historyState === undefined &&
+                      !transcriptUnknown &&
                       !waiting?.length &&
                       !sessionView ? (
                         <EmptyThread voice={voiceThread} />
@@ -1466,7 +1620,14 @@ function ThreadView({
                         <SessionActivity view={sessionView} />
                       ) : (
                         <AgentTranscript
+                          rowItemsRef={drawnRows}
                           followTail={atTail && !historical}
+                          // Live work appends to the newest window of one cut; a page read does not.
+                          liveCut={
+                            detailCurrent && !canLoadNewer && !historical && !loadingEarlier
+                              ? `${generation}:${cuts}`
+                              : null
+                          }
                           pinnedMessageIds={pinnedMessageIds}
                           pinnedRowKeys={pinnedRowKeys}
                           revealMessage={revealMessage}
@@ -1475,7 +1636,7 @@ function ThreadView({
                           attachmentReader={hostClient}
                           activity={activity}
                           browserSessions={tabSource}
-                          browserUses={snapshot.browserUses}
+                          browserUses={scope.browserUses}
                           // A conversation (Opensteer, a direct message) reads as messages, each
                           // turn's steps behind its reply; work keeps its whole trace in view.
                           conversation={conversational}
@@ -1483,51 +1644,25 @@ function ThreadView({
                           computers={computers}
                           entries={local.transcript}
                           afterQueue={local.afterQueue}
-                          waitingRequests={snapshot.waitingRequests}
-                          assignments={snapshot.assignments}
+                          waitingRequests={scope.waitingRequests}
+                          assignments={scope.assignments}
                           inputQueuePaused={thread.inputQueuePaused}
                           renderPasswordsSuggestion={renderPasswordsSuggestion}
-                          queued={
-                            !conversational && (waiting || local.afterQueue.length) ? (
-                              <WaitingInputs
-                                client={hostClient}
-                                disabled={!canRespond}
-                                inputs={waiting ?? []}
-                                local={local.afterQueue}
-                                transcript={projected}
-                                onError={reportActionError}
-                                paused={inputQueue?.paused ?? false}
-                                resumable={
-                                  thread.status !== "archived" && endedOriginMessage === null
-                                }
-                                threadId={thread.id}
-                                viewerUserId={snapshot.user?.id ?? null}
-                              />
-                            ) : null
-                          }
+                          queued={queued}
                           {...(conversational
                             ? {
-                                activityOwner:
-                                  activityView?.source === "reply" &&
-                                  activityView.selection.kind === "turn"
-                                    ? {
-                                        onClose: () => setActivityView(null),
-                                        panelId: activityPanelId,
-                                        turnKey: activityView.selection.key,
-                                      }
-                                    : null,
+                                activityOwner,
                                 onActivityAnchor: setActivityOwnerAnchor,
-                                onOpenActivity: (key: string, opener: HTMLElement) =>
-                                  openActivity({ key, kind: "turn" }, opener),
+                                onOpenActivity: openTurnActivity,
                               }
                             : {})}
                           onReply={replyWith}
-                          renderTask={(entries) => <TaskRows entries={entries} />}
+                          renderTask={renderTaskRows}
                           requestShown={dockedRequests.length > 0}
                           startHold={startHold}
-                          subagentReader={subagentReader}
+                          subagentReader={scope}
                           threadId={thread.id}
-                          viewerUserId={snapshot.user?.id ?? null}
+                          viewerUserId={userId}
                         />
                       )}
                       {missingMessage ? (
@@ -1548,29 +1683,23 @@ function ThreadView({
           way back is to load the live one — so the offer stands whether or not
           anything new has arrived since. */}
                   {canLoadNewer ? (
-                    <button
-                      className="transcript__jump"
-                      type="button"
-                      onClick={() =>
-                        void hostClient.loadNewerTranscript(thread.id).catch(reportActionError)
-                      }
-                    >
-                      <Icon name="chevron-down" /> Load newer
-                    </button>
+                    <div className="transcript__jumps">
+                      <button
+                        className="transcript__jump"
+                        type="button"
+                        onClick={() => {
+                          // The reader reads on into the page below, not past it to its foot.
+                          setFollows(false);
+                          void hostClient.loadNewerTranscript(thread.id).catch(reportActionError);
+                        }}
+                      >
+                        <Icon name="chevron-down" /> Load newer
+                      </button>
+                      {/* However far the window stops short, the live conversation is one read away. */}
+                      {backToLatest}
+                    </div>
                   ) : historical ? (
-                    <button
-                      className="transcript__jump"
-                      disabled={returning}
-                      onClick={() => {
-                        setReturning(true);
-                        void returnToLatest()
-                          .catch(reportActionError)
-                          .finally(() => setReturning(false));
-                      }}
-                      type="button"
-                    >
-                      <Icon name="chevron-down" /> {returning ? "Loading…" : "Back to latest"}
-                    </button>
+                    backToLatest
                   ) : !atTail && computerNow ? (
                     <button className="transcript__jump" onClick={goToTail} type="button">
                       <Icon name="laptop" /> {computerUseNowSummary(computerNow)}
@@ -1670,16 +1799,16 @@ function ThreadView({
                       : (activityAnchor() ?? activityView.opener)
                   }
                   browserSessions={tabSource}
-                  browserUses={snapshot.browserUses}
+                  browserUses={scope.browserUses}
                   entries={conversation}
                   id={activityPanelId}
                   inputQueuePaused={thread.inputQueuePaused}
                   live={live}
-                  onClose={() => setActivityView(null)}
+                  onClose={closeActivity}
                   returnFocusTo={activityView.opener}
                   reveal={activityView.reveal}
                   selection={activityView.selection}
-                  subagentReader={snapshot}
+                  subagentReader={scope}
                   threadId={thread.id}
                 />
               ) : null}
@@ -1745,7 +1874,7 @@ function ThreadView({
                     stopLabel={
                       conversational
                         ? "Stop the reply"
-                        : workerAssignment(snapshot.assignments, thread.id)?.status === "open"
+                        : ownAssignment?.status === "open"
                           ? "Pause this task"
                           : "Stop the run"
                     }
@@ -1822,7 +1951,7 @@ function ThreadView({
       </RunPlacePictureScope>
     </PersonalReferences>
   );
-}
+});
 
 /**
  * The exact update a link or notification points at, under the parameter name
@@ -1936,8 +2065,8 @@ function ConversationSheetHandle({
   readonly title: string;
 }) {
   const { nav } = useWorkspace();
-  const directory = useTaskDirectory(hostClient);
-  const tone = directory.rows.get(threadId)?.tone ?? "working";
+  const tone = useTaskStanding(hostClient, threadId)?.tone ?? "working";
+  const mark = useTaskMark(hostClient, threadId);
   const start = useRef<number | null>(null);
   const dragged = useRef(false);
   const words = taskStateWords(tone);
@@ -1971,7 +2100,7 @@ function ConversationSheetHandle({
       >
         <span aria-hidden className="thread__sheet-grip" />
         <span aria-hidden className="thread__sheet-mark" data-yield={2}>
-          <TaskMark size={20} mark={threadMark(threadId, directory.snapshot)} />
+          <TaskMark size={20} mark={mark} />
         </span>
         <span className="thread__sheet-name" data-yield-name>
           {title}

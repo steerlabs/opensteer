@@ -233,6 +233,7 @@ function stubLayout(width: number, touch = false) {
     "ResizeObserver",
     class {
       observe() {}
+      unobserve() {}
       disconnect() {}
     },
   );

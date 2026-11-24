@@ -242,6 +242,7 @@ export async function buildPersonalDetailSnapshot(
     ...(queue ? queueSnapshot(queue) : {}),
     ...(nodeSubject ? { nodeSubject } : {}),
     items: page.items,
+    ...("runs" in page && page.runs ? { runs: page.runs } : {}),
     pendingRequests: requests.items,
     activeItems: [...tools.items, ...nodes.items],
     overlayCursors: {

@@ -74,3 +74,100 @@ it("keeps same-origin links in a real-origin app and hides the ticket before app
   expect(html.indexOf("'__Host-'+pair")).toBeLessThan(html.indexOf("/app.js"));
   expect(prepareAppHtml("<body>", "dark")).not.toContain("replaceState");
 });
+
+it("names only web pages outside the app as departures, wherever the app is served", async () => {
+  const { appDeparture } = await import("./appFrame.js");
+  for (const kind of ["apps", "plugin-pages"]) {
+    const prefix = `https://host/v1/${kind}/app_test/dark/token/`;
+    expect(appDeparture("https://www.linkedin.com/in/someone", prefix)).toBe(
+      "https://www.linkedin.com/in/someone",
+    );
+    expect(appDeparture("http://reddit.com/r/x#top", prefix)).toBe("http://reddit.com/r/x#top");
+    // The Host's own other pages are not the app's, so they leave it too.
+    expect(appDeparture("https://host/v1/rpc/foo", prefix)).toBe("https://host/v1/rpc/foo");
+    for (const stays of [prefix + "settings", "settings", prefix + "#details", "#details"])
+      expect(appDeparture(stays, prefix)).toBeNull();
+    for (const refused of [
+      "mailto:a@b.test",
+      "javascript:alert(1)",
+      "file:///etc/passwd",
+      "opensteer-app://view/",
+      "https://user:secret@example.com/",
+      `https://example.com/${"a".repeat(8200)}`,
+      "not a url at all \u0000",
+    ])
+      expect(appDeparture(refused, prefix)).toBeNull();
+  }
+  const real = "https://abc.opensteerapp.com/page";
+  expect(appDeparture("https://abc.opensteerapp.com/other", real)).toBeNull();
+  expect(appDeparture("https://other.opensteerapp.com/", real)).toBe(
+    "https://other.opensteerapp.com/",
+  );
+});
+
+it("reads a bootstrap's request to open a page only as a web address", async () => {
+  const { appLinkRequest } = await import("./appFrame.js");
+  expect(appLinkRequest({ url: "https://example.com/a" })).toBe("https://example.com/a");
+  for (const hostile of [
+    null,
+    "https://example.com",
+    {},
+    { url: 42 },
+    { url: "javascript:alert(1)" },
+    { url: "app://opensteer/settings" },
+    { url: "https://u:p@example.com/" },
+    { url: `https://example.com/${"a".repeat(8200)}` },
+  ])
+    expect(appLinkRequest(hostile)).toBeNull();
+});
+
+it("reads a bootstrap's press report only as exactly that", async () => {
+  const { appPressReport } = await import("./appFrame.js");
+  expect(appPressReport({ press: true })).toBe(true);
+  for (const other of [null, true, {}, { press: 1 }, { press: "true" }, { url: "https://a.test/" }])
+    expect(appPressReport(other)).toBe(false);
+});
+
+it("routes an app's departures through its own port, set up before the app's scripts", async () => {
+  const { appLinkPortMessage } = await import("./appFrame.js");
+  const document = prepareAppHtml(
+    "<!doctype html><head><script>window.open('https://x.test')</script></head>",
+    "dark",
+  );
+  expect(document.indexOf("window.open=function")).toBeLessThan(document.indexOf("https://x.test"));
+  expect(document.indexOf(appLinkPortMessage)).toBeLessThan(document.indexOf("https://x.test"));
+  expect(document.indexOf(appLinkPortMessage)).toBeLessThan(
+    document.indexOf("send({type:'opensteer-app:ready'})"),
+  );
+  // A modifier keeps the browser's own gesture.
+  expect(document).toContain("e.metaKey||e.ctrlKey||e.shiftKey||e.altKey");
+});
+
+it("runs the bootstrap before anything the app wrote, inside the app's own opening tags", () => {
+  const bootstrapAt = (document: string) => document.indexOf('<meta charset="utf-8">');
+  const cases: [string, string, string][] = [
+    // [html, what must precede the bootstrap, what must follow it]
+    [
+      '<!-- a template: <head><script>window.first="app"</script> --><html style="--v:1"><head data-x="a>b"><script>window.app=1</script></head></html>',
+      '<head data-x="a>b">',
+      "window.app=1",
+    ],
+    [
+      '<!doctype html><script>window.first="app"</script><html lang="en"><head></head></html>',
+      "<!doctype html>",
+      'window.first="app"',
+    ],
+    [
+      '<!doctype html>\n<!-- note -->\n<html lang="en">\n<body><script>window.app=1</script></body></html>',
+      '<html lang="en">',
+      "window.app=1",
+    ],
+    ["<p>fragment</p><script>window.app=1</script>", "<!doctype html>", "<p>fragment</p>"],
+  ];
+  for (const [html, before, after] of cases) {
+    const document = prepareAppHtml(html, "dark");
+    expect(document.indexOf(before) + before.length).toBeLessThanOrEqual(bootstrapAt(document));
+    expect(bootstrapAt(document)).toBeLessThan(document.indexOf(after, bootstrapAt(document) - 1));
+    expect(document.lastIndexOf(after)).toBeGreaterThan(bootstrapAt(document));
+  }
+});

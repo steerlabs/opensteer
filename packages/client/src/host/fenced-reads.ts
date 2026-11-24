@@ -155,9 +155,14 @@ export class FencedReads {
     for (const waiter of slot.waiters) waiter.resolve();
   }
 
+  /** Ends every key, as `stop` does; later requests still run. */
+  stopAll() {
+    for (const key of this.#slots.keys()) this.stop(key);
+  }
+
   dispose() {
     this.#disposed = true;
-    for (const key of this.#slots.keys()) this.stop(key);
+    this.stopAll();
   }
 
   #bump(key: string) {

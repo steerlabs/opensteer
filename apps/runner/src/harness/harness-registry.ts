@@ -1,7 +1,11 @@
 import { claudeInstallGuidance } from "@opensteer/harness-claude";
 import { harnessCatalog } from "@opensteer/core";
-import { HarnessRegistry } from "@opensteer/harness";
-import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
+import { EngineInstallationResolver, HarnessRegistry } from "@opensteer/harness";
+import {
+  hostCommandPlatform,
+  resolveCommand,
+  resolveCommandCopies,
+} from "@opensteer/shared/command";
 import { redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import type { AgentExecutionConfig } from "../app-config.js";
 import type { RunnerLogger } from "../host/host-connection.js";
@@ -41,6 +45,8 @@ export function createHarnessRegistry(
         }
       : {},
   );
+  // Reads each copy's own `--version`; the registry asks again only when a copy changes.
+  const versions = new EngineInstallationResolver();
   for (const entry of harnessCatalog) {
     const factory = harnessDriverFactories[entry.kind];
     const installed =
@@ -49,6 +55,19 @@ export function createHarnessRegistry(
         : "installed" in entry
           ? entry.installed
           : undefined;
+    // The copy this Runner ships, verified at startup to print exactly this version.
+    const shippedVersion =
+      entry.runtime.shape === "installed" || entry.runtime.shape === "downloaded"
+        ? undefined
+        : /\d+\.\d+\.\d+/u.exec(entry.runtime.expectedVersion)?.[0];
+    // How to update the person's copy, and how to read any copy's version.
+    const installedEngine = (minimumVersion: string) => {
+      const update = {
+        ...installedEngineUpdateFacts[entry.kind as keyof typeof installedEngineUpdateFacts],
+        minimumVersion,
+      };
+      return { update, version: (executable: string) => versions.readVersion(executable, update) };
+    };
     registry.registerDriver(
       factory.create(executables[entry.kind], runtime),
       {
@@ -56,6 +75,7 @@ export function createHarnessRegistry(
         status: "runtime-check",
       },
       installed && {
+        ...installedEngine(installed.minimumVersion),
         // The Runner's PATH is the one every engine process inherits; on a
         // person's own computer it is their login shell's.
         locate: () =>
@@ -64,16 +84,19 @@ export function createHarnessRegistry(
             environment: process.env,
             platform: hostCommandPlatform(),
           })?.path,
+        copies: () =>
+          resolveCommandCopies(installed.command, {
+            cwd: process.cwd(),
+            environment: process.env,
+            platform: hostCommandPlatform(),
+          }).map(({ path }) => path),
         create: (executable) => factory.create(executable, runtime),
         missing:
           entry.kind === "claude"
             ? claudeInstallGuidance
             : `${entry.label}'s CLI is not installed on this computer. Install it from ${installed.installUrl}${entry.runtime.shape === "installed" ? ". Opensteer finds it within a minute; if it doesn't, restart Opensteer." : `, or add an Opensteer-managed ${entry.label} account.`}`,
         scope: entry.runtime.shape === "installed" ? "all" : "ambient",
-        update: {
-          ...installedEngineUpdateFacts[entry.kind as keyof typeof installedEngineUpdateFacts],
-          minimumVersion: installed.minimumVersion,
-        },
+        ...(shippedVersion ? { shippedVersion } : {}),
       },
     );
   }

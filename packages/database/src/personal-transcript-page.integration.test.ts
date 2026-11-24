@@ -112,3 +112,112 @@ test("an anchored read reserves its turn and can continue paging older turns", a
     await fixture.close();
   }
 });
+
+test("a page carries the Run cards of its rows that it does not hold, beside its order", async () => {
+  const fixture = await createStoreFixture();
+  const { database } = fixture;
+  try {
+    const run = await fixture.startRunFixture("run-cards");
+    await database
+      .updateTable("transcriptItems")
+      .set({ visible: false, isTurnStart: false })
+      .where("threadId", "=", run.threadId)
+      .execute();
+    const card = await database
+      .updateTable("transcriptItems")
+      .set({ visible: true, position: "1" })
+      .where("threadId", "=", run.threadId)
+      .where("kind", "=", "run")
+      .where("runId", "=", run.runId)
+      .returning("id")
+      .executeTakeFirstOrThrow();
+    const message = await database
+      .selectFrom("messages")
+      .selectAll()
+      .where("threadId", "=", run.threadId)
+      .limit(1)
+      .executeTakeFirstOrThrow();
+    const ids = Array.from({ length: 40 }, () => createId("message"));
+    await database
+      .insertInto("messages")
+      .values(
+        ids.map((id, index) => ({
+          ...message,
+          content: jsonValue(message.content),
+          id,
+          sequence: String(index + 20),
+        })),
+      )
+      .execute();
+    await database
+      .insertInto("transcriptItems")
+      .values(
+        ids.map((id, index) => ({
+          id,
+          messageId: id,
+          threadId: run.threadId,
+          runId: run.runId,
+          attemptId: null,
+          nodeId: null,
+          position: String(index + 2),
+          kind: "message" as const,
+          visible: true,
+          isTurnStart: false,
+          createdAt: message.createdAt,
+          view: { preview: "Step" },
+        })),
+      )
+      .execute();
+    const query = {
+      viewerId: run.userId,
+      scope: { kind: "thread" as const, threadId: run.threadId },
+    };
+    // The latest page starts far below the Run's card: it carries the card beside its rows.
+    const latest = await readTranscriptPage(database, { ...query, limit: 10 });
+    if (latest.kind !== "page") throw new Error("The thread must have a page");
+    expect(latest.items.map(({ id }) => id)).toEqual(ids.slice(30));
+    expect(latest.runs?.map(({ id }) => id)).toEqual([card.id]);
+    // A newer page from an anchor, and an older page, carry it too until a page holds it.
+    const around = await readTranscriptPage(database, {
+      ...query,
+      anchorItemId: ids[20]!,
+      limit: 10,
+    });
+    if (around.kind !== "page") throw new Error("The anchor must have a page");
+    expect(around.runs?.map(({ id }) => id)).toEqual([card.id]);
+    const newer = await readTranscriptPage(database, { ...query, after: around.nextAfter! });
+    expect(newer).toMatchObject({ kind: "page", runs: [expect.objectContaining({ id: card.id })] });
+    const all = await readTranscriptPage(database, { ...query, limit: 100 });
+    if (all.kind !== "page") throw new Error("The thread must have a page");
+    expect(all.items[0]?.id).toBe(card.id);
+    expect(all.runs).toBeUndefined();
+    // The cards count against the page's bytes: a page that would overflow with them gives up
+    // rows at its far end, and its cursor continues from the rows it kept.
+    await database
+      .updateTable("transcriptItems")
+      .set({ view: { preview: "y".repeat(50) } })
+      .where("threadId", "=", run.threadId)
+      .where("kind", "=", "message")
+      .execute();
+    const maxBytes = 8 * 1024;
+    const tight = await readTranscriptPage(database, { ...query, limit: 40, maxBytes });
+    if (tight.kind !== "page") throw new Error("The thread must have a page");
+    const size = (items: readonly unknown[]) =>
+      items.reduce<number>((sum, item) => sum + Buffer.byteLength(JSON.stringify(item)) + 1, 0);
+    expect(tight.runs?.map(({ id }) => id)).toEqual([card.id]);
+    expect(size(tight.items) + size(tight.runs ?? [])).toBeLessThanOrEqual(maxBytes - 1024);
+    expect(tight.hasMore).toBe(true);
+    expect(tight.nextBefore?.beforeId).toBe(tight.items[0]!.id);
+    const after = await readTranscriptPage(database, {
+      ...query,
+      after: { ...tight.nextBefore!, beforeId: ids[0]!, beforePosition: "2" },
+      limit: 40,
+      maxBytes,
+    });
+    if (after.kind !== "page") throw new Error("The thread must have a page");
+    expect(size(after.items) + size(after.runs ?? [])).toBeLessThanOrEqual(maxBytes - 1024);
+    expect(after.nextAfter?.beforeId).toBe(after.items.at(-1)!.id);
+  } finally {
+    await fixture.close();
+  }
+});

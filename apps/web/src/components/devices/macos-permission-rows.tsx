@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import type {
-  DesktopComputerUsePermissionsResult,
-  OpensteerDesktopBridge,
+import {
+  desktopComputerUseOffInTrial,
+  desktopComputerUseUnsupported,
+  type DesktopComputerUsePermissionsResult,
+  type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import { Icon } from "../icon.js";
 import { SetupRow } from "../first-run/setup-list.js";
@@ -10,7 +12,50 @@ export type MacosGrants = {
   readonly accessibility: boolean;
   readonly screenRecording: boolean;
   readonly fullDiskAccess: boolean;
+  /** Why Apps cannot be allowed here at all, in the desktop's own words. */
+  readonly appsOff?: string;
 } | null;
+
+/** The sentences the desktop refuses with when computer use is off here. */
+const appsOffSentences: readonly string[] = [
+  desktopComputerUseOffInTrial,
+  desktopComputerUseUnsupported,
+];
+
+/**
+ * Which of the desktop's own sentences an IPC refusal ends with: the words
+ * shown are that constant, never the refusal's text.
+ */
+function appsOffReason(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  return appsOffSentences.find((sentence) => error.message.endsWith(`: ${sentence}`));
+}
+
+/** Matches the desktop docs: computer use needs a build signed with a Developer ID. */
+export const unsignedBuildSentence =
+  "This build isn’t signed with a Developer ID, so it can’t set up computer use. See apps/desktop/README.md.";
+
+/** Opens the desktop's Apps permission panel, and says why when it cannot. */
+export async function openAppsPermissionsPanel(
+  bridge: OpensteerDesktopBridge,
+  say: (words: string) => void,
+): Promise<void> {
+  try {
+    const result = await bridge.openComputerUsePermissionsPanel();
+    if (!result.opened) say(unsignedBuildSentence);
+  } catch (error) {
+    say(
+      appsOffReason(error) ??
+        "System Settings didn’t open. Open System Settings › Privacy & Security › Accessibility and turn on Opensteer.",
+    );
+  }
+}
+
+const grantPane = {
+  accessibility: "Accessibility",
+  "screen-recording": "Screen Recording",
+  "full-disk-access": "Full Disk Access",
+} as const;
 
 /** Grants change in System Settings, so they are read again whenever this window regains focus. */
 export function useMacosGrants(bridge: OpensteerDesktopBridge | null): {
@@ -30,15 +75,20 @@ export function useMacosGrants(bridge: OpensteerDesktopBridge | null): {
 }
 
 export async function readMacosGrants(bridge: OpensteerDesktopBridge): Promise<MacosGrants> {
+  let appsOff: string | undefined;
   const [apps, disk]: [DesktopComputerUsePermissionsResult | null, { granted: boolean } | null] =
     await Promise.all([
-      bridge.computerUsePermissionsGet().catch(() => null),
+      bridge.computerUsePermissionsGet().catch((error: unknown) => {
+        appsOff = appsOffReason(error);
+        return null;
+      }),
       bridge.checkFullDiskAccess().catch(() => null),
     ]);
   return {
     accessibility: apps?.accessibility === "granted",
     screenRecording: apps?.screenRecording === "granted",
     fullDiskAccess: disk?.granted === true,
+    ...(appsOff ? { appsOff } : {}),
   };
 }
 
@@ -65,24 +115,45 @@ export function MacosPermissionRows({
   readonly grants: MacosGrants;
   readonly onAsked: () => void;
 }) {
-  const ask = (operation: () => Promise<unknown>) => void operation().then(onAsked, onAsked);
+  // A request that fails says so on its row: pressing the button must never do nothing.
+  const [failed, setFailed] = useState<keyof typeof grantPane | null>(null);
+  const ask = (pane: keyof typeof grantPane, operation: () => Promise<unknown>) => {
+    setFailed(null);
+    void operation().then(onAsked, () => {
+      setFailed(pane);
+      onAsked();
+    });
+  };
+  const failure = (pane: keyof typeof grantPane) =>
+    failed === pane
+      ? `System Settings didn’t open. Open System Settings › Privacy & Security › ${grantPane[pane]} and turn on Opensteer.`
+      : undefined;
+  const appsOff = grants?.appsOff;
   return (
     <>
       {apps ? (
         <>
           <GrantRow
             allowed={grants?.accessibility ?? null}
-            detail="For Apps · lets your agent click and type"
+            detail={appsOff ?? "For Apps · lets your agent click and type"}
+            failure={failure("accessibility")}
+            off={appsOff !== undefined}
             onOpen={() =>
-              ask(() => bridge.computerUsePermissionsRequest({ pane: "accessibility" }))
+              ask("accessibility", () =>
+                bridge.computerUsePermissionsRequest({ pane: "accessibility" }),
+              )
             }
             title="Accessibility"
           />
           <GrantRow
             allowed={grants?.screenRecording ?? null}
-            detail="For Apps · lets your agent and your phone see its windows"
+            detail={appsOff ?? "For Apps · lets your agent and your phone see its windows"}
+            failure={failure("screen-recording")}
+            off={appsOff !== undefined}
             onOpen={() =>
-              ask(() => bridge.computerUsePermissionsRequest({ pane: "screen-recording" }))
+              ask("screen-recording", () =>
+                bridge.computerUsePermissionsRequest({ pane: "screen-recording" }),
+              )
             }
             title="Screen Recording"
           />
@@ -92,7 +163,9 @@ export function MacosPermissionRows({
         <GrantRow
           allowed={grants?.fullDiskAccess ?? null}
           detail="For Files and commands · reach folders like Documents and Desktop"
-          onOpen={() => ask(() => bridge.requestFullDiskAccess())}
+          failure={failure("full-disk-access")}
+          off={false}
+          onOpen={() => ask("full-disk-access", () => bridge.requestFullDiskAccess())}
           title="Full Disk Access"
         />
       ) : null}
@@ -103,21 +176,38 @@ export function MacosPermissionRows({
 function GrantRow({
   allowed,
   detail,
+  failure,
+  off,
   onOpen,
   title,
 }: {
   readonly allowed: boolean | null;
   readonly detail: string;
+  readonly failure: string | undefined;
+  /** Nothing here can grant it, so there is no button to press. */
+  readonly off: boolean;
   readonly onOpen: () => void;
   readonly title: string;
 }) {
   return (
     <SetupRow
-      detail={detail}
+      detail={
+        failure ? (
+          <>
+            {detail}
+            <span className="setup-row__failure" role="alert">
+              {" "}
+              {failure}
+            </span>
+          </>
+        ) : (
+          detail
+        )
+      }
       title={title}
-      tone={allowed ? "ready" : "idle"}
+      tone={allowed ? "ready" : off ? "missing" : "idle"}
       trailing={
-        allowed === null ? (
+        off ? null : allowed === null ? (
           <span aria-label="Checking" className="spinner" role="status" />
         ) : allowed ? (
           <span className="setup-done">

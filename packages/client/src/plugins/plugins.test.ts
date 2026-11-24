@@ -1,7 +1,7 @@
 import { requestDecision } from "../host/client.js";
 import { describe, expect, it, vi } from "vitest";
 import { RequestSchema } from "@opensteer/core";
-import { MockPlugins, mockPluginRequests } from "../mock/mock-plugins.js";
+import { MockPlugins, mockPluginPagePath, mockPluginRequests } from "../mock/mock-plugins.js";
 import type { HostApiCommand } from "@opensteer/protocol";
 import { controlledClientSession } from "../test-support/client-connection.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
@@ -421,7 +421,8 @@ describe("plugin page and webhook clients", () => {
       host.rpc["plugins.page.view"]({ pluginId: "plg_linear", theme: "dark" }).then(
         unwrapRpcResult,
       );
-    expect((await view()).entryUrl).toMatch(/^data:text\/html,/);
+    expect(await view()).toEqual({ path: mockPluginPagePath });
+    expect(mock.pageUrl("plg_linear", "dark")).toMatch(/^data:text\/html,/);
     await setPluginAccess(host, "plg_linear", "off");
     await expect(view()).rejects.toThrow("Plugin page is unavailable");
     await setPluginAccess(host, "plg_linear", "all");

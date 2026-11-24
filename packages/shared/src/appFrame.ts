@@ -117,23 +117,64 @@ export const appFrameReadinessScript = `
 export function prepareAppHtml(html: string, theme: AppTheme, realOrigin = false): string {
   const doctype = /^(?:\s|<!--[\s\S]*?-->)*<!doctype[^>]*>/iu.exec(html);
   if (!doctype) html = "<!doctype html>" + html;
-  const bootstrap = `<meta name="viewport" content="width=device-width, initial-scale=1"><script>
+  const bootstrap = `<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script>
 (()=>{${realOrigin ? appOriginScript : ""}
   ${appThemeScript(theme)}
-  const isAppNavigation=${isAppNavigation.toString()};
   const send=message=>{
     if(parent!==window)parent.postMessage(message,'*');
     if(window.ReactNativeWebView)window.ReactNativeWebView.postMessage(JSON.stringify(message));
   };
+  const departure=${appDeparture.toString()};
+  // Taken before the app's scripts run, so nothing the app redefines later changes what follows.
+  const apply=Reflect.apply,nativeOpen=window.open,around=parent,portPost=MessagePort.prototype.postMessage;
+  const stop=Event.prototype.stopImmediatePropagation;
+  const getter=(prototype,name)=>Object.getOwnPropertyDescriptor(prototype,name).get;
+  const eventData=getter(MessageEvent.prototype,'data'),eventSource=getter(MessageEvent.prototype,'source'),eventPorts=getter(MessageEvent.prototype,'ports');
+  const activation=navigator.userActivation,isActive=activation?getter(Object.getPrototypeOf(activation),'isActive'):null;
+  const native=()=>!!window.ReactNativeWebView;
+  const framed=()=>native()||around!==window;
+  // The page around the app hands this script, and only it, the way to ask for a page: it listens
+  // before any of the app's listeners and keeps the message from them.
+  let port=null;
+  addEventListener('message',e=>{const data=apply(eventData,e,[]);
+    if(apply(eventSource,e,[])!==around||!data||data.type!=='${appLinkPortMessage}')return;
+    apply(stop,e,[]);const given=apply(eventPorts,e,[])[0];if(!port&&given)port=given},true);
+  // A phone's WebView opens a window only for a person's tap, and its native side decides where.
+  // In a frame, this asks the page around the app, and only for a press inside this frame, which
+  // is this frame's own user activation: the app cannot fake it, and a press outside never gives it.
+  // A browser spends a press on the window it opens: one press, one page. Presses are counted here,
+  // before any of the app's listeners, and only the browser's own: the app can neither make one up
+  // nor keep one from this count, and a press spent on a page opens no second one. Each is also told
+  // to the page around the app on this script's own port, which the app cannot write to, so a page
+  // the app leaves for by any other way (a navigation desktop main catches) spends one too.
+  let presses=0,spent=0;
+  const press=e=>{if(!e.isTrusted||e.repeat)return;presses++;if(port)apply(portPost,port,[{press:true}])};
+  addEventListener('pointerdown',press,true);addEventListener('keydown',press,true);
+  const leave=(href,trusted)=>{
+    if(native()){apply(nativeOpen,window,[href,'_blank','noopener']);return}
+    if(!(isActive?apply(isActive,activation,[]):trusted))return;
+    if(spent===presses)return;spent=presses;
+    // Before the port arrives, the window goes where this frame's windows always went.
+    if(port)apply(portPost,port,[{url:href}]);else apply(nativeOpen,window,[href,'_blank','noopener']);
+  };
+  addEventListener('click',e=>{const a=e.target instanceof Element&&e.target.closest('a[href]');if(!a||e.defaultPrevented||!framed())return;
+    // A browser keeps its own gestures for a link: a modifier opens it as that browser would.
+    if(e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
+    const href=departure(a.href,location.href);if(href===null)return;
+    e.preventDefault();leave(href,e.isTrusted);
+  });
+  // Only a plain new window for a page is a link, and returns null as a noopener window does. A
+  // named window or one with features, as a sign-in popup the app watches is opened, keeps the
+  // browser's own.
+  const plain=(target,features)=>(target===undefined||target===''||String(target).toLowerCase()==='_blank')&&
+    String(features??'').split(/[\\s,]+/).every(feature=>feature===''||/^(noopener|noreferrer)$/i.test(feature));
+  window.open=function(url,target,features){
+    const href=url===undefined||url===null||String(url)===''||!framed()||(!isActive&&!native())||!plain(target,features)?null:departure(String(url),location.href);
+    if(href===null)return apply(nativeOpen,window,arguments);
+    leave(href,false);return null;
+  };
   window.${appReadyFlag}=true;
   send({type:'opensteer-app:ready'});
-  addEventListener('click',e=>{const a=e.target instanceof Element&&e.target.closest('a[href]');if(!a||e.defaultPrevented)return;
-    const url=new URL(a.href,location.href);
-    if(isAppNavigation(url.href,location.href))return;
-    if(!/^https?:$/.test(url.protocol))return;
-    const here=new URL(location.href);url.hash='';here.hash='';if(url.href===here.href)return;
-    e.preventDefault();open(a.href,'_blank','noopener');
-  });
   let last=0, queued=false;
   const report=()=>{queued=false;const b=document.body;if(!b)return;
     const height=Math.ceil(Math.max(b.scrollHeight,b.getBoundingClientRect().height)+Math.max(0,b.getBoundingClientRect().top));
@@ -149,13 +190,28 @@ export function prepareAppHtml(html: string, theme: AppTheme, realOrigin = false
   addEventListener('DOMContentLoaded',()=>{const observer=new ResizeObserver(schedule);observer.observe(document.body);observer.observe(document.documentElement);schedule()},{once:true});
   addEventListener('load',schedule);addEventListener('resize',schedule);
 })();</script>`;
-  const head = /<head(?:\s[^>]*)?>/iu.exec(html);
-  if (head) {
-    const end = head.index + head[0].length;
-    return html.slice(0, end) + bootstrap + html.slice(end);
-  }
-  const end = doctype?.[0].length ?? "<!doctype html>".length;
+  const end = bootstrapOffset(html, doctype?.[0].length ?? "<!doctype html>".length);
   return html.slice(0, end) + bootstrap + html.slice(end);
+}
+
+/**
+ * Where the bootstrap goes: past the doctype, then past the app's own opening
+ * `<html>` and `<head>` tags if they come next, with only space and comments
+ * between. Anything else the app wrote comes after it, so nothing of the
+ * app's runs first, and a `<head>` mentioned in a later comment or script is
+ * never mistaken for one. Placed before an opening tag the parser has already
+ * implied, the app's attributes on it would be dropped.
+ */
+function bootstrapOffset(html: string, start: number): number {
+  const filler = /^(?:\s|<!--[\s\S]*?-->)*/u;
+  const attributes = String.raw`(?:\s+(?:[^>"']|"[^"]*"|'[^']*')*)?\s*>`;
+  let at = start;
+  for (const name of ["html", "head"]) {
+    const skipped = at + filler.exec(html.slice(at))![0].length;
+    const tag = new RegExp(`^<${name}${attributes}`, "iu").exec(html.slice(skipped));
+    if (tag) at = skipped + tag[0].length;
+  }
+  return at;
 }
 
 export function appContentHeight(value: unknown): number | null {
@@ -176,6 +232,68 @@ export function appFrameReady(value: unknown): boolean {
   return (
     !!value && typeof value === "object" && "type" in value && value.type === "opensteer-app:ready"
   );
+}
+
+/**
+ * What the page around an app frame sends it, with the port on which the
+ * frame's bootstrap, and nothing else in the frame, asks to open a page a
+ * person followed out of the app.
+ */
+export const appLinkPortMessage = "opensteer-app:links";
+const appLinkMaxLength = 8192;
+
+/**
+ * The web address a link leaves the app for, or null when it stays in the app,
+ * stays on this page, or is not a web page. It runs inside the app's frame too,
+ * so it may only use what it is given.
+ */
+export function appDeparture(value: string, document: string): string | null {
+  try {
+    const url = new URL(value, document);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    if (url.username || url.password || url.href.length > 8192) return null;
+    const from = new URL(document);
+    const prefix = /^\/v1\/(?:apps|plugin-pages)\/[^/]+\/(?:light|dark)\/[^/]+\//u.exec(
+      from.pathname,
+    )?.[0];
+    if (
+      url.protocol === from.protocol &&
+      url.host === from.host &&
+      (!prefix || url.pathname.startsWith(prefix))
+    )
+      return null;
+    const href = url.href;
+    url.hash = "";
+    from.hash = "";
+    return url.href === from.href ? null : href;
+  } catch {
+    return null;
+  }
+}
+
+/** The web address an app frame's bootstrap asked to open, or null for anything else. */
+/** Whether a message on an app's link port reports a press of the person's in that app's frame. */
+export function appPressReport(value: unknown): boolean {
+  return !!value && typeof value === "object" && "press" in value && value.press === true;
+}
+
+export function appLinkRequest(value: unknown): string | null {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("url" in value) ||
+    typeof value.url !== "string" ||
+    value.url.length > appLinkMaxLength
+  )
+    return null;
+  try {
+    const url = new URL(value.url);
+    return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password
+      ? url.href
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Whether a link stays in this app: inside its capability prefix, or anywhere on its own origin. */

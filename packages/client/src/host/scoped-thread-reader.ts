@@ -16,15 +16,22 @@ import {
   type RunQueueEntry,
   type TranscriptEntry,
 } from "./client.js";
-import { FencedReads, type FencedRead } from "./fenced-reads.js";
+import {
+  FencedReads,
+  type FencedJob,
+  type FencedRead,
+  type FencedRequestOptions,
+} from "./fenced-reads.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 import type { ObservedDetail } from "./scoped-personal-stream.js";
 import { transcriptCard } from "./transcript-item-view.js";
 import {
   displayedItemIds,
   finalizedItemText,
-  type ThreadTranscriptStore,
+  type TranscriptPage,
+  type TranscriptPageAsk,
   type TranscriptState,
+  type TranscriptFollowReader,
 } from "./thread-transcript-store.js";
 
 export interface ThreadViewState {
@@ -64,6 +71,14 @@ export interface ThreadViewSource {
 }
 
 type Overlay = "requests" | "tools" | "nodes";
+/** A page that extends the window at one edge. */
+type Paging = "earlier" | "newer";
+/**
+ * The read key for history. A move (a jump, Return to latest, a repair's reread) replaces the
+ * window and has one key; paging extends it at one edge, and each edge has its own key, so asking
+ * for newer never cancels earlier and neither cancels a move.
+ */
+const historyKey = (mode: Paging | "move") => (mode === "move" ? "history" : `history:${mode}`);
 type RequestSummaries = NonNullable<
   ReturnType<ObservedDetail["transcript"]["getSnapshot"]>["snapshot"]
 >["pendingRequests"];
@@ -165,6 +180,19 @@ export class ScopedThreadReader implements ThreadViewSource {
       this.#listeners.delete(listener);
     };
   };
+
+  /** The scope this reader projects; a reader is reused for as long as the stream keeps it. */
+  get detail() {
+    return this.#detail;
+  }
+
+  /**
+   * The task is no longer shown: what its reads were doing is given up, as on dispose, but the
+   * projection stays, so showing the task again draws its rows in the first frame.
+   */
+  park() {
+    this.#reads.stopAll();
+  }
 
   dispose() {
     this.#disposed = true;
@@ -449,11 +477,9 @@ export class ScopedThreadReader implements ThreadViewSource {
       !this.#detail.moving &&
       (anchor !== undefined ? !holdsAnchor(state.items.values(), anchor) : !state.newest)
     )
-      void this.#reads
-        .request("history", (read) => this.#readHistory(read, { mode: "anchor" }), {
-          observed: this.#observed,
-        })
-        .catch(() => undefined);
+      void this.#requestMove((read) => this.#readHistory(read, { mode: "anchor" }), {
+        observed: this.#observed,
+      }).catch(() => undefined);
     // A move whose page was read but not yet revealed lost that page to the repair: its target is
     // read again under the same move, and the view still reveals it.
     const moving = this.#detail.moving;
@@ -461,17 +487,29 @@ export class ScopedThreadReader implements ThreadViewSource {
       const ask = moving.target
         ? ({ mode: "around", aroundMessageId: moving.target, intent: moving.intent } as const)
         : ({ mode: "latest", intent: moving.intent } as const);
-      void this.#reads
-        .request("history", (read) => this.#readHistory(read, ask), { observed: this.#observed })
-        .catch(() => undefined);
+      void this.#requestMove((read) => this.#readHistory(read, ask), {
+        observed: this.#observed,
+      }).catch(() => undefined);
     }
     for (const [kind, depth] of this.#overlayDepth)
       if (depth > 0) void this.#requestOverlays(kind, true).catch(() => undefined);
   }
 
-  /** The view revealed the target of the move under way: the move has landed and gives way. */
+  /**
+   * The view revealed the target of the move under way. The move gives up the position once its
+   * page has landed too, whichever of the two comes first: a view drawing the target as the page
+   * lands may say so before the read settles.
+   */
   revealed() {
-    if (this.#detail.moving?.read) this.#detail.moving = undefined;
+    const moving = this.#detail.moving;
+    if (!moving) return;
+    if (moving.read) this.#detail.moving = undefined;
+    else moving.revealed = true;
+  }
+
+  /** The view's report of whether the reader follows the live latest. */
+  setFollowing(read: TranscriptFollowReader | undefined) {
+    this.#detail.transcript.setFollowing(read);
   }
 
   /** The view's one-shot measurement of the row in view, asked only when the position is needed. */
@@ -490,34 +528,41 @@ export class ScopedThreadReader implements ThreadViewSource {
     if (this.#disposed) return Promise.resolve(false);
     // A jump or Return to latest is a move of the reader's: it takes the next intent number, and
     // only that intent's page may land. Paging earlier or newer moves no one.
-    const intent = mode === "around" || mode === "latest" ? this.#detail.intend() : undefined;
+    const paging = mode === "earlier" || mode === "newer";
+    const intent = paging ? undefined : this.#detail.intend();
     if (intent !== undefined) {
       // The move owns the position from now until it lands or fails: a repair or subscription
       // meanwhile centres on its target, and the Host is told at once.
       const target = mode === "around" ? aroundMessageId : undefined;
       this.#detail.moving = { intent, target };
       this.#detail.anchorTo(target);
+      // The window paging extended is about to be replaced: its pages would answer nothing.
+      this.#reads.stop(historyKey("earlier"));
+      this.#reads.stop(historyKey("newer"));
     }
     // The person waits on this read: a failure is theirs to see and retry. One asked for while the
     // scope resubscribes waits for its cut rather than finding nothing, so a valid link still lands.
-    return this.#reads
-      .request(
-        "history",
-        async (read) => {
-          if (!this.#ready() && (!(await this.#untilObserved(read.signal)) || !read.current()))
-            return;
-          await this.#readHistory(read, { mode, aroundMessageId, intent });
-        },
-        { observed: () => !this.#disposed, retry: false },
-      )
-      .then(
-        () => this.#settled(intent, true),
-        (error: unknown) => {
-          // A failure answers for its own move only: a superseded one reports nothing.
-          if (!this.#settled(intent, false)) return false;
-          throw error;
-        },
-      );
+    const job: FencedJob = async (read) => {
+      if (!this.#ready() && (!(await this.#untilObserved(read.signal)) || !read.current())) return;
+      // A page continues the window a move leaves (a repair's reread restoring where the reader
+      // was), never the cut the move is about to replace.
+      while (paging && this.#moves) {
+        await this.#moves;
+        if (!read.current()) return;
+      }
+      await this.#readHistory(read, { mode, aroundMessageId, intent });
+    };
+    const options = { observed: () => !this.#disposed, retry: false };
+    return (
+      paging ? this.#reads.request(historyKey(mode), job, options) : this.#requestMove(job, options)
+    ).then(
+      () => this.#settled(intent, true),
+      (error: unknown) => {
+        // A failure answers for its own move only: a superseded one reports nothing.
+        if (!this.#settled(intent, false)) return false;
+        throw error;
+      },
+    );
   }
 
   /**
@@ -528,12 +573,10 @@ export class ScopedThreadReader implements ThreadViewSource {
   #settled(intent: number | undefined, succeeded: boolean) {
     if (intent === undefined) return true;
     const moving = this.#detail.moving;
-    if (moving?.intent === intent) {
-      // Read and installed: with a view, the move holds the position until the view reveals its
-      // target (`revealed`); without one, it has landed. A failure ends it.
-      if (succeeded && this.#landed === intent && this.#detail.measure) moving.read = true;
-      else this.#detail.moving = undefined;
-    }
+    // Read and installed, the move was marked read as its page landed (`#installPage`); it holds
+    // the position until the view reveals its target. Anything else ends it.
+    if (moving?.intent === intent && !(succeeded && this.#landed === intent && moving.read))
+      this.#detail.moving = undefined;
     if (this.#detail.intent !== intent) return false;
     return succeeded ? this.#landed === intent : true;
   }
@@ -580,6 +623,7 @@ export class ScopedThreadReader implements ThreadViewSource {
     const snapshot = state.snapshot;
     if (!snapshot) return;
     const { mode, aroundMessageId } = ask;
+    const key = historyKey(mode === "earlier" || mode === "newer" ? mode : "move");
     const transcript = this.#detail.transcript;
     const token = transcript.beginRead();
     try {
@@ -590,7 +634,15 @@ export class ScopedThreadReader implements ThreadViewSource {
           // The reader scrolled on to a row this client holds: that is where they are now.
           if (!current()) return;
           if (page.kind === "page" && holdsAnchor(page.items, anchor)) {
-            this.#installPage([page, state.generation, "around", token], undefined, intent);
+            this.#installPage(
+              page,
+              state.generation,
+              { mode: "around" },
+              token,
+              undefined,
+              intent,
+              key,
+            );
             return;
           }
           // The Host no longer has the reader's row: the reader follows the latest messages.
@@ -599,7 +651,15 @@ export class ScopedThreadReader implements ThreadViewSource {
         if (this.#detail.anchor !== undefined || transcript.getSnapshot().newest) return;
         const latest = await this.#page(read.signal, null);
         if (current() && latest.kind === "page")
-          this.#installPage([latest, state.generation, "latest", token], undefined, intent);
+          this.#installPage(
+            latest,
+            state.generation,
+            { mode: "latest" },
+            token,
+            undefined,
+            intent,
+            key,
+          );
         return;
       }
       const before = mode === "earlier" ? snapshot.nextBefore : null;
@@ -608,73 +668,77 @@ export class ScopedThreadReader implements ThreadViewSource {
       const page = await this.#page(
         read.signal,
         before ?? null,
-        aroundMessageId,
         undefined,
+        // A jump's target is a message or any row (a Request's receipt): the Host places either.
+        aroundMessageId,
         after ?? undefined,
       );
       if (!current()) return;
+      const unavailable = () =>
+        new HostClientRequestError({
+          code: "not_found",
+          message: "The requested message is unavailable.",
+          status: 404,
+        });
       if (page.kind === "page") {
-        if (
-          aroundMessageId &&
-          !page.items.some((item) => item.kind === "message" && item.messageId === aroundMessageId)
-        )
-          throw new HostClientRequestError({
-            code: "not_found",
-            message: "The requested message is unavailable.",
-            status: 404,
-          });
-        this.#installPage([page, state.generation, mode, token], aroundMessageId, intent);
+        if (aroundMessageId && !page.items.some((item) => isTarget(item, aroundMessageId)))
+          throw unavailable();
+        const ask: TranscriptPageAsk =
+          mode === "earlier" || mode === "newer" ? { mode, from: (before ?? after)! } : { mode };
+        this.#installPage(page, state.generation, ask, token, aroundMessageId, intent, key);
         return;
       }
-      const anchor = this.#detail.anchor ?? before?.beforeId ?? after?.beforeId;
-      let reset = await this.#page(read.signal, null, aroundMessageId, anchor);
-      if (!current()) return;
-      if (anchor && (reset.kind !== "page" || !holdsAnchor(reset.items, anchor))) {
-        if (
-          !(reset.kind === "history-reset" && reset.anchorUnavailable) &&
-          holdsAnchor(transcript.getSnapshot().items.values(), anchor)
-        )
-          throw new Error("The history anchor is unavailable.");
-        this.#detail.anchorTo(undefined);
-        reset = await this.#page(read.signal, null, aroundMessageId);
-      }
-      if (current() && reset.kind === "page")
-        this.#installPage(
-          [
-            reset,
-            state.generation,
-            aroundMessageId || (anchor && holdsAnchor(reset.items, anchor)) ? "around" : "latest",
-            token,
-          ],
-          aroundMessageId,
-          intent,
-        );
+      // A jump's target the Host no longer holds.
+      if (aroundMessageId) throw unavailable();
+      // The Host's history moved to a new epoch: every cursor this cut holds is void, and no page
+      // read from one can join it. The scope is cut again, centred where the reader is, and this
+      // read runs again in the new cut, from its edge.
+      this.#detail.recut();
     } finally {
       transcript.endRead(token);
     }
   }
 
   #installPage(
-    args: Parameters<ThreadTranscriptStore["installPage"]>,
+    page: TranscriptPage,
+    generation: number,
+    ask: TranscriptPageAsk,
+    token: number,
     aroundMessageId: string | undefined,
-    intent?: number,
+    intent: number | undefined,
+    key: string,
   ) {
-    // The store refused it (its change journal overflowed, or the cut moved): the read is not done
-    // and runs again, rather than reporting a page that never landed.
-    if (!this.#detail.transcript.installPage(...args)) return this.#reads.changed("history");
+    // A move's page marks the move read before the store tells anyone it landed, so a view that
+    // reveals the target as it draws the page finds the move ready to end.
+    const current = this.#detail.moving;
+    const moving =
+      intent !== undefined && current?.intent === intent && this.#detail.measure !== undefined
+        ? current
+        : undefined;
+    if (moving) moving.read = true;
+    const outcome = this.#detail.transcript.installPage(page, generation, ask, token);
+    if (outcome !== "installed") {
+      if (moving) moving.read = false;
+      // The store refused it (its change journal overflowed, or the cut moved): the read is not
+      // done and runs again, rather than reporting a page that never landed.
+      if (outcome === "stale") this.#reads.changed(key);
+      // `moved`: the edge this page continues is gone (the window was replaced or gave it up), so
+      // the page answers nothing on screen. The reader asks again from the edge they see.
+      return;
+    }
     if (intent !== undefined) this.#landed = intent;
+    // Revealed while its page was still landing: the move has landed and gives up the position.
+    if (moving?.revealed && this.#detail.moving === moving) this.#detail.moving = undefined;
     const state = this.#detail.transcript.getSnapshot();
-    for (const item of args[0].items) {
+    for (const item of page.items) {
       const current = state.items.get(item.id);
       if (finalizedItemText(current)) this.#detail.text.finishItem(item.id);
     }
     // The scope's anchor is where the reader is: none back at the latest, the linked message after a
     // jump. Paging keeps it: the reader still looks at the row they scrolled to.
-    if (args[2] === "latest" && state.newest) this.#detail.anchorTo(undefined);
+    if (ask.mode === "latest" && state.newest) this.#detail.anchorTo(undefined);
     else if (aroundMessageId) {
-      const target = args[0].items.find(
-        (item) => item.kind === "message" && item.messageId === aroundMessageId,
-      );
+      const target = page.items.find((item) => isTarget(item, aroundMessageId));
       if (target) this.#detail.anchorTo(target.id);
     }
   }
@@ -724,6 +788,12 @@ export class ScopedThreadReader implements ThreadViewSource {
           );
         }) ||
         new Set(page.items.map(({ id }) => id)).size !== page.items.length ||
+        (page.runs ?? []).some(
+          (run) =>
+            run.kind !== "run" ||
+            run.nodeId !== nodeId ||
+            BigInt(run.revision) > BigInt(page.revision),
+        ) ||
         boundaries.some(
           ([cursor, item]) =>
             cursor &&
@@ -752,6 +822,27 @@ export class ScopedThreadReader implements ThreadViewSource {
     this.#overlayDepth.set(kind, Math.max(this.#overlayDepth.get(kind) ?? 0, pages + 1));
     await this.#requestOverlays(kind, false);
   }
+
+  /**
+   * Requests a move's read: one that replaces the window (a jump, Return to latest, a repair's
+   * reread). Paging waits for it, so a page continues the window the move leaves, not one it is
+   * about to replace.
+   */
+  #requestMove(job: FencedJob, options: FencedRequestOptions) {
+    const request = this.#reads.request(historyKey("move"), job, options);
+    const settled = request.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#moves = settled;
+    void settled.then(() => {
+      if (this.#moves === settled) this.#moves = undefined;
+    });
+    return request;
+  }
+
+  /** The move in flight, if any: settled, whether it landed or not. */
+  #moves: Promise<void> | undefined;
 
   #requestOverlays(kind: Overlay, retry: boolean) {
     return this.#reads.request(`overlay:${kind}`, (read) => this.#readOverlays(read, kind), {
@@ -903,6 +994,11 @@ export function transcriptBodyKey(
 }
 
 /** Whether `items` hold the anchor: a row's own id, or a jump's target message. */
+/** Whether `item` is a jump's target: the row itself, or the row of the message it names. */
+function isTarget(item: TranscriptItem, target: string) {
+  return item.id === target || (item.kind === "message" && item.messageId === target);
+}
+
 function holdsAnchor(items: Iterable<TranscriptItem>, anchor: string) {
   for (const item of items)
     if (item.id === anchor || (item.kind === "message" && item.messageId === anchor)) return true;

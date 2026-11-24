@@ -3441,6 +3441,7 @@ async function configuration(directory: string): Promise<DesktopConfiguration> {
         hostCallback: "com.opensteer.opensteer:/oauth/host-callback",
       },
     },
+    trial: null,
   };
 }
 

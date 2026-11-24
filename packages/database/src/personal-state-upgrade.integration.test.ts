@@ -17,6 +17,7 @@ import {
   inlineTranscriptMessagesMigrationName,
   runProviderRetryMigrationName,
   stoppedRunsNotNewsMigrationName,
+  taskOpenIndexesMigrationName,
   threadDoneByMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
@@ -108,6 +109,7 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         stoppedRunsNotNewsMigrationName,
         threadDoneByMigrationName,
         runProviderRetryMigrationName,
+        taskOpenIndexesMigrationName,
         agentGrantsMigrationName,
         agentSessionsMigrationName,
         "0102_chrome_live_tabs_source",

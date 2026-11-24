@@ -161,6 +161,7 @@ import {
   MockPlugins,
   type MockPluginScenario,
   mockPluginAccountConsent,
+  mockPluginPagePath,
   mockPluginRequests,
 } from "./mock-plugins.js";
 import { MockSettingsFixtures } from "./settings-fixtures.js";
@@ -409,6 +410,7 @@ import {
   type MockPlacesWorld,
 } from "./mock-places.js";
 import { mockGeneratedTaskIcon, seedMockTaskMarks } from "./mock-task-marks.js";
+import type { TranscriptFollowReader } from "../host/thread-transcript-store.js";
 
 async function* binaryChunks(body: Blob, signal?: AbortSignal): AsyncIterable<Uint8Array> {
   const reader = body.stream().getReader();
@@ -4779,7 +4781,11 @@ export class MockHostClient implements HostClient {
   async viewPluginPage(pluginId: string, theme: "light" | "dark", signal?: AbortSignal) {
     signal?.throwIfAborted();
     const view = unwrapRpcResult(await this.rpc["plugins.page.view"]({ pluginId, theme }));
-    return { title: pluginId, url: view.entryUrl ?? view.path };
+    const url =
+      view.path === mockPluginPagePath
+        ? this.enginePlugins.pageUrl(pluginId, theme)
+        : (view.entryUrl ?? view.path);
+    return { title: pluginId, url };
   }
   async viewApp(
     _appId: string,
@@ -5030,7 +5036,13 @@ export class MockHostClient implements HostClient {
     return result.ok ? result.data : undefined;
   }
 
-  setTranscriptPosition(_threadId: string, _measure: (() => string | undefined | null) | null) {}
+  setTranscriptPosition(_threadId: string, _measure: () => string | undefined | null) {
+    return () => undefined;
+  }
+
+  setTranscriptFollowing(_threadId: string, _following: TranscriptFollowReader) {
+    return () => undefined;
+  }
 
   revealedTranscriptMove(_threadId: string) {}
   async loadMoreOverlays(threadId: string, kind: "requests" | "tools" | "nodes") {
@@ -5303,7 +5315,7 @@ export class MockHostClient implements HostClient {
   }
 
   async loadTranscriptAround(threadId: string, messageId: string): Promise<boolean> {
-    await this.#readMockHistory(threadId, { aroundMessageId: messageId });
+    await this.#readMockHistory(threadId, { anchorItemId: messageId });
     return true;
   }
 
@@ -5763,18 +5775,37 @@ function mockAutomaticModelsView(state: MockHostState): AutomaticModelsView {
       computerDisplayName: env?.name ?? "Computer",
     };
   });
+  const homeEnvironmentId = snapshot.environments.find(
+    (e) => e.runnerId === snapshot.personalSettings?.agentHome.computerId,
+  )?.id;
   const inUse = (role: BackgroundModelRole) => {
+    const original = role === "deep" ? snapshot.executionPreferences.history[0] : undefined;
     const chosen = resolveModelCandidates({
       wants: backgroundModelWants(state.agentHomeSettings, role),
+      ...(original ? { original } : {}),
       accounts,
       excludedAccounts,
-      canRun: () => ({ ok: true }),
+      canRun: (account) => {
+        if (role === "naming") return { ok: true };
+        if (homeEnvironmentId && account.environmentId !== homeEnvironmentId)
+          return { ok: false, reason: "wrong-computer" };
+        const driver = snapshot.environments
+          .find((e) => e.id === account.environmentId)
+          ?.harnessDrivers.find((d) => d.driverKind === account.driverKind);
+        if (driver?.readiness === "unavailable")
+          return { ok: false, reason: "unsupported-capability" };
+        if (driver && !driver.accessModes.includes(DEFAULT_THREAD_ACCESS_MODE))
+          return { ok: false, reason: "unsupported-access-mode" };
+        return { ok: true };
+      },
       now: Date.now(),
     }).candidates[0];
     if (!chosen) return null;
     const account = accounts.find((a) => a.harnessInstanceId === chosen.harnessInstanceId)!;
-    const { modelId } = chosen.storedModelSelection;
-    const model = account.catalog?.models.find((m) => m.modelId === modelId);
+    const { modelId, providerId } = chosen.storedModelSelection;
+    const model = account.catalog?.models.find(
+      (m) => m.modelId === modelId && m.providerId === providerId,
+    );
     return {
       harnessInstanceId: chosen.harnessInstanceId,
       accountDisplayName: account.accountDisplayName,

@@ -11,6 +11,7 @@ import {
   type IntegrationCallSubject,
 } from "@opensteer/core";
 import { readComputerUseResultHeadline, readComputerStepHeadline } from "@opensteer/protocol";
+import { BoundedCache } from "@opensteer/shared/boundedCache";
 import { isRecord } from "@opensteer/shared/isRecord";
 import type {
   AppEntry,
@@ -698,6 +699,36 @@ interface ConversationRowOptions {
   readonly waitingRequests?: readonly WaitingRequest[];
   readonly atComputer: (turn: Turn) => boolean;
   readonly live: boolean;
+}
+
+/**
+ * The item a transcript row stands for, which is what a reading position names and a new cut
+ * centres on: what the row shows the reader, so the cut holds it.
+ */
+export function transcriptRowItemId(group: TranscriptGroup): string | undefined {
+  // A turn folds its steps under what the agent said: that is the row's place, however many steps
+  // fold above it.
+  const entry =
+    group.kind === "turn"
+      ? (group.turn.reply ??
+        group.turn.work.findLast((step) => step.kind === "message") ??
+        group.turn.work[0] ??
+        group.turn.run)
+      : group.entry;
+  return entry ? entryItemId(entry) : undefined;
+}
+
+/** Whether the row draws the item `itemId`, wherever in it the item stands. */
+export function transcriptRowHolds(group: TranscriptGroup, itemId: string): boolean {
+  if (group.kind !== "turn") return entryItemId(group.entry) === itemId;
+  const { turn } = group;
+  return [turn.run, turn.reply, ...turn.work, ...turn.assignments].some(
+    (entry) => entry !== null && entryItemId(entry) === itemId,
+  );
+}
+
+function entryItemId(entry: TranscriptEntry): string | undefined {
+  return ("itemId" in entry ? (entry.itemId ?? entry.id) : entry.id) || undefined;
 }
 
 /**
@@ -2897,10 +2928,13 @@ function computerUseHeadline(tool: ToolEntry): string | null {
     : readComputerUseResultHeadline(tool.output.text);
 }
 
-const parsedToolArgumentsCache = new WeakMap<
-  ToolEntry,
-  { readonly streamText: string; readonly value: unknown }
->();
+/**
+ * Streamed arguments, parsed, by their text: every reader of a Thread, and every entry a new
+ * reader makes for the same call, parses them once. Text that is not JSON is kept as `unparsed`.
+ * Parsed values are shared, so nothing may change them.
+ */
+const parsedStreamText = new BoundedCache<string, unknown>({ maxSize: 2_000_000 });
+const unparsed = Symbol("unparsed");
 
 /** Claude streams arguments as partial JSON; recover them once complete. */
 export function effectiveArguments(tool: ToolEntry): unknown {
@@ -2911,17 +2945,18 @@ export function effectiveArguments(tool: ToolEntry): unknown {
     !Array.isArray(args) &&
     Object.keys(args as Record<string, unknown>).length === 0;
   if (args !== undefined && args !== null && !isEmptyObject) return args;
-  if (tool.state === "running" || !tool.streamText) return args;
-  const cached = parsedToolArgumentsCache.get(tool);
-  if (cached && cached.streamText === tool.streamText) return cached.value;
-  let value: unknown = args;
-  try {
-    value = JSON.parse(tool.streamText);
-  } catch {
-    value = args;
+  const text = tool.streamText;
+  if (tool.state === "running" || !text) return args;
+  let value = parsedStreamText.get(text);
+  if (value === undefined) {
+    try {
+      value = JSON.parse(text) as unknown;
+    } catch {
+      value = unparsed;
+    }
+    parsedStreamText.set(text, value, text.length);
   }
-  parsedToolArgumentsCache.set(tool, { streamText: tool.streamText, value });
-  return value;
+  return value === unparsed ? args : value;
 }
 
 function commandFrom(args: unknown): string | null {

@@ -7,14 +7,13 @@ This runbook is for the Opensteer operator who runs Opensteer Cloud Computer.
 Three components run the managed service:
 
 1. **Account service** (`apps/control-plane`) runs in Kubernetes (`opensteer-system`, two replicas by default) backed by PostgreSQL. It owns customer billing, Stripe webhooks, desired state, the backup target pool, the egress endpoint pool, the reconciler lease, and automatic claiming of each new Home.
-2. **Home reconciler** (`apps/home-provisioner`) runs in Kubernetes (`opensteer-system`) as a single replica (`replicas: 1`, `Recreate` strategy) using a dedicated Google service account. It polls Account for desired state, creates and powers Hetzner VMs, manages Cloudflare DNS records, and verifies each Home's pinned identity.
-3. **One VM per customer** runs on Hetzner Cloud (Ubuntu 24.04 LTS). Cloud-init downloads the signed-by-hash standalone installer, exchanges the bootstrap token with Account, starts seven Docker Compose services (`postgres`, `host`, `gateway`, `runner`, `browser-runtime`, `browser-egress`, `channel-runtime`), and calls `boot-complete`.
+2. **Home reconciler** (`apps/home-provisioner`) runs in Kubernetes (`opensteer-system`) as a single replica (`replicas: 1`, `Recreate` strategy) using a dedicated Google service account. It polls Account for desired state, creates and powers Compute Engine VMs, manages Cloudflare DNS records, and verifies each Home's pinned identity.
+3. **One VM per customer** runs on Google Compute Engine (Ubuntu 24.04 LTS). Cloud-init downloads the signed-by-hash standalone installer, exchanges the bootstrap token with Account, starts seven Docker Compose services (`postgres`, `host`, `gateway`, `runner`, `browser-runtime`, `browser-egress`, `channel-runtime`), and calls `boot-complete`.
 
 External provider accounts involved:
 
-- **Google Cloud**: runs Account and the reconciler, stores runtime secrets, and provides the reconciler's workload identity token.
+- **Google Cloud**: runs Account and the reconciler, stores runtime secrets, provides the reconciler's workload identity token, and hosts one Compute Engine VM per customer with its static address and the shared `opensteer-cloud-computers` firewall rules.
 - **Stripe**: handles Checkout, the Billing Portal, recurring subscriptions, and webhooks.
-- **Hetzner Cloud**: hosts one VM per customer and the shared `opensteer-cloud-computers` firewall.
 - **Cloudflare**: hosts the DNS zone for customer Home hostnames (`OPENSTEER_CLOUD_COMPUTER_DOMAIN`).
 - **S3-compatible object storage**: stores encrypted restic snapshots. Account assigns a registered principal and non-overlapping prefix; operators enforce the principal's prefix permissions in S3. The daily timer attempts a backup and reports successful scheduled snapshots to Account. An upload can succeed even when the report fails.
 - **Static browser egress proxy provider**: provides HTTPS proxy endpoints and credentials for the pool. A Home without an assignment waits; the provider supplies the stable external IP, which the installer does not verify.
@@ -33,8 +32,8 @@ Customer (Desktop / Mobile / Web)
    | check, status         |     | GET /.well-known/opensteer
    | (GCP workload JWT)    |     v
 +------------------------+ |  +---------------------------------------------+
-| Home reconciler (1 pod)| |  | Customer VM on Hetzner (Ubuntu 24.04)       |
-|  - Hetzner API         |-|--|  - cloud-init -> opensteer-home-managed     |
+| Home reconciler (1 pod)| |  | Customer VM on Compute Engine (Ubuntu 24.04)|
+|  - Compute Engine API  |-|--|  - cloud-init -> opensteer-home-managed     |
 |  - Cloudflare API      | +--|  - POST /v1/cloud-computers/:id/boot        |
 |  - Pinned TLS probe    |    |  - POST /v1/cloud-computers/:id/boot-complete
 +------------------------+    |  - Docker Compose: postgres, host, gateway, |
@@ -59,8 +58,8 @@ Account also requires its core variables to be valid for Cloud Computer: `OPENST
 | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------- | ------- | ---------------------- |
 | `OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL`              | Google service account email (`*.iam.gserviceaccount.com`) allowed to call reconciler routes    | Yes      | None    | ConfigMap / non-secret |
 | `OPENSTEER_CLOUD_COMPUTER_DOMAIN`                         | DNS suffix for Home hostnames (lowercase DNS name, max 214 chars)                               | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_REGION`                         | Hetzner location assigned to new Cloud Computers                                                | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE`                    | Hetzner server type assigned to new Cloud Computers                                             | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_REGION`                         | Compute Engine zone (or region) assigned to new Cloud Computers                                 | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE`                    | Machine type for new Cloud Computers, or `default` to let the provisioner choose                | Yes      | None    | ConfigMap / non-secret |
 | `OPENSTEER_CLOUD_COMPUTER_RELEASE_JSON`                   | JSON release manifest (`version`, `installerUrl`, `installerSha256`, `images`)                  | Yes      | None    | ConfigMap / non-secret |
 | `OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL`           | Public HTTPS feed for digest-pinned in-place updates                                            | No       | None    | ConfigMap / non-secret |
 | `OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY`              | Stripe secret or restricted key (`sk_live_...`, `rk_live_...`, `sk_test_...`, or `rk_test_...`) | Yes      | None    | Secret (`_FILE` mount) |
@@ -77,24 +76,28 @@ Set `OPENSTEER_CLOUD_COMPUTER_BACKUP_KEY_PROJECT` to a dedicated Google Cloud pr
 
 ### Home reconciler environment
 
-Run `apps/home-provisioner` with `deploy/home-provisioner/deployment.yaml` (`replicas: 1`, `strategy.type: Recreate`). The pod authenticates to Account with a Google workload identity token fetched from `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity` for the Account origin audience. `OPENSTEER_HOME_HETZNER_TOKEN` and `OPENSTEER_HOME_CLOUDFLARE_TOKEN` each accept a `_FILE` variant.
+Run `apps/home-provisioner` with `deploy/home-provisioner/deployment.yaml` (`replicas: 1`, `strategy.type: Recreate`). The pod authenticates to Account with a Google workload identity token fetched from `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity` for the Account origin audience. The same identity's access token authorizes its Compute Engine calls. `OPENSTEER_HOME_CLOUDFLARE_TOKEN` accepts a `_FILE` variant. [deploy/home-provisioner/google-compute.md](../deploy/home-provisioner/google-compute.md) sets up the project, the network and the provisioner's permissions.
 
-| Env var                               | Meaning                                                                       | Required | Default  | Secret source                 |
-| ------------------------------------- | ----------------------------------------------------------------------------- | -------- | -------- | ----------------------------- |
-| `OPENSTEER_ACCOUNT_URL`               | Bare `https://` origin of the Account service                                 | Yes      | None     | Deployment secret/env         |
-| `OPENSTEER_HOME_DEFAULT_REGION`       | Fallback Hetzner location when a desired record has `region: null`            | Yes      | None     | Deployment secret/env         |
-| `OPENSTEER_HOME_DEFAULT_SERVER_TYPE`  | Fallback Hetzner server type when a desired record has `serverType: null`     | Yes      | None     | Deployment secret/env         |
-| `OPENSTEER_HOME_IMAGE`                | Hetzner OS image name or numeric ID (Ubuntu 24.04 LTS)                        | Yes      | None     | Deployment secret/env         |
-| `OPENSTEER_HOME_HETZNER_TOKEN`        | Hetzner Cloud API token                                                       | Yes      | None     | Secret (`_FILE` or SecretRef) |
-| `OPENSTEER_HOME_CLOUDFLARE_TOKEN`     | Cloudflare API token                                                          | Yes      | None     | Secret (`_FILE` or SecretRef) |
-| `OPENSTEER_HOME_CLOUDFLARE_ZONE_ID`   | Cloudflare 32-character hex zone ID for `OPENSTEER_CLOUD_COMPUTER_DOMAIN`     | Yes      | None     | Deployment secret/env         |
-| `OPENSTEER_HOME_PROVISIONER_REPLICAS` | Safety guard; must equal `"1"` or the process refuses to start                | No       | `1`      | Deployment manifest           |
-| `OPENSTEER_HOME_INTERVAL_MS`          | Poll interval in milliseconds (`1000`–`300000`)                               | No       | `10000`  | Deployment secret/env         |
-| `OPENSTEER_HOME_REQUEST_TIMEOUT_MS`   | Per-HTTP-request timeout in milliseconds (`100`–`60000`)                      | No       | `15000`  | Deployment secret/env         |
-| `OPENSTEER_HOME_ACTION_TIMEOUT_MS`    | Hetzner server action timeout in milliseconds (`1000`–`600000`)               | No       | `90000`  | Deployment secret/env         |
-| `OPENSTEER_HOME_READINESS_TIMEOUT_MS` | Max wait for a Home to become ready in milliseconds (`1000`–`3600000`)        | No       | `600000` | Deployment secret/env         |
-| `OPENSTEER_HOME_ORPHAN_GRACE_MS`      | Grace period before deleting orphaned VMs or DNS records (`60000`–`86400000`) | No       | `300000` | Deployment secret/env         |
-| `OPENSTEER_HOME_CONCURRENCY`          | Max Cloud Computers reconciled in parallel (`1`–`16`)                         | No       | `4`      | Deployment secret/env         |
+| Env var                               | Meaning                                                                       | Required | Default                       | Secret source                 |
+| ------------------------------------- | ----------------------------------------------------------------------------- | -------- | ----------------------------- | ----------------------------- |
+| `OPENSTEER_ACCOUNT_URL`               | Bare `https://` origin of the Account service                                 | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_PROJECT`          | Compute Engine project for Cloud Computer VMs                                 | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_ZONE`             | Compute Engine zone (for example `us-central1-a`); also selects the region    | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_NETWORK`          | VPC network name                                                              | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_SUBNET`           | Subnet name                                                                   | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_MACHINE_TYPE`     | Machine type when a desired record has `serverType: null`                     | No       | `e2-standard-4`               | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_IMAGE`            | Ubuntu 24.04 LTS image or image family resource path                          | No       | Ubuntu 24.04 LTS amd64 family | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_DISK_TYPE`        | Boot disk type (`pd-balanced`, `pd-standard`, `pd-ssd`)                       | No       | `pd-balanced`                 | Deployment secret/env         |
+| `OPENSTEER_HOME_GCP_DISK_SIZE_GB`     | Boot disk size in GB                                                          | No       | `30`                          | Deployment secret/env         |
+| `OPENSTEER_HOME_CLOUDFLARE_TOKEN`     | Cloudflare API token                                                          | Yes      | None                          | Secret (`_FILE` or SecretRef) |
+| `OPENSTEER_HOME_CLOUDFLARE_ZONE_ID`   | Cloudflare 32-character hex zone ID for `OPENSTEER_CLOUD_COMPUTER_DOMAIN`     | Yes      | None                          | Deployment secret/env         |
+| `OPENSTEER_HOME_PROVISIONER_REPLICAS` | Safety guard; must equal `"1"` or the process refuses to start                | No       | `1`                           | Deployment manifest           |
+| `OPENSTEER_HOME_INTERVAL_MS`          | Poll interval in milliseconds (`1000`–`300000`)                               | No       | `10000`                       | Deployment secret/env         |
+| `OPENSTEER_HOME_REQUEST_TIMEOUT_MS`   | Per-HTTP-request timeout in milliseconds (`100`–`60000`)                      | No       | `15000`                       | Deployment secret/env         |
+| `OPENSTEER_HOME_ACTION_TIMEOUT_MS`    | Compute Engine operation timeout in milliseconds (`1000`–`600000`)            | No       | `90000`                       | Deployment secret/env         |
+| `OPENSTEER_HOME_READINESS_TIMEOUT_MS` | Max wait for a Home to become ready in milliseconds (`1000`–`3600000`)        | No       | `600000`                      | Deployment secret/env         |
+| `OPENSTEER_HOME_ORPHAN_GRACE_MS`      | Grace period before deleting orphaned VMs or DNS records (`60000`–`86400000`) | No       | `300000`                      | Deployment secret/env         |
+| `OPENSTEER_HOME_CONCURRENCY`          | Max Cloud Computers reconciled in parallel (`1`–`16`)                         | No       | `4`                           | Deployment secret/env         |
 
 ### Home VM environment (on each VM)
 
@@ -125,11 +128,10 @@ Managed VMs receive their configuration automatically during boot and store it u
      - `invoice.paid`
      - `invoice.payment_failed`
    - Store the webhook signing secret in `OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET_FILE` and the API key in `OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY_FILE`.
-2. **Hetzner Cloud**:
-   - Use a dedicated Hetzner Cloud project for Cloud Computers.
-   - Create a Read & Write API token for that project (the reconciler manages `/v1/servers`, `/v1/actions`, and `/v1/firewalls`).
-   - Pick a valid location (for example `fsn1`), server type, and Ubuntu 24.04 LTS image (`OPENSTEER_HOME_IMAGE`). Ubuntu 24.04 LTS lets the managed installer install missing Docker and tool packages automatically.
-   - On first run, the reconciler creates and maintains firewall `opensteer-cloud-computers` (label `opensteer.com/managed-by=home-provisioner`) allowing inbound TCP `80` and `443` from `0.0.0.0/0` and `::/0`.
+2. **Google Compute Engine**:
+   - Use a dedicated Compute project and VPC for Cloud Computers, and grant the provisioner's service account the permissions listed in [deploy/home-provisioner/google-compute.md](../deploy/home-provisioner/google-compute.md).
+   - Pick a zone (for example `us-central1-a`), a machine type and the Ubuntu 24.04 LTS image. Ubuntu 24.04 LTS lets the managed installer install missing Docker and tool packages automatically.
+   - On first run, the reconciler creates and maintains firewall rule `opensteer-cloud-computers-v4` (and `opensteer-cloud-computers-v6` on a dual-stack subnet) on the VPC, allowing inbound TCP `80` and `443` from `0.0.0.0/0` (and `::/0`) to instances tagged `opensteer-cloud-computers`.
 3. **Cloudflare**:
    - Create or choose the DNS zone for `OPENSTEER_CLOUD_COMPUTER_DOMAIN` and record its 32-hex zone ID in `OPENSTEER_HOME_CLOUDFLARE_ZONE_ID`.
    - Create an API token with `Zone:DNS:Edit` restricted to that single zone.
@@ -310,7 +312,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
    - Customer sees `status: "preparing"` ("Setting up") and `egress: "pending"`.
    - Operator can run `node dist/cloud-computer-operator-main.js show <id>` and see `phase: "provisioning"`.
 3. **Server created**:
-   - On its next poll (`GET /v1/cloud-computers/desired`), the reconciler sees the active record with no VM, verifies the revision via `POST /v1/cloud-computers/:id/check`, ensures the `opensteer-cloud-computers` firewall exists, creates Hetzner server `os-cc-<uuid>-1` (`start_after_create: false`) with labels `opensteer.com/cloud-computer=<id>` and `opensteer.com/generation=1`, powers it on, writes the Cloudflare `A` record (and `AAAA` if `ipv6Enabled`), and reports `phase: "booting"` with `providerServerId` and IP to `POST /v1/cloud-computers/:id/status`.
+   - On its next poll (`GET /v1/cloud-computers/desired`), the reconciler sees the active record with no VM, verifies the revision via `POST /v1/cloud-computers/:id/check`, ensures the `opensteer-cloud-computers` firewall rules exist, reserves the static external address `os-cc-<uuid>-1-ip`, creates Compute Engine instance `os-cc-<uuid>-1` with the network tag `opensteer-cloud-computers` and the labels `opensteer-cloud-computer=<id>`, `opensteer-generation=1` and `opensteer-managed-by=home-provisioner`, writes the Cloudflare `A` record (and `AAAA` if `ipv6Enabled`), and reports `phase: "booting"` with `providerServerRef` and IP to `POST /v1/cloud-computers/:id/status`.
    - Reporting `providerServerId` starts the 20-minute bootstrap token timer in Account.
    - Customer still sees `status: "preparing"`.
 4. **Boot**:
@@ -340,12 +342,12 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 - **Suspend**:
   - Owner calls `POST /v1/account/cloud-computers/:id/suspend` (sets `ownerSuspended`), operator runs `node dist/cloud-computer-operator-main.js suspend <id> <reason>` (sets `operatorSuspension`), or Stripe reports non-active billing (`past_due`, `unpaid`, `canceled`, etc.).
   - Account moves `state` to `suspended` and `phase` to `provisioning`.
-  - Reconciler removes the Cloudflare DNS record, requests a graceful Hetzner shutdown (waits up to 30 seconds or `OPENSTEER_HOME_ACTION_TIMEOUT_MS`, whichever is shorter), forces `poweroff` if still running, and reports `phase: "suspended"`. Data and disks stay intact.
+  - Reconciler removes the Cloudflare DNS record, stops the Compute Engine instance (`instances.stop`, a graceful guest shutdown), and reports `phase: "suspended"`. Data and disks stay intact.
   - Customer sees `status: "suspended"` with the reason (`"You paused this Cloud Computer."`, `"Your subscription ended."`, `"Your subscription needs attention."`, or the operator's reason text).
 - **Resume**:
   - Owner calls `POST /v1/account/cloud-computers/:id/resume` (clears `ownerSuspended`), operator runs `node dist/cloud-computer-operator-main.js unsuspend <id>` (clears `operatorSuspension`), or Stripe reports `active` billing again.
   - Only when all three conditions are clear (no owner pause, no operator suspension, active billing) does Account move `state` back to `active`.
-  - Reconciler powers on the existing Hetzner VM, restores the Cloudflare DNS record, verifies the pinned Home identity, and reports `phase: "ready"`.
+  - Reconciler starts the existing Compute Engine instance, restores the Cloudflare DNS record, verifies the pinned Home identity, and reports `phase: "ready"`.
   - Customer sees `status: "preparing"` while it boots, then `status: "ready"`.
 - **Cancel**:
   - Customer cancels in the Stripe Billing Portal (`POST /v1/account/cloud-computers/billing-portal`).
@@ -358,12 +360,12 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 - **Delete**:
   - Owner calls `DELETE /v1/account/cloud-computers/:id` with `{"confirmation":"DELETE:<id>"}`, or operator runs `node dist/cloud-computer-operator-main.js delete <id>`.
   - Account marks `deletionRequestedAt` and cancels the Stripe subscription at once, whether or not a checkout for that computer or person is open: a checkout keeps its own path (expired, and a payment on it cancelled and refunded). Once Stripe confirms cancellation, Account transitions `state: "deleted"`, `phase: "deleting"`, removes the Home from `deployments` and deletes its OIDC client.
-  - Reconciler removes the Cloudflare DNS record, requests a graceful Hetzner shutdown (waits up to 30 seconds or `OPENSTEER_HOME_ACTION_TIMEOUT_MS`, whichever is shorter), forces `poweroff` if still running, and reports `phase: "suspended"`. Data and disks stay intact.
+  - Reconciler removes the Cloudflare DNS record, stops the Compute Engine instance (`instances.stop`, a graceful guest shutdown), and reports `phase: "suspended"`. Data and disks stay intact.
   - Customer sees `status: "suspended"` with the reason (`"You paused this Cloud Computer."`, `"Your subscription ended."`, `"Your subscription needs attention."`, or the operator's reason text).
 - **Resume**:
   - Owner calls `POST /v1/account/cloud-computers/:id/resume` (clears `ownerSuspended`), operator runs `node dist/cloud-computer-operator-main.js unsuspend <id>` (clears `operatorSuspension`), or Stripe reports `active` billing again.
   - Only when all three conditions are clear (no owner pause, no operator suspension, active billing) does Account move `state` back to `active`.
-  - Reconciler powers on the existing Hetzner VM, restores the Cloudflare DNS record, verifies the pinned Home identity, and reports `phase: "ready"`.
+  - Reconciler starts the existing Compute Engine instance, restores the Cloudflare DNS record, verifies the pinned Home identity, and reports `phase: "ready"`.
   - Customer sees `status: "preparing"` while it boots, then `status: "ready"`.
 - **Cancel**:
   - Customer cancels in the Stripe Billing Portal (`POST /v1/account/cloud-computers/billing-portal`).
@@ -376,7 +378,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 - **Delete**:
   - Owner calls `DELETE /v1/account/cloud-computers/:id` with `{"confirmation":"DELETE:<id>"}`, or operator runs `node dist/cloud-computer-operator-main.js delete <id>`.
   - Account marks `deletionRequestedAt`, cancels the Stripe subscription first, and once Stripe confirms cancellation transitions `state: "deleted"`, `phase: "deleting"`, removes the Home from `deployments` and deletes its OIDC client.
-  - Reconciler removes the Cloudflare DNS record, deletes the Hetzner server, waits until it is absent, and reports `phase: "deleted"`.
+  - Reconciler removes the Cloudflare DNS record, deletes the Compute Engine instance and releases its static address, waits until the instance is absent, and reports `phase: "deleted"`.
   - Account records the provider confirmation, then destroys the Home's Secret Manager secret. It records the tombstone and reports `status: "deleted"` only when both facts are confirmed.
   - Account purges stored object versions and delete markers using the corresponding Home's own S3 credential, including retired targets. It confirms removal with a fresh empty listing before releasing the target for rotation. A durable purge reservation holds each target through failures. The provisioner never receives storage credentials.
   - The Cloud Computer page shows **Computer and disk destroyed**, **Backups made unreadable**, and **Stored backup data removed** with separate dates.
@@ -446,11 +448,11 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
 ### Provider rate limits
 
-- **How to recognise it**: Reconciler stderr logs `{"event":"home-provisioner.provider.rate-limited","service":"Hetzner","status":429,"retryAt":...}` or `"service":"Cloudflare"`.
-- **What the system does**: The HTTP client parses `retry-after` and `ratelimit-reset` headers into `retryAt`. The Hetzner adapter sleeps until `retryAt` and retries once per request. If rate limiting persists, the reconciler fails the current item (`"The Cloud Computer provider operation failed."` or `"The Cloud Computer DNS operation failed."`) and retries on the next 10-second pass.
+- **How to recognise it**: Reconciler stderr logs `{"event":"home-provisioner.provider.rate-limited","service":"Google Compute Engine","status":429,"retryAt":...}` or `"service":"Cloudflare"`.
+- **What the system does**: The HTTP client parses `retry-after` and `ratelimit-reset` headers into `retryAt`. The Compute Engine adapter sends nothing more until `retryAt`; a rate-limited write was not carried out and is retried later. If rate limiting persists, the reconciler fails the current item (`"The Cloud Computer provider operation failed."` or `"The Cloud Computer DNS operation failed."`) and retries on the next 10-second pass.
 - **What the operator does**:
-  1. Lower `OPENSTEER_HOME_CONCURRENCY` (default `4`, minimum `1`) or raise `OPENSTEER_HOME_INTERVAL_MS` (default `10000`) if bulk churn is saturating Hetzner or Cloudflare quotas.
-  2. Verify no runaway loop or external tool is sharing the same Hetzner or Cloudflare API token.
+  1. Lower `OPENSTEER_HOME_CONCURRENCY` (default `4`, minimum `1`) or raise `OPENSTEER_HOME_INTERVAL_MS` (default `10000`) if bulk churn is saturating Compute Engine or Cloudflare quotas.
+  2. Verify no runaway loop or external tool is sharing the provisioner's Compute Engine quota or the same Cloudflare API token.
 
 ### Account refusing the reconciler
 
@@ -470,7 +472,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 - **What the system does**: On an identity mismatch, the reconciler deletes the Cloudflare DNS record so traffic does not reach the wrong host, reports `phase: "failed"`, and stops publishing DNS. On a pre-existing foreign DNS record, Cloudflare calls fail closed without overwriting the foreign record.
 - **What the operator does**:
   1. For a DNS conflict, inspect the hostname in the Cloudflare zone and remove the conflicting non-managed record if it is stale. The next reconciler pass will create the managed record.
-  2. For an identity mismatch, do not point DNS back manually. Inspect the Hetzner server (`os-cc-<uuid>-<gen>`) and its `/etc/opensteer-home` state to find why its Host key or deployment ID changed.
+  2. For an identity mismatch, do not point DNS back manually. Inspect the Compute Engine instance (`os-cc-<uuid>-<gen>`) and its `/etc/opensteer-home` state to find why its Host key or deployment ID changed.
   3. Rebuild the Home with `reissue-bootstrap <id>` (if never ready) or `replace <computer-id> <snapshot-id>` (if previously ready).
 
 ### Stripe outage during delete
@@ -569,9 +571,9 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 The automated test suite and local Colima proof (`scripts/verify-home-deployment.mjs`) exercise the Account store, reconciler, Stripe client, and Home container stack against local mocks and containers only. None of the following has been run in production or against live third-party services:
 
 - **Live Stripe**: Checkout Sessions (`2026-11-18.endive` with `allowed_payment_method_types[0]=card`), Billing Portal sessions, real webhook signing and delivery to `/v1/cloud-computers/stripe-webhook`, and live `validateOffer` / 60-second billing reconciliation.
-- **Live Hetzner Cloud**: server creation (`start_after_create: false`), cloud-init execution on an actual Hetzner Ubuntu 24.04 LTS image, firewall `opensteer-cloud-computers`, graceful shutdown + forced `poweroff`, IPv6 `/64` `::1` addressing, and server deletion.
+- **The live Compute Engine adapter**: the reconciler's instance creation with a reserved static address, cloud-init on the instance it created, firewall rules `opensteer-cloud-computers-v4`/`-v6`, stop and start, dual-stack addressing, and instance and address deletion. Its tests run against a stand-in for the Compute Engine API.
 - **Live Cloudflare DNS**: creating, updating, and deleting unproxied `A` / `AAAA` records with the `Opensteer Cloud Computer` comment, and orphan DNS cleanup.
 - **Live backup erasure**: Secret Manager workload permissions and irreversible key deletion, S3-compatible version listing and deletion with prefix-scoped credentials, and principal rotation after deletion. Real restic backup and restore over the public internet remain unverified.
-- **`linux/amd64` Home VMs at a provider**: the verifier has run in local mode on pristine AMD64 Ubuntu 24.04 Compute Engine instances without an external address (2026-11-21): the `linux/amd64` build and all 34 checks passed, including AppArmor, seccomp, the Runner bubblewrap sandbox this release later removed, Chromium, and the managed installer with a claim signed by a stand-in for the Opensteer account and OIDC sign-in against it. Nothing has run on Hetzner, and the `linux/arm64` build-only half did not run there.
+- **`linux/amd64` Home VMs at a provider**: the verifier has run in local mode on pristine AMD64 Ubuntu 24.04 Compute Engine instances without an external address (2026-11-21): the `linux/amd64` build and all 34 checks passed, including AppArmor, seccomp, the Runner bubblewrap sandbox this release later removed, Chromium, and the managed installer with a claim signed by a stand-in for the Opensteer account and OIDC sign-in against it. The `linux/arm64` build-only half did not run there.
 - **Production systemd units and timers**: The Colima proof uses `--prepare` and invokes `opensteer-home` directly for bring-your-own installs, but waits for the managed installer and Home systemd services for managed boot and restore. It does not qualify the scheduled timers end-to-end on a production VM.
-- **Production restore from a named snapshot**: `replace <computer-id> <snapshot-id>` driving a fresh Hetzner VM through `managed-restore`, `boot-complete`, DNS cutover, identity verification, old-VM deletion, and re-claim has never been executed end-to-end against real infrastructure.
+- **Production restore from a named snapshot**: `replace <computer-id> <snapshot-id>` driving a fresh Compute Engine VM through `managed-restore`, `boot-complete`, DNS cutover, identity verification, old-VM deletion, and re-claim has never been executed end-to-end against real infrastructure.

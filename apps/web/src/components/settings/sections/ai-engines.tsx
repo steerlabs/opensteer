@@ -153,6 +153,22 @@ export function installationUpdateLabel(update: HarnessInstallation["update"]): 
   }
 }
 
+/**
+ * The line under an installed engine: how to update one Opensteer cannot
+ * update or whose update failed, and otherwise the Runner's own sentence, such
+ * as Opensteer's own copy running while every copy here is too old.
+ */
+export function installationDetailLine(installation: HarnessInstallation): string | null {
+  const { detail, manualCommand, update } = installation;
+  if (update === "failed" || update === "manual") {
+    const sentence =
+      detail ??
+      (update === "manual" ? "Update this agent on its computer." : "The update did not finish.");
+    return manualCommand ? `${sentence} Run ${manualCommand}.` : sentence;
+  }
+  return update === "succeeded" || update === "updating" ? null : (detail ?? null);
+}
+
 function authKindLabel(authKind: HarnessAuthKind): string {
   switch (authKind) {
     case "subscription":
@@ -882,17 +898,9 @@ export function AiEngineSettings({
                   </button>
                 ) : null}
               </header>
-              {engine.installation &&
-              (engine.installation.update === "failed" ||
-                engine.installation.update === "manual") ? (
+              {engine.installation && installationDetailLine(engine.installation) ? (
                 <p className="settings-engine__update-detail" role="status">
-                  {engine.installation.detail ??
-                    (engine.installation.update === "manual"
-                      ? "Update this agent on its computer."
-                      : "The update did not finish.")}
-                  {engine.installation.manualCommand
-                    ? ` Run ${engine.installation.manualCommand}.`
-                    : ""}
+                  {installationDetailLine(engine.installation)}
                 </p>
               ) : null}
               {engine.profiles.map((profile) =>

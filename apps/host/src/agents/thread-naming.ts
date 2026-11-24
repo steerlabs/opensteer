@@ -21,12 +21,18 @@ import {
   type HarnessCatalogRecorder,
 } from "./harness-catalogs.js";
 
-/** Three automatic attempts, then the task's own model when it is still eligible. */
+/** Up to three other ranked attempts, plus the task's own model in its resolved position. */
 export function namingCandidates(resolved: readonly ResolvedModelCandidate[]) {
-  return [
-    ...resolved.filter((candidate) => !candidate.original).slice(0, 3),
-    ...resolved.filter((candidate) => candidate.original),
-  ];
+  const selected: ResolvedModelCandidate[] = [];
+  let others = 0;
+  for (const candidate of resolved) {
+    if (candidate.original) selected.push(candidate);
+    else if (others < 3) {
+      others++;
+      selected.push(candidate);
+    }
+  }
+  return selected;
 }
 
 /** Failures that suggest the stored catalog is stale, so it is refreshed before the next job. */

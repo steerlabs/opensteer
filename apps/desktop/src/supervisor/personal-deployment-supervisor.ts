@@ -135,6 +135,11 @@ interface PersonalDeploymentSupervisorOptions {
   readonly accountIssuer?: URL | string | null;
   /** `NODE_EXTRA_CA_CERTS` from the app's own environment: the Host gets it, and nothing else does. */
   readonly extraCertificateAuthorities?: string | null;
+  /**
+   * A trial's own Agent home (`config.ts`). Null otherwise: the Home then keeps the one a
+   * released app has always used, `~/Opensteer`.
+   */
+  readonly agentHome?: string | null;
   readonly allocatePort?: () => Promise<number>;
   readonly baseEnvironment?: Readonly<Record<string, string>>;
   readonly catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
@@ -251,6 +256,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   >;
   readonly #accountIssuer: string | null;
   readonly #extraCertificateAuthorities: string | null;
+  readonly #agentHome: string | null;
   readonly #allocatePort: () => Promise<number>;
   readonly #passkeys: boolean;
   readonly #baseEnvironment: Readonly<Record<string, string>>;
@@ -321,6 +327,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       ? new URL(String(options.accountIssuer)).origin
       : null;
     this.#extraCertificateAuthorities = options.extraCertificateAuthorities ?? null;
+    this.#agentHome = options.agentHome ?? null;
     this.#allocatePort = options.allocatePort ?? allocateLoopbackPort;
     this.#passkeys = options.passkeys === true;
     this.#baseEnvironment = options.baseEnvironment ?? filterUserEnvironment(process.env);
@@ -1055,6 +1062,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         extensionDirectory,
         await this.#personFullName(),
         this.#extraCertificateAuthorities,
+        this.#agentHome,
       ),
       (line) => {
         const stage = line.startsWith(`${personalUpgradeProgressLine}: `)
@@ -2272,6 +2280,8 @@ export function hostSpec(
   ownerNameSeed: string | null,
   /** `NODE_EXTRA_CA_CERTS`, when the app's own environment carried it; otherwise none. */
   extraCertificateAuthorities: string | null = null,
+  /** A trial's own Agent home; otherwise none, and the Home uses its default. */
+  agentHome: string | null = null,
 ): PersonalProcessSpec {
   const fingerprint = HostKeyFingerprintSchema.parse(manifest.hostKeyFingerprint);
   const origin = `http://127.0.0.1:${manifest.hostPort}`;
@@ -2282,6 +2292,7 @@ export function hostSpec(
     environment: {
       ...desktopNodeTrust({
         LANG: "en_US.UTF-8",
+        ...(agentHome ? { OPENSTEER_AGENT_HOME: agentHome } : {}),
         OPENSTEER_BIND_ADDRESS: "127.0.0.1",
         OPENSTEER_CANONICAL_ORIGIN: origin,
         OPENSTEER_CREDENTIAL_KEY_PATH: paths.credentialKeyPath,
