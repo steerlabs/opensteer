@@ -93,6 +93,18 @@ describe("a Home's problems and its one report", () => {
         "update.failed",
       ]);
 
+      // On a Mac nothing of root's writes this file, and the person's own agents could: it is
+      // never read there.
+      const mac = new HomeProblems({
+        database,
+        dataDirectory: directory,
+        home: "mac",
+        version: "1.4.0",
+        destination: { kind: "none" },
+      });
+      expect(await mac.report()).not.toHaveProperty("services");
+      expect((await mac.report()).problems).toEqual([]);
+
       // Off by default: nothing leaves.
       expect((await problems.reporting()).mode).toBe("off");
       await problems.sendOnce();

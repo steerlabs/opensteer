@@ -225,6 +225,9 @@ export class HomeProblems {
   }
 
   async #machine(): Promise<{ readonly status: MachineStatus; readonly at?: number }> {
+    // Only a Linux Home's root maintenance writes it, into a volume no Runner mounts. Anywhere
+    // else nothing of root's writes it and the person's own agents could, so it is not read.
+    if (this.#home !== "server" && this.#home !== "cloud-computer") return { status: {} };
     const path = join(this.#dataDirectory, machineStatusFile);
     try {
       const [text, info] = await Promise.all([readFile(path, "utf8"), stat(path)]);
