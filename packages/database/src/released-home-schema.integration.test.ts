@@ -2,7 +2,7 @@ import { sql, type Kysely } from "kysely";
 import { afterEach, expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
 import { createId } from "@opensteer/core";
-import { migrateToLatest } from "./migrations.js";
+import { migrateToLatest, migrationProvider } from "./migrations.js";
 import {
   emptyPublicSchema,
   loadReleasedHome,
@@ -160,7 +160,15 @@ it("takes a released Home, with main-era work in it, to exactly what a fresh ins
   const released = await emptyDatabase();
   await loadReleasedHome(released.clone.url);
   const seeded = await seedMainEra(released.database);
-  await migrateToLatest(released.database);
+  const steps: [number, number][] = [];
+  await migrateToLatest(released.database, undefined, {
+    beforeMigration: (step, of) => steps.push([step, of]),
+  });
+  // Each of this release's own migrations says it is starting, in order.
+  const own = Object.keys(await migrationProvider().getMigrations()).filter(
+    (name) => name > "0046_run_provider_retry",
+  );
+  expect(steps).toEqual(own.map((_, index) => [index + 1, own.length]));
   const fresh = await emptyDatabase();
   await sql.raw(emptyPublicSchema()).execute(fresh.database);
   await migrateToLatest(fresh.database);
