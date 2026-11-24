@@ -350,3 +350,13 @@ export function chatConsentRefusal(
     return { message: chatAddRefusals.directMessagesOwnerOnly };
   return chatGrantRefusal(chatGrantShape(senders), grant);
 }
+
+/**
+ * The consent a connection gave covers direct work (browser, computer, plugins, asking the
+ * person) from this version on. The one predicate for listing those tools and for calling them
+ * (B5): a connection that consented before is listed none of them and refused none it is shown.
+ */
+export const directWorkConsentVersion = 2;
+export function consentAllowsDirectWork(consentVersion: number): boolean {
+  return consentVersion >= directWorkConsentVersion;
+}

@@ -75,7 +75,12 @@ export interface CommandDoor {
 }
 /** The door as an agent meets it: the same registry, and the one admission. */
 export interface AgentCommandDoor extends CommandDoor {
-  readonly admit: (caller: AgentCaller, command: HostApiCommand) => Promise<CommandAdmission>;
+  readonly admit: (
+    caller: AgentCaller,
+    command: HostApiCommand,
+    /** What the door just read of this caller, which admission reuses where it can. */
+    holder?: CommandHolder,
+  ) => Promise<CommandAdmission>;
   /**
    * What the caller holds as the Home has it now, never as it was at sign-in: its scope and
    * effective grant (null for your own agents) and its live mode; `gone` once it may not act.
@@ -133,11 +138,12 @@ export function agentCommandAdmission(
   database: Kysely<DatabaseSchema>,
   taskId?: string,
 ): AgentCommandDoor["admit"] {
-  return async (caller, command) =>
+  return async (caller, command, holder) =>
     admitCommand(database, {
       ownerUserId: caller.userId,
       subject: await admittedSubject(database, caller, taskId),
       command,
+      ...(holder?.execution ? { execution: holder.execution } : {}),
     });
 }
 
@@ -198,7 +204,7 @@ export async function dispatchCommand(
         .join("; ")}`.slice(0, 1_000),
     });
   command = parsed.data as HostApiCommand;
-  const admission = await door.admit(actor, command);
+  const admission = await door.admit(actor, command, holder);
   if (admission.answer === "not_found") throw notFound();
   assertNoSecretPaths(row, command);
   const handler = door.registry[command.type] as CommandHandler<HostApiCommand["type"]>;

@@ -1038,25 +1038,34 @@ export async function admitCommand(
     readonly command: Command;
     readonly stored?: CommandStoredFace | undefined;
     readonly awaitingStore?: true;
+    /**
+     * The caller's execution as the door just read it. Reused only where nothing is held: work
+     * with no connection in its lineage, whose execution a Disconnect cannot change.
+     */
+    readonly execution?: ExecutionAuthority;
   },
 ): Promise<CommandAdmission> {
   const row = commandRow(input.command.type) as CommandRow | undefined;
   if (!row) return { answer: "not_found", face: undefined, execution: null };
   const face = commandFaceFor(row, input);
   if (input.subject.kind === "person") return { answer: "now", face, execution: null };
+  // A Run's row is read once: it names the connection to hold, and admission reads the rest of
+  // it. Only a connection is held, in one transaction with the rest, so a Disconnect meanwhile is
+  // seen; work with no connection in its lineage has nothing to hold and needs no transaction,
+  // and the execution the door just read of it is its execution still.
+  const reused =
+    input.execution && input.execution.agentConnection === null ? input.execution : undefined;
+  const binding =
+    input.subject.kind === "binding" && !reused
+      ? await bindingFacts(database, input.subject.bindingId)
+      : undefined;
+  const connectionId =
+    input.subject.kind === "connection"
+      ? input.subject.agentConnectionId
+      : binding && !binding.inconsistent
+        ? binding.agentConnectionId
+        : null;
   const admit = async (transaction: Kysely<DatabaseSchema>) => {
-    // A Run's row is read once: it names the connection to hold, and admission reads the rest of
-    // it. The connection itself is read after the hold, so a Disconnect meanwhile is seen.
-    const binding =
-      input.subject.kind === "binding"
-        ? await bindingFacts(transaction, input.subject.bindingId)
-        : undefined;
-    const connectionId =
-      input.subject.kind === "connection"
-        ? input.subject.agentConnectionId
-        : binding && !binding.inconsistent
-          ? binding.agentConnectionId
-          : null;
     if (connectionId)
       await transaction
         .selectFrom("agentConnections")
@@ -1064,11 +1073,13 @@ export async function admitCommand(
         .where("id", "=", connectionId)
         .forShare()
         .executeTakeFirst();
-    const execution = await admitExecutionWith(
-      transaction,
-      { ownerUserId: input.ownerUserId, subject: input.subject },
-      binding,
-    );
+    const execution =
+      reused ??
+      (await admitExecutionWith(
+        transaction,
+        { ownerUserId: input.ownerUserId, subject: input.subject },
+        binding,
+      ));
     const reach = await commandReach(
       transaction,
       execution,
@@ -1078,9 +1089,10 @@ export async function admitCommand(
     );
     return { execution, reach };
   };
-  const { execution, reach } = database.isTransaction
-    ? await admit(database)
-    : await withDatabaseTransaction(database, admit);
+  const { execution, reach } =
+    database.isTransaction || !connectionId
+      ? await admit(database)
+      : await withDatabaseTransaction(database, admit);
   const connection = execution.agentConnection;
   // The same holding rule the listing reads, where it is admitted (and readmitted at the effect).
   if (connection && !lineageAllowsPersonalContext(connection) && anyoneChatHoldsNo(row))
@@ -1138,6 +1150,8 @@ export interface CommandHolder {
   readonly anyoneChat?: boolean;
   /** A connection with no active direct session: it has no session's Requests or session. */
   readonly withoutSession?: boolean;
+  /** The execution this was read from, for the admission that follows it. */
+  readonly execution?: ExecutionAuthority;
 }
 
 /**
@@ -1215,6 +1229,7 @@ export async function commandCallerHolder(
       mode: execution.mode,
       ...(connection && !lineageAllowsPersonalContext(connection) ? { anyoneChat: true } : {}),
       ...(subject.kind === "connection" ? { withoutSession: true } : {}),
+      execution,
     };
   } catch (error) {
     if (error instanceof ConnectionWaiting) return "gone";
@@ -1382,7 +1397,14 @@ async function commandReach(
       };
       if (resource.id === null)
         return connection && !agentGrantAllowsTasks(connection.grant) ? outOfReach : requested;
-      return both(await task(resource.id), requested);
+      const reached = both(await task(resource.id), requested);
+      // What a connection queues into a task runs at most at the connection's own mode, whatever
+      // the task's: it is its own work at that mode. A steer acts in the Run already going.
+      const queued =
+        connection &&
+        command.type === "thread.sendMessage" &&
+        (command as { readonly delivery?: string }).delivery !== "steer";
+      return queued && reached.reach ? { ...reached, ownWork: true } : reached;
     }
     case "request": {
       const request = await database
@@ -1437,26 +1459,37 @@ async function commandReach(
       return tabsReach(ids);
     }
     case "tab-group": {
-      const layout = await database
-        .selectFrom("tabLayouts")
-        .select("items")
-        .where("ownerId", "=", owner)
-        .executeTakeFirst();
-      const items = (layout?.items ?? []) as readonly {
-        readonly kind: string;
-        readonly group?: { readonly groupId: string; readonly tabIds?: readonly string[] };
-      }[];
-      const group = items.find(
-        (item) => item.kind === "group" && item.group?.groupId === resource.id,
-      )?.group;
-      if (!group) return outOfReach;
-      // A group is reached only when every tab in it is: one holding some of its tabs, or none,
-      // finds no group. An empty group holds nothing a selected grant names.
-      const members = group.tabIds ?? [];
-      const reach =
-        members.length === 0 ? !selected : selected ? (await tabsReach(members)).reach : true;
+      // A group is reached only when every tab in it is (a selected grant through the profiles
+      // its tabs are in; never an empty one), decided in one statement whatever the group is: a
+      // hidden group does the same work as a missing one and answers the same (A6, rule 5).
+      const grantedProfiles = selected
+        ? (connection?.grant.scope === "selected" ? connection.grant.resources : [])
+            .flatMap((entry) => (entry.kind === "browser-profile" ? [entry.profileId] : []))
+            .filter((profileId) => granted({ kind: "browser-profile", profileId }))
+        : [];
+      const { rows } = await sql<{ readonly reach: boolean }>`
+        select exists (
+          select 1
+          from tab_layouts layout
+          cross join lateral jsonb_array_elements(layout.items) item
+          where layout.owner_id = ${owner}
+            and item->>'kind' = 'group'
+            and item->'group'->>'groupId' = ${resource.id}
+            and (${!selected}
+              or (jsonb_array_length(coalesce(item->'group'->'tabIds', '[]'::jsonb)) > 0
+                and not exists (
+                  select 1
+                  from jsonb_array_elements_text(coalesce(item->'group'->'tabIds', '[]'::jsonb))
+                    member(tab_id)
+                  where not exists (
+                    select 1 from personal_tabs tab
+                    where tab.id = member.tab_id
+                      and tab.owner_id = ${owner}
+                      and tab.profile_id = any(${grantedProfiles}::text[])))))
+        ) as reach
+      `.execute(database);
       // A group records no opener: it is never an agent's own work.
-      return reach ? { reach: true, ownWork: false } : outOfReach;
+      return rows[0]?.reach ? { reach: true, ownWork: false } : outOfReach;
     }
     case "browser-session": {
       const session = await database

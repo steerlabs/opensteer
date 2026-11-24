@@ -150,6 +150,20 @@ describe("the connection's actual MCP listing", () => {
     ["tasks only", selected(true), [...common, ...tasks], undefined],
     ["empty", selected(false), [], undefined],
   ];
+  it("lists no direct tool to an Everything connection whose consent predates direct work (B5)", async () => {
+    const current = await measureMcpContext("connection", { grant: full });
+    const earlier = await measureMcpContext("connection", { grant: full, consentVersion: 1 });
+    const names = (tools: readonly { readonly name: string }[]) => tools.map(({ name }) => name);
+    // What it is listed is what it can call: direct work is refused for that consent, so none of
+    // its tools is shown; everything else it holds is.
+    expect(names(earlier.tools)).toEqual(
+      names(current.tools).filter((name) => !connectionDirectTools.has(name)),
+    );
+    expect(names(current.tools).some((name) => connectionDirectTools.has(name))).toBe(true);
+    for (const name of connectionDirectTools)
+      expect(earlier.instructions, name).not.toContain(name);
+  });
+
   it.each(shapes)(
     "names only the state areas %s may read (G5)",
     async (_name, grant, _e, accessMode) => {

@@ -51,6 +51,11 @@ export type RunToolActionClass = Exclude<RunToolAction, "person.message">;
 type TriggerControlAction = RunToolAction;
 export type TriggerControlActionClass = RunToolActionClass;
 export interface RunToolAdmissionInput {
+  /**
+   * The door's last admission of the command this write is (rule 2, A3), run in admit mode in the
+   * write's own transaction: a change since the door admitted it refuses.
+   */
+  readonly commandAdmit?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
   readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
   readonly targetThreadIds?: readonly ThreadId[];
   readonly action: RunToolAction;
@@ -69,6 +74,11 @@ export interface RunToolAdmissionResult {
   readonly wasDuplicate: boolean;
 }
 export interface TriggerControlAdmissionInput {
+  /**
+   * The door's last admission of the command this write is (rule 2, A3), run in admit mode in the
+   * write's own transaction: a change since the door admitted it refuses.
+   */
+  readonly commandAdmit?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
   readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
   readonly targetThreadIds?: readonly ThreadId[];
   readonly action: TriggerControlAction;
@@ -87,6 +97,11 @@ export interface TriggerControlAdmissionResult {
   readonly wasDuplicate: boolean;
 }
 export interface WatchControlAdmissionInput {
+  /**
+   * The door's last admission of the command this write is (rule 2, A3), run in admit mode in the
+   * write's own transaction: a change since the door admitted it refuses.
+   */
+  readonly commandAdmit?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
   readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
   readonly targetThreadIds?: readonly ThreadId[];
   readonly action: "thread.delegate" | "thread.message";
@@ -154,6 +169,7 @@ export async function admitRunToolCallInTransaction(
   if (!/^[0-9a-f]{64}$/.test(input.requestFingerprint)) {
     throw new TypeError("Tool request fingerprint must be a SHA-256 hex digest");
   }
+  if (mode === "admit") await input.commandAdmit?.(transaction);
   const actionClass = actionClasses[input.action];
   await lockLineageConnection(
     transaction,
@@ -265,6 +281,7 @@ export async function admitTriggerControlRequestInTransaction(
   if (!/^[0-9a-f]{64}$/.test(input.requestFingerprint)) {
     throw new TypeError("Trigger-control request fingerprint must be a SHA-256 hex digest");
   }
+  if (mode === "admit") await input.commandAdmit?.(transaction);
   const actionClass = actionClasses[input.action];
   const notFound = () =>
     new OpensteerError({ code: "not_found", message: "Automation occurrence not found" });
@@ -351,6 +368,7 @@ export async function admitWatchControlRequestInTransaction(
   if (!/^[0-9a-f]{64}$/.test(input.requestFingerprint)) {
     throw new TypeError("Watch-control request fingerprint must be a SHA-256 hex digest");
   }
+  if (mode === "admit") await input.commandAdmit?.(transaction);
   await lockLineageConnection(
     transaction,
     await bindingAgentConnectionId(transaction, `watch:${input.activationId}`),
