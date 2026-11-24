@@ -36,7 +36,11 @@ function VoiceAskCards({ ask }: { readonly ask: VoiceAskValue }) {
 
 function VoiceRequests({ threadId }: { readonly threadId: string }) {
   const { hostClient } = useShell();
-  const dock = useRequestDock(threadId, useThreadTranscript(hostClient, threadId).requests);
+  const dock = useRequestDock(
+    hostClient,
+    threadId,
+    useThreadTranscript(hostClient, threadId).requests,
+  );
   return (
     <RequestStack
       disabled={false}

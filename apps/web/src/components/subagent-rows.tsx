@@ -29,7 +29,11 @@ import {
   type WorkflowView,
 } from "@opensteer/client/host";
 import type { AssignmentSummary } from "@opensteer/core";
-import { useLiveAgentCard, useWorkerTranscripts } from "@opensteer/client/react";
+import {
+  useAssignmentScope,
+  useLiveAgentCard,
+  useWorkerTranscripts,
+} from "@opensteer/client/react";
 import { useOptionalShell, useShell } from "./app-shell.js";
 import { Icon } from "./icon.js";
 import { EngineMark } from "./model-picker.js";
@@ -639,37 +643,42 @@ function PhaseRow({
 
 /** The tasks one turn handed out, as rows that open each task's own conversation. */
 export function TaskRows({ entries }: { entries: readonly AssignmentEntry[] }) {
-  const { hostClient, snapshot } = useShell();
+  const { hostClient } = useShell();
   // A working task names its step while its own transcript is held live.
   const workers = useWorkerTranscripts(hostClient);
+  // These tasks as held now, and what their cards read, live: the shell here is stable.
+  const scope = useAssignmentScope(
+    hostClient,
+    entries.map((entry) => entry.assignment.id),
+  );
   const tasks = useMemo(
-    () => entries.map((entry) => currentAssignment(entry, snapshot.assignments)),
-    [entries, snapshot.assignments],
+    () => entries.map((entry) => currentAssignment(entry, scope.assignments)),
+    [entries, scope.assignments],
   );
   const group = useMemo(
     () =>
       tasks.length
         ? subagentGroup(
             tasks.map((assignment) =>
-              assignmentSubagentCard(assignment, { ...snapshot, transcripts: workers }),
+              assignmentSubagentCard(assignment, { ...scope, transcripts: workers }),
             ),
           )
         : null,
-    [tasks, snapshot, workers],
+    [tasks, scope, workers],
   );
   const byId = useMemo(
     () =>
       new Map(
         tasks.map((assignment) => [assignment.id, { assignment, owner: taskOwner(assignment) }]),
       ),
-    [tasks, snapshot],
+    [tasks],
   );
   if (!group) return null;
   return (
     <TaskAssignments value={byId}>
       <div className="agent-tasks turn__content">
-        {entries.map((entry) => (
-          <ObservedWorker entry={entry} key={entry.id} />
+        {entries.map((entry, index) => (
+          <ObservedWorker assignment={tasks[index]!} key={entry.id} reader={scope} />
         ))}
         <AgentGroupRow group={group} />
       </div>
