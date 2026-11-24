@@ -138,12 +138,18 @@ export async function idleCpuPhase(): Promise<void> {
       let releasedEvaluation = false;
       try {
         active = await measure("agent-demand", 1_000);
-        await evaluate("globalThis.__releaseAgentDemand?.('done')");
+        await platform.send("Runtime.evaluate", {
+          expression: "globalThis.__releaseAgentDemand?.('done')",
+        });
         await inFlight;
         releasedEvaluation = true;
       } finally {
         if (!releasedEvaluation) {
-          await evaluate("globalThis.__releaseAgentDemand?.('done')").catch(() => undefined);
+          await platform
+            .send("Runtime.evaluate", {
+              expression: "globalThis.__releaseAgentDemand?.('done')",
+            })
+            .catch(() => undefined);
           await inFlight.catch(() => undefined);
         }
       }
