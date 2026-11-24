@@ -173,7 +173,7 @@ async function browserUseHome() {
     beforeClientCommand:
       | ((command: {
           readonly method: string;
-          readonly parameters?: Record<string, unknown>;
+          readonly parameters?: Record<string, unknown> | undefined;
         }) => Promise<void> | void)
       | undefined;
     onServerMessage: ((message: unknown) => void) | undefined;

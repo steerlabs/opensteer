@@ -5,6 +5,7 @@ import {
   type BrowserPoolControl,
   type BrowserPoolRuntimeFence,
 } from "./browser-pool.js";
+import { SessionFiles } from "./browser/session-files.js";
 import { BrowserRuntime, pooledSessionWithoutChannelMs } from "./runtime.js";
 import { BrowserSessionIdSchema } from "@opensteer/protocol/browser";
 import {
@@ -555,30 +556,36 @@ it("ends a session it still holds when the Home asks, and says ended only once i
 
 it("answers unknown after a teardown that failed, never ended, and ends the session when asked again", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const filesDisposed = Promise.withResolvers<void>();
+  const realDispose = SessionFiles.prototype.dispose;
+  const disposeSpy = vi.spyOn(SessionFiles.prototype, "dispose").mockImplementation(async function (
+    this: SessionFiles,
+  ) {
+    try {
+      await realDispose.call(this);
+    } finally {
+      filesDisposed.resolve();
+    }
+  });
   const f = await fixture();
   try {
     await f.install();
     await f.open();
     const closing = holdClose(f.page);
     const first = endRequest(f, "end-1");
-    // Its teardown's bound, then the ledger's own wait for the page: past both, still held.
+    await vi.waitFor(() => expect(closing.spy).toHaveBeenCalled());
     let answered = false;
     void first.finally(() => {
       answered = true;
     });
-    let waited = 0;
-    while (!answered && waited < 60) {
-      // Yield to real I/O (such as active.files.dispose()) while no fake timer is armed so
-      // loaded unit runs do not burn through the fake-timer loop before poolEndConfirmMs starts.
-      if (vi.getTimerCount() === 0) {
-        await new Promise((resolve) => setImmediate(resolve));
-        continue;
-      }
-      waited++;
-      await vi.advanceTimersByTimeAsync(1_000);
-    }
-    // Its teardown's bound (5 s) and the ledger's own wait for the page (2 s), and no more.
-    expect(waited).toBeLessThanOrEqual(12);
+    // Its teardown's bound (5 s), then wait for real fs.rm in active.files.dispose() so busy
+    // filesystem I/O cannot burn fake time before the ledger's own page wait (2 s) starts.
+    await vi.advanceTimersByTimeAsync(5_000);
+    await filesDisposed.promise;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(answered).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(answered).toBe(true);
     expect((await first).outcome).toBe("unknown");
     expect(f.page.isClosed()).toBe(false);
     closing.release();
@@ -587,6 +594,7 @@ it("answers unknown after a teardown that failed, never ended, and ends the sess
     await vi.advanceTimersByTimeAsync(100);
     expect((await again).outcome).toBe("ended");
   } finally {
+    disposeSpy.mockRestore();
     vi.useRealTimers();
     await f.runtime.shutdown();
   }
