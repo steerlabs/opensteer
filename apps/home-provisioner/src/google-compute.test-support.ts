@@ -352,7 +352,20 @@ export class ComputeFake {
       if (usersOf(entry).length) return json({}, 400);
       return json(this.#start(req, regionPath, () => this.addresses.delete(name)));
     }
-    const body = req.body as { name: string; labels: Labels };
+    const body = req.body as { name: string; labels: Labels; ipVersion?: string };
+    // Compute Engine, addresses.insert on a region (seen 2026-11-24): "IP Version is not
+    // supported for regional addresses." The field exists only for global addresses.
+    if (body.ipVersion !== undefined)
+      return json(
+        {
+          error: {
+            code: 400,
+            message: "IP Version is not supported for regional addresses.",
+            errors: [{ domain: "global", reason: "badRequest" }],
+          },
+        },
+        400,
+      );
     if (this.addresses.has(body.name)) return json({}, 409);
     if (this.nextAddressInsert === "quota") {
       this.nextAddressInsert = undefined;

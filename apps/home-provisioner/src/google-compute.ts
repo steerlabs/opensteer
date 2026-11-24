@@ -649,7 +649,8 @@ export class GoogleCompute implements VmProvider, PoolHostProvider {
             name,
             addressType: "EXTERNAL",
             networkTier: "PREMIUM",
-            ipVersion: "IPV4",
+            // A regional external address is IPv4; Compute refuses `ipVersion` here ("IP
+            // Version is not supported for regional addresses"), it exists for global ones.
             labels: managedLabels(target),
           },
         });
