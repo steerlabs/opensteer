@@ -212,6 +212,7 @@ export const TriggerOccurrenceSchema = z.strictObject({
   event: TriggerScriptEventSchema,
   exitCode: z.number().int().nullable(),
   id: TriggerOccurrenceIdSchema,
+  outputPrunedAt: IsoDateTimeSchema.nullable().optional(),
   result: z.unknown().nullable(),
   revisionId: TriggerRevisionIdSchema,
   sent: z.boolean().optional(),

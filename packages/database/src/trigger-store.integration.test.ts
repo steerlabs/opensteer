@@ -2640,6 +2640,32 @@ integration.sequential("Trigger failure auto-pause", () => {
       expect(row.result).toBeNull();
       expect(row.webhookBody).toBeNull();
     }
+    const retainedDetail = await triggers.getForOwner(hook.trigger.id, fixture.userId, 100, {
+      kind: "person",
+    });
+    expect(retainedDetail?.occurrences).toHaveLength(100);
+    for (const occ of retainedDetail!.occurrences) {
+      expect(occ.outputPrunedAt).toBeNull();
+    }
+    await database
+      .deleteFrom("triggerOccurrences")
+      .where(
+        "id",
+        "in",
+        retained.map(({ id }) => id),
+      )
+      .execute();
+    const prunedDetail = await triggers.getForOwner(hook.trigger.id, fixture.userId, 100, {
+      kind: "person",
+    });
+    expect(prunedDetail?.occurrences).toHaveLength(4);
+    for (const occ of prunedDetail!.occurrences) {
+      expect(occ.status).toBe("succeeded");
+      expect(occ.stdout).toBe("");
+      expect(occ.stderr).toBe("");
+      expect(occ.result).toBeNull();
+      expect(occ.outputPrunedAt).toEqual(expect.any(String));
+    }
 
     // 4. Removing a computer pauses its automations and settles running firings to unknown (Y6)
     await database

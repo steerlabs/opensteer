@@ -403,3 +403,51 @@ it("shows live webhook address, marks legacy automations as needing an update wi
     }),
   );
 });
+
+it("shows a plain notice instead of empty output when a firing's output was pruned", async () => {
+  client = new MockHostClient({ latencyMs: 0 });
+  await client.load();
+  harness.client = client;
+  const trigger = unwrapRpcResult(await client.rpc["triggers.list"]({})).triggers.find(
+    (t) => t.source.kind === "schedule" && t.source.schedule.kind === "cron",
+  )!;
+  const baseDetail = unwrapRpcResult(await client.rpc["triggers.get"]({ triggerId: trigger.id }));
+  const prunedDetail = {
+    ...baseDetail,
+    occurrences: [
+      {
+        ...baseDetail.occurrences[0]!,
+        outputPrunedAt: "2026-11-23T00:00:00.000Z",
+        result: null,
+        status: "succeeded" as const,
+        stderr: "",
+        stdout: "",
+      },
+    ],
+  };
+  Object.defineProperty(client, "rpc", {
+    value: new Proxy(client.rpc, {
+      get(target, key) {
+        if (key !== "triggers.get") return Reflect.get(target, key);
+        return async () => ({ ok: true as const, data: prunedDetail });
+      },
+    }),
+  });
+  const node = document.createElement("div");
+  document.body.append(node);
+  root = createRoot(node);
+  await act(async () =>
+    root!.render(
+      <MemoryRouter initialEntries={[`/automations/${trigger.id}`]}>
+        <Routes>
+          <Route path="/automations/:triggerId" element={<AutomationDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    ),
+  );
+  await vi.waitFor(
+    () => expect(node.textContent).toContain("Opensteer no longer keeps this firing's output."),
+    { timeout: 2000 },
+  );
+  expect(node.querySelector("details.automation-run__output")).toBeNull();
+});

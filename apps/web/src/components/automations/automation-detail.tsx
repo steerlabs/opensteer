@@ -31,7 +31,9 @@ import { useToast } from "../toast.js";
 import { conversationPath, useMinuteClock } from "../../ui-utils.js";
 import {
   automationShape,
+  prunedOutputNotice,
   runOutcome,
+  runOutput,
   scheduleStatusWord,
   describeEvent,
   describeRepeating,
@@ -809,7 +811,9 @@ function RunRow({
           )}
           {error ? <q className="automation-run__error">{error.trim().split("\n", 1)[0]}</q> : null}
         </span>
-        {output ? (
+        {occurrence.outputPrunedAt ? (
+          <span className="automation-run__outcome">{prunedOutputNotice}</span>
+        ) : output ? (
           <details className="automation-run__output">
             <summary>Output</summary>
             <pre>{output}</pre>
@@ -837,16 +841,6 @@ function RunRow({
       ) : null}
     </div>
   );
-}
-
-/** The program's own output, for the curious: what it printed, returned or threw. */
-function runOutput(occurrence: TriggerOccurrence): string | null {
-  const parts = [
-    occurrence.stdout.trim(),
-    occurrence.stderr.trim(),
-    occurrence.result === null ? "" : JSON.stringify(occurrence.result, null, 2),
-  ].filter(Boolean);
-  return parts.length > 0 ? parts.join("\n\n") : null;
 }
 
 /**
