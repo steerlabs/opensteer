@@ -62,6 +62,9 @@ export function runnerMemoryBytes(
  * process tree, so a small laptop keeps one or two rather than eight.
  */
 export function warmEngineIdleCap(totalMemoryBytes: number = runnerMemoryBytes()): number {
+  // Under 2 GiB (a Cloud Computer's Runner on a 4 GiB machine) a warm engine beside the one Run,
+  // with no swap, would invite an out-of-memory kill: none is kept.
+  if (totalMemoryBytes < 2 * gibibyte) return 0;
   if (totalMemoryBytes <= 4 * gibibyte) return 1;
   if (totalMemoryBytes <= 8 * gibibyte) return 2;
   return 8;
