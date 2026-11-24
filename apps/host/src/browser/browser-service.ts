@@ -9714,12 +9714,15 @@ export class HostedBrowserBroker {
             previous.order !== row.order ||
             previous.openerId !== row.openerId ||
             row.creatorAttachmentId !== undefined ||
-            (previous.favicon ?? null) !== favicon)
+            (previous.favicon ?? null) !== favicon ||
+            // An untitled page's load ending decides whether the tab's last title still stands.
+            (row.title === "" && (previous.loading ?? false) !== row.loading))
         )
           this.#dirtyTabs.set(id, {
             id: row.id,
             title: row.title,
             url: row.url,
+            ...(row.loading ? { loading: true } : {}),
             order: row.order,
             openerId: row.openerId,
             ...(row.creatorAttachmentId ? { creatorAttachmentId: row.creatorAttachmentId } : {}),
@@ -11499,6 +11502,8 @@ type PageDescriptor = Pick<
   "id" | "title" | "url" | "order" | "openerId" | "creatorAttachmentId"
 > & {
   readonly favicon?: string | null;
+  /** The document is still loading: an empty title then keeps the tab's last one. */
+  readonly loading?: boolean;
 };
 
 function pageIconRef(lineageId: BrowserSessionId, favicon: string): string {

@@ -7535,6 +7535,53 @@ it("keeps workspace descriptors after a runtime retires and closes viewers grace
   expect(peer.closed?.code).toBe(1000);
 });
 
+it("writes an untitled page again when its load ends, so the tab's last title does not stay for good", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      tabRestoreVersion: true,
+    });
+  const initial = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "initial",
+  );
+  await memory.add(initial);
+  vi.spyOn(repository, "listBrowserSessionViewers").mockResolvedValue({ userIds: [ownerId] });
+  await service.pageTabs.admitted!(initial);
+  const writes = vi.spyOn(memory.store, "updatePage");
+  const address = "https://example.com/untitled";
+  const written = () =>
+    writes.mock.calls.map(([, , , , descriptor]) => ({
+      title: descriptor.title,
+      loading: descriptor.loading ?? false,
+    }));
+  runtime.publishTabs({
+    surfaces: [{ id: initial.id, active: true, title: "", url: address, loading: true }],
+  });
+  await vi.waitFor(async () => {
+    await service.flushPendingTabDescriptors();
+    expect(written()).toEqual([{ title: "", loading: true }]);
+  });
+  runtime.publishTabs({
+    surfaces: [{ id: initial.id, active: true, title: "", url: address, loading: false }],
+  });
+  await vi.waitFor(async () => {
+    await service.flushPendingTabDescriptors();
+    expect(written(), "the finished load of an untitled page was never written").toEqual([
+      { title: "", loading: true },
+      { title: "", loading: false },
+    ]);
+  });
+});
+
 it.each(["generation admission", "a concurrent durable open"])(
   "retains descriptors received before %s",
   async (race) => {
