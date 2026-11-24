@@ -31,7 +31,10 @@ interface TriggerServiceOptions {
   readonly publicUrl: URL;
   /** Live public tunnel/remote origin when Personal Remote Access is active (Y3). */
   readonly remoteOrigin?: () => Promise<string | null>;
-  readonly secrets?: Pick<AutomationSecrets, "apply" | "names"> | undefined;
+  readonly secrets?:
+    | (Pick<AutomationSecrets, "apply" | "names"> &
+        Partial<Pick<AutomationSecrets, "applyWithMeta">>)
+    | undefined;
   readonly store: TriggerStore;
   readonly runnerStore: AutomationScriptRunnerStore;
   readonly threads: Pick<OpensteerStore, "readTask">;
@@ -43,7 +46,7 @@ export class TriggerService {
   readonly #onWatchChanged: TriggerServiceOptions["onWatchChanged"];
   readonly #publicUrl: URL;
   readonly #remoteOrigin: (() => Promise<string | null>) | undefined;
-  readonly #secrets: Pick<AutomationSecrets, "apply" | "names"> | undefined;
+  readonly #secrets: TriggerServiceOptions["secrets"];
   readonly #store: TriggerStore;
   readonly #runnerStore: AutomationScriptRunnerStore;
   readonly #threads: TriggerServiceOptions["threads"];
@@ -201,14 +204,24 @@ export class TriggerService {
           ? await this.resolveWebhookAddress(detail.trigger.webhookRouteKey)
           : { scope: (await this.#resolveWebhookOrigin()).scope, url: null }
         : null;
-    const secretNames = this.#secrets
-      ? [
-          ...(await this.#secrets.names(
-            detail.trigger.id,
-            await this.#store.getEncryptedSecrets(ownerId, detail.trigger.id),
-          )),
-        ]
-      : [];
+    let secretNames: string[] = [];
+    if (this.#secrets) {
+      const storedNames = this.#store.getSecretNames
+        ? await this.#store.getSecretNames(ownerId, detail.trigger.id)
+        : null;
+      if (storedNames && storedNames.length > 0) {
+        secretNames = [...storedNames];
+      } else if (this.#store.getEncryptedSecrets) {
+        const envelope = await this.#store.getEncryptedSecrets(ownerId, detail.trigger.id);
+        if (envelope) {
+          try {
+            secretNames = [...(await this.#secrets.names(detail.trigger.id, envelope))];
+          } catch {
+            secretNames = [];
+          }
+        }
+      }
+    }
     return { ...detail, secretNames, webhook };
   }
   async update(
@@ -243,7 +256,7 @@ export class TriggerService {
       readonly triggerId: TriggerId;
     },
     actorThreadId: ThreadId | null,
-    commandIdentity?: Pick<CommandIdentity, "admit">,
+    commandIdentity?: CommandIdentity | Pick<CommandIdentity, "admit">,
     actorConnectionId?: string,
   ): Promise<{ readonly secretNames: readonly string[] }> {
     const secrets = this.#secrets;
@@ -261,23 +274,41 @@ export class TriggerService {
         message: "Provide at least one secret to set or remove.",
       });
     }
-    const { result: secretNames, trigger } = await this.#store.updateEncryptedSecrets({
+    const {
+      changed,
+      result: secretNames,
+      trigger,
+    } = await this.#store.updateEncryptedSecrets({
       actorThreadId,
       ownerId,
       triggerId: input.triggerId,
       ...(commandIdentity ? { commandIdentity } : {}),
       ...(actorConnectionId ? { actorConnectionId } : {}),
       transform: async (current) => {
+        if (secrets.applyWithMeta) {
+          const applied = await secrets.applyWithMeta(input.triggerId, current, {
+            ...(input.remove ? { remove: input.remove } : {}),
+            ...(input.set ? { set: input.set } : {}),
+          });
+          return {
+            changed: applied.changed,
+            names: applied.names,
+            result: applied.names,
+            sealed: applied.sealed,
+          };
+        }
         const sealed = await secrets.apply(input.triggerId, current, {
           ...(input.remove ? { remove: input.remove } : {}),
           ...(input.set ? { set: input.set } : {}),
         });
         const names = await secrets.names(input.triggerId, sealed?.envelope ?? null);
-        return { result: names, sealed };
+        return { changed: true, names, result: names, sealed };
       },
     });
-    this.#onChanged?.();
-    if (trigger.kind === "watch") this.#onWatchChanged?.(trigger.id);
+    if (changed !== false) {
+      this.#onChanged?.();
+      if (trigger.kind === "watch") this.#onWatchChanged?.(trigger.id);
+    }
     return { secretNames };
   }
   async setStatus(

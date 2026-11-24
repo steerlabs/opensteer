@@ -63,7 +63,7 @@ export interface AgentTriggerManager {
       readonly triggerId: TriggerId;
     },
     actorThreadId: ThreadId | null,
-    commandIdentity?: Pick<CommandIdentity, "admit">,
+    commandIdentity?: CommandIdentity | Pick<CommandIdentity, "admit">,
     actorConnectionId?: string,
   ): Promise<{ readonly secretNames: readonly string[] }>;
 }

@@ -1,4 +1,6 @@
+import { createHmac } from "node:crypto";
 import { OpensteerError } from "@opensteer/core";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { z } from "zod";
 import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import { runCommandEffect, type CommandAttempts } from "./command-effect.js";
@@ -211,7 +213,7 @@ export async function dispatchCommand(
     admission.answer === "now" &&
     handler.accepts === "any" &&
     agentRunsNow(row, admission.face, handler, holder?.scope ?? null);
-  if (!runsNow) assertNoSecretPaths(row, command);
+  assertNoSecretPaths(row, command, runsNow);
   if (runsNow) {
     const authority = commandAuthority(actor, command, row);
     const readmit = door.readmit;
@@ -291,12 +293,24 @@ function commandAuthority(
   if (!idempotencyKey)
     throw new OpensteerError({ code: "bad_request", message: "A command needs its key" });
   const sanitized = JSON.parse(JSON.stringify(request)) as Record<string, unknown>;
+  const secretDigests: Record<string, string> = {};
   for (const path of row.secretFields ?? []) {
     const keys = path.split(".");
     let at: unknown = sanitized;
     for (const key of keys.slice(0, -1))
       at = typeof at === "object" && at !== null ? (at as Record<string, unknown>)[key] : undefined;
-    if (typeof at === "object" && at !== null) delete (at as Record<string, unknown>)[keys.at(-1)!];
+    if (typeof at === "object" && at !== null && keys.at(-1)! in at) {
+      const value = (at as Record<string, unknown>)[keys.at(-1)!];
+      if (value !== undefined) {
+        secretDigests[path] = createHmac("sha256", `${caller.userId}:${idempotencyKey}`)
+          .update(canonicalJson(value))
+          .digest("hex");
+      }
+      delete (at as Record<string, unknown>)[keys.at(-1)!];
+    }
+  }
+  if (Object.keys(secretDigests).length > 0) {
+    sanitized.__secretDigests = secretDigests;
   }
   const authority = Object.freeze({
     caller,
@@ -375,9 +389,14 @@ function parseHeld(row: CommandRow, command: HostApiCommand, underConnection: bo
   return first ?? hostApi["commands.dispatch"].payload.safeParse(command);
 }
 
-/** A value only the person types never passes through an agent: found by the table's paths. */
-function assertNoSecretPaths(row: CommandRow, command: HostApiCommand): void {
+/**
+ * A value only the person types never passes through an agent: found by the table's `secretFields`.
+ * Only paths explicitly listed in `row.agentMaySet` are allowed when the call runs now (S1).
+ */
+function assertNoSecretPaths(row: CommandRow, command: HostApiCommand, runsNow: boolean): void {
+  const allowed = runsNow ? new Set(row.agentMaySet ?? []) : null;
   for (const path of row.secretFields ?? []) {
+    if (allowed?.has(path)) continue;
     let at: unknown = command;
     for (const key of path.split(".")) {
       at = typeof at === "object" && at !== null ? (at as Record<string, unknown>)[key] : undefined;

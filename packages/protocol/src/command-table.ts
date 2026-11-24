@@ -194,10 +194,17 @@ export interface CommandRow<K extends CommandType = CommandType> {
   readonly governsKinds: readonly CommandResourceKind[];
   readonly governs: (command: Command<K>) => CommandResource;
   /**
-   * Input paths only the person types (dotted, nested included); an agent's command never
-   * carries them, and a stored proposal never holds them.
+   * Input paths that carry secret values (dotted, nested included): redacted from stored Requests,
+   * command identities, and schemas for asking callers. Unless also listed in `agentMaySet`, an
+   * agent may never send them, even when admitted `now`.
    */
   readonly secretFields?: readonly string[];
+  /**
+   * Subset of `secretFields` that an agent admitted `now` may supply directly (only
+   * `trigger.secrets.set.set`, where an own-lineage Full-access agent can already write the
+   * script that reads them). Every other `secretFields` path stays person-only.
+   */
+  readonly agentMaySet?: readonly string[];
   /**
    * Kinds of a top-level input field that only your own agents send: under a connection's grant
    * the schema has no such kind, in its listing and at the door, so one sent anyway reads like any
@@ -1583,15 +1590,30 @@ export const commandTable: CommandTable = {
     family: "automations",
     scope: "task",
     step: "A",
-    // Removing a secret narrows what the script holds; setting or replacing one gives the
-    // automation's script a new value in its lineage (same admission as changing the script,
-    // trigger.update face 1). `set` is in `secretFields` so a stored Request (propose or approve)
-    // never holds secret values, and an agent whose call asks must leave `set` out.
-    faces: [{ class: "narrow" }, { class: "widen-self", fullAccess: true, lineage: true }],
-    face: (c) => (c.remove !== undefined && c.remove.length > 0 && c.set === undefined ? 0 : 1),
+    // Removing a secret destroys data the person entered and cannot be undone (`destroy`, like
+    // `app.delete`: Full access runs now, below Full access and selected grants ask). Setting or
+    // replacing a secret with `set` needs Full access in the automation's own lineage (same
+    // admission as changing the script, trigger.update face 1). Proposing secret `names` without
+    // values always asks the person (`secret`), who enters them on the automation's Secrets screen.
+    faces: [
+      { class: "destroy" },
+      { class: "widen-self", fullAccess: true, lineage: true },
+      { class: "secret" },
+    ],
+    face: (c) =>
+      c.remove !== undefined &&
+      c.remove.length > 0 &&
+      c.set === undefined &&
+      (c.names === undefined || c.names.length === 0)
+        ? 0
+        : c.set !== undefined
+          ? 1
+          : 2,
     governsKinds: ["automation"],
     governs: (c) => resource("automation", c.triggerId),
     secretFields: ["set"],
+    agentMaySet: ["set"],
+    editor: { screen: "automation-secrets" },
     effect: "database",
   },
 };
@@ -1643,7 +1665,10 @@ export function commandEffect(row: Pick<CommandRow, "effect">): "database" | "ou
  */
 export function commandAgentOutput(command: Command, output: unknown): unknown {
   const row = commandRow(command.type) as CommandRow;
-  const sensitive = row.faces.some(
+  const faceIndex = commandFace(command);
+  const faces =
+    faceIndex !== undefined && row.faces[faceIndex] ? [row.faces[faceIndex]!] : row.faces;
+  const sensitive = faces.some(
     (face) => face.class === "secret" || face.class === "identity" || face.also === "secret",
   );
   return sensitive ? { type: command.type } : output;

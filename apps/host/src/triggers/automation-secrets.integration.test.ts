@@ -560,6 +560,7 @@ describeStore("automation secrets through the one door", (it) => {
       resource: "https://secrets.opensteer.test/mcp",
       expiresAt: new Date(Date.now() + 60 * 60_000),
     });
+    await connections.activate(connection.id, `hash-selected-${randomUUID()}`);
     const selectedCaller = {
       kind: "connection",
       key: `connection:${connection.id}`,
@@ -602,12 +603,382 @@ describeStore("automation secrets through the one door", (it) => {
     expect((foreignErr as Error).message).toBe((missingErr as Error).message);
   });
 
-  it("never leaks a secret marker value in any response, Request, approval, error, event, or log", async ({
+  it("requires approval for Supervised remove (B1), lets everything connection remove via door without store gate (B2), and carries names/editor/O2 risk on ask without card approval (B3, O2, S2)", async ({
     storeFixture,
   }) => {
-    const marker = "OPENSTEER_SECRET_LEAK_MARKER_9f3a7c1d";
+    const { f, database, personDispatch, commandRequests, commandTools, handlers } = await setup(
+      storeFixture,
+      "approval-required",
+    );
+    const created = (await personDispatch({
+      type: "trigger.create",
+      input: { anchorThreadId: f.threadId, name: "Guarded job", script, source: scheduleSource },
+    })) as { readonly trigger: { readonly id: TriggerId; readonly currentRevisionId: string } };
+    const triggerId = created.trigger.id;
+
+    await personDispatch({
+      type: "trigger.secrets.set",
+      triggerId,
+      set: { STRIPE_KEY: "sk_live_1", SECOND_KEY: "sec_2" },
+    });
+
+    const supCaller = {
+      kind: "run",
+      key: `run:${f.run.id}`,
+      userId: f.userId as UserId,
+      accessMode: "approval-required",
+      claims: { runId: f.run.id, threadId: f.threadId },
+      thread: { id: f.threadId, accessMode: "approval-required" },
+    } as unknown as AgentCaller;
+
+    // B1: Supervised agent cannot silently delete a secret — must ask (destroy face).
+    const supRemove = (await commandTools.opensteer_command({
+      caller: supCaller,
+      input: {
+        command: { type: "trigger.secrets.set", triggerId, remove: ["STRIPE_KEY"] },
+        reason: "Clean up old Stripe key",
+      },
+      operationKey: "b1-sup-remove",
+    })) as { readonly status: string; readonly requestId?: RequestId };
+    expect(supRemove).toMatchObject({ status: "pending", requestId: expect.any(String) });
+    const afterSupRemove = (await handlers.read({
+      caller: supCaller,
+      input: { automationId: triggerId, occurrenceLimit: 5 },
+      operationKey: "b1-check-still-there",
+    })) as { readonly secretNames?: readonly string[] };
+    expect(afterSupRemove.secretNames).toEqual(["SECOND_KEY", "STRIPE_KEY"]);
+    // Withdraw the remove ask so the same proposer can next propose `names` on this automation.
+    await commandRequests.withdraw({
+      ownerUserId: f.userId,
+      requestId: supRemove.requestId!,
+      proposerKey: `task:${f.threadId}` as never,
+    });
+
+    // S2: opensteer_commands omits `set` for Supervised callers, keeps `names` and `remove`.
+    const supSchema = await commandTools.opensteer_commands({
+      caller: supCaller,
+      input: { type: "trigger.secrets.set" },
+      operationKey: "s2-sup-schema",
+    });
+    expect(JSON.stringify(supSchema.input)).not.toContain('"set"');
+    expect(JSON.stringify(supSchema.input)).toContain('"names"');
+    expect(JSON.stringify(supSchema.input)).toContain('"remove"');
+
+    // B3 + O2: Asking agent proposes with `names` (no values) and reason -> Request carries names,
+    // editor opening Secrets section, and O2 words saying whether proposer can change the script.
+    const supAsk = (await commandTools.opensteer_command({
+      caller: supCaller,
+      input: {
+        command: { type: "trigger.secrets.set", triggerId, names: ["NEW_TOKEN"] },
+        reason: "Need a token for the API call",
+      },
+      operationKey: "b3-sup-ask",
+    })) as { readonly status: string; readonly requestId: RequestId };
+    expect(supAsk).toMatchObject({ status: "pending", requestId: expect.any(String) });
+    const askRow = await database
+      .selectFrom("requests")
+      .selectAll()
+      .where("id", "=", supAsk.requestId)
+      .executeTakeFirstOrThrow();
+    const askPart = askRow.command as unknown as {
+      readonly command: Record<string, unknown>;
+      readonly editor: { readonly screen: string } | null;
+      readonly gives: string | null;
+      readonly secretPaths: readonly string[];
+      readonly agentReason: string | null;
+    };
+    expect(askPart.command).toMatchObject({
+      type: "trigger.secrets.set",
+      triggerId,
+      names: ["NEW_TOKEN"],
+    });
+    expect(askPart.editor).toEqual({ screen: "automation-secrets" });
+    expect(askPart.agentReason).toBe("Need a token for the API call");
+    expect(askPart.gives).toContain("OPENSTEER_SECRET_NEW_TOKEN");
+    expect(askPart.gives).toContain("cannot change that script without asking you");
+
+    // B3: A secret-bearing Request is NEVER approved on the card (person uses the Secrets screen).
+    await expect(
+      personDispatch({
+        type: "request.command.approve",
+        requestId: supAsk.requestId,
+        expectedRevision: String(askRow.revision),
+        command: {
+          type: "trigger.secrets.set",
+          triggerId,
+          names: ["NEW_TOKEN"],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    await commandRequests.withdraw({
+      ownerUserId: f.userId,
+      requestId: supAsk.requestId,
+      proposerKey: `task:${f.threadId}` as never,
+    });
+
+    // B3: Proposing with neither names nor remove nor set is refused before opening a blank Request.
+    await expect(
+      commandTools.opensteer_command({
+        caller: supCaller,
+        input: { command: { type: "trigger.secrets.set", triggerId } },
+        operationKey: "b3-empty-ask",
+      }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+
+    // O2: Proposing a script edit on an automation with secrets says how many secrets it receives.
+    const scriptAsk = (await commandTools.opensteer_command({
+      caller: supCaller,
+      input: {
+        command: {
+          type: "trigger.update",
+          triggerId,
+          input: {
+            expectedRevisionId: created.trigger.currentRevisionId,
+            script: { interpreter: null, text: "console.log('updated')" },
+          },
+        },
+        reason: "Update the check logic",
+      },
+      operationKey: "o2-script-update",
+    })) as { readonly status: string; readonly requestId: RequestId };
+    expect(scriptAsk).toMatchObject({ status: "pending", requestId: expect.any(String) });
+    const scriptRow = await database
+      .selectFrom("requests")
+      .selectAll()
+      .where("id", "=", scriptAsk.requestId)
+      .executeTakeFirstOrThrow();
+    const scriptPart = scriptRow.command as unknown as { readonly gives: string | null };
+    expect(scriptPart.gives).toContain("2 secrets");
+    expect(scriptPart.gives).not.toContain("STRIPE_KEY");
+
+    // O2: When a Full-access own agent proposes `names`, `gives` warns it CAN change the script!
+    await database
+      .updateTable("threads")
+      .set({ accessMode: "full-access" })
+      .where("id", "=", f.threadId)
+      .execute();
+    await database
+      .updateTable("runs")
+      .set({ accessMode: "full-access" })
+      .where("id", "=", f.run.id)
+      .execute();
+    const fullCaller = {
+      ...supCaller,
+      accessMode: "full-access",
+      thread: { id: f.threadId, accessMode: "full-access" },
+    } as unknown as AgentCaller;
+    const fullAsk = (await commandTools.opensteer_command({
+      caller: fullCaller,
+      input: {
+        command: { type: "trigger.secrets.set", triggerId, names: ["BANK_KEY"] },
+        reason: "Please enter bank key",
+      },
+      operationKey: "o2-full-ask-names",
+    })) as { readonly status: string; readonly requestId: RequestId };
+    expect(fullAsk).toMatchObject({ status: "pending", requestId: expect.any(String) });
+    const fullAskRow = await database
+      .selectFrom("requests")
+      .selectAll()
+      .where("id", "=", fullAsk.requestId)
+      .executeTakeFirstOrThrow();
+    const fullAskPart = fullAskRow.command as unknown as { readonly gives: string | null };
+    expect(fullAskPart.gives).toContain("can change the script that will read");
+
+    // B2: `everything` connection at Full access on the person's automation (not its origin):
+    // store must NOT throw `forbidden` when the door admits `remove` (`destroy`, Full access -> now).
+    const connections = new AgentConnectionStore(database);
+    const everythingConn = await connections.create({
+      userId: f.userId,
+      clientName: "Everything Agent",
+      label: "Everything Agent",
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+      resource: "https://secrets.opensteer.test/mcp",
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+    });
+    await connections.activate(everythingConn.id, `hash-everything-${randomUUID()}`);
+    const everythingCaller = {
+      kind: "connection",
+      key: `connection:${everythingConn.id}`,
+      userId: f.userId,
+      accessMode: "full-access",
+      connectionId: everythingConn.id,
+      grant: everythingConn.grant,
+      grantRevision: everythingConn.grantRevision,
+    } as unknown as AgentCaller;
+
+    const connRemove = await commandTools.opensteer_command({
+      caller: everythingCaller,
+      input: {
+        command: { type: "trigger.secrets.set", triggerId, remove: ["STRIPE_KEY"] },
+      },
+      operationKey: "b2-everything-remove",
+    });
+    expect(connRemove).toEqual({
+      status: "done",
+      result: { type: "trigger.secrets.set", secretNames: ["SECOND_KEY"] },
+    });
+
+    // `everything` connection trying `set` on the person's automation asks (lineage: true) -> Leave set out.
+    await expect(
+      commandTools.opensteer_command({
+        caller: everythingCaller,
+        input: {
+          command: { type: "trigger.secrets.set", triggerId, set: { FOREIGN_KEY: "nope" } },
+        },
+        operationKey: "b2-everything-set-refused",
+      }),
+    ).rejects.toMatchObject({ code: "bad_request", message: /Leave set out/u });
+  });
+
+  it("refuses idempotency key reuse with a different secret value (S3), skips no-op watch restarts and checks authority (S4), and reads/removes secrets even if ciphertext cannot be opened (S6)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, personDispatch, rpc, commandTools, runCaller, watchChanged } = await setup(
+      storeFixture,
+      "full-access",
+    );
+
+    const watch = (await personDispatch({
+      type: "trigger.create",
+      input: {
+        anchorThreadId: f.threadId,
+        name: "Idempotent watch",
+        script,
+        source: { kind: "watch" },
+      },
+    })) as { readonly trigger: { readonly id: TriggerId; readonly currentRevisionId: string } };
+    const triggerId = watch.trigger.id;
+
+    // S3 (agent): same operationKey with same value replays; different value -> conflict!
+    const firstAgent = await commandTools.opensteer_command({
+      caller: runCaller,
+      input: {
+        command: { type: "trigger.secrets.set", triggerId, set: { KEY_A: "val_1" } },
+      },
+      operationKey: "s3-agent-key",
+    });
+    expect(firstAgent).toEqual({
+      status: "done",
+      result: { type: "trigger.secrets.set", secretNames: ["KEY_A"] },
+    });
+    const replayAgent = await commandTools.opensteer_command({
+      caller: runCaller,
+      input: {
+        command: { type: "trigger.secrets.set", triggerId, set: { KEY_A: "val_1" } },
+      },
+      operationKey: "s3-agent-key",
+    });
+    expect(replayAgent).toEqual(firstAgent);
+    await expect(
+      commandTools.opensteer_command({
+        caller: runCaller,
+        input: {
+          command: { type: "trigger.secrets.set", triggerId, set: { KEY_A: "val_2" } },
+        },
+        operationKey: "s3-agent-key",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+
+    // S3 (person): same idempotencyKey with different value -> conflict!
+    const personKey = `person-s3-${randomUUID()}`;
+    await personDispatch({
+      idempotencyKey: personKey,
+      type: "trigger.secrets.set",
+      triggerId,
+      set: { KEY_B: "p_1" },
+    });
+    await expect(
+      personDispatch({
+        idempotencyKey: personKey,
+        type: "trigger.secrets.set",
+        triggerId,
+        set: { KEY_B: "p_2" },
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+
+    // S4: No-op remove (missing key) and no-op set (identical value) do NOT bump revision or restart watch.
+    const revBeforeNoop = (
+      await database
+        .selectFrom("triggers")
+        .select("currentRevisionId")
+        .where("id", "=", triggerId)
+        .executeTakeFirstOrThrow()
+    ).currentRevisionId;
+    watchChanged.mockClear();
+    await personDispatch({
+      type: "trigger.secrets.set",
+      triggerId,
+      remove: ["DOES_NOT_EXIST"],
+    });
+    await personDispatch({
+      type: "trigger.secrets.set",
+      triggerId,
+      set: { KEY_A: "val_1" },
+    });
+    const revAfterNoop = (
+      await database
+        .selectFrom("triggers")
+        .select("currentRevisionId")
+        .where("id", "=", triggerId)
+        .executeTakeFirstOrThrow()
+    ).currentRevisionId;
+    expect(revAfterNoop).toBe(revBeforeNoop);
+    expect(watchChanged).not.toHaveBeenCalled();
+
+    // S6: Corrupt encrypted_secrets (simulating wrong credentialKey) -> triggers.get STILL lists
+    // secretNames without decrypting, and removing a secret succeeds to recover!
+    await database
+      .updateTable("triggers")
+      .set({ encryptedSecrets: Buffer.from("corrupted-ciphertext-wrong-key") })
+      .where("id", "=", triggerId)
+      .execute();
+
+    const detailWhenCorrupt = await rpc["triggers.get"]({ triggerId }, {
+      session: { id: "s", user: { id: f.userId } },
+    } as never);
+    expect(detailWhenCorrupt.ok).toBe(true);
+    if (detailWhenCorrupt.ok) {
+      expect((detailWhenCorrupt.data as { secretNames?: readonly string[] }).secretNames).toEqual([
+        "KEY_A",
+        "KEY_B",
+      ]);
+    }
+    const recovered = await personDispatch({
+      type: "trigger.secrets.set",
+      triggerId,
+      remove: ["KEY_A"],
+    });
+    expect(recovered).toEqual({
+      type: "trigger.secrets.set",
+      secretNames: [],
+    });
+
+    // S4: Active watch restart enforces requireTriggerExecutionAuthority (same as update/setStatus).
+    await database
+      .updateTable("runners")
+      .set({ revokedAt: new Date() })
+      .where("id", "=", f.runnerId)
+      .execute();
+    await expect(
+      personDispatch({
+        type: "trigger.secrets.set",
+        triggerId,
+        set: { BLOCKED: "val" },
+      }),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+      message: /execution authority is no longer active/u,
+    });
+  });
+
+  it("never leaks a secret marker value in any response, Request, error, event, DB table, or Host log (S8)", async ({
+    storeFixture,
+  }) => {
+    const personMarker = "OPENSTEER_SECRET_PERSON_MARKER_9f3a7c1d";
+    const agentMarker = "OPENSTEER_SECRET_AGENT_MARKER_4e8b2d0a";
     const { f, database, personDispatch, rpc, commandTools, handlers, runCaller, events } =
-      await setup(storeFixture, "approval-required");
+      await setup(storeFixture, "full-access");
 
     const created = (await personDispatch({
       type: "trigger.create",
@@ -619,114 +990,139 @@ describeStore("automation secrets through the one door", (it) => {
     const record = (value: unknown) => {
       captured.push(typeof value === "string" ? value : JSON.stringify(value));
     };
-
-    // 1. Person sets marker via door.
-    record(
-      await personDispatch({
-        type: "trigger.secrets.set",
-        triggerId,
-        set: { MARKER_KEY: marker },
+    const logSpies = (["log", "info", "warn", "error", "debug"] as const).map((level) =>
+      vi.spyOn(console, level).mockImplementation((...args: unknown[]) => {
+        captured.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
       }),
     );
 
-    // 2. Person and agent reads.
-    record(
-      await rpc["triggers.get"]({ triggerId }, {
-        session: { id: "s", user: { id: f.userId } },
-      } as never),
-    );
-    record(
-      await handlers.read({
-        caller: runCaller,
-        input: { automationId: triggerId, occurrenceLimit: 10 },
-        operationKey: "read-marker",
-      }),
-    );
+    try {
+      // 1. Person sets marker via door.
+      record(
+        await personDispatch({
+          type: "trigger.secrets.set",
+          triggerId,
+          set: { PERSON_KEY: personMarker },
+        }),
+      );
 
-    // 3. Supervised agent trying to pass `set` gets refused before Request creation, with no value in error.
-    const supErr = await commandTools
-      .opensteer_command({
-        caller: runCaller,
+      // 2. Full-access agent sets its own marker via run-now opensteer_command (S8).
+      record(
+        await commandTools.opensteer_command({
+          caller: runCaller,
+          input: {
+            command: {
+              type: "trigger.secrets.set",
+              triggerId,
+              set: { AGENT_KEY: agentMarker },
+            },
+          },
+          operationKey: "s8-agent-run-now",
+        }),
+      );
+
+      // 3. Person and agent reads.
+      record(
+        await rpc["triggers.get"]({ triggerId }, {
+          session: { id: "s", user: { id: f.userId } },
+        } as never),
+      );
+      record(
+        await handlers.read({
+          caller: runCaller,
+          input: { automationId: triggerId, occurrenceLimit: 10 },
+          operationKey: "read-marker",
+        }),
+      );
+
+      // 4. Lower thread to Supervised; agent trying to pass `set` is refused without echoing marker.
+      await database
+        .updateTable("threads")
+        .set({ accessMode: "approval-required" })
+        .where("id", "=", f.threadId)
+        .execute();
+      await database
+        .updateTable("runs")
+        .set({ accessMode: "approval-required" })
+        .where("id", "=", f.run.id)
+        .execute();
+      const supCaller = {
+        ...runCaller,
+        accessMode: "approval-required",
+        thread: { id: f.threadId, accessMode: "approval-required" },
+      } as unknown as AgentCaller;
+
+      const supErr = await commandTools
+        .opensteer_command({
+          caller: supCaller,
+          input: {
+            command: {
+              type: "trigger.secrets.set",
+              triggerId,
+              set: { AGENT_KEY: agentMarker },
+            },
+          },
+          operationKey: "sup-with-secret",
+        })
+        .catch((error: unknown) => error);
+      expect(supErr).toMatchObject({ code: "bad_request" });
+      record((supErr as Error).message);
+
+      // 5. Supervised agent proposes with `names` (no values) -> Request holds names only.
+      const proposed = (await commandTools.opensteer_command({
+        caller: supCaller,
         input: {
           command: {
             type: "trigger.secrets.set",
             triggerId,
-            set: { MARKER_KEY: marker },
+            names: ["EXTRA_SECRET"],
           },
+          reason: "Need extra secret",
         },
-        operationKey: "sup-with-secret",
-      })
-      .catch((error: unknown) => error);
-    expect(supErr).toMatchObject({ code: "bad_request" });
-    record((supErr as Error).message);
+        operationKey: "sup-ask-secrets",
+      })) as { readonly status: string; readonly requestId: RequestId };
+      expect(proposed).toMatchObject({ status: "pending", requestId: expect.any(String) });
+      record(proposed);
 
-    // 4. Supervised agent proposes without `set` -> Request opens -> person approves supplying marker.
-    const proposed = (await commandTools.opensteer_command({
-      caller: runCaller,
-      input: {
-        command: {
-          type: "trigger.secrets.set",
-          triggerId,
-        },
-      },
-      operationKey: "sup-ask-secrets",
-    })) as { readonly status: string; readonly requestId: RequestId };
-    expect(proposed).toMatchObject({ status: "pending", requestId: expect.any(String) });
-    record(proposed);
+      const reqRow = await database
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", proposed.requestId)
+        .executeTakeFirstOrThrow();
+      record(reqRow);
 
-    const reqRow = await database
-      .selectFrom("requests")
-      .selectAll()
-      .where("id", "=", proposed.requestId)
-      .executeTakeFirstOrThrow();
-    record(reqRow);
-
-    const approval = await personDispatch({
-      type: "request.command.approve",
-      requestId: proposed.requestId,
-      expectedRevision: String(reqRow.revision),
-      command: {
+      // 6. Invalid value (contains NUL byte alongside marker) error never echoes either marker.
+      const badValErr = await personDispatch({
         type: "trigger.secrets.set",
         triggerId,
-        set: { APPROVED_KEY: marker },
-      },
-    });
-    record(approval);
+        set: { BAD: `${personMarker}\0tail` },
+      }).catch((error: unknown) => error);
+      expect(badValErr).toMatchObject({ code: "bad_request" });
+      record((badValErr as Error).message);
 
-    const reqAfterApproval = await database
-      .selectFrom("requests")
-      .selectAll()
-      .where("id", "=", proposed.requestId)
-      .executeTakeFirstOrThrow();
-    record(reqAfterApproval);
+      // 7. Inspect commands, command_attempts, and events.
+      const commandRows = await database.selectFrom("commands").selectAll().execute();
+      const attemptRows = await database.selectFrom("commandAttempts").selectAll().execute();
+      record(commandRows);
+      record(attemptRows);
+      record(events);
 
-    // 5. Invalid value (contains NUL byte alongside marker) error never echoes the marker.
-    const badValErr = await personDispatch({
-      type: "trigger.secrets.set",
-      triggerId,
-      set: { BAD: `${marker}\0tail` },
-    }).catch((error: unknown) => error);
-    expect(badValErr).toMatchObject({ code: "bad_request" });
-    record((badValErr as Error).message);
+      for (const blob of captured) {
+        expect(blob).not.toContain(personMarker);
+        expect(blob).not.toContain(agentMarker);
+      }
 
-    // 6. Inspect commands, command_attempts, and events.
-    const commandRows = await database.selectFrom("commands").selectAll().execute();
-    const attemptRows = await database.selectFrom("commandAttempts").selectAll().execute();
-    record(commandRows);
-    record(attemptRows);
-    record(events);
-
-    for (const blob of captured) {
-      expect(blob).not.toContain(marker);
+      // Confirm markers are sealed (encrypted) and NOT plaintext in triggers.encrypted_secrets.
+      const triggerRow = await database
+        .selectFrom("triggers")
+        .select(["encryptedSecrets", "secretNames" as never])
+        .where("id", "=", triggerId)
+        .executeTakeFirstOrThrow();
+      expect(triggerRow.encryptedSecrets).not.toBeNull();
+      expect(triggerRow.encryptedSecrets!.toString("utf8")).not.toContain(personMarker);
+      expect(triggerRow.encryptedSecrets!.toString("utf8")).not.toContain(agentMarker);
+    } finally {
+      for (const spy of logSpies) spy.mockRestore();
     }
-
-    // Confirm the marker actually was sealed (encrypted) and NOT plaintext in triggers.encrypted_secrets.
-    const triggerRow = await database
-      .selectFrom("triggers")
-      .select("encryptedSecrets")
-      .where("id", "=", triggerId)
-      .executeTakeFirstOrThrow();
-    expect(triggerRow.encryptedSecrets).not.toBeNull();
-    expect(triggerRow.encryptedSecrets!.toString("utf8")).not.toContain(marker);
   });
 });

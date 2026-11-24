@@ -1,4 +1,6 @@
+import { createHmac } from "node:crypto";
 import { personTaskReader } from "@opensteer/database";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { TriggerOccurrenceIdSchema, OpensteerError, type UserId } from "@opensteer/core";
 import { MAX_WEBHOOK_BODY_BYTES } from "@opensteer/triggers";
 import {
@@ -169,7 +171,19 @@ export async function handleTriggerCommand(
         ],
         type: command.type,
       };
-    case "trigger.secrets.set":
+    case "trigger.secrets.set": {
+      const requestSummary: Record<string, unknown> = {
+        triggerId: command.triggerId,
+        ...(command.remove === undefined ? {} : { remove: [...command.remove] }),
+        ...(command.names === undefined ? {} : { names: [...command.names] }),
+      };
+      if (command.set !== undefined) {
+        requestSummary.__secretDigests = {
+          set: createHmac("sha256", `${ownerId}:${command.idempotencyKey}`)
+            .update(canonicalJson(command.set))
+            .digest("hex"),
+        };
+      }
       return {
         secretNames: [
           ...(
@@ -181,11 +195,19 @@ export async function handleTriggerCommand(
                 triggerId: command.triggerId,
               },
               null,
+              {
+                requestedBy: ownerId,
+                idempotencyKey: command.idempotencyKey,
+                type: command.type,
+                request: requestSummary,
+                authoritySource: { kind: "person" },
+              },
             )
           ).secretNames,
         ],
         type: command.type,
       };
+    }
   }
 }
 export function registerTriggerRoutes(

@@ -1240,6 +1240,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    names: z.array(AutomationSecretNameSchema).min(1).max(MAX_AUTOMATION_SECRETS).optional(),
     remove: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS).optional(),
     set: z.record(AutomationSecretNameSchema, AutomationSecretValueSchema).optional(),
     triggerId: TriggerIdSchema,

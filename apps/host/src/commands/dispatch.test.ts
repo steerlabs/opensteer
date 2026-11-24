@@ -458,6 +458,43 @@ describe("dispatchCommand", () => {
     expect(calls).toEqual([]);
   });
 
+  it("refuses secretFields on commands without agentMaySet even when runsNow is true (S1)", async () => {
+    const { registry, calls } = spyRegistry();
+    const row = commandTable["integration.server.secrets.set"] as CommandRow & { step: string };
+    const originalStep = row.step;
+    row.step = "A";
+    const anyRegistry = {
+      ...registry,
+      "integration.server.secrets.set": {
+        accepts: "any" as const,
+        run: async (_actor: unknown, command: HostApiCommand) => {
+          calls.push(command.type);
+          return { type: command.type } as never;
+        },
+      },
+    };
+    try {
+      await expect(
+        dispatchCommand(
+          run("full-access"),
+          withPath(
+            sample("integration.server.secrets.set"),
+            "secrets",
+            validSecret("integration.server.secrets.set", "secrets"),
+          ),
+          {
+            registry: anyRegistry as never,
+            admit: async () => ({ answer: "now", face: 0, execution: null }),
+            scope: signedIn,
+          },
+        ),
+      ).rejects.toMatchObject({ code: "bad_request", message: /Leave secrets out/u });
+      expect(calls).toEqual([]);
+    } finally {
+      row.step = originalStep;
+    }
+  });
+
   it("decides whether a caller holds a type from its grant as the Home has it now (X15)", async () => {
     const { registry, calls } = spyRegistry();
     // Signed in with everything; since then narrowed to selected, opened to anyone, or ended.

@@ -804,6 +804,7 @@ describe("Managed memory passes", () => {
     const screen = detailScreen(trigger.id);
     await shown(screen, "Secrets", "secrets section did not appear");
     expect(screen.textContent).toContain("can read them there");
+    expect(screen.textContent).toContain("prints a secret");
     expect(screen.textContent?.toLowerCase()).not.toContain("agent cannot see");
 
     const setInput = (label: string, value: string) => {
@@ -826,6 +827,25 @@ describe("Managed memory passes", () => {
     await shown(screen, "API_TOKEN", "added secret name never appeared");
     expect(screen.textContent).not.toContain("mobile-secret-1");
 
+    // Failed save shows why the Home refused it rather than hiding the reason (S7).
+    const beforeRefusedDispatch = f.dispatch.mock.calls.length;
+    vi.spyOn(harness.host, "dispatch").mockRejectedValueOnce(
+      new HostClientRequestError({
+        code: "bad_request",
+        reason: "automation-secret-case-conflict",
+        status: 400,
+        message:
+          'Secret "api_token" conflicts with "API_TOKEN" which already exists with different casing.',
+      }),
+    );
+    press(button(screen, "Add"));
+    setInput("Secret name", "api_token");
+    setInput("Secret value", "other");
+    press(button(screen, "Save"));
+    await shown(screen, "different capitalization", "save refusal reason did not appear");
+    expect(f.dispatch.mock.calls.length).toBe(beforeRefusedDispatch + 1);
+    press(button(screen, "Cancel"));
+
     press(button(screen, "Replace API_TOKEN"));
     const replaceInput = screen.querySelector<HTMLInputElement>('input[aria-label="New value"]')!;
     expect(replaceInput.type).toBe("password");
@@ -838,7 +858,11 @@ describe("Managed memory passes", () => {
     expect(screen.textContent).toContain("API_TOKEN");
     expect(screen.textContent).not.toContain("mobile-secret-2");
 
+    // Remove requires confirmation before deleting (S7).
     press(button(screen, "Remove API_TOKEN"));
+    await shown(screen, "Confirm remove", "remove confirmation did not appear");
+    expect(screen.textContent).toContain("API_TOKEN");
+    press(button(screen, "Confirm remove"));
     await vi.waitFor(() => expect(screen.textContent).not.toContain("API_TOKEN"), {
       timeout: 2000,
     });

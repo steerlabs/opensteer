@@ -383,14 +383,25 @@ export interface CommandScriptPlace {
 }
 
 /**
+ * Facts the Home read about an automation when building approval words (O2): never agent-supplied.
+ */
+export interface CommandAutomationContext {
+  /** Whether the proposing agent can change this automation's script without asking. */
+  readonly proposerCanChangeScript?: boolean;
+  /** How many secrets this automation holds (count only, never values or names). */
+  readonly secretCount?: number;
+}
+
+/**
  * What a command gives, and to whom, when it widens something, in the person's words; null when
  * it gives nothing to anyone. From the table and the input only, never the agent's description,
- * and, for a script an automation will run, the place the Home read (`place`).
+ * and, for a script an automation will run, the place the Home read (`place`) and automation facts.
  */
 export function commandGives(
   command: Command,
   face: number,
   place?: CommandScriptPlace | null,
+  automation?: CommandAutomationContext | null,
 ): string | null {
   const shape = commandTable[command.type].faces[face];
   if (!shape) return null;
@@ -441,10 +452,44 @@ export function commandGives(
         : null;
     case "trigger.create":
     case "trigger.update":
-    case "trigger.run":
+    case "trigger.run": {
       // Only a face that puts a program on the computer (its script, or when it runs).
       if (!shape.lineage || !place) return null;
-      return `Its script runs ${place.where}${place.name ? ` ${place.name}` : ""}, as ${place.as}.`;
+      const base = `Its script runs ${place.where}${place.name ? ` ${place.name}` : ""}, as ${place.as}.`;
+      const changingScript =
+        command.type === "trigger.update" &&
+        typeof input.input === "object" &&
+        input.input !== null &&
+        (input.input as Record<string, unknown>).script !== undefined;
+      const secretCount = automation?.secretCount ?? 0;
+      if (changingScript && secretCount > 0) {
+        return `${base} The new script receives this automation's ${secretCount === 1 ? "1 secret" : `${secretCount} secrets`}.`;
+      }
+      return base;
+    }
+    case "trigger.secrets.set": {
+      if (shape.class === "destroy") {
+        return "Removing a secret cannot be undone; the automation stops receiving it.";
+      }
+      const rawNames = Array.isArray(input.names)
+        ? input.names.filter((item): item is string => typeof item === "string" && item.length > 0)
+        : [];
+      const envNames = rawNames.slice(0, 8).map((name) => `OPENSTEER_SECRET_${name}`);
+      const list =
+        envNames.length > 0
+          ? `${envNames.join(", ")}${rawNames.length > envNames.length ? ` (+${rawNames.length - envNames.length} more)` : ""}`
+          : null;
+      const base = list
+        ? `Add ${list} on the automation's Secrets screen; its script receives ${rawNames.length === 1 ? "this value" : "these values"} in its environment.`
+        : "Add these values on the automation's Secrets screen; its script receives them in its environment.";
+      if (automation?.proposerCanChangeScript === true) {
+        return `${base} This agent can change the script that will read the value without asking you.`;
+      }
+      if (automation?.proposerCanChangeScript === false) {
+        return `${base} This agent cannot change that script without asking you.`;
+      }
+      return base;
+    }
     default:
   }
   switch (shape.class) {

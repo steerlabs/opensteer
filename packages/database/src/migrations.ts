@@ -833,6 +833,20 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
+              "0119_automation_secret_names": {
+                /**
+                 * Stores each automation's sorted secret names unsealed beside `encrypted_secrets`
+                 * so listing names never requires decrypting values and a key mismatch never blocks
+                 * opening the automation or removing unreadable secrets (S6).
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table triggers
+                      add column if not exists secret_names jsonb not null default '[]'::jsonb
+                        check (jsonb_typeof(secret_names) = 'array')
+                  `.execute(database);
+                },
+              },
             }
           : {}),
       };

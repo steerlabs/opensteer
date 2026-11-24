@@ -85,7 +85,7 @@ import { personTaskReader, readerSees, type TaskReader } from "./task-reader.js"
 import { connectionState } from "./connection-liveness.js";
 import { assertDelegationDepth } from "./thread-lineage.js";
 import type { Thread } from "@opensteer/core";
-import type { CommandIdentity } from "./administration-command.js";
+import { administrationCommand, type CommandIdentity } from "./administration-command.js";
 type TriggerRow = Selectable<DatabaseSchema["triggers"]>;
 type TriggerRevisionRow = Selectable<DatabaseSchema["triggerRevisions"]>;
 type TriggerOccurrenceRow = Selectable<TriggerOccurrenceTable>;
@@ -1598,6 +1598,19 @@ export class TriggerStore {
       triggerId: input.triggerId,
     };
   }
+  async getSecretNames(ownerId: UserId, triggerId: TriggerId): Promise<readonly string[]> {
+    await requirePersonalOwner(this.#database, ownerId);
+    const row = await this.#database
+      .selectFrom("triggers")
+      .select("secretNames")
+      .where("id", "=", triggerId)
+      .where("createdBy", "=", ownerId)
+      .executeTakeFirst();
+    if (!row) throw notFound("Automation not found");
+    return Array.isArray(row.secretNames)
+      ? row.secretNames.filter((item): item is string => typeof item === "string")
+      : [];
+  }
   async getEncryptedSecrets(ownerId: UserId, triggerId: TriggerId): Promise<Buffer | null> {
     await requirePersonalOwner(this.#database, ownerId);
     const row = await this.#database
@@ -1610,91 +1623,140 @@ export class TriggerStore {
     return row.encryptedSecrets ?? null;
   }
   async updateEncryptedSecrets<Result>(input: {
-    readonly commandIdentity?: Pick<CommandIdentity, "admit">;
+    readonly commandIdentity?: CommandIdentity | Pick<CommandIdentity, "admit">;
     readonly actorConnectionId?: string;
     readonly actorThreadId: ThreadId | null;
     readonly ownerId: UserId;
     readonly transform: (current: Buffer | null) => Promise<{
+      readonly changed?: boolean;
+      readonly names?: readonly string[];
       readonly result: Result;
       readonly sealed: { readonly envelope: Buffer; readonly keyVersion: number } | null;
     }>;
     readonly triggerId: TriggerId;
-  }): Promise<{ readonly result: Result; readonly trigger: Trigger }> {
+  }): Promise<{ readonly changed: boolean; readonly result: Result; readonly trigger: Trigger }> {
     return commitPersonalMutation(this.#database, async (transaction) => {
-      const admitted = await admitTriggerActor(transaction, input.ownerId, input);
-      await lockWatchAnchorPlacementForTrigger(transaction, input.triggerId);
-      const trigger = await lockTriggerForMutation(transaction, admitted.input);
-      if (
-        admitted.connection?.grant.scope === "selected" &&
-        trigger.originConnectionId !== admitted.input.actorConnectionId
-      ) {
-        throw notFound();
-      }
-      if (
-        admitted.input.actorConnectionId &&
-        trigger.originConnectionId !== admitted.input.actorConnectionId
-      ) {
-        throw new OpensteerError({
-          code: "forbidden",
-          message:
-            "A connected agent cannot change the secrets of an automation it did not create.",
+      const fullIdentity =
+        input.commandIdentity && "idempotencyKey" in input.commandIdentity
+          ? input.commandIdentity
+          : undefined;
+      let outcomeChanged = false;
+      let outcomeTrigger: Trigger | null = null;
+      const runMutation = async (): Promise<Result> => {
+        // B2: authority is decided solely by `admitCommand` (`commandIdentity.admit`), never by
+        // store-level connection gates. When `administrationCommand` already ran `admit`, only
+        // live connection verification (if any) runs here.
+        const actorInput = fullIdentity
+          ? input.actorConnectionId !== undefined
+            ? { actorConnectionId: input.actorConnectionId }
+            : {}
+          : input;
+        const admitted = await admitTriggerActor(transaction, input.ownerId, actorInput);
+        await lockWatchAnchorPlacementForTrigger(transaction, input.triggerId);
+        const trigger = await lockTriggerForMutation(transaction, {
+          actorThreadId: input.actorThreadId,
+          ownerId: input.ownerId,
+          triggerId: input.triggerId,
+          ...(admitted.input.actorConnectionId !== undefined
+            ? { actorConnectionId: admitted.input.actorConnectionId }
+            : {}),
         });
-      }
-      if (trigger.systemRole) throw conflict(MANAGED_MEMORY_REFUSAL);
-      if (trigger.status === "archived") throw conflict("Archived automations cannot be changed");
-      const { result, sealed } = await input.transform(trigger.encryptedSecrets ?? null);
-      const now = new Date();
-      let nextRevisionId = trigger.currentRevisionId;
-      if (trigger.kind === "watch") {
-        const current = await transaction
-          .selectFrom("triggerRevisions")
-          .selectAll()
-          .where("id", "=", trigger.currentRevisionId)
-          .executeTakeFirstOrThrow();
-        nextRevisionId = createId("triggerRevision");
-        await transaction
-          .insertInto("triggerRevisions")
-          .values({
-            createdAt: now,
-            createdBy: input.ownerId,
-            createdByThreadId: input.actorThreadId,
-            id: nextRevisionId,
-            ordinal: current.ordinal + 1,
-            script: current.script === null ? null : jsonValue(current.script),
-            source: jsonValue(current.source),
-            triggerId: trigger.id,
-          })
-          .execute();
-      }
-      const updated = await transaction
-        .updateTable("triggers")
-        .set({
-          currentRevisionId: nextRevisionId,
-          encryptedSecrets: sealed?.envelope ?? null,
-          secretsKeyVersion: sealed?.keyVersion ?? null,
-          updatedAt: now,
-        })
-        .where("id", "=", trigger.id)
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      if (trigger.kind === "watch") {
-        await stopActiveWatchActivation(transaction, trigger.id, now);
-        if (updated.status === "active") {
-          const anchor = await transaction
-            .selectFrom("threads")
-            .select("environmentId")
-            .where("id", "=", trigger.anchorThreadId)
-            .executeTakeFirstOrThrow();
-          await createWatchActivation(transaction, {
-            anchorThreadId: trigger.anchorThreadId,
-            createdBy: trigger.createdBy,
-            environmentId: anchor.environmentId,
-            revisionId: nextRevisionId,
-            triggerId: trigger.id,
-          });
+        if (trigger.systemRole) throw conflict(MANAGED_MEMORY_REFUSAL);
+        if (trigger.status === "archived") throw conflict("Archived automations cannot be changed");
+        const {
+          changed = true,
+          names,
+          result,
+          sealed,
+        } = await input.transform(trigger.encryptedSecrets ?? null);
+        if (!changed) {
+          outcomeChanged = false;
+          outcomeTrigger = triggerFromRow(trigger);
+          return result;
         }
+        const now = new Date();
+        let nextRevisionId = trigger.currentRevisionId;
+        if (trigger.kind === "watch") {
+          // S4: a watch restart checks the exact same execution authority and personal-context
+          // lineage rules as `update` and `setStatus` before replacing the active activation.
+          if (trigger.status === "active") {
+            if (
+              trigger.originConnectionId !== null &&
+              !(await lineagePersonalContext(transaction, trigger.originConnectionId))
+            ) {
+              throw noProgramWithoutPersonalContext();
+            }
+            await requireTriggerExecutionAuthority(transaction, trigger);
+          }
+          const current = await transaction
+            .selectFrom("triggerRevisions")
+            .selectAll()
+            .where("id", "=", trigger.currentRevisionId)
+            .executeTakeFirstOrThrow();
+          nextRevisionId = createId("triggerRevision");
+          await transaction
+            .insertInto("triggerRevisions")
+            .values({
+              createdAt: now,
+              createdBy: input.ownerId,
+              createdByThreadId: input.actorThreadId,
+              id: nextRevisionId,
+              ordinal: current.ordinal + 1,
+              script: current.script === null ? null : jsonValue(current.script),
+              source: jsonValue(current.source),
+              triggerId: trigger.id,
+            })
+            .execute();
+        }
+        const nextNames =
+          names !== undefined ? [...names] : Array.isArray(result) ? [...result] : [];
+        const updated = await transaction
+          .updateTable("triggers")
+          .set({
+            currentRevisionId: nextRevisionId,
+            encryptedSecrets: sealed?.envelope ?? null,
+            secretNames: jsonValue(nextNames),
+            secretsKeyVersion: sealed?.keyVersion ?? null,
+            updatedAt: now,
+          })
+          .where("id", "=", trigger.id)
+          .returningAll()
+          .executeTakeFirstOrThrow();
+        if (trigger.kind === "watch") {
+          await stopActiveWatchActivation(transaction, trigger.id, now);
+          if (updated.status === "active") {
+            const anchor = await transaction
+              .selectFrom("threads")
+              .select("environmentId")
+              .where("id", "=", trigger.anchorThreadId)
+              .executeTakeFirstOrThrow();
+            await createWatchActivation(transaction, {
+              anchorThreadId: trigger.anchorThreadId,
+              createdBy: trigger.createdBy,
+              environmentId: anchor.environmentId,
+              revisionId: nextRevisionId,
+              triggerId: trigger.id,
+            });
+          }
+        }
+        outcomeChanged = true;
+        outcomeTrigger = triggerFromRow(updated);
+        return result;
+      };
+      const result = fullIdentity
+        ? await administrationCommand(transaction, fullIdentity, runMutation)
+        : await runMutation();
+      if (!outcomeTrigger) {
+        // Replayed idempotently via `administrationCommand` without running `runMutation`.
+        const row = await transaction
+          .selectFrom("triggers")
+          .selectAll()
+          .where("id", "=", input.triggerId)
+          .where("createdBy", "=", input.ownerId)
+          .executeTakeFirstOrThrow();
+        outcomeTrigger = triggerFromRow(row);
       }
-      return { result, trigger: triggerFromRow(updated) };
+      return { changed: outcomeChanged, result, trigger: outcomeTrigger };
     });
   }
   async applyWatchStatus(input: {

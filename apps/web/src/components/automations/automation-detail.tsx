@@ -972,17 +972,20 @@ function AutomationSecretsSection({
     readonly mode: "add" | "replace";
     readonly name: string;
   } | null>(null);
+  const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null);
   const [nameInput, setNameInput] = useState("");
   const [valueInput, setValueInput] = useState("");
   const [invalid, setInvalid] = useState<string | null>(null);
 
   const openAdd = () => {
+    setConfirmingRemove(null);
     setEditing({ mode: "add", name: "" });
     setNameInput("");
     setValueInput("");
     setInvalid(null);
   };
   const openReplace = (name: string) => {
+    setConfirmingRemove(null);
     setEditing({ mode: "replace", name });
     setNameInput(name);
     setValueInput("");
@@ -994,6 +997,11 @@ function AutomationSecretsSection({
     setValueInput("");
     setInvalid(null);
   };
+  const trimmedAddName = editing?.mode === "add" ? nameInput.trim() : "";
+  const existingMatch =
+    trimmedAddName.length > 0
+      ? (names.find((existing) => existing.toLowerCase() === trimmedAddName.toLowerCase()) ?? null)
+      : null;
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!editing) return;
@@ -1017,7 +1025,7 @@ function AutomationSecretsSection({
   };
 
   return (
-    <section aria-labelledby="automation-secrets" className="automations-group">
+    <section aria-labelledby="automation-secrets" className="automations-group" id="secrets">
       <div className="automation-secrets__head">
         <h2 className="automations-group__title" id="automation-secrets">
           Secrets
@@ -1030,7 +1038,9 @@ function AutomationSecretsSection({
       </div>
       <p className="automation-secrets__note">
         Values are added to the script’s environment as <code>OPENSTEER_SECRET_&lt;NAME&gt;</code>{" "}
-        and aren’t shown again. The script, and any agent that can change it, can read them there.
+        and aren’t shown again. The script, and any agent that can change it, can read them there. A
+        script that prints a secret puts it in its run’s record, where agents that can read this
+        automation can see it.
       </p>
       {editing ? (
         <form className="automation-time" noValidate onSubmit={(event) => void submit(event)}>
@@ -1047,6 +1057,13 @@ function AutomationSecretsSection({
                 type="text"
                 value={nameInput}
               />
+              {existingMatch ? (
+                <span className="field__hint">
+                  {existingMatch === trimmedAddName
+                    ? `Saving replaces the existing ${existingMatch} secret.`
+                    : `Conflicts with existing ${existingMatch} (names are case-insensitive).`}
+                </span>
+              ) : null}
             </label>
           ) : (
             <p className="automation-secrets__target">
@@ -1089,22 +1106,51 @@ function AutomationSecretsSection({
               <code className="automation-secret-row__name">{name}</code>
               {archived ? null : (
                 <div className="automation-secret-row__actions">
-                  <button
-                    className="btn btn--small btn--ghost"
-                    disabled={disabled}
-                    onClick={() => openReplace(name)}
-                    type="button"
-                  >
-                    Replace
-                  </button>
-                  <button
-                    className="btn btn--small btn--ghost btn--danger"
-                    disabled={disabled}
-                    onClick={() => onRemove(name)}
-                    type="button"
-                  >
-                    Remove
-                  </button>
+                  {confirmingRemove === name ? (
+                    <>
+                      <button
+                        className="btn btn--small btn--ghost"
+                        disabled={disabled}
+                        onClick={() => setConfirmingRemove(null)}
+                        type="button"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        className="btn btn--small btn--danger"
+                        disabled={disabled}
+                        onClick={() => {
+                          setConfirmingRemove(null);
+                          onRemove(name);
+                        }}
+                        type="button"
+                      >
+                        Confirm remove
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        className="btn btn--small btn--ghost"
+                        disabled={disabled}
+                        onClick={() => openReplace(name)}
+                        type="button"
+                      >
+                        Replace
+                      </button>
+                      <button
+                        className="btn btn--small btn--ghost btn--danger"
+                        disabled={disabled}
+                        onClick={() => {
+                          close();
+                          setConfirmingRemove(name);
+                        }}
+                        type="button"
+                      >
+                        Remove
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             </div>

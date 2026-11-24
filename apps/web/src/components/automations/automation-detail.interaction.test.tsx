@@ -456,6 +456,7 @@ it("lists secret names and lets the person add, replace, and remove secrets with
   const { node } = await mount();
   expect(node.textContent).toContain("Secrets");
   expect(node.textContent).toContain("can read them there");
+  expect(node.textContent).toContain("prints a secret");
   expect(node.textContent?.toLowerCase()).not.toContain("agent cannot see");
 
   // Add a secret
@@ -478,6 +479,15 @@ it("lists secret names and lets the person add, replace, and remove secrets with
   await vi.waitFor(() => expect(node.textContent).toContain("API_TOKEN"), { timeout: 2000 });
   expect(node.textContent).not.toContain("secret-value-1");
 
+  // Add mode warns when entering a name that already exists (S7).
+  await act(async () => button(node, "Add").click());
+  const dupNameInput = node.querySelector<HTMLInputElement>('input[name="secret-name"]')!;
+  await act(async () => {
+    setInput(dupNameInput, "API_TOKEN");
+  });
+  expect(node.textContent).toContain("replaces");
+  await act(async () => button(node, "Cancel").click());
+
   // Replace the secret
   await act(async () => button(node, "Replace").click());
   const replaceInput = node.querySelector<HTMLInputElement>('input[name="secret-value"]')!;
@@ -492,7 +502,10 @@ it("lists secret names and lets the person add, replace, and remove secrets with
   expect(node.textContent).toContain("API_TOKEN");
   expect(node.textContent).not.toContain("secret-value-2");
 
-  // Remove the secret
+  // Remove requires confirmation before deleting (S7).
   await act(async () => button(node, "Remove").click());
+  expect(node.textContent).toContain("API_TOKEN");
+  expect(node.textContent).toContain("Confirm remove");
+  await act(async () => button(node, "Confirm remove").click());
   await vi.waitFor(() => expect(node.textContent).not.toContain("API_TOKEN"), { timeout: 2000 });
 });

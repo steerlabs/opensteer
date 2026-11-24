@@ -36,6 +36,7 @@ import {
   commandEditor,
   commandGives,
   commandSentence,
+  type CommandAutomationContext,
   type CommandScriptPlace,
 } from "@opensteer/protocol/command-words";
 import { sql, type Kysely } from "kysely";
@@ -188,6 +189,7 @@ export class CommandRequestService {
     readonly ask: CommandAsk;
     readonly face: number | undefined;
     readonly proposer: CommandProposer;
+    readonly proposerCallerKey?: string | undefined;
     readonly origin: CommandRequestOrigin;
     readonly originatingThreadId: ThreadId;
     /** The agent's own key for this call: the same call is the same Request. */
@@ -195,6 +197,17 @@ export class CommandRequestService {
     readonly reason?: string | undefined;
   }): Promise<CommandProposed> {
     const row = commandRow(input.command.type) as CommandRow;
+    if (input.command.type === "trigger.secrets.set") {
+      const hasNames = Array.isArray(input.command.names) && input.command.names.length > 0;
+      const hasRemove = Array.isArray(input.command.remove) && input.command.remove.length > 0;
+      if (!hasNames && !hasRemove) {
+        throw new OpensteerError({
+          code: "bad_request",
+          message:
+            "Provide `names` for the secrets you want the person to enter, or `remove` to remove existing secrets.",
+        });
+      }
+    }
     const face = commandAskedFace(input.command.type, input.face);
     const governs = (row.governs as (c: HostApiCommand) => CommandResource)(input.command);
     const stored = proposedCommand(row, input.command);
@@ -206,17 +219,25 @@ export class CommandRequestService {
       input.command,
       face,
       await this.#scriptPlace(input.command, input.ownerUserId),
+      await this.#automationContext(input),
     );
     const reason = input.reason?.trim().slice(0, 500) || null;
+    const faceClass = row.faces[face]!.class;
+    // A remove-only `trigger.secrets.set` (`destroy`) carries no secret values; all other
+    // faces of a command with `secretFields` carry secret paths and are never approved on the card.
+    const secretPaths =
+      input.command.type === "trigger.secrets.set" && faceClass === "destroy"
+        ? []
+        : [...(row.secretFields ?? [])];
     const part: CommandRequestPart = {
       type: input.command.type,
       family: row.family,
-      face: row.faces[face]!.class,
+      face: faceClass,
       summary,
       sentence: named,
       gives,
       command: RequestJsonObjectSchema.parse(JSON.parse(JSON.stringify(stored))),
-      secretPaths: [...(row.secretFields ?? [])],
+      secretPaths,
       governs: JSON.parse(JSON.stringify(governs)) as CommandRequestPart["governs"],
       askKey: digest([input.proposer.key, input.command.type, commandResourceKey(governs)]),
       argumentsDigest: digest(stored),
@@ -280,6 +301,15 @@ export class CommandRequestService {
     const pending = await this.#requests.get(input.requestId);
     if (!pending?.command || pending.requestedBy !== actor.userId)
       throw new OpensteerError({ code: "not_found", message: "Request not found" });
+    // A command that carries a secret is never approved on the card (B3): the person enters it
+    // directly on that command's own screen.
+    if (pending.command.secretPaths.length > 0) {
+      throw new OpensteerError({
+        code: "bad_request",
+        message:
+          "This change carries a secret and must be done on its own screen, not approved on this card.",
+      });
+    }
     // The same approval again: what the first one came to, and nothing runs twice.
     if (pending.status !== "pending" && pending.command.approvalKey === input.idempotencyKey)
       return pending.command.outcome ?? { status: "running" };
@@ -486,6 +516,62 @@ export class CommandRequestService {
     return device.platform === "macos"
       ? { where: "on your Mac", name: quotedName(device.name), as: "you" }
       : { where: "on the computer", name: quotedName(device.name), as: "its user" };
+  }
+
+  /**
+   * Facts the Home reads about an automation for approval risk words (O2): whether the proposing
+   * agent can change the script that reads the secret, or how many secrets a script edit receives.
+   */
+  async #automationContext(input: {
+    readonly ownerUserId: UserId;
+    readonly command: HostApiCommand;
+    readonly proposer: CommandProposer;
+    readonly proposerCallerKey?: string | undefined;
+    readonly origin: CommandRequestOrigin;
+  }): Promise<CommandAutomationContext | null> {
+    if (input.command.type === "trigger.update") {
+      if (input.command.input.script === undefined) return null;
+      const row = await this.#database
+        .selectFrom("triggers")
+        .select(["secretNames", "encryptedSecrets"])
+        .where("id", "=", input.command.triggerId)
+        .where("createdBy", "=", input.ownerUserId)
+        .executeTakeFirst();
+      if (!row) return null;
+      const names = Array.isArray(row.secretNames) ? row.secretNames : [];
+      return { secretCount: names.length };
+    }
+    if (input.command.type === "trigger.secrets.set") {
+      const subject = input.proposerCallerKey
+        ? commandSubject(input.proposerCallerKey)
+        : "agentSessionId" in input.origin && input.origin.agentSessionId
+          ? ({ kind: "binding", bindingId: `session:${input.origin.agentSessionId}` } as const)
+          : "runId" in input.origin && input.origin.runId
+            ? ({ kind: "binding", bindingId: `run:${input.origin.runId}` } as const)
+            : input.proposer.connectionId
+              ? ({ kind: "connection", agentConnectionId: input.proposer.connectionId } as const)
+              : null;
+      if (!subject) return null;
+      try {
+        const admission = await admitCommand(this.#database, {
+          ownerUserId: input.ownerUserId,
+          subject,
+          command: {
+            type: "trigger.update",
+            idempotencyKey: "risk-check",
+            triggerId: input.command.triggerId,
+            input: {
+              expectedRevisionId: "trv_00000000-0000-4000-8000-000000000001",
+              script: { interpreter: null, text: "" },
+            },
+          } as unknown as HostApiCommand,
+        });
+        return { proposerCanChangeScript: admission.answer === "now" };
+      } catch {
+        return { proposerCanChangeScript: false };
+      }
+    }
+    return null;
   }
 
   /** The governed thing as the person's apps name it, where the Home can tell cheaply. */
