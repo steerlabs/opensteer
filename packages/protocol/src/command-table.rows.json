@@ -712,6 +712,30 @@
       }
     },
     {
+      "type": "settings.problemReports.set",
+      "family": "settings",
+      "governs": "whether this Home sends its problem reports",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "the person's own choice of what leaves the Home",
+      "effect": {
+        "where": "database",
+        "why": "administration-service.ts:352: one update of personal_settings",
+        "ongoing": false
+      }
+    },
+    {
       "type": "viewer.quietTasks.update",
       "family": "settings",
       "governs": "quiet-task days",
@@ -3734,6 +3758,7 @@
     "thread.input.edit leaseId": "same class; omitted: the edit without a lease, refused to agents today (thread-service.ts:339-347)",
     "thread.done.set done": "face: true narrow, false widen-self",
     "settings.idleCompaction.set policy.mode": "same class",
+    "settings.problemReports.set send": "same class",
     "viewer.quietTasks.update quietTaskDays": "same class",
     "thread.execution.update continuation": "same class; omitted: no continuation change (schema only)",
     "thread.execution.update modelSelection.nativeModelId": "same class; omitted: the engine's default model",

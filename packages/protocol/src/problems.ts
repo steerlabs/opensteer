@@ -253,7 +253,8 @@ export type MachineStatus = z.infer<typeof MachineStatusSchema>;
  */
 export const HomeHealthReportSchema = z.strictObject({
   schema: z.literal(1),
-  home: z.enum(["cloud-computer", "linux", "mac"]),
+  /** Where the Home runs, in the Host's own words (`personalHomeKind`); `other` for the rest. */
+  home: z.enum(["cloud-computer", "server", "mac", "other"]),
   version: ReleaseVersionSchema,
   disk: DiskBucketSchema.optional(),
   ...MachineStatusSchema.shape,

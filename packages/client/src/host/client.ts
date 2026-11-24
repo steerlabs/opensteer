@@ -1334,6 +1334,8 @@ export interface HostClient extends TabsClient {
   loadEarlierDoneTasks(deploymentId?: string): Promise<void>;
   setIdleCompactionPolicy(policy: import("@opensteer/core").IdleCompactionPolicy): Promise<void>;
   setQuietTaskDays(days: QuietTaskDays): Promise<void>;
+  /** The person's own "Send problem reports to Opensteer"; no agent can send this command. */
+  setProblemReports(send: boolean): Promise<import("@opensteer/protocol").ProblemReporting>;
   /** False when the Account already had a newer name, which the snapshot then shows. */
   setOwnerName(
     name: PersonName | null,

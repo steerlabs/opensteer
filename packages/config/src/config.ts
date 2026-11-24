@@ -213,6 +213,11 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_OIDC_CONFIG_PATH: optionalPath,
   OPENSTEER_PORT: positiveInteger(4310),
   OPENSTEER_PERSONAL_ACCOUNT_ISSUER: optionalUrl,
+  /**
+   * Where this Home sends its problem reports when the person turns them on, instead of the
+   * Opensteer account: a self-hoster's own collector. Never read on a Cloud Computer.
+   */
+  OPENSTEER_PROBLEM_REPORTS_URL: optionalUrl,
   OPENSTEER_PORTAL_ORIGIN: optionalUrl,
   OPENSTEER_CANONICAL_ORIGIN: z.url(),
   OPENSTEER_RUNTIME_ORIGIN: optionalUrl,
@@ -329,6 +334,8 @@ export interface HostConfig {
    * separate from an Account adoption bundle because a Personal Host keeps
    * its own canonical authority. */
   readonly personalAccountIssuer?: URL;
+  /** A self-hoster's own address for problem reports; see `OPENSTEER_PROBLEM_REPORTS_URL`. */
+  readonly problemReportsOrigin?: URL;
   readonly exposure: HostExposure;
   /** Absent means the default for the exposure: see `hostTrustedProxy`. */
   readonly trustedProxy?: TrustedProxy;
@@ -661,6 +668,14 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
         ? { personalAccountIssuer: managedHome.accountOrigin }
         : {}),
     ...(managedHome ? { managedHome } : {}),
+    ...(parsed.OPENSTEER_PROBLEM_REPORTS_URL
+      ? {
+          problemReportsOrigin: originUrl(
+            parsed.OPENSTEER_PROBLEM_REPORTS_URL,
+            "OPENSTEER_PROBLEM_REPORTS_URL",
+          ),
+        }
+      : {}),
     ...(portalOrigin ? { portalOrigin } : {}),
     exposure,
     ...(parsed.OPENSTEER_TRUSTED_PROXY === undefined

@@ -833,6 +833,27 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
+              "0118_problem_reports": {
+                /**
+                 * Whether the person sends their Home's problem reports to Opensteer (off until
+                 * they turn it on; docs/architecture.md, "Problems and reports"), and the partial
+                 * indexes that let the Home count outcomes it could not confirm without reading
+                 * every operation, firing or chat reply it ever recorded.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table personal_settings
+                      add column if not exists problem_reports text not null default 'off'
+                        check (problem_reports in ('off', 'on'));
+                    create index if not exists agent_operations_unknown
+                      on agent_operations(completed_at) where outcome = 'unknown';
+                    create index if not exists trigger_occurrences_unknown
+                      on trigger_occurrences(updated_at) where status = 'unknown';
+                    create index if not exists bridge_deliveries_unknown
+                      on bridge_deliveries(updated_at) where status = 'unknown';
+                  `.execute(database);
+                },
+              },
             }
           : {}),
       };

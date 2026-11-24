@@ -190,6 +190,8 @@ const decided: Readonly<Record<string, string>> = {
 const withoutTool: Readonly<Record<string, string>> = {
   "channel.connection.status.set":
     "the messaging bridge tools were removed at 5766f3613; a chat account is another connection (X13)",
+  "settings.problemReports.set":
+    "no tool sends or stops problem reports; only the person's settings screen",
   "viewer.quietTasks.update": "no tool sets quiet-task days; only the person's settings screen",
   "viewer.timeZone.update": "no tool sets the time zone; only the person's apps send it",
   "integration.grant.revoke":

@@ -40,6 +40,7 @@ export const commandTitles: { readonly [K in CommandType]: string } = {
   "attachment.upload.discard": "Discard an upload",
   "execution.preferences.remember": "Change the defaults for new tasks",
   "viewer.timeZone.update": "Change the time zone",
+  "settings.problemReports.set": "Turn sending problem reports on or off",
   "viewer.quietTasks.update": "Change quiet days for tasks",
   "viewer.name.update": "Change your name",
   "settings.idleCompaction.set": "Change idle compaction for Claude",

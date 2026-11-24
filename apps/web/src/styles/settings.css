@@ -1534,3 +1534,30 @@ a.connected-agents__row:focus-visible {
   min-width: 0;
   padding: 0;
 }
+
+/* The problem report: what this Home sends, field by field, then exactly as sent. */
+.problem-report {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0;
+}
+.problem-report > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+.problem-report dt {
+  color: var(--text-soft);
+}
+.problem-report dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.problem-report__exact {
+  max-height: 240px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

@@ -4027,6 +4027,15 @@ export class HttpHostClient {
     this.#update({ ...this.#snapshot, ownerProfile: result.profile });
     return { applied: result.applied };
   }
+  async setProblemReports(send: boolean) {
+    const result = await this.#dispatch({
+      idempotencyKey: mutationIdempotencyKey("problem-reports"),
+      send,
+      type: "settings.problemReports.set",
+    });
+    if (result.type !== "settings.problemReports.set") throw new Error("Setting command mismatch.");
+    return result.reporting;
+  }
   async setQuietTaskDays(days: QuietTaskDays): Promise<void> {
     const result = await this.#dispatch({
       idempotencyKey: mutationIdempotencyKey("quiet-tasks"),

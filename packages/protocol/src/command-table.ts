@@ -521,6 +521,16 @@ export const commandTable: CommandTable = {
     governs: home("time-zone"),
     effect: "database",
   },
+  // What leaves the Home is the person's alone to choose: no agent turns it on, off or asks.
+  "settings.problemReports.set": {
+    family: "settings",
+    scope: "home",
+    step: "none",
+    faces: [personView],
+    governsKinds: ["home"],
+    governs: home("problem-reports"),
+    effect: "database",
+  },
   "viewer.quietTasks.update": {
     family: "settings",
     scope: "home",
