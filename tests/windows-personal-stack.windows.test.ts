@@ -619,9 +619,14 @@ describe("the personal stack from source", () => {
     );
     const { tasks } = await rpc("tasks.list", {});
     expect(tasks.map((task) => task.thread.id)).toContain(threadId);
-    expect((await rpc("triggers.get", { triggerId })).occurrences[0]).toMatchObject({
-      result: { doubled: 42 },
+    const persistedOccurrence = (await rpc("triggers.get", { triggerId })).occurrences[0];
+    expect(persistedOccurrence).toMatchObject({
+      exitCode: 0,
       status: "succeeded",
+    });
+    expect(JSON.parse(persistedOccurrence!.stdout.trim())).toEqual({
+      doubled: 42,
+      pid: pids.get("automation"),
     });
     // And the task goes on, through the engine the restarted Runner launches again.
     await turn("[[reply Still here.]]", "Still here.");
