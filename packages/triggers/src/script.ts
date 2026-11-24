@@ -125,20 +125,49 @@ export function scriptFileExtension(interpreter: readonly string[] | null | unde
  */
 export const AUTOMATION_SECRET_ENV_PREFIX = "OPENSTEER_SECRET_" as const;
 
+const RESERVED_AUTOMATION_SECRET_NAMES = new Set(["__proto__", "constructor", "prototype"]);
+
+export const AUTOMATION_SECRET_NAME_ERROR =
+  "Secret name must be 1 to 64 letters, digits, or underscores starting with a letter or underscore.";
+
 export const AutomationSecretNameSchema = z
   .string()
-  .regex(
-    /^[A-Za-z_][A-Za-z0-9_]{0,63}$/u,
-    "Secret name must be 1 to 64 letters, digits, or underscores starting with a letter or underscore.",
-  );
+  .regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/u, AUTOMATION_SECRET_NAME_ERROR)
+  .refine((value) => !RESERVED_AUTOMATION_SECRET_NAMES.has(value), {
+    message: "Secret name cannot use a reserved property name.",
+    params: { reason: "automation-secret-invalid-name" },
+  });
 
 export const AutomationSecretValueSchema = z
   .string()
-  .refine((value) => !value.includes("\0"), "Secret value cannot contain a NUL byte.")
-  .refine(
-    (value) => utf8ByteLength(value) <= MAX_AUTOMATION_SECRET_VALUE_BYTES,
-    `Secret value exceeds ${MAX_AUTOMATION_SECRET_VALUE_BYTES} bytes.`,
-  );
+  .refine((value) => !value.includes("\0"), {
+    message: "Secret value cannot contain a NUL byte.",
+    params: { reason: "automation-secret-invalid-value" },
+  })
+  .refine((value) => utf8ByteLength(value) <= MAX_AUTOMATION_SECRET_VALUE_BYTES, {
+    message: `Secret value exceeds ${MAX_AUTOMATION_SECRET_VALUE_BYTES} bytes.`,
+    params: { reason: "automation-secret-invalid-value" },
+  });
+
+/**
+ * Record of secret names to values. `z.record` skips own `"__proto__"` keys before validating
+ * keys, so `preprocess` detects an own `"__proto__"` key and forces it through the reserved-name
+ * rejection rather than silently dropping it to `{}`.
+ */
+export const AutomationSecretMapSchema = z.preprocess(
+  (value) => {
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      !Array.isArray(value) &&
+      Object.hasOwn(value, "__proto__")
+    ) {
+      return { ...(value as Record<string, unknown>), prototype: "" };
+    }
+    return value;
+  },
+  z.record(AutomationSecretNameSchema, AutomationSecretValueSchema),
+);
 
 /** Returns the prefixed environment variable name (`OPENSTEER_SECRET_<name>`) for a sealed secret. */
 export function automationSecretEnvName(name: string): string {

@@ -386,6 +386,8 @@ export interface CommandScriptPlace {
  * Facts the Home read about an automation when building approval words (O2): never agent-supplied.
  */
 export interface CommandAutomationContext {
+  /** Existing secret names on the automation, so a names-only ask can note replacements. */
+  readonly existingSecretNames?: readonly string[];
   /** Whether the proposing agent can change this automation's script without asking. */
   readonly proposerCanChangeScript?: boolean;
   /** How many secrets this automation holds (count only, never values or names), or `"unknown"` for an unbackfilled pre-0119 sealed row. */
@@ -477,14 +479,25 @@ export function commandGives(
       const rawNames = Array.isArray(input.names)
         ? input.names.filter((item): item is string => typeof item === "string" && item.length > 0)
         : [];
-      const envNames = rawNames.slice(0, 8).map((name) => `OPENSTEER_SECRET_${name}`);
-      const list =
-        envNames.length > 0
-          ? `${envNames.join(", ")}${rawNames.length > envNames.length ? ` (+${rawNames.length - envNames.length} more)` : ""}`
-          : null;
-      const base = list
-        ? `Add ${list} on the automation's Secrets screen; its script receives ${rawNames.length === 1 ? "this value" : "these values"} in its environment.`
-        : "Add these values on the automation's Secrets screen; its script receives them in its environment.";
+      const existingSet = new Set(automation?.existingSecretNames ?? []);
+      const replacingNames = rawNames.filter((name) => existingSet.has(name));
+      const addingNames = rawNames.filter((name) => !existingSet.has(name));
+      const formatList = (list: readonly string[]) => {
+        const envNames = list.slice(0, 8).map((name) => `OPENSTEER_SECRET_${name}`);
+        return `${envNames.join(", ")}${list.length > envNames.length ? ` (+${list.length - envNames.length} more)` : ""}`;
+      };
+      const valueNoun = rawNames.length === 1 ? "this value" : "these values";
+      let base: string;
+      if (addingNames.length > 0 && replacingNames.length > 0) {
+        base = `Add ${formatList(addingNames)} and replace existing ${formatList(replacingNames)} on the automation's Secrets screen; its script receives ${valueNoun} in its environment.`;
+      } else if (replacingNames.length > 0) {
+        base = `Replace existing ${formatList(replacingNames)} on the automation's Secrets screen; its script receives ${valueNoun} in its environment.`;
+      } else if (addingNames.length > 0) {
+        base = `Add ${formatList(addingNames)} on the automation's Secrets screen; its script receives ${valueNoun} in its environment.`;
+      } else {
+        base =
+          "Add these values on the automation's Secrets screen; its script receives them in its environment.";
+      }
       if (automation?.proposerCanChangeScript === true) {
         return `${base} This agent can change the script that will read the value without asking you.`;
       }

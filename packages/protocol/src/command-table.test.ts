@@ -281,6 +281,45 @@ describe("the command table", () => {
     );
   });
 
+  it("enforces separate proposal, patch, and clearAll shapes for trigger.secrets.set and forbids prototype keys", () => {
+    const parse = (extra: Record<string, unknown>) =>
+      hostApi["commands.dispatch"].payload.safeParse({
+        type: "trigger.secrets.set",
+        idempotencyKey: "k",
+        triggerId: "trg_00000000-0000-4000-8000-000000000001",
+        ...extra,
+      }).success;
+    expect(parse({ names: ["API_TOKEN"] })).toBe(true);
+    expect(parse({ set: { API_TOKEN: "val" } })).toBe(true);
+    expect(parse({ remove: ["API_TOKEN"] })).toBe(true);
+    expect(parse({ set: { A: "1" }, remove: ["B"] })).toBe(true);
+    expect(parse({ clearAll: true })).toBe(true);
+    // Mixed shapes are refused at the parser.
+    expect(parse({ names: ["A"], set: { A: "1" } })).toBe(false);
+    expect(parse({ names: ["A"], remove: ["B"] })).toBe(false);
+    expect(parse({ names: ["A"], clearAll: true })).toBe(false);
+    expect(parse({ clearAll: true, set: { A: "1" } })).toBe(false);
+    expect(parse({ clearAll: true, remove: ["A"] })).toBe(false);
+    // Prototype-pollution keys are refused in both `set` (even via JSON.parse) and `names`.
+    expect(parse({ set: JSON.parse('{"__proto__":"marker"}') as Record<string, string> })).toBe(
+      false,
+    );
+    expect(parse({ set: { constructor: "x" } })).toBe(false);
+    expect(parse({ set: { prototype: "x" } })).toBe(false);
+    expect(parse({ names: ["__proto__"] })).toBe(false);
+    // A patch whose only effect is removal is classed `destroy` even when `set: {}` is present.
+    const row = commandTable["trigger.secrets.set"];
+    expect(
+      row.face!({
+        type: "trigger.secrets.set",
+        idempotencyKey: "k",
+        triggerId: "trg_00000000-0000-4000-8000-000000000001" as never,
+        remove: ["API_TOKEN"],
+        set: {},
+      }),
+    ).toBe(0);
+  });
+
   it("has a verdict for every input that could decide a command, and none for a gone one (D0b)", () => {
     const verdicts = (expected as unknown as { inputs: Record<string, string> }).inputs;
     const paths = decidingInputPaths();

@@ -48,6 +48,15 @@ describe("AutomationSecrets", () => {
       remove: ["EXTRA", "WEBHOOK_SECRET"],
     });
     expect(cleared).toBeNull();
+
+    // Documented policy: when the same name appears in both `remove` and `set`, `remove` runs
+    // first and `set` wins (replacing the stored value).
+    const seeded = await secrets.apply(triggerA, null, { set: { SAME_KEY: "old" } });
+    const overlap = await secrets.apply(triggerA, seeded!.envelope, {
+      remove: ["SAME_KEY"],
+      set: { SAME_KEY: "new" },
+    });
+    expect(await secrets.values(triggerA, overlap!.envelope)).toEqual({ SAME_KEY: "new" });
   });
 
   it("binds sealed envelopes to their trigger id, rejects case-insensitive collisions, and bounds total bytes (Z10)", async () => {

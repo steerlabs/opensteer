@@ -3708,7 +3708,7 @@
         }
       ],
       "step": "A",
-      "note": "removing a secret destroys person-entered data (`destroy`, like `app.delete`); setting values (`set`, in `agentMaySet`) needs Full access in the automation's own lineage (same admission as changing its script, trigger.update face 1); proposing `names` without values always asks (`secret`) and the person enters values on the automation's Secrets screen (`editor: automation-secrets`), never on the Request card",
+      "note": "removing or clearing secrets destroys person-entered data (`destroy`, like `app.delete`); setting values (`set`, in `agentMaySet`) needs Full access in the automation's own lineage (same admission as changing its script, trigger.update face 1); when the same name appears in both `remove` and `set`, `remove` runs first so `set` wins; proposing `names` without values always asks (`secret`) and the person enters values on the automation's Secrets screen (`editor: automation-secrets`), never on the Request card",
       "effect": {
         "where": "database",
         "why": "trigger-service.ts:238: one store write; the notices after it are in memory",

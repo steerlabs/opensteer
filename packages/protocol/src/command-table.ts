@@ -1666,9 +1666,18 @@ export function commandEffect(row: Pick<CommandRow, "effect">): "database" | "ou
  */
 export function commandAgentOutput(command: Command, output: unknown): unknown {
   const row = commandRow(command.type) as CommandRow;
-  const faceIndex = commandFace(command);
+  // `trigger.secrets.set` has face 2 (`secret`, which asks) alongside face 0/1 (which return
+  // names only on run-now). Keep the global any-sensitive-face rule unchanged for every other
+  // command family.
   const faces =
-    faceIndex !== undefined && row.faces[faceIndex] ? [row.faces[faceIndex]!] : row.faces;
+    command.type === "trigger.secrets.set"
+      ? (() => {
+          const faceIndex = commandFace(command);
+          return faceIndex !== undefined && row.faces[faceIndex]
+            ? [row.faces[faceIndex]!]
+            : row.faces;
+        })()
+      : row.faces;
   const sensitive = faces.some(
     (face) => face.class === "secret" || face.class === "identity" || face.also === "secret",
   );

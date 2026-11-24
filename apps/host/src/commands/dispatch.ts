@@ -198,14 +198,24 @@ export async function dispatchCommand(
   // person types is left out by the agent, so a schema that requires it reads the rest without it.
   // Under a connection's grant (the scope just read says so) the own-agents-only kinds are absent.
   const parsed = parseHeld(row, command, holder.scope !== null);
-  if (!parsed.success)
+  if (!parsed.success) {
+    const customReason = parsed.error.issues.find(
+      (issue) =>
+        issue.code === "custom" &&
+        "params" in issue &&
+        typeof issue.params === "object" &&
+        issue.params !== null &&
+        typeof (issue.params as { readonly reason?: unknown }).reason === "string",
+    ) as { readonly params?: { readonly reason?: string } } | undefined;
     throw new OpensteerError({
       code: "bad_request",
+      ...(customReason?.params?.reason ? { reason: customReason.params.reason } : {}),
       message: `That ${command.type} command is not valid: ${parsed.error.issues
         .slice(0, 3)
         .map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`)
         .join("; ")}`.slice(0, 1_000),
     });
+  }
   command = parsed.data as HostApiCommand;
   const admission = await door.admit(actor, command, holder);
   if (admission.answer === "not_found") throw notFound();
@@ -361,7 +371,7 @@ export function commandVariants(type: string, underConnection: boolean): readonl
   return narrowed;
 }
 
-/** Reads a command with its own schema, leaving out each top-level secret field it does not carry. */
+/** Reads a command with its own schema, leaving out each required top-level secret field it does not carry. */
 function parseHeld(row: CommandRow, command: HostApiCommand, underConnection: boolean) {
   const input = command as unknown as Record<string, unknown>;
   const absent = (row.secretFields ?? []).filter(
@@ -369,8 +379,12 @@ function parseHeld(row: CommandRow, command: HostApiCommand, underConnection: bo
   );
   let first: ReturnType<z.ZodObject["safeParse"]> | undefined;
   for (const variant of commandVariants(command.type, underConnection)) {
-    const schema = absent.length
-      ? variant.omit(Object.fromEntries(absent.map((key) => [key, true])) as never)
+    const requiredAbsent = absent.filter((key) => {
+      const field = variant.shape[key] as z.ZodType | undefined;
+      return field !== undefined && !field.safeParse(undefined).success;
+    });
+    const schema = requiredAbsent.length
+      ? variant.omit(Object.fromEntries(requiredAbsent.map((key) => [key, true])) as never)
       : variant;
     const result = schema.safeParse(command);
     if (result.success) return result;

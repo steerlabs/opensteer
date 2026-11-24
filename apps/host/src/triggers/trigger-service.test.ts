@@ -632,7 +632,7 @@ describe("TriggerService", () => {
           }) => {
             const { changed, result, sealed } = await input.transform(storedEnvelope);
             storedEnvelope = sealed?.envelope ?? null;
-            return { changed, result, trigger: triggerRecord };
+            return { changed, replayed: false, result, trigger: triggerRecord };
           },
         ),
       } as never,

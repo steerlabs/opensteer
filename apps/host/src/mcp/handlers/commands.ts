@@ -104,36 +104,27 @@ export class CommandTools {
       const found = held.find((entry) => entry.type === input.type);
       if (!found) throw notFound();
       const row = commandRow(found.type) as CommandRow;
-      // S2: derive secret-field visibility directly from admission (`commandRule` + `agentRunsNow`)
-      // and the table's explicit `agentMaySet` paths rather than checking `mode === "full-access"`.
-      const connection = found.scope ? { grant: found.scope } : null;
-      const setFaceIndex = found.type === "trigger.secrets.set" ? 1 : 0;
-      const canRunInOwnLineage =
-        commandRule(row, setFaceIndex, {
-          connection,
-          mode: found.mode,
-          reach: true,
-          ownWork: true,
-          ownLineage: true,
-        }).answer === "now" &&
-        agentRunsNow(row, setFaceIndex, this.#registry[found.type], found.scope);
-      const canRunOutsideLineage =
-        commandRule(row, setFaceIndex, {
-          connection,
-          mode: found.mode,
-          reach: true,
-          ownWork: false,
-          ownLineage: false,
-        }).answer === "now" &&
-        agentRunsNow(row, setFaceIndex, this.#registry[found.type], found.scope);
-      const allowedSecretPaths = canRunInOwnLineage ? (row.agentMaySet ?? []) : [];
+      let allowedSecretPaths: readonly string[] = [];
+      // S2: only commands declaring `agentMaySet` can expose a secret field, and only when the
+      // caller's live admission can run that face directly.
+      if (row.agentMaySet?.length) {
+        const connection = found.scope ? { grant: found.scope } : null;
+        const setFaceIndex = found.type === "trigger.secrets.set" ? 1 : 0;
+        const canRunInOwnLineage =
+          commandRule(row, setFaceIndex, {
+            connection,
+            mode: found.mode,
+            reach: true,
+            ownWork: true,
+            ownLineage: true,
+          }).answer === "now" &&
+          agentRunsNow(row, setFaceIndex, this.#registry[found.type], found.scope);
+        if (canRunInOwnLineage) allowedSecretPaths = row.agentMaySet;
+      }
       const schemas = commandInputSchemas(
         found.type,
         callerLineage(caller) !== null,
         allowedSecretPaths,
-        canRunInOwnLineage && !canRunOutsideLineage
-          ? "Values to set (accepted directly only at Full access on automations in your own lineage; otherwise omit set and pass names to ask the person)."
-          : undefined,
       );
       return {
         type: found.type,
@@ -563,43 +554,28 @@ export function commandInputSchemas(
   type: CommandType,
   underConnection = false,
   allowedSecretPaths: readonly string[] = [],
-  secretFieldDescription?: string,
 ): Record<string, unknown>[] {
   const row = commandRow(type) as CommandRow;
   const allowed = new Set(allowedSecretPaths);
   return commandVariants(type, underConnection).map((variant) => {
-    const schema = z.toJSONSchema(
-      "idempotencyKey" in variant.shape ? variant.omit({ idempotencyKey: true } as never) : variant,
-      { io: "input", unrepresentable: "any" },
-    ) as Record<string, unknown>;
+    const schema = z.toJSONSchema(variant, {
+      io: "input",
+      unrepresentable: "any",
+    }) as Record<string, unknown>;
+    dropPath(schema, ["idempotencyKey"]);
     for (const path of row.secretFields ?? []) {
       if (allowed.has(path) && row.agentMaySet?.includes(path)) {
-        if (secretFieldDescription) describePath(schema, path.split("."), secretFieldDescription);
+        const properties = schema.properties as Record<string, Record<string, unknown>> | undefined;
+        if (type === "trigger.secrets.set" && path === "set" && properties?.set) {
+          properties.set.description =
+            "Values to set (accepted directly only at Full access on automations in your own lineage; otherwise omit set and pass names to ask the person).";
+        }
         continue;
       }
       dropPath(schema, path.split("."));
     }
     return schema;
   });
-}
-
-/** Attaches a description to a dotted path in a JSON Schema when present. */
-function describePath(node: unknown, path: readonly string[], description: string): void {
-  if (!node || typeof node !== "object" || path.length === 0) return;
-  const schema = node as Record<string, unknown>;
-  for (const key of ["anyOf", "oneOf", "allOf"])
-    if (Array.isArray(schema[key]))
-      for (const option of schema[key]) describePath(option, path, description);
-  const properties = schema.properties as Record<string, unknown> | undefined;
-  if (!properties || !(path[0]! in properties)) return;
-  if (path.length === 1) {
-    const target = properties[path[0]!];
-    if (target && typeof target === "object") {
-      (target as Record<string, unknown>).description = description;
-    }
-    return;
-  }
-  describePath(properties[path[0]!], path.slice(1), description);
 }
 
 /** Removes a dotted path from a JSON Schema, through its properties and its unions. */

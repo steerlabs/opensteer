@@ -292,6 +292,7 @@ export class TriggerService {
     const allowStopWithoutRestart = isClearAll || (!hasSet && hasRemove);
     const {
       changed,
+      replayed,
       result: secretNames,
       trigger,
     } = await this.#store.updateEncryptedSecrets({
@@ -318,6 +319,10 @@ export class TriggerService {
     if (changed) {
       this.#onChanged?.();
       if (trigger.kind === "watch") this.#onWatchChanged?.(trigger.id);
+    } else if (replayed && trigger.kind === "watch") {
+      // Recover a watch whose restart committed before a missed post-commit wake,
+      // without re-applying the secret mutation.
+      this.#onWatchChanged?.(trigger.id);
     }
     return { secretNames };
   }

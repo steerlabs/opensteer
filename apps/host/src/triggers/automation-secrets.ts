@@ -109,7 +109,12 @@ export class AutomationSecrets {
         });
       }
     }
-    const next: Record<string, string> = { ...current };
+    // Apply removals before sets: when the same name appears in both `remove` and `set`,
+    // `set` wins and stores the new value.
+    const next: Record<string, string> = Object.assign(
+      Object.create(null) as Record<string, string>,
+      current,
+    );
     for (const name of removeNames) {
       delete next[name];
     }

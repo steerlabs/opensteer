@@ -200,12 +200,31 @@ export class CommandRequestService {
     if (input.command.type === "trigger.secrets.set") {
       const hasNames = Array.isArray(input.command.names) && input.command.names.length > 0;
       const hasRemove = Array.isArray(input.command.remove) && input.command.remove.length > 0;
-      if (!hasNames && !hasRemove) {
+      const isClearAll = input.command.clearAll === true;
+      if (!hasNames && !hasRemove && !isClearAll) {
         throw new OpensteerError({
           code: "bad_request",
           message:
             "Provide `names` for the secrets you want the person to enter, or `remove` to remove existing secrets.",
         });
+      }
+      if (hasNames) {
+        const seen = new Map<string, string>();
+        for (const name of input.command.names!) {
+          const lower = name.toLowerCase();
+          const existing = seen.get(lower);
+          if (existing !== undefined) {
+            throw new OpensteerError({
+              code: "bad_request",
+              ...(existing !== name ? { reason: "automation-secret-case-conflict" } : {}),
+              message:
+                existing === name
+                  ? `Secret "${name}" is listed more than once.`
+                  : `Secret "${name}" conflicts with "${existing}" (secret names are case-insensitive).`,
+            });
+          }
+          seen.set(lower, name);
+        }
       }
     }
     const face = commandAskedFace(input.command.type, input.face);
@@ -301,15 +320,6 @@ export class CommandRequestService {
     const pending = await this.#requests.get(input.requestId);
     if (!pending?.command || pending.requestedBy !== actor.userId)
       throw new OpensteerError({ code: "not_found", message: "Request not found" });
-    // A command that carries a secret is never approved on the card (B3): the person enters it
-    // directly on that command's own screen.
-    if (pending.command.secretPaths.length > 0) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message:
-          "This change carries a secret and must be done on its own screen, not approved on this card.",
-      });
-    }
     // The same approval again: what the first one came to, and nothing runs twice.
     if (pending.status !== "pending" && pending.command.approvalKey === input.idempotencyKey)
       return pending.command.outcome ?? { status: "running" };
@@ -543,6 +553,15 @@ export class CommandRequestService {
       return { secretCount: 0 };
     }
     if (input.command.type === "trigger.secrets.set") {
+      const triggerRow = await this.#database
+        .selectFrom("triggers")
+        .select("secretNames")
+        .where("id", "=", input.command.triggerId)
+        .where("createdBy", "=", input.ownerUserId)
+        .executeTakeFirst();
+      const existingSecretNames = Array.isArray(triggerRow?.secretNames)
+        ? triggerRow.secretNames
+        : [];
       const subject = input.proposerCallerKey
         ? commandSubject(input.proposerCallerKey)
         : "agentSessionId" in input.origin && input.origin.agentSessionId
@@ -552,7 +571,9 @@ export class CommandRequestService {
             : input.proposer.connectionId
               ? ({ kind: "connection", agentConnectionId: input.proposer.connectionId } as const)
               : null;
-      if (!subject) return null;
+      if (!subject) {
+        return existingSecretNames.length > 0 ? { existingSecretNames } : null;
+      }
       try {
         const admission = await admitCommand(this.#database, {
           ownerUserId: input.ownerUserId,
@@ -567,9 +588,15 @@ export class CommandRequestService {
             },
           } as unknown as HostApiCommand,
         });
-        return { proposerCanChangeScript: admission.answer === "now" };
+        return {
+          ...(existingSecretNames.length > 0 ? { existingSecretNames } : {}),
+          proposerCanChangeScript: admission.answer === "now",
+        };
       } catch {
-        return { proposerCanChangeScript: false };
+        return {
+          ...(existingSecretNames.length > 0 ? { existingSecretNames } : {}),
+          proposerCanChangeScript: false,
+        };
       }
     }
     return null;

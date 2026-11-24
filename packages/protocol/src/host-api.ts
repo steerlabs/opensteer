@@ -197,10 +197,7 @@ import {
   TriggerWebhookAddressViewSchema,
   UpdateTriggerHttpBodySchema,
 } from "@opensteer/triggers/models";
-import {
-  AutomationSecretNameSchema,
-  AutomationSecretValueSchema,
-} from "@opensteer/triggers/script";
+import { AutomationSecretMapSchema, AutomationSecretNameSchema } from "@opensteer/triggers/script";
 import { z } from "zod";
 import { ReferenceResolveInputSchema, ReferenceResolveResultSchema } from "./references.js";
 import { AppIdSchema } from "@opensteer/core";
@@ -1238,15 +1235,35 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     triggerId: TriggerIdSchema,
     type: z.literal("trigger.cancel"),
   }),
-  z.strictObject({
-    clearAll: z.literal(true).optional(),
-    idempotencyKey: idempotencyKeySchema,
-    names: z.array(AutomationSecretNameSchema).min(1).max(MAX_AUTOMATION_SECRETS).optional(),
-    remove: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS).optional(),
-    set: z.record(AutomationSecretNameSchema, AutomationSecretValueSchema).optional(),
-    triggerId: TriggerIdSchema,
-    type: z.literal("trigger.secrets.set"),
-  }),
+  z
+    .strictObject({
+      clearAll: z.literal(true).optional(),
+      idempotencyKey: idempotencyKeySchema,
+      names: z.array(AutomationSecretNameSchema).min(1).max(MAX_AUTOMATION_SECRETS).optional(),
+      remove: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS).optional(),
+      set: AutomationSecretMapSchema.optional(),
+      triggerId: TriggerIdSchema,
+      type: z.literal("trigger.secrets.set"),
+    })
+    .superRefine((command, ctx) => {
+      const hasNames = command.names !== undefined;
+      const hasClearAll = command.clearAll === true;
+      const hasPatch = command.set !== undefined || command.remove !== undefined;
+      if (hasNames && (hasPatch || hasClearAll)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["names"],
+          message: "Pass either `names` (to ask the person) or a patch (`set`/`remove`), not both.",
+        });
+      }
+      if (hasClearAll && hasPatch) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["clearAll"],
+          message: "`clearAll` cannot be combined with `set` or `remove`.",
+        });
+      }
+    }),
 ]);
 
 const commandInputSchema = z.union([

@@ -708,23 +708,48 @@ describeStore("automation secrets through the one door", (it) => {
     expect(askPart.agentReason).toBe("Need a token for the API call");
     expect(askPart.gives).toContain("OPENSTEER_SECRET_NEW_TOKEN");
     expect(askPart.gives).toContain("cannot change that script without asking you");
-
-    // B3: A secret-bearing Request is NEVER approved on the card (person uses the Secrets screen).
-    await expect(
-      personDispatch({
-        type: "request.command.approve",
-        requestId: supAsk.requestId,
-        expectedRevision: String(askRow.revision),
-        command: {
-          type: "trigger.secrets.set",
-          triggerId,
-          names: ["NEW_TOKEN"],
-        },
-      }),
-    ).rejects.toMatchObject({ code: "bad_request" });
     await commandRequests.withdraw({
       ownerUserId: f.userId,
       requestId: supAsk.requestId,
+      proposerKey: `task:${f.threadId}` as never,
+    });
+
+    // Names-only ask refuses duplicates and case variants by the same rule as writes.
+    await expect(
+      commandTools.opensteer_command({
+        caller: supCaller,
+        input: { command: { type: "trigger.secrets.set", triggerId, names: ["DUP", "DUP"] } },
+        operationKey: "b3-dup-names",
+      }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    await expect(
+      commandTools.opensteer_command({
+        caller: supCaller,
+        input: { command: { type: "trigger.secrets.set", triggerId, names: ["TOK", "tok"] } },
+        operationKey: "b3-case-names",
+      }),
+    ).rejects.toMatchObject({ code: "bad_request", reason: "automation-secret-case-conflict" });
+
+    // Names-only ask for an already-existing secret indicates it asks for replacement.
+    const replaceAsk = (await commandTools.opensteer_command({
+      caller: supCaller,
+      input: {
+        command: { type: "trigger.secrets.set", triggerId, names: ["STRIPE_KEY"] },
+        reason: "Rotate Stripe key",
+      },
+      operationKey: "b3-replace-existing-name",
+    })) as { readonly status: string; readonly requestId: RequestId };
+    expect(replaceAsk).toMatchObject({ status: "pending", requestId: expect.any(String) });
+    const replaceRow = await database
+      .selectFrom("requests")
+      .selectAll()
+      .where("id", "=", replaceAsk.requestId)
+      .executeTakeFirstOrThrow();
+    const replacePart = replaceRow.command as unknown as { readonly gives: string | null };
+    expect(replacePart.gives).toContain("Replace existing OPENSTEER_SECRET_STRIPE_KEY");
+    await commandRequests.withdraw({
+      ownerUserId: f.userId,
+      requestId: replaceAsk.requestId,
       proposerKey: `task:${f.threadId}` as never,
     });
 
@@ -937,6 +962,51 @@ describeStore("automation secrets through the one door", (it) => {
     ).currentRevisionId;
     expect(revAfterNoop).toBe(revBeforeNoop);
     expect(watchChanged).not.toHaveBeenCalled();
+
+    // Watch missed wake-up recovery: if a watch restart commits in PostgreSQL but its post-commit
+    // wake-up callback fails, retrying with the same idempotencyKey recovers the wake-up without
+    // re-applying the secret mutation or bumping the revision again.
+    const missedWakeKey = `missed-wake-${randomUUID()}`;
+    watchChanged.mockImplementationOnce(() => {
+      throw new Error("simulated missed watch wake-up");
+    });
+    await expect(
+      personDispatch({
+        idempotencyKey: missedWakeKey,
+        type: "trigger.secrets.set",
+        triggerId,
+        set: { KEY_B: "p_1_wake" },
+      }),
+    ).rejects.toThrow("simulated missed watch wake-up");
+    const revAfterMissedWake = (
+      await database
+        .selectFrom("triggers")
+        .select("currentRevisionId")
+        .where("id", "=", triggerId)
+        .executeTakeFirstOrThrow()
+    ).currentRevisionId;
+    expect(revAfterMissedWake).not.toBe(revAfterNoop);
+    watchChanged.mockClear();
+
+    const recovered = await personDispatch({
+      idempotencyKey: missedWakeKey,
+      type: "trigger.secrets.set",
+      triggerId,
+      set: { KEY_B: "p_1_wake" },
+    });
+    expect(recovered).toEqual({
+      type: "trigger.secrets.set",
+      secretNames: ["KEY_A", "KEY_B"],
+    });
+    const revAfterReplayWake = (
+      await database
+        .selectFrom("triggers")
+        .select("currentRevisionId")
+        .where("id", "=", triggerId)
+        .executeTakeFirstOrThrow()
+    ).currentRevisionId;
+    expect(revAfterReplayWake).toBe(revAfterMissedWake);
+    expect(watchChanged).toHaveBeenCalledWith(triggerId);
 
     // R6: Corrupt encrypted_secrets (simulating wrong credentialKey) -> triggers.get STILL opens
     // without throwing, selective remove/set is REFUSED and preserves the ciphertext intact,

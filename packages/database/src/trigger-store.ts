@@ -1665,7 +1665,12 @@ export class TriggerStore {
       readonly sealed: { readonly envelope: Buffer; readonly keyVersion: number } | null;
     }>;
     readonly triggerId: TriggerId;
-  }): Promise<{ readonly changed: boolean; readonly result: Result; readonly trigger: Trigger }> {
+  }): Promise<{
+    readonly changed: boolean;
+    readonly replayed: boolean;
+    readonly result: Result;
+    readonly trigger: Trigger;
+  }> {
     return commitPersonalMutation(this.#database, async (transaction) => {
       const fullIdentity =
         input.commandIdentity && "idempotencyKey" in input.commandIdentity
@@ -1793,6 +1798,7 @@ export class TriggerStore {
       const result = fullIdentity
         ? await administrationCommand(transaction, fullIdentity, runMutation)
         : await runMutation();
+      const replayed = !outcomeTrigger;
       if (!outcomeTrigger) {
         // Replayed idempotently via `administrationCommand` without running `runMutation`.
         const row = await transaction
@@ -1803,7 +1809,7 @@ export class TriggerStore {
           .executeTakeFirstOrThrow();
         outcomeTrigger = triggerFromRow(row);
       }
-      return { changed: outcomeChanged, result, trigger: outcomeTrigger };
+      return { changed: outcomeChanged, replayed, result, trigger: outcomeTrigger };
     });
   }
   async applyWatchStatus(input: {
