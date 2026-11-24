@@ -107,6 +107,10 @@ export function grantOffersTool(
   accessMode: ThreadAccessMode = "full-access",
 ): boolean {
   if (!grant) return true;
+  // A local server is a folder package on the person's computer, running outside any
+  // connection's Disconnect set: your own agents' only, as the table's plugins.install folder
+  // source is (B8). Work under a connection's grant is offered neither tool.
+  if (name === "local_server_add" || name === "local_server_remove") return false;
   const family = agentToolFamilies[name];
   if (grant.scope === "everything")
     return accessMode === "full-access" || family === "widen" || family === "owner-context"
