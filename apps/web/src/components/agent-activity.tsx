@@ -1,5 +1,5 @@
 import { RetainedToolImage } from "./asset-image.js";
-import { rowHeights, useVirtualTranscript } from "./virtual-transcript.js";
+import { useVirtualTranscript } from "./virtual-transcript.js";
 import { useWindowedRows } from "./workspace/windowed-rows.js";
 import {
   hostMessageOutbox,
@@ -173,8 +173,7 @@ const Markdown = lazy(() => markdownChunk);
  * flicker: a screen's height of them, at most eight. A long report is a screen by itself, so a
  * research task holds only its last reply.
  */
-const tailPinRows = 8;
-const tailPinPx = 900;
+const transcriptTail = { rows: 8, px: 900 } as const;
 
 const TranscriptLive = createContext(true);
 /**
@@ -650,16 +649,6 @@ export function AgentTranscript({
   const disclosures = useMemo(() => new Map<string, boolean>(), [threadId]);
   const allPinnedKeys = useMemo(() => {
     const pinned = new Set<string>(pinnedRowKeys);
-    let tail = 0;
-    for (
-      let index = rows.length - 1;
-      index >= Math.max(0, rows.length - tailPinRows) && tail < tailPinPx;
-      index--
-    ) {
-      const { key } = rows[index]!;
-      pinned.add(key);
-      tail += rowHeights.peek(key) ?? estimateRowHeight(index);
-    }
     if (ownerTurn !== undefined) pinned.add(ownerTurn);
     const wantedMessages = new Set<string>(pinnedMessageIds);
     if (revealMessage !== null) wantedMessages.add(revealMessage.id);
@@ -678,20 +667,13 @@ export function AgentTranscript({
     }
     if (focusedRowKey !== null) pinned.add(focusedRowKey);
     return [...pinned];
-  }, [
-    estimateRowHeight,
-    focusedRowKey,
-    ownerTurn,
-    pinnedMessageIds,
-    pinnedRowKeys,
-    revealMessage,
-    rows,
-  ]);
+  }, [focusedRowKey, ownerTurn, pinnedMessageIds, pinnedRowKeys, revealMessage, rows]);
   const virtual = useVirtualTranscript({
     scroller,
     keys: rowKeys,
     estimate: estimateRowHeight,
     pinnedKeys: allPinnedKeys,
+    tail: transcriptTail,
     followTail,
     initialAtTail:
       pinnedRowKeys.length === 0 && pinnedMessageIds.length === 0 && revealMessage === null,
