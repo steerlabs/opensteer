@@ -1,15 +1,15 @@
 #!/bin/bash
 # Runs in the disposable guest, over SSH, before the job's first journey (test-macos-journeys.sh
-# calls it): the screen capture the image's SSH sessions were allowed to make is approved again, as
-# of the guest's own clock.
+# calls it): replayd is told that the screen capture the image's SSH sessions were allowed to make
+# was asked about past any job, so it does not ask again during one.
 #
 # Why: macOS keeps, per responsible program, when it last asked whether that program may capture
-# the screen without the system picker (replayd's ScreenCaptureApprovals.plist). It asks again once
-# kScreenCapturePrivacyHintDate has passed: the last ask plus kScreenCapturePrivacyHintPolicy
-# (30 days). The image asked on the day it was made, so every guest whose clock is more than 30
-# days past that day shows "com.apple.sshd-session is requesting to bypass the system private
-# window picker" at the first capture a journey makes over SSH, and the prompt takes the active app
-# from whatever journey is running. Nobody answers it in a guest.
+# the screen without the system picker, and when to remind (replayd's ScreenCaptureApprovals.plist;
+# for SSH the program is /usr/libexec/sshd-keygen-wrapper). The image was asked on 2026-10-22 and
+# its reminder fell due 2026-11-21 (its 30-day policy). Every guest since shows "com.apple.sshd-
+# session is requesting to bypass the system private window picker" at the first ScreenCaptureKit
+# capture a journey makes over SSH, and that prompt takes the active app from whatever journey is
+# running. Nobody answers it in a guest.
 #
 # What: for every program the image already approved, replayd's record says it was last asked on
 # 2100-01-01 and its next reminder is then, and that it was last used now; replayd is restarted so
