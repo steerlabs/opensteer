@@ -1,6 +1,35 @@
 # A Cloud Computer whose boot answer said browserPool: true. Its browser runs on a pool host, not
 # here. Only this file changes the shape; compose.yaml is the self-hosted default, unchanged.
+# Each service's limits come from this machine (home_limits in common.sh), so together they never
+# ask for more memory than it has.
 services:
+  postgres:
+    cpus: ${OPENSTEER_HOME_LIMIT_POSTGRES_CPUS:?Machine limits required}
+    mem_limit: ${OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY:?Machine limits required}
+    memswap_limit: ${OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY:?Machine limits required}
   host:
+    cpus: ${OPENSTEER_HOME_LIMIT_HOST_CPUS:?Machine limits required}
+    mem_limit: ${OPENSTEER_HOME_LIMIT_HOST_MEMORY:?Machine limits required}
+    memswap_limit: ${OPENSTEER_HOME_LIMIT_HOST_MEMORY:?Machine limits required}
     environment:
       OPENSTEER_MANAGED_HOME_BROWSER_POOL: "true"
+  gateway:
+    cpus: ${OPENSTEER_HOME_LIMIT_GATEWAY_CPUS:?Machine limits required}
+    mem_limit: ${OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY:?Machine limits required}
+    memswap_limit: ${OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY:?Machine limits required}
+  runner:
+    cpus: ${OPENSTEER_HOME_LIMIT_RUNNER_CPUS:?Machine limits required}
+    mem_limit: ${OPENSTEER_HOME_LIMIT_RUNNER_MEMORY:?Machine limits required}
+    memswap_limit: ${OPENSTEER_HOME_LIMIT_RUNNER_MEMORY:?Machine limits required}
+  browser-runtime:
+    cpus: ${OPENSTEER_HOME_LIMIT_BROWSER_CPUS:?Machine limits required}
+    mem_limit: ${OPENSTEER_HOME_LIMIT_BROWSER_MEMORY:?Machine limits required}
+    memswap_limit: ${OPENSTEER_HOME_LIMIT_BROWSER_MEMORY:?Machine limits required}
+  browser-egress:
+    cpus: ${OPENSTEER_HOME_LIMIT_EGRESS_CPUS:?Machine limits required}
+    mem_limit: ${OPENSTEER_HOME_LIMIT_EGRESS_MEMORY:?Machine limits required}
+    memswap_limit: ${OPENSTEER_HOME_LIMIT_EGRESS_MEMORY:?Machine limits required}
+  channel-runtime:
+    cpus: ${OPENSTEER_HOME_LIMIT_CHANNEL_CPUS:?Machine limits required}
+    mem_limit: ${OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY:?Machine limits required}
+    memswap_limit: ${OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY:?Machine limits required}

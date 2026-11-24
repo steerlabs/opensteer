@@ -25,8 +25,15 @@ compose() {
     args+=(-f "$home_dir/compose.apparmor.yaml")
   fi
   if [[ -f "$home_dir/ipv6.enabled" ]]; then args+=(-f "$home_dir/compose.ipv6.yaml"); fi
-  # A Cloud Computer whose boot answer said browserPool: its browser runs on a pool host.
+  # A Cloud Computer whose boot answer said browserPool: its browser runs on a pool host, and
+  # its services' limits come from the machine it is on.
+  local limits=() sized line
   if [[ -f "$home_dir/browser-pool" ]]; then args+=(-f "$home_dir/compose.browser-pool.yaml"); fi
+  if [[ -f "$home_dir/browser-pool" ]]; then
+    # shellcheck disable=SC2046 # machine_size prints two numbers.
+    sized=$(home_limits $(machine_size)) || return
+    while IFS= read -r line; do limits+=("$line"); done <<< "$sized"
+  fi
   if [[ -s "$home_dir/secrets/egress_url" ]]; then
     args+=(-f "$home_dir/compose.egress.yaml")
   elif [[ -f "$home_dir/managed" && ! -f "$home_dir/browser-pool" ]]; then
@@ -41,7 +48,42 @@ compose() {
   if [[ -n ${stage_project:-$project} ]]; then args+=(--project-name "${stage_project:-$project}"); fi
   env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \
     OPENSTEER_HOME_RUNNER_APPARMOR="$apparmor" OPENSTEER_HOME_OIDC_CLIENT_SECRET_PATH="$oidc_path" \
-    docker compose "${args[@]}" "$@"
+    "${limits[@]}" docker compose "${args[@]}" "$@"
+}
+
+# This machine's memory in MiB (what Linux reports as MemTotal) and its CPU count.
+machine_size() {
+  printf '%s %s\n' "$(awk '/^MemTotal:/ { print int($2 / 1024) }' /proc/meminfo)" "$(nproc)"
+}
+
+# clamp <value> <lowest> <highest>
+clamp() { if (($1 < $2)); then echo "$2"; elif (($1 > $3)); then echo "$3"; else echo "$1"; fi; }
+
+# home_limits <memory MiB> <cpus>: the CPU and memory limit of each service of a Cloud Computer's
+# Home, whose browser runs in the browser pool. The memory limits add up to the machine less what
+# the kernel, Docker and the system keep (an eighth of it, at least 512 MiB), so the services
+# together can never take more than the machine has. No Chromium runs here: the Browser Runtime
+# and its egress proxy only idle, and each has 256 MiB. CPU limits are each service's ceiling of
+# CPU time, not a reservation; none is above the machine's CPU count, and the Runner may use all.
+home_limits() {
+  local memory=$1 cpus=$2 reserve budget postgres host agents two small=256
+  [[ $memory =~ ^[0-9]+$ ]] || fail "Invalid machine memory: $memory"
+  if [[ ! $cpus =~ ^[0-9]+$ ]] || ((cpus < 1)); then fail "Invalid machine CPU count: $cpus"; fi
+  reserve=$(clamp $((memory / 8)) 512 "$memory")
+  budget=$((memory - reserve))
+  postgres=$(clamp $((budget / 8)) 512 2048)
+  host=$(clamp $((budget / 5)) 768 2048)
+  agents=$((budget - postgres - host - 4 * small))
+  ((agents >= 768)) || fail "This machine (${memory} MiB) is too small for a Cloud Computer's Home."
+  two=$(clamp 2 1 "$cpus")
+  printf '%s\n' \
+    "OPENSTEER_HOME_LIMIT_POSTGRES_CPUS=$two" "OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY=${postgres}m" \
+    "OPENSTEER_HOME_LIMIT_HOST_CPUS=$two" "OPENSTEER_HOME_LIMIT_HOST_MEMORY=${host}m" \
+    "OPENSTEER_HOME_LIMIT_GATEWAY_CPUS=1" "OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY=${small}m" \
+    "OPENSTEER_HOME_LIMIT_RUNNER_CPUS=$cpus" "OPENSTEER_HOME_LIMIT_RUNNER_MEMORY=${agents}m" \
+    "OPENSTEER_HOME_LIMIT_BROWSER_CPUS=1" "OPENSTEER_HOME_LIMIT_BROWSER_MEMORY=${small}m" \
+    "OPENSTEER_HOME_LIMIT_EGRESS_CPUS=1" "OPENSTEER_HOME_LIMIT_EGRESS_MEMORY=${small}m" \
+    "OPENSTEER_HOME_LIMIT_CHANNEL_CPUS=1" "OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY=${small}m"
 }
 
 publish_file() {

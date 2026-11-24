@@ -42,7 +42,7 @@ it("adds the pooled override only for a marked Home, and keeps the default recip
   );
   expect(common).toMatch(/recipe_files=\([^)]*compose\.browser-pool\.yaml/u);
   expect(read("compose.yaml")).not.toMatch(/BROWSER_POOL|browser-pool/u);
-  expect(parse(read("compose.browser-pool.yaml"))).toEqual({
+  expect(parse(read("compose.browser-pool.yaml"))).toMatchObject({
     services: { host: { environment: { OPENSTEER_MANAGED_HOME_BROWSER_POOL: "true" } } },
   });
   for (const installer of ["install.sh", "package-installer.sh"])
@@ -63,7 +63,7 @@ function composeFiles(markers: readonly string[]): string[] {
       [
         "-c",
         // compose() runs `env -i ... docker compose <args>`: print the args instead.
-        `source "$1"; env() { printf '%s\\n' "$@"; }; compose config`,
+        `source "$1"; machine_size() { echo 4096 2; }; env() { printf '%s\\n' "$@"; }; compose config`,
         "shape",
         join(home, "common.sh"),
       ],
@@ -92,3 +92,131 @@ it("waits for a Home's own exit address only on a Cloud Computer whose browser r
   ]);
   expect(composeFiles([])).toEqual(["compose.yaml"]);
 });
+
+/** `home_limits` from `common.sh`: a Cloud Computer's limits for a machine of this size. */
+function homeLimits(memoryMib: number, cpus: number): Record<string, string> {
+  const printed = execFileSync(
+    "bash",
+    ["-c", 'source "$1"; home_limits "$2" "$3"', "limits", join(home, "common.sh"), `${memoryMib}`, `${cpus}`],
+    { encoding: "utf8", env: { ...process.env, OPENSTEER_HOME_DIR: tmpdir() } },
+  );
+  return Object.fromEntries(
+    printed
+      .trim()
+      .split("\n")
+      .map((line) => line.split("=") as [string, string]),
+  );
+}
+
+const pooledServices = {
+  postgres: "POSTGRES",
+  host: "HOST",
+  gateway: "GATEWAY",
+  runner: "RUNNER",
+  "browser-runtime": "BROWSER",
+  "browser-egress": "EGRESS",
+  "channel-runtime": "CHANNEL",
+} as const;
+
+const mebibytes = (value: string) => {
+  const match = /^(\d+)m$/u.exec(value);
+  if (!match) throw new Error(`Not a size in MiB: ${value}`);
+  return Number(match[1]);
+};
+
+it("sizes a Cloud Computer's Home from its machine: no limit adds up past it, room left for the kernel", () => {
+  // 3916 MiB is what Linux reports as MemTotal on a 4 GiB e2-medium.
+  for (const [memory, cpus] of [
+    [4096, 2],
+    [3916, 2],
+    [8192, 2],
+    [16384, 4],
+  ] as const) {
+    const limits = homeLimits(memory, cpus);
+    expect(Object.keys(limits).sort()).toEqual(
+      Object.values(pooledServices)
+        .flatMap((name) => [`OPENSTEER_HOME_LIMIT_${name}_CPUS`, `OPENSTEER_HOME_LIMIT_${name}_MEMORY`])
+        .sort(),
+    );
+    const total = Object.values(pooledServices).reduce(
+      (sum, name) => sum + mebibytes(limits[`OPENSTEER_HOME_LIMIT_${name}_MEMORY`]!),
+      0,
+    );
+    // Every cap together stays under the machine, with at least 512 MiB and an eighth left over.
+    expect(total).toBeLessThanOrEqual(memory - Math.max(512, Math.floor(memory / 8)));
+    for (const name of Object.values(pooledServices)) {
+      const share = Number(limits[`OPENSTEER_HOME_LIMIT_${name}_CPUS`]);
+      expect(share).toBeGreaterThan(0);
+      // Docker refuses a container more CPUs than the machine has.
+      expect(share).toBeLessThanOrEqual(cpus);
+    }
+    // The Runner may use every CPU the machine has, whatever their number.
+    expect(limits.OPENSTEER_HOME_LIMIT_RUNNER_CPUS).toBe(`${cpus}`);
+    expect(mebibytes(limits.OPENSTEER_HOME_LIMIT_RUNNER_MEMORY!)).toBeGreaterThanOrEqual(1024);
+  }
+  // The default machine, 4 GiB with two CPUs. No Chromium runs here: the Browser Runtime and its
+  // egress proxy only idle, so each is held to 256 MiB.
+  expect(homeLimits(4096, 2)).toEqual({
+    OPENSTEER_HOME_LIMIT_POSTGRES_CPUS: "2",
+    OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY: "512m",
+    OPENSTEER_HOME_LIMIT_HOST_CPUS: "2",
+    OPENSTEER_HOME_LIMIT_HOST_MEMORY: "768m",
+    OPENSTEER_HOME_LIMIT_GATEWAY_CPUS: "1",
+    OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY: "256m",
+    OPENSTEER_HOME_LIMIT_RUNNER_CPUS: "2",
+    OPENSTEER_HOME_LIMIT_RUNNER_MEMORY: "1280m",
+    OPENSTEER_HOME_LIMIT_BROWSER_CPUS: "1",
+    OPENSTEER_HOME_LIMIT_BROWSER_MEMORY: "256m",
+    OPENSTEER_HOME_LIMIT_EGRESS_CPUS: "1",
+    OPENSTEER_HOME_LIMIT_EGRESS_MEMORY: "256m",
+    OPENSTEER_HOME_LIMIT_CHANNEL_CPUS: "1",
+    OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY: "256m",
+  });
+  expect(homeLimits(16384, 4).OPENSTEER_HOME_LIMIT_RUNNER_MEMORY).toBe("9472m");
+});
+
+it("refuses a machine too small for a Cloud Computer's Home instead of overcommitting it", () => {
+  expect(() => homeLimits(2048, 1)).toThrow(/too small/u);
+  expect(() => homeLimits(4096, 0)).toThrow(/CPU/u);
+});
+
+it("applies the machine's limits on a pooled Cloud Computer only, never on a self-hosted Home", () => {
+  const override = parse(read("compose.browser-pool.yaml")) as {
+    services: Record<string, Record<string, unknown>>;
+  };
+  for (const [service, name] of Object.entries(pooledServices))
+    expect(override.services[service]).toMatchObject({
+      cpus: `\${OPENSTEER_HOME_LIMIT_${name}_CPUS:?Machine limits required}`,
+      mem_limit: `\${OPENSTEER_HOME_LIMIT_${name}_MEMORY:?Machine limits required}`,
+      memswap_limit: `\${OPENSTEER_HOME_LIMIT_${name}_MEMORY:?Machine limits required}`,
+    });
+  // The self-hosted recipe keeps its own limits and their OPENSTEER_HOME_* overrides.
+  expect(read("compose.yaml")).not.toContain("OPENSTEER_HOME_LIMIT_");
+  expect(composeEnvironment(["managed", "browser-pool"])).toContain(
+    "OPENSTEER_HOME_LIMIT_RUNNER_MEMORY=1280m",
+  );
+  expect(composeEnvironment(["managed"]).join("\n")).not.toContain("OPENSTEER_HOME_LIMIT_");
+  expect(composeEnvironment([]).join("\n")).not.toContain("OPENSTEER_HOME_LIMIT_");
+});
+
+/** The environment `common.sh`'s compose() gives Docker Compose, on a 4 GiB two-CPU machine. */
+function composeEnvironment(markers: readonly string[]): string[] {
+  const directory = mkdtempSync(join(tmpdir(), "opensteer-home-limits-"));
+  try {
+    writeFileSync(join(directory, "config.env"), "COMPOSE_PROJECT_NAME='shape'\n");
+    for (const marker of markers) writeFileSync(join(directory, marker), "");
+    const printed = execFileSync(
+      "bash",
+      [
+        "-c",
+        `source "$1"; machine_size() { echo 4096 2; }; env() { printf '%s\\n' "$@"; }; compose config`,
+        "shape",
+        join(home, "common.sh"),
+      ],
+      { env: { ...process.env, OPENSTEER_HOME_DIR: directory }, encoding: "utf8" },
+    );
+    return printed.split("\n").filter((line) => /^[A-Z_]+=/u.test(line));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
