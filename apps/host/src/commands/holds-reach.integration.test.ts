@@ -8,6 +8,7 @@ import {
 } from "@opensteer/database";
 import { describeStore, testModelSelection } from "@opensteer/database/test-support/store";
 import {
+  commandGovernedKinds,
   commandTable,
   type CommandResource,
   type CommandRow,
@@ -126,7 +127,8 @@ describeStore("what a caller is shown is what it can send (G2)", (test) => {
       .values({
         ownerId: owner,
         items: JSON.stringify([
-          { kind: "group", group: { groupId: tabGroup, name: "A group" } },
+          // Its one tab is in the profile: a group is reached only when every tab in it is.
+          { kind: "group", group: { groupId: tabGroup, name: "A group", tabIds: [tab] } },
         ]) as never,
       })
       .execute();
@@ -519,5 +521,25 @@ describeStore("what a caller is shown is what it can send (G2)", (test) => {
         anyoneWrong.push(`${type}: admitted, ${admitted.answer}`);
     }
     expect(anyoneWrong).toEqual([]);
+
+    // A selected grant without Tasks reaches Requests and a session only through its own active
+    // direct session: with none yet, it is shown none of their commands.
+    const sessionKinds = types.filter((type) =>
+      commandGovernedKinds(type).some((kind) => kind === "request" || kind === "agent-session"),
+    );
+    const lone = await connect("No session yet", {
+      scope: "selected",
+      tasks: false,
+      resources: [{ kind: "browser-profile", profileId: profile.id }],
+    } as AgentGrant);
+    await database
+      .updateTable("agentSessions")
+      .set({ status: "ended", endedAt: new Date(), endReason: "stopped" } as never)
+      .where("id", "=", lone.session.id)
+      .execute();
+    const loneHolder = (await agentCommandScope(database)(lone.caller)) as CommandHolder;
+    expect(sessionKinds.filter((type) => commandHolds(type, loneHolder))).toEqual([]);
+    for (const type of sessionKinds)
+      expect((await outcome(lone.caller, samples.get(type)!.command)).code, type).toBe("not_found");
   }, 120_000);
 });

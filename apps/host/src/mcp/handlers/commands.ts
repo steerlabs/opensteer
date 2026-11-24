@@ -523,7 +523,8 @@ function tooled(outcome: AgentCommandOutcome) {
       return {
         status: "pending" as const,
         requestId: outcome.requestId as RequestId,
-        next: "The person decides in Opensteer. Read it with opensteer_request_read; it may be changed before it is approved.",
+        // A tool every caller holds: a connection has no opensteer_request_read (G6).
+        next: "The person decides in Opensteer. See it with opensteer_state, area requests; it may be changed before it is approved.",
       };
     case "ask":
       throw new OpensteerError({
