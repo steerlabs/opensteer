@@ -667,15 +667,17 @@ export function migrationProvider(options?: {
               "0107_needs_you_counts_requests": {
                 /**
                  * A Home that used teams counted its teammates' asks in Needs you, and those
-                 * rows no longer list: the count is what the list shows, Requests alone. A
-                 * database still converting is left to its conversion, which counts the same.
+                 * rows no longer list: the count is what the list shows, Requests alone, and the
+                 * pending count with it, so neither can sit below the other. A database still
+                 * converting gets the same: one past its count stage keeps this, one before it
+                 * counts again the same way.
                  */
                 async up(database: Kysely<unknown>) {
-                  await sql`update client_sync_state set needs_you_count=listed.count
+                  await sql`update client_sync_state set pending_request_count=listed.count,
+                      needs_you_count=listed.count
                     from (select count(*)::integer as count from personal_attention where kind='request') listed
-                    where ready and needs_you_count is distinct from listed.count`.execute(
-                    database,
-                  );
+                    where pending_request_count is distinct from listed.count
+                      or needs_you_count is distinct from listed.count`.execute(database);
                 },
               },
               [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
