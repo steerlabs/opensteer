@@ -5,6 +5,7 @@ import {
   forwardAntigravityCallback,
   parseAntigravityAuthorizationUrl,
   validateAntigravityCallbackUrl,
+  validateAntigravityLoginResponse,
 } from "./oauth.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -39,6 +40,42 @@ describe("Antigravity browser OAuth", () => {
         "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&state=x&state=y&redirect_uri=http%3A%2F%2F127.0.0.1%3A8123%2F",
       ),
     ).toThrow("invalid Google sign-in URL");
+  });
+
+  it("validates 1.5 --login code authorization URLs and responses", () => {
+    const authorization = parseAntigravityAuthorizationUrl(
+      "https://accounts.google.com/o/oauth2/auth?response_type=code&state=state-2&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback",
+      "code",
+    );
+    expect(authorization).toMatchObject({
+      redirectUri: "https://antigravity.google/oauth-callback",
+      state: "state-2",
+    });
+    expect(() =>
+      parseAntigravityAuthorizationUrl(
+        "https://accounts.google.com/o/oauth2/auth?response_type=code&state=state-2&redirect_uri=https%3A%2F%2Fevil.example%2Foauth-callback",
+        "code",
+      ),
+    ).toThrow("invalid Google sign-in URL");
+
+    expect(validateAntigravityLoginResponse(authorization, "  4/0AbcDef_123-xyz  ")).toBe(
+      "4/0AbcDef_123-xyz",
+    );
+    expect(
+      validateAntigravityLoginResponse(
+        authorization,
+        "https://antigravity.google/oauth-callback?state=state-2&code=4/0Abc",
+      ),
+    ).toBe("https://antigravity.google/oauth-callback?state=state-2&code=4/0Abc");
+    for (const invalid of [
+      "",
+      "code\nwith-newline",
+      "https://antigravity.google/oauth-callback?state=other&code=4/0Abc",
+      "https://evil.example/oauth-callback?state=state-2&code=4/0Abc",
+      "https://antigravity.google/oauth-callback?state=state-2",
+    ]) {
+      expect(() => validateAntigravityLoginResponse(authorization, invalid)).toThrow();
+    }
   });
 
   it("binds a pasted callback to its exact origin, path, state, and one result", () => {

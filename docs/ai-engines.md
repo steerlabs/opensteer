@@ -64,9 +64,11 @@ not served limits ([model-servers.ts](../packages/harness/src/model-servers.ts))
 A settled sign-in-required catalog is a normal result, not a retry loop, and CLI sign-in changes
 need explicit refresh, never a timed cache. An unlistable or oversized catalog fails rather than
 publishing another source or a partial list. Transient provider retries stay working, not waiting
-for a person. Capacity exhaustion uses the shared `harness_usage_limit` classification. Antigravity
-reports a failed model call as reply text with a normal `end_turn`; only its stderr markers show the
-failure, so its driver classifies from them and drops the echoed reply.
+for a person. Capacity exhaustion uses the shared `harness_usage_limit` classification, and
+permanently corrupted native sessions use `harness_session_broken` so the Host rotates to a fresh
+native session with portable Thread context on the next Run. Antigravity reports a failed model call
+as reply text with a normal `end_turn`; its driver inspects both its native SQLite turn log and
+stderr markers to classify the failure and drop the echoed reply.
 
 Report usage before terminal events, even on interruption. Costs are list-price arithmetic, not
 subscription charges; never invent prices or show an unknown zero price as free. Root usage includes

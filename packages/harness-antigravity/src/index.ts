@@ -6,4 +6,5 @@ export * from "./output.js";
 export * from "./release.js";
 export * from "./runtime.js";
 export * from "./session-files.js";
+export * from "./turn-outcome.js";
 export * from "./usage.js";

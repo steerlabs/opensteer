@@ -10,6 +10,8 @@ import type {
   ToolIdentity,
 } from "@opensteer/core";
 
+import type { AcpPromptResult } from "./protocol.js";
+
 export type AcpProtocolVersion = 1 | 2;
 
 export interface AcpClientInfo {
@@ -48,6 +50,8 @@ export interface AcpSessionPolicy {
   readonly cancel: AcpCancelPolicy;
   readonly initializeMetadata?: Readonly<Record<string, unknown>>;
   readonly accessModeIds: Readonly<Record<ThreadAccessMode, string>>;
+  /** When set to `"prompt"`, mid-turn steers send a follow-up `session/prompt` onto the active session. */
+  readonly steering?: "prompt";
   readonly model:
     | {
         readonly type: "set-model";
@@ -160,6 +164,23 @@ export type AcpHeldAssistantDecision =
   | { readonly status: "pending" }
   | { readonly status: "succeeded" };
 
+export type AcpPermissionDisposition = "allow" | "ask" | "deny";
+
+export interface AcpPromptOutcomeWatchContext {
+  readonly context: HarnessSessionContext;
+  readonly providerSessionReference: string;
+}
+
+export interface AcpPromptOutcomeFailure {
+  readonly discardAssistant?: boolean;
+  readonly error: OpensteerError;
+}
+
+export type AcpPromptOutcomeCheck = (
+  result: AcpPromptResult,
+  context: { readonly assistantText: string },
+) => Promise<AcpPromptOutcomeFailure | undefined> | AcpPromptOutcomeFailure | undefined;
+
 export interface AcpNativeHooks {
   /** Engine-specific extensions and quirks only; standard ACP updates are normalized first. */
   normalizeUpdate?(update: unknown): readonly AcpNormalizedUpdate[] | undefined;
@@ -177,7 +198,22 @@ export interface AcpNativeHooks {
     readonly maxCharacters: number;
     readonly settle: (context: AcpHeldAssistantContext) => AcpHeldAssistantDecision;
   };
+  /**
+   * Decides whether a native permission prompt should be automatically allowed,
+   * denied, or forwarded to the person for approval based on the session's access mode.
+   */
+  permissionDisposition?(
+    request: AcpPermissionRequest,
+    context: HarnessSessionContext,
+  ): AcpPermissionDisposition;
   permissionChoices(request: AcpPermissionRequest): readonly AcpPermissionChoice[];
+  /**
+   * Snapshots engine-owned session state before a prompt and inspects it once the
+   * prompt settles to surface hidden failures that the ACP protocol reports as a normal stop.
+   */
+  watchPromptOutcome?(
+    context: AcpPromptOutcomeWatchContext,
+  ): Promise<AcpPromptOutcomeCheck | undefined> | AcpPromptOutcomeCheck | undefined;
   authenticationMethod?(
     context: HarnessSessionContext,
     inspection: AcpInspectionSnapshot,

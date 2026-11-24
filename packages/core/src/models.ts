@@ -847,6 +847,15 @@ export const ActiveRunStatusSchema = z.enum(nonTerminalRunStatuses);
  */
 export const harnessUsageLimitFailureCode = "harness_usage_limit";
 
+/**
+ * The Run failure code a harness reports when the provider's native session
+ * state is permanently corrupted and can no longer accept prompts (for
+ * example, a stripped thinking signature in persisted history). The Host
+ * retires that ProviderSession and opens a fresh one so the next Run
+ * continues seamlessly with portable Thread context.
+ */
+export const harnessSessionBrokenFailureCode = "harness_session_broken";
+
 /** The longest a Run's failure message may be, in UTF-16 units. */
 export const runFailureMessageMaxLength = 20_000;
 

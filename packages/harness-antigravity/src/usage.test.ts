@@ -561,6 +561,99 @@ describe("Antigravity usage", () => {
     expect(JSON.stringify(usage)).not.toContain("\\u0000");
   });
 
+  it("treats 1.5 antigravity-oauth-token as authoritative and uses acp_token.json only when absent", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-antigravity-cli-token-"));
+    temporaryDirectories.push(directory);
+    const cliTokenPath = join(directory, "antigravity-oauth-token");
+    const tokenPath = join(directory, "acp_token.json");
+    const now = Date.parse("2026-11-01T12:00:00Z");
+    await writeFile(
+      cliTokenPath,
+      JSON.stringify({
+        token: {
+          access_token: "cli-access-token",
+          expiry: "2026-11-01T13:00:00Z",
+        },
+      }),
+    );
+    const urls: string[] = [];
+    const authHeaders: string[] = [];
+    const request = vi.fn(async (value: string | URL | Request, init?: RequestInit) => {
+      const url = String(value);
+      urls.push(url);
+      const auth = new Headers(init?.headers).get("authorization");
+      if (auth) authHeaders.push(auth);
+      if (url === "https://oauth2.googleapis.com/token") {
+        return Response.json({ access_token: "refreshed-token", expires_in: 3_600 });
+      }
+      return Response.json({
+        buckets: [
+          {
+            bucketId: "gemini-5h",
+            remainingFraction: 0.5,
+            resetTime: "2026-11-01T15:00:00Z",
+            window: "5h",
+          },
+        ],
+      });
+    });
+
+    const directUsage = await readAntigravityUsage({
+      authMethod: "oauth-personal",
+      cliTokenPath,
+      fetch: request,
+      now,
+      signal: new AbortController().signal,
+      tokenPath,
+    });
+    expect(directUsage?.windows).toHaveLength(1);
+    expect(urls).not.toContain("https://oauth2.googleapis.com/token");
+    expect(authHeaders).toContain("Bearer cli-access-token");
+
+    // When antigravity-oauth-token exists but is expired, do NOT fall back to a stale acp_token.json.
+    await writeFile(
+      cliTokenPath,
+      JSON.stringify({
+        token: {
+          access_token: "expired-cli-token",
+          expiry: "2026-11-01T11:00:00Z",
+        },
+      }),
+    );
+    await writeFile(
+      tokenPath,
+      JSON.stringify({
+        client_id: "client-id",
+        client_secret: "client-secret",
+        refresh_token: "refresh-token",
+      }),
+    );
+    const expiredUsage = await readAntigravityUsage({
+      authMethod: "oauth-personal",
+      cliTokenPath,
+      fetch: request,
+      now,
+      signal: new AbortController().signal,
+      tokenPath,
+    });
+    expect(expiredUsage).toBeUndefined();
+    expect(urls).not.toContain("https://oauth2.googleapis.com/token");
+
+    // Only when antigravity-oauth-token is absent does legacy acp_token.json refresh run.
+    await rm(cliTokenPath);
+    const legacyUsage = await readAntigravityUsage({
+      authMethod: "oauth-personal",
+      cliTokenPath,
+      fetch: request,
+      now,
+      signal: new AbortController().signal,
+      tokenPath,
+    });
+    expect(legacyUsage?.windows).toHaveLength(1);
+    expect(urls).toContain("https://oauth2.googleapis.com/token");
+    expect(authHeaders).toContain("Bearer refreshed-token");
+  });
+
   it("does not probe quota for API-key sources", async () => {
     const request = vi.fn();
     await expect(

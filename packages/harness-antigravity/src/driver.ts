@@ -23,6 +23,7 @@ import {
   type AcpHeldAssistantDecision,
   type AcpInspectionSnapshot,
   type AcpNormalizedUpdate,
+  type AcpPermissionDisposition,
   type AcpPermissionRequest,
   type AcpProtocolClient,
   type AcpSessionPolicy,
@@ -54,8 +55,9 @@ import {
   type HarnessGenerateTextInput,
   type HarnessGenerateTextResult,
 } from "@opensteer/harness";
+import { lstatSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   AntigravityHarnessConfigSchema,
   antigravitySource,
@@ -69,6 +71,7 @@ import {
   forwardAntigravityCallback,
   parseAntigravityAuthorizationUrl,
   validateAntigravityCallbackUrl,
+  validateAntigravityLoginResponse,
 } from "./oauth.js";
 import {
   authenticationRequired,
@@ -91,11 +94,18 @@ import {
   removeTemporaryAntigravitySession,
 } from "./session-files.js";
 import { antigravityToolIdentity } from "./tool-identity.js";
+import {
+  brokenAntigravitySessionError,
+  invalidThinkingSignaturePattern,
+  sanitizeAntigravityFailureMessage,
+  watchAntigravityPromptOutcome,
+} from "./turn-outcome.js";
 import { readAntigravityUsage } from "./usage.js";
 
 const initializeDeadlineMs = 20_000;
 const authenticationLifetimeMs = 5 * 60_000;
 const primaryConnectionSlot = "primary";
+const antigravityClientInfo = { name: "opensteer", version: "0.0.0" } as const;
 const requiredAuthMethods = new Set<AntigravityAuthMethod>([
   "oauth-personal",
   "oauth-business",
@@ -111,13 +121,13 @@ export const antigravityHarnessCapabilities: HarnessCapabilities = Object.freeze
       maxBytes: attachmentMaxBytes,
       maxPixels: attachmentImageMaxPixels,
       mediaTypes: attachmentNativeImageMediaTypes,
-      steering: false,
+      steering: true,
     },
   },
   interruption: true,
   mcpImageContent: true,
   resume: true,
-  steering: false,
+  steering: true,
   toolCalls: true,
   userInput: true,
   warmReuse: true,
@@ -260,7 +270,7 @@ async function initializeProtocol(
     const inspection = await owned.client.initialize({
       capabilities: { elicitation: true, fileSystem: "read-only", terminal: false },
       deadlineMs: initializeDeadlineMs,
-      info: { name: "zed", version: "0.0.0" },
+      info: antigravityClientInfo,
       signal,
     });
     if (inspection.protocolVersion !== protocolVersion) {
@@ -286,7 +296,7 @@ function assertRuntimeIdentity(
   expectedVersion: string,
 ): AntigravityRuntimeIdentity {
   if (
-    inspection.agentInfo?.name !== "antigravity-acp" ||
+    inspection.agentInfo?.name !== "Antigravity ACP Server" ||
     inspection.agentInfo.version !== expectedVersion ||
     (inspection.protocolVersion !== 1 && inspection.protocolVersion !== 2)
   ) {
@@ -303,6 +313,91 @@ function assertRuntimeIdentity(
     throw new Error("The downloaded Antigravity runtime lacks a required authentication method");
   }
   return { protocolVersion: inspection.protocolVersion };
+}
+
+function canonicalContainmentPath(target: string): string | undefined {
+  let candidate = target;
+  const missingSuffix: string[] = [];
+  for (;;) {
+    try {
+      return resolve(realpathSync.native(candidate), ...missingSuffix);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+    }
+    try {
+      lstatSync(candidate);
+      return undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+    }
+    const parent = dirname(candidate);
+    if (parent === candidate) return undefined;
+    missingSuffix.unshift(basename(candidate));
+    candidate = parent;
+  }
+}
+
+function isWithinRoot(path: string, root: string): boolean {
+  const rel = relative(root, path);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+function locationsWithinWritableRoots(
+  locations: readonly { readonly path?: string }[] | undefined,
+  context: Pick<HarnessSessionContext, "workspacePath" | "writableRoots">,
+): boolean {
+  if (!locations || locations.length === 0) return false;
+  const roots: string[] = [];
+  for (const root of [context.workspacePath, ...context.writableRoots]) {
+    if (!root.trim()) continue;
+    const canonical = canonicalContainmentPath(resolve(root));
+    if (canonical) roots.push(canonical);
+  }
+  if (roots.length === 0) return false;
+  for (const location of locations) {
+    const rawPath = location.path?.trim();
+    if (!rawPath) return false;
+    const resolved = isAbsolute(rawPath) ? rawPath : resolve(context.workspacePath, rawPath);
+    const canonical = canonicalContainmentPath(resolved);
+    if (!canonical || !roots.some((root) => isWithinRoot(canonical, root))) return false;
+  }
+  return true;
+}
+
+function isOpensteerMcpRequest(request: AcpPermissionRequest): boolean {
+  const mcpMeta = record(record(request.toolCall.meta)?.mcp);
+  if (mcpMeta?.server === "opensteer" && typeof mcpMeta.tool === "string") {
+    return true;
+  }
+  const rawInput = record(request.toolCall.rawInput);
+  return rawInput?.ServerName === "opensteer" && typeof rawInput.ToolName === "string";
+}
+
+/**
+ * Antigravity 1.5 CLI rejects legacy `yolo` and `auto_edit` session modes and
+ * stays in `default`, where it asks the client before acting. Answering those
+ * permission requests from Opensteer's `accessMode` keeps full-access and
+ * auto-accept-edits faithful without requiring unsupported server modes.
+ */
+export function antigravityPermissionDisposition(
+  request: AcpPermissionRequest,
+  context: Pick<HarnessSessionContext, "accessMode" | "workspacePath" | "writableRoots">,
+): AcpPermissionDisposition {
+  if (context.accessMode === "full-access") return "allow";
+  if (context.accessMode === "approval-required") return "ask";
+  const kind = request.toolCall.kind?.toLowerCase() ?? "other";
+  if (kind === "read" || kind === "search" || kind === "think") return "allow";
+  if (isOpensteerMcpRequest(request)) return "allow";
+  if (context.accessMode === "auto-accept-edits") {
+    // Only non-destructive edits with every target path proven inside writable roots
+    // are auto-approved; deletes, moves, and shell commands still ask explicitly.
+    if (kind === "edit" && locationsWithinWritableRoots(request.toolCall.locations, context)) {
+      return "allow";
+    }
+    return "ask";
+  }
+  // In `auto` mode Antigravity's native Auto reviewer already escalated this call.
+  return "ask";
 }
 
 function permissionChoices(request: AcpPermissionRequest) {
@@ -323,13 +418,16 @@ function permissionChoices(request: AcpPermissionRequest) {
 function classifyError(error: unknown): OpensteerError {
   if (error instanceof OpensteerError) return error;
   const message = error instanceof Error ? error.message : "";
+  if (invalidThinkingSignaturePattern.test(message)) {
+    return brokenAntigravitySessionError();
+  }
   if (/quota|rate.?limit|resource.?exhausted/i.test(message)) {
     return new OpensteerError({
       code: harnessUsageLimitFailureCode,
       message: "This Google account has reached its Antigravity usage limit",
     });
   }
-  if (/sign.?in|authenticat|subscription_required|-32000/i.test(message)) {
+  if (looksLikeAuthenticationFailure(error)) {
     return authenticationRequired();
   }
   return new OpensteerError({ code: "harness_error", message: "Antigravity could not continue" });
@@ -446,9 +544,12 @@ export function settleAntigravityHeldAssistant(
 }
 
 function classifyAntigravityTurnFailure(failure: AntigravityTurnFailure): OpensteerError {
+  if (failure.message && invalidThinkingSignaturePattern.test(failure.message)) {
+    return brokenAntigravitySessionError();
+  }
   const status = failure.grpcStatus;
   if (failure.httpStatus === 402 || failure.httpStatus === 429 || status === "RESOURCE_EXHAUSTED") {
-    const detail = failure.message ? `: ${sanitizeAntigravityFailure(failure.message)}` : "";
+    const detail = failure.message ? `: ${sanitizeAntigravityFailureMessage(failure.message)}` : "";
     return new OpensteerError({
       code: harnessUsageLimitFailureCode,
       message: `Antigravity usage limit reached${detail}`,
@@ -465,22 +566,9 @@ function classifyAntigravityTurnFailure(failure: AntigravityTurnFailure): Openst
   return new OpensteerError({
     code: "harness_error",
     message: failure.message
-      ? sanitizeAntigravityFailure(failure.message)
+      ? sanitizeAntigravityFailureMessage(failure.message)
       : "Antigravity could not continue",
   });
-}
-
-function sanitizeAntigravityFailure(message: string): string {
-  return message
-    .replace(/Bearer\s+\S+/giu, "Bearer [REDACTED]")
-    .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/gu, "[REDACTED]")
-    .replace(
-      /\b(api[ _-]?key|authorization|credential|password|secret|token)\s*[:=]\s*[^,\s]+/giu,
-      "$1=[REDACTED]",
-    )
-    .replace(/[\r\n\0]+/gu, " ")
-    .trim()
-    .slice(0, 2_000);
 }
 
 export function antigravityModelDescriptors(
@@ -540,12 +628,12 @@ export function antigravitySessionPolicy(protocolVersion: 1 | 2): AcpSessionPoli
     accessModeIds: {
       "approval-required": "default",
       "auto-accept-edits": "auto_edit",
-      auto: "default",
+      auto: "auto",
       "full-access": "yolo",
     },
     cancel: { behavior: "wait-for-prompt" },
     clientCapabilities: { elicitation: true, fileSystem: "read-only", terminal: false },
-    clientInfo: { name: "zed", version: "0.0.0" },
+    clientInfo: antigravityClientInfo,
     eagerAuthentication: true,
     initializeDeadlineMs,
     model: {
@@ -557,6 +645,7 @@ export function antigravitySessionPolicy(protocolVersion: 1 | 2): AcpSessionPoli
     },
     protocolVersion,
     resume: { method: "resume", suppressReplay: false },
+    steering: "prompt",
   };
 }
 
@@ -704,6 +793,7 @@ export class AntigravityHarnessDriver implements HarnessDriver {
       await owned.client.closeSession(session.sessionId);
       const usage = await readAntigravityUsage({
         authMethod: source.authMethod,
+        cliTokenPath: launch.profile.cliTokenPath,
         signal: context.signal,
         tokenPath: launch.profile.tokenPath,
       }).catch(() => undefined);
@@ -847,6 +937,157 @@ export class AntigravityHarnessDriver implements HarnessDriver {
     context: HarnessAuthenticationContext,
     authMethod: "oauth-business" | "oauth-personal",
   ): Promise<HarnessAuthenticationStart> {
+    if (authMethod === "oauth-personal") {
+      return this.#codeBrowserAuthentication(context);
+    }
+    return this.#loopbackBrowserAuthentication(context, authMethod);
+  }
+
+  /**
+   * Antigravity 1.5 ignores `BROWSER` during ACP `authenticate` for personal
+   * Google accounts. Running `antigravity acp ... --login` without a display
+   * prints the Google OAuth URL on stdout and reads the pasted code or callback
+   * URL from stdin, storing the token in the profile's `antigravity-oauth-token`.
+   */
+  async #codeBrowserAuthentication(
+    context: HarnessAuthenticationContext,
+  ): Promise<HarnessAuthenticationStart> {
+    const runtime = this.#requireRuntime();
+    const config = AntigravityHarnessConfigSchema.parse(context.config);
+    const launch = await prepareAntigravityLaunch({
+      authMethod: "oauth-personal",
+      baseEnvironment: context.environment,
+      config,
+      nodeExecutable: this.#options.nodeExecutable,
+      providerState: context.providerState,
+      runtime,
+    });
+    const { DISPLAY: _display, WAYLAND_DISPLAY: _wayland, ...environment } = launch.environment;
+    const lifetime = new AbortController();
+    const signal = AbortSignal.any([
+      context.signal,
+      lifetime.signal,
+      AbortSignal.timeout(authenticationLifetimeMs),
+    ]);
+    const child = spawnSupervised({
+      args: [...launch.args, "--login"],
+      cwd: context.workingDirectory,
+      environment,
+      executable: launch.executable,
+      maxOutputBytes: acpProtocolOutputBytes,
+      signal,
+    });
+    const authorization = new Deferred<string>();
+    let firstAuthorization: string | undefined;
+    let settled = false;
+    let submitted = false;
+    let resolveResult!: (result: HarnessAuthenticationResult) => void;
+    const result = new Promise<HarnessAuthenticationResult>((resolvePromise) => {
+      resolveResult = resolvePromise;
+    });
+    const finish = async (outcome: HarnessAuthenticationResult) => {
+      if (settled) return;
+      settled = true;
+      lifetime.abort(new Error("Antigravity sign-in finished"));
+      await child.terminate().catch(() => undefined);
+      await child.exited.catch(() => undefined);
+      resolveResult(outcome);
+    };
+    const drainStderr = (async () => {
+      for await (const _chunk of child.stderr) {
+        // Deliberately discard stderr bytes.
+      }
+    })().catch(() => undefined);
+    const readStdout = (async () => {
+      let pending = "";
+      for await (const chunk of child.stdout) {
+        pending += chunk.toString("utf8");
+        const lines = pending.split("\n");
+        pending = lines.pop() ?? "";
+        if (pending.length > 20_000) pending = "";
+        for (const rawLine of lines) {
+          if (rawLine.length > 20_000) continue;
+          const line = rawLine.trim();
+          if (!line.startsWith("https://accounts.google.com/")) continue;
+          const parsed = parseAntigravityAuthorizationUrl(line, "code");
+          if (firstAuthorization && firstAuthorization !== parsed.authorizationUrl) {
+            throw new Error("Antigravity started more than one Google sign-in request");
+          }
+          firstAuthorization = parsed.authorizationUrl;
+          authorization.resolve(parsed.authorizationUrl);
+        }
+      }
+      const trailing = pending.trim();
+      if (trailing.startsWith("https://accounts.google.com/")) {
+        const parsed = parseAntigravityAuthorizationUrl(trailing, "code");
+        if (!firstAuthorization) {
+          firstAuthorization = parsed.authorizationUrl;
+          authorization.resolve(parsed.authorizationUrl);
+        }
+      }
+    })();
+    const authentication = (async () => {
+      try {
+        await readStdout;
+        await drainStderr;
+        const exit = await child.exited;
+        if (exit.code === 0 && exit.signal === null) {
+          await finish({ status: "ready" });
+        } else {
+          await finish({ detail: "Google sign-in failed or was canceled", status: "failed" });
+        }
+      } catch {
+        await finish({ detail: "Google sign-in failed or was canceled", status: "failed" });
+      }
+    })();
+    const authorizationUrl = await Promise.race([
+      authorization.promise,
+      authentication.then(() => undefined),
+    ]);
+    if (!authorizationUrl) {
+      await authentication;
+      const outcome = await result;
+      if (outcome.status === "ready") return { status: "ready" };
+      throw new OpensteerError({ code: "harness_error", message: outcome.detail });
+    }
+    const pending = parseAntigravityAuthorizationUrl(authorizationUrl, "code");
+    return {
+      cancel: async () => finish({ detail: "Google sign-in was canceled", status: "failed" }),
+      challenge: {
+        authorizationUrl: pending.authorizationUrl,
+        inputPrompt: "Paste the code or complete redirect URL from the Google sign-in page",
+        kind: "browser-code",
+      },
+      result,
+      status: "pending",
+      submit: async (value) => {
+        if (settled || submitted) {
+          throw new OpensteerError({
+            code: "conflict",
+            message: "This sign-in is no longer pending",
+          });
+        }
+        const response = validateAntigravityLoginResponse(pending, value);
+        submitted = true;
+        try {
+          await new Promise<void>((resolveWrite, rejectWrite) => {
+            child.child.stdin.write(`${response}\n`, "utf8", (error) => {
+              if (error) rejectWrite(error);
+              else resolveWrite();
+            });
+          });
+          child.child.stdin.end();
+        } catch {
+          await finish({ detail: "Could not deliver the sign-in response", status: "failed" });
+        }
+      },
+    };
+  }
+
+  async #loopbackBrowserAuthentication(
+    context: HarnessAuthenticationContext,
+    authMethod: "oauth-business" | "oauth-personal",
+  ): Promise<HarnessAuthenticationStart> {
     const runtime = this.#requireRuntime();
     const config = AntigravityHarnessConfigSchema.parse(context.config);
     const launch = await prepareAntigravityLaunch({
@@ -957,7 +1198,7 @@ export class AntigravityHarnessDriver implements HarnessDriver {
 
 function looksLikeAuthenticationFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : "";
-  return /sign.?in|authenticat|subscription_required|-32000/i.test(message);
+  return /sign.?in|authenticat|subscription_required|no browser is available|-32000/i.test(message);
 }
 
 class AntigravityAdapter implements HarnessAdapter {
@@ -994,8 +1235,14 @@ class AntigravityAdapter implements HarnessAdapter {
         },
         normalizeUpdate: normalizeAntigravityUpdate,
         permissionChoices,
+        permissionDisposition: antigravityPermissionDisposition,
         toolIdentity: antigravityToolIdentity,
         transformStdout: (stdout) => transformAntigravityStdout(stdout),
+        watchPromptOutcome: ({ context, providerSessionReference }) =>
+          watchAntigravityPromptOutcome(
+            context.providerState.providerHomeDirectory,
+            providerSessionReference,
+          ),
       },
       launch: ({ context }) => this.#launch(context),
       maxEventBytes: 32 * 1_024 * 1_024,
@@ -1074,7 +1321,7 @@ class AntigravityAdapter implements HarnessAdapter {
         const launch: HarnessProcessLaunch = context.wrapProcessLaunch({ ...base, cwd: workspace });
         const generated = await generateContainedAcpTitle({
           authenticationMethod: this.#authMethod,
-          clientInfo: { name: "zed", version: "0.0.0" },
+          clientInfo: antigravityClientInfo,
           initializeDeadlineMs,
           launch,
           modeId: "default",
