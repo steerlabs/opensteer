@@ -1,3 +1,4 @@
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import { RunnerIdSchema, type DeviceId } from "@opensteer/core";
 import { DeviceIdSchema } from "@opensteer/core";
 import { DeviceAccessRefusal } from "../administration/device-access.js";
@@ -501,7 +502,8 @@ describe("BrowserService", () => {
     runtime.sendServer({
       type: "cdp.error",
       requestId: request.requestId,
-      error: { code: "conflict", message: "Could not create page", retryable: false },
+      // A definite refusal: the runtime made no page.
+      error: { code: "conflict", message: "Could not create page", retryable: false, unsent: true },
     });
     await refused;
     expect((await repository.getBrowserSessionForOwner(opened.session.id, ownerId))?.state).toBe(
@@ -517,7 +519,8 @@ describe("BrowserService", () => {
     runtime.sendServer({
       type: "cdp.error",
       requestId: next.requestId,
-      error: { code: "conflict", message: "Could not create page", retryable: false },
+      // A definite refusal: the runtime made no page.
+      error: { code: "conflict", message: "Could not create page", retryable: false, unsent: true },
     });
     await retried;
     expect(runtime.receivedCommands()).toHaveLength(2);
@@ -8080,7 +8083,12 @@ it("admits paged listing and exact resume only inside an agent's own session", a
   runtime.sendServer({
     type: "cdp.error",
     requestId: asked.requestId,
-    error: { code: "not_found", message: "The browser tab closed.", retryable: false },
+    error: {
+      code: "not_found",
+      message: "The browser tab closed.",
+      retryable: false,
+      unsent: true,
+    },
   });
   await expect(outside).rejects.toMatchObject({ code: "not_found" });
   await expect(cdp.request({ method: "Opensteer.openTab", parameters: {} })).rejects.toMatchObject({
@@ -9177,6 +9185,87 @@ it("a reopening whose last read fails for another reason keeps the open tab and 
   expect(sentFor(browserHostMethods.fenceTab)).toBe(false);
   expect(sentFor(browserHostMethods.closeTab)).toBe(false);
 });
+
+/*
+ * A7: an agent's command answered by an error. Only one the runtime says came before the command
+ * reached the page (`unsent`) is a refusal; one that does not say may have come after its effect,
+ * and its outcome is unknown: never failed, never retried by the Home.
+ */
+it.each([
+  ["after", undefined],
+  ["before", true],
+] as const)(
+  "tells an agent's command apart by whether its error came %s it reached the page (A7)",
+  async (when, unsent) => {
+    const keys = generateKeyPairSync("ed25519"),
+      runtime = await startFakeRuntime(keys.publicKey, "host-primary", { cdpReplyBudget: true }),
+      ownerId = createId("user"),
+      repository = new MemoryBrowserRepository(ownerId),
+      memory = memoryTabs(),
+      service = freshService({
+        keys,
+        runtime,
+        repository,
+        tabs: memory.store,
+        surfaceState: true,
+        tabRestoreVersion: true,
+      });
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", guest: true, url: "about:blank" },
+      `bind-${when}`,
+    );
+    await memory.add(descriptor);
+    const row = memory.rows.get(descriptor.id)!;
+    const binding = service.pageTabs.bindBrowserScript!(
+      {
+        authority: { ownerId, agentBindingId: `run:bind-${when}` },
+        threadId: createId("thread"),
+        signal: new AbortController().signal,
+      } as never,
+      row,
+    );
+    void binding.catch(() => undefined);
+    const resume = await vi.waitFor(() => {
+      const sent = runtime
+        .receivedCommands()
+        .findLast(
+          (m) =>
+            m.type === "cdp.command" &&
+            (m.command as { method?: string }).method === "Opensteer.resumeTab",
+        );
+      expect(sent).toBeDefined();
+      return sent!;
+    });
+    expect(resume.replyBudget).toBeDefined();
+    runtime.sendServer({
+      type: "cdp.error",
+      requestId: resume.requestId,
+      error:
+        unsent === true
+          ? {
+              code: "conflict",
+              message: "This tab is awake, but its page is still loading. Try again shortly.",
+              retryable: true,
+              unsent: true,
+            }
+          : {
+              code: "bad_message",
+              message: "Browser result exceeds its byte or nesting limit.",
+              reason: "browser-reply-limit",
+              retryable: false,
+            },
+    });
+    if (unsent === true) {
+      const refused = await binding.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(refused).toBeInstanceOf(OpensteerError);
+      expect(refused).not.toBeInstanceOf(OperationOutcomeUnknown);
+    } else await expect(binding).rejects.toBeInstanceOf(OperationOutcomeUnknown);
+  },
+);
 
 function memoryTabs() {
   const rows = new Map<string, TabRecord>();
