@@ -14,6 +14,7 @@ export {
 } from "./standard-cdp-limits.js";
 import { contextScopedCdpMethods } from "./cdp-context.js";
 import { CdpProductIsolation } from "./cdp-product-isolation.js";
+import { ConnectionExtensionIsolation, isExtensionUrl } from "./connection-extension-isolation.js";
 import { boundedJsonSize, type JsonSizeBudget } from "./bounded-json.js";
 import { utf8Size } from "./bytes.js";
 import {
@@ -22,7 +23,9 @@ import {
   connectionCdpRefusal,
   connectionMethodRefusal,
   decodeNestedCdpMessage,
+  extensionManagementRefusal,
   invalidNestedMessageRefusal,
+  isExtensionMutationCommand,
 } from "./cdp-command-refusals.js";
 export {
   decodeNestedCdpMessage,
@@ -37,6 +40,8 @@ export {
   clipboardPermissionRefusal,
   connectionClipboardRefusal,
   connectionPermissionRefusal,
+  extensionManagementRefusal,
+  isExtensionMutationCommand,
 } from "./cdp-command-refusals.js";
 
 export interface SessionCdpRouterPorts {
@@ -61,6 +66,11 @@ export interface CdpCommand {
    * command's attachment; nested commands carry it on.
    */
   readonly connection?: true;
+  /**
+   * The Home's authority rule admitted this execution to persist or remove profile Chrome
+   * extensions (`Extensions.loadUnpacked`, `Extensions.uninstall`). Never defaulted on.
+   */
+  readonly manageExtensions?: true;
 }
 
 export interface CdpEvent {
@@ -82,6 +92,8 @@ export interface CdpChannel {
 export interface BrowserCdpBackend {
   readonly protectProductWorlds?: boolean;
   readonly allowsProfileCookieReads?: boolean;
+  /** The browser keeps the profile's Chrome extensions and answers CDP's `Extensions` domain. */
+  readonly extensions?: boolean;
   /**
    * Opens a page channel that behaves as a fresh CDP session: its
    * `Runtime.enable` reports every live execution context before it resolves,
@@ -157,6 +169,7 @@ interface AttachedChannel {
   readonly rootAttached?: boolean;
   readonly rootAlias?: TargetRoot;
   readonly childClaim?: TargetClaim;
+  readonly extensionIsolation?: ConnectionExtensionIsolation;
   readonly virtualSessionId: string;
 }
 
@@ -724,7 +737,12 @@ export class SessionCdpRouter {
     this.#assertOpen();
     const state = this.#commandState(sessionId, command.scriptAttachmentId);
     validateCommand(command, this.#sessionLimits(state).maxCommandBytes);
-    assertSafeNavigationUrl(command.parameters?.url, true);
+    assertSafeNavigationUrl(
+      command.parameters?.url,
+      true,
+      true,
+      !state.connection && command.connection !== true,
+    );
   }
 
   onEvent(sessionId: string, listener: (event: CdpEvent) => void): () => void {
@@ -954,19 +972,66 @@ export class SessionCdpRouter {
       "Target.activateTarget",
       "Target.setDiscoverTargets",
     ].includes(command.method);
-    const result = targetRouting
-      ? await this.#sendTargetCommand(state, command, alias)
-      : command.sessionId
-        ? await this.#sendAttachedCommand(state, command, beforeActivity)
-        : command.method.startsWith("Target.")
-          ? await this.#sendTargetCommand(state, command, alias)
-          : await this.#backend.send(command.method, command.parameters);
+    // Extensions belong to the profile's browser, so a page's session reaches
+    // them as the browser target does.
+    const result = command.method.startsWith("Extensions.")
+      ? await this.#sendExtensionsCommand(state, command)
+      : targetRouting
+        ? await this.#sendTargetCommand(state, command, alias)
+        : command.sessionId
+          ? await this.#sendAttachedCommand(state, command, beforeActivity)
+          : command.method.startsWith("Target.")
+            ? await this.#sendTargetCommand(state, command, alias)
+            : await this.#backend.send(command.method, command.parameters);
     this.#assertResultSize(
       result,
       this.#sessionLimits(state).maxResultBytes,
       command.replyBudget ?? (state.standard ? standardJsonBudget : undefined),
     );
     return result;
+  }
+
+  #sendExtensionsCommand(state: ConnectionState, command: CdpCommand): Promise<unknown> {
+    if (state.connection || command.connection === true)
+      throw new SessionCdpRouterError("forbidden", connectionMethodRefusal(command.method));
+    if (
+      isExtensionMutationCommand(command.method, command.parameters) &&
+      command.manageExtensions !== true
+    )
+      throw new SessionCdpRouterError("forbidden", extensionManagementRefusal);
+    if (command.parameters) this.#assertScope(state, command.parameters);
+    let parameters = command.parameters;
+    let attachedTargetId: string | undefined;
+    if (command.sessionId !== undefined) {
+      const attached = this.#admitAttachedCommand(state, command);
+      attachedTargetId = attached.physicalTargetId;
+    }
+    if (command.method === "Extensions.triggerAction") {
+      if (parameters?.targetId !== undefined) {
+        if (typeof parameters.targetId !== "string" || !parameters.targetId) {
+          throw new SessionCdpRouterError(
+            "bad_command",
+            "Extensions.triggerAction targetId must be a non-empty string.",
+          );
+        }
+      } else {
+        const defaultTargetId =
+          attachedTargetId ?? state.script?.root ?? state.session.rootTargetId;
+        if (!defaultTargetId || !this.#canReach(state, defaultTargetId)) {
+          throw new SessionCdpRouterError(
+            "not_found",
+            "No Browser Session tab is available for Extensions.triggerAction.",
+          );
+        }
+        parameters = { ...parameters, targetId: defaultTargetId };
+      }
+    }
+    if (!this.#backend.extensions)
+      throw new SessionCdpRouterError(
+        "bad_command",
+        "This browser keeps no extensions: they live in the desktop app's saved profiles.",
+      );
+    return this.#backend.send(command.method, parameters);
   }
 
   async #sendTargetCommand(
@@ -1007,6 +1072,7 @@ export class SessionCdpRouter {
           parameters: nested.params ?? {},
           ...(command.replyBudget ? { replyBudget: command.replyBudget } : {}),
           ...(command.connection ? { connection: true as const } : {}),
+          ...(command.manageExtensions ? { manageExtensions: true as const } : {}),
           sessionId: virtualSessionId,
         });
         if (!root.aliasId || state.aliases.has(root.aliasId))
@@ -1034,7 +1100,12 @@ export class SessionCdpRouter {
         return this.#readTargetInfo(state, targetId, claim, parameters);
       }
       case "Target.createTarget": {
-        assertSafeNavigationUrl(parameters.url, true);
+        assertSafeNavigationUrl(
+          parameters.url,
+          true,
+          true,
+          !state.connection && command.connection !== true,
+        );
         const response = asRecord(await this.#backend.send(command.method, parameters));
         const targetId = readString(response, "targetId");
         if (!targetId) {
@@ -1288,6 +1359,7 @@ export class SessionCdpRouter {
   #projectTargetInfo(state: ConnectionState, info: CdpParameters): CdpParameters | undefined {
     const targetId = readString(info, "targetId");
     if (!targetId || !this.#canReach(state, targetId)) return;
+    if (state.connection && isExtensionUrl(info.url)) return;
     const projected: Record<string, unknown> = {
       ...info,
       ...(state.standard ? { browserContextId: state.session.sessionId } : {}),
@@ -1422,6 +1494,7 @@ export class SessionCdpRouter {
       physicalTargetId: targetId,
       rootAttached: rootInfo !== undefined,
       ...(root.aliasId ? { rootAlias: root } : {}),
+      ...(state.connection ? { extensionIsolation: new ConnectionExtensionIsolation() } : {}),
       removeListener: () => undefined,
       pageEnabled: false,
       virtualSessionId: `cdp_${this.#ports.uuid()}`,
@@ -1486,7 +1559,8 @@ export class SessionCdpRouter {
         (owner && !this.#canReach(state, targetId)) ||
         (!owner && this.#workByTarget.has(targetId)) ||
         (state.standard && state.channels.size + state.aliases.size >= standardCdpMaxPending) ||
-        (isWorkerShared(info.type) && (this.#exclusive !== state || state.connection))
+        (isWorkerShared(info.type) && (this.#exclusive !== state || state.connection)) ||
+        (state.connection && isExtensionUrl(info.url))
       ) {
         void attached.channel
           .send("Target.detachFromTarget", { sessionId: physicalSessionId })
@@ -1511,6 +1585,7 @@ export class SessionCdpRouter {
         physicalTargetId: targetId,
         childClaim,
         ...(attached.rootAlias ? { rootAlias: attached.rootAlias } : {}),
+        ...(state.connection ? { extensionIsolation: new ConnectionExtensionIsolation() } : {}),
         virtualSessionId: `cdp_${this.#ports.uuid()}`,
         pageEnabled: false,
         removeListener: () => undefined,
@@ -1545,6 +1620,11 @@ export class SessionCdpRouter {
       void this.#endChannel(state, child);
       return;
     }
+    if (attached.extensionIsolation) {
+      const filtered = attached.extensionIsolation.observeEvent(method, parameters);
+      if (!filtered) return;
+      parameters = filtered;
+    }
     this.#appendEvent(state, method, parameters, attached.virtualSessionId);
   }
 
@@ -1571,7 +1651,12 @@ export class SessionCdpRouter {
       ? entries.find((candidate: unknown) => asRecord(candidate).id === entryId)
       : undefined;
     if (!entry) throw new SessionCdpRouterError("not_found", "No such navigation history entry.");
-    assertSafeNavigationUrl(asRecord(entry).url, false, Boolean(state.standard || state.script));
+    assertSafeNavigationUrl(
+      asRecord(entry).url,
+      false,
+      Boolean(state.standard || state.script),
+      !state.connection,
+    );
   }
 
   /** Refused before any effect: see `cdp-command-refusals.ts`. */
@@ -1631,7 +1716,15 @@ export class SessionCdpRouter {
     this.#assertScope(state, parameters, false, command.method);
     this.#assertAllowed(state, command);
     if (command.method === "Page.navigate") {
-      assertSafeNavigationUrl(parameters.url, false, Boolean(state.standard || state.script));
+      assertSafeNavigationUrl(
+        parameters.url,
+        false,
+        Boolean(state.standard || state.script),
+        !state.connection && command.connection !== true,
+      );
+    }
+    if (attached.extensionIsolation) {
+      attached.extensionIsolation.assertCommand(command.method, parameters);
     }
     if (
       state.standard &&
@@ -1707,7 +1800,9 @@ export class SessionCdpRouter {
     }
     if (command.method === "Page.enable") attached.pageEnabled = true;
     if (command.method === "Page.disable") attached.pageEnabled = false;
-    let parameters = command.parameters;
+    let parameters = attached.extensionIsolation
+      ? attached.extensionIsolation.assertCommand(command.method, command.parameters ?? {})
+      : command.parameters;
     if (command.method === "Target.setAutoAttach")
       parameters = {
         ...(state.connection || command.connection
@@ -1734,6 +1829,7 @@ export class SessionCdpRouter {
             parameters: message.params ?? {},
             ...(command.replyBudget ? { replyBudget: command.replyBudget } : {}),
             ...(command.connection ? { connection: true as const } : {}),
+            ...(command.manageExtensions ? { manageExtensions: true as const } : {}),
             sessionId: child.virtualSessionId,
           },
           beforeActivity,
@@ -1802,7 +1898,10 @@ export class SessionCdpRouter {
     };
     const tracked = () =>
       this.#trackPhysicalWork(state, () => this.#trackTargetWork(attached.physicalTargetId, send));
-    return command.replyBudget ? tracked() : whileOpen(attached.pending, tracked);
+    const answered = await (command.replyBudget ? tracked() : whileOpen(attached.pending, tracked));
+    return attached.extensionIsolation
+      ? attached.extensionIsolation.sanitizeResult(command.method, answered)
+      : answered;
   }
 
   // An agent's target selection cannot change a viewer's tab or native focus.
@@ -2362,6 +2461,7 @@ function assertSafeNavigationUrl(
   value: unknown,
   allowOmitted: boolean,
   allowAboutBlank = allowOmitted,
+  allowExtensions = true,
 ): void {
   if (value === undefined && allowOmitted) return;
   if (typeof value !== "string" || value.length < 1 || value.length > 16_384) {
@@ -2376,10 +2476,14 @@ function assertSafeNavigationUrl(
       cause: error,
     });
   }
-  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) {
+  const allowed = allowExtensions ? ["http:", "https:", "chrome-extension:"] : ["http:", "https:"];
+  // Extension pages are the browser's own; connected agents stay limited to HTTP(S).
+  if (!allowed.includes(url.protocol) || url.username || url.password) {
     throw new SessionCdpRouterError(
       "forbidden",
-      "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
+      allowExtensions
+        ? "CDP navigation is limited to HTTP(S) and extension pages, without embedded credentials."
+        : "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
     );
   }
 }

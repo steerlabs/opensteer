@@ -773,6 +773,12 @@ const BaselineBrowserClientMessageSchema = z
        * auto-attach limit and the clipboard and permission rules itself.
        */
       connection: z.literal(true).optional(),
+      /**
+       * The Home's authority rule admitted this execution to persist or remove profile Chrome
+       * extensions (`Extensions.loadUnpacked`, `Extensions.uninstall`): Full access with personal
+       * context on the person's own lineage. Omitted everywhere else; never defaulted on.
+       */
+      manageExtensions: z.literal(true).optional(),
       /** Host-only attribution for Page.navigate and Opensteer.openTab. */
       navigationId: z.uuid().optional(),
       type: z.literal("cdp.command"),

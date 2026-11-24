@@ -9,6 +9,11 @@ import { VerifiedDesktopSecretCryptography } from "../secrets/verified-secret-cr
 import { BrowserSessionRequestGate } from "./browser-session-policy.js";
 import { SessionCookieMirror } from "./session-cookie-mirror.js";
 import { profileFailureDiagnostic } from "./profile-failure-diagnostic.js";
+import {
+  ProfileExtensions,
+  extensionPreloadPaths,
+  type ProfileExtensionsPreloads,
+} from "./profile-extensions.js";
 
 type ProfileRetirementReason = "network-service-lost" | "startup-failed" | "deleted" | "cancelled";
 export type ElectronLocalProfileDiagnostic =
@@ -104,6 +109,7 @@ export function acquireElectronLocalProfile(input: {
   directory: string;
   binding: LocalProfileBinding;
   configure(session: Session, gate: BrowserSessionRequestGate): void;
+  extensionPreloads?: ProfileExtensionsPreloads;
   onDiagnostic?: ProfileDiagnosticSink;
 }): ElectronLocalProfile {
   const binding = LocalProfileBindingSchema.parse(input.binding);
@@ -138,6 +144,7 @@ export function acquireElectronLocalProfile(input: {
     binding,
     input.configure,
     input.onDiagnostic,
+    input.extensionPreloads,
   );
   profiles.set(input.directory, profile);
   profile.start();
@@ -176,6 +183,7 @@ export class ElectronLocalProfile {
   readonly gate = new BrowserSessionRequestGate();
   readonly binding: LocalProfileBinding;
   readonly mirror: SessionCookieMirror;
+  readonly extensions: ProfileExtensions;
   readonly #contexts = new Set<() => Promise<void>>();
   readonly #onDiagnostic: ProfileDiagnosticSink | undefined;
   #ready: Promise<unknown> = Promise.resolve();
@@ -193,6 +201,7 @@ export class ElectronLocalProfile {
     binding: LocalProfileBinding,
     configure: (session: Session, gate: BrowserSessionRequestGate) => void,
     onDiagnostic?: ProfileDiagnosticSink,
+    extensionPreloads: ProfileExtensionsPreloads = extensionPreloadPaths(),
   ) {
     this.#onDiagnostic = onDiagnostic;
     this.binding = binding;
@@ -201,6 +210,11 @@ export class ElectronLocalProfile {
     this.session = session.fromPath(directory);
     retainedDirectories.add(directory);
     configure(this.session, this.gate);
+    this.extensions = ProfileExtensions.for(this.session, directory, {
+      preloads: extensionPreloads,
+      canAccessCookies: () =>
+        this.#admitted && !this.#retired && !this.#suspended && !this.#failure,
+    });
     // This private target exists only for the cookie bridge, never as a user page.
     const command = async (method: string, parameters?: Record<string, unknown>) => {
       this.assertUsable();
@@ -298,8 +312,9 @@ export class ElectronLocalProfile {
     return this.#retired;
   }
 
+  /** Restored cookies and loaded extensions: a first page runs its extensions' scripts. */
   async ready(): Promise<void> {
-    await this.#ready;
+    await Promise.all([this.#ready, this.extensions.ready()]);
     this.assertUsable();
   }
 
@@ -356,10 +371,11 @@ export class ElectronLocalProfile {
     if (profiles.get(this.#directory) === this) profiles.delete(this.#directory);
     this.gate.fail();
     const stopped = this.mirror.stop();
+    const closedExtensions = this.extensions.close();
     this.#releaseIdleCookieTarget();
     const contexts = [...this.#contexts].map((close) => close());
     this.#retirement = (async () => {
-      await withTimeout(Promise.all([stopped, ...contexts]), 2_000, {
+      await withTimeout(Promise.all([stopped, closedExtensions, ...contexts]), 2_000, {
         timeoutError: persistenceFailure,
       });
       this.#releaseIdleCookieTarget();
@@ -369,6 +385,7 @@ export class ElectronLocalProfile {
   async eraseLiveData(): Promise<void> {
     await this.retire("deleted");
     // This is explicit profile deletion, never eviction or failure cleanup.
+    await this.extensions.close();
     await this.session.clearStorageData();
     await this.session.clearCache();
   }

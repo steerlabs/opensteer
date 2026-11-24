@@ -62,6 +62,7 @@ try {
       "profile-restore",
       "cookies",
       "system-ca",
+      "extensions",
     ];
     const rows = fs
       .readFileSync(path.join(root, "results.jsonl"), "utf8")

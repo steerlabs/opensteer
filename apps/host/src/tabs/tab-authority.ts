@@ -298,6 +298,18 @@ export async function authorizeTabTarget(
     return;
   }
   const lineage = await admitTabActor(actor, database, "read-write");
+  if (
+    lineage !== null &&
+    "kind" in target &&
+    target.kind === "page" &&
+    "url" in target &&
+    typeof target.url === "string" &&
+    target.url.trim().toLowerCase().startsWith("chrome-extension:")
+  )
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Use about:blank or an HTTP(S) URL without credentials.",
+    });
   if (!(await tabTargetAuthority(actor, database, lineage)(target, "read-write"))) deny();
 }
 export async function canReadTab(

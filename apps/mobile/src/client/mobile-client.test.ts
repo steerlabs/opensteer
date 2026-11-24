@@ -3233,7 +3233,11 @@ describe("MobileClient and this iPhone's apps", () => {
       const { client } = open(port.factory, undefined, { iphoneApps: phone.controller.owner });
       await client.catalog.upsertAndSelect(connectComputer(1));
       if (session === "expired")
-        await client.sessions.save({ ...personalSession(), expiresAt: "2020-01-01T00:00:00.000Z" });
+        await client.sessions.save({
+          ...personalSession(),
+          expiresAt: "2020-01-01T00:00:00.000Z",
+          absoluteExpiresAt: "2020-01-01T00:00:00.000Z",
+        });
       const establish = vi
         .spyOn(client.sessionExchange, "establish")
         .mockResolvedValue(sessionExchangeResponse());

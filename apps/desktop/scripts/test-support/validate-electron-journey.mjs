@@ -31,6 +31,9 @@ try {
     case "cdp-boundary":
       assert.equal(local("electron.json").passed, true);
       break;
+    case "extensions":
+      assert.equal(local("extensions.json").passed, true);
+      break;
     case "passwords":
       assert.equal(local("manifest.json").passed, true);
       assert.equal(local("leak-scan.json").executed, true);

@@ -4,6 +4,8 @@ import {
   cdpCommandRefusal,
   connectionAutoAttachParameters,
   connectionCdpRefusal,
+  extensionManagementRefusal,
+  isExtensionMutationCommand,
   type BrowserRuntime,
 } from "@opensteer/browser-runtime-core";
 import type {
@@ -38,6 +40,7 @@ import {
   listBrowserStandardCdpLeases,
   releaseBrowserStandardCdpLease,
   executionAccess,
+  executionMayManageExtensions,
   selectedGrantOf,
   type RequestOriginInput,
   type TabRecord,
@@ -879,6 +882,7 @@ interface BrowserActor {
 type StandardCdpAuthority = Pick<StandardCdpFacts, "grantRevision" | "agentConnectionId"> & {
   readonly mode: import("@opensteer/core").ThreadAccessMode;
   readonly threadId: ThreadId | null;
+  readonly manageExtensions: boolean;
 };
 interface StandardCdpEntry {
   readonly claims: StandardCdpTicketClaims;
@@ -6298,11 +6302,20 @@ export class BrowserService {
           (!bindingWasEnded ? await this.#actorToken(input, record.id) : undefined);
         if (lease && !(await fillAllowed())) return expired;
         assertAttached(bindingWasEnded);
-        const admitted = await this.#admitAgentBackend(input, "cdp");
+        let canManageExtensions = false;
+        const admitted = await this.#admitAgentBackend(input, "cdp", false, undefined, (facts) => {
+          canManageExtensions = facts.manageExtensions;
+        });
         if (admitted.record.id !== record.id)
           throw new BrowserCdpConnectionEnded(
             "This Run selected another browser. Bind the exact tab with Browser Harness openPage(tabId).",
           );
+        if (
+          !connectionWork &&
+          isExtensionMutationCommand(command.method, command.parameters) &&
+          !canManageExtensions
+        )
+          throw new OpensteerError({ code: "forbidden", message: extensionManagementRefusal });
         if (input.scriptTabId) {
           if (
             this.tabOccupants(input.ownerId, record.id, input.scriptTabId).some(
@@ -6392,6 +6405,10 @@ export class BrowserService {
             ...(actorToken ? { actorToken } : {}),
             ...(nativeAttachment ? { attachmentId: nativeAttachment.attachmentId } : {}),
             ...(runtimeHoldsConnection ? { connection: true as const } : {}),
+            ...(canManageExtensions &&
+            isExtensionMutationCommand(command.method, command.parameters)
+              ? { manageExtensions: true as const }
+              : {}),
             requestId: globalThis.crypto.randomUUID(),
             type: "cdp.command",
           },
@@ -8015,6 +8032,7 @@ export class BrowserService {
         threadId: authority.execution.threadId,
         grantRevision: authority.execution.agentConnection?.grantRevision ?? null,
         agentConnectionId: authority.execution.agentConnection?.agentConnectionId ?? null,
+        manageExtensions: executionMayManageExtensions(authority.execution),
       });
       const level = executionAccess(authority.execution, "read-write");
       if (!level || level !== "read-write")
@@ -8155,6 +8173,7 @@ export class BrowserService {
         threadId: authority.execution.threadId,
         grantRevision: authority.execution.agentConnection?.grantRevision ?? null,
         agentConnectionId: authority.execution.agentConnection?.agentConnectionId ?? null,
+        manageExtensions: executionMayManageExtensions(authority.execution),
       });
       // Exactly the level asked for: the intersection can be read where a write was requested.
       const level = executionAccess(authority.execution, access);

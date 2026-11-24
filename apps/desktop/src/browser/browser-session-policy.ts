@@ -74,6 +74,9 @@ export function applyBrowserSessionPolicy(
     if (details.resourceType === "mainFrame" && details.webContentsId !== undefined)
       options.onMainFrameRequest?.(details.webContentsId, details.method);
     if (!isAllowedBrowserRequest(details.url)) callback({ cancel: true });
+    // An extension's own files are part of the browser, not the web: they
+    // never wait for the profile's cookies, and its worker starts from them.
+    else if (details.url.startsWith("chrome-extension://")) callback({ cancel: false });
     else if (requestGates.has(session))
       requestGates.get(session)!.beforeRequest(details.webContentsId, callback);
     else callback({ cancel: false });
@@ -114,13 +117,17 @@ export function applyBrowserSessionPolicy(
       });
     });
   }
-  for (const preload of session.getPreloadScripts()) {
-    session.unregisterPreloadScript(preload.id);
-  }
+  // Only this policy's own preload is replaced: the profile's extensions keep theirs.
+  for (const preload of session.getPreloadScripts())
+    if (preload.id === pagePolicyPreloadId) session.unregisterPreloadScript(preload.id);
   // The preload covers the first main-frame document, including documents
   // without response headers. Each page's debugger installs the negotiated
   // provider or absent policy in later documents and frames.
-  session.registerPreloadScript({ filePath: options.pagePolicyPreloadPath, type: "frame" });
+  session.registerPreloadScript({
+    filePath: options.pagePolicyPreloadPath,
+    id: pagePolicyPreloadId,
+    type: "frame",
+  });
   updateBrowserPasskeyPolicy(session, options.provider === true);
   options.downloads.accept(session);
 }
@@ -179,9 +186,13 @@ function isLoopbackOrigin(value: string): boolean {
   }
 }
 
+const pagePolicyPreloadId = "opensteer-page-policy";
+
 function isAllowedBrowserRequest(value: string): boolean {
   try {
-    return ["blob:", "data:", "http:", "https:", "ws:", "wss:"].includes(new URL(value).protocol);
+    return ["blob:", "chrome-extension:", "data:", "http:", "https:", "ws:", "wss:"].includes(
+      new URL(value).protocol,
+    );
   } catch {
     return false;
   }

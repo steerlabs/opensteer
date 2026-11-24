@@ -1658,6 +1658,11 @@ export const DesktopBrowserPresentationEventSchema = z.discriminatedUnion("type"
   }),
   z.strictObject({ key: DesktopForwardedKeySchema, type: z.literal("key") }),
   z.strictObject({ focused: z.boolean(), type: z.literal("window-focus") }),
+  /** The page's profile gained, lost or changed an extension: read `extensions` again. */
+  z.strictObject({
+    presentationId: DesktopBrowserPresentationIdSchema,
+    type: z.literal("extensions"),
+  }),
   /** The person picked an account in the autofill popup showing `sceneRevision`. */
   z.strictObject({
     accountId: z.uuid(),
@@ -1787,6 +1792,73 @@ export interface OpensteerAutofillPopupBridge {
 
 export const DesktopBrowserNavigationAvailableSchema = z.strictObject({ hardReload: z.boolean() });
 
+/** A Chrome extension ID: 32 letters from a to p. */
+export const BrowserExtensionIdSchema = z.string().regex(/^[a-p]{32}$/u);
+
+/** Toolbar button state for one extension on the presented page. */
+export const DesktopBrowserExtensionActionSchema = z.strictObject({
+  title: z.string().max(512),
+  badgeText: z.string().max(64),
+  badgeColor: z.string().max(64).nullable(),
+  /** Dynamic per-tab or action icon as a PNG data URL when it differs from or supplies the icon. */
+  icon: z
+    .string()
+    .startsWith("data:image/png;base64,")
+    .max(256 * 1_024)
+    .nullable(),
+  hasPopup: z.boolean(),
+});
+export type DesktopBrowserExtensionAction = z.infer<typeof DesktopBrowserExtensionActionSchema>;
+
+/** One extension of the profile a native page browses as. */
+export const DesktopBrowserExtensionSchema = z.strictObject({
+  id: BrowserExtensionIdSchema,
+  name: z.string().min(1).max(200),
+  version: z.string().max(64),
+  /** The extension's own icon as a PNG data URL, when it ships one. */
+  icon: z
+    .string()
+    .startsWith("data:image/png;base64,")
+    .max(256 * 1_024)
+    .nullable(),
+  /** Its resolved toolbar button for this page, or null when it declares no `action`. */
+  action: DesktopBrowserExtensionActionSchema.nullable(),
+  /** Its options page, which opens as an ordinary tab. */
+  optionsUrl: z.string().startsWith("chrome-extension://").max(2_048).nullable(),
+  /** Loaded from a folder on this computer, not installed from the Chrome Web Store. */
+  unpacked: z.boolean(),
+});
+export type DesktopBrowserExtension = z.infer<typeof DesktopBrowserExtensionSchema>;
+
+export const DesktopBrowserExtensionsSchema = z.strictObject({
+  extensions: z.array(DesktopBrowserExtensionSchema).max(256),
+});
+export type DesktopBrowserExtensions = z.infer<typeof DesktopBrowserExtensionsSchema>;
+
+export const DesktopBrowserExtensionActivationSchema = z.strictObject({
+  presentationId: DesktopBrowserPresentationIdSchema,
+  revision: DesktopBrowserPresentationRevisionSchema,
+  extensionId: BrowserExtensionIdSchema,
+  eventType: z.enum(["click", "contextmenu"]),
+  /** Button box in window DIPs, used to anchor the extension popup or menu. */
+  anchorRect: z.strictObject({
+    x: z.number().finite(),
+    y: z.number().finite(),
+    width: z.number().finite().nonnegative(),
+    height: z.number().finite().nonnegative(),
+  }),
+});
+export type DesktopBrowserExtensionActivation = z.infer<
+  typeof DesktopBrowserExtensionActivationSchema
+>;
+
+export const DesktopBrowserExtensionRemovalSchema = z.strictObject({
+  extensionId: BrowserExtensionIdSchema,
+  presentationId: DesktopBrowserPresentationIdSchema,
+  revision: DesktopBrowserPresentationRevisionSchema,
+});
+export type DesktopBrowserExtensionRemoval = z.infer<typeof DesktopBrowserExtensionRemovalSchema>;
+
 /** Desktop page commands and native presentation of this process's own Runtime pages. */
 export interface DesktopBrowserPresentationBridge {
   /** The selected page's negotiated commands, for this window's menu. */
@@ -1819,6 +1891,18 @@ export interface DesktopBrowserPresentationBridge {
   setAutofill(input: DesktopBrowserAutofillInput): void;
   /** Gives the page the keyboard (Shift-F6, leaving find or the address); only for the current revision in the active window. */
   focusPage(input: DesktopBrowserPresentationTarget): Promise<void>;
+  /**
+   * The extensions of the page's profile (with their resolved toolbar actions
+   * for this page), or null where it has none: Guest keeps no extensions. An
+   * `extensions` event says to read them again.
+   */
+  extensions?(input: DesktopBrowserPresentationTarget): Promise<DesktopBrowserExtensions | null>;
+  /** Clicks or right-clicks an extension's toolbar action on this page, anchored to `anchorRect`. */
+  activateExtension?(input: DesktopBrowserExtensionActivation): Promise<void>;
+  /** Asks the person, in this window, to remove an extension of the page's profile. */
+  removeExtension?(input: DesktopBrowserExtensionRemoval): Promise<void>;
+  /** Opens the Chrome Web Store in an isolated, extension-free window bound to this profile. */
+  openExtensionStore?(input: DesktopBrowserPresentationTarget): Promise<void>;
 }
 
 /**

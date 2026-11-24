@@ -8,7 +8,13 @@ import {
   type CommandType,
 } from "@opensteer/protocol/command-table";
 import expected from "../../protocol/src/command-table.rows.json" with { type: "json" };
-import { commandRule, type CommandAnswer, type CommandRuleCaller } from "./resource-access.js";
+import {
+  commandRule,
+  executionMayManageExtensions,
+  type CommandAnswer,
+  type CommandRuleCaller,
+  type ExecutionAuthority,
+} from "./resource-access.js";
 
 type Column = "a" | "b" | "c" | "d";
 interface ExpectedRow {
@@ -394,5 +400,39 @@ describe("a command whose effect a store cannot admit, for an agent (AD3)", () =
           answer("viewer.name.update", 0, callers[column](mode)),
           `${column} ${mode}`,
         ).not.toBe("now");
+  });
+});
+
+describe("executionMayManageExtensions (Rule 1 / 2b)", () => {
+  const baseExecution = (
+    overrides: Partial<Pick<ExecutionAuthority, "actor" | "agentConnection" | "mode">> = {},
+  ): Pick<ExecutionAuthority, "actor" | "agentConnection" | "mode"> => ({
+    actor: "native",
+    mode: "full-access",
+    agentConnection: null,
+    ...overrides,
+  });
+
+  it("allows only a native Full access execution with personal context on the person's own lineage", () => {
+    expect(executionMayManageExtensions(baseExecution())).toBe(true);
+    for (const mode of belowFullAccess) {
+      expect(executionMayManageExtensions(baseExecution({ mode })), mode).toBe(false);
+    }
+    expect(executionMayManageExtensions(baseExecution({ actor: "agent" }))).toBe(false);
+    expect(executionMayManageExtensions(baseExecution({ actor: "person" }))).toBe(false);
+    expect(
+      executionMayManageExtensions(
+        baseExecution({
+          agentConnection: {
+            agentConnectionId: "acn_00000000-0000-0000-0000-000000000001" as never,
+            grant: { scope: "everything" },
+            grantRevision: 1,
+            consentVersion: 1,
+            accessMode: "full-access",
+            bridgeSenders: null,
+          },
+        }),
+      ),
+    ).toBe(false);
   });
 });

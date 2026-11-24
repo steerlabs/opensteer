@@ -95,6 +95,22 @@ export function lineageAllowsPersonalContext(
 }
 
 /**
+ * Whether an admitted execution may persist or remove profile Chrome extensions via CDP
+ * (`Extensions.loadUnpacked`, `Extensions.uninstall`): Full access with personal context on the
+ * person's own lineage, the same standing under which the door runs a command at once.
+ */
+export function executionMayManageExtensions(
+  execution: Pick<ExecutionAuthority, "actor" | "agentConnection" | "mode">,
+): boolean {
+  return (
+    execution.actor === "native" &&
+    execution.agentConnection === null &&
+    execution.mode === "full-access" &&
+    lineageAllowsPersonalContext(execution.agentConnection)
+  );
+}
+
+/**
  * Whether work in this lineage may use the person's personal context, from its connection's own
  * row. The person's own work reads nothing: it has no connection, and always has it.
  */
@@ -1094,6 +1110,14 @@ export async function admitCommand(
       ? await admit(database)
       : await withDatabaseTransaction(database, admit);
   const connection = execution.agentConnection;
+  // Connected agents (and Runs in a connected agent's lineage) never open extension pages as tabs.
+  if (
+    connection &&
+    input.command.type === "tab.open" &&
+    input.command.target.kind === "page" &&
+    input.command.target.url.trim().toLowerCase().startsWith("chrome-extension:")
+  )
+    throw forbidden("Use about:blank or an HTTP(S) URL without credentials.");
   // The same holding rule the listing reads, where it is admitted (and readmitted at the effect).
   if (connection && !lineageAllowsPersonalContext(connection) && anyoneChatHoldsNo(row))
     return { answer: "not_found", face: undefined, execution };

@@ -925,6 +925,158 @@ describe("LocalRunnerService", () => {
     },
   );
 
+  it("asks for sign-in, not another confirmation, when the session still fails after the Runner confirmed membership", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://confirm-loop.opensteer.test");
+    const running = fixture(config, targets);
+    const start = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await start;
+    const runnerId = readTestIdentity(child.dataDirectory)!.runnerId;
+    await running.service.bindDeviceSession(target.deploymentId);
+    try {
+      const ending = running.service.sessionLost(target.deploymentId);
+      await eventually(() => hasStopMessage(child));
+      child.emit("exit", 0);
+      await ending;
+      await eventually(() => running.children.length === 2);
+      connect(childAt(running.children, 1));
+      await eventually(
+        async () => (await running.service.status(target.deploymentId)).runner.state === "running",
+      );
+      await expect(
+        running.service.assertSessionAllowed(target.deploymentId),
+      ).resolves.toBeUndefined();
+
+      // The reopened Deployment still has no working session, reported at once
+      // by more than one HostSession and by both the ended and unauthorized arms.
+      await Promise.all([
+        running.service.sessionLost(target.deploymentId),
+        running.service.sessionLost(target.deploymentId),
+        running.service.sessionLost(target.deploymentId),
+      ]);
+      await running.service.sessionLost(target.deploymentId);
+      expect((await running.service.status(target.deploymentId)).membership).toMatchObject({
+        state: "active",
+        runnerId,
+        sessionState: "sign-in-again",
+      });
+      await expect(running.service.assertSessionAllowed(target.deploymentId)).rejects.toThrow(
+        "Sign in again",
+      );
+      // No further confirmation Runner was started, and the identity was kept.
+      expect(running.children).toHaveLength(2);
+      expect(hasStopMessage(childAt(running.children, 1))).toBe(false);
+
+      const resumed = await running.service.setUpDevice({
+        deploymentId: target.deploymentId,
+        runnerName: "Same Mac",
+        runAgents: false,
+      });
+      expect(resumed.membership).toMatchObject({ runnerId, sessionState: "ready" });
+    } finally {
+      const stopped = running.service.shutdown();
+      running.children.forEach((child) => child.kill());
+      await stopped;
+      running.service.dispose();
+    }
+  });
+
+  it("confirms membership again for a later session loss once a session was bound, even after the Runner reconnects", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://confirm-reconnect.opensteer.test");
+    const running = fixture(config, targets);
+    const start = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await start;
+    await running.service.bindDeviceSession(target.deploymentId);
+    try {
+      const ending = running.service.sessionLost(target.deploymentId);
+      await eventually(() => hasStopMessage(child));
+      child.emit("exit", 0);
+      await ending;
+      await eventually(() => running.children.length === 2);
+      const confirming = childAt(running.children, 1);
+      connect(confirming);
+      await eventually(
+        async () => (await running.service.status(target.deploymentId)).runner.state === "running",
+      );
+      // A working session is proved, then the same worker reconnects.
+      await running.service.bindDeviceSession(target.deploymentId);
+      confirming.emit("message", { type: "runner.worker.reconnecting" });
+      await eventually(
+        async () => (await running.service.status(target.deploymentId)).runner.state === "starting",
+      );
+      connect(confirming);
+      // Running again only once the reconnect's connected handler has finished.
+      await eventually(
+        async () => (await running.service.status(target.deploymentId)).runner.state === "running",
+      );
+      const later = running.service.sessionLost(target.deploymentId);
+      await eventually(() => hasStopMessage(confirming));
+      confirming.emit("exit", 0);
+      await later;
+      expect((await running.service.status(target.deploymentId)).membership).toMatchObject({
+        state: "active",
+        sessionState: "confirming",
+      });
+    } finally {
+      const stopped = running.service.shutdown();
+      running.children.forEach((child) => child.kill());
+      await stopped;
+      running.service.dispose();
+    }
+  });
+
+  it("connects again from a removed membership an earlier build left confirming", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://removed-confirming.opensteer.test");
+    const running = fixture(config, targets);
+    const input = {
+      deploymentId: target.deploymentId,
+      runnerName: "Prepared Mac",
+      runAgents: false,
+    };
+    try {
+      await running.service.prepareDeviceSetup(input);
+      await running.service.markRemoved(target.deploymentId);
+      const file = path.join(directory, "runner", "desktop-runner.json");
+      const raw = JSON.parse(await readFile(file, "utf8")) as {
+        runners: Record<string, Record<string, unknown>>;
+      };
+      raw.runners[target.deploymentId] = {
+        ...raw.runners[target.deploymentId],
+        confirmingSession: true,
+        needsSignIn: true,
+      };
+      await writeFile(file, `${JSON.stringify(raw)}\n`, { mode: 0o600 });
+      expect((await running.service.status(target.deploymentId)).membership).toMatchObject({
+        state: "removed",
+        sessionState: "ready",
+      });
+      const resumed = await running.service.setUpDevice(input);
+      expect(resumed.membership?.state).toBe("active");
+      expect((await readMemberships(file)).runners[target.deploymentId]).toMatchObject({
+        state: "active",
+        confirmingSession: false,
+        needsSignIn: false,
+      });
+    } finally {
+      await running.service.shutdown();
+      running.service.dispose();
+    }
+  });
+
   it("records at startup a session the Host already bound, without a window and without binding again", async () => {
     const directory = await temporaryDirectory();
     const config = await configuration(directory);

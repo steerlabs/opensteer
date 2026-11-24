@@ -3565,6 +3565,7 @@ export class BrowserController {
       ...(message.replyBudget ? { replyBudget: message.replyBudget } : {}),
       ...(message.scriptAttachmentId ? { scriptAttachmentId: message.scriptAttachmentId } : {}),
       ...(message.connection ? { connection: true as const } : {}),
+      ...(message.manageExtensions ? { manageExtensions: true as const } : {}),
       ...(requested.parameters === undefined ? {} : { parameters: requested.parameters }),
       ...(requested.sessionId === undefined ? {} : { sessionId: requested.sessionId }),
     };

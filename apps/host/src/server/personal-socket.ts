@@ -16,6 +16,8 @@ import type { PersonalResources } from "./personal-resources.js";
 import { installWebSocketLiveness, scheduleWebSocketExpiration } from "./websocket-liveness.js";
 
 const authorityCloseCode = 4003;
+/** How long before the handshake deadline the session is checked again. */
+const sessionRecheckLeadMilliseconds = 60_000;
 const socketBudget = personalSocketBudget;
 const attachVersion = z.object({
   type: z.literal("client.attach"),
@@ -32,6 +34,12 @@ export function attachPersonalSocket(options: {
   refreshOwner: () => void;
   probeMachines: () => void;
   liveText?: import("../runtime/personal-live-text.js").PersonalLiveText;
+  /**
+   * Authenticates the upgrade's credential again, or answers null. Use renews a
+   * session's idle deadline after this socket opened, so the deadline taken at
+   * the handshake is checked before it is enforced.
+   */
+  reauthenticate?: () => Promise<AuthenticatedHostSession["session"] | null>;
 }) {
   const {
     socket,
@@ -40,7 +48,9 @@ export function attachPersonalSocket(options: {
     reads,
     resources,
   } = options;
-  const expires = Math.min(Date.parse(session.expiresAt), Date.parse(session.absoluteExpiresAt));
+  const deadline = (current: AuthenticatedHostSession["session"]) =>
+    Math.min(Date.parse(current.expiresAt), Date.parse(current.absoluteExpiresAt));
+  let expires = deadline(session);
   installWebSocketLiveness(socket);
   let attached = false;
   const send = async (
@@ -121,11 +131,36 @@ export function attachPersonalSocket(options: {
     sink,
     sync,
   });
-  const cancelExpiry = scheduleWebSocketExpiration(expires, () =>
-    realtime.closeSession(session.id),
-  );
+  let closed = false;
+  let cancelDeadline = () => {};
+  let cancelRecheck = () => {};
+  // The deadline always runs on its own timer, so a check that stalls can
+  // never keep an expired socket registered. Only a confirmed later deadline
+  // replaces it.
+  const armExpiry = () => {
+    cancelDeadline();
+    cancelRecheck();
+    const at = expires;
+    cancelDeadline = scheduleWebSocketExpiration(at, () => realtime.closeSession(session.id));
+    const reauthenticate = options.reauthenticate;
+    if (!reauthenticate) return;
+    cancelRecheck = scheduleWebSocketExpiration(at - sessionRecheckLeadMilliseconds, () => {
+      void reauthenticate()
+        .catch(() => null)
+        .then((renewed) => {
+          if (closed || expires !== at || renewed?.id !== session.id) return;
+          const next = deadline(renewed);
+          if (next <= at) return;
+          expires = next;
+          armExpiry();
+        });
+    });
+  };
+  armExpiry();
   const close = () => {
-    cancelExpiry();
+    closed = true;
+    cancelDeadline();
+    cancelRecheck();
     unregister();
     sync.close("Personal socket closed");
   };

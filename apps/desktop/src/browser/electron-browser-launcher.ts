@@ -88,6 +88,11 @@ import {
   type ElectronLocalProfile,
   type ElectronLocalProfileDiagnostic,
 } from "./electron-local-profile.js";
+import {
+  extensionPreloadPaths,
+  isExtensionId,
+  type ProfileExtensions,
+} from "./profile-extensions.js";
 
 import type { BrowserPagePolicyConfig } from "@opensteer/browser-runtime-core/page-policy";
 import {
@@ -274,6 +279,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       const profile = acquireElectronLocalProfile({
         ...request.storage,
         root: this.#localProfileRoot,
+        extensionPreloads: extensionPreloadPaths(this.#pagePolicyPreloadPath),
         ...(this.#onLocalProfileDiagnostic ? { onDiagnostic: this.#onLocalProfileDiagnostic } : {}),
         configure: (session, gate) =>
           this.#configureSession(
@@ -833,6 +839,11 @@ class ElectronBrowserContext implements BrowserContext {
     return [...this.#pages].filter((page) => !page.isClosed());
   }
 
+  /** The saved profile's Chrome extensions; Guest has none. */
+  get extensions(): ProfileExtensions | null {
+    return this.#localProfile?.extensions ?? null;
+  }
+
   async createPage(options?: {
     readonly restore?: unknown;
     readonly own?: (page: BrowserPage) => void;
@@ -976,6 +987,7 @@ class ElectronBrowserContext implements BrowserContext {
     options: ElectronBrowserViewOptions,
     timing?: PageOpenTiming,
     startRenderer = false,
+    handOffOpener: ElectronBrowserPage | null = opener,
   ): ElectronBrowserPage {
     this.#assertOpen();
     const page = new ElectronBrowserPage(
@@ -1007,8 +1019,22 @@ class ElectronBrowserContext implements BrowserContext {
       },
     );
     this.#pages.add(page);
-    for (const listener of this.#handOffs) listener(page, opener);
+    for (const listener of this.#handOffs) listener(page, handOffOpener);
+    const extensions = this.#localProfile?.extensions;
+    const contents = page.view.webContents;
+    const removeTab = extensions?.addTab({
+      contents,
+      open: (url, active) =>
+        this.#openExtensionPage(page, { url, background: !active }).view.webContents,
+      close: () => void page.close().catch(() => undefined),
+      presentedWindow: () => page.presentedWindow(),
+    });
+    const removePresented = extensions
+      ? page.onPresented(() => extensions.selectTab(contents))
+      : undefined;
     page.onClose(() => {
+      removeTab?.();
+      removePresented?.();
       this.#pages.delete(page);
       void page
         .targetId()
@@ -1028,6 +1054,36 @@ class ElectronBrowserContext implements BrowserContext {
       return popup.view.webContents;
     });
     return page;
+  }
+
+  /**
+   * Opens a tab for a Chrome extension (`chrome.tabs.create`, Web Store external link) with NO
+   * opener (`opener = null`), so it is always the person's tab and never joins a connected agent's
+   * lineage even when a connected agent's page was active. `sessionAnchor` only attributes the
+   * page to this profile's session handoff.
+   */
+  #openExtensionPage(
+    sessionAnchor: ElectronBrowserPage,
+    options: {
+      readonly url: string;
+      readonly background: boolean;
+    },
+  ): ElectronBrowserPage {
+    const child = this.#newPage(
+      null,
+      { webPreferences: this.#securePreferences() },
+      undefined,
+      false,
+      sessionAnchor,
+    );
+    child.openedInBackground = options.background;
+    if (options.url && options.url !== "about:blank") {
+      void child.loadInitialUrl(options.url).catch(() => child.close());
+    }
+    setImmediate(() => {
+      void this.#announcePage(child).catch(() => child.close());
+    });
+    return child;
   }
 
   #openChildPage(
@@ -1216,6 +1272,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   readonly #hub: ElectronDebuggerHub;
   readonly #opener: ElectronBrowserPage | null;
   openedInBackground = false;
+  readonly #presentedListeners = new Set<() => void>();
   readonly #cdpPromise: Promise<CdpSession>;
   #dialog: unknown = null;
   #targetIdPromise: Promise<string> | null = null;
@@ -1863,6 +1920,18 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     return () => this.#humanInput.delete(listener);
   }
 
+  /** The app window showing this page now, if any. */
+  presentedWindow(): BaseWindow | null {
+    const window = this.#mount?.window;
+    return window && !window.isDestroyed() ? window : null;
+  }
+
+  /** Calls `listener` whenever this page is shown in, or its window takes, focus. */
+  onPresented(listener: () => void): () => void {
+    this.#presentedListeners.add(listener);
+    return () => this.#presentedListeners.delete(listener);
+  }
+
   mount(
     window: BaseWindow,
     stage: WindowRect,
@@ -1872,8 +1941,13 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       throw new Error("The browser presentation is closed.");
     this.#invalidateCursor();
     const displayChanged = () => this.displayChanged();
+    // The page in front of the person: the focused window's page.
+    const presented = () => {
+      for (const listener of this.#presentedListeners) listener();
+    };
     window.on("resize", displayChanged);
     window.on("move", displayChanged);
+    window.on("focus", presented);
     // The view stays in its resting host until placement moves it here: it
     // keeps resting bounds until then, and placement can wait on agent work.
     this.#parked = false;
@@ -1886,11 +1960,13 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       dispose: () => {
         window.off("resize", displayChanged);
         window.off("move", displayChanged);
+        window.off("focus", presented);
       },
     };
     this.#invalidateAppliedSurface();
     void this.#reconcile().catch(() => undefined);
     this.#syncRenderingDemand();
+    if (window.isFocused()) presented();
   }
 
   setStage(stage: WindowRect, personFollows = true): void {
@@ -4403,6 +4479,7 @@ class ElectronCdpChannel implements CdpSession, CdpChannel {
 
 class ElectronBrowserCdpBackend implements BrowserCdpBackend {
   readonly protectProductWorlds = true;
+  readonly extensions = true;
   readonly #context: ElectronBrowserContext;
   readonly #listeners = new Set<(method: string, parameters: CdpParameters) => void>();
   readonly #removeTargetListener: () => void;
@@ -4508,6 +4585,7 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
     }
     if (method === "Target.activateTarget")
       throw new Error("Target.activateTarget is unavailable at Electron browser scope.");
+    if (method.startsWith("Extensions.")) return this.#extensions(method, parameters);
     this.assertScope(method, parameters);
     const routed = await this.scopeParameters(method, parameters);
     const page = this.#context.pages()[0] as ElectronBrowserPage | undefined;
@@ -4542,6 +4620,43 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
     this.#listeners.clear();
   }
 
+  /** Chrome's CDP Extensions domain, over the profile's own extensions. */
+  async #extensions(method: string, parameters: CdpParameters): Promise<unknown> {
+    const extensions = this.#context.extensions;
+    if (!extensions) throw new Error("Extensions need a saved browser profile; Guest keeps none.");
+    switch (method) {
+      case "Extensions.loadUnpacked": {
+        if (typeof parameters.path !== "string")
+          throw new Error("Extensions.loadUnpacked requires path.");
+        return { id: await extensions.loadUnpacked(parameters.path) };
+      }
+      case "Extensions.uninstall": {
+        if (!isExtensionId(parameters.id)) throw new Error("Extensions.uninstall requires id.");
+        await extensions.uninstall(parameters.id);
+        return {};
+      }
+      case "Extensions.getExtensions":
+        await extensions.ready();
+        return { extensions: extensions.describe() };
+      case "Extensions.triggerAction": {
+        if (!isExtensionId(parameters.id)) throw new Error("Extensions.triggerAction requires id.");
+        let targetContents: WebContents | undefined;
+        if (parameters.targetId !== undefined) {
+          if (typeof parameters.targetId !== "string" || !parameters.targetId) {
+            throw new Error("Extensions.triggerAction targetId must be a non-empty string.");
+          }
+          const targetPage = await this.#context.pageByTargetId(parameters.targetId);
+          if (!targetPage) throw new Error("CDP target does not exist in this Profile Host.");
+          targetContents = targetPage.view.webContents;
+        }
+        await extensions.triggerAction(parameters.id, targetContents);
+        return {};
+      }
+      default:
+        throw new Error(`${method} is not available in Opensteer's browser.`);
+    }
+  }
+
   #assertOpen(): void {
     if (this.#closed) throw new Error("Electron browser CDP backend is closed.");
   }
@@ -4551,7 +4666,13 @@ function isAllowedBrowserNavigation(value: string, popup = false): boolean {
   if (value === "about:blank") return true;
   try {
     const protocol = new URL(value).protocol;
-    return protocol === "http:" || protocol === "https:" || (popup && protocol === "blob:");
+    // Chromium itself keeps web pages from extension pages they may not reach.
+    return (
+      protocol === "http:" ||
+      protocol === "https:" ||
+      protocol === "chrome-extension:" ||
+      (popup && protocol === "blob:")
+    );
   } catch {
     return false;
   }

@@ -575,3 +575,55 @@ it("treats a connection's auto-attach on an alias of the browser root as the roo
     },
   });
 });
+
+it("refuses chrome-extension: navigation for a connection before it reaches the browser (2a)", async () => {
+  const f = await fixture();
+  const socket = await f.connect(
+    f.tickets.issue({ ...claims, facts: { ...claims.facts, agentConnectionId: "external" } }),
+  );
+  const replies: Record<string, unknown>[] = [];
+  socket.on("message", (data) => replies.push(JSON.parse(String(data)) as Record<string, unknown>));
+  const extUrl = "chrome-extension://abcdefghijklmnopabcdefghijklmnop/popup.html";
+  socket.send(
+    JSON.stringify({ id: 1, method: "Page.navigate", params: { url: extUrl }, sessionId: "page" }),
+  );
+  socket.send(JSON.stringify({ id: 2, method: "Target.createTarget", params: { url: extUrl } }));
+  socket.send(
+    JSON.stringify({
+      id: 3,
+      method: "Target.sendMessageToTarget",
+      params: {
+        sessionId: "child",
+        message: JSON.stringify({ id: 9, method: "Page.navigate", params: { url: extUrl } }),
+      },
+      sessionId: "page",
+    }),
+  );
+  await vi.waitFor(() => expect(replies).toHaveLength(3));
+  expect(replies).toEqual([
+    {
+      id: 1,
+      sessionId: "page",
+      error: {
+        code: -32000,
+        message: "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
+      },
+    },
+    {
+      id: 2,
+      error: {
+        code: -32000,
+        message: "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
+      },
+    },
+    {
+      id: 3,
+      sessionId: "page",
+      error: {
+        code: -32000,
+        message: "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
+      },
+    },
+  ]);
+  expect(f.send).not.toHaveBeenCalled();
+});

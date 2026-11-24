@@ -10505,6 +10505,130 @@ describe("work under a connection's authority never uses the clipboard or change
     cdpFirst.close();
   });
 
+  it("gates Extensions.loadUnpacked and Extensions.uninstall on Rule 1 Full access standing (2b)", async () => {
+    const ownerId = createId("user");
+    const runId = createId("run");
+    const threadId = createId("thread");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Extensions Profile" });
+    const runBinding = { agentBindingId: `run:${runId}`, ownerId };
+
+    let standing: {
+      actor: "native" | "agent";
+      mode: "full-access" | "auto" | "approval-required";
+      agentConnection: {
+        agentConnectionId: string;
+        grant: { scope: "everything" };
+        grantRevision: number;
+        consentVersion: number;
+        accessMode: "full-access";
+        bridgeSenders: null;
+      } | null;
+    } = { actor: "native", mode: "full-access", agentConnection: null };
+
+    repository.resolveResourceAccess = async () => ({
+      access: "read-write",
+      runAccess: "read-write",
+      grantAccess: "read-write",
+      execution: {
+        ownerUserId: ownerId,
+        subject: { kind: "binding", bindingId: runBinding.agentBindingId },
+        actor: standing.actor,
+        threadId,
+        runId,
+        agentConnection: standing.agentConnection,
+        taskMode: standing.mode,
+        runMode: standing.mode,
+        mode: standing.mode,
+      },
+    });
+
+    const opened = await service.openAgentSession({ ...runBinding, profileId: profile.id });
+    const cdp = await service.attachCdpForAgent(
+      { ...runBinding, sessionId: opened.session.id },
+      () => undefined,
+    );
+
+    // Full access native Run on person's own lineage: carries manageExtensions: true for mutations.
+    const loadReq = cdp.request({
+      method: "Extensions.loadUnpacked",
+      parameters: { path: "/tmp/ext" },
+    });
+    const loadForward = await runtime.nextCommand();
+    expect(loadForward).toMatchObject({
+      type: "cdp.command",
+      manageExtensions: true,
+      command: { method: "Extensions.loadUnpacked", parameters: { path: "/tmp/ext" } },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: loadForward.requestId,
+      result: { id: "a".repeat(32) },
+    });
+    expect(await loadReq).toEqual({ id: "a".repeat(32) });
+
+    // Non-mutating Extensions.getExtensions does NOT set manageExtensions.
+    const listReq = cdp.request({ method: "Extensions.getExtensions" });
+    const listForward = await runtime.nextCommand();
+    expect(listForward).toMatchObject({
+      type: "cdp.command",
+      command: { method: "Extensions.getExtensions" },
+    });
+    expect("manageExtensions" in listForward && listForward.manageExtensions).toBeFalsy();
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: listForward.requestId,
+      result: { extensions: [] },
+    });
+    expect(await listReq).toEqual({ extensions: [] });
+
+    // Auto mode Run: refused at Host before reaching the runtime.
+    standing = { actor: "native", mode: "auto", agentConnection: null };
+    await expect(
+      cdp.request({ method: "Extensions.loadUnpacked", parameters: { path: "/tmp/ext" } }),
+    ).rejects.toThrow(/Full access/u);
+    await expect(
+      cdp.request({ method: "Extensions.uninstall", parameters: { id: "a".repeat(32) } }),
+    ).rejects.toThrow(/Full access/u);
+
+    // Run under a connected agent's lineage (even at full-access): refused with Rule 5 neutral message.
+    const connectedRunId = createId("run");
+    const connectedBinding = { agentBindingId: `run:${connectedRunId}`, ownerId };
+    standing = {
+      actor: "agent",
+      mode: "full-access",
+      agentConnection: {
+        agentConnectionId: `acn_${randomUUID()}`,
+        grant: { scope: "everything" },
+        grantRevision: 1,
+        consentVersion: 1,
+        accessMode: "full-access",
+        bridgeSenders: null,
+      },
+    };
+    const connectedOpened = await service.openAgentSession({
+      ...connectedBinding,
+      profileId: profile.id,
+    });
+    const connectedCdp = await service.attachCdpForAgent(
+      { ...connectedBinding, sessionId: connectedOpened.session.id },
+      () => undefined,
+    );
+    await expect(
+      connectedCdp.request({ method: "Extensions.loadUnpacked", parameters: { path: "/tmp/ext" } }),
+    ).rejects.toThrow(/Extensions\.loadUnpacked is not available to a connected agent/u);
+    await expect(connectedCdp.request({ method: "Extensions.getExtensions" })).rejects.toThrow(
+      /Extensions\.getExtensions is not available to a connected agent/u,
+    );
+
+    connectedCdp.close();
+    cdp.close();
+  });
+
   it("never deadlocks when attachCdpForAgent or agent start races #holdForAgent on the same profile (PH1)", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");

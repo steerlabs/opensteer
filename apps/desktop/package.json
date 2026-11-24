@@ -53,6 +53,8 @@
     "test:native-browser-journey": "node .electron-smoke/native-browser-journey.js",
     "build:native-browser-journey": "tsup --config scripts/tsup.electron-native-browser.config.ts",
     "test:electron-cdp-boundary:run": "electron .electron-smoke/electron-cdp-boundary-smoke.js",
+    "test:electron-extensions": "tsup --config scripts/tsup.electron-smoke.config.ts && electron .electron-smoke/electron-extensions-smoke.js",
+    "test:electron-extensions:run": "electron .electron-smoke/electron-extensions-smoke.js",
     "test:electron-passwords:run": "electron .electron-smoke/electron-passwords-smoke.js",
     "test:electron-attachments:run": "electron .electron-smoke/electron-attachment-smoke.js",
     "test:electron-profile-restore:run": "electron .electron-smoke/electron-profile-restore-smoke.js",

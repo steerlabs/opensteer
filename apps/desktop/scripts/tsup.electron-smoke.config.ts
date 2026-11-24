@@ -21,6 +21,7 @@ export const smokeConfig = {
     "scripts/electron-browser-passkey-smoke.ts",
     "scripts/electron-browser-smoke.ts",
     "scripts/electron-cdp-boundary-smoke.ts",
+    "scripts/electron-extensions-smoke.ts",
     "scripts/electron-computer-use-smoke.ts",
     "scripts/electron-display-smoke.ts",
     "scripts/electron-passwords-smoke.ts",
@@ -68,6 +69,8 @@ export const smokeConfig = {
       esbuildPlugins: [signingBuildPlugin()],
       entry: {
         "browser-page-preload": "src/browser/browser-page-preload.ts",
+        "chrome-extension-api-preload": "src/browser/extensions/chrome-extension-api-preload.ts",
+        "chrome-web-store-preload": "src/browser/extensions/chrome-web-store-preload.ts",
         // The desktop's own panel preload, for the passwords smoke's toolbars.
         "desktop-preload": "src/preload.ts",
       },
