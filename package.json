@@ -78,7 +78,7 @@
     "typescript": "7.0.2",
     "typescript-5": "npm:typescript@5.9.3",
     "vite": "catalog:",
-    "vitest": "4.1.10",
+    "vitest": "4.1.11",
     "ws": "catalog:",
     "yaml": "catalog:",
     "zod": "catalog:",
