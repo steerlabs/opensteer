@@ -13,6 +13,7 @@ import {
   dropDeviceAccessCountMigrationName,
   inlineTranscriptMessagesMigrationName,
   stoppedRunsNotNewsMigrationName,
+  taskOpenIndexesMigrationName,
   threadDoneByMigrationName,
   runProviderRetryMigrationName,
   taskApprovalReceiptsMigrationName,
@@ -65,6 +66,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     stoppedRunsNotNewsMigrationName,
     threadDoneByMigrationName,
     runProviderRetryMigrationName,
+    taskOpenIndexesMigrationName,
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

@@ -175,6 +175,82 @@ describeStore("Personal readers", (it) => {
         ).toEqual({ icons: [{ iconRef: page.icons[0]!.iconRef, favicon }] });
       });
   });
+  it("lists both parent and child assignments newest-first with exact counts across pages", async ({
+    storeFixture,
+  }) => {
+    const { store, startRunFixture } = storeFixture;
+    const root = await startRunFixture("assignment-root");
+    const middle = await store.delegateThread({
+      accessMode: "full-access",
+      createdBy: root.userId,
+      environmentId: root.environmentId,
+      harnessInstanceId: root.harnessInstance.id,
+      idempotencyKey: "assignment-middle",
+      modelSelection: root.thread.modelSelection,
+      origin: { kind: "run", parentRunId: root.run.id, parentThreadId: root.thread.id },
+      task: [{ type: "text", text: "Middle task" }],
+      title: "Middle",
+    });
+    await storeFixture.database
+      .updateTable("runs")
+      .set({ status: "running" })
+      .where("id", "=", middle.run.id)
+      .execute();
+    const childOne = await store.delegateThread({
+      accessMode: "full-access",
+      createdBy: root.userId,
+      environmentId: root.environmentId,
+      harnessInstanceId: root.harnessInstance.id,
+      idempotencyKey: "assignment-child-1",
+      modelSelection: root.thread.modelSelection,
+      origin: { kind: "run", parentRunId: middle.run.id, parentThreadId: middle.thread.id },
+      task: [{ type: "text", text: "Child 1" }],
+      title: "Child 1",
+    });
+    const childTwo = await store.delegateThread({
+      accessMode: "full-access",
+      createdBy: root.userId,
+      environmentId: root.environmentId,
+      harnessInstanceId: root.harnessInstance.id,
+      idempotencyKey: "assignment-child-2",
+      modelSelection: root.thread.modelSelection,
+      origin: { kind: "run", parentRunId: middle.run.id, parentThreadId: middle.thread.id },
+      task: [{ type: "text", text: "Child 2" }],
+      title: "Child 2",
+    });
+    const all = await store.listThreadAssignmentsForOwner({
+      ownerId: root.userId,
+      threadId: middle.thread.id,
+      maxItems: 10,
+    });
+    expect(all?.window.hasMore).toBe(false);
+    expect(all?.window.totalItems).toBe(3);
+    expect(all?.assignments.map(({ id }) => id)).toEqual([
+      childTwo.assignment.id,
+      childOne.assignment.id,
+      middle.assignment.id,
+    ]);
+    const page1 = await store.listThreadAssignmentsForOwner({
+      ownerId: root.userId,
+      threadId: middle.thread.id,
+      maxItems: 2,
+    });
+    expect(page1?.window.hasMore).toBe(true);
+    expect(page1?.window.totalItems).toBe(3);
+    expect(page1?.assignments.map(({ id }) => id)).toEqual([
+      childTwo.assignment.id,
+      childOne.assignment.id,
+    ]);
+    const page2 = await store.listThreadAssignmentsForOwner({
+      ownerId: root.userId,
+      threadId: middle.thread.id,
+      maxItems: 2,
+      before: page1!.window.nextBefore!,
+    });
+    expect(page2?.window.hasMore).toBe(false);
+    expect(page2?.window.totalItems).toBe(3);
+    expect(page2?.assignments.map(({ id }) => id)).toEqual([middle.assignment.id]);
+  });
   for (const [name, read] of Object.entries(readers)) {
     it(`reads ${name} without taking a mutation lock`, async ({ storeFixture }) => {
       const f = await storeFixture.startRunFixture("read-only");

@@ -765,6 +765,32 @@ export async function applyRunProviderRetry(database: Kysely<DatabaseSchema>) {
   await sql`alter table runs add column if not exists provider_retry jsonb`.execute(database);
 }
 
+export const taskOpenIndexesMigrationName = "0047_task_open_indexes";
+/**
+ * Indexes the task-open reads on `browser_session_uses`, `delegations`, and `runs`:
+ * - `browser_session_uses_thread_session_run` serves `getThreadBrowserUsage` by thread, session,
+ *   and run without scanning other threads or sorting `(session_id, run_id)` partitions.
+ * - `delegations_parent_thread_created` and `delegations_child_thread_created` serve
+ *   `listThreadAssignmentsForOwner` in newest-first order without scanning `delegations`.
+ * - `runs_assignment_latest` serves `assignmentSummariesInTransaction`'s `DISTINCT ON
+ *   (assignment_id) ... ORDER BY assignment_id, run_ordinal DESC` lookup without scanning
+ *   non-assigned runs.
+ * Additive: a Host from before it ignores the indexes.
+ */
+export async function applyTaskOpenIndexes(database: Kysely<DatabaseSchema>) {
+  await sql`
+    create index if not exists browser_session_uses_thread_session_run
+      on browser_session_uses(thread_id, session_id, run_id, last_used_at desc);
+    create index if not exists delegations_parent_thread_created
+      on delegations(parent_thread_id, created_at desc, id desc);
+    create index if not exists delegations_child_thread_created
+      on delegations(child_thread_id, created_at desc, id desc);
+    create index if not exists runs_assignment_latest
+      on runs(assignment_id, run_ordinal desc)
+      where assignment_id is not null;
+  `.execute(database);
+}
+
 export async function applyPersonalStateSchema(transaction: Kysely<DatabaseSchema>) {
   await sql.raw(retainedStateDdl).execute(transaction);
   await sql.raw(currentStateIndexes).execute(transaction);
