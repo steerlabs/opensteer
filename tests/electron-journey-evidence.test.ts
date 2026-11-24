@@ -57,7 +57,7 @@ it("rejects early success without result evidence and records smoke failures", (
     expect(JSON.parse(quitRows.at(-1)!).exitCode).toBe(0);
 
     // extensions validation requires extensions.json (passed, boundaryPassed, lifecyclePassed) AND
-    // every per-section result file (5 connected-agent boundary sections + extension-lifecycle).
+    // every per-section result file (6 boundary sections + extension-lifecycle).
     const extDir = path.join(out, "extensions");
     mkdirSync(extDir, { recursive: true });
     writeFileSync(path.join(out, "extensions.log"), "");
@@ -67,6 +67,7 @@ it("rejects early success without result evidence and records smoke failures", (
       "connected-agent-compromise",
       "connected-agent-probes",
       "connected-agent-dialog",
+      "extension-web-accessible",
       "extension-lifecycle",
     ];
     const writeExtArtifacts = (overrides: {
@@ -97,6 +98,8 @@ it("rejects early success without result evidence and records smoke failures", (
       [0, {}, 0],
       [0, { failingSection: "connected-agent-dialog" }, 1],
       [0, { omitSection: "connected-agent-compromise" }, 1],
+      [0, { omitSection: "extension-web-accessible" }, 1],
+      [0, { failingSection: "extension-web-accessible" }, 1],
       [0, { report: { boundaryPassed: false } }, 1],
       [0, { report: { lifecyclePassed: false } }, 1],
       [1, {}, 1],

@@ -340,12 +340,23 @@ connected agents are refused the entire `Extensions.*` domain, cannot open or na
 redirects, popups, and subresource requests to `chrome-extension:` URLs blocked or cancelled once a
 connected agent binds the page via CDP, and are isolated from extension targets and content-script
 execution worlds (with agent-chosen world names namespaced so they never match or probe extension
-worlds). Two residuals remain: main-world DOM mutations written directly into a page by an
-extension's content script remain readable from the page's default world, and a tab opened via
-`tab.open` is not marked connection-controlled until a connected agent binds it via CDP (which is
-for ever for an agent that never binds it), so before binding that page can navigate itself, load
-subframes, `window.open`, or probe any web-accessible extension page or resource just as any
-website can in Chrome (while CDP attach itself refuses any tab at a `chrome-extension:` address). The person's own actions in their own app (installing from the Web Store window or removing
+worlds). Every other page of the profile (the person's, your own agents', a tab a connected agent
+opened before it binds it) reaches an extension's pages and files as a website can in Chrome: an
+extension's own pages move among its own pages, and any other page navigates, follows a redirect,
+opens a window or an iframe, or requests a file at a `chrome-extension:` address only when that
+extension lists it as web-accessible for the page. Anything else is refused the same way as an
+address of an extension that is not installed, and the page stays where it was. Where Chrome's
+rule is not written down, Opensteer refuses: for `window.open`, about which Electron does not say
+which frame opened the window, every frame of the opener must be allowed. Opensteer's own opening
+of an extension's pages (its popup, its options page) is not a page's navigation and stays
+allowed. Two residuals remain: main-world DOM mutations written directly into
+a page by an extension's content script remain readable from the page's default world, and a tab
+opened via `tab.open` is not marked connection-controlled until a connected agent binds it via CDP
+(which is for ever for an agent that never binds it), so before binding that page can reach the
+extension pages and files that extensions list as web-accessible, just as any website can in
+Chrome. A connected agent cannot attach to a tab that ended on an extension page (CDP attach
+refuses any tab at a `chrome-extension:` address), and once it binds a page, that page reaches no
+extension address at all. The person's own actions in their own app (installing from the Web Store window or removing
 an extension from the toolbar's Extensions menu, each with a native confirmation dialog) stay on the
 desktop bridge as the person's hand in their own browser, just like installing or removing an
 extension in Chrome. The person sees every extension in the toolbar's Extensions menu (with a quiet

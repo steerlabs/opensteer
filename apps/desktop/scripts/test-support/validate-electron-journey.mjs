@@ -42,6 +42,7 @@ try {
         "connected-agent-compromise",
         "connected-agent-probes",
         "connected-agent-dialog",
+        "extension-web-accessible",
         "extension-lifecycle",
       ]) {
         const entry = local(`section-${section}.json`);

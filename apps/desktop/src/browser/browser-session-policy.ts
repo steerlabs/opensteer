@@ -1,6 +1,7 @@
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import type { Session } from "electron";
 import { browserIdentity, isExtensionUrl } from "@opensteer/browser-core";
+import { mayReachExtensionResource } from "./extensions/web-accessible.js";
 import { isLoopbackHostname } from "@opensteer/core";
 import { browserPagePermissionsPolicy } from "@opensteer/browser-runtime-core/page-policy";
 
@@ -79,11 +80,13 @@ export function applyBrowserSessionPolicy(
     if (kind === "denied") callback({ cancel: true });
     // An extension's own files are part of the browser, not the web: they
     // never wait for the profile's cookies, and its worker starts from them.
-    // Pages controlled by a connected agent cannot load or probe extension URLs (M1a, S1).
+    // Pages controlled by a connected agent cannot load or probe extension URLs (M1a, S1);
+    // any other page loads only what the extension lists as web-accessible for it.
     else if (kind === "extension") {
       const cancel =
-        details.webContentsId !== undefined &&
-        options.isConnectionWebContents?.(details.webContentsId) === true;
+        (details.webContentsId !== undefined &&
+          options.isConnectionWebContents?.(details.webContentsId) === true) ||
+        !mayRequestExtensionResource(session, details);
       callback({ cancel });
     } else if (requestGates.has(session))
       requestGates.get(session)!.beforeRequest(details.webContentsId, callback);
@@ -195,6 +198,33 @@ function isLoopbackOrigin(value: string): boolean {
 }
 
 const pagePolicyPreloadId = "opensteer-page-policy";
+
+/**
+ * Whether a page's own request for an extension resource may load (Chrome's web-accessible
+ * rule, `mayReachExtensionResource`). Navigations are decided by the page's navigation events
+ * instead: a load the browser itself starts (the address bar, an extension's popup) arrives here
+ * carrying the frame's previous origin. A request with no frame (an extension's worker, a page's
+ * worker, a frame already gone) is left to Chromium's own extension loader, which already refuses a web page's
+ * request for a resource that is not web-accessible.
+ */
+function mayRequestExtensionResource(
+  session: Session,
+  details: Electron.OnBeforeRequestListenerDetails,
+): boolean {
+  if (details.resourceType === "mainFrame" || details.resourceType === "subFrame") return true;
+  let origin: string;
+  try {
+    if (!details.frame) return true;
+    origin = details.frame.origin;
+  } catch {
+    return false;
+  }
+  return mayReachExtensionResource(
+    details.url,
+    origin,
+    (extensionId) => session.extensions.getExtension(extensionId)?.manifest as unknown,
+  );
+}
 
 /**
  * Classifies one request URL without adding a second `new URL()` parse on the hot web path:
