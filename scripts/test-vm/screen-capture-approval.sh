@@ -32,6 +32,7 @@ fi
 now_epoch=$(date -u +%s)
 iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
 now=$(iso "$now_epoch")
+settled=2100-01-01T00:00:00Z
 echo "screen capture approval: guest clock $now"
 # Its top-level keys are the programs, one a line at the first indent of plutil's listing.
 programs=$(plutil -p "$plist" | sed -n 's/^  "\(.*\)" => {$/\1/p')
@@ -44,12 +45,14 @@ while IFS= read -r program; do
     exit 1
     ;;
   esac
-  before=$(plutil -extract "$program.kScreenCapturePrivacyHintDate" raw -o - "$plist" 2>/dev/null || echo none)
-  policy=$(plutil -extract "$program.kScreenCapturePrivacyHintPolicy" raw -o - "$plist" 2>/dev/null || echo 2592000)
-  case "$policy" in '' | *[!0-9]*) policy=2592000 ;; esac
-  plutil -replace "$program.kScreenCaptureApprovalLastAlerted" -date "$now" "$plist"
-  plutil -replace "$program.kScreenCapturePrivacyHintDate" -date "$(iso $((now_epoch + policy)))" "$plist"
-  echo "screen capture approval: $program asked again after $before; now after $(iso $((now_epoch + policy)))"
+  before=$(plutil -extract "$program.kScreenCaptureApprovalLastAlerted" raw -o - "$plist" 2>/dev/null || echo none)
+  # An ask stamped now still alerted again within minutes (Nov 24, 10:09 then 10:14): replayd's
+  # rule is not the age of the last ask alone. The last ask and the next reminder go past any
+  # job's life, the same on every run, and the last use is now.
+  plutil -replace "$program.kScreenCaptureApprovalLastAlerted" -date "$settled" "$plist"
+  plutil -replace "$program.kScreenCapturePrivacyHintDate" -date "$settled" "$plist"
+  plutil -replace "$program.kScreenCaptureApprovalLastUsed" -date "$now" "$plist"
+  echo "screen capture approval: $program last asked $before; now marked asked at $settled"
 done <<<"$programs"
 
 # replayd holds what it read; it reads the file again when it starts.
