@@ -262,6 +262,9 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
             }
             return reason;
           },
+          beginPublication: (entry) => notifications.beginPublication(entry),
+          continuePublication: (id, entry) => notifications.continuePublication(id, entry),
+          settlePublication: (id, state) => notifications.settlePublication(id, state),
         },
       });
       try {
@@ -361,6 +364,7 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
         userId: decision.userId,
         eventId: createId("event"),
         sequence: decision.sequence,
+        connectionId: decision.connectionId,
         occurredAt: new Date(decision.view.occurredAt),
         expiresAt: new Date(
           Date.parse(decision.view.occurredAt) + notificationPushWindowMilliseconds,

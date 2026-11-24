@@ -41,6 +41,11 @@ export type NotificationPublicationResult =
   | {
       readonly status: "push-not-configured";
     }
+  /** The hand-off refused it after every earlier await: nothing was sent (A5). */
+  | {
+      readonly status: "withdrawn";
+    }
+  /** No acknowledgement came: it may have arrived, or not. */
   | {
       readonly status: "retry";
       readonly reason: string;
@@ -48,6 +53,11 @@ export type NotificationPublicationResult =
   | {
       readonly status: "failed";
       readonly reason: string;
+      /**
+       * Whether the account may have taken it anyway: an acknowledgement it could not read is
+       * `maybe`; a refusal it answered with before handling it is `never`.
+       */
+      readonly sent: "never" | "maybe";
     };
 export class NotificationPublicationClient {
   readonly #previews: NotificationPublicationClientOptions["previews"];
@@ -66,6 +76,12 @@ export class NotificationPublicationClient {
     readonly entry: NotificationPublication;
     readonly recipientAccountIds: readonly string[];
     readonly signal: AbortSignal;
+    /**
+     * Asked immediately before each request leaves, after every other await here: a connected
+     * agent's alert is handed off through its Disconnect set, and `false` sends nothing (A5).
+     * Your own agents' alerts pass none.
+     */
+    readonly handOff?: () => Promise<boolean>;
   }): Promise<NotificationPublicationResult> {
     const { entry } = input;
     const target = await this.#target();
@@ -134,18 +150,22 @@ export class NotificationPublicationClient {
     });
     const url = new URL("/v1/host/notifications", exactOrigin(target.controlApiOrigin));
     const authorization = `Bearer ${hostCredential(target.hostCredential)}`;
+    const handedOff = async () => (input.handOff ? input.handOff() : true);
+    if (!(await handedOff())) return { status: "withdrawn" };
     const result = await this.#post(url, authorization, request, input.signal);
     if (result.status !== "rejected") return result;
     if (request.previews) {
       // An Account released before sealed previews rejects the field; the
       // generic alert still reaches the phone.
       const { previews: _previews, ...generic } = request;
+      if (!(await handedOff())) return { status: "withdrawn" };
       const fallback = await this.#post(url, authorization, generic, input.signal);
       if (fallback.status !== "rejected") return fallback;
     }
     return {
       status: "failed",
       reason: "Notification publication API returned HTTP 400",
+      sent: "never",
     };
   }
   async #post(
@@ -193,10 +213,16 @@ export class NotificationPublicationClient {
           return {
             status: "rejected",
           };
-        return {
-          status: response.status === 429 || response.status >= 500 ? "retry" : "failed",
-          reason: `Notification publication API returned HTTP ${response.status}`,
-        };
+        return response.status === 429 || response.status >= 500
+          ? {
+              status: "retry",
+              reason: `Notification publication API returned HTTP ${response.status}`,
+            }
+          : {
+              status: "failed",
+              reason: `Notification publication API returned HTTP ${response.status}`,
+              sent: "never",
+            };
       }
       try {
         const acknowledged = HostNotificationPublicationResponseSchema.parse(
@@ -219,9 +245,12 @@ export class NotificationPublicationClient {
             status: "retry",
             reason: "Notification publication API request failed",
           };
+        // The account answered with success and a body this Home could not read: it may
+        // well have published it.
         return {
           status: "failed",
           reason: "Notification publication API returned an invalid acknowledgement",
+          sent: "maybe",
         };
       }
       return {
