@@ -79,6 +79,7 @@ const screenLabels: Readonly<Record<string, string>> = {
   "add-device": "Devices",
   "ai-engines": "AI engines",
   automation: "Automations",
+  "automation-secrets": "the automation's Secrets",
   "browser-profiles": "Browser profiles",
   chrome: "Chrome",
   "connected-agent": "Connected agents",

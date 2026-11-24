@@ -120,7 +120,14 @@ export function CommandRequestPanel({
   const busy = disabled || approve.running || answer.running;
   const ready = armed && seenEnd;
   const screen = shown.personOnly?.screen;
-  const screenPath = screen ? screenPaths[screen.id] : undefined;
+  const triggerId = (request.command?.command as { readonly triggerId?: unknown } | undefined)
+    ?.triggerId;
+  const screenPath =
+    screen?.id === "automation-secrets" && typeof triggerId === "string"
+      ? `/automations/${encodeURIComponent(triggerId)}#secrets`
+      : screen
+        ? screenPaths[screen.id]
+        : undefined;
   return (
     <fieldset
       aria-label={shown.sentence}

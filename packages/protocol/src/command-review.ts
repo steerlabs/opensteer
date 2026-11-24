@@ -141,7 +141,20 @@ export function commandReviewText(value: unknown): string {
  * Characters that change how text reads without being seen: controls, bidirectional overrides
  * and isolates, zero-width marks. Tab, newline and carriage return are layout, handled apart.
  */
-const hidden = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f؜​-‏‪-‮⁠-⁩﻿]/gu;
+function hidden(code: number): boolean {
+  return (
+    code <= 0x08 ||
+    code === 0x0b ||
+    code === 0x0c ||
+    (code >= 0x0e && code <= 0x1f) ||
+    (code >= 0x7f && code <= 0x9f) ||
+    code === 0x061c ||
+    (code >= 0x200b && code <= 0x200f) ||
+    (code >= 0x202a && code <= 0x202e) ||
+    (code >= 0x2060 && code <= 0x2069) ||
+    code === 0xfeff
+  );
+}
 
 /**
  * Text from outside the Home (an agent's or a person's), as a card shows it: every hidden or
@@ -149,10 +162,11 @@ const hidden = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f؜​-‏‪
  * On one line, line breaks and tabs read as spaces.
  */
 export function visibleText(value: string, lines: "keep" | "one" = "keep"): string {
-  const shown = value.replace(
-    hidden,
-    (character) => `[U+${character.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}]`,
-  );
+  let shown = "";
+  for (const character of value) {
+    const code = character.codePointAt(0)!;
+    shown += hidden(code) ? `[U+${code.toString(16).toUpperCase().padStart(4, "0")}]` : character;
+  }
   return lines === "one" ? shown.replace(/[\r\n\t]+/gu, " ") : shown;
 }
 

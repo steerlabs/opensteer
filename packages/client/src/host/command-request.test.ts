@@ -128,6 +128,38 @@ describe("a command Request as the person reviews it", () => {
     expect(done.line).toBe(commandRequestWords["done-myself"]);
   });
 
+  it("shows an automation's secret proposal by its names only, with no Approve, and opens its Secrets", () => {
+    const view = commandRequestView({
+      ...pending,
+      command: {
+        ...part,
+        type: "trigger.secrets.set",
+        face: "secret",
+        secretPaths: ["set"],
+        gives: "This agent can change the script that will read the value without asking you.",
+        command: { type: "trigger.secrets.set", triggerId: "trg_1", names: ["API_KEY", "TOKEN"] },
+        editor: { screen: "automation-secrets" },
+      },
+    } as typeof pending)!;
+    expect(view.approve).toBeNull();
+    expect(view.personOnly?.screen).toEqual({
+      id: "automation-secrets",
+      label: "the automation's Secrets",
+    });
+    expect(
+      view.rows.filter(({ value }) => value !== null).map(({ path, value }) => [path, value]),
+    ).toEqual([
+      ["triggerId", "trg_1"],
+      ["names.0", "API_KEY"],
+      ["names.1", "TOKEN"],
+    ]);
+    expect(view.gives).toBe(
+      "This agent can change the script that will read the value without asking you.",
+    );
+    expect(view.doneMyself).not.toBeNull();
+    expect(view.decline).not.toBeNull();
+  });
+
   it("shows text from outside the Home as it is: no name closes the Home's quotes, nothing hidden turns it around", () => {
     const view = commandRequestView({
       ...pending,

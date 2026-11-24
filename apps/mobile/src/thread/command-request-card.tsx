@@ -109,7 +109,18 @@ export function CommandRequestCard(props: {
   const ready = armed && scroll.seen;
   const line = approve.line ?? answer.line;
   const screen = view.personOnly?.screen;
-  const route = screen ? (screenRoutes[screen.id] ?? "Settings") : null;
+  const triggerId = (request.command?.command as { readonly triggerId?: unknown } | undefined)
+    ?.triggerId;
+  // An automation's Secrets are on that automation's own page.
+  const opens =
+    screen?.id === "automation-secrets" && typeof triggerId === "string"
+      ? { route: "Schedule", params: { deploymentId: props.deploymentId, triggerId } }
+      : screen
+        ? {
+            route: screenRoutes[screen.id] ?? "Settings",
+            params: { deploymentId: props.deploymentId },
+          }
+        : null;
   return (
     <View
       accessibilityLabel={view.sentence}
@@ -184,7 +195,7 @@ export function CommandRequestCard(props: {
       <AppText role="caption" tone="muted">
         {view.line}
       </AppText>
-      {screen && route ? (
+      {screen && opens ? (
         <AnswerPill
           label={`Open ${screen.label}`}
           onPress={() =>
@@ -196,7 +207,7 @@ export function CommandRequestCard(props: {
                     name: string,
                     params: object,
                   ) => void
-                )(route, { deploymentId: props.deploymentId });
+                )(opens.route, opens.params);
             })
           }
           tone="secondary"

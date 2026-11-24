@@ -98,7 +98,7 @@ describeStore("command Requests in the store", (it) => {
     });
   });
 
-  it("lets an ask wait until it is answered, and a declined one be asked again (one rule)", async ({
+  it("lets an ask wait until it is answered, and answers the same declined proposal as declined for a day", async ({
     storeFixture,
   }) => {
     const { f, store, open, database } = await setup(storeFixture);
@@ -116,13 +116,32 @@ describeStore("command Requests in the store", (it) => {
       status: "pending",
       request: { id: idOf(many[0]!) },
     });
-    // Declined, it may be asked again: a new Request, the agent's judgement whether to.
+    // Declined, the same proposal is answered as declined, with nothing opened, for a day.
     await store.decline({
       requestId: idOf(many[1]!),
       expectedRevision: (await storeFixture.store.requests.revision(idOf(many[1]!)))!,
       resolvedBy: f.userId,
       response: { kind: "external", value: { decision: "declined" } },
     });
+    expect(await open({ askKey: "many1" })).toEqual({
+      status: "declined",
+      requestId: idOf(many[1]!),
+    });
+    // Other arguments are another proposal.
+    const other = await open({ askKey: "many1", args: "b" });
+    expect(other).toMatchObject({ status: "pending", replayed: false });
+    await store.decline({
+      requestId: idOf(other),
+      expectedRevision: (await storeFixture.store.requests.revision(idOf(other)))!,
+      resolvedBy: f.userId,
+      response: { kind: "external", value: { decision: "declined" } },
+    });
+    // A day later the same proposal may be asked again: a new Request.
+    await database
+      .updateTable("requests")
+      .set({ resolvedAt: new Date(Date.now() - 25 * 60 * 60_000) })
+      .where("id", "=", idOf(many[1]!))
+      .execute();
     const again = await open({ askKey: "many1" });
     expect(again).toMatchObject({ status: "pending", replayed: false });
     expect(idOf(again)).not.toBe(idOf(many[1]!));
