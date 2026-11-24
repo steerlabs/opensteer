@@ -70,6 +70,8 @@ import { computerAppIdFromHash, devicesRoute } from "./device-routes.js";
 import { useThisDevice } from "./this-device.js";
 import { HomeCloudComputerRow } from "../settings/sections/cloud-computer.js";
 import { HomeFacts, useHomeKind } from "./home-facts.js";
+import { openAppsPermissionsPanel } from "./macos-permission-rows.js";
+import { useToast } from "../toast.js";
 
 export function DevicePage() {
   const { deviceId } = useParams();
@@ -234,6 +236,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
   const homeKind = useHomeKind();
   const { desktopBridge, desktopDeployment, hostClient, openMobileNavigation, snapshot } =
     useShell();
+  const toast = useToast();
   const navigate = useNavigate();
   const deploymentName = useDeploymentName();
   const device = useThisDevice();
@@ -579,9 +582,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
       onThisMac && desktopBridge ? (
         <button
           className="btn btn--small"
-          onClick={() =>
-            void desktopBridge.openComputerUsePermissionsPanel().catch(() => undefined)
-          }
+          onClick={() => void openAppsPermissionsPanel(desktopBridge, toast.error)}
           type="button"
         >
           Open System Settings

@@ -200,8 +200,9 @@ describe("a sign-in that returns to the Home's computer", () => {
       { onShowTab, tabId },
     );
     expect(document.body.textContent).toContain("This sign-in finishes on MacBook Pro");
-    // Nothing opens on this device first.
+    // Nothing opens on this device first, and it is not offered beside the one way that works.
     expect(document.querySelector("a.btn--primary")).toBeNull();
+    expect(() => button("Open on this device")).toThrow();
     await act(async () => button("Open in MacBook Pro’s browser").click());
     expect(flow.openHomeBrowser).toHaveBeenCalledTimes(1);
     expect(onShowTab).toHaveBeenCalledWith(tabId);

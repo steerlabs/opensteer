@@ -3,6 +3,7 @@ import type {
   DesktopUseComputerViewInput,
   DesktopUseComputerViewResult,
 } from "@opensteer/protocol/desktop";
+import { desktopComputerUseUnsupported } from "@opensteer/protocol/desktop";
 import { DeploymentIdSchema } from "@opensteer/core";
 import {
   ComputerViewHelperRequestSchema,
@@ -128,6 +129,8 @@ export interface ComputerUseServiceOptions {
   /** The one clock every deadline on this Mac is read against. */
   readonly now?: () => number;
   readonly platform?: NodeJS.Platform;
+  /** Why computer use is off on a platform without the helper, as the person reads it. */
+  readonly unsupported?: string;
   readonly run?: ComputerUseHelperProcess;
   readonly teamId: string | null;
   /** The menu bar's Stop: closed, no agent's request reaches the helper. */
@@ -452,7 +455,7 @@ export class ComputerUseService {
     if (!this.supported) {
       throw new ComputerUseHelperFailure(
         "unsupported",
-        "Computer use runs on macOS only, on the Mac the person is using.",
+        this.#options.unsupported ?? desktopComputerUseUnsupported,
       );
     }
   }
