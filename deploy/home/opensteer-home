@@ -75,6 +75,10 @@ case "${1:-}" in
       compose down
       start_pod
     fi
+    # A Cloud Computer follows the pool network its account gives now (checked as at boot).
+    if refresh_pool_network && pid=$(host_pid); then
+      apply_firewall "$pid" && check_firewall "$pid"
+    fi
     if [[ -f "$home_dir/managed" && -f "$home_dir/managed-egress.sh" ]]; then
       # shellcheck source=deploy/home/managed-egress.sh
       source "$home_dir/managed-egress.sh"

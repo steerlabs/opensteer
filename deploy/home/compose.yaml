@@ -12,11 +12,16 @@ x-pod: &pod
   <<: *container
   network_mode: "service:host"
 
+# Checked every 2 s while a service starts (up to 60 s, so a start is seen as soon as before),
+# then every 30 s: on a small machine the old 3 s checks, each starting Node, kept about 0.4 of a
+# core busy at idle. Two failures in a row (about a minute, as before) mark a service unhealthy.
+# The probes are bash's own /dev/tcp and a file read: no process beyond the shell itself.
 x-health: &health
-  interval: 3s
+  interval: 30s
+  start_interval: 2s
+  start_period: 60s
   timeout: 4s
-  retries: 20
-  start_period: 15s
+  retries: 2
 
 services:
   postgres:
@@ -100,9 +105,9 @@ services:
       test:
         [
           CMD,
-          node,
-          -e,
-          "fetch('http://127.0.0.1:4310/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+          bash,
+          -c,
+          'exec 3<>/dev/tcp/127.0.0.1/4310 && printf "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:4310\r\nConnection: close\r\n\r\n" >&3 && IFS= read -r line <&3 && [[ $$line == "HTTP/1.1 200 "* ]]',
         ]
     stop_grace_period: 45s
   gateway:
@@ -155,9 +160,9 @@ services:
       test:
         [
           CMD,
-          node,
-          -e,
-          "try {const r=require(process.env.OPENSTEER_RUNNER_READINESS_PATH);process.kill(r.pid,0);if(r.state!=='connected')process.exit(1)}catch{process.exit(1)}",
+          bash,
+          -c,
+          'r=$$(<"$$OPENSTEER_RUNNER_READINESS_PATH") && [[ $$r =~ \"pid\":([0-9]+), && $$r == *\"state\":\"connected\"* ]] && kill -0 "$${BASH_REMATCH[1]}"',
         ]
     stop_grace_period: 45s
   browser-runtime:
@@ -190,9 +195,9 @@ services:
       test:
         [
           CMD,
-          node,
-          -e,
-          "fetch('http://127.0.0.1:4312/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+          bash,
+          -c,
+          'exec 3<>/dev/tcp/127.0.0.1/4312 && printf "GET /health HTTP/1.1\r\nHost: 127.0.0.1:4312\r\nConnection: close\r\n\r\n" >&3 && IFS= read -r line <&3 && [[ $$line == "HTTP/1.1 200 "* ]]',
         ]
     stop_grace_period: 45s
   browser-egress:
@@ -206,9 +211,9 @@ services:
       test:
         [
           CMD,
-          node,
-          -e,
-          "fetch('http://127.0.0.1:4313/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+          bash,
+          -c,
+          'exec 3<>/dev/tcp/127.0.0.1/4313 && printf "GET /health HTTP/1.1\r\nHost: 127.0.0.1:4313\r\nConnection: close\r\n\r\n" >&3 && IFS= read -r line <&3 && [[ $$line == "HTTP/1.1 200 "* ]]',
         ]
   channel-runtime:
     <<: *pod
@@ -228,9 +233,9 @@ services:
       test:
         [
           CMD,
-          node,
-          -e,
-          "fetch('http://127.0.0.1:4320/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+          bash,
+          -c,
+          'exec 3<>/dev/tcp/127.0.0.1/4320 && printf "GET /readyz HTTP/1.1\r\nHost: 127.0.0.1:4320\r\nConnection: close\r\n\r\n" >&3 && IFS= read -r line <&3 && [[ $$line == "HTTP/1.1 200 "* ]]',
         ]
     stop_grace_period: 45s
 

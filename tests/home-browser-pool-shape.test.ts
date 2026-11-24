@@ -1,6 +1,6 @@
 // A Cloud Computer is pooled only by its boot answer's own flag (phase B, piece 2): the installer
 // marks it, the marker adds one override, and the default recipe is the self-hosted one.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -11,6 +11,7 @@ import { parse as parseYaml } from "yaml";
 const reset = Symbol("reset");
 const parse = (text: string) =>
   parseYaml(text, {
+    merge: true,
     customTags: [{ tag: "!reset", identify: () => false, resolve: () => reset }],
   }) as unknown;
 
@@ -235,7 +236,10 @@ it("applies the machine's limits on a pooled Cloud Computer only, never on a sel
   expect(composeEnvironment([]).join("\n")).not.toContain("OPENSTEER_HOME_LIMIT_");
 });
 
-/** The environment `common.sh`'s compose() gives Docker Compose, on a 4 GiB two-CPU machine. */
+/**
+ * The environment `common.sh`'s compose() gives Docker Compose when it starts the Home, on a
+ * 4 GiB two-CPU machine.
+ */
 function composeEnvironment(markers: readonly string[]): string[] {
   const directory = mkdtempSync(join(tmpdir(), "opensteer-home-limits-"));
   try {
@@ -245,7 +249,7 @@ function composeEnvironment(markers: readonly string[]): string[] {
       "bash",
       [
         "-c",
-        `source "$1"; machine_size() { echo 4096 2; }; env() { printf '%s\\n' "$@"; }; compose config`,
+        `source "$1"; machine_size() { echo 4096 2; }; env() { printf '%s\\n' "$@"; }; compose up -d`,
         "shape",
         join(home, "common.sh"),
       ],
@@ -323,3 +327,88 @@ function runningServices(markers: readonly string[]): string[] {
     rmSync(directory, { recursive: true, force: true });
   }
 }
+
+it("checks health quickly only while a service starts, then every 30 s, and never with Node", () => {
+  for (const markers of [[], ["managed", "browser-pool"]]) {
+    const services = mergedServices(markers);
+    for (const [name, service] of Object.entries(services)) {
+      const health = service.healthcheck as Record<string, unknown> | undefined;
+      if (!health) continue;
+      // An idle Home spent about 0.4 of a core on 3 s checks that each started Node.
+      expect(health.interval, name).toBe("30s");
+      expect(health.start_interval, name).toBe("2s");
+      expect(health.start_period, name).toBe("60s");
+      expect(health.retries, name).toBe(2);
+      const test = (health.test as string[]).join(" ");
+      expect(test, name).not.toMatch(/(^|[\s/])node(\s|$)/u);
+    }
+  }
+});
+
+it("caps the Runs at once at the Runner's own limit of 1,000", () => {
+  expect(homeLimits(2_097_152, 64).OPENSTEER_HOME_LIMIT_RUNNER_RUNS).toBe("1000");
+});
+
+it("lets an operator stop and inspect a Home on any machine, even one too small to start it", () => {
+  const directory = mkdtempSync(join(tmpdir(), "opensteer-home-small-"));
+  try {
+    writeFileSync(join(directory, "config.env"), "COMPOSE_PROJECT_NAME='shape'\n");
+    for (const marker of ["managed", "browser-pool"]) writeFileSync(join(directory, marker), "");
+    const run = (subcommand: string) =>
+      spawnSync(
+        "bash",
+        [
+          "-c",
+          `source "$1"; machine_size() { echo 1024 1; }; env() { printf '%s\\n' "$@"; }; compose ${subcommand}`,
+          "small",
+          join(home, "common.sh"),
+        ],
+        { env: { ...process.env, OPENSTEER_HOME_DIR: directory }, encoding: "utf8" },
+      );
+    for (const subcommand of ["down", "stop", "logs", "ps", "config", "pull"])
+      expect(run(subcommand).status, subcommand).toBe(0);
+    // Only what creates or starts containers needs the machine's limits.
+    for (const subcommand of ["up -d", "create", "start", "restart", "run --rm host true"])
+      expect(run(subcommand).stderr, subcommand).toMatch(/too small/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+it("neither pulls nor checks the two browser images on a Cloud Computer, which never runs them", () => {
+  const directory = mkdtempSync(join(tmpdir(), "opensteer-home-images-"));
+  try {
+    for (const marker of ["managed", "browser-pool"]) writeFileSync(join(directory, marker), "");
+    writeFileSync(join(directory, "images.env"), "OPENSTEER_HOME_VERSION=1.2.3\n");
+    const images = Object.fromEntries(
+      ["host", "gateway", "runner", "browser-runtime", "browser-egress", "channel-runtime"].map(
+        (service) => [service, { image: `example.test/${service}@sha256:${"a".repeat(64)}` }],
+      ),
+    );
+    const log = join(directory, "calls.log");
+    const run = (call: string) =>
+      spawnSync(
+        "bash",
+        [
+          "-c",
+          `source "$1"; calls=$2
+           compose() { printf 'compose %s\\n' "$*" >> "$calls"; [[ $1 == config ]] && printf '%s' '${JSON.stringify({ services: images })}'; return 0; }
+           docker() { printf 'docker %s\\n' "$*" >> "$calls"; [[ $* == *release.json* ]] && echo '{"version":"1.2.3"}'; [[ $* == *oci.json* ]] && echo '{}'; return 0; }
+           ${call}`,
+          "images",
+          join(home, "common.sh"),
+          log,
+        ],
+        { env: { ...process.env, OPENSTEER_HOME_DIR: directory }, encoding: "utf8" },
+      );
+    expect(run(`fetch_release_images "${directory}/images.env" false`).status).toBe(0);
+    expect(run(`check_release_stamps "${directory}/images.env"`).status).toBe(0);
+    expect(run(`install_sandbox_policies "${directory}"`).status).toBe(0);
+    const calls = readFileSync(log, "utf8");
+    expect(calls).toContain("compose pull --quiet postgres host gateway runner channel-runtime\n");
+    expect(calls).not.toMatch(/browser-(runtime|egress)@sha256/u);
+    expect(calls).toContain("runner@sha256");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

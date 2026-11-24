@@ -63,8 +63,13 @@ cluster.
    ```
 
    List every ingress rule in the VPC, including disabled rules. The only
-   rules should be `opensteer-cloud-computers-v4` and, for external dual
-   stack, `opensteer-cloud-computers-v6`.
+   rules should be `opensteer-cloud-computers-v4`, for external dual stack
+   `opensteer-cloud-computers-v6`, and the provisioner's two pool rules
+   (`opensteer-pool-hosts-home` and `opensteer-pool-hosts-admin`, see
+   [Browser pool hosts](#browser-pool-hosts)). Keep the account's and the
+   provisioner's own machines out of this subnet: every Home's firewall lets
+   its Host reach the whole subnet on the pool's agent and relay ports, and
+   only pool hosts may listen there.
 
    ```sh
    gcloud compute firewall-rules list --project="$PROJECT" \

@@ -51,6 +51,16 @@ Customer (Desktop / Mobile / Web)
                               +---------------------------------------------+
 ```
 
+## Before deploying this release
+
+Every step, in order, before the first Account or reconciler of this release starts. Each one that is missing makes that service refuse to start, or a new Cloud Computer wait at boot.
+
+1. **Account**: set `OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL` (the feed every Home updates from), `OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST` and `OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON`. Keep the pool agent and relay ports different and away from 25, 465 and 587, or leave them at 7310 and 7312.
+2. **Reconciler**: set `OPENSTEER_POOL_PROVISIONER_KEY` (or `_FILE`), `OPENSTEER_POOL_HOME_CIDR` (exactly the Homes' subnet's range: the reconciler reads the subnet and refuses to start otherwise) and `OPENSTEER_POOL_PROVISIONER_CIDR`.
+3. **The Homes' subnet**: nothing but Homes and pool hosts in it. In particular, not the Account's or the reconciler's own machines: every Home's Host may reach the whole subnet on the agent and relay ports.
+4. **The lease**: after the new reconciler started, check that it reported the pool network: `select host(pool_network) || '/' || masklen(pool_network) from cloud_computer_provisioner_lease` names the subnet. Until it does, every new Cloud Computer's boot is answered 503 and its installer keeps retrying, which uses up its 20-minute bootstrap token (reissue it if it runs out).
+5. **Existing Cloud Computers**: a Home installed before this release keeps its old shape until it is replaced; replace it from a snapshot (see [A Cloud Computer made before its browser moved to the pool](#a-cloud-computer-made-before-its-browser-moved-to-the-pool)).
+
 ## First-time setup
 
 ### Account service environment
@@ -585,7 +595,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
 ### A Cloud Computer made before its browser moved to the pool
 
-- **What happened to it**: `0040_browser_always_pooled` moved every row that said `browser_mode = 'local'` into the pool. A live one got a browser pool slot with the pool's default guest size (two vCPUs, 2048 MiB, a 2048 MiB profile); one already deleted or being deleted was marked as having no slot to erase. No row was dropped, and `browser_mode` now only accepts `pool`.
+- **What happened to it**: `0040_browser_always_pooled` moved every row that said `browser_mode = 'local'` into the pool. A live one gets its browser pool slot from Account at its next pool reconciliation, at the guest and profile size Account is configured with; one already deleted or being deleted was marked as having no slot to erase. No row was dropped, and `browser_mode` now only accepts `pool`.
 - **What it means**: its VM still runs the Home it was installed with, browser included, until it is replaced. Its old browser profiles stay in that VM's `browser-profiles` volume and its backups; they are not copied to the pool.
 - **What the operator does**: replace it (`replace <computer-id>`, from a snapshot when its Home's data matters). The replacement's boot answer says `browserPool: true`, so it starts without a local browser and its browser runs on a pool host.
 
@@ -593,7 +603,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
 The automated test suite and local Colima proof (`scripts/verify-home-deployment.mjs`) exercise the Account store, reconciler, Stripe client, and Home container stack against local mocks and containers only. None of the following has been run in production or against live third-party services:
 
-- **A Cloud Computer's browser end to end**: nothing yet shows a person using their browser in the pool from their Cloud Computer. The Host does not start its side of the pool yet (`startManagedBrowserPool` has no caller). The Home's pod firewall now lets it reach the pool network from its boot answer on the agent and relay ports (see below), but no real Home has reached a real pool host through it.
+- **A Cloud Computer's browser end to end**: nothing on this branch shows a person using their browser in the pool from their Cloud Computer; the Host's side of the pool is built on another branch. The Home's pod firewall lets its Host's uid (10002) reach the pool network on the agent and relay ports, but no real Home has reached a real pool host through it.
 - **A 4 GiB Home under load**: the limits `home_limits` sets on an `e2-medium` have only been computed and checked by tests, not measured with the person's own agents running.
 - **Live Stripe**: Checkout Sessions (`2026-11-18.endive` with `allowed_payment_method_types[0]=card`), Billing Portal sessions, real webhook signing and delivery to `/v1/cloud-computers/stripe-webhook`, and live `validateOffer` / 60-second billing reconciliation.
 - **The live Compute Engine adapter**: the reconciler's instance creation with a reserved static address, cloud-init on the instance it created, firewall rules `opensteer-cloud-computers-v4`/`-v6`, stop and start, dual-stack addressing, and instance and address deletion. Its tests run against a stand-in for the Compute Engine API.

@@ -1,38 +1,45 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# A Cloud Computer's pool network: <private IPv4 CIDR> <agent port>,<relay port>, from its boot
+# answer (or its account later, checked the same way). The only private destination the pod may
+# reach, only on those two TCP ports, and only from the Host's own uid: the Runner, gateway and
+# Channel Runtime share the Host's network namespace but not that uid, so an agent's shell
+# cannot use it. Why that is narrow enough: Google's rule opensteer-pool-hosts-home lets machines
+# tagged as Cloud Computers reach machines tagged as pool hosts on exactly these ports, and no
+# Home listens on either, so the allow reaches pool hosts only (as long as nothing else in the
+# subnet listens there: the account's and the provisioner's machines must not sit in it). The
+# agent port answers only requests signed with the key the Home registered for its slot, and the
+# relay only a TLS client holding the relay key registered for it.
+pool_owner=10002 # The Host's uid on a Cloud Computer (compose.browser-pool.yaml).
+valid_pool_network() {
+  local cidr=$1 ports=$2 a b c d prefix address
+  [[ $cidr =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})/([1-9]|[12][0-9]|3[0-2])$ ]] ||
+    return 1
+  a=${BASH_REMATCH[1]} b=${BASH_REMATCH[2]} c=${BASH_REMATCH[3]} d=${BASH_REMATCH[4]} prefix=${BASH_REMATCH[5]}
+  ((a <= 255 && b <= 255 && c <= 255 && d <= 255)) || return 1
+  address=$(((a << 24) | (b << 16) | (c << 8) | d))
+  ((address % (1 << (32 - prefix)) == 0)) || return 1
+  { ((a == 10 && prefix >= 8)) || ((a == 172 && b >= 16 && b <= 31 && prefix >= 12)) ||
+    ((a == 192 && b == 168 && prefix >= 16)); } || return 1
+  [[ $ports =~ ^([1-9][0-9]{0,4}),([1-9][0-9]{0,4})$ ]] || return 1
+  local agent=${BASH_REMATCH[1]} relay=${BASH_REMATCH[2]}
+  ((agent <= 65535 && relay <= 65535 && agent != relay)) || return 1
+  # The mail ports are rejected before the allow: a pool there could never be reached.
+  [[ " 25 465 587 " != *" $agent "* && " 25 465 587 " != *" $relay "* ]]
+}
+
+# firewall.sh validate-pool CIDR PORTS: only whether that pool network would be accepted.
+if [[ ${1:-} == validate-pool ]]; then
+  (($# == 3)) && valid_pool_network "$2" "$3"
+  exit
+fi
+
 [[ ( $# == 1 || ( ( $# == 2 || $# == 3 || $# == 5 ) && ( $2 == check || $2 == apply ) && ( ${3:-false} == true || ${3:-false} == false ) ) ) && $1 =~ ^[1-9][0-9]*$ ]] || { echo 'Home firewall requires the namespace owner PID.' >&2; exit 1; }
 
-# A Cloud Computer's pool network: <private IPv4 CIDR> <agent port>,<relay port>, from its boot
-# answer. The only private destination the pod may reach, and only on those two TCP ports. Why
-# that is narrow enough: Google's own rule (opensteer-pool-hosts-home) lets only machines tagged
-# as Cloud Computers reach machines tagged as pool hosts, on exactly these ports; other Homes in
-# the subnet listen on neither, and Google's rules do not let Homes reach each other. The agent
-# port answers only requests signed with the key the Home registered for its slot, and the relay
-# only a TLS client holding the relay key registered for it. The Host, Runner, gateway and Channel
-# Runtime share this one network namespace (and one uid), so this one rule serves them all.
 pool_rule=''
 if (($# == 5)); then
-  pool_cidr=$4 pool_ports=$5
-  valid_pool=false
-  if [[ $pool_cidr =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})/([1-9]|[12][0-9]|3[0-2])$ ]]; then
-    a=${BASH_REMATCH[1]} b=${BASH_REMATCH[2]} c=${BASH_REMATCH[3]} d=${BASH_REMATCH[4]} prefix=${BASH_REMATCH[5]}
-    if ((a <= 255 && b <= 255 && c <= 255 && d <= 255)); then
-      address=$(((a << 24) | (b << 16) | (c << 8) | d))
-      if ((address % (1 << (32 - prefix)) == 0)) &&
-        { ((a == 10 && prefix >= 8)) || ((a == 172 && b >= 16 && b <= 31 && prefix >= 12)) ||
-          ((a == 192 && b == 168 && prefix >= 16)); }; then
-        valid_pool=true
-      fi
-    fi
-  fi
-  if [[ $pool_ports =~ ^([1-9][0-9]{0,4}),([1-9][0-9]{0,4})$ ]] &&
-    ((BASH_REMATCH[1] <= 65535 && BASH_REMATCH[2] <= 65535 && BASH_REMATCH[1] != BASH_REMATCH[2])); then
-    :
-  else
-    valid_pool=false
-  fi
-  $valid_pool || { echo 'Home firewall refused an invalid pool network.' >&2; exit 1; }
-  pool_rule="-A OPENSTEER-HOME -d $pool_cidr -p tcp -m multiport --dports $pool_ports -j RETURN"
+  valid_pool_network "$4" "$5" || { echo 'Home firewall refused an invalid pool network.' >&2; exit 1; }
+  pool_rule="-A OPENSTEER-HOME -d $4 -p tcp -m owner --uid-owner $pool_owner -m multiport --dports $5 -j RETURN"
 fi
 
 policy() {

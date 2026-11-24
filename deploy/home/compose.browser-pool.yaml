@@ -1,5 +1,5 @@
 # A Cloud Computer whose boot answer said browserPool: true. Its browser runs on a pool host, not
-# here. Only this file changes the shape; compose.yaml is the self-hosted default, unchanged.
+# here. Only this file sets it apart from a self-hosted Home's shape (compose.yaml).
 # Each service's limits come from this machine (home_limits in common.sh), so together they never
 # ask for more memory than it has.
 services:
@@ -8,11 +8,17 @@ services:
     mem_limit: ${OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY:?Machine limits required}
     memswap_limit: ${OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY:?Machine limits required}
   host:
+    # Its own uid, which alone the firewall lets reach the pool host (firewall.sh pool_owner):
+    # the Runner and the others share its network namespace but not this uid. Its data moves to
+    # it before it starts (own_host_data in common.sh).
+    user: "10002:10002"
     cpus: ${OPENSTEER_HOME_LIMIT_HOST_CPUS:?Machine limits required}
     mem_limit: ${OPENSTEER_HOME_LIMIT_HOST_MEMORY:?Machine limits required}
     memswap_limit: ${OPENSTEER_HOME_LIMIT_HOST_MEMORY:?Machine limits required}
     environment:
       OPENSTEER_MANAGED_HOME_BROWSER_POOL: "true"
+      # The image knows no user 10002: its home is its own data directory.
+      HOME: /var/lib/opensteer
   gateway:
     cpus: ${OPENSTEER_HOME_LIMIT_GATEWAY_CPUS:?Machine limits required}
     mem_limit: ${OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY:?Machine limits required}

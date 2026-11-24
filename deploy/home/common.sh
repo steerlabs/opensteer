@@ -30,8 +30,15 @@ compose() {
   local limits=() sized line
   if [[ -f "$home_dir/browser-pool" ]]; then args+=(-f "$home_dir/compose.browser-pool.yaml"); fi
   if [[ -f "$home_dir/browser-pool" ]]; then
-    # shellcheck disable=SC2046 # machine_size prints two numbers.
-    sized=$(home_limits $(machine_size)) || return
+    # Only what creates or starts containers needs this machine's limits: an operator can stop,
+    # inspect, back up or uninstall a Home on any machine, so the rest gets placeholders that
+    # are never applied.
+    if [[ " up create start restart run " == *" ${1:-} "* ]]; then
+      # shellcheck disable=SC2046 # machine_size prints two numbers.
+      sized=$(home_limits $(machine_size)) || return
+    else
+      sized=$(home_limits_unused)
+    fi
     while IFS= read -r line; do limits+=("$line"); done <<< "$sized"
   fi
   if [[ -s "$home_dir/secrets/egress_url" ]]; then
@@ -93,7 +100,8 @@ home_limits() {
   host=$(clamp $((budget / 5)) 768 2048)
   agents=$((budget - postgres - host - 2 * small))
   ((agents >= 768)) || fail "This machine (${memory} MiB) is too small for a Cloud Computer's Home."
-  runs=$(clamp $((agents / run_allowance)) 1 "$agents")
+  # At most the Runner's own limit of 1,000 Runs at once.
+  runs=$(clamp $((agents / run_allowance)) 1 1000)
   two=$(clamp 2 1 "$cpus")
   printf '%s\n' \
     "OPENSTEER_HOME_LIMIT_POSTGRES_CPUS=$two" "OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY=${postgres}m" \
@@ -102,6 +110,16 @@ home_limits() {
     "OPENSTEER_HOME_LIMIT_RUNNER_CPUS=$cpus" "OPENSTEER_HOME_LIMIT_RUNNER_MEMORY=${agents}m" \
     "OPENSTEER_HOME_LIMIT_RUNNER_RUNS=$runs" \
     "OPENSTEER_HOME_LIMIT_CHANNEL_CPUS=1" "OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY=${small}m"
+}
+
+# Limits for a command that creates no container (down, stop, logs, config, pull, ...): Compose
+# reads every file even then, so each variable is set, to a value nothing applies.
+home_limits_unused() {
+  local name
+  for name in POSTGRES HOST GATEWAY RUNNER CHANNEL; do
+    printf '%s\n' "OPENSTEER_HOME_LIMIT_${name}_CPUS=1" "OPENSTEER_HOME_LIMIT_${name}_MEMORY=64m"
+  done
+  printf '%s\n' "OPENSTEER_HOME_LIMIT_RUNNER_RUNS=1"
 }
 
 publish_file() {
@@ -229,23 +247,31 @@ valid_managed_feed() {
     managed_feed_resolution "$1" >/dev/null
 }
 
+# ask_account <route> <answer file>: GET a managed Home's own route on its account
+# (/v1/cloud-computers/<id>/<route>) with its OIDC client credentials, as the egress check does.
+# Succeeds only on HTTP 200, with the answer in the file.
+ask_account() {
+  local route=$1 answer=$2 origin id client_id status
+  origin=$(sed -n "s/^OPENSTEER_HOME_ACCOUNT_ORIGIN='\([^']*\)'$/\1/p" "$home_dir/config.env")
+  id=$(sed -n "s/^OPENSTEER_HOME_MANAGED_ID='\([^']*\)'$/\1/p" "$home_dir/config.env")
+  client_id=$(sed -n "s/^OPENSTEER_HOME_OIDC_CLIENT_ID='\([^']*\)'$/\1/p" "$home_dir/config.env")
+  [[ $origin =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ && $id =~ ^cc_[a-f0-9-]{36}$ &&
+    $client_id =~ ^occ_[a-f0-9-]{36}$ && -s "$home_dir/secrets/oidc_client_secret" ]] || return
+  status=$(printf 'user = "%s:%s"\n' "$client_id" "$(cat "$home_dir/secrets/oidc_client_secret")" |
+    curl -q --config - --basic --silent --proto '=https' --tlsv1.2 \
+      --connect-timeout 10 --max-time 20 --max-filesize 16384 \
+      --output "$answer" --write-out '%{http_code}' \
+      -- "$origin/v1/cloud-computers/$id/$route") && [[ $status == 200 ]]
+}
+
 # The feed a managed Home updates from, on stdout: the one its account gives now, when the account
 # answers and the address passes the boot checks (config.env is rewritten when it changed), and
 # otherwise the one config.env has. An address that fails the checks is never used.
 managed_feed() {
-  local configured asked='' origin id client_id answer status
+  local configured asked='' answer
   configured=$(configured_feed) || return
-  origin=$(sed -n "s/^OPENSTEER_HOME_ACCOUNT_ORIGIN='\([^']*\)'$/\1/p" "$home_dir/config.env")
-  id=$(sed -n "s/^OPENSTEER_HOME_MANAGED_ID='\([^']*\)'$/\1/p" "$home_dir/config.env")
-  client_id=$(sed -n "s/^OPENSTEER_HOME_OIDC_CLIENT_ID='\([^']*\)'$/\1/p" "$home_dir/config.env")
   answer=$(mktemp "$home_dir/feed.XXXXXX") || return
-  if [[ $origin =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ && $id =~ ^cc_[a-f0-9-]{36}$ &&
-    $client_id =~ ^occ_[a-f0-9-]{36}$ && -s "$home_dir/secrets/oidc_client_secret" ]] &&
-    status=$(printf 'user = "%s:%s"\n' "$client_id" "$(cat "$home_dir/secrets/oidc_client_secret")" |
-      curl -q --config - --basic --silent --proto '=https' --tlsv1.2 \
-        --connect-timeout 10 --max-time 20 --max-filesize 16384 \
-        --output "$answer" --write-out '%{http_code}' \
-        -- "$origin/v1/cloud-computers/$id/release-feed") && [[ $status == 200 ]]; then
+  if ask_account release-feed "$answer"; then
     asked=$(jq -r '.releaseManifestUrl | select(type == "string")' "$answer" 2>/dev/null) || asked=''
     if [[ -n $asked ]] && valid_managed_feed "$asked"; then
       rm -f -- "$answer"
@@ -330,7 +356,8 @@ check_release_stamps() {
   local selector=$1 version service image actual config
   version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$selector") || return
   config=$(release_env="$selector" compose config --format json) || return
-  for service in "${services[@]}"; do
+  # Only the images this Home runs: a Cloud Computer never runs the two browser ones.
+  for service in $(running_services); do
     image=$(jq -er --arg service "$service" '.services[$service].image' <<< "$config") || return
     actual=$(docker run --rm --network none --user 0:0 --entrypoint cat "$image" /usr/local/share/opensteer/release.json |
       jq -er '.version') || fail "Could not read the $service release stamp."
@@ -341,6 +368,9 @@ check_release_stamps() {
 install_sandbox_policies() {
   local destination=${1:-$home_dir} service policy image tmp
   for service in browser-runtime runner; do
+    # No Browser Runtime runs on a Cloud Computer: Compose needs no policy for a service it
+    # never creates, and its image is never pulled there.
+    if ! running_services | grep -qx -- "$service"; then continue; fi
     case "$service" in
       browser-runtime) policy=chromium-oci.json ;;
       runner) policy=runner-oci.json ;;
@@ -393,9 +423,11 @@ host_pid() {
 }
 
 # The pool network (CIDR, then agent,relay ports) a Cloud Computer's firewall lets it reach.
+# The pool network (CIDR, then agent,relay ports) a Cloud Computer's firewall lets its Host reach:
+# read only on a Home whose boot answer said browserPool, so a file left behind opens nothing.
 pool_network_args() {
   local cidr ports
-  [[ -f "$home_dir/pool-network" ]] || return 0
+  [[ -f "$home_dir/browser-pool" && -f "$home_dir/pool-network" ]] || return 0
   read -r cidr ports < "$home_dir/pool-network" || return
   printf '%s\n' "$cidr" "$ports"
 }
@@ -412,24 +444,82 @@ apply_firewall() { firewall "$1" apply; }
 
 check_firewall() { firewall "$1" check; }
 
-# Keeps a pooled Cloud Computer's pool network from its boot answer for its firewall. firewall.sh
-# checks it again in full; this refuses anything that is not a plain CIDR and two port numbers.
-save_pool_network() {
-  local result=$1 network
-  jq -e '.browserPool == true and .browserPoolNetwork != null' "$result" >/dev/null || return 0
+# Whether firewall.sh (beside this file) accepts this pool network: one check for every source.
+valid_pool_network() {
+  bash "$(dirname -- "${BASH_SOURCE[0]}")/firewall.sh" validate-pool "$1" "$2"
+}
+
+# The pool network in a JSON answer's browserPoolNetwork, as "CIDR AGENT,RELAY", when valid.
+pool_network_from() {
+  local network cidr ports
   network=$(jq -er '.browserPoolNetwork |
     select((.cidr | type) == "string" and (.agentPort | type) == "number" and
       (.relayPort | type) == "number" and .agentPort == (.agentPort | floor) and
       .relayPort == (.relayPort | floor)) |
-    "\(.cidr) \(.agentPort),\(.relayPort)"' "$result") || fail 'The boot answer has an invalid pool network.'
-  [[ $network =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}\ [0-9]{1,5},[0-9]{1,5}$ ]] ||
-    fail 'The boot answer has an invalid pool network.'
+    "\(.cidr) \(.agentPort),\(.relayPort)"' "$1" 2>/dev/null) || return
+  [[ $network =~ ^([0-9./]+)\ ([0-9]+,[0-9]+)$ ]] || return
+  cidr=${BASH_REMATCH[1]} ports=${BASH_REMATCH[2]}
+  valid_pool_network "$cidr" "$ports" || return
+  printf '%s\n' "$network"
+}
+
+# Keeps a pooled Cloud Computer's pool network from its boot answer for its firewall. A pooled
+# Home without one, or with one firewall.sh refuses, would have no path to its browser: refused.
+save_pool_network() {
+  local result=$1 network
+  jq -e '.browserPool == true' "$result" >/dev/null || return 0
+  network=$(pool_network_from "$result") ||
+    fail 'The boot answer has no valid pool network: this Cloud Computer could not reach its browser.'
   printf '%s\n' "$network" > "$home_dir/pool-network"
+}
+
+# A pooled Home asks its account for its pool network at each maintenance pass. Succeeds only
+# when it changed and was saved (the caller re-applies the firewall); a network that fails the
+# checks, or no answer, keeps the one it has, and says so.
+refresh_pool_network() {
+  local answer network current=''
+  [[ -f "$home_dir/managed" && -f "$home_dir/browser-pool" ]] || return 1
+  answer=$(mktemp "$home_dir/pool-network.XXXXXX") || return 1
+  if ! ask_account pool-network "$answer"; then
+    rm -f -- "$answer"
+    echo "The account did not answer for its pool network; keeping this Home's own." >&2
+    return 1
+  fi
+  if ! network=$(pool_network_from "$answer"); then
+    rm -f -- "$answer"
+    echo "The account's pool network failed the checks; keeping this Home's own." >&2
+    return 1
+  fi
+  [[ -f "$home_dir/pool-network" ]] && current=$(cat "$home_dir/pool-network")
+  if [[ $network == "$current" ]]; then
+    rm -f -- "$answer"
+    return 1
+  fi
+  printf '%s\n' "$network" > "$answer"
+  publish_file "$answer" "$home_dir/pool-network" || return 1
+  echo "This Home now reaches the pool network its account gives: $network" >&2
+}
+
+# The Host's own uid on a Cloud Computer (compose.browser-pool.yaml, firewall.sh's pool_owner),
+# so that only it may reach the pool. Its data volume, made under the image's shared uid or
+# restored from a backup taken under it, moves to that uid before it starts: moved, never wiped.
+# A self-hosted Home is left exactly as it is.
+host_uid=10002
+own_host_data() {
+  local config volume image
+  [[ -f "$home_dir/browser-pool" ]] || return 0
+  config=$(compose config --format json) || return
+  volume=$(jq -er '.volumes["host-data"].name' <<< "$config") || return
+  image=$(jq -er '.services.host.image' <<< "$config") || return
+  docker run --rm --network none --user 0:0 --entrypoint find \
+    --mount "type=volume,src=$volume,dst=/data" "$image" \
+    /data '(' '!' -uid "$host_uid" -o '!' -gid "$host_uid" ')' -exec chown -h "$host_uid:$host_uid" '{}' +
 }
 
 start_pod() {
   local pid namespace
   prepare_runner_apparmor || return
+  own_host_data || return
   if compose up -d --wait --wait-timeout 240 --pull never postgres host &&
     pid=$(host_pid) && namespace=$(readlink "/proc/$pid/ns/net") &&
     apply_firewall "$pid" && check_firewall "$pid" &&
@@ -487,12 +577,18 @@ claimed_state() {
 fetch_release_images() {
   local selector=$1 local=$2 config service image missing=()
   if [[ $local != true ]]; then
-    release_env="$selector" compose pull --quiet
+    if [[ -f "$home_dir/browser-pool" ]]; then
+      # A Cloud Computer never runs the two browser images: they are not pulled.
+      # shellcheck disable=SC2046 # one service per word.
+      release_env="$selector" compose pull --quiet postgres $(running_services)
+    else
+      release_env="$selector" compose pull --quiet
+    fi
     return
   fi
   release_env="$selector" compose pull --quiet postgres
   config=$(release_env="$selector" compose config --format json) || return
-  for service in "${services[@]}"; do
+  for service in $(running_services); do
     image=$(jq -er --arg service "$service" '.services[$service].image' <<< "$config") || return
     docker image inspect "$image" >/dev/null 2>&1 || missing+=("$image")
   done
@@ -536,7 +632,7 @@ compose_down_home() {
 remove_home_files() {
   rm -rf -- "${home_dir:?}/"{secrets,boot,identity,restore.pending,update.pending,restore.pending.retired,update.pending.retired}
   rm -rf -- "$home_dir/"{install,backup,update,egress,images.placeholder}.??????
-  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,compose.browser-pool.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,browser-pool,update-database.dump,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
+  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,compose.browser-pool.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,browser-pool,pool-network,update-database.dump,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
 }
 
 # Whether this Home was installed with --local-images.

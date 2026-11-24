@@ -158,27 +158,49 @@ An Opensteer Cloud Computer's Home is different in two ways, both set by
   least one, and the Host holds the next one back until one ends. The 1 GiB
   is a placeholder until a Run is measured on a real Cloud Computer. The
   `OPENSTEER_HOME_*` limit settings above do not apply to it.
-- **It reaches its pool host and nothing else private.** The boot answer's
-  `browserPoolNetwork` (a private subnet and the agent and relay ports) is kept
-  in `pool-network`, and `firewall.sh` allows TCP to that subnet on those two
-  ports before it rejects every private range. Without it the Home reaches
-  nothing private; a malformed or wider one stops the Home from starting.
+- **Its Host, and only its Host, reaches its pool host.** The boot answer's
+  `browserPoolNetwork` (the private subnet the pool hosts live in, and the
+  agent and relay ports) is kept in `pool-network`, and `firewall.sh` allows
+  TCP to that subnet on those two ports, from the Host's own uid (10002 on a
+  Cloud Computer), before it rejects every private range. The Runner, gateway
+  and Channel Runtime share the Host's network namespace but not its uid, so
+  an agent's shell cannot use the allow. The account refuses to boot a Cloud
+  Computer until it knows the pool network (the installer retries), and the
+  installer refuses a boot answer without a valid one. Maintenance asks the
+  account for it again on every pass and re-applies the firewall when it
+  changed. The file is read only with the `browser-pool` marker and removed at
+  uninstall. The Host's data volume is moved to its uid before every start
+  (from a backup taken under the shared uid too); a self-hosted Home keeps the
+  shared uid and is left as it is.
 
 On Compute Engine's default `e2-medium` (2 vCPUs, 4 GiB) that gives PostgreSQL
 512 MiB, the Host 768 MiB, Caddy and Channel Runtime 256 MiB each, and the
 Runner 1280 MiB and both CPUs: one Run at a time. Linux reports somewhat less than 4 GiB as the
 machine's memory, and the Runner's share shrinks by that difference (1100 MiB
-if it reports 3916 MiB). Measured idle, with nobody signed in, the Host used
-189 MiB, the Runner 229 MiB, Channel Runtime 65 MiB, PostgreSQL 14 MiB and
-Caddy 13 MiB. Whether the person's own agents' Runs fit in what the Runner is
-given has not been measured on a real machine.
+if it reports 3916 MiB). Measured on a real pooled Cloud Computer, idle with
+nobody signed in, its services' working set was 509 MiB (the Runner about
+263, the Host about 195) and the machine used 1,299 MiB, so about 790 MiB was
+outside the containers: the reserve above is for that. Whether the person's
+own agents' Runs fit in what the Runner is given has not been measured on a
+real machine. Below 2 GiB the Runner keeps no warm engine beside its Run;
+from 2 to 4 GiB it keeps one, to 8 GiB two, above that eight. That cap reads
+the memory the Runner runs under (its container's limit), so a self-hosted
+Home's Runner, limited to 8 GiB by default, now keeps two where it kept eight
+on a 16 GiB machine.
 
 CPU limits are ceilings, not shares: they add up to more than the machine's
 CPUs, and a service may use up to its ceiling only while the others leave the
-time free. An idle Home was measured using 0.61 of one core on average (1.22
-in its busiest minute), with a Browser Runtime that no longer runs on a Cloud
-Computer. An `e2-medium` sustains one core and bursts to two, so if that idle
-use holds, the person's own agents have well under one core sustained.
+time free. An idle Home was measured using 0.61 of one core on average with
+a Browser Runtime running, and 0.40 without one, mostly its own health
+checks: every 3 s each container started Node for its check. Every Linux
+Home now checks every 2 s only while a service starts (its first 60 s) and
+every 30 s after, with bash's own `/dev/tcp` or a file read and no Node
+process. A start is seen as quickly as before. A service that keeps failing
+is unhealthy after two failed checks in a row (about a minute, as before);
+one that never comes up is marked unhealthy after about 2 minutes instead of
+about 75 s, and the update's health gate (`compose up --wait`, 240 s) still
+rolls it back. The idle cost of the new checks has not been measured on a
+real machine.
 
 Disk and networking are billed apart from the machine. [Google machine specifications](https://cloud.google.com/compute/docs/general-purpose-machines) · [Compute Engine prices](https://cloud.google.com/compute/vm-instance-pricing)
 
