@@ -60,6 +60,7 @@ import { ControlPlaneStore } from "../database/store.js";
 import { CloudComputerSecretCipher } from "./secret-cipher.js";
 import { createControlPlaneServer } from "../server/server.js";
 import { testBackupVault } from "./backup-erasure.test-support.js";
+import type { BackupKeyVault } from "./backup-vault.js";
 import { loadCloudComputerConfig } from "./config.js";
 import { runCloudComputerOperator } from "./operator.js";
 import { resetManagedCloudTables } from "./reset.test-support.js";
@@ -269,6 +270,7 @@ integration("Browser pool Account service", () => {
     slotsPerHost?: string,
     db: Kysely<ControlPlaneDatabaseSchema> = database,
     env: Record<string, string> = {},
+    backupKeyVault: BackupKeyVault = testBackupVault(),
   ) {
     const config = loadCloudComputerConfig({ ...makeEnv(slotsPerHost), ...env })!;
     const cloudStore = new CloudComputerStore(db, {
@@ -277,7 +279,7 @@ integration("Browser pool Account service", () => {
       cipher,
       stripe,
       now: () => now,
-      backupKeyVault: testBackupVault(),
+      backupKeyVault,
       purgeBackupStep: async () => true,
     });
     const auth = createControlPlaneAuth(db, {
@@ -823,8 +825,21 @@ integration("Browser pool Account service", () => {
 
   it("refuses a Cloud Computer's boot, which its installer retries, until the lease has a pool network", async () => {
     // Review C1: this used to boot a pooled Home with no pool network, which then had no path to
-    // its browser for good (the network is saved only at install). It is now refused, retryably.
-    const h = await buildHarness("2");
+    // its browser for good (the network is saved only at install). It is now refused, retryably,
+    // and before anything is written: each retry would otherwise add a backup password version
+    // to the secret store that nothing refers to.
+    const vault = testBackupVault();
+    let issued = 0;
+    let vaultFails = false;
+    const counting: BackupKeyVault = {
+      ...vault,
+      issue: async (...args) => {
+        issued += 1;
+        if (vaultFails) throw new Error("Secret Manager is unavailable");
+        return vault.issue(...args);
+      },
+    };
+    const h = await buildHarness("2", database, {}, counting);
     try {
       await h.acquireLease();
       const { accountId, computer } = await h.provisionComputer(1);
@@ -847,21 +862,101 @@ integration("Browser pool Account service", () => {
           lastError: null,
         },
       });
-      const refused = await h.app.inject({
-        method: "POST",
-        url: cloudComputerBootPath(computer.id),
-        payload: { hostname: computer.hostname, bootstrapToken: computer.bootstrapToken },
-      });
-      // 503: managed-boot.sh exits 1 and systemd tries again; 401/403/409/410 would end it.
-      expect(refused.statusCode).toBe(503);
-      expect(refused.body).not.toContain("managedHome");
+      const bootOnce = () =>
+        h.app.inject({
+          method: "POST",
+          url: cloudComputerBootPath(computer.id),
+          payload: { hostname: computer.hostname, bootstrapToken: computer.bootstrapToken },
+        });
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const refused = await bootOnce();
+        // 503: managed-boot.sh exits 1 and systemd tries again; 401/403/409/410 would end it.
+        expect(refused.statusCode).toBe(503);
+        expect(refused.body).not.toContain("managedHome");
+      }
+      expect(issued).toBe(0);
+      // A vault that fails cannot hide the refusal: it is never reached.
+      vaultFails = true;
+      const stillRefused = await bootOnce();
+      expect(stillRefused.statusCode).toBe(503);
+      expect(stillRefused.body).toContain("network is not known yet");
+      expect(issued).toBe(0);
+      vaultFails = false;
       await h.acquireLease("10.128.0.0/20");
       const { boot } = await h.bootAndClaimComputer(computer, accountId);
+      // Exactly one password, issued by the boot that succeeded.
+      expect(issued).toBe(1);
       expect(boot.browserPoolNetwork).toEqual({
         cidr: "10.128.0.0/20",
         agentPort: 7310,
         relayPort: 7312,
       });
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("settles the deletion of a Cloud Computer with no slot left to erase, and waits for one that has", async () => {
+    // Review A2: deleted before the account ever gave it a slot (a row moved by 0040), nothing
+    // could ever report its erasure, and it stayed Deleting for good.
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease();
+      const erased = async (id: string) =>
+        (
+          await database
+            .selectFrom("cloudComputers")
+            .select("browserSlotErasedAt")
+            .where("id", "=", id as CloudComputerId)
+            .executeTakeFirstOrThrow()
+        ).browserSlotErasedAt !== null;
+
+      // 1. Bought, then deleted before the first pool pass: its slot was never placed.
+      const first = await h.provisionComputer(1);
+      await h.cloudStore.mutate(first.computer.id, "delete", first.accountId);
+      expect(await erased(first.computer.id)).toBe(true);
+
+      // 2. A row moved by 0040, deleted before it got a slot.
+      const second = await h.provisionComputer(2);
+      await database
+        .deleteFrom("browserPoolSlots")
+        .where("computerId", "=", second.computer.id)
+        .execute();
+      await h.cloudStore.mutate(second.computer.id, "delete", second.accountId);
+      expect(await erased(second.computer.id)).toBe(true);
+
+      // 3. A slot it once had, whose erasure was never confirmed: still waits.
+      const third = await h.provisionComputer(3);
+      await database
+        .updateTable("browserPoolSlots")
+        .set({
+          state: "deleted",
+          phase: "deleted",
+          tombstonedAt: new Date(),
+          profileErasedAt: null,
+        })
+        .where("computerId", "=", third.computer.id)
+        .execute();
+      await h.cloudStore.mutate(third.computer.id, "delete", third.accountId);
+      expect(await erased(third.computer.id)).toBe(false);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("keeps a deleted Cloud Computer waiting while its placed slot's erasure is unconfirmed", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { accountId, computer, slot } = await h.setupPooledHomeAndHost();
+      await h.cloudStore.mutate(computer.id, "delete", accountId);
+      const row = await database
+        .selectFrom("cloudComputers")
+        .select(["browserSlotErasedAt", "tombstonedAt"])
+        .where("id", "=", computer.id)
+        .executeTakeFirstOrThrow();
+      expect(row).toEqual({ browserSlotErasedAt: null, tombstonedAt: null });
+      const [deleting] = (await h.getDesiredSlots()).filter((s) => s.slotId === slot.slotId);
+      expect(deleting?.state).toBe("deleting");
     } finally {
       await h.app.close();
     }
@@ -909,6 +1004,16 @@ integration("Browser pool Account service", () => {
         payload: { holder: randomUUID(), poolConfigured: true, poolNetwork: "10.40.0.0/20" },
       });
       expect(flagged.statusCode).toBe(400);
+      // Review A3: a provisioner whose admin port is a pool port the Homes use would only find
+      // out at pool host enrolment, after a VM was made: its lease is refused at its start.
+      const colliding = await h.app.inject({
+        method: "POST",
+        url: cloudComputerLeasePath,
+        headers: { authorization: "Bearer provisioner-ok" },
+        payload: { holder: randomUUID(), poolNetwork: "10.40.0.0/20", poolAdminPort: 7312 },
+      });
+      expect(colliding.statusCode).toBe(409);
+      expect(colliding.body).toContain("admin port 7312");
       const bare = await h.app.inject({
         method: "POST",
         url: cloudComputerLeasePath,

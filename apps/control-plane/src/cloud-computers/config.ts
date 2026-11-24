@@ -9,6 +9,7 @@ import {
   CloudComputerRegionSchema,
   CloudComputerReleaseSchema,
   CloudComputerReleaseManifestUrlSchema,
+  defaultBrowserPoolAdminPort,
   defaultBrowserPoolAgentPort,
   defaultBrowserPoolRelayPort,
 } from "@opensteer/control-plane-protocol";
@@ -137,15 +138,17 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
     };
   })();
   // Every Home's firewall lets its Host reach these two ports only, after rejecting the mail
-  // ports (deploy/home/firewall.sh): ports it would refuse leave no path to any browser.
-  const mailPorts = [25, 465, 587];
+  // ports (deploy/home/firewall.sh): ports it would refuse leave no path to any browser. Each
+  // pool host also serves the provisioner's admin port (7311 unless the provisioner says
+  // otherwise with its lease, which is refused on a clash); none may be the same.
+  const refusedPorts = [25, 465, 587, defaultBrowserPoolAdminPort];
   if (
     browserPool.agentPort === browserPool.relayPort ||
-    mailPorts.includes(browserPool.agentPort) ||
-    mailPorts.includes(browserPool.relayPort)
+    refusedPorts.includes(browserPool.agentPort) ||
+    refusedPorts.includes(browserPool.relayPort)
   )
     throw new Error(
-      "The browser pool's agent and relay ports must differ and must not be 25, 465 or 587",
+      "The browser pool's agent and relay ports must differ and must not be 25, 465, 587 or the pool's admin port",
     );
   return {
     provisionerEmail: read(

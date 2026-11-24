@@ -141,6 +141,32 @@ export class BrowserPoolStore {
   }
 
   /**
+   * The one settlement of a deleted Cloud Computer's browser: nothing of it is left to erase
+   * (its slot erased, never placed, or never given). Records it once, and completes the
+   * deletion when the VM and the backup key are gone too. Caller holds the `cloudComputers` lock.
+   */
+  async #settleBrowserSlotErasure(tx: TransactionDb, computerId: CloudComputerId, now: Date) {
+    const computer = await tx
+      .selectFrom("cloudComputers")
+      .select(["vmDestroyedAt", "backupsUnreadableAt", "browserSlotErasedAt", "tombstonedAt"])
+      .where("id", "=", computerId)
+      .executeTakeFirst();
+    if (!computer || computer.browserSlotErasedAt) return;
+    const settled =
+      computer.vmDestroyedAt !== null &&
+      computer.backupsUnreadableAt !== null &&
+      computer.tombstonedAt === null;
+    await tx
+      .updateTable("cloudComputers")
+      .where("id", "=", computerId)
+      .set({
+        browserSlotErasedAt: now,
+        ...(settled ? { phase: "deleted", tombstonedAt: now, updatedAt: now } : {}),
+      })
+      .executeTakeFirstOrThrow();
+  }
+
+  /**
    * A fresh Home replaces this Cloud Computer's (a new deployment, without the old one's
    * profiles): its slot is erased as a deletion erases one, profile included, and the computer
    * gets a new slot once that one is gone. Its own profiles' bindings would otherwise make the
@@ -216,7 +242,25 @@ export class BrowserPoolStore {
       .where("tombstonedAt", "is", null)
       .forNoKeyUpdate()
       .executeTakeFirst();
-    if (!slot) return;
+    if (!slot) {
+      // Review A2: no live slot (deleted before this account gave it one, or a row moved by
+      // 0040). Nothing is left to erase once every slot it ever had confirmed its erasure; one
+      // whose erasure is unconfirmed still holds the deletion.
+      const unconfirmed = await tx
+        .selectFrom("browserPoolSlots")
+        .select("slotId")
+        .where("computerId", "=", computerId)
+        .where((eb) =>
+          eb.or([
+            eb("slotErasedAt", "is", null),
+            eb("profileErasedAt", "is", null),
+            eb("credentialsErasedAt", "is", null),
+          ]),
+        )
+        .executeTakeFirst();
+      if (!unconfirmed) await this.#settleBrowserSlotErasure(tx, computerId, now);
+      return;
+    }
     if (slot.hostId === null) {
       await tx
         .updateTable("browserPoolSlots")
@@ -234,25 +278,7 @@ export class BrowserPoolStore {
           updatedAt: now,
         })
         .executeTakeFirstOrThrow();
-      const computer = await tx
-        .selectFrom("cloudComputers")
-        .select(["vmDestroyedAt", "backupsUnreadableAt", "browserSlotErasedAt", "tombstonedAt"])
-        .where("id", "=", computerId)
-        .executeTakeFirst();
-      if (computer && !computer.browserSlotErasedAt) {
-        const settled =
-          computer.vmDestroyedAt !== null &&
-          computer.backupsUnreadableAt !== null &&
-          computer.tombstonedAt === null;
-        await tx
-          .updateTable("cloudComputers")
-          .where("id", "=", computerId)
-          .set({
-            browserSlotErasedAt: now,
-            ...(settled ? { phase: "deleted", tombstonedAt: now, updatedAt: now } : {}),
-          })
-          .executeTakeFirstOrThrow();
-      }
+      await this.#settleBrowserSlotErasure(tx, computerId, now);
       return;
     }
     if (slot.state === "active") {
@@ -1241,18 +1267,7 @@ export class BrowserPoolStore {
         // and its new Home gets a slot of its own.
         await this.createSlotForComputer(tx, computer.id, now);
       } else if (deleted && computer) {
-        const settled =
-          computer.vmDestroyedAt !== null &&
-          computer.backupsUnreadableAt !== null &&
-          computer.tombstonedAt === null;
-        await tx
-          .updateTable("cloudComputers")
-          .where("id", "=", computer.id)
-          .set({
-            browserSlotErasedAt: computer.browserSlotErasedAt ?? now,
-            ...(settled ? { phase: "deleted", tombstonedAt: now, updatedAt: now } : {}),
-          })
-          .executeTakeFirstOrThrow();
+        await this.#settleBrowserSlotErasure(tx, computer.id, now);
       }
       return { recorded: true };
     });

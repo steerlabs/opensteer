@@ -135,7 +135,13 @@ export function registerCloudComputerRoutes(
   app.post(cloudComputerLeasePath, async (request, reply) => {
     privateResponse(reply);
     await options.verifyProvisioner(request.headers.authorization);
-    const { holder, poolNetwork } = CloudComputerLeaseSchema.parse(request.body);
+    const { holder, poolNetwork, poolAdminPort } = CloudComputerLeaseSchema.parse(request.body);
+    const { agentPort, relayPort } = store.poolPorts;
+    if (poolAdminPort === agentPort || poolAdminPort === relayPort)
+      throw new ControlPlaneError(
+        "conflict",
+        `The provisioner's admin port ${poolAdminPort} is the browser pool's agent or relay port`,
+      );
     if (!(await store.lease(holder, true, poolNetwork))) {
       throw new ControlPlaneError("conflict", "Another Cloud Computer provisioner holds the lease");
     }

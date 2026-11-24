@@ -243,6 +243,8 @@ export const CloudComputerLeaseSchema = z.strictObject({
   holder: z.uuid(),
   /** The provisioner's Home subnet, where its pool hosts live too. */
   poolNetwork: BrowserPoolNetworkCidrSchema,
+  /** The provisioner's admin port on every pool host: refused if it is a port Homes use. */
+  poolAdminPort: z.number().int().min(1).max(65_535).optional(),
 });
 export const CloudComputerCheckSchema = z.discriminatedUnion("operation", [
   z.strictObject({ operation: z.literal("orphan") }),

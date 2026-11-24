@@ -1597,6 +1597,16 @@ export class CloudComputerStore {
         throw invalidBoot();
       const owner = snapshot.accountId;
       if (!owner || owner !== locked?.accountId) throw invalidBoot();
+      // Review C1: without it this Home would have no path to its browser, for good. The
+      // installer retries a 503 until the provisioner's lease names the pool network. Decided
+      // before any credential is prepared or the backup key vault is written, so a retry writes
+      // nothing.
+      const poolNetwork = await this.#poolNetwork(tx);
+      if (!poolNetwork)
+        throw new ControlPlaneError(
+          "unavailable",
+          "The browser pool's network is not known yet; the Cloud Computer will boot once it is",
+        );
       const { managedHome, credentials } = await this.#prepareManagedHome(tx, snapshot, owner);
       const row = await tx
         .selectFrom("cloudComputers")
@@ -1649,14 +1659,6 @@ export class CloudComputerStore {
           .executeTakeFirstOrThrow();
       }
       const { endpoint: backupEndpoint, bucket, prefix } = backup;
-      const poolNetwork = await this.#poolNetwork(tx);
-      // Review C1: without it this Home would have no path to its browser, for good. The
-      // installer retries a 503 until the provisioner's lease names the pool network.
-      if (!poolNetwork)
-        throw new ControlPlaneError(
-          "unavailable",
-          "The browser pool's network is not known yet; the Cloud Computer will boot once it is",
-        );
       return {
         managedHome,
         ipv6Enabled: row.ipv6Enabled,
@@ -1819,6 +1821,12 @@ export class CloudComputerStore {
       // T9: A Cloud Computer's egress password is held only by its pool host, never its Home.
       return {};
     });
+  }
+
+  /** The ports every Home's Host reaches its pool host on. */
+  get poolPorts() {
+    const { agentPort, relayPort } = this.#options.config.browserPool;
+    return { agentPort, relayPort };
   }
 
   /** The pool network now, to a booted Home that proves its credentials (review S2). */

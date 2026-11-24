@@ -110,9 +110,11 @@ it("loads optional managed Home settings from the Account runtime directory", ()
       { OPENSTEER_CLOUD_COMPUTER_POOL_AGENT_PORT: "7312" },
       { OPENSTEER_CLOUD_COMPUTER_POOL_RELAY_PORT: "25" },
       { OPENSTEER_CLOUD_COMPUTER_POOL_AGENT_PORT: "587" },
+      // The provisioner's admin port on every pool host (review A3), unless it says otherwise.
+      { OPENSTEER_CLOUD_COMPUTER_POOL_RELAY_PORT: "7311" },
     ])
       expect(() => loadControlPlaneConfig({ ...environment, ...ports })).toThrow(
-        "The browser pool's agent and relay ports must differ and must not be 25, 465 or 587",
+        "The browser pool's agent and relay ports must differ and must not be 25, 465, 587 or the pool's admin port",
       );
     expect(() =>
       loadControlPlaneConfig({
