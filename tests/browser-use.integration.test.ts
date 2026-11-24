@@ -553,10 +553,12 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         return {
           type: "cdp.error",
           requestId: message.requestId,
+          // A definite refusal (A7: before the page), whose private words never reach the agent.
           error: {
             code: "forbidden",
             retryable: false,
             message: "private upstream URL and secret",
+            unsent: true,
           },
         };
       }
