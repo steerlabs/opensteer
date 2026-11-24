@@ -3363,6 +3363,10 @@ export function attachRunnerSocket(
     );
     releaseChallenge();
     inbox.close(error);
+    // A socket already closing ends with its own close, whose code says whether the Runner is
+    // restarting: a send that failed on it cannot know, and a restart taken for a loss ends the
+    // person's tabs that were reattaching to it.
+    if (socket.readyState !== socket.OPEN) return;
     runners.disconnect(peer);
     closeProtocolSocket(socket, error);
   };
@@ -3765,6 +3769,9 @@ function attachRunnerAuxiliarySocket(options: {
     );
     release();
     inbox.close(error);
+    // As for the Runner's own socket: one already closing ends with its close, whose code says
+    // whether the Runner is restarting.
+    if (socket.readyState !== socket.OPEN) return;
     if (stream) {
       options.runners.detachAuxiliary(peer);
       dispatch.onDetach("transport-disconnected");
