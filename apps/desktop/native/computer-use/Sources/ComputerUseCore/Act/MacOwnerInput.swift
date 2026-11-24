@@ -226,27 +226,99 @@ final class MacOwnerAttachment: @unchecked Sendable {
 }
 
 @PersonInputActor
-private final class OwnerShortcutPolicy {
+final class OwnerShortcutPolicy {
+  enum Resolution {
+    case menuItem(AXUIElement)
+    case disabled
+    case keystroke
+  }
+
+  /// AppKit's `NSMenu` AX validation (`accessibilityChildren` / `AXEnabled`) throttles
+  /// `-[NSMenu update]` to once per 1.0 s, so a menu item just enabled by a prior `AXPress`
+  /// (such as Edit › Redo after Undo) can read disabled until that 1.0 s window clears.
+  /// Bound: 1150 ms (1.0 s AppKit throttle + 150 ms scheduling margin under load).
+  nonisolated static let disabledShortcutWait: TimeInterval = 1.15
+
   private var index: MenuShortcutIndex?
   private var pid: pid_t?
-  nonisolated init() {}
+  private let makeIndex: @Sendable () -> MenuShortcutIndex
+  private let isEnabled: @Sendable (AXUIElement) -> Bool?
+  nonisolated init(
+    makeIndex: @escaping @Sendable () -> MenuShortcutIndex = { MenuShortcutIndex() },
+    isEnabled: @escaping @Sendable (AXUIElement) -> Bool? = { MenuShortcutIndex.isEnabled($0) }
+  ) {
+    self.makeIndex = makeIndex
+    self.isEnabled = isEnabled
+  }
   func invalidate() {
     index?.invalidate()
   }
   var diagnosticSnapshot: (shortcuts: [String], disabled: [String], complete: Bool)? {
     index?.diagnosticSnapshot
   }
-  func route(_ combo: KeyCombo, pid: pid_t) throws -> ActionRunner.KeyRoute {
+  func route(
+    _ combo: KeyCombo,
+    pid: pid_t,
+    wait: TimeInterval = disabledShortcutWait,
+    pollIntervalNanoseconds: UInt64 = 25_000_000,
+    now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+    checkGate: @escaping @Sendable () throws -> Void = {}
+  ) async throws -> Resolution {
     guard !combo.modifiers.isEmpty else { return .keystroke }
     if self.pid != pid {
       index?.invalidate()
       self.pid = pid
     }
-    let index = self.index ?? MenuShortcutIndex()
+    let index = self.index ?? makeIndex()
     self.index = index
+    // Every real menu chord (cmd/ctrl/alt) reads the live menu bar so added, removed,
+    // rebound, or newly disabled items never go stale; plain/shifted typing keeps the cache.
+    if !combo.modifiers.isDisjoint(with: [.cmd, .ctrl, .alt]) {
+      index.invalidate()
+    }
     let app = AXUIElementCreateApplication(pid)
     AXUIElementSetMessagingTimeout(app, 0.1)
-    return try ActionRunner.keyRoute(index.lookup(combo, applicationElement: app), combo: combo)
+
+    func resolve(_ lookup: MenuShortcutIndex.Lookup) throws -> Resolution? {
+      switch lookup {
+      case .reserved:
+        throw ActionRunner.reservedShortcut
+      case .item(let item):
+        return .menuItem(item)
+      case .none:
+        return .keystroke
+      case .unverified:
+        guard combo.modifiers.isDisjoint(with: [.cmd, .ctrl, .alt]) else {
+          throw ActionRunner.unverifiedShortcut
+        }
+        return .keystroke
+      case .disabled:
+        return nil
+      }
+    }
+
+    let initial = index.lookup(combo, applicationElement: app)
+    if let resolved = try resolve(initial) { return resolved }
+    guard case .disabled(var current) = initial else { return .keystroke }
+
+    let deadline = now() + wait
+    while true {
+      try checkGate()
+      let remaining = deadline - now()
+      if remaining <= 0 { break }
+      let sleepNs = min(pollIntervalNanoseconds, UInt64(max(1, remaining * 1_000_000_000)))
+      try await Task.sleep(nanoseconds: sleepNs)
+      try checkGate()
+      if let enabled = isEnabled(current) {
+        if enabled { return .menuItem(current) }
+      } else {
+        index.invalidate()
+        let refreshed = index.lookup(combo, applicationElement: app)
+        if let resolved = try resolve(refreshed) { return resolved }
+        if case .disabled(let replacement) = refreshed { current = replacement }
+      }
+    }
+    return .disabled
   }
 }
 
@@ -585,9 +657,37 @@ final class MacOwnerInputWorker {
 
   private func menuShortcut(_ combo: KeyCombo, target: EventTarget, lease: MacOwnerAttachment,
                             map: MacOwnerInputMap, proceed: @escaping @Sendable () throws -> Void) async throws -> Bool {
-    let route = try shortcutPolicy.route(combo, pid: target.processIdentifier)
+    let route = try await shortcutPolicy.route(combo, pid: target.processIdentifier, checkGate: {
+      try proceed(); try lease.check(map)
+    })
     let snap = shortcutPolicy.diagnosticSnapshot
-    guard case .menuItem(let item) = route else {
+    switch route {
+    case .menuItem(let item):
+      // A background app may receive the key without running its menu equivalent.
+      // Choose its native menu action before effect; never also post or retry it.
+      try proceed(); try lease.check(map)
+      let status: AXError
+      if target.processIdentifier == getpid() {
+        status = try await MainActor.run {
+          try proceed(); try lease.check(map)
+          return AXUIElementPerformAction(item, kAXPressAction as CFString)
+        }
+      } else { status = AXUIElementPerformAction(item, kAXPressAction as CFString) }
+      if let error = ActionRunner.pressOutcome(status, whatMayHaveHappened: "the shortcut ran",
+        failure: "This app's menu did not accept that shortcut.") { throw error }
+      MacVideoDiagnostic.write(["event": "owner-menu-shortcut-hit", "streamId": lease.streamID,
+        "combo": MenuShortcutIndex.key(for: combo), "shortcuts": snap?.shortcuts ?? [],
+        "disabled": snap?.disabled ?? [], "complete": snap?.complete ?? false,
+        "uptimeUs": DispatchTime.now().uptimeNanoseconds / 1000])
+      shortcutPolicy.invalidate()
+      return true
+    case .disabled:
+      MacVideoDiagnostic.write(["event": "owner-menu-shortcut-disabled", "streamId": lease.streamID,
+        "combo": MenuShortcutIndex.key(for: combo), "shortcuts": snap?.shortcuts ?? [],
+        "disabled": snap?.disabled ?? [], "complete": snap?.complete ?? false,
+        "uptimeUs": DispatchTime.now().uptimeNanoseconds / 1000])
+      return true
+    case .keystroke:
       if !combo.modifiers.isDisjoint(with: [.cmd, .ctrl, .alt]) {
         MacVideoDiagnostic.write(["event": "owner-menu-shortcut-miss", "streamId": lease.streamID,
           "combo": MenuShortcutIndex.key(for: combo), "shortcuts": snap?.shortcuts ?? [],
@@ -596,24 +696,6 @@ final class MacOwnerInputWorker {
       }
       return false
     }
-    // A background app may receive the key without running its menu equivalent.
-    // Choose its native menu action before effect; never also post or retry it.
-    try proceed(); try lease.check(map)
-    let status: AXError
-    if target.processIdentifier == getpid() {
-      status = try await MainActor.run {
-        try proceed(); try lease.check(map)
-        return AXUIElementPerformAction(item, kAXPressAction as CFString)
-      }
-    } else { status = AXUIElementPerformAction(item, kAXPressAction as CFString) }
-    if let error = ActionRunner.pressOutcome(status, whatMayHaveHappened: "the shortcut ran",
-      failure: "This app's menu did not accept that shortcut.") { throw error }
-    MacVideoDiagnostic.write(["event": "owner-menu-shortcut-hit", "streamId": lease.streamID,
-      "combo": MenuShortcutIndex.key(for: combo), "shortcuts": snap?.shortcuts ?? [],
-      "disabled": snap?.disabled ?? [], "complete": snap?.complete ?? false,
-      "uptimeUs": DispatchTime.now().uptimeNanoseconds / 1000])
-    shortcutPolicy.invalidate()
-    return true
   }
 
   private struct Focused { let element: AXUIElement; let target: EventTarget; let secure: Bool; let role: String; let token: AXWindowToken }

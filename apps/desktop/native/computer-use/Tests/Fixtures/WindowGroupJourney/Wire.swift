@@ -461,12 +461,13 @@ extension WireJourney {
     try await Task.sleep(nanoseconds: 200_000_000)
     let originalFront = PrivateAPI.focusPID(front: true)
     let originalPointer = CGEvent(source: nil)?.location
+    let stressMode = ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_REDO_STRESS"] == "1"
     person.beginEvidence()
-    let localKeys = try OwnerPersonStream(out: out)
+    let localKeys = stressMode ? nil : try OwnerPersonStream(out: out)
     var localEvidenceCompleted = false
     defer {
-      localKeys.cancel()
-      if !localEvidenceCompleted, let sent = try? localKeys.recorded() {
+      localKeys?.cancel()
+      if !stressMode, !localEvidenceCompleted, let sent = try? localKeys?.recorded() {
         try? person.finishEvidence(sent: sent, out: out, front: originalFront, pointer: originalPointer, complete: false)
       }
     }
@@ -748,6 +749,7 @@ extension WireJourney {
         ])
       }
       // Opposite case: Redo when there is truly nothing to redo.
+      // Wait past AppKit's 1.0 s AX menu throttle so Edit › Redo reads disabled before sending redo.
       let beforeNothingMark = editingMark
       try await Contracts.command(out, "owner-clear")
       _ = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
@@ -758,6 +760,7 @@ extension WireJourney {
       ])
       try await waitKeyUp(after: freshKU)
       let nothingCtx = try await activeContext(after: beforeNothingMark)
+      try await Task.sleep(nanoseconds: 1_150_000_000)
       let nothingDiagOff = diagOffset()
       let nothingRawBefore = try rawRedoCount()
       let nothingStartUs = DispatchTime.now().uptimeNanoseconds / 1000
@@ -767,7 +770,9 @@ extension WireJourney {
       let nothingState = try await readState()
       let nothingDiags = diagShortcutEvents(since: nothingDiagOff)
       let nothingText = nothingState["text"] as? String ?? ""
-      let nothingOk = nothingText == "f"
+      let nothingOk = nothingRes["outcome"] as? String == "dispatched"
+        && nothingText == "f"
+        && nothingRawAfter == nothingRawBefore
       let report: [String: Any] = [
         "gaps": gapReports,
         "totalMisses": totalMisses,
@@ -784,12 +789,13 @@ extension WireJourney {
       ]
       try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
         .write(to: out.appendingPathComponent("redo-stress-report.json"))
-      localKeys.cancel()
-      try person.finishEvidence(sent: try localKeys.recorded(), out: out, front: originalFront, pointer: originalPointer, complete: true)
+      person.stopEvidence()
+      try require(PrivateAPI.focusPID(front: true) == originalFront && CGEvent(source: nil)?.location == originalPointer,
+        "Stress run changed the person's front app or pointer")
       localEvidenceCompleted = true
       if failOnMiss {
         try require(totalMisses == 0, "Redo stress had \(totalMisses) misses; see redo-stress-report.json")
-        try require(nothingOk, "Nothing-to-redo changed text to \(nothingText)")
+        try require(nothingOk, "Nothing-to-redo failed: text=\(nothingText) rawPosted=\(nothingRawAfter > nothingRawBefore) outcome=\(nothingRes)")
       }
       return
     }
@@ -1405,7 +1411,7 @@ extension WireJourney {
     start("local-cover-invariants")
     try require(PrivateAPI.focusPID(front: true) == originalFront && CGEvent(source: nil)?.location == originalPointer,
       "Owner input changed the person's front app or pointer")
-    let sent = try await localKeys.stop()
+    let sent = try await localKeys.unwrap("local person keystream").stop()
     try await Task.sleep(nanoseconds: 100_000_000)
     try person.finishEvidence(sent: sent, out: out, front: originalFront, pointer: originalPointer)
     localEvidenceCompleted = true
