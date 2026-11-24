@@ -44,3 +44,5 @@ func signalSubreaperDescendants(_ int, _ syscall.Signal) error {
 func subreaperDescendantsEmpty(_ int) (bool, error) {
 	return true, nil
 }
+
+func reapAdoptedChildren(_ int) {}

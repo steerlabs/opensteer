@@ -462,7 +462,6 @@ export async function listLinuxProcesses(
   procRoot = "/proc",
 ): Promise<ProcessInventory> {
   const maxAttempts = 3;
-  const checkLiveOnHost = procRoot === "/proc";
   let previousVanished: ReadonlySet<number> | undefined;
   let last: { readonly processes: readonly ListedProcess[]; readonly incomplete: boolean } = {
     processes: [],
@@ -474,11 +473,10 @@ export async function listLinuxProcesses(
       return { processes: scan.processes, incomplete: true };
     }
     if (previousVanished) {
-      // A PID that vanished on the prior pass must now be absent from /proc and
-      // dead; if it is still listed or still alive (e.g. privilege change or a
-      // broken /proc listing), the scan cannot prove containment.
-      for (const pid of previousVanished) {
-        if (scan.listedPids.has(pid) || (checkLiveOnHost && defaultProbeAlive(pid) !== "gone")) {
+      // A PID that stays listed and keeps failing with ENOENT/ESRCH across
+      // passes indicates an unstable or broken /proc listing, not a normal exit.
+      for (const pid of scan.vanishedPids) {
+        if (previousVanished.has(pid)) {
           return { processes: scan.processes, incomplete: true };
         }
       }
@@ -486,17 +484,10 @@ export async function listLinuxProcesses(
     if (scan.vanishedPids.size === 0) {
       return { processes: scan.processes, incomplete: false };
     }
-    if (checkLiveOnHost) {
-      for (const pid of scan.vanishedPids) {
-        if (defaultProbeAlive(pid) !== "gone") {
-          return { processes: scan.processes, incomplete: true };
-        }
-      }
-    }
     previousVanished = scan.vanishedPids;
     // After retrying so any child forked before prior vanished PIDs exited is
-    // captured in a fresh readdirSync, remaining disjoint dead PIDs on a busy
-    // host do not poison containment unless a PID keeps vanishing or stays alive.
+    // captured in a fresh readdirSync, strictly disjoint exits on a busy host
+    // do not poison containment unless a PID keeps vanishing or errors.
     last = { processes: scan.processes, incomplete: false };
   }
   return last;
@@ -508,7 +499,6 @@ async function scanLinuxProcOnce(
 ): Promise<{
   readonly processes: readonly ListedProcess[];
   readonly incomplete: boolean;
-  readonly listedPids: ReadonlySet<number>;
   readonly vanishedPids: ReadonlySet<number>;
 }> {
   let entries: string[];
@@ -518,7 +508,6 @@ async function scanLinuxProcOnce(
     return {
       processes: [],
       incomplete: true,
-      listedPids: new Set(),
       vanishedPids: new Set(),
     };
   }
@@ -526,7 +515,6 @@ async function scanLinuxProcOnce(
   const myUid = process.getuid?.();
   const found: ListedProcess[] = [];
   const readablePids = new Set<number>();
-  const listedPids = new Set<number>();
   const deferredDenied: {
     readonly pid: number;
     readonly ppid: number;
@@ -546,7 +534,6 @@ async function scanLinuxProcOnce(
       sliceStart = performance.now();
     }
     const pid = Number(entry);
-    listedPids.add(pid);
     if (pid === process.pid) continue;
     let stat: string;
     try {
@@ -588,9 +575,15 @@ async function scanLinuxProcOnce(
       environ = readFileSync(`${procRoot}/${entry}/environ`, "latin1");
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
-      if (code === "ESRCH" && state === "Z") {
-        // Linux removes a zombie's address space before its PID is reaped.
-        // Its start identity must remain listed even when environ returns ESRCH.
+      if (
+        code === "ESRCH" ||
+        ((state === "Z" || state === "X") &&
+          (code === "ENOENT" || code === "EACCES" || code === "EPERM"))
+      ) {
+        // Linux clears a dying/zombie process's mm_struct before its parent reaps
+        // it, so /proc/<pid>/environ returns ESRCH or EACCES even for a direct child
+        // while its stat still shows Z/X. Keep its start identity listed so containment
+        // still tracks already-seen PIDs until reaped without falsely failing the scan.
         found.push({
           identity: `${pid}@${startTime}`,
           pid,
@@ -601,7 +594,7 @@ async function scanLinuxProcOnce(
         readablePids.add(pid);
         continue;
       }
-      if (code === "ENOENT" || code === "ESRCH") {
+      if (code === "ENOENT") {
         vanishedPids.add(pid);
         continue;
       }
@@ -678,7 +671,7 @@ async function scanLinuxProcOnce(
       });
     }
   }
-  return { processes: found, incomplete, listedPids, vanishedPids };
+  return { processes: found, incomplete, vanishedPids };
 }
 
 /**

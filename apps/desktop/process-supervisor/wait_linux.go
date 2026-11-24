@@ -124,3 +124,26 @@ func subreaperDescendantsEmpty(rootPID int) (bool, error) {
 	}
 	return remaining == 0, nil
 }
+
+// reapAdoptedChildren reaps exited descendants re-parented to this subreaper
+// while the supervised root process is still running, never reaping rootPID.
+func reapAdoptedChildren(rootPID int) {
+	tasks, err := os.ReadDir("/proc/self/task")
+	if err != nil {
+		return
+	}
+	for _, task := range tasks {
+		raw, readErr := os.ReadFile("/proc/self/task/" + task.Name() + "/children")
+		if readErr != nil {
+			continue
+		}
+		for _, field := range strings.Fields(string(raw)) {
+			pid, convErr := strconv.Atoi(field)
+			if convErr != nil || pid <= 0 || pid == rootPID {
+				continue
+			}
+			var status unix.WaitStatus
+			_, _ = unix.Wait4(pid, &status, unix.WNOHANG, nil)
+		}
+	}
+}

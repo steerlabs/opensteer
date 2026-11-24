@@ -35,6 +35,7 @@ type processContainment interface {
 	graceful() error
 	force() error
 	empty() (bool, error)
+	reapAdopted()
 }
 
 type targetExit struct {
@@ -171,6 +172,7 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer
 				_ = containment.force()
 			}
 		case <-ticker.C:
+			containment.reapAdopted()
 		}
 
 		if rootExited {

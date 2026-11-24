@@ -81,6 +81,10 @@ func (containment *posixProcessContainment) empty() (bool, error) {
 	return subreaperDescendantsEmpty(containment.processGroupID)
 }
 
+func (containment *posixProcessContainment) reapAdopted() {
+	reapAdoptedChildren(containment.processGroupID)
+}
+
 func (containment *posixProcessContainment) signal(signal syscall.Signal) error {
 	if containment.processGroupID < 1 {
 		return syscall.ESRCH

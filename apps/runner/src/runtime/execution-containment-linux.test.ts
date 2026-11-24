@@ -147,3 +147,24 @@ it("A1(a) case 4: returns unverifiable when a child seen earlier disappears whil
     killSpy.mockRestore();
   }
 });
+
+it("does not fail a scan when an already-exited zombie direct child returns EACCES on /proc/<pid>/environ", async () => {
+  const containment = new ExecutionContainment({
+    bootId: "boot",
+    dataDirectory: "/data",
+    platform: "linux",
+  });
+  vi.mocked(readdirSync).mockImplementation(() => ["205"] as never);
+  vi.mocked(readFileSync).mockImplementation((path) => {
+    const target = String(path);
+    if (target === "/proc/205/stat") {
+      return `205 (opensteer-proce) Z ${process.pid} ${Array(17).fill(0).join(" ")} 999` as never;
+    }
+    if (target === "/proc/205/environ") {
+      throw Object.assign(new Error("Permission denied"), { code: "EACCES" });
+    }
+    throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+  });
+  await expect(containment.reapEarlierBoots()).resolves.toBe("proven");
+  await expect(containment.liveRoots("run")).resolves.toBe(0);
+});
