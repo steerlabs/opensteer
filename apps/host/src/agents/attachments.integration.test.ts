@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createId, ModelSelectionSchema, type Attachment } from "@opensteer/core";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import sharp from "sharp";
 import { sql } from "kysely";
@@ -46,7 +46,6 @@ integration("chat attachment delivery through a whole deployment", () => {
       catalogTimeoutMs: 10_000,
       runTimeoutMs: 20_000,
       harnesses,
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       harnessInstance: {
         config: {},
         driverKind: "codex",

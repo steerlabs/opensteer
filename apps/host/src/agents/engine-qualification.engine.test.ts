@@ -21,7 +21,6 @@ import {
   type ThreadAccessMode,
   shortRequestHoldMs,
 } from "@opensteer/core";
-import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
 import { RunnerRegistry } from "@opensteer/orchestration";
 import { createHarnessRegistry, parseAgentExecutionConfig } from "@opensteer/runner";
@@ -145,7 +144,6 @@ describe("engine qualification", () => {
           databaseUrl,
           harnessInstance: qualificationAccount(engine),
           harnesses,
-          harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
           runTimeoutMs: 180_000,
           runnerWire: {},
         }).catch((error: unknown) => {
@@ -383,7 +381,6 @@ describe("engine qualification", () => {
             runtimeCacheDirectory: runtimeCacheDirectory!,
           },
         ),
-        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         runTimeoutMs: 180_000,
       }).catch((error: unknown) => {
         throw qualificationFailure(engine, error);
@@ -473,7 +470,6 @@ describe("engine qualification", () => {
         databaseUrl,
         harnessInstance: qualificationAccount(engine),
         harnesses,
-        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         runTimeoutMs: 300_000,
       }).catch((error: unknown) => {
         throw qualificationFailure(engine, error);
@@ -767,7 +763,6 @@ describe("engine qualification", () => {
         databaseUrl,
         harnessInstance: qualificationAccount(engine),
         harnesses,
-        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         runTimeoutMs: 300_000,
       }).catch((error: unknown) => {
         throw qualificationFailure(engine, error);
@@ -1213,7 +1208,6 @@ describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
             runtimeCacheDirectory: runtimeCacheDirectory!,
           },
         ),
-        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         runTimeoutMs: 120_000,
         runnerLogger: {
           info: (message, fields) => console.info(message, fields),
@@ -1415,7 +1409,6 @@ describe("live Home handoff between native engines", () => {
         nodeExecutable: process.execPath,
         runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
       }),
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       runTimeoutMs: 300_000,
     });
     const claudeHarnessId = stack.additionalHarnessInstanceIds[0];

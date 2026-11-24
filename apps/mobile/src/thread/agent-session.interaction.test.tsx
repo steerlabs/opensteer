@@ -153,7 +153,7 @@ describe("a connected agent's own task on the phone", () => {
     const text = page.textContent ?? "";
     expect(text).toContain("Listed tabs in Travel on Studio Mac");
     expect(text).toContain("Reading only · Done");
-    expect(text).toContain("Allowed by Auto · Failed");
+    expect(text).toContain("Allowed by you · Failed");
     expect(text).toContain("Uncertain");
     expect(text).toContain("can’t say whether this happened");
     expect(text).toContain("“\u2068Claude\u2069” is working");

@@ -10,6 +10,11 @@ import type { Kysely } from "kysely";
 import { randomUUID } from "node:crypto";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 
+/** No answer came in time: not knowing, never a failure (P18). */
+export class BrowserPoolUnanswered extends Error {
+  override readonly name = "BrowserPoolUnanswered";
+}
+
 /** A guest's saved live state: consumed by exactly one resume, discarded at `discardAt`. */
 export interface BrowserPoolSavedState {
   readonly id: string;
@@ -26,6 +31,11 @@ export interface BrowserPoolPhysicalStatus {
   readonly epoch: number | null;
   readonly phase: "running" | "paused" | "stopped";
   readonly savedState: BrowserPoolSavedState | null;
+  /**
+   * The guest's egress proxy is down for good (its restarts exhausted): the guest has no way out
+   * until its next start or wake brings the proxy back. Absent otherwise.
+   */
+  readonly proxy?: "down";
 }
 
 export type BrowserPoolPhysicalKind = "start" | "pause" | "resume" | "stop" | "sign";
@@ -75,6 +85,17 @@ export interface BrowserPoolControllerResult {
 /**
  * The narrow port a pool agent implements. The Home never holds the controller's key: the
  * runtime accepts only controls the controller signed for the fence it issued.
+ *
+ * What an implementation must guarantee, because the coordinator acts on what it returns
+ * (a mismatch discards live state; a stopped status lets a removal finish):
+ * - every answer (`status`, `result`, `apply`) is authenticated by the controller client: it
+ *   comes from the controller this Home was given, not from anything on the way;
+ * - every answer is bound to the slot and the term it was asked for, and to the request it
+ *   answers: a status for another slot, one from an older term, or a replayed earlier reply is
+ *   refused by the client and never returned here. A refused answer is not knowing (a throw).
+ * The loopback fake answers in process. The real client (the pool agent's) signs its requests
+ * and verifies signed replies; its suite holds the cases for another slot, an older term and a
+ * replayed reply.
  */
 export interface BrowserPoolPhysicalController {
   status(slotId: string, term: number): Promise<BrowserPoolPhysicalStatus>;
@@ -103,6 +124,7 @@ export class BrowserPoolControllerJournal {
   readonly #database: Kysely<DatabaseSchema>;
   readonly #controller: BrowserPoolPhysicalController;
   readonly #runnerId: RunnerId;
+  readonly #target: { readonly slotId: string; readonly term: number } | undefined;
 
   readonly #timeoutMs: number;
 
@@ -112,11 +134,13 @@ export class BrowserPoolControllerJournal {
     runnerId: RunnerId,
     timeoutMs = 10_000,
     settle?: (id: string, result: Readonly<Record<string, unknown>>) => Promise<void>,
+    target?: { readonly slotId: string; readonly term: number },
   ) {
     this.#database = database;
     this.#controller = controller;
     this.#runnerId = runnerId;
     this.#timeoutMs = timeoutMs;
+    this.#target = target;
     this.#settle =
       settle ?? ((id, result) => settleBrowserPoolControllerCall(database, id, result));
   }
@@ -126,7 +150,7 @@ export class BrowserPoolControllerJournal {
   /** A read of the slot: it changes nothing, so it carries no journal row. */
   status(slotId: string, term: number, signal?: AbortSignal) {
     return withTimeout(this.#controller.status(slotId, term), this.#timeoutMs, {
-      timeoutError: () => new Error("The pool controller did not answer in time."),
+      timeoutError: () => new BrowserPoolUnanswered("The pool controller did not answer in time."),
       ...(signal ? { signal } : {}),
     });
   }
@@ -143,7 +167,11 @@ export class BrowserPoolControllerJournal {
     intentId: string | null,
     closeOpen?: BrowserPoolPhysicalStatus,
     signal?: AbortSignal,
+    restartKeys?: readonly string[],
   ): Promise<BrowserPoolControllerResult> {
+    // One id per intent until it is settled: an open Start is delivered again by its own id
+    // before anything else is asked, never closed or replaced by a new one.
+    await this.settleStarts(signal);
     const call: BrowserPoolControllerCall = { id: randomUUID(), ...input };
     await recordBrowserPoolControllerCall(
       this.#database,
@@ -155,16 +183,44 @@ export class BrowserPoolControllerJournal {
         intentId,
         kind: call.kind,
         request: call as unknown as Record<string, unknown>,
+        ...(restartKeys?.length ? { restartKeys } : {}),
       },
       closeOpen as unknown as Record<string, unknown> | undefined,
     );
     return this.#deliver(call, signal);
   }
 
+  /**
+   * Delivers every open Start again by its own id, oldest first, and settles it. Until each has
+   * its answer no stopped status is believed: a Start still on its way names a stopped guest as
+   * its predecessor and could bring one up after it. A Start that cannot be settled fails here,
+   * and the step that asked is tried again. (A Start the pool host agent receives after its slot
+   * was deleted is refused there, and one of an older term by that term: the agent's fence,
+   * proven in tests/browser-pool-pair.integration.test.ts.)
+   */
+  async settleStarts(signal?: AbortSignal): Promise<readonly BrowserPoolControllerResult[]> {
+    const settled: BrowserPoolControllerResult[] = [];
+    // A stop too: one id per intent within a restart or a removal, never closed as superseded.
+    for (const row of await listOpenBrowserPoolControllerCalls(
+      this.#database,
+      this.#runnerId,
+      this.#target,
+    ))
+      if (row.kind === "start" || row.kind === "stop")
+        settled.push(
+          await this.#deliver(row.request as unknown as BrowserPoolControllerCall, signal),
+        );
+    return settled;
+  }
+
   /** Delivers every call the journal still has open, oldest first. */
   async settleOpen(signal?: AbortSignal): Promise<readonly BrowserPoolControllerResult[]> {
     const settled: BrowserPoolControllerResult[] = [];
-    for (const row of await listOpenBrowserPoolControllerCalls(this.#database, this.#runnerId))
+    for (const row of await listOpenBrowserPoolControllerCalls(
+      this.#database,
+      this.#runnerId,
+      this.#target,
+    ))
       settled.push(
         await this.#deliver(row.request as unknown as BrowserPoolControllerCall, signal),
       );
@@ -178,7 +234,8 @@ export class BrowserPoolControllerJournal {
     // Every call has a deadline. Past it the outcome is unknown and is read by the call's id.
     const bounded = <T>(work: Promise<T>) =>
       withTimeout(work, this.#timeoutMs, {
-        timeoutError: () => new Error("The pool controller did not answer in time."),
+        timeoutError: () =>
+          new BrowserPoolUnanswered("The pool controller did not answer in time."),
         ...(signal ? { signal } : {}),
       });
     let result: BrowserPoolControllerResult | null;

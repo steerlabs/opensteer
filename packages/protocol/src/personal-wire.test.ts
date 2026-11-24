@@ -12,8 +12,11 @@ import { TabCommandSchema, TabViewerSchema } from "./tabs.js";
 import { ScopedClientMessageSchema, ScopedHostMessageSchema } from "./personal-sync.js";
 import { hostApi } from "./host-api.js";
 import {
+  AgentBrowserSessionSummarySchema,
   BrowserAttachTicketClaimsSchema,
   BrowserBridgeAttachedSchema,
+  BrowserPoolReportSchema,
+  HostedBrowserSessionSchema,
   PooledBrowserAttachTicketClaimsSchema,
 } from "./browser.js";
 import {
@@ -148,6 +151,16 @@ describe("personal wire compatibility", () => {
     expect(BrowserAttachTicketClaimsSchema.safeParse(pooled).success).toBe(false);
     expect(PooledBrowserAttachTicketClaimsSchema.safeParse(ordinary).success).toBe(false);
     expect(PooledBrowserAttachTicketClaimsSchema.parse(pooled)).toEqual(pooled);
+    // The Home's end request (P15) is a pooled ticket only: no ordinary ticket carries it.
+    const ending = { ...pooled, pool: { ...pooled.pool, end: true } };
+    expect(PooledBrowserAttachTicketClaimsSchema.parse(ending)).toEqual(ending);
+    expect(BrowserAttachTicketClaimsSchema.safeParse(ending).success).toBe(false);
+    expect(
+      PooledBrowserAttachTicketClaimsSchema.safeParse({
+        ...pooled,
+        pool: { ...pooled.pool, end: false },
+      }).success,
+    ).toBe(false);
   });
 
   it("adds the pooled browser's report and loss notice as optional fields both ways", () => {
@@ -166,6 +179,7 @@ describe("personal wire compatibility", () => {
           start: { reason: "expired", at: "start-1" },
           failures: 0,
           pages: [{ surfaceId: "surface_a", outcome: "lost", typed: "yes" }],
+          notReady: { reason: "unreachable" },
         },
       ],
     };
@@ -247,6 +261,46 @@ describe("personal wire compatibility", () => {
     ).toEqual([]);
     expect(surfaceBreaks(before, item({}), "output").join("\n")).toContain(
       "oneOf[kind=request]/properties/title",
+    );
+  });
+
+  it("carries unconfirmed-closing pooled sessions and browser.session.dismiss additively (X2)", () => {
+    const session = {
+      access: "read-write" as const,
+      closeUnconfirmed: true as const,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      id: "bsn_11111111-1111-4111-8111-111111111111",
+      origin: "person" as const,
+      placement: { kind: "runner" as const, runnerId: "rnr_11111111-1111-4111-8111-111111111111" },
+      profileId: null,
+      runtimeId: "rt-1",
+      state: "closing" as const,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    expect(HostedBrowserSessionSchema.parse(session).closeUnconfirmed).toBe(true);
+    expect("closeUnconfirmed" in AgentBrowserSessionSummarySchema.shape).toBe(false);
+    const report = BrowserPoolReportSchema.parse({
+      runnerId: "rnr_11111111-1111-4111-8111-111111111111",
+      phase: "running",
+      since: "2026-01-01T00:00:00.000Z",
+      unconfirmedClosings: [
+        {
+          sessionId: "bsn_11111111-1111-4111-8111-111111111111",
+          surfaceIds: ["tab-1"],
+        },
+      ],
+    });
+    expect(report.unconfirmedClosings).toEqual([
+      { sessionId: "bsn_11111111-1111-4111-8111-111111111111", surfaceIds: ["tab-1"] },
+    ]);
+    const command = hostApi["commands.dispatch"].payload.parse({
+      idempotencyKey: "dismiss-x2-1",
+      sessionId: "bsn_11111111-1111-4111-8111-111111111111",
+      type: "browser.session.dismiss",
+    });
+    expect(command.type).toBe("browser.session.dismiss");
+    expect(hostApi["commands.dispatch"].success.parse({ type: "browser.session.dismiss" })).toEqual(
+      { type: "browser.session.dismiss" },
     );
   });
 });

@@ -71,8 +71,6 @@ const grokSourceId = "xai";
 const grokApiKeySetupMethodId = "xai-api-key";
 const grokDeviceSetupMethodId = "grok-device-code";
 const grokConnectionSlot = "primary";
-const grokNativeUserDetail =
-  "Grok keeps its sign-in in the computer's own account, so it runs only on a computer where Opensteer runs as you.";
 const grokAuthenticationDetail = "Sign in to Grok or add an xAI API key.";
 const grokAuthenticationTimeoutMs = 5 * 60_000;
 const grokApiKeyFileName = "opensteer-xai-api-key";
@@ -124,7 +122,6 @@ export interface GrokHarnessDependencies {
 
 export class GrokHarnessDriver implements HarnessDriver {
   readonly kind = HarnessIdSchema.parse("grok");
-  readonly isolatedServiceRefusal = grokNativeUserDetail;
   readonly sources = grokSources;
   readonly accessModes = grokAccessModes;
   readonly capabilities = grokCapabilities;
@@ -150,9 +147,6 @@ export class GrokHarnessDriver implements HarnessDriver {
 
   async inspect(context: HarnessInspectionContext): Promise<HarnessInspectionResult> {
     assertGrokSource(context.sourceId);
-    if (context.runtimeBoundary.kind !== "native-user") {
-      return { detail: grokNativeUserDetail, status: "unavailable" };
-    }
     const config = GrokHarnessConfigSchema.parse(context.config);
     const runtime = grokInstalledRuntime();
     let version: string;
@@ -262,7 +256,6 @@ export class GrokHarnessDriver implements HarnessDriver {
     context: HarnessAuthenticationContext,
     selection: HarnessAuthenticationSelection,
   ): Promise<HarnessAuthenticationStart> {
-    assertNativeUser(context);
     assertGrokSource(context.sourceId);
     assertConnectionSlot(selection.connectionSlot);
     if (selection.methodId === grokApiKeySetupMethodId) {
@@ -300,7 +293,6 @@ export class GrokHarnessDriver implements HarnessDriver {
     context: HarnessAuthenticationContext,
     selection: HarnessLogoutSelection,
   ): Promise<void> {
-    assertNativeUser(context);
     assertGrokSource(context.sourceId);
     assertConnectionSlot(selection.connectionSlot);
     if (context.providerState.kind === "isolated") {
@@ -327,7 +319,6 @@ export class GrokHarnessDriver implements HarnessDriver {
   }
 
   async removeProfile(context: HarnessAuthenticationContext): Promise<void> {
-    assertNativeUser(context);
     assertGrokSource(context.sourceId);
     if (context.providerState.kind !== "isolated") return;
     await grokApiKey(context.providerState).remove();
@@ -428,7 +419,6 @@ class GrokHarnessAdapter implements HarnessAdapter {
         rewritePromptText: rewriteGrokSkillInvocation,
       },
       launch: async ({ accessMode, context }) => {
-        assertNativeUser(context);
         const environment = await grokProcessEnvironment(
           context.environment,
           context.providerState,
@@ -481,7 +471,6 @@ class GrokHarnessAdapter implements HarnessAdapter {
   }
 
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
-    assertNativeUser(context);
     // Grok cannot be run here to show what of the person's it loads.
     assertEngineMayRun("grok", context);
     return this.#delegate.startSession(this.#resolvedContext(context));
@@ -491,7 +480,6 @@ class GrokHarnessAdapter implements HarnessAdapter {
     providerSessionReference: string,
     context: HarnessSessionContext,
   ): Promise<HarnessSession> {
-    assertNativeUser(context);
     assertEngineMayRun("grok", context);
     await assertGrokSessionExists(providerSessionReference, context);
     return this.#delegate.resumeSession(providerSessionReference, this.#resolvedContext(context));
@@ -759,7 +747,6 @@ async function generateGrokText(
   context: HarnessGenerateTextInput["context"],
   input: HarnessGenerateTextInput,
 ): Promise<string> {
-  assertNativeUser(context);
   return withBackgroundTextDirectory(context, input.signal, async (directory) => {
     const home = join(directory, "home");
     await mkdir(home, { mode: 0o700 });
@@ -1128,11 +1115,6 @@ function grokInstalledRuntime() {
     throw new OpensteerError({ code: "internal", message: "Grok runtime is not installed-shaped" });
   }
   return entry.runtime;
-}
-
-function assertNativeUser(context: { readonly runtimeBoundary: { readonly kind: string } }): void {
-  if (context.runtimeBoundary.kind === "native-user") return;
-  throw new OpensteerError({ code: "forbidden", message: grokNativeUserDetail });
 }
 
 function assertGrokSource(sourceId: string): void {

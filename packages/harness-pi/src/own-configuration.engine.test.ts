@@ -3,11 +3,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createId, ModelSelectionSchema, type ThreadAccessMode } from "@opensteer/core";
-import {
-  nativeUserHarnessRuntimeBoundary,
-  type HarnessEvent,
-  type HarnessSessionContext,
-} from "@opensteer/harness";
+import { type HarnessEvent, type HarnessSessionContext } from "@opensteer/harness";
 import { afterEach, expect, it } from "vitest";
 import { packagedPiExecutable } from "./executable.js";
 import { PiHarnessDriver } from "./pi-driver.js";
@@ -176,8 +172,6 @@ async function piRun(input: {
     historyWindow: { byteCount: 2, hasEarlier: false, itemCount: 0 },
     instructions: "OPENSTEER-INSTRUCTIONS-MARKER",
     machineAccessNotice: "No other computers are reachable.",
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse({
       modelId: "stub-model",
       options: {},
@@ -193,7 +187,6 @@ async function piRun(input: {
       providerHomeDirectory: undefined,
       store: { directory: agentDirectory, id: "own-configuration" },
     },
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: AbortSignal.timeout(120_000),
     skills: { skills: [] },
     threadId,
@@ -418,8 +411,6 @@ it("refuses others' tasks and background text before spawning Pi when models.jso
       historyWindow: { byteCount: 2, hasEarlier: false, itemCount: 0 },
       instructions: "OPENSTEER-INSTRUCTIONS-MARKER",
       machineAccessNotice: "No other computers are reachable.",
-      machineAccessPlatform: undefined,
-      machineAccessRelaySocket: undefined,
       modelSelection: ModelSelectionSchema.parse({
         modelId: "stub-model",
         options: {},
@@ -435,7 +426,6 @@ it("refuses others' tasks and background text before spawning Pi when models.jso
         providerHomeDirectory: undefined,
         store: { directory: agentDirectory, id: "own-configuration" },
       },
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: AbortSignal.timeout(120_000),
       skills: { skills: [] },
       threadId,
@@ -606,8 +596,6 @@ it("isolates models.json as a checked copy and re-checks auth.json before each t
     historyWindow: { byteCount: 2, hasEarlier: false, itemCount: 0 },
     instructions: "OPENSTEER-INSTRUCTIONS-MARKER",
     machineAccessNotice: "No other computers are reachable.",
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse({
       modelId: "stub-model",
       options: {},
@@ -623,7 +611,6 @@ it("isolates models.json as a checked copy and re-checks auth.json before each t
       providerHomeDirectory: undefined,
       store: { directory: agentDirectory, id: "own-configuration" },
     },
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: AbortSignal.timeout(120_000),
     skills: { skills: [] },
     threadId,

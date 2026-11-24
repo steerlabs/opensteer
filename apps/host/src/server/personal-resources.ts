@@ -461,7 +461,6 @@ export class PersonalResources {
               }
             : driver,
         ),
-        providerStateModes: [...(runner?.modules.agents?.providerStateModes ?? [])],
         status: runner ? "connected" : "disconnected",
         can: {
           executeTasks:

@@ -123,7 +123,10 @@ func hostInput(
   helperVersion: String, peerRequirement: PeerRequirementMode,
   catalog: AppCatalog = AppCatalog(roots: [], bundles: []),
   dataPlane: DataPlane = DataPlane(
-    contracts: [:], grants: [:], providers: [:], grantReader: FakeGrants([:]))
+    contracts: [:], grants: [:], providers: [:], grantReader: FakeGrants([:])),
+  terminate: @escaping @MainActor () -> Void = {
+    XCTFail("Unexpected helper exit")
+  }
 ) -> HelperRuntime {
   HelperRuntime(
     helperVersion: helperVersion, peerRequirement: peerRequirement, catalog: catalog,
@@ -138,7 +141,7 @@ func hostInput(
       }),
       sendRecords: URL(fileURLWithPath: "/nonexistent/cu-host-test-records.json")),
     permissions: { PermissionsState(accessibility: .granted, screenRecording: .granted) },
-    appRunning: { _, _ in false })
+    appRunning: { _, _ in false }, terminate: terminate)
 }
 
 func startQueuedWork(_ work: QueuedWork) -> Bool { work.start() }

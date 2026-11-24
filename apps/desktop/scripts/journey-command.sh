@@ -40,11 +40,19 @@ journey() {
       export OPENSTEER_STATE_IMPORT_E2E_ARTIFACT_DIR="$out/cookies"
       export OPENSTEER_PASSKEY_POLICY_E2E_ARTIFACT_DIR="$out/passkeys"
       export OPENSTEER_USB_E2E_ARTIFACT_DIR="$out/usb"
-      for smoke in cdp-boundary passwords attachments downloads focus host-transport browser idle quit menu-bar passkeys usb profile-restore cookies; do
+      export OPENSTEER_SYSTEM_CA_E2E_ARTIFACT_DIR="$out/system-ca"
+      # OPENSTEER_ELECTRON_SMOKES names the smokes to run, in order (one may repeat); all by default.
+      for smoke in ${OPENSTEER_ELECTRON_SMOKES:-cdp-boundary passwords attachments downloads focus host-transport browser idle quit menu-bar passkeys usb profile-restore cookies system-ca}; do
         mkdir -p "$out/$smoke"
         smoke_start=$SECONDS
         smoke_code=0
         if [[ "$smoke" == quit ]]; then
+          # A repeated quit signs a new copy of its app, which may not read the Safe Storage
+          # item an earlier copy left in the guest's keychain: that item goes first.
+          if [[ -n "${quit_ran:-}" ]]; then
+            security delete-generic-password -s "opensteer-quit-smoke Safe Storage" > /dev/null 2>&1 || true
+          fi
+          quit_ran=1
           pnpm test:electron-quit:run --tab-restore > "$out/$smoke.log" 2>&1 || smoke_code=$?
         else
           pnpm "test:electron-$smoke:run" > "$out/$smoke.log" 2>&1 || smoke_code=$?

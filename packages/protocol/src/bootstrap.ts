@@ -33,7 +33,6 @@ export const HostBootstrapEnvironmentSchema = z.object({
   id: z.string().min(1),
   kind: ExecutionEnvironmentKindSchema,
   name: z.string().min(1),
-  providerStateModes: z.array(HarnessInstanceStateKindSchema).max(2),
   runnerId: z.string().min(1).nullable(),
   status: HostEnvironmentStatusSchema,
   can: z.object({ executeTasks: z.boolean() }),

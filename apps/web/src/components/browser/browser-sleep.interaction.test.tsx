@@ -257,3 +257,37 @@ it("tells the person they restarted it, when they did", async () => {
     "This page reloaded because you restarted your browser.",
   );
 });
+
+it("shows an unconfirmed-closing replaced-browser session and removes it from the list (X2)", async () => {
+  await openPage();
+  const computerId = computerOf(place);
+  const sessionId =
+    client.getSnapshot().browserSessions.find((item) => item.state !== "closed")?.id ??
+    "bsn_11111111-1111-4111-8111-111111111111";
+  const dismissSpy = vi.fn(async () => {});
+  (
+    client as unknown as { dismissBrowserSession?: (id: string) => Promise<void> }
+  ).dismissBrowserSession = dismissSpy;
+  await act(async () =>
+    client.setBrowserPools([
+      {
+        ...mockBrowserPoolReport("awake", computerId, place.key),
+        unconfirmedClosings: [{ sessionId, surfaceIds: [place.key] }],
+      } as never,
+    ]),
+  );
+  await settle(60);
+  const state = await until("The unconfirmed-closing state was never shown", () =>
+    element(".place-state"),
+  );
+  expect(state.textContent).toContain("This page didn't confirm it closed");
+  expect(state.textContent).toContain(
+    "Its browser was replaced before it answered, and Opensteer can no longer ask it. Nothing more is sent to this page.",
+  );
+  const remove = [...state.querySelectorAll("button")].find(
+    (button) => button.textContent === "Remove from list",
+  );
+  expect(remove).toBeDefined();
+  await click(remove!);
+  expect(dismissSpy).toHaveBeenCalledWith(sessionId);
+});

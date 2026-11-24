@@ -209,6 +209,7 @@ it("makes an explicit stopped-mode decision for every primary work message", () 
     "host.inspect-harnesses",
     "host.reconcile-harnesses",
     "host.runs.revoked",
+    "host.thread.stop.recheck",
   ]);
 });
 

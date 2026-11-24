@@ -138,6 +138,14 @@ authority_end() {
 
 # `security list-keychains` prints one quoted path a line.
 list() { security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//'; }
+# The keychains of a saved list other than the fixture, one array item each, spaces kept.
+others_in() {
+  others=()
+  local item
+  while IFS= read -r item; do
+    if [ -n "$item" ] && [ "$item" != "$keychain" ]; then others+=("$item"); fi
+  done <<<"$1"
+}
 current_default() { security default-keychain -d user | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//'; }
 
 # Write and read back a throwaway item in the fixture keychain only, and say what happened, with
@@ -171,8 +179,8 @@ if [ "$action" = begin ]; then
   # No timeout and no lock on sleep: the job's suite may run for half an hour.
   security set-keychain-settings "$keychain"
   security unlock-keychain -p "$password" "$keychain"
-  # shellcheck disable=SC2046 # one path a line, none with spaces in a guest's home
-  security list-keychains -d user -s "$keychain" $(printf '%s\n' "$previous_list" | grep -vxF "$keychain" || true)
+  others_in "$previous_list"
+  security list-keychains -d user -s "$keychain" ${others[@]+"${others[@]}"}
   security default-keychain -d user -s "$keychain"
   echo "fixture keychain: in place, default and first in the search list"
   authority_begin
@@ -212,8 +220,8 @@ status=0
 if [ -n "$previous_default" ]; then
   security default-keychain -d user -s "$previous_default" || status=1
 fi
-# shellcheck disable=SC2046
-security list-keychains -d user -s $(printf '%s\n' "$previous_list" | grep -vxF "$keychain" || true) || status=1
+others_in "$previous_list"
+security list-keychains -d user -s ${others[@]+"${others[@]}"} || status=1
 # Deleted whether or not `begin` got as far as creating it; a failure counts only if it is still there.
 security delete-keychain "$keychain" 2>/dev/null || [ ! -e "$keychain" ] || status=1
 rm -f "$state"

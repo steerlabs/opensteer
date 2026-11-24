@@ -32,7 +32,7 @@ import {
   type ComputerFolder,
 } from "@opensteer/core";
 import { parseHostConfig, parseRunnerConfig } from "@opensteer/config";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { FileRunnerIdentityStore, providerContinuationIdentityProjector } from "@opensteer/runner";
 import {
@@ -320,12 +320,6 @@ export async function startPersonalRuntime(input: {
         resolve("apps/runner/browser-harness/browser-harness.mjs"),
       deploymentShape: { kind: "personal" },
       harnesses: registry,
-      harnessRuntimeBoundary:
-        vertical?.harnessRuntimeBoundary ?? isolatedServiceHarnessRuntimeBoundary,
-      harnessSandbox: {
-        plan: async () => (launch) => launch,
-        planProgram: async () => (launch) => launch,
-      },
       modelServerHome: vertical?.modelServerHome ?? directory,
       plugins: async () => ({
         cleanup: async () => {},

@@ -48,6 +48,12 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
  * as too new and asks to be updated. This is the one place where AGENTS.md rule
  * 6 ("wire changes that released apps read are additive and optional") does not
  * apply; removing the team server was the owner's decision.
+ *
+ * The same cutover removed `providerStateModes` from each environment: every
+ * Runner now runs its engines as its own user, so the field said only whether
+ * it ran engines, which its drivers already say. No app speaking 66 was
+ * released before that, so it is one number, not two: CI admits exactly this
+ * cutover (`.github/scripts/ci-stable-api.mjs`).
  */
 export const hostApiVersion = 66;
 export const minimumHostApiVersion = 66;
@@ -166,7 +172,7 @@ export const HostCapabilitySchema = z.enum([
    * reopen rather than refusing their message.
    */
   "quiet-tasks-v1",
-  /** A native-user Runner can inspect and update a person's installed engine CLI. */
+  /** A Runner can inspect and update a person's installed engine CLI. */
   "harness-update-v1",
   /** `asset.urls` and `/media` serve image files on the hosting computer. */
   "agent-images-v1",

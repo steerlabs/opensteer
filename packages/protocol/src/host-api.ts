@@ -609,6 +609,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("thread.inputQueue.resume"),
   }),
   z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    threadId: ThreadIdSchema,
+    type: z.literal("thread.stop.recheck"),
+  }),
+  z.strictObject({
     type: z.literal("thread.visit"),
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
@@ -1177,6 +1182,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    sessionId: z.string().min(1),
+    type: z.literal("browser.session.dismiss"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
     surfaceId: z.string().min(1).max(200),
     noticeId: z.string().min(1).max(200),
     type: z.literal("browser.pool.notice.seen"),
@@ -1266,6 +1276,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     asOfSequence: SequenceSchema,
     thread: ThreadViewSchema,
     type: z.literal("thread.inputQueue.resume"),
+  }),
+  z.object({
+    proven: z.boolean(),
+    type: z.literal("thread.stop.recheck"),
   }),
   z.object({ input: ThreadInputViewSchema, type: z.literal("thread.input.cancel") }),
   z.object({ type: z.literal("thread.input.move") }),
@@ -1497,6 +1511,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     deletion: BrowserProfileDeletionSchema.optional().catch(undefined),
   }),
   z.object({ type: z.literal("browser.session.close") }),
+  z.object({ type: z.literal("browser.session.dismiss") }),
   z.object({ type: z.literal("browser.pool.restart") }),
   z.object({ type: z.literal("browser.pool.notice.seen") }),
   z.object({ type: z.literal("browser.history.remove") }),

@@ -403,7 +403,7 @@ integration("Machine access session lifecycle", () => {
 
     // The Runner owns the relay socket and takes it away with the Run.
     await launch.close();
-    await expect(connectToSocket(launch.machineAccessRelaySocket)).rejects.toThrow();
+    await expect(connectToSocket(join(launch.launchDirectory, "relay.sock"))).rejects.toThrow();
   }, 180_000);
 
   it("prints the offline sentence, queues nothing, and works again on reconnect", async () => {

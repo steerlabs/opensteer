@@ -1097,6 +1097,32 @@ export class HttpHostClient {
     });
   }
 
+  /**
+   * W15: removes an unconfirmed-closing replaced-browser session from the person's list without
+   * changing its closing state on the Home.
+   */
+  async dismissBrowserSession(sessionId: string): Promise<void> {
+    await this.dispatch({
+      type: "browser.session.dismiss",
+      sessionId,
+      idempotencyKey: globalThis.crypto.randomUUID(),
+    });
+    const browserSessions = this.#snapshot.browserSessions.filter(
+      (session) => session.id !== sessionId,
+    );
+    const browserPools = this.#snapshot.browserPools?.map((pool) => {
+      if (!pool.unconfirmedClosings?.some((entry) => entry.sessionId === sessionId)) return pool;
+      const remaining = pool.unconfirmedClosings.filter((entry) => entry.sessionId !== sessionId);
+      const { unconfirmedClosings: _dropped, ...rest } = pool;
+      return remaining.length ? { ...rest, unconfirmedClosings: remaining } : rest;
+    });
+    this.#update({
+      ...this.#snapshot,
+      browserSessions,
+      ...(browserPools ? { browserPools } : {}),
+    });
+  }
+
   async dispatch(
     command: ClientCommandInput,
     options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
@@ -1895,7 +1921,12 @@ export class HttpHostClient {
       SequenceSchema.parse(row.revision),
       row,
     );
-    const entry = { thread, lastReply: row.lastReplyPreview, failure: row.failurePreview };
+    const entry = {
+      thread,
+      lastReply: row.lastReplyPreview,
+      failure: row.failurePreview,
+      failureCode: row.failureCode ?? null,
+    };
     this.#shellEntries.set(row, entry);
     return entry;
   }
@@ -1984,6 +2015,8 @@ export class HttpHostClient {
               latestRunCompletedAt: row.latestRunCompletedAt,
               inputQueuePaused: row.inputQueuePaused ?? held.inputQueuePaused,
               runQueued: row.runQueued,
+              runStartHoldReason: row.runStartHoldReason ?? null,
+              failureCode: row.failureCode ?? null,
               agentSessionId: row.agentSessionId ?? null,
               externalWork: row.externalWork ?? null,
               ...(row.retry === undefined ? {} : { retry: row.retry }),
@@ -3501,6 +3534,18 @@ export class HttpHostClient {
       threadId,
       type: "thread.inputQueue.resume",
     });
+  }
+
+  async recheckThreadStop(threadId: string): Promise<{ readonly proven: boolean }> {
+    const result = await this.dispatch({
+      idempotencyKey: mutationIdempotencyKey("thread-stop-recheck"),
+      threadId,
+      type: "thread.stop.recheck",
+    });
+    if (result.type !== "thread.stop.recheck") {
+      throw new Error(`Unexpected thread.stop.recheck response: ${result.type}`);
+    }
+    return { proven: result.proven };
   }
 
   /**
@@ -5148,6 +5193,8 @@ function compactThread(
     environmentId: row.environmentId,
     harnessInstanceId: row.harnessInstanceId,
     runQueued: row.runQueued,
+    runStartHoldReason: row.runStartHoldReason ?? null,
+    failureCode: row.failureCode ?? null,
     agentSessionId: row.agentSessionId ?? null,
     externalWork: row.externalWork ?? null,
     ...(row.retry === undefined ? {} : { retry: row.retry }),

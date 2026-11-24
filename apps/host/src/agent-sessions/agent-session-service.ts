@@ -7,7 +7,6 @@ import {
   refused,
   requestOperationCallsMaxLength,
   threadAccessModeAtMost,
-  type AgentGrant,
   type AgentOperationDecision,
   type AgentOperationId,
   type AgentOperationTarget,
@@ -27,6 +26,7 @@ import {
   askForAgentOperation,
   beginAgentSession,
   decideAgentOperation,
+  type AgentOperationWrittenDecision,
   endAgentSessions,
   expireAgentOperationRequests,
   findAgentOperation,
@@ -46,33 +46,10 @@ import {
   type OpensteerStore,
 } from "@opensteer/database";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import { DeadlineDrain } from "../runtime/deadline-drain.js";
 import { ReplFailureSchema, type ReplFailure } from "../computer-use/computer-repl/messages.js";
 import type { BrowserPoolReservation } from "../browser/browser-pool-gate.js";
 
-/**
- * Decides an effect in `auto`: allow it, or ask the person. It sees the grant, the mode, the
- * trusted target, the exact script or calls, and the agent's reason marked as untrusted. It never
- * refuses on its own; doubt, an error, a timeout or a malformed answer means ask.
- */
-export interface AgentReviewerPort {
-  review(
-    input: {
-      readonly ownerUserId: UserId;
-      readonly grant: AgentGrant;
-      readonly mode: ThreadAccessMode;
-      readonly tool: string;
-      readonly target: AgentOperationTarget;
-      readonly calls: string;
-      readonly agentReason: { readonly untrusted: true; readonly text: string } | null;
-    },
-    signal: AbortSignal,
-  ): Promise<"allow" | "ask">;
-}
-/** The reviewer this Home ships with until a model-backed one is configured. */
-export const alwaysAskReviewer: AgentReviewerPort = { review: async () => "ask" };
-export const reviewerTimeoutMs = 15_000;
 /** How long one executor call may take before its signal aborts. */
 const defaultExecutionMs = 120_000;
 
@@ -282,7 +259,6 @@ export function operationArgumentDigest(tool: string, input: unknown): string {
 
 export class AgentSessionService {
   readonly #store: OpensteerStore;
-  readonly #reviewer: AgentReviewerPort;
   readonly #closeBinding: (bindingId: string, reason: string) => void;
   readonly #onError: (error: unknown) => void;
   /** One controller per session with work in this process; aborted when the session ends. */
@@ -303,24 +279,19 @@ export class AgentSessionService {
   >();
   readonly #decisions = new EventEmitter();
   readonly #holdMs: number;
-  readonly #reviewTimeoutMs: number;
   readonly #sweeper: DeadlineDrain;
   #sweeping = false;
 
   constructor(options: {
     readonly store: OpensteerStore;
-    readonly reviewer?: AgentReviewerPort;
     /** Closes what holds a binding open elsewhere, such as a standard CDP attachment. */
     readonly closeBinding?: (bindingId: string, reason: string) => void;
     readonly onError?: (error: unknown) => void;
     /** How long a call waits for the person's decision before it returns pending. */
     readonly holdMs?: number;
-    readonly reviewTimeoutMs?: number;
   }) {
     this.#store = options.store;
     this.#holdMs = options.holdMs ?? agentOperationHoldMs;
-    this.#reviewTimeoutMs = options.reviewTimeoutMs ?? reviewerTimeoutMs;
-    this.#reviewer = options.reviewer ?? alwaysAskReviewer;
     this.#closeBinding = options.closeBinding ?? (() => {});
     this.#onError = options.onError ?? (() => {});
     this.#decisions.setMaxListeners(0);
@@ -614,7 +585,7 @@ export class AgentSessionService {
           return { status: "unknown", ...base, next: unknownNext };
         }
         case "admitted":
-          row = await this.#decide(operation, row, taskId, execution);
+          row = await this.#decide(operation, row, taskId);
           break;
         case "pending": {
           const decided = await this.#wait(row);
@@ -633,15 +604,13 @@ export class AgentSessionService {
     operation: DirectOperation<Result>,
     row: AgentOperationRow,
     taskId: ThreadId,
-    execution: ExecutionAuthority,
   ): Promise<AgentOperationRow> {
-    const decide = (decision: AgentOperationDecision) =>
+    const decide = (decision: AgentOperationWrittenDecision) =>
       decideAgentOperation(this.#store.database, row, decision);
+    // Every other mode, Auto included, asks the person before an effect.
     if (!operation.question) {
       if (row.effect === "read") return decide({ by: "structural-read" });
       if (row.mode === "full-access") return decide({ by: "full-access" });
-      if (row.mode === "auto" && (await this.#review(row, execution)) === "allow")
-        return decide({ by: "reviewer" });
     }
     return askForAgentOperation(this.#store.database, this.#store.requests, {
       operation: row,
@@ -650,31 +619,6 @@ export class AgentSessionService {
       ...(operation.question ? { presentation: await operation.question(taskId) } : {}),
       copy: (agent) => directOperationCopy(row.tool, row.target, agent),
     });
-  }
-
-  async #review(row: AgentOperationRow, execution: ExecutionAuthority): Promise<"allow" | "ask"> {
-    const signal = AbortSignal.timeout(this.#reviewTimeoutMs);
-    try {
-      const answer = await withTimeout(
-        this.#reviewer.review(
-          {
-            ownerUserId: execution.ownerUserId,
-            grant: execution.agentConnection!.grant,
-            mode: row.mode,
-            tool: row.tool,
-            target: row.target,
-            calls: row.calls,
-            agentReason: row.agentReason ? { untrusted: true, text: row.agentReason } : null,
-          },
-          signal,
-        ),
-        this.#reviewTimeoutMs,
-        { signal, timeoutError: () => new Error("Agent review timed out") },
-      );
-      return answer === "allow" && !signal.aborted ? "allow" : "ask";
-    } catch {
-      return "ask";
-    }
   }
 
   /** Waits up to the hold for the person's decision, woken by `respond` after its commit. */
@@ -798,6 +742,44 @@ export class AgentSessionService {
       await pool.recheckTarget();
       signal.throwIfAborted();
       reservation = await pool.reserve(signal);
+      // Between here and the execution's own settler (registered once its send counters exist),
+      // a restart that can wait no longer records this holder too: refused while nothing is
+      // handed off, and refused as unsent once it is, since no command can have left before the
+      // execution began. Both writes apply only to the row in the state they name.
+      // The hand-off may commit while this runs (its write waits on the row, then lands before
+      // the refusal's): the row is read again after each write until it has an outcome.
+      // Each write is the one the row's current state and revision name (the operation may have
+      // been reviewed again meanwhile); after the third, the row is read once more.
+      reservation.onForcedEnd?.(async () => {
+        const unsettled = (state: string | undefined) =>
+          state === "handed-off" ||
+          state === "admitted" ||
+          state === "pending" ||
+          state === "approved";
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const current = await readAgentOperation(this.#store.database, row.id);
+          if (!current || !unsettled(current.state)) return;
+          if (current.state === "handed-off") {
+            // Written: the row has its outcome, with nothing more to read.
+            if (
+              await refuseUnsentHandedOffAgentOperation(
+                this.#store.database,
+                row.id,
+                "This browser restarted before anything was sent.",
+                "changed",
+              )
+            )
+              return;
+          } else
+            await refuseUnsentAgentOperation(this.#store.database, row.id, current.grantRevision);
+        }
+        const last = await readAgentOperation(this.#store.database, row.id);
+        if (!last || !unsettled(last.state)) return;
+        // Still without an outcome: the restart does not go on to Stop. Its hold ends when the
+        // holder's own work ends (its operation's deadline), when a later turn's settlement
+        // writes, or at a removal.
+        throw new Error("The pooled operation's outcome could not be recorded.");
+      });
       // A restart or a removal asks every holder to stop: the work ends and records its outcome.
       const held = reservation.ended
         ? AbortSignal.any([
@@ -826,9 +808,18 @@ export class AgentSessionService {
         reservation,
       });
     } catch (error) {
-      // Nothing was handed off, so nothing reached the browser: a definite refusal.
-      if (!handed)
-        await refuseUnsentAgentOperation(this.#store.database, row.id, row.grantRevision);
+      // Nothing was handed off, so nothing reached the browser: a definite refusal, under the
+      // revision the row holds now (it may have been reviewed again while this waited).
+      if (!handed) {
+        const current = await readAgentOperation(this.#store.database, row.id).catch(
+          () => undefined,
+        );
+        await refuseUnsentAgentOperation(
+          this.#store.database,
+          row.id,
+          current?.grantRevision ?? row.grantRevision,
+        );
+      }
       throw error;
     } finally {
       reservation?.release();

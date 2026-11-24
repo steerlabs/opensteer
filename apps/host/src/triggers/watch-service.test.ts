@@ -400,7 +400,6 @@ function watchFixture(): {
         harnessDrivers: [],
 
         maxConcurrentRuns: 4,
-        providerStateModes: ["isolated"],
       },
     },
     name: "Runner",

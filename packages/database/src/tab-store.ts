@@ -946,13 +946,13 @@ export class TabStore {
     tabId: TabId,
     generation: number,
     binding: PageBinding,
-    descriptor: { title: string; url: string; favicon?: string | null },
+    descriptor: { title: string; url: string; favicon?: string | null; loading?: boolean },
     restoring = false,
   ): Promise<boolean> {
     PageBindingSchema.parse(binding);
     restoreUrl.parse(descriptor.url);
     if (descriptor.favicon) BrowserFaviconSchema.parse(descriptor.favicon);
-    const title = outsideName(descriptor.title, 1024);
+    const named = outsideName(descriptor.title, 1024);
     return commitPersonalMutation(this.database, async (tx, mutation) => {
       await this.#lock(tx, ownerId, [], [tabId]);
       if (!(await this.#session(tx, binding, ownerId))) return false;
@@ -965,6 +965,10 @@ export class TabStore {
         return false;
       if (restoring && descriptor.url === "about:blank" && row.url !== "about:blank") return false;
       const favicon = descriptor.favicon ?? (descriptor.url === row.url ? row.favicon : null);
+      // A tab keeps the title last seen at its address while a new document there loads with
+      // none yet (a reload, a restore); once it has loaded, its own title stands, empty or not.
+      const title =
+        named === "" && descriptor.loading && descriptor.url === row.url ? row.title : named;
       if (row.title === title && row.url === descriptor.url && row.favicon === favicon)
         return false;
       await tx

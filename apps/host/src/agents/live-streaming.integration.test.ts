@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { ModelSelectionSchema, type RunId, type ThreadId } from "@opensteer/core";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
@@ -100,7 +100,6 @@ integration("live streaming across the deployment", () => {
         stateKind: "isolated",
       },
       harnesses,
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       maxConcurrentRuns,
       runTimeoutMs: 60_000,
     });

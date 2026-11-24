@@ -14,7 +14,6 @@ import {
 import { createDatabase, migrateToLatest } from "@opensteer/database";
 import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
 import { apiVersionQueryParameter, hostApiVersion } from "@opensteer/deployment-authority";
-import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import {
   agentHomeFilesCapability,
   HarnessInstanceCatalogSchema,
@@ -509,7 +508,6 @@ export async function connectTargetMachine(
                 environmentIds: [environment],
                 harnessDrivers: [],
                 maxConcurrentRuns: 2,
-                providerStateModes: ["isolated"],
               },
             }
           : {}),
@@ -848,7 +846,6 @@ export async function connectCallerMachine(
           },
         ],
         maxConcurrentRuns: input.maxConcurrentRuns ?? 4,
-        providerStateModes: ["ambient", "isolated"],
       },
     },
     name: input.name,
@@ -1418,11 +1415,10 @@ export async function setUpCallerLaunchDirectory(
     environment,
     plan,
     privateStateRoot,
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     transport: { controlCaPath: undefined, hostUrl: new URL(host.origin), mode: "development" },
     workspacePath,
     wrapModelCommand: (launch) => launch,
-    wrapProcessLaunch: async () => (launch) => launch,
+    wrapProcessLaunch: (launch) => launch,
   });
   if (!isMachineAccessSetup(setup)) {
     throw new Error(`The Run's machine access was not set up: ${setup.reason}.`);
