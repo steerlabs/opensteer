@@ -51,6 +51,7 @@ const config = loadCloudComputerConfig({
       ),
     ),
   }),
+  OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL: "https://releases.example.test/managed/stable.json",
   OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY: "sk_test_abcdefghijklmno",
   OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET: webhookSecret,
   OPENSTEER_CLOUD_COMPUTER_STRIPE_PRICE_ID: "price_1",

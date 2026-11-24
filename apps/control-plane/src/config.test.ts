@@ -83,6 +83,16 @@ it("loads optional managed Home settings from the Account runtime directory", ()
     for (const [name, value] of Object.entries(poolFiles)) {
       writeFileSync(join(directory, name), value + "\n", { mode: 0o600 });
     }
+    // A Cloud Computer updates only from the feed its boot answer gave it: none is born without one.
+    rmSync(join(directory, "OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL"));
+    expect(() => loadControlPlaneConfig(environment)).toThrow(
+      "Cloud Computers need a release feed to update from: set OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL",
+    );
+    writeFileSync(
+      join(directory, "OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL"),
+      files.OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL + "\n",
+      { mode: 0o600 },
+    );
     const config = loadControlPlaneConfig({
       ...environment,
       OPENSTEER_CLOUD_COMPUTER_REGION: "europe-west3-a",

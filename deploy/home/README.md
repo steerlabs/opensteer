@@ -265,7 +265,8 @@ again and connects only to the checked public addresses. PostgreSQL has its own
 fixed digest; inherited Compose variables cannot override images or volume selection.
 Set `OPENSTEER_HOME_RELEASE_MANIFEST_URL` in `config.env` for scheduled updates
 on a bring-your-own Home, or supply a manifest to `update` directly. The Opensteer
-account can set `releaseManifestUrl` in the managed boot response to schedule updates.
+account gives every Cloud Computer a `releaseManifestUrl` in its boot response, which schedules
+its updates; a managed Home updates from that feed only.
 
 ## Managed release and verification
 

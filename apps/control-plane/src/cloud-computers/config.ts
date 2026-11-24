@@ -75,6 +75,12 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
   const integer = (min: number, max: number) =>
     z.string().regex(/^\d+$/u).transform(Number).pipe(z.number().int().min(min).max(max));
   const region = read("REGION", CloudComputerLocationSchema);
+  // An installed Cloud Computer updates only from the feed its boot answer gave it: without one it
+  // could never be updated short of a replacement.
+  if (!has("RELEASE_MANIFEST_URL"))
+    throw new Error(
+      `Cloud Computers need a release feed to update from: set ${prefix}RELEASE_MANIFEST_URL`,
+    );
   // A Cloud Computer's browser runs in the browser pool, always: none runs in its own VM.
   if (!has("POOL_SLOTS_PER_HOST") || !has("POOL_RELEASE_JSON"))
     throw new Error(
@@ -144,10 +150,7 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
       : {}),
     serverType: read("SERVER_TYPE", CloudComputerLocationSchema),
     release,
-    ...(env[`${prefix}RELEASE_MANIFEST_URL`] !== undefined ||
-    env[`${prefix}RELEASE_MANIFEST_URL_FILE`] !== undefined
-      ? { releaseManifestUrl: read("RELEASE_MANIFEST_URL", CloudComputerReleaseManifestUrlSchema) }
-      : {}),
+    releaseManifestUrl: read("RELEASE_MANIFEST_URL", CloudComputerReleaseManifestUrlSchema),
     ...(env[`${prefix}BACKUP_KEY_PROJECT`] !== undefined ||
     env[`${prefix}BACKUP_KEY_PROJECT_FILE`] !== undefined
       ? {

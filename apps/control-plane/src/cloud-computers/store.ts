@@ -1673,9 +1673,7 @@ export class CloudComputerStore {
           version: row.release.version,
           images: row.release.images,
         }),
-        ...(this.#options.config.releaseManifestUrl
-          ? { releaseManifestUrl: this.#options.config.releaseManifestUrl }
-          : {}),
+        releaseManifestUrl: this.#options.config.releaseManifestUrl,
         // Its browser runs on a pool host, which alone holds its egress password (T9).
         browserPool: true,
         // The pool network its firewall may reach; without one it reaches nothing private.
