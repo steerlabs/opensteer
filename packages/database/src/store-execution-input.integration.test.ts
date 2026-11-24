@@ -2511,4 +2511,90 @@ describeStore("PostgreSQL store", (it) => {
       status: "succeeded",
     });
   });
+
+  it("preserves unknown steer command status when the Run finishes without delivery proof (T1)", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, store, database } = storeFixture;
+    const activeRun = await startRunFixture("thread-steer-unknown-finish");
+    const unknown = await store.enqueueThreadInput({
+      content: [{ text: "Delivery remained unknown until finish", type: "text" }],
+      idempotencyKey: "thread-steer-unknown-finish",
+      policy: "steer",
+      requestedBy: activeRun.userId,
+      source: { kind: "human" },
+      threadId: activeRun.thread.id,
+    });
+    if (!unknown.command) throw new Error("Expected unknown steer Command");
+    await store.claimCommand(unknown.command.id, "thread-steer-unknown-finish-dispatcher");
+    await store.markSteerUnknown(unknown.command.id, "Runner disconnected after dispatch");
+
+    const inflight = await store.enqueueThreadInput({
+      content: [{ text: "Dispatched steer raced Run completion", type: "text" }],
+      idempotencyKey: "thread-steer-dispatched-finish",
+      policy: "steer",
+      requestedBy: activeRun.userId,
+      source: { kind: "human" },
+      threadId: activeRun.thread.id,
+    });
+    if (!inflight.command) throw new Error("Expected dispatched steer Command");
+    await store.claimCommand(inflight.command.id, "thread-steer-dispatched-finish-dispatcher");
+
+    const unsent = await store.enqueueThreadInput({
+      content: [{ text: "Pending steer was never dispatched", type: "text" }],
+      idempotencyKey: "thread-steer-pending-finish",
+      policy: "steer",
+      requestedBy: activeRun.userId,
+      source: { kind: "human" },
+      threadId: activeRun.thread.id,
+    });
+    if (!unsent.command) throw new Error("Expected pending steer Command");
+
+    await commitRunnerEvent(store.database, threadPathLinks, {
+      environmentId: activeRun.environmentId,
+      event: pendingEvent({
+        bindingGeneration: activeRun.bindingGeneration,
+        data: { status: "completed" },
+        environmentId: activeRun.environmentId,
+        ordinal: 1,
+        runId: activeRun.run.id,
+        threadId: activeRun.thread.id,
+        type: "run.completed",
+      }),
+      runnerBootId: activeRun.runnerBootId,
+      runnerId: activeRun.runnerId,
+    });
+
+    await expect(
+      database
+        .selectFrom("commands")
+        .select(["status", "lastError"])
+        .where("id", "=", unknown.command.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toMatchObject({
+      lastError: { message: "Runner disconnected after dispatch" },
+      status: "unknown",
+    });
+    await expect(
+      database
+        .selectFrom("commands")
+        .select("status")
+        .where("id", "=", inflight.command.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: "unknown" });
+    await expect(
+      database
+        .selectFrom("commands")
+        .select("status")
+        .where("id", "=", unsent.command.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: "failed" });
+    await expect(
+      database
+        .selectFrom("threadInputs")
+        .select(["state"])
+        .where("messageId", "=", unknown.message.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ state: "unknown" });
+  });
 });

@@ -124,7 +124,11 @@ export async function finalizeRunTransaction(
     .selectAll()
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
-  const children = offline ? undefined : await readFinishChildren(transaction, run.id);
+  const children = offline
+    ? undefined
+    : await readFinishChildren(transaction, run.id, undefined, {
+        runnerProvenExecute: input.source === "runner",
+      });
   if (children && !children.hasMore)
     await lockRunProjectionRows(transaction, {
       threadIds: [run.threadId],
@@ -342,9 +346,16 @@ export async function settleFinishChildren(
                 .case()
                 .when("type", "=", "run.execute")
                 .then("succeeded" as const)
+                .when(sql<boolean>`type = 'run.steer' and status = 'dispatched'`)
+                .then("unknown" as const)
                 .else("failed" as const)
                 .end()
-            : "failed",
+            : eb
+                .case()
+                .when(sql<boolean>`type = 'run.steer' and status = 'dispatched'`)
+                .then("unknown" as const)
+                .else("failed" as const)
+                .end(),
         lastError:
           input.failure && input.source === "host"
             ? jsonValue(input.failure)
@@ -353,6 +364,10 @@ export async function settleFinishChildren(
         updatedAt: input.completedAt,
       }))
       .where("id", "in", children.commands)
+      // Unknown stays unknown unless the Runner itself proved `run.execute` ran.
+      .where(
+        sql<boolean>`not (status = 'unknown' and not (type = 'run.execute' and ${input.source} = 'runner'))`,
+      )
       .execute();
   }
   await endLiveExecutionNodes(tx, { runId, endedAt: input.completedAt, ids: children.nodes });
@@ -629,7 +644,12 @@ async function finalizeRunOutcome(
         .set({ ...sessionUpdate, active: false })
         .where("id", "=", run.providerSessionId)
         .where("active", "=", true)
-        .returning(["continuationIdentity", "harnessInstanceId", "personalContext"])
+        .returning([
+          "continuationIdentity",
+          "harnessInstanceId",
+          "personLineage",
+          "personalContext",
+        ])
         .executeTakeFirst();
       if (retired) {
         await transaction
@@ -646,6 +666,7 @@ async function finalizeRunOutcome(
             id: createId("providerSession"),
             leaseExpiresAt: null,
             leaseTokenHash: null,
+            personLineage: retired.personLineage,
             personalContext: retired.personalContext,
             providerSessionReference: null,
             runnerBootId: null,

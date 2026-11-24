@@ -230,6 +230,73 @@ describe("Antigravity ACP policy", () => {
         writableRoots: [workspacePath],
       }),
     ).toBe("ask");
+    const readCall = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: { id: "call-read", kind: "read" },
+    };
+    const searchCall = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: { id: "call-search", kind: "search" },
+    };
+    const thinkCall = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: { id: "call-think", kind: "think" },
+    };
+    for (const invalidMode of [undefined, "unrecognized-mode"] as unknown as [
+      Parameters<typeof antigravityPermissionDisposition>[1]["accessMode"],
+      Parameters<typeof antigravityPermissionDisposition>[1]["accessMode"],
+    ]) {
+      for (const request of [readCall, searchCall, thinkCall, opensteerMcp, opensteerMetaMcp]) {
+        expect(
+          antigravityPermissionDisposition(request, {
+            accessMode: invalidMode,
+            workspacePath,
+            writableRoots: [workspacePath],
+          }),
+        ).toBe("ask");
+      }
+    }
+  });
+
+  it("gates native prompt steering on ACP protocol version 1", async () => {
+    expect(antigravitySessionPolicy(1).steering).toBe("prompt");
+    expect(antigravitySessionPolicy(2).steering).toBeUndefined();
+
+    const fixture = await setupTurn("skills");
+    const prepared = vi.spyOn(antigravityRuntime, "prepareAntigravityRuntime").mockResolvedValue({
+      directory: fixture.context.workspacePath,
+      executable: process.execPath,
+      protocolVersion: 2,
+      version: "1.5.16",
+    });
+    const driver = new AntigravityHarnessDriver({
+      nodeExecutable: process.execPath,
+      runtimeCacheDirectory: fixture.context.workspacePath,
+    });
+    try {
+      await driver.prepare({
+        config: {},
+        environment: fixture.context.environment,
+        providerState: fixture.context.providerState,
+        signal: AbortSignal.timeout(2_000),
+        sourceId: "google",
+        workingDirectory: fixture.context.workspacePath,
+      });
+      const adapter = await driver.create({
+        config: {},
+        instanceId: fixture.context.harnessInstanceId,
+        sourceId: "google",
+      });
+      try {
+        expect(adapter.capabilities.steering).toBe(false);
+        expect(adapter.capabilities.messageAttachments?.nativeImages?.steering).toBe(false);
+      } finally {
+        await adapter.close();
+      }
+    } finally {
+      prepared.mockRestore();
+      await fixture.adapter.close();
+    }
   });
 
   it("classifies missing Claude thinking signatures as harness_session_broken", () => {

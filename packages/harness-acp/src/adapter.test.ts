@@ -10,12 +10,15 @@ import {
 } from "@opensteer/core";
 import {
   Deferred,
+  HarnessSteerDeliveryUnknownError,
   spawnSupervised,
   type HarnessEvent,
   type HarnessRunInput,
   type HarnessSessionContext,
   type SupervisedProcess,
 } from "@opensteer/harness";
+import { RequestError } from "@agentclientprotocol/sdk";
+import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1417,20 +1420,23 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
       expect(receivedPrompts).toHaveLength(1);
     });
 
-    await session.steer!({
-      input: {
-        author: {
-          displayName: "Person",
-          kind: "human",
-          principalId: "person:test",
-          userId: createId("user"),
+    const followUpMessageId = createId("message");
+    await expect(
+      session.steer!({
+        input: {
+          author: {
+            displayName: "Person",
+            kind: "human",
+            principalId: "person:test",
+            userId: createId("user"),
+          },
+          content: [{ text: "change direction now", type: "text" }],
+          createdAt: new Date().toISOString(),
+          kind: "input",
+          messageId: followUpMessageId,
         },
-        content: [{ text: "change direction now", type: "text" }],
-        createdAt: new Date().toISOString(),
-        kind: "input",
-        messageId: createId("message"),
-      },
-    });
+      }),
+    ).rejects.toBeInstanceOf(HarnessSteerDeliveryUnknownError);
     expect(receivedPrompts).toHaveLength(2);
     expect(receivedPrompts[1]).toEqual([
       { text: expect.stringContaining("change direction now"), type: "text" },
@@ -1453,6 +1459,11 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
     await adapter.close();
     await f.adapter.close();
 
+    expect(
+      observed.events.some(
+        (event) => event.type === "message.injected" && event.data.messageId === followUpMessageId,
+      ),
+    ).toBe(true);
     expect(observed.events.some((event) => event.type === "run.completed")).toBe(true);
     expect(observed.events.find((event) => event.type === "assistant.message")).toMatchObject({
       data: { content: [{ text: "steered reply", type: "text" }] },
@@ -1568,7 +1579,7 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
     // Provider rejects the steering RPC as busy while the first prompt is still pending:
     // steer() must reject so the Runner does not emit message.injected and the Host re-queues it,
     // while the original prompt stays alive and completes the Run.
-    secondPrompt.reject(new Error("busy"));
+    secondPrompt.reject(new RequestError(-32000, "busy"));
     await expect(steerCall).rejects.toMatchObject({
       code: "conflict",
       message: expect.stringContaining("busy"),
@@ -1679,21 +1690,24 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
       expect(promptCalls).toBe(1);
     });
 
-    await session.steer!({
-      input: {
-        author: {
-          displayName: "Person",
-          kind: "human",
-          principalId: "person:test",
-          userId: createId("user"),
+    await expect(
+      session.steer!({
+        input: {
+          author: {
+            displayName: "Person",
+            kind: "human",
+            principalId: "person:test",
+            userId: createId("user"),
+          },
+          content: [{ text: "accepted steer", type: "text" }],
+          createdAt: new Date().toISOString(),
+          kind: "input",
+          messageId: createId("message"),
         },
-        content: [{ text: "accepted steer", type: "text" }],
-        createdAt: new Date().toISOString(),
-        kind: "input",
-        messageId: createId("message"),
-      },
-    });
-    // Steer was admitted; a later execution error must surface as run.failed, never silently vanish.
+      }),
+    ).rejects.toBeInstanceOf(HarnessSteerDeliveryUnknownError);
+    // Steer remained pending on the wire; a later execution error must surface as run.failed,
+    // never silently vanish, and never emit message.injected.
     secondPrompt.reject(new Error("upstream failure"));
     await execution;
     await session.stop();
@@ -1701,6 +1715,7 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
     await adapter.close();
     await f.adapter.close();
 
+    expect(observed.events.some((event) => event.type === "message.injected")).toBe(false);
     expect(observed.events.find((event) => event.type === "run.failed")).toMatchObject({
       data: { code: "harness_error", message: expect.stringContaining("upstream failure") },
     });
@@ -2002,5 +2017,881 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
     expect(chosen).toEqual(["allow"]);
     expect(observed.events.some((event) => event.type === "request.opened")).toBe(false);
     expect(observed.events.some((event) => event.type === "run.completed")).toBe(true);
+  });
+
+  it("reports silence, non-RPC transport errors, and post-send aborts on steer as unknown instead of delivered or refused (T1)", async () => {
+    const f = await setup("replay");
+    const envSecret = "synthetic-value-8A4Z";
+    const launchSecret = "launch-only-secret-9Q7K";
+    const toolToken = "synthetic-tool-token-5M2X";
+    const context: HarnessSessionContext = {
+      ...f.context,
+      agentTools: { ...f.context.agentTools, token: toolToken },
+      environment: { ...f.context.environment, TEST_API_KEY: envSecret },
+    };
+
+    const makeAdapter = (
+      promptImpl: (call: number) => Promise<{ readonly stopReason: string }>,
+      onHandlers?: (handlers: AcpProtocolHandlers) => void,
+    ) =>
+      new AcpHarnessAdapter(
+        context.harnessInstanceId,
+        {
+          capabilities: {
+            approvals: true,
+            attachments: true,
+            interruption: true,
+            mcpImageContent: false,
+            resume: true,
+            steering: true,
+            toolCalls: true,
+            userInput: true,
+          },
+          engineLabel: "Steerable ACP",
+          hooks: {
+            classifyError: (error) =>
+              error instanceof OpensteerError
+                ? error
+                : new OpensteerError({ code: "harness_error", message: String(error) }),
+            permissionChoices: () => [],
+          },
+          launch: ({ context: launchContext }) => ({
+            args: ["-e", "process.stdin.resume()"],
+            cwd: launchContext.workspacePath,
+            environment: { ...launchContext.environment, DRIVER_API_KEY: launchSecret },
+            executable: process.execPath,
+          }),
+          maxEventBytes: 1_000_000,
+          maxEventItems: 1_000,
+          policy: {
+            accessModeIds: {
+              "approval-required": "default",
+              "auto-accept-edits": "default",
+              auto: "auto",
+              "full-access": "default",
+            },
+            cancel: { behavior: "wait-for-prompt" },
+            clientCapabilities: { elicitation: true, fileSystem: "read-only", terminal: false },
+            clientInfo: { name: "opensteer_test", version: "0.0.0" },
+            eagerAuthentication: false,
+            initializeDeadlineMs: 100,
+            model: { type: "set-model" },
+            protocolVersion: 1,
+            resume: { method: "resume", suppressReplay: false },
+            steering: "prompt",
+          },
+        },
+        {
+          createClient: ((input: { readonly handlers: AcpProtocolHandlers }) => {
+            onHandlers?.(input.handlers);
+            let calls = 0;
+            const base = fakeClient(
+              "replay",
+              input.handlers,
+              () => undefined,
+              {
+                child: {} as SupervisedProcess["child"],
+                exited: new Promise(() => undefined),
+                stderr: (async function* () {})(),
+                stdout: (async function* () {})(),
+                terminate: async () => undefined,
+              },
+              () => undefined,
+              [],
+            );
+            return {
+              ...base,
+              newSession: async () => ({
+                configOptions: [],
+                metadata: {},
+                sessionId: "new-session",
+              }),
+              prompt: async () => {
+                calls += 1;
+                return promptImpl(calls);
+              },
+            };
+          }) as typeof import("./protocol.js").createAcpProtocolClient,
+        },
+      );
+
+    const steerInput = (text: string) => ({
+      author: {
+        displayName: "Person",
+        kind: "human" as const,
+        principalId: "person:test",
+        userId: createId("user"),
+      },
+      content: [{ text, type: "text" as const }],
+      createdAt: new Date().toISOString(),
+      kind: "input" as const,
+      messageId: createId("message"),
+    });
+
+    // 1. Silent follow-up prompt (even with an unrelated session/update) must reject as unknown,
+    //    then promote via message.injected only when that steer prompt actually resolves.
+    {
+      const first = new Deferred<{ readonly stopReason: string }>();
+      const second = new Deferred<{ readonly stopReason: string }>();
+      let handlers: AcpProtocolHandlers | undefined;
+      let calls = 0;
+      const adapter = makeAdapter(
+        (call) => {
+          calls = call;
+          return call === 1 ? first.promise : second.promise;
+        },
+        (h) => {
+          handlers = h;
+        },
+      );
+      const session = await adapter.startSession(context);
+      const observed = observe(session.events);
+      const executing = session.execute({ ...f.turn("initial"), environment: context.environment });
+      await vi.waitFor(() => expect(calls).toBe(1));
+
+      const followUp = steerInput("silent steer");
+      const steerPromise = session.steer!({ input: followUp });
+      await vi.waitFor(() => expect(calls).toBe(2));
+      // Unrelated session/update carries no prompt correlation and must not confirm steer delivery.
+      handlers!.update("new-session", {
+        content: { text: "still talking", type: "text" },
+        sessionUpdate: "agent_message_chunk",
+      });
+      await expect(steerPromise).rejects.toBeInstanceOf(HarnessSteerDeliveryUnknownError);
+      expect(observed.events.some((event) => event.type === "message.injected")).toBe(false);
+
+      first.resolve({ stopReason: "cancelled" });
+      second.resolve({ stopReason: "end_turn" });
+      await executing;
+      await session.stop();
+      await observed.done;
+      await adapter.close();
+
+      const injectedIndex = observed.events.findIndex(
+        (event) => event.type === "message.injected" && event.data.messageId === followUp.messageId,
+      );
+      const completedIndex = observed.events.findIndex((event) => event.type === "run.completed");
+      expect(injectedIndex).toBeGreaterThanOrEqual(0);
+      expect(completedIndex).toBeGreaterThan(injectedIndex);
+    }
+
+    // 2. Non-RPC error (transport drop) after send is unknown (not conflict) and redacts secrets.
+    {
+      const first = new Deferred<{ readonly stopReason: string }>();
+      const second = Promise.withResolvers<{ readonly stopReason: string }>();
+      let calls = 0;
+      const adapter = makeAdapter((call) => {
+        calls = call;
+        return call === 1 ? first.promise : second.promise;
+      });
+      const session = await adapter.startSession(context);
+      const observed = observe(session.events);
+      const executing = session.execute({ ...f.turn("initial"), environment: context.environment });
+      await vi.waitFor(() => expect(calls).toBe(1));
+
+      const steerPromise = session.steer!({ input: steerInput("closed steer") });
+      await vi.waitFor(() => expect(calls).toBe(2));
+      second.reject(new Error(`ACP connection closed: ${envSecret} ${launchSecret} ${toolToken}`));
+      const rejection = await steerPromise.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(rejection).toBeInstanceOf(HarnessSteerDeliveryUnknownError);
+      expect((rejection as Error).message).not.toContain(envSecret);
+      expect((rejection as Error).message).not.toContain(launchSecret);
+      expect((rejection as Error).message).not.toContain(toolToken);
+
+      first.resolve({ stopReason: "end_turn" });
+      await executing;
+      await session.stop();
+      await observed.done;
+      await adapter.close();
+    }
+
+    // 3. Post-send abort and ambiguous JSON-RPC codes (-32800 / -32603) are unknown.
+    {
+      const first = new Deferred<{ readonly stopReason: string }>();
+      const second = new Deferred<{ readonly stopReason: string }>();
+      const third = Promise.withResolvers<{ readonly stopReason: string }>();
+      let calls = 0;
+      const adapter = makeAdapter((call) => {
+        calls = call;
+        if (call === 1) return first.promise;
+        if (call === 2) return second.promise;
+        return third.promise;
+      });
+      const session = await adapter.startSession(context);
+      const observed = observe(session.events);
+      const executing = session.execute({ ...f.turn("initial"), environment: context.environment });
+      await vi.waitFor(() => expect(calls).toBe(1));
+
+      const steerAbort = new AbortController();
+      const abortedSteer = session.steer!({
+        input: steerInput("abort after send"),
+        signal: steerAbort.signal,
+      });
+      await vi.waitFor(() => expect(calls).toBe(2));
+      steerAbort.abort();
+      await expect(abortedSteer).rejects.toBeInstanceOf(HarnessSteerDeliveryUnknownError);
+
+      const cancelledRpcSteer = session.steer!({ input: steerInput("cancelled rpc") });
+      await vi.waitFor(() => expect(calls).toBe(3));
+      third.reject(RequestError.requestCancelled());
+      await expect(cancelledRpcSteer).rejects.toBeInstanceOf(HarnessSteerDeliveryUnknownError);
+
+      second.resolve({ stopReason: "end_turn" });
+      first.resolve({ stopReason: "cancelled" });
+      await executing;
+      await session.stop();
+      await observed.done;
+      await adapter.close();
+    }
+
+    // 4. Immediate JSON-RPC result on the steer prompt itself proves delivery:
+    //    steer() resolves without emitting a duplicate message.injected from the session.
+    {
+      const first = new Deferred<{ readonly stopReason: string }>();
+      const second = new Deferred<{ readonly stopReason: string }>();
+      let calls = 0;
+      const adapter = makeAdapter((call) => {
+        calls = call;
+        return call === 1 ? first.promise : second.promise;
+      });
+      const session = await adapter.startSession(context);
+      const observed = observe(session.events);
+      const executing = session.execute({ ...f.turn("initial"), environment: context.environment });
+      await vi.waitFor(() => expect(calls).toBe(1));
+
+      const steerPromise = session.steer!({ input: steerInput("fast steer") });
+      await vi.waitFor(() => expect(calls).toBe(2));
+      second.resolve({ stopReason: "end_turn" });
+      await expect(steerPromise).resolves.toBeUndefined();
+      first.resolve({ stopReason: "cancelled" });
+      await executing;
+      await session.stop();
+      await observed.done;
+      await adapter.close();
+
+      expect(observed.events.some((event) => event.type === "message.injected")).toBe(false);
+      expect(observed.events.some((event) => event.type === "run.completed")).toBe(true);
+    }
+
+    await f.adapter.close();
+  });
+
+  it("redacts context, launch, and tool secrets from watchPromptOutcome failures, steer refusals, and stderr (T2)", async () => {
+    const f = await setup("replay");
+    const envSecret = "synthetic-value-8A4Z";
+    const launchSecret = "launch-only-secret-4P9R";
+    const toolToken = "synthetic-tool-token-7K3V";
+    const context: HarnessSessionContext = {
+      ...f.context,
+      agentTools: { ...f.context.agentTools, token: toolToken },
+      environment: { ...f.context.environment, TEST_API_KEY: envSecret },
+    };
+
+    // 1. watchPromptOutcome hook error (SQLite turn outcome) must redact all three secrets.
+    {
+      const stderr = new EventEmitter();
+      const exited = Promise.withResolvers<{
+        readonly code: number | null;
+        readonly signal: NodeJS.Signals | null;
+      }>();
+      const adapter = new AcpHarnessAdapter(
+        context.harnessInstanceId,
+        {
+          capabilities: {
+            approvals: true,
+            attachments: true,
+            interruption: true,
+            mcpImageContent: false,
+            resume: true,
+            steering: true,
+            toolCalls: true,
+            userInput: true,
+          },
+          engineLabel: "Redacted ACP",
+          hooks: {
+            classifyError: (error, { stderrTail }) =>
+              new OpensteerError({ code: "harness_error", message: stderrTail || String(error) }),
+            permissionChoices: () => [],
+            watchPromptOutcome: async () => () => ({
+              discardAssistant: true,
+              error: new OpensteerError({
+                code: "harness_error",
+                message: `sqlite failure leaked ${envSecret} ${launchSecret} ${toolToken}`,
+              }),
+            }),
+          },
+          launch: ({ context: launchContext }) => ({
+            args: [],
+            cwd: launchContext.workspacePath,
+            environment: { ...launchContext.environment, DRIVER_API_KEY: launchSecret },
+            executable: "unused",
+          }),
+          maxEventBytes: 1_000_000,
+          maxEventItems: 1_000,
+          policy: {
+            accessModeIds: {
+              "approval-required": "default",
+              "auto-accept-edits": "default",
+              auto: "auto",
+              "full-access": "default",
+            },
+            cancel: { behavior: "wait-for-prompt" },
+            clientCapabilities: { elicitation: true, fileSystem: "read-only", terminal: false },
+            clientInfo: { name: "opensteer_test", version: "0.0.0" },
+            eagerAuthentication: false,
+            initializeDeadlineMs: 100,
+            model: { type: "set-model" },
+            protocolVersion: 1,
+            resume: { method: "resume", suppressReplay: false },
+            steering: "prompt",
+          },
+        },
+        {
+          spawn: (() => ({
+            child: { stderr } as unknown as SupervisedProcess["child"],
+            exited: exited.promise,
+            stderr: (async function* () {})(),
+            stdout: (async function* () {})(),
+            terminate: async () => {
+              exited.resolve({ code: 0, signal: null });
+            },
+          })) as typeof spawnSupervised,
+          createClient: ((input: { readonly handlers: AcpProtocolHandlers }) => {
+            const base = fakeClient(
+              "replay",
+              input.handlers,
+              () => undefined,
+              {
+                child: { stderr } as unknown as SupervisedProcess["child"],
+                exited: exited.promise,
+                stderr: (async function* () {})(),
+                stdout: (async function* () {})(),
+                terminate: async () => {
+                  exited.resolve({ code: 0, signal: null });
+                },
+              },
+              () => undefined,
+              [],
+            );
+            return {
+              ...base,
+              newSession: async () => ({
+                configOptions: [],
+                metadata: {},
+                sessionId: "new-session",
+              }),
+            };
+          }) as typeof import("./protocol.js").createAcpProtocolClient,
+        },
+      );
+      const session = await adapter.startSession(context);
+      const observed = observe(session.events);
+      await session.execute({ ...f.turn("sqlite leak"), environment: context.environment });
+      await session.stop();
+      await observed.done;
+      await adapter.close();
+
+      const failed = observed.events.find((event) => event.type === "run.failed");
+      expect(failed).toBeDefined();
+      const message = failed?.type === "run.failed" ? failed.data.message : "";
+      expect(message).not.toContain(envSecret);
+      expect(message).not.toContain(launchSecret);
+      expect(message).not.toContain(toolToken);
+      expect(message).toContain("[REDACTED]");
+    }
+
+    // 2. Explicit JSON-RPC steer refusal must redact launch/context/tool secrets.
+    {
+      const first = new Deferred<{ readonly stopReason: string }>();
+      const second = Promise.withResolvers<{ readonly stopReason: string }>();
+      let calls = 0;
+      const adapter = new AcpHarnessAdapter(
+        context.harnessInstanceId,
+        {
+          capabilities: {
+            approvals: true,
+            attachments: true,
+            interruption: true,
+            mcpImageContent: false,
+            resume: true,
+            steering: true,
+            toolCalls: true,
+            userInput: true,
+          },
+          engineLabel: "Redacted ACP",
+          hooks: {
+            classifyError: (error) =>
+              error instanceof OpensteerError
+                ? error
+                : new OpensteerError({ code: "harness_error", message: String(error) }),
+            permissionChoices: () => [],
+          },
+          launch: ({ context: launchContext }) => ({
+            args: ["-e", "process.stdin.resume()"],
+            cwd: launchContext.workspacePath,
+            environment: { ...launchContext.environment, DRIVER_API_KEY: launchSecret },
+            executable: process.execPath,
+          }),
+          maxEventBytes: 1_000_000,
+          maxEventItems: 1_000,
+          policy: {
+            accessModeIds: {
+              "approval-required": "default",
+              "auto-accept-edits": "default",
+              auto: "auto",
+              "full-access": "default",
+            },
+            cancel: { behavior: "wait-for-prompt" },
+            clientCapabilities: { elicitation: true, fileSystem: "read-only", terminal: false },
+            clientInfo: { name: "opensteer_test", version: "0.0.0" },
+            eagerAuthentication: false,
+            initializeDeadlineMs: 100,
+            model: { type: "set-model" },
+            protocolVersion: 1,
+            resume: { method: "resume", suppressReplay: false },
+            steering: "prompt",
+          },
+        },
+        {
+          createClient: ((input: { readonly handlers: AcpProtocolHandlers }) => {
+            const base = fakeClient(
+              "replay",
+              input.handlers,
+              () => undefined,
+              {
+                child: {} as SupervisedProcess["child"],
+                exited: new Promise(() => undefined),
+                stderr: (async function* () {})(),
+                stdout: (async function* () {})(),
+                terminate: async () => undefined,
+              },
+              () => undefined,
+              [],
+            );
+            return {
+              ...base,
+              newSession: async () => ({
+                configOptions: [],
+                metadata: {},
+                sessionId: "new-session",
+              }),
+              prompt: async () => {
+                calls += 1;
+                return calls === 1 ? first.promise : second.promise;
+              },
+            };
+          }) as typeof import("./protocol.js").createAcpProtocolClient,
+        },
+      );
+      const session = await adapter.startSession(context);
+      const observed = observe(session.events);
+      const executing = session.execute({ ...f.turn("initial"), environment: context.environment });
+      await vi.waitFor(() => expect(calls).toBe(1));
+
+      const steerPromise = session.steer!({
+        input: {
+          author: {
+            displayName: "Person",
+            kind: "human",
+            principalId: "person:test",
+            userId: createId("user"),
+          },
+          content: [{ text: "busy steer", type: "text" }],
+          createdAt: new Date().toISOString(),
+          kind: "input",
+          messageId: createId("message"),
+        },
+      });
+      await vi.waitFor(() => expect(calls).toBe(2));
+      second.reject(
+        new RequestError(-32000, `busy echoing ${envSecret} ${launchSecret} ${toolToken}`),
+      );
+      const rejection = await steerPromise.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(rejection).toBeInstanceOf(OpensteerError);
+      expect((rejection as OpensteerError).code).toBe("conflict");
+      expect((rejection as OpensteerError).message).not.toContain(envSecret);
+      expect((rejection as OpensteerError).message).not.toContain(launchSecret);
+      expect((rejection as OpensteerError).message).not.toContain(toolToken);
+
+      first.resolve({ stopReason: "end_turn" });
+      await executing;
+      await session.stop();
+      await observed.done;
+      await adapter.close();
+    }
+
+    await f.adapter.close();
+  });
+
+  it("preserves the previous prompt outcome and stderr boundary when a steer is explicitly refused", async () => {
+    const f = await setup("replay");
+
+    // 1. Old prompt resolves while steer is pending, then steer is explicitly refused -> Run completes.
+    {
+      const first = new Deferred<{ readonly stopReason: string }>();
+      const second = Promise.withResolvers<{ readonly stopReason: string }>();
+      let handlers: AcpProtocolHandlers | undefined;
+      let calls = 0;
+      const adapter = new AcpHarnessAdapter(
+        f.context.harnessInstanceId,
+        {
+          capabilities: {
+            approvals: true,
+            attachments: true,
+            interruption: true,
+            mcpImageContent: false,
+            resume: true,
+            steering: true,
+            toolCalls: true,
+            userInput: true,
+          },
+          engineLabel: "Steerable ACP",
+          hooks: {
+            classifyError: (error) =>
+              error instanceof OpensteerError
+                ? error
+                : new OpensteerError({ code: "harness_error", message: String(error) }),
+            permissionChoices: () => [],
+          },
+          launch: ({ context }) => ({
+            args: ["-e", "process.stdin.resume()"],
+            cwd: context.workspacePath,
+            environment: context.environment,
+            executable: process.execPath,
+          }),
+          maxEventBytes: 1_000_000,
+          maxEventItems: 1_000,
+          policy: {
+            accessModeIds: {
+              "approval-required": "default",
+              "auto-accept-edits": "default",
+              auto: "auto",
+              "full-access": "default",
+            },
+            cancel: { behavior: "wait-for-prompt" },
+            clientCapabilities: { elicitation: true, fileSystem: "read-only", terminal: false },
+            clientInfo: { name: "opensteer_test", version: "0.0.0" },
+            eagerAuthentication: false,
+            initializeDeadlineMs: 100,
+            model: { type: "set-model" },
+            protocolVersion: 1,
+            resume: { method: "resume", suppressReplay: false },
+            steering: "prompt",
+          },
+        },
+        {
+          createClient: ((input: { readonly handlers: AcpProtocolHandlers }) => {
+            handlers = input.handlers;
+            const base = fakeClient(
+              "replay",
+              input.handlers,
+              () => undefined,
+              {
+                child: {} as SupervisedProcess["child"],
+                exited: new Promise(() => undefined),
+                stderr: (async function* () {})(),
+                stdout: (async function* () {})(),
+                terminate: async () => undefined,
+              },
+              () => undefined,
+              [],
+            );
+            return {
+              ...base,
+              prompt: async () => {
+                calls += 1;
+                return calls === 1 ? first.promise : second.promise;
+              },
+            };
+          }) as typeof import("./protocol.js").createAcpProtocolClient,
+        },
+      );
+
+      const session = await adapter.startSession(f.context);
+      const observed = observe(session.events);
+      const executing = session.execute(f.turn("initial"));
+      await vi.waitFor(() => expect(calls).toBe(1));
+
+      const steerPromise = session.steer!({
+        input: {
+          author: {
+            displayName: "Person",
+            kind: "human",
+            principalId: "person:test",
+            userId: createId("user"),
+          },
+          content: [{ text: "late busy steer", type: "text" }],
+          createdAt: new Date().toISOString(),
+          kind: "input",
+          messageId: createId("message"),
+        },
+      });
+      await vi.waitFor(() => expect(calls).toBe(2));
+
+      // First prompt finishes cleanly BEFORE the steer rejects as busy.
+      handlers!.update("new-session", {
+        content: { text: "preserved original reply", type: "text" },
+        sessionUpdate: "agent_message_chunk",
+      });
+      first.resolve({ stopReason: "end_turn" });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      second.reject(new RequestError(-32000, "session busy"));
+      await expect(steerPromise).rejects.toMatchObject({ code: "conflict" });
+      await executing;
+      await session.stop();
+      await observed.done;
+      await adapter.close();
+
+      expect(observed.events.some((event) => event.type === "run.failed")).toBe(false);
+      expect(observed.events.some((event) => event.type === "run.completed")).toBe(true);
+      expect(observed.events.find((event) => event.type === "assistant.message")).toMatchObject({
+        data: { content: [{ text: "preserved original reply", type: "text" }] },
+      });
+    }
+
+    // 2. Old prompt stays pending while steer is refused -> its original stderr boundary is preserved.
+    {
+      const first = Promise.withResolvers<{ readonly stopReason: string }>();
+      const second = Promise.withResolvers<{ readonly stopReason: string }>();
+      const stderr = new EventEmitter();
+      const exited = Promise.withResolvers<{
+        readonly code: number | null;
+        readonly signal: NodeJS.Signals | null;
+      }>();
+      let calls = 0;
+      let observedStderrTail = "";
+      const adapter = new AcpHarnessAdapter(
+        f.context.harnessInstanceId,
+        {
+          capabilities: {
+            approvals: true,
+            attachments: true,
+            interruption: true,
+            mcpImageContent: false,
+            resume: true,
+            steering: true,
+            toolCalls: true,
+            userInput: true,
+          },
+          engineLabel: "Steerable ACP",
+          hooks: {
+            classifyError: (error, { stderrTail }) => {
+              observedStderrTail = stderrTail;
+              return new OpensteerError({
+                code: "harness_error",
+                message: stderrTail || String(error),
+              });
+            },
+            permissionChoices: () => [],
+          },
+          launch: ({ context }) => ({
+            args: [],
+            cwd: context.workspacePath,
+            environment: context.environment,
+            executable: "unused",
+          }),
+          maxEventBytes: 1_000_000,
+          maxEventItems: 1_000,
+          policy: {
+            accessModeIds: {
+              "approval-required": "default",
+              "auto-accept-edits": "default",
+              auto: "auto",
+              "full-access": "default",
+            },
+            cancel: { behavior: "wait-for-prompt" },
+            clientCapabilities: { elicitation: true, fileSystem: "read-only", terminal: false },
+            clientInfo: { name: "opensteer_test", version: "0.0.0" },
+            eagerAuthentication: false,
+            initializeDeadlineMs: 100,
+            model: { type: "set-model" },
+            protocolVersion: 1,
+            resume: { method: "resume", suppressReplay: false },
+            steering: "prompt",
+          },
+        },
+        {
+          spawn: (() => ({
+            child: { stderr } as unknown as SupervisedProcess["child"],
+            exited: exited.promise,
+            stderr: (async function* () {})(),
+            stdout: (async function* () {})(),
+            terminate: async () => {
+              exited.resolve({ code: 0, signal: null });
+            },
+          })) as typeof spawnSupervised,
+          createClient: ((input: { readonly handlers: AcpProtocolHandlers }) => {
+            const base = fakeClient(
+              "replay",
+              input.handlers,
+              () => undefined,
+              {
+                child: { stderr } as unknown as SupervisedProcess["child"],
+                exited: exited.promise,
+                stderr: (async function* () {})(),
+                stdout: (async function* () {})(),
+                terminate: async () => {
+                  exited.resolve({ code: 0, signal: null });
+                },
+              },
+              () => undefined,
+              [],
+            );
+            return {
+              ...base,
+              prompt: async () => {
+                calls += 1;
+                return calls === 1 ? first.promise : second.promise;
+              },
+            };
+          }) as typeof import("./protocol.js").createAcpProtocolClient,
+        },
+      );
+
+      const session = await adapter.startSession(f.context);
+      const observed = observe(session.events);
+      const executing = session.execute(f.turn("initial"));
+      await vi.waitFor(() => expect(calls).toBe(1));
+
+      stderr.emit("data", Buffer.from("diagnostic-before-steer\n"));
+      const steerPromise = session.steer!({
+        input: {
+          author: {
+            displayName: "Person",
+            kind: "human",
+            principalId: "person:test",
+            userId: createId("user"),
+          },
+          content: [{ text: "busy steer", type: "text" }],
+          createdAt: new Date().toISOString(),
+          kind: "input",
+          messageId: createId("message"),
+        },
+      });
+      await vi.waitFor(() => expect(calls).toBe(2));
+      second.reject(new RequestError(-32000, "busy"));
+      await expect(steerPromise).rejects.toMatchObject({ code: "conflict" });
+
+      first.reject(new Error("original prompt failed"));
+      await executing;
+      await session.stop();
+      await observed.done;
+      await adapter.close();
+
+      expect(observedStderrTail).toContain("diagnostic-before-steer");
+    }
+
+    await f.adapter.close();
+  });
+
+  it("does not expose prompt steering on ACP v2 sessions and never auto-selects allow_always", async () => {
+    const f = await setup("permission");
+    const chosen: (string | null)[] = [];
+    const permissionResults: (string | null)[] = [];
+    const adapter = new AcpHarnessAdapter(
+      f.context.harnessInstanceId,
+      {
+        capabilities: {
+          approvals: true,
+          attachments: true,
+          interruption: true,
+          mcpImageContent: false,
+          resume: true,
+          steering: true,
+          toolCalls: true,
+          userInput: true,
+        },
+        engineLabel: "Policy ACP v2",
+        hooks: {
+          classifyError: (error) =>
+            error instanceof OpensteerError
+              ? error
+              : new OpensteerError({ code: "harness_error", message: String(error) }),
+          permissionChoices: () => [],
+          permissionDisposition: () => "allow",
+        },
+        launch: ({ context }) => ({
+          args: ["-e", "process.stdin.resume()"],
+          cwd: context.workspacePath,
+          environment: context.environment,
+          executable: process.execPath,
+        }),
+        maxEventBytes: 1_000_000,
+        maxEventItems: 1_000,
+        policy: {
+          accessModeIds: {
+            "approval-required": "default",
+            "auto-accept-edits": "default",
+            auto: "auto",
+            "full-access": "default",
+          },
+          cancel: { behavior: "wait-for-prompt" },
+          clientCapabilities: { elicitation: true, fileSystem: "read-only", terminal: false },
+          clientInfo: { name: "opensteer_test", version: "0.0.0" },
+          eagerAuthentication: false,
+          initializeDeadlineMs: 100,
+          model: { type: "set-model" },
+          protocolVersion: 2,
+          resume: { method: "resume", suppressReplay: false },
+          steering: "prompt",
+        },
+      },
+      {
+        createClient: ((input: { readonly handlers: AcpProtocolHandlers }) => {
+          const wrappedHandlers: AcpProtocolHandlers = {
+            ...input.handlers,
+            permission: async (request, signal) => {
+              const result = await input.handlers.permission(request, signal);
+              permissionResults.push(result);
+              return result;
+            },
+          };
+          const base = fakeClient(
+            "persistent-permission",
+            wrappedHandlers,
+            (choice) => chosen.push(choice),
+            {
+              child: {} as SupervisedProcess["child"],
+              exited: new Promise(() => undefined),
+              stderr: (async function* () {})(),
+              stdout: (async function* () {})(),
+              terminate: async () => undefined,
+            },
+            () => undefined,
+            [],
+          );
+          return {
+            ...base,
+            initialize: async () => ({
+              agentCapabilities: {},
+              authMethods: [],
+              metadata: {},
+              protocolVersion: 2,
+            }),
+          };
+        }) as typeof import("./protocol.js").createAcpProtocolClient,
+      },
+    );
+
+    const session = await adapter.startSession(f.context);
+    expect(session.steer).toBeUndefined();
+    const observed = observe(session.events);
+    await session.execute(f.turn("run command"));
+    expect(await session.releaseForReuse!()).toBe(true);
+    await session.stop();
+    await observed.done;
+    await adapter.close();
+    await f.adapter.close();
+
+    expect(permissionResults).toEqual([null]);
+    expect(chosen).toEqual([]);
   });
 });

@@ -376,7 +376,9 @@ export function antigravityPermissionDisposition(
   context: Pick<HarnessSessionContext, "accessMode" | "workspacePath" | "writableRoots">,
 ): AcpPermissionDisposition {
   if (context.accessMode === "full-access") return "allow";
-  if (context.accessMode === "approval-required") return "ask";
+  if (context.accessMode !== "auto-accept-edits" && context.accessMode !== "auto") {
+    return "ask";
+  }
   const kind = request.toolCall.kind?.toLowerCase() ?? "other";
   if (kind === "read" || kind === "search" || kind === "think") return "allow";
   if (isOpensteerMcpRequest(request)) return "allow";
@@ -637,7 +639,30 @@ export function antigravitySessionPolicy(protocolVersion: 1 | 2): AcpSessionPoli
     },
     protocolVersion,
     resume: { method: "resume", suppressReplay: false },
-    steering: "prompt",
+    ...(protocolVersion === 1 ? { steering: "prompt" as const } : {}),
+  };
+}
+
+function antigravityCapabilitiesForProtocol(protocolVersion: 1 | 2): HarnessCapabilities {
+  if (protocolVersion === 1) return antigravityHarnessCapabilities;
+  return {
+    ...antigravityHarnessCapabilities,
+    ...(antigravityHarnessCapabilities.messageAttachments
+      ? {
+          messageAttachments: {
+            ...antigravityHarnessCapabilities.messageAttachments,
+            ...(antigravityHarnessCapabilities.messageAttachments.nativeImages
+              ? {
+                  nativeImages: {
+                    ...antigravityHarnessCapabilities.messageAttachments.nativeImages,
+                    steering: false,
+                  },
+                }
+              : {}),
+          },
+        }
+      : {}),
+    steering: false,
   };
 }
 
@@ -1184,7 +1209,7 @@ function looksLikeAuthenticationFailure(error: unknown): boolean {
 }
 
 class AntigravityAdapter implements HarnessAdapter {
-  readonly capabilities = antigravityHarnessCapabilities;
+  readonly capabilities: HarnessCapabilities;
   readonly instanceId: HarnessDriverCreateContext["instanceId"];
   readonly #adapter: AcpHarnessAdapter;
   readonly #authMethod: AntigravityAuthMethod;
@@ -1199,13 +1224,14 @@ class AntigravityAdapter implements HarnessAdapter {
     options: AntigravityHarnessDriverOptions,
     runtime: PreparedAntigravityRuntime,
   ) {
+    this.capabilities = antigravityCapabilitiesForProtocol(runtime.protocolVersion);
     this.instanceId = instanceId;
     this.#authMethod = authMethod;
     this.#config = config;
     this.#options = options;
     this.#runtime = runtime;
     this.#adapter = new AcpHarnessAdapter(instanceId, {
-      capabilities: antigravityHarnessCapabilities,
+      capabilities: this.capabilities,
       engineLabel: "Antigravity",
       hooks: {
         authenticationMethod: () => this.#authMethod,
