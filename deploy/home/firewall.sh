@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # A Cloud Computer's pool network: <private IPv4 CIDR> <agent port>,<relay port>, from its boot
-# answer (or its account later, checked the same way). The only private destination the pod may
+# answer (or its Opensteer account later, checked the same way). The only private destination the pod may
 # reach, only on those two TCP ports, and only from the Host's own uid: the Runner, gateway and
-# Channel Runtime share the Host's network namespace but not that uid, so an agent's shell
+# Channel Runtime share the Host's network namespace but not that uid, so a shell of your own agents
 # cannot use it. Why that is narrow enough: Google's rule opensteer-pool-hosts-home lets machines
 # tagged as Cloud Computers reach machines tagged as pool hosts on exactly these ports, and no
 # Home listens on either, so the allow reaches pool hosts only (as long as nothing else in the

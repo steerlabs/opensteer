@@ -247,7 +247,7 @@ valid_managed_feed() {
     managed_feed_resolution "$1" >/dev/null
 }
 
-# ask_account <route> <answer file>: GET a managed Home's own route on its account
+# ask_account <route> <answer file>: GET a managed Home's own route on its Opensteer account
 # (/v1/cloud-computers/<id>/<route>) with its OIDC client credentials, as the egress check does.
 # Succeeds only on HTTP 200, with the answer in the file.
 ask_account() {
@@ -264,7 +264,7 @@ ask_account() {
       -- "$origin/v1/cloud-computers/$id/$route") && [[ $status == 200 ]]
 }
 
-# The feed a managed Home updates from, on stdout: the one its account gives now, when the account
+# The feed a managed Home updates from, on stdout: the one its Opensteer account gives now, when it
 # answers and the address passes the boot checks (config.env is rewritten when it changed), and
 # otherwise the one config.env has. An address that fails the checks is never used.
 managed_feed() {
@@ -277,14 +277,14 @@ managed_feed() {
       rm -f -- "$answer"
       if [[ $asked != "$configured" ]]; then
         set_configured_feed "$asked" || return
-        echo "This Home now follows the update feed its account gives: $asked" >&2
+        echo "This Home now follows the update feed its Opensteer account gives: $asked" >&2
       fi
       printf '%s\n' "$asked"
       return
     fi
-    echo "The account's update feed failed the checks; keeping this Home's own." >&2
+    echo "The Opensteer account's update feed failed the checks; keeping this Home's own." >&2
   else
-    echo "The account did not answer for its update feed; using this Home's own." >&2
+    echo "The Opensteer account did not answer for its update feed; using this Home's own." >&2
   fi
   rm -f -- "$answer"
   [[ -z $configured ]] && return 0
@@ -463,6 +463,13 @@ pool_network_from() {
   printf '%s\n' "$network"
 }
 
+# Whether a saved boot answer may be used again: one for a pooled Home must hold a valid pool
+# network (one saved by an install before this release may not).
+usable_boot_answer() {
+  jq -e '.browserPool == true' "$1" >/dev/null 2>&1 || return 0
+  pool_network_from "$1" >/dev/null
+}
+
 # Keeps a pooled Cloud Computer's pool network from its boot answer for its firewall. A pooled
 # Home without one, or with one firewall.sh refuses, would have no path to its browser: refused.
 save_pool_network() {
@@ -473,7 +480,7 @@ save_pool_network() {
   printf '%s\n' "$network" > "$home_dir/pool-network"
 }
 
-# A pooled Home asks its account for its pool network at each maintenance pass. Succeeds only
+# A pooled Home asks its Opensteer account for its pool network at each maintenance pass. Succeeds only
 # when it changed and was saved (the caller re-applies the firewall); a network that fails the
 # checks, or no answer, keeps the one it has, and says so.
 refresh_pool_network() {
@@ -482,12 +489,12 @@ refresh_pool_network() {
   answer=$(mktemp "$home_dir/pool-network.XXXXXX") || return 1
   if ! ask_account pool-network "$answer"; then
     rm -f -- "$answer"
-    echo "The account did not answer for its pool network; keeping this Home's own." >&2
+    echo "The Opensteer account did not answer for its pool network; keeping this Home's own." >&2
     return 1
   fi
   if ! network=$(pool_network_from "$answer"); then
     rm -f -- "$answer"
-    echo "The account's pool network failed the checks; keeping this Home's own." >&2
+    echo "The Opensteer account's pool network failed the checks; keeping this Home's own." >&2
     return 1
   fi
   [[ -f "$home_dir/pool-network" ]] && current=$(cat "$home_dir/pool-network")
@@ -497,7 +504,7 @@ refresh_pool_network() {
   fi
   printf '%s\n' "$network" > "$answer"
   publish_file "$answer" "$home_dir/pool-network" || return 1
-  echo "This Home now reaches the pool network its account gives: $network" >&2
+  echo "This Home now reaches the pool network its Opensteer account gives: $network" >&2
 }
 
 # The Host's own uid on a Cloud Computer (compose.browser-pool.yaml, firewall.sh's pool_owner),
@@ -631,7 +638,7 @@ compose_down_home() {
 # Everything an install, its operations and its interrupted ones leave in the Home directory.
 remove_home_files() {
   rm -rf -- "${home_dir:?}/"{secrets,boot,identity,restore.pending,update.pending,restore.pending.retired,update.pending.retired}
-  rm -rf -- "$home_dir/"{install,backup,update,egress,images.placeholder}.??????
+  rm -rf -- "$home_dir/"{install,backup,update,egress,images.placeholder,feed,config.env,pool-network}.??????
   rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,compose.browser-pool.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,browser-pool,pool-network,update-database.dump,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
 }
 

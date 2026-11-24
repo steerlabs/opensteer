@@ -303,3 +303,45 @@ it("gives the Host its own uid on a Cloud Computer, which alone the pool rule le
   ).toBe(0);
   expect(existsSync(join(work, "docker.log"))).toBe(false);
 });
+
+it("reuses a saved boot answer only when it still holds what a pooled Home needs", () => {
+  const directory = mkdtempSync(join(work, "home-"));
+  const usable = (answer: object) => {
+    writeFileSync(join(directory, "result.json"), JSON.stringify(answer));
+    return spawnSync(
+      "bash",
+      [
+        "-c",
+        'source "$1"; usable_boot_answer "$2"',
+        "boot",
+        join(home, "common.sh"),
+        join(directory, "result.json"),
+      ],
+      { env: { ...process.env, OPENSTEER_HOME_DIR: directory } },
+    ).status;
+  };
+  const network = { cidr: "10.128.0.0/20", agentPort: 7310, relayPort: 7312 };
+  expect(usable({ browserPool: true, browserPoolNetwork: network })).toBe(0);
+  // Saved by an install before this release: fetched again rather than installed without a path
+  // to its browser.
+  expect(usable({ browserPool: true })).not.toBe(0);
+  expect(
+    usable({ browserPool: true, browserPoolNetwork: { ...network, cidr: "0.0.0.0/0" } }),
+  ).not.toBe(0);
+  expect(usable({})).toBe(0);
+  expect(readFileSync(join(home, "install.sh"), "utf8")).toMatch(
+    /usable_boot_answer "\$result" \|\| rm -f -- "\$result"/u,
+  );
+});
+
+it("purges the files an interrupted feed, configuration or pool network change left behind", () => {
+  const directory = mkdtempSync(join(work, "home-"));
+  const left = ["feed.AbC123", "config.env.AbC123", "pool-network.AbC123"];
+  for (const file of left) writeFileSync(join(directory, file), "");
+  expect(
+    spawnSync("bash", ["-c", 'source "$1"; remove_home_files', "rm", join(home, "common.sh")], {
+      env: { ...process.env, OPENSTEER_HOME_DIR: directory },
+    }).status,
+  ).toBe(0);
+  for (const file of left) expect(existsSync(join(directory, file)), file).toBe(false);
+});

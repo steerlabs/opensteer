@@ -173,6 +173,11 @@ if $resume_managed; then
 fi
 if [[ -n $managed ]]; then
   if $resume_managed; then result="$home_dir/boot/result.json"; else result="$staging/result.json"; fi
+  # A saved answer is used again only while nothing was installed from it and it still holds
+  # what this Home needs (a pooled one's pool network); otherwise the boot is asked again.
+  if [[ -s $result && ! -f "$home_dir/config.env" ]]; then
+    usable_boot_answer "$result" || rm -f -- "$result"
+  fi
   if [[ ! -s $result ]]; then
     if "$source_dir/managed-boot.sh" boot "$managed" "$token_path" "$result"; then
       :

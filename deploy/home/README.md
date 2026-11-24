@@ -49,7 +49,7 @@ hourly update timer from install. A managed Home asks its Opensteer account for 
 current feed at each check (`/v1/cloud-computers/<id>/release-feed`, with its OIDC
 client credentials, like the egress check), takes it only when it is HTTPS and resolves
 only to public addresses, and writes it to `config.env` when it changed; when the
-account does not answer it uses the feed it has and logs so. Managed updates always
+Opensteer account does not answer it uses the feed it has and logs so. Managed updates always
 require image digests. A release is its version and its image digests: the updater says
 "Already on this release", "Same version, different build: updating", "Updating from
 … to …", or, on a scheduled update, refuses an older version ("older: refused").
@@ -142,8 +142,9 @@ An Opensteer Cloud Computer's Home is different in two ways, both set by
 
 - **No browser runs in it.** The person's browser runs in the browser pool, so
   `browser-runtime` and `browser-egress` are scaled to zero: no Chromium, no
-  browser profiles and no egress proxy on the VM. Both images are still
-  selected, so release checks and updates treat all six alike.
+  browser profiles and no egress proxy on the VM. Both images stay in its
+  six-image selection, but it neither pulls them, checks their release stamps
+  nor reads their sandbox policy.
 - **Its limits come from its machine.** `home_limits` in `common.sh` reads the
   machine's memory and CPU count and sets each running service's limits so
   that together they never ask for more memory than the machine has. It keeps
@@ -164,10 +165,11 @@ An Opensteer Cloud Computer's Home is different in two ways, both set by
   TCP to that subnet on those two ports, from the Host's own uid (10002 on a
   Cloud Computer), before it rejects every private range. The Runner, gateway
   and Channel Runtime share the Host's network namespace but not its uid, so
-  an agent's shell cannot use the allow. The account refuses to boot a Cloud
-  Computer until it knows the pool network (the installer retries), and the
-  installer refuses a boot answer without a valid one. Maintenance asks the
-  account for it again on every pass and re-applies the firewall when it
+  a shell of your own agents' Runs cannot use the allow. The Opensteer account
+  refuses to boot a Cloud Computer until it knows the pool network (the
+  installer retries), and the installer refuses a boot answer without a valid
+  one, and fetches again a saved one that lacks it. Maintenance asks the
+  Opensteer account for it again on every pass and re-applies the firewall when it
   changed. The file is read only with the `browser-pool` marker and removed at
   uninstall. The Host's data volume is moved to its uid before every start
   (from a backup taken under the shared uid too); a self-hosted Home keeps the
@@ -194,8 +196,10 @@ time free. An idle Home was measured using 0.61 of one core on average with
 a Browser Runtime running, and 0.40 without one, mostly its own health
 checks: every 3 s each container started Node for its check. Every Linux
 Home now checks every 2 s only while a service starts (its first 60 s) and
-every 30 s after, with bash's own `/dev/tcp` or a file read and no Node
-process. A start is seen as quickly as before. A service that keeps failing
+every 30 s after, with no Node process: an HTTP check is bash's own
+`/dev/tcp`, sending one GET and passing only on an `HTTP/1.1 200` status line
+within the 4 s timeout (another 2xx, which the old `fetch().ok` accepted, now
+fails); the Runner's check reads its readiness file and its process. A start is seen as quickly as before. A service that keeps failing
 is unhealthy after two failed checks in a row (about a minute, as before);
 one that never comes up is marked unhealthy after about 2 minutes instead of
 about 75 s, and the update's health gate (`compose up --wait`, 240 s) still
