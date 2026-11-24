@@ -2583,6 +2583,45 @@ test("a task shown again draws its kept rows at once from the same reader, until
   }
 });
 
+test("reads a task's browser usage only once its subscription is synchronized", async () => {
+  const host = scriptedHost();
+  const reads: string[] = [];
+  const client = scriptedClient(host, async (input, init) => {
+    const name = new URL(String(input)).pathname.slice("/v1/rpc/".length);
+    if (name === "thread.browserUsage.get") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { threadId: string };
+      reads.push(body.threadId);
+      return Response.json({ ok: true, data: { threadId: body.threadId, uses: [] } });
+    }
+    return Response.json({
+      ok: false,
+      error: { code: "not_found", message: "Unavailable", retryable: false },
+    });
+  });
+  const synchronized = () =>
+    vi.waitFor(() =>
+      expect(client.getThreadTranscript(threadId)?.getSnapshot().synchronized).toBe(true),
+    );
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    await synchronized();
+    await vi.waitFor(() => expect(reads).toHaveLength(1));
+    // Shown again: the subscription is not synchronized until the Host's cut arrives (a
+    // microtask later), and a notice landing meanwhile starts no read the Host could not
+    // follow up; the synchronized subscription reads the usage whole, once.
+    client.deactivateThread(threadId);
+    client.activateThread(threadId);
+    expect(client.getThreadTranscript(threadId)?.getSnapshot().synchronized).toBe(false);
+    host.socket().deliver({ type: "host.browser-usage-changed", threadIds: [threadId] } as never);
+    expect(reads).toHaveLength(1);
+    await synchronized();
+    await vi.waitFor(() => expect(reads).toHaveLength(2));
+  } finally {
+    client.dispose();
+  }
+});
+
 test("an early detail past the buffer is set aside and resubscribed after the shell cut", () => {
   const f = fixture();
   f.stream.receive(f.detailSnapshot());

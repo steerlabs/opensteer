@@ -2726,6 +2726,15 @@ export class HttpHostClient {
     )
       return;
     if (!this.#stream.ready) return;
+    // The Host's usage notices reach only a synchronized subscription, so a read starts only once
+    // the task's is: one started earlier could miss a change announced before then. Nothing is
+    // lost: each subscription's first synchronized state reads the task's usage whole.
+    const detailScope = this.#detailScope(threadId);
+    if (
+      !detailScope ||
+      !this.#stream.peekDetail(detailScope)?.transcript.getSnapshot().synchronized
+    )
+      return;
     const pending = this.#browserUsageReads.get(threadId);
     if (pending) {
       if (mode === "full") pending.again = "full";
