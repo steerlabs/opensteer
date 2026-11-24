@@ -10663,6 +10663,16 @@ describe("work under a connection's authority never uses the clipboard or change
         sequence: 3,
       },
     });
+    // S-c: an extension target created BEFORE this subscription started also has its no-URL
+    // destroy/detach events dropped because only targets shown with a non-extension URL pass.
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "preexisting-ext-target" },
+        sequence: 4,
+      },
+    });
     runtime.sendServer({
       type: "cdp.event",
       event: {
@@ -10670,7 +10680,7 @@ describe("work under a connection's authority never uses the clipboard or change
         parameters: {
           targetInfo: { targetId: "web-target", type: "page", url: "https://example.test/" },
         },
-        sequence: 4,
+        sequence: 5,
       },
     });
     runtime.sendServer({
@@ -10678,12 +10688,13 @@ describe("work under a connection's authority never uses the clipboard or change
       event: {
         method: "Target.targetDestroyed",
         parameters: { targetId: "web-target" },
-        sequence: 5,
+        sequence: 6,
       },
     });
     await vi.waitFor(() => expect(rootEvents).toHaveLength(2));
     expect(JSON.stringify(rootEvents)).not.toContain("chrome-extension:");
     expect(JSON.stringify(rootEvents)).not.toContain("ext-target");
+    expect(JSON.stringify(rootEvents)).not.toContain("preexisting-ext-target");
     expect(JSON.stringify(rootEvents)).toContain("web-target");
 
     connectedRoot.close();

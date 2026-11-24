@@ -55,7 +55,10 @@ export class CdpProductIsolation {
       for (const frame of Array.isArray(params.callFrames) ? params.callFrames : []) {
         const record = frame as Record<string, unknown>;
         const location = record.location as Record<string, unknown> | undefined;
-        if (this.#scripts.get(String(location?.scriptId)) !== false) return false;
+        if (this.#scripts.get(String(location?.scriptId)) !== false) {
+          this.#frames.clear();
+          return false;
+        }
         this.#frames.add(String(record.callFrameId));
       }
     }

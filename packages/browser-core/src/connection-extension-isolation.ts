@@ -163,6 +163,13 @@ export class ConnectionExtensionIsolation {
     includeScriptMethods = true,
   ): boolean {
     if (includeScriptMethods && scriptOrWorldMethods.has(method)) return true;
+    if (
+      includeScriptMethods &&
+      method === "Page.reload" &&
+      params?.scriptToEvaluateOnLoad !== undefined
+    ) {
+      return true;
+    }
     return referencesAnyRuntimeId(params);
   }
 

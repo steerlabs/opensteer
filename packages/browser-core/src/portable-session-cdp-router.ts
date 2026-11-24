@@ -178,6 +178,8 @@ interface AttachedChannel {
   internalRuntimeEnabled: boolean;
   /** Underlying `Runtime.enable` send reused across retries after a bounded wait times out (S9). */
   runtimeEnableSent?: Promise<unknown>;
+  /** Underlying error when `Runtime.enable` rejected and ended the channel (Q1). */
+  runtimeEnableFailure?: unknown;
   internalRuntimeEnable?: Promise<void>;
   readonly rootAttached?: boolean;
   readonly rootAlias?: TargetRoot;
@@ -1833,11 +1835,9 @@ export class SessionCdpRouter {
       });
     }
     if (command.connection === true && !attached.connection) {
-      throw new SessionCdpRouterError(
-        "forbidden",
-        "A connected agent command cannot use a non-connection CDP channel.",
-        { unsent: true },
-      );
+      throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+        unsent: true,
+      });
     }
     const parameters = command.parameters ?? {};
     this.#assertOwnedTarget(state, attached.physicalTargetId);
@@ -1937,6 +1937,12 @@ export class SessionCdpRouter {
           },
           (error: unknown) => {
             if (attached.runtimeEnableSent === sent) delete attached.runtimeEnableSent;
+            // Q1: when the underlying `Runtime.enable` rejects (not a bounded timeout), end the
+            // channel so no un-held command can run without main-frame compromise detection.
+            attached.runtimeEnableFailure = error;
+            if (state.channels.get(attached.virtualSessionId) === attached) {
+              void this.#endChannel(state, attached, true);
+            }
             throw error;
           },
         );
@@ -1960,9 +1966,10 @@ export class SessionCdpRouter {
           }
           const onAbort = () => {
             timeout.reject(
-              new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
-                unsent: true,
-              }),
+              attached.runtimeEnableFailure ??
+                new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+                  unsent: true,
+                }),
             );
           };
           const signals = [state.closed.signal, attached.ended.signal];

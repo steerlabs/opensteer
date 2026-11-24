@@ -6170,7 +6170,7 @@ export class BrowserService {
       if (pooledRelay) void pooledRelay.close().catch(this.#onError);
       onClosed?.();
     };
-    const hiddenRootTargets = new Set<string>();
+    const visibleRootTargets = new Set<string>();
     const unsubscribe = broker.subscribeCdp((event) => {
       if (event.scriptAttachmentId !== scriptAttachmentId) return;
       if (connectionWork && event.method.startsWith("Target.")) {
@@ -6182,19 +6182,21 @@ export class BrowserService {
             : typeof params?.targetId === "string"
               ? params.targetId
               : undefined;
-        if (isChromeExtensionUrl(params?.targetInfo?.url)) {
-          if (targetId) {
-            if (hiddenRootTargets.size >= 1_024) {
-              const oldest = hiddenRootTargets.values().next().value;
-              if (oldest !== undefined) hiddenRootTargets.delete(oldest);
-            }
-            hiddenRootTargets.add(targetId);
+        if (params?.targetInfo !== undefined) {
+          if (isChromeExtensionUrl(params.targetInfo.url)) {
+            if (targetId) visibleRootTargets.delete(targetId);
+            return;
           }
-          return;
-        }
-        if (targetId && hiddenRootTargets.has(targetId)) {
-          if (event.method === "Target.targetDestroyed") hiddenRootTargets.delete(targetId);
-          return;
+          if (targetId) {
+            if (!visibleRootTargets.has(targetId) && visibleRootTargets.size >= 4_096) {
+              const oldest = visibleRootTargets.values().next().value;
+              if (oldest !== undefined) visibleRootTargets.delete(oldest);
+            }
+            visibleRootTargets.add(targetId);
+          }
+        } else if (targetId) {
+          if (!visibleRootTargets.has(targetId)) return;
+          if (event.method === "Target.targetDestroyed") visibleRootTargets.delete(targetId);
         }
       }
       onEvent(event);

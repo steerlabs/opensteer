@@ -274,4 +274,21 @@ it("refuses Debugger.setBreakpointByUrl with a non-empty condition outside expli
     ),
   ).not.toThrow();
   expect(result.locations).toEqual([{ scriptId: "page-1", lineNumber: 0 }]);
+
+  // S-f: when a Debugger.paused event is dropped because a lower call frame is in a preload
+  // script, any page call frames recorded earlier in the same stack are cleared.
+  expect(
+    worlds.observe("Debugger.paused", {
+      callFrames: [
+        { callFrameId: "page-frame-1", location: { scriptId: "page-1", lineNumber: 0 } },
+        { callFrameId: "preload-frame-2", location: { scriptId: "preload-1", lineNumber: 0 } },
+      ],
+    }),
+  ).toBe(false);
+  expect(() =>
+    worlds.assertCommand("Debugger.evaluateOnCallFrame", {
+      callFrameId: "page-frame-1",
+      expression: "1",
+    }),
+  ).toThrow();
 });

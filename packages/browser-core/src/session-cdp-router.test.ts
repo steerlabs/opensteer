@@ -4109,12 +4109,14 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
       expect(controlledHistory).toContainEqual(["seed", false]);
       expect(controlledHistory).toContainEqual(["next", false]);
 
-      // Specific backend errors (e.g., renderer crash) keep their own sentence instead of a generic wrapper.
-      dialogGate = Promise.withResolvers<void>();
+      // Specific backend errors (e.g., renderer crash) keep their own sentence for waiting commands
+      // AND end the channel (Q1).
+      const crashGate = Promise.withResolvers<void>();
       backend.prepareChannel = (channel) => {
         const origSend = channel.send.bind(channel);
         channel.send = async (method, parameters) => {
           if (method === "Runtime.enable") {
+            await crashGate.promise;
             throw new Error(
               "Electron browser page crashed (crashed); reload the page to continue.",
             );
@@ -4131,13 +4133,15 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
         method: "Target.attachToTarget",
         parameters: { targetId: "seed", flatten: true },
       })) as { sessionId: string };
-      await expect(
-        crashClient.send({
-          method: "Runtime.evaluate",
-          sessionId: crashSession,
-          parameters: { expression: "1" },
-        }),
-      ).rejects.toThrow("Electron browser page crashed (crashed); reload the page to continue.");
+      const waitingEval = crashClient.send({
+        method: "Runtime.evaluate",
+        sessionId: crashSession,
+        parameters: { expression: "1" },
+      });
+      crashGate.resolve();
+      await expect(waitingEval).rejects.toThrow(
+        "Electron browser page crashed (crashed); reload the page to continue.",
+      );
       crashClient.close();
       await crashClient.settled;
 
@@ -4147,7 +4151,7 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
     }
   });
 
-  it("refuses connection:true on a non-connection channel (S1, S3), drops no-URL Target events for hidden extension targets (S4), and uses one sentence with no stray detach on compromised attach (S6)", async () => {
+  it("refuses connection:true on a non-connection channel (S1, S3, S-b), drops no-URL Target events for hidden extension targets (S4), and uses one sentence with no stray detach on compromised attach (S6)", async () => {
     const backend = new FakeBackend();
     backend.extensions = true;
     backend.dedicatedContext = true;
@@ -4158,8 +4162,9 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
     const router = new SessionCdpRouter(backend);
     router.registerSession("a", "seed", async () => true, "/files/a");
 
-    // S1 + S3: sending connection:true on a channel attached without connection is refused and
-    // never mutates the person's own channel.
+    // S1 + S3 + S-b (ZZ4 inverted): sending connection:true on a channel attached without
+    // connection answers identically to an unknown session (`not_found: CDP session is not
+    // attached here.`) and never mutates the person's own channel.
     const { sessionId: ownSession } = (await router.send("a", {
       method: "Target.attachToTarget",
       parameters: { targetId: "seed", flatten: true },
@@ -4171,7 +4176,15 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
         connection: true,
         parameters: { expression: "1" },
       }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({ code: "not_found", message: "CDP session is not attached here." });
+    await expect(
+      router.send("a", {
+        method: "DOM.getDocument",
+        sessionId: "cdp_nope",
+        connection: true,
+        parameters: {},
+      }),
+    ).rejects.toMatchObject({ code: "not_found", message: "CDP session is not attached here." });
     await expect(
       router.send("a", {
         method: "Debugger.setBreakpointByUrl",
@@ -4243,6 +4256,94 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
 
     await router.closeScriptAttachment("a", "script-s4", Promise.resolve());
     connClient.close();
+    await router.close();
+  });
+
+  it("ends the connection channel when attach-time Runtime.enable rejects (Q1 / ZZ1 inverted) and holds Page.reload with scriptToEvaluateOnLoad behind inventory (S-a / ZZ2 inverted)", async () => {
+    // Q1 (ZZ1 inverted): when attach-time Runtime.enable rejects (e.g. crashed renderer), the
+    // channel is ended immediately so no later un-held commands can run without inventory.
+    const backend = new FakeBackend();
+    backend.dedicatedContext = true;
+    backend.targetInfos = [{ targetId: "seed", type: "page", url: "https://example.test/" }];
+    let crashed = true;
+    backend.prepareChannel = (channel) => {
+      const orig = channel.send.bind(channel);
+      channel.send = async (method, parameters) => {
+        if (method === "Runtime.enable" && crashed) {
+          channel.commands.push({ method });
+          throw new Error("Electron browser page crashed; reload the page to continue.");
+        }
+        return orig(method, parameters);
+      };
+    };
+    const router = new SessionCdpRouter(backend, { internalRuntimeEnableTimeoutMs: 25 });
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    const client = router.openStandardClient("a", {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId: "q1-client", seedTargetId: "seed" },
+    });
+    const events: CdpEvent[] = [];
+    client.onEvent((event) => events.push(event));
+    const { sessionId } = (await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const ch = backend.channels.get("seed")!;
+    await vi.waitFor(() => expect(ch.closed).toBe(true));
+    expect(
+      events.some(
+        (e) => e.method === "Target.detachedFromTarget" && e.parameters.sessionId === sessionId,
+      ),
+    ).toBe(true);
+    crashed = false;
+    for (const [method, parameters] of [
+      ["Page.reload", { scriptToEvaluateOnLoad: "window.x = chrome?.runtime?.id" }],
+      ["DOM.getDocument", { depth: -1 }],
+      ["DOM.getOuterHTML", { nodeId: 1 }],
+      [
+        "Input.dispatchMouseEvent",
+        { type: "mousePressed", x: 1, y: 1, button: "left", clickCount: 1 },
+      ],
+      ["Page.captureScreenshot", {}],
+    ] as const) {
+      await expect(
+        client.send({ method, sessionId, parameters: parameters as CdpParameters }),
+        method,
+      ).rejects.toMatchObject({ code: "not_found", message: "CDP session is not attached here." });
+    }
+    client.close();
+    await client.settled;
+
+    // S-a (ZZ2 inverted): Page.reload with scriptToEvaluateOnLoad is held behind inventory while
+    // Runtime.enable is pending and refuses with retryable conflict without forwarding Page.reload.
+    backend.prepareChannel = (channel) => {
+      channel.enableGate = new Promise<void>(() => undefined);
+    };
+    const heldClient = router.openStandardClient("a", {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId: "sa-client", seedTargetId: "seed" },
+    });
+    const { sessionId: heldSession } = (await heldClient.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    await expect(
+      heldClient.send({
+        method: "Page.reload",
+        sessionId: heldSession,
+        parameters: { scriptToEvaluateOnLoad: "1" },
+      }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "The page is not answering; try again.",
+    });
+    expect(backend.channels.get("seed")!.commands.some((c) => c.method === "Page.reload")).toBe(
+      false,
+    );
+    heldClient.close();
+    await heldClient.settled;
     await router.close();
   });
 });

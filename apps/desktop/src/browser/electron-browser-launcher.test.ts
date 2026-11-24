@@ -15,7 +15,7 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 type Bounds = { x: number; y: number; width: number; height: number };
 
@@ -52,6 +52,7 @@ type MockViewWebContents = {
 };
 
 const electron = vi.hoisted(() => ({
+  listenerErrors: [] as unknown[],
   restore: undefined as undefined | (() => Promise<void>),
   storage: undefined as undefined | (() => Promise<unknown>),
   blankLoad: undefined as undefined | (() => Promise<void>),
@@ -155,6 +156,7 @@ vi.mock("electron", () => {
     readonly endFrameSubscription = vi.fn();
     #onDestroying: (() => void) | undefined;
     #destroyed = false;
+    readonly #destroyedListeners: Array<{ readonly fn: () => void; readonly once: boolean }> = [];
     attachView(onDestroying: () => void): void {
       this.#onDestroying = onDestroying;
     }
@@ -162,9 +164,23 @@ vi.mock("electron", () => {
       if (this.#destroyed) return;
       this.#destroyed = true;
       this.isDestroyed.mockReturnValue(true);
-      // Match real Electron: WebContentsView.webContents becomes undefined before `destroyed` fires.
+      // Match real Electron: WebContentsView.webContents becomes undefined before `destroyed` fires,
+      // and `destroyed` is emitted asynchronously to both `on` and `once` listeners in registration
+      // order so throws surface directly instead of being swallowed by `#disposeContents`.
       this.#onDestroying?.();
-      for (const [event, listener] of this.once.mock.calls) if (event === "destroyed") listener();
+      queueMicrotask(() => {
+        for (const entry of this.#destroyedListeners.slice()) {
+          if (entry.once) {
+            const index = this.#destroyedListeners.indexOf(entry);
+            if (index >= 0) this.#destroyedListeners.splice(index, 1);
+          }
+          try {
+            entry.fn();
+          } catch (error) {
+            electron.listenerErrors.push(error);
+          }
+        }
+      });
     }
     readonly close = vi.fn(() => {
       this.#markDestroyed();
@@ -178,10 +194,20 @@ vi.mock("electron", () => {
       url === "about:blank" ? electron.blankLoad?.() : undefined,
     );
     readonly executeJavaScriptInIsolatedWorld = vi.fn(async () => electron.storage?.() ?? {});
-    readonly off = vi.fn();
-    readonly on = vi.fn();
-    readonly once = vi.fn();
-    readonly removeAllListeners = vi.fn();
+    readonly off = vi.fn((event: string, listener: () => void) => {
+      if (event !== "destroyed") return;
+      const index = this.#destroyedListeners.findIndex((entry) => entry.fn === listener);
+      if (index >= 0) this.#destroyedListeners.splice(index, 1);
+    });
+    readonly on = vi.fn((event: string, listener: () => void) => {
+      if (event === "destroyed") this.#destroyedListeners.push({ fn: listener, once: false });
+    });
+    readonly once = vi.fn((event: string, listener: () => void) => {
+      if (event === "destroyed") this.#destroyedListeners.push({ fn: listener, once: true });
+    });
+    readonly removeAllListeners = vi.fn((event?: string) => {
+      if (!event || event === "destroyed") this.#destroyedListeners.length = 0;
+    });
     readonly setWindowOpenHandler = vi.fn();
     readonly setVisualZoomLevelLimits = vi.fn(async () => undefined);
   }
@@ -309,6 +335,11 @@ const {
   electronPagePresentation,
   nativePlacement,
 } = await import("./electron-browser-launcher.js");
+
+afterEach(() => {
+  const errors = electron.listenerErrors.splice(0);
+  if (errors.length > 0) throw errors[0];
+});
 
 it("attributes renderer memory to its own frame trees and keeps unassigned counts separate", async () => {
   const launch = () =>
